@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -19,12 +20,13 @@ import (
 // tests (X-User-ID header + chi URL params), so the RequireSuperAdmin
 // middleware itself is covered by internal/middleware/admin_test.go.
 
-// insertAdminTestUser is a fixture wrapper with a per-call-site unique
+// insertAdminTestUser is a fixture wrapper with a per-invocation unique
 // email; it returns the user id string. admin_audit_log has no foreign key
 // by repo convention, so the audit rows each test generates are cleaned up
 // here alongside the user rows.
 func insertAdminTestUser(t *testing.T, email, name string, isSuperAdmin bool) string {
 	t.Helper()
+	email = strings.Replace(email, "@", "+"+uuid.NewString()+"@", 1)
 	id := dbfx.Insert(t, "user", testutil.Cols{
 		"email":          email,
 		"name":           name,
@@ -35,6 +37,18 @@ func insertAdminTestUser(t *testing.T, email, name string, isSuperAdmin bool) st
 			`DELETE FROM admin_audit_log WHERE actor_id::text = $1 OR target_id::text = $1`, id)
 	})
 	return id
+}
+
+func TestInsertAdminTestUserAvoidsOldFixtureEmail(t *testing.T) {
+	const email = "admin-fixture-collision@test.local"
+	dbfx.User(t, "Old Admin Fixture", email)
+	id := insertAdminTestUser(t, email, "New Admin Fixture", false)
+
+	var actualEmail string
+	dbfx.QueryRow(t, `SELECT email FROM "user" WHERE id = $1`, id).Scan(&actualEmail)
+	if actualEmail == email || !strings.HasPrefix(actualEmail, "admin-fixture-collision+") {
+		t.Fatalf("fixture email = %q, want a unique address distinct from %q", actualEmail, email)
+	}
 }
 
 func setSuperAdminEmailsForTest(t *testing.T, emails []string) {
@@ -433,7 +447,7 @@ func TestAdminAddWorkspaceMember(t *testing.T) {
 	t.Run("unknown user rejected", func(t *testing.T) {
 		ws := dbfx.Insert(t, "workspace", testutil.Cols{"name": "Admin Add Unknown", "slug": "admin-add-unknown"})
 		req := newRequest("POST", "/api/admin/workspaces/"+ws+"/members", AdminAddWorkspaceMemberRequest{
-			Email: "admin-add-missing-user@test.local", Role: "member",
+			Email: "admin-add-missing-user+" + uuid.NewString() + "@test.local", Role: "member",
 		})
 		req = withURLParam(req, "id", ws)
 		req.Header.Set("X-User-ID", admin)
@@ -529,12 +543,14 @@ func TestAdminListWorkspaces_OwnerlessWorkspaceDoesNotError(t *testing.T) {
 }
 
 func TestMaybeGrantSuperAdmin_IsIdempotentBootstrap(t *testing.T) {
-	setSuperAdminEmailsForTest(t, []string{"bootstrap-admin@test.local"})
+	adminID := insertAdminTestUser(t, "bootstrap-admin@test.local", "Bootstrap Admin", false)
+	otherID := insertAdminTestUser(t, "bootstrap-other@test.local", "Bootstrap Other", false)
+	var adminEmail, otherEmail string
+	dbfx.QueryRow(t, `SELECT email FROM "user" WHERE id = $1`, adminID).Scan(&adminEmail)
+	dbfx.QueryRow(t, `SELECT email FROM "user" WHERE id = $1`, otherID).Scan(&otherEmail)
+	setSuperAdminEmailsForTest(t, []string{adminEmail})
 
-	insertAdminTestUser(t, "bootstrap-admin@test.local", "Bootstrap Admin", false)
-	insertAdminTestUser(t, "bootstrap-other@test.local", "Bootstrap Other", false)
-
-	fetched, err := testHandler.Queries.GetUserByEmail(t.Context(), "bootstrap-admin@test.local")
+	fetched, err := testHandler.Queries.GetUserByEmail(t.Context(), adminEmail)
 	if err != nil {
 		t.Fatalf("fetch user: %v", err)
 	}
@@ -550,19 +566,19 @@ func TestMaybeGrantSuperAdmin_IsIdempotentBootstrap(t *testing.T) {
 	// Fresh read: the second call must not rewrite the row — updated_at
 	// unchanged proves the early return fired.
 	var updatedBefore, updatedAfter time.Time
-	dbfx.QueryRow(t, `SELECT updated_at FROM "user" WHERE email = $1`, "bootstrap-admin@test.local").Scan(&updatedBefore)
-	refetched, err := testHandler.Queries.GetUserByEmail(t.Context(), "bootstrap-admin@test.local")
+	dbfx.QueryRow(t, `SELECT updated_at FROM "user" WHERE email = $1`, adminEmail).Scan(&updatedBefore)
+	refetched, err := testHandler.Queries.GetUserByEmail(t.Context(), adminEmail)
 	if err != nil {
 		t.Fatalf("refetch: %v", err)
 	}
 	testHandler.maybeGrantSuperAdmin(t.Context(), refetched)
-	dbfx.QueryRow(t, `SELECT updated_at FROM "user" WHERE email = $1`, "bootstrap-admin@test.local").Scan(&updatedAfter)
+	dbfx.QueryRow(t, `SELECT updated_at FROM "user" WHERE email = $1`, adminEmail).Scan(&updatedAfter)
 	if !updatedBefore.Equal(updatedAfter) {
 		t.Fatal("idempotent grant must not write when the flag is already set")
 	}
 
 	// A non-listed email is never granted.
-	row, err := testHandler.Queries.GetUserByEmail(t.Context(), "bootstrap-other@test.local")
+	row, err := testHandler.Queries.GetUserByEmail(t.Context(), otherEmail)
 	if err != nil {
 		t.Fatalf("fetch other: %v", err)
 	}
@@ -573,10 +589,12 @@ func TestMaybeGrantSuperAdmin_IsIdempotentBootstrap(t *testing.T) {
 }
 
 func TestDisabledUserRejectedOnLoginPath(t *testing.T) {
-	insertAdminTestUser(t, "login-disabled@test.local", "Login Disabled", false)
-	dbfx.Exec(t, `UPDATE "user" SET disabled_at = now() WHERE email = $1`, "login-disabled@test.local")
+	id := insertAdminTestUser(t, "login-disabled@test.local", "Login Disabled", false)
+	var email string
+	dbfx.QueryRow(t, `SELECT email FROM "user" WHERE id = $1`, id).Scan(&email)
+	dbfx.Exec(t, `UPDATE "user" SET disabled_at = now() WHERE id = $1`, id)
 
-	_, _, err := testHandler.findOrCreateUser(t.Context(), "login-disabled@test.local")
+	_, _, err := testHandler.findOrCreateUser(t.Context(), email)
 	if err == nil || !strings.Contains(err.Error(), auth.UserDisabledError) {
 		t.Fatalf("expected disabled rejection, got %v", err)
 	}

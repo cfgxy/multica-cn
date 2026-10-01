@@ -719,7 +719,8 @@ func (h *Handler) GetLocalSkillImportRequest(w http.ResponseWriter, r *http.Requ
 
 func (h *Handler) ReportLocalSkillListResult(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
-	if _, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID); !ok {
+	rt, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID)
+	if !ok {
 		return
 	}
 
@@ -769,6 +770,14 @@ func (h *Handler) ReportLocalSkillListResult(w http.ResponseWriter, r *http.Requ
 			slog.Error("local skills Complete failed", "error", err, "request_id", requestID)
 			writeError(w, http.StatusInternalServerError, "failed to persist completion")
 			return
+		}
+		// RUYI-288: mirror the fresh discovery into the workspace skill
+		// catalog index so every selection surface sees runtime-local skills.
+		// Best-effort: the report must stay successful even when the index
+		// write fails, or the daemon would retry a completed discovery.
+		if syncErr := h.syncRuntimeSkillDiscoveries(r.Context(), uuidToString(rt.WorkspaceID), runtimeID, body.Skills); syncErr != nil {
+			slog.Warn("runtime skill discovery index sync failed",
+				"error", syncErr, "runtime_id", runtimeID, "request_id", requestID)
 		}
 	} else {
 		if err := h.LocalSkillListStore.Fail(r.Context(), requestID, body.Error); err != nil {

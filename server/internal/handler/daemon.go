@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -1898,6 +1899,27 @@ func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.A
 	}
 }
 
+// quizPromptFromContext reports whether the task's context JSONB is a
+// prompt-quiz payload (kind=="quiz", RUYI-286) and returns the item under
+// test. Every other context — quick_create or an unknown shape — returns
+// false, so the claim path can never surface a foreign prompt as a
+// measurement assignment. The payload structurally excludes the item's
+// private half (promptquizsweep.TaskContextPayload), so extracting quiz_prompt
+// here cannot leak rubric or answer material onto the daemon channel (A2).
+func quizPromptFromContext(raw []byte) (string, bool) {
+	var payload struct {
+		Kind       string `json:"kind"`
+		QuizPrompt string `json:"quiz_prompt"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return "", false
+	}
+	if payload.Kind != promptquiz.TaskKind || strings.TrimSpace(payload.QuizPrompt) == "" {
+		return "", false
+	}
+	return payload.QuizPrompt, true
+}
+
 // remoteMCPDaemonTokenForClaim prepares the short-lived credential the daemon
 // uses to resolve write-only Remote MCP secrets for this task. The raw token is
 // returned only in the claim response; its hash is committed atomically with
@@ -3107,6 +3129,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					}
 				}
 			}
+		} else if quizPrompt, ok := quizPromptFromContext(task.Context); ok {
+			// Prompt-quiz measurement run (RUYI-286): the item under test is
+			// the run's entire assignment. Attribution stays quiz's own kind
+			// — no quick_create fields, no origin stamping, no source-context
+			// path, no project hydration. Workspace resolution below is the
+			// same catch-all every other kind already passes.
+			resp.QuizPrompt = quizPrompt
 		}
 	}
 

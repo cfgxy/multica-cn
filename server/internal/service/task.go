@@ -30,6 +30,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -7191,6 +7192,7 @@ func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.Agen
 // ResolveTaskWorkspaceID determines the workspace ID for a task.
 // For issue tasks, it comes from the issue. For chat tasks, from the chat session.
 // For autopilot tasks, from the autopilot via its run.
+// For quiz runs, from the workspace of the quiz item the context names.
 // Returns "" when none of the links resolve — callers treat that as "not found".
 func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentTaskQueue) string {
 	if task.IssueID.Valid {
@@ -7217,6 +7219,19 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return qc.WorkspaceID
+	}
+	// Quiz runs (prompt-governance measurement) are the other linkless kind:
+	// their context names the quiz item, and the item's workspace is the
+	// authority both ordering paths (sweep tick and batch endpoint) already
+	// scope everything under. Returning "" here repeated the quick-create
+	// failure mode on RUYI-286: every daemon call a claimed run makes 404'd
+	// and the ordered runs stuck at dispatched. An item whose row is gone
+	// stays unresolvable — the daemon reads that as 404, which is right for
+	// a measurement that lost its anchor.
+	if itemID, ok := s.parseQuizContext(task); ok {
+		if wsID, err := s.Queries.GetPromptQuizItemWorkspace(ctx, itemID); err == nil {
+			return util.UUIDToString(wsID)
+		}
 	}
 	return ""
 }
@@ -7526,6 +7541,38 @@ func (s *TaskService) parseQuickCreateContext(task db.AgentTaskQueue) (QuickCrea
 		return QuickCreateContext{}, false
 	}
 	return qc, true
+}
+
+// parseQuizContext returns the quiz item id if the task's context JSONB is a
+// quiz run payload — kind == promptquiz.TaskKind and a quiz_item_id, the shape
+// promptquizsweep.TaskContextPayload writes and both ordering paths share.
+// Otherwise the bool is false so callers can short-circuit. Tasks linked to an
+// issue / chat / autopilot are never quiz runs even if they happen to carry a
+// context blob, so those are filtered up front — same shape as
+// parseQuickCreateContext, whose payloads this stays disjoint from:
+// quick-create tags "type", quiz tags "kind".
+func (s *TaskService) parseQuizContext(task db.AgentTaskQueue) (pgtype.UUID, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return pgtype.UUID{}, false
+	}
+	if len(task.Context) == 0 {
+		return pgtype.UUID{}, false
+	}
+	var payload struct {
+		Kind       string `json:"kind"`
+		QuizItemID string `json:"quiz_item_id"`
+	}
+	if err := json.Unmarshal(task.Context, &payload); err != nil {
+		return pgtype.UUID{}, false
+	}
+	if payload.Kind != promptquiz.TaskKind {
+		return pgtype.UUID{}, false
+	}
+	itemID, err := util.ParseUUID(payload.QuizItemID)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return itemID, true
 }
 
 func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) (bool, error) {

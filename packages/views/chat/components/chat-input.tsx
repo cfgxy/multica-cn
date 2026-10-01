@@ -23,7 +23,10 @@ import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
+import { getCurrentWsId } from "@multica/core/platform";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
+import { skillListOptions } from "@multica/core/workspace/queries";
+import { useQuery } from "@tanstack/react-query";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
 import type { Attachment, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
@@ -175,6 +178,11 @@ export function ChatInput({
 }: ChatInputProps) {
   const { t } = useT("chat");
   const { t: tEditor } = useT("editor");
+  // Warm the workspace skill library so the `/` skill picker reads the full
+  // list instead of whatever the active agent happens to have attached
+  // (RUYI-288). Same prefetch the issue comment composer does.
+  const wsId = getCurrentWsId();
+  useQuery({ ...skillListOptions(wsId ?? ""), enabled: !!wsId });
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);

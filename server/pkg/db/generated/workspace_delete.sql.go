@@ -631,8 +631,20 @@ func (q *Queries) DeleteWorkspaceRuntimesAndProjects(ctx context.Context, worksp
 }
 
 const deleteWorkspaceSelfEvolutionData = `-- name: DeleteWorkspaceSelfEvolutionData :exec
-WITH deleted_proposals AS (
-    DELETE FROM proposal WHERE proposal.workspace_id = $1
+WITH deleted_prompt_proposals AS (
+    DELETE FROM prompt_proposal WHERE prompt_proposal.workspace_id = $1
+),
+deleted_prompt_structure_baselines AS (
+    DELETE FROM prompt_structure_baseline WHERE prompt_structure_baseline.workspace_id = $1
+),
+deleted_retrospective_runs AS (
+    DELETE FROM retrospective_run WHERE retrospective_run.workspace_id = $1
+),
+deleted_retrospective_watermarks AS (
+    DELETE FROM retrospective_issue_watermark WHERE retrospective_issue_watermark.workspace_id = $1
+),
+deleted_retrospective_configs AS (
+    DELETE FROM retrospective_config WHERE retrospective_config.workspace_id = $1
 ),
 deleted_scan_batches AS (
     DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
@@ -643,9 +655,10 @@ deleted_knowledge_entries AS (
 DELETE FROM knowledge_dir WHERE knowledge_dir.workspace_id = $1
 `
 
-// Self-evolution tables (RUYI-265) have no foreign keys or cascades. Every
-// row — proposals, registered knowledge directories, mirror entries and scan
-// batches — is workspace-keyed, so each table deletes by workspace_id
+// Self-evolution tables (RUYI-265, RUYI-305) have no foreign keys or cascades.
+// Every row — prompt legislation proposals, structure baselines, retrospective
+// runs/watermarks/config, registered knowledge directories, mirror entries and
+// scan batches — is workspace-keyed, so each table deletes by workspace_id
 // directly; no id-set indirection is needed.
 func (q *Queries) DeleteWorkspaceSelfEvolutionData(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceSelfEvolutionData, workspaceID)
@@ -657,6 +670,8 @@ WITH deleted_squads AS (
     DELETE FROM squad WHERE squad.workspace_id = $1
 ), deleted_skill_versions AS (
     DELETE FROM skill_version WHERE workspace_id = $1
+), deleted_runtime_skill_discoveries AS (
+    DELETE FROM runtime_skill_discovery WHERE workspace_id = $1
 )
 DELETE FROM skill WHERE skill.workspace_id = $1
 `

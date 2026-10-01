@@ -1,9 +1,9 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { createRef, type ReactNode } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import type { Agent, MemberWithUser } from "@multica/core/types";
+import type { Agent, MemberWithUser, SkillSummary } from "@multica/core/types";
 import type { QueryClient } from "@tanstack/react-query";
 import enEditor from "../../locales/en/editor.json";
 
@@ -87,13 +87,28 @@ function agent(overrides: Partial<Agent>): Agent {
 function fakeQc(data: {
   members?: Array<Pick<MemberWithUser, "user_id" | "name" | "role">>;
   agents?: Agent[];
-}): QueryClient {
+  /** Omit to simulate a never-fetched (cold) skills cache. */
+  skills?: Array<Pick<SkillSummary, "id" | "name" | "description">>;
+}): QueryClient & { fetchCalls: Array<readonly unknown[]> } {
+  const fetchCalls: Array<readonly unknown[]> = [];
   const map = new Map<string, unknown>();
   map.set(JSON.stringify(workspaceKeys.members("ws-1")), data.members ?? []);
   map.set(JSON.stringify(workspaceKeys.agents("ws-1")), data.agents ?? []);
+  if (data.skills !== undefined) {
+    map.set(JSON.stringify(workspaceKeys.skills("ws-1")), data.skills);
+  }
   return {
     getQueryData: (key: readonly unknown[]) => map.get(JSON.stringify(key)),
-  } as unknown as QueryClient;
+    fetchQuery: (options: { queryKey: readonly unknown[] }) => {
+      fetchCalls.push(options.queryKey);
+      return Promise.resolve(map.get(JSON.stringify(options.queryKey)));
+    },
+    fetchCalls,
+  } as unknown as QueryClient & { fetchCalls: Array<readonly unknown[]> };
+}
+
+function libSkill(id: string, name: string, description = "") {
+  return { id, name, description };
 }
 
 function items(qc: QueryClient, query = ""): SlashCommandItem[] {
@@ -159,43 +174,56 @@ describe("issue skill and command menu", () => {
 });
 
 describe("slash command suggestion items", () => {
-  it("returns all active agent skills when query is empty", () => {
+  // RUYI-288: the chat `/` picker draws from the WORKSPACE skill library, not
+  // the active agent's attachment list. Library skills the agent has not
+  // attached still appear — marked `attached: false` so the renderer shows
+  // them disabled with a reason — because hiding them made the picker read as
+  // a curated subset ("only the pattern skills") of the real library.
+  it("lists the whole library with attached skills first and selectable", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
       agents: [
         agent({
           id: "agent-1",
-          skills: [
-            { id: "s1", name: "deploy", description: "Ship changes" },
-            { id: "s2", name: "review", description: "Review code" },
-          ],
+          skills: [{ id: "s1", name: "deploy", description: "Ship changes" }],
         }),
+      ],
+      skills: [
+        libSkill("s1", "deploy", "Ship changes"),
+        libSkill("s2", "review", "Review code"),
+        libSkill("s3", "patterns", "Design patterns"),
       ],
     });
 
-    expect(items(qc).map((i) => i.label)).toEqual(["deploy", "review"]);
+    const result = items(qc);
+    expect(result.map((i) => [i.id, i.attached])).toEqual([
+      ["s1", true],
+      ["s2", false],
+      ["s3", false],
+    ]);
   });
 
-  it("filters skills by name case-insensitively", () => {
+  it("searches across unattached skills too", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
       agents: [
         agent({
           id: "agent-1",
-          skills: [
-            { id: "s1", name: "Deploy", description: "" },
-            { id: "s2", name: "Review", description: "" },
-          ],
+          skills: [{ id: "s1", name: "deploy", description: "" }],
         }),
+      ],
+      skills: [
+        libSkill("s1", "deploy", ""),
+        libSkill("s2", "review", "Read a pull request"),
       ],
     });
 
-    expect(items(qc, "dep").map((i) => i.id)).toEqual(["s1"]);
+    expect(items(qc, "pull").map((i) => [i.id, i.attached])).toEqual([["s2", false]]);
   });
 
-  it("filters skills by description", () => {
+  it("keeps the attached block ahead of the unattached block, library order within each", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
@@ -203,29 +231,73 @@ describe("slash command suggestion items", () => {
         agent({
           id: "agent-1",
           skills: [
-            { id: "s1", name: "deploy", description: "Ship changes" },
-            { id: "s2", name: "review", description: "Read a pull request" },
+            { id: "s2", name: "beta", description: "" },
+            { id: "s1", name: "alpha", description: "" },
           ],
         }),
       ],
+      skills: [
+        libSkill("s1", "alpha", ""),
+        libSkill("s2", "beta", ""),
+        libSkill("s3", "gamma", ""),
+      ],
     });
 
-    expect(items(qc, "pull").map((i) => i.id)).toEqual(["s2"]);
+    expect(items(qc).map((i) => i.id)).toEqual(["s1", "s2", "s3"]);
+    expect(items(qc).map((i) => i.attached)).toEqual([true, true, false]);
+  });
+
+  it("treats an enabled:false assignment as unattached", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "", enabled: false }],
+        }),
+      ],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    expect(items(qc).map((i) => i.attached)).toEqual([false]);
+  });
+
+  it("caps results at 20 without dropping attached skills in favor of unattached ones", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [
+            { id: "a1", name: "mine-1", description: "" },
+            { id: "a2", name: "mine-2", description: "" },
+          ],
+        }),
+      ],
+      skills: [
+        libSkill("a1", "mine-1", ""),
+        libSkill("a2", "mine-2", ""),
+        ...Array.from({ length: 25 }, (_, i) => libSkill(`s${i}`, `skill-${i}`, "")),
+      ],
+    });
+
+    const result = items(qc);
+    expect(result).toHaveLength(20);
+    expect(result.slice(0, 2).map((i) => i.id)).toEqual(["a1", "a2"]);
+    expect(result.slice(2).every((i) => !i.attached)).toBe(true);
   });
 
   it("ranks name prefix matches above description-only matches", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [
-        agent({
-          id: "agent-1",
-          skills: [
-            { id: "s1", name: "grilling", description: "Grill the user about a plan" },
-            { id: "s2", name: "prototype", description: "Build a throwaway prototype" },
-            { id: "s3", name: "wayfinder", description: "Plan a huge chunk of work" },
-          ],
-        }),
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [
+        libSkill("s1", "grilling", "Grill the user about a plan"),
+        libSkill("s2", "prototype", "Build a throwaway prototype"),
+        libSkill("s3", "wayfinder", "Plan a huge chunk of work"),
       ],
     });
 
@@ -236,72 +308,34 @@ describe("slash command suggestion items", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [
-        agent({
-          id: "agent-1",
-          skills: [
-            { id: "s1", name: "reviewer", description: "" },
-            { id: "s2", name: "review", description: "" },
-          ],
-        }),
-      ],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [libSkill("s1", "reviewer", ""), libSkill("s2", "review", "")],
     });
 
     expect(items(qc, "review").map((i) => i.id)).toEqual(["s2", "s1"]);
   });
 
-  it("ranks a name prefix above a mid-name match", () => {
+  it("filters skills by name case-insensitively", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [
-        agent({
-          id: "agent-1",
-          skills: [
-            { id: "s1", name: "pr-review", description: "" },
-            { id: "s2", name: "review", description: "" },
-          ],
-        }),
-      ],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [libSkill("s1", "Deploy", ""), libSkill("s2", "Review", "")],
     });
 
-    expect(items(qc, "rev").map((i) => i.id)).toEqual(["s2", "s1"]);
-  });
-
-  it("keeps the configured skill order within a match tier", () => {
-    chatState.selectedAgentId = "agent-1";
-    const qc = fakeQc({
-      members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [
-        agent({
-          id: "agent-1",
-          skills: [
-            { id: "s1", name: "deploy-web", description: "" },
-            { id: "s2", name: "deploy-api", description: "" },
-          ],
-        }),
-      ],
-    });
-
-    expect(items(qc, "deploy").map((i) => i.id)).toEqual(["s1", "s2"]);
+    expect(items(qc, "dep").map((i) => i.id)).toEqual(["s1"]);
   });
 
   it("keeps a name match inside the 20-item cap when description hits fill it", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [
-        agent({
-          id: "agent-1",
-          skills: [
-            ...Array.from({ length: 25 }, (_, i) => ({
-              id: `d${i}`,
-              name: `skill-${i}`,
-              description: "Build a throwaway prototype",
-            })),
-            { id: "s-named", name: "wayfinder", description: "" },
-          ],
-        }),
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [
+        ...Array.from({ length: 25 }, (_, i) =>
+          libSkill(`d${i}`, `skill-${i}`, "Build a throwaway prototype"),
+        ),
+        libSkill("s-named", "wayfinder", ""),
       ],
     });
 
@@ -317,20 +351,39 @@ describe("slash command suggestion items", () => {
       agents: [
         agent({
           id: "agent-1",
-          skills: [
-            { id: "s1", name: "deploy" } as Agent["skills"][number],
-          ],
+          skills: [{ id: "s1", name: "deploy" } as Agent["skills"][number]],
         }),
       ],
+      skills: [{ id: "s1", name: "deploy" } as Pick<SkillSummary, "id" | "name" | "description">],
     });
 
     expect(() => items(qc, "dep")).not.toThrow();
-    expect(items(qc, "dep")).toEqual([
-      { id: "s1", label: "deploy", description: "" },
-    ]);
+    const [first] = items(qc, "dep");
+    expect(first).toMatchObject({ id: "s1", label: "deploy", description: "", attached: true });
   });
 
-  it("returns empty when the active agent has no skills", () => {
+  it("populates supporting agents and rings the chat agent", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "" }],
+        }),
+        agent({ id: "agent-2", skills: [] }),
+      ],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    const [first] = items(qc);
+    expect(first?.kind).toBe("skill");
+    expect(first?.supportingAgents?.map((a) => a.id)).toEqual(["agent-1"]);
+    expect(first?.assignedAgentId).toBe("agent-1");
+    expect(first?.allAgentsSupport).toBe(false);
+  });
+
+  it("warms a cold skills cache and returns no items for that keystroke", async () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
@@ -338,25 +391,30 @@ describe("slash command suggestion items", () => {
     });
 
     expect(items(qc)).toEqual([]);
+    expect(qc.fetchCalls).toEqual([workspaceKeys.skills("ws-1")]);
   });
 
-  it("caps results at 20", () => {
+  it("does not refetch when the cache holds an already-fetched empty library", () => {
     chatState.selectedAgentId = "agent-1";
     const qc = fakeQc({
       members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [
-        agent({
-          id: "agent-1",
-          skills: Array.from({ length: 25 }, (_, i) => ({
-            id: `s${i}`,
-            name: `skill-${i}`,
-            description: "",
-          })),
-        }),
-      ],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [],
     });
 
-    expect(items(qc)).toHaveLength(20);
+    expect(items(qc)).toEqual([]);
+    expect(qc.fetchCalls).toEqual([]);
+  });
+
+  it("returns empty when no agents exist", () => {
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    expect(items(qc)).toEqual([]);
+    expect(qc.fetchCalls).toEqual([]);
   });
 
   it("falls back to the first available agent when selectedAgentId is stale", () => {
@@ -369,18 +427,10 @@ describe("slash command suggestion items", () => {
           skills: [{ id: "s1", name: "deploy", description: "" }],
         }),
       ],
+      skills: [libSkill("s1", "deploy", "")],
     });
 
-    expect(items(qc).map((i) => i.id)).toEqual(["s1"]);
-  });
-
-  it("returns empty when no agents exist", () => {
-    const qc = fakeQc({
-      members: [{ user_id: "u1", name: "Alice", role: "member" }],
-      agents: [],
-    });
-
-    expect(items(qc)).toEqual([]);
+    expect(items(qc).map((i) => [i.id, i.attached])).toEqual([["s1", true]]);
   });
 
   it("excludes skills from private agents the user cannot access", () => {
@@ -400,6 +450,7 @@ describe("slash command suggestion items", () => {
           skills: [{ id: "private-skill", name: "secret", description: "" }],
         }),
       ],
+      skills: [libSkill("private-skill", "secret", "")],
     });
 
     expect(items(qc)).toEqual([]);
@@ -711,6 +762,159 @@ describe("SlashCommandList skill agent-support rendering", () => {
     expect(getAllByTestId("actor-avatar")).toHaveLength(3);
     expect(getByText("+1")).toBeInTheDocument();
     expect(getByTitle("Beta").className).toContain("ring-primary");
+  });
+});
+
+describe("SlashCommandList attached/unattached rendering", () => {
+  function skillItem(overrides: Partial<SlashCommandItem>): SlashCommandItem {
+    return {
+      id: "s1",
+      label: "Review",
+      description: "Inspect changes",
+      kind: "skill",
+      supportingAgents: [],
+      assignedAgentId: null,
+      allAgentsSupport: false,
+      ...overrides,
+    };
+  }
+
+  it("renders unattached skills disabled with a reason and ignores their clicks", () => {
+    const command = vi.fn();
+    const { getByText, getByRole } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[
+            skillItem({ id: "s1", label: "attached-one", attached: true }),
+            skillItem({ id: "s2", label: "library-only", attached: false }),
+          ]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const row = getByRole("button", { name: /library-only/ });
+    expect(row).toBeDisabled();
+    expect(getByText(/attach it to this agent/i)).toBeInTheDocument();
+
+    fireEvent.click(row);
+    expect(command).not.toHaveBeenCalled();
+
+    fireEvent.click(getByRole("button", { name: /attached-one/ }));
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ id: "s1" }));
+  });
+
+  it("splits the skills block into attached and unattached group headers", () => {
+    const { getByText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[
+            skillItem({ id: "s1", label: "attached-one", attached: true }),
+            skillItem({ id: "s2", label: "library-only", attached: false }),
+          ]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("Attached to this agent")).toBeInTheDocument();
+    expect(getByText("Not attached")).toBeInTheDocument();
+  });
+
+  it("keeps the legacy single Skills header for pickers without attachment data", () => {
+    const { getByText, queryByText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[skillItem({ id: "s1", label: "review" })]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("Skills")).toBeInTheDocument();
+    expect(queryByText("Attached to this agent")).not.toBeInTheDocument();
+  });
+
+  it("skips disabled rows when navigating and swallows Enter on them", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={[
+            skillItem({ id: "s1", label: "attached-one", attached: true }),
+            skillItem({ id: "s2", label: "library-only", attached: false }),
+            skillItem({ id: "s3", label: "attached-two", attached: true }),
+          ]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const highlightedLabel = () => {
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+      return buttons.find((b) => b.classList.contains("bg-accent"))?.textContent ?? "";
+    };
+    let handled: boolean | undefined;
+    const press = (init: KeyboardEventInit) => {
+      act(() => {
+        handled = ref.current?.onKeyDown({ event: new KeyboardEvent("keydown", init) });
+      });
+      return handled;
+    };
+
+    // Start on the first selectable row (attached-one); ArrowDown skips the
+    // disabled library-only row and lands on attached-two.
+    expect(press({ key: "ArrowDown" })).toBe(true);
+    expect(highlightedLabel()).toContain("/attached-two");
+
+    // Enter on a selectable row fires the command.
+    press({ key: "Enter" });
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ id: "s3" }));
+
+    // Wrap backwards from the top lands on attached-two again, not the
+    // disabled row above it.
+    command.mockClear();
+    expect(press({ key: "ArrowUp" })).toBe(true);
+    expect(highlightedLabel()).toContain("/attached-one");
+    expect(press({ key: "ArrowUp" })).toBe(true);
+    expect(highlightedLabel()).toContain("/attached-two");
+  });
+
+  it("falls through with arrows and swallows Enter when every skill is disabled", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={[skillItem({ id: "s2", label: "library-only", attached: false })]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const press = (init: KeyboardEventInit) => {
+      let out: boolean | undefined;
+      act(() => {
+        out = ref.current?.onKeyDown({ event: new KeyboardEvent("keydown", init) });
+      });
+      return out;
+    };
+
+    expect(press({ key: "ArrowDown" })).toBe(false);
+    expect(press({ key: "ArrowUp" })).toBe(false);
+    // Enter must not leak into the composer (would send the message).
+    expect(press({ key: "Enter" })).toBe(true);
+    expect(command).not.toHaveBeenCalled();
   });
 });
 

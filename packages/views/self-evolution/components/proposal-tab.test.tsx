@@ -1,32 +1,33 @@
 // @vitest-environment jsdom
 
-import { it, expect, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { it, expect, vi, afterEach } from "vitest";
+import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { Proposal } from "@multica/core/types";
+import type { PromptProposal, PromptProposalPreview } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { ProposalTab } from "./proposal-tab";
 
 /**
- * The proposal tab's wiring (RUYI-265 §A).
+ * The legislation tab's wiring (RUYI-305 E2).
  *
- * The pool's invariants (prophecy at entry, adoption separate from
- * verification, rejected rows retrievable) are enforced by the server and
- * covered by its handler tests. What only a mount can show is asserted here:
- * that the owner-only lifecycle buttons appear exactly for the statuses they
- * are legal on, that a non-owner sees no lifecycle controls at all while
- * creation stays available, and that a verification cannot be submitted
- * without evidence.
+ * The state machine, permissions and gate semantics are enforced by the
+ * server and covered by its handler tests. What only a mount can show is
+ * asserted here: the owner-only lifecycle buttons appear exactly for the
+ * statuses they are legal on, a non-owner sees no lifecycle controls at all
+ * while creation stays available, and — the injection defense — the approve
+ * button stays disabled until the full-text diff preview has rendered and
+ * the reviewer ticked the confirmation.
  */
 
 const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
 
 const state = vi.hoisted(() => ({
   role: "owner" as string | null,
-  proposals: [] as Proposal[],
-  adoptedIds: [] as string[],
+  proposals: [] as PromptProposal[],
+  approved: [] as { id: string; confirmDiffPreviewed: boolean }[],
+  batchApproved: [] as { ids: string[]; confirmDiffPreviewed: boolean }[],
 }));
 
 vi.mock("@multica/core/permissions", () => ({
@@ -36,37 +37,69 @@ vi.mock("@multica/core/permissions", () => ({
 vi.mock("@multica/core/api", () => ({
   clientErrorMessage: (e: unknown) => (e instanceof Error ? e.message : undefined),
   api: {
-    listProposals: () => Promise.resolve(state.proposals),
-    createProposal: vi.fn(),
-    adoptProposal: (id: string) => {
-      state.adoptedIds.push(id);
-      return Promise.resolve({ status: "adopted" });
+    listPromptProposals: () => Promise.resolve(state.proposals),
+    createPromptProposal: vi.fn(),
+    updatePromptProposalDraft: vi.fn(),
+    submitPromptProposal: vi.fn(),
+    previewPromptProposal: (id: string) =>
+      Promise.resolve({
+        proposal: state.proposals.find((p) => p.id === id),
+        diff: [
+          { kind: "context", text: "# Workspace Context" },
+          { kind: "add", text: "- **每日同步**：开工前回报当日计划。" },
+        ],
+        current_sha256: "abc",
+        baseline_used: true,
+      }) as Promise<PromptProposalPreview>,
+    approvePromptProposal: (id: string, confirmDiffPreviewed: boolean) => {
+      state.approved.push({ id, confirmDiffPreviewed });
+      return Promise.resolve(state.proposals.find((p) => p.id === id));
     },
-    rejectProposal: vi.fn(),
-    restoreProposal: vi.fn(),
-    verifyProposal: vi.fn(),
+    batchApprovePromptProposals: (ids: string[], confirmDiffPreviewed: boolean) => {
+      state.batchApproved.push({ ids, confirmDiffPreviewed });
+      return Promise.resolve(ids.map((id) => ({ id, status: 200, body: "{}" })));
+    },
+    rejectPromptProposal: vi.fn(),
+    restorePromptProposal: vi.fn(),
+    reworkPromptProposal: vi.fn(),
+    enactPromptProposal: vi.fn(),
+    getRetrospectiveConfig: vi.fn(),
+    listRetrospectiveRuns: vi.fn(),
   },
 }));
 
-function draftProposal(overrides: Partial<Proposal> = {}): Proposal {
+function proposal(overrides: Partial<PromptProposal> = {}): PromptProposal {
   return {
     id: "prop-1",
-    type: "project_cognition",
-    status: "draft",
-    title: "nightly failures cluster around cache",
-    summary: "Cache the prompt snapshot read before the nightly sweep.",
-    evidence: [],
-    prophecy: {
-      outcome_text: "nightly failures drop below one per week",
-      falsify_condition: "a week with two or more nightly failures",
-    },
-    generation_snapshot: { captured_at: "2026-09-29T00:00:00Z" },
-    audit_log: [{ action: "create", actor: "u-1", at: "2026-09-29T00:00:00Z" }],
-    created_at: "2026-09-29T00:00:00Z",
-    updated_at: "2026-09-29T00:00:00Z",
+    workspace_id: "ws-1",
+    carrier_scope: "workspace",
+    carrier_scope_id: "carrier-1",
+    target_section: "",
+    change_kind: "add_clause",
+    clause_name: "每日同步",
+    clause_text: "- **每日同步**：各成员开工前在任务单回报当日计划与阻塞。",
+    gate_answer_layer: "workspace tier",
+    gate_answer_retention: "keeps daily coordination explicit",
+    gate_answer_cost: "one bullet per run",
+    gate_answer_conflict: "none — replaces nothing",
+    gate_answer_dedup: "no existing daily-sync clause",
+    evidence_anchors: [],
+    status: "pending_owner",
+    gate_errors: [],
+    gate_warnings: [],
+    rollback_reason: "",
+    merged_from: [],
+    source: "retrospective",
+    created_by_type: "member",
+    created_by_id: "u-2",
+    audit_log: [],
+    created_at: "2026-09-30T00:00:00Z",
+    updated_at: "2026-09-30T00:00:00Z",
     ...overrides,
   };
 }
+
+afterEach(cleanup);
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -79,121 +112,116 @@ function mount() {
   );
 }
 
-it("keeps creation available to a member while hiding every lifecycle control", async () => {
-  state.role = "admin";
-  state.proposals = [draftProposal()];
-  mount();
-  await waitFor(() => expect(screen.getByRole("heading", { name: /nightly failures/ })).toBeTruthy());
-  // B1: the entered prophecy is visible on the row's detail.
-  expect(screen.getByText("nightly failures drop below one per week")).toBeTruthy();
-  expect(screen.getByText(/a week with two or more nightly failures/)).toBeTruthy();
-  // Writing to the pool is member-level; adopting is not.
-  expect(screen.getByRole("button", { name: "New proposal" })).toBeTruthy();
-  expect(screen.queryByTestId("proposal-owner-actions")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
-  expect(
-    screen.getByText("Adopting, rejecting, restoring and verifying are workspace-owner only."),
-  ).toBeTruthy();
-});
-
-it("offers adopt and reject for a draft only", async () => {
+it("moves the lifecycle controls with the selected row's status", async () => {
   state.role = "owner";
-  state.proposals = [draftProposal()];
-  mount();
-  await waitFor(() => expect(screen.getByTestId("proposal-owner-actions")).toBeTruthy());
-  expect(screen.getByRole("button", { name: "Adopt" })).toBeTruthy();
+  state.proposals = [proposal({ id: "prop-a", status: "pending_owner" })];
+  const first = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  expect(screen.getByRole("button", { name: "Preview diff" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Rework" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Restore to draft" })).toBeNull();
-  expect(screen.queryByRole("button", { name: /Record verification/ })).toBeNull();
-});
+  expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  first.unmount();
 
-it("marks each row's source and the in-flight knowledge transfer", async () => {
-  state.role = "owner";
   state.proposals = [
-    draftProposal({ id: "prop-sys", created_by_type: "system" }),
-    draftProposal({ id: "prop-mem" }),
-  ];
-  const { unmount } = mount();
-  await waitFor(() => expect(screen.getByTestId("proposal-owner-actions")).toBeTruthy());
-  expect(screen.getByText("System")).toBeTruthy();
-  expect(screen.getByText("Member")).toBeTruthy();
-  unmount();
-
-  // While a knowledge transfer rides the daemon queue the lifecycle buttons
-  // step aside: the row is neither adoptable again nor rejectable mid-flight.
-  state.proposals = [
-    draftProposal({ id: "prop-t", transfer_state: "transferring" }),
-  ];
-  mount();
-  await waitFor(() => expect(screen.getByTestId("proposal-transferring")).toBeTruthy());
-  expect(screen.getByText("Transferring")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
-});
-
-it("moves the lifecycle controls with the row's status", async () => {
-  state.role = "owner";
-  // B2: verify exists only after adoption.
-  state.proposals = [
-    draftProposal({ id: "prop-a", status: "adopted" }),
-  ];
-  const { unmount } = mount();
-  await waitFor(() => expect(screen.getByRole("button", { name: /Record verification/ })).toBeTruthy());
-  expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
-  unmount();
-
-  // B3: a rejected row stays retrievable and offers the restore path.
-  state.proposals = [draftProposal({ id: "prop-b", status: "rejected" })];
-  mount();
-  await waitFor(() => expect(screen.getByRole("button", { name: "Restore to draft" })).toBeTruthy());
-  expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
-  expect(screen.queryByRole("button", { name: /Record verification/ })).toBeNull();
-});
-
-it("adopts through the API when the owner confirms", async () => {
-  state.role = "owner";
-  state.proposals = [draftProposal()];
-  state.adoptedIds = [];
-  mount();
-  const adopt = await screen.findByRole("button", { name: "Adopt" });
-  fireEvent.click(adopt);
-  await waitFor(() => expect(state.adoptedIds).toEqual(["prop-1"]));
-});
-
-it("renders recorded verification marks and requires evidence for a new one", async () => {
-  state.role = "owner";
-  state.proposals = [
-    draftProposal({
-      id: "prop-v",
-      status: "adopted",
-      verification: {
-        marks: [
-          {
-            verdict: "partial",
-            evidence: "median moved 400→300, inside the band only on 6 of 8 agents",
-            note: "two agents regressed",
-            at: "2026-09-29T01:00:00Z",
-          },
-        ],
-      },
+    proposal({
+      id: "prop-b",
+      status: "gate_failed",
+      gate_errors: [{ line: 12, level: "error", message: "weak wording" }],
+      gate_warnings: [{ line: 12, level: "warning", message: "clause overlaps an existing rule" }],
     }),
   ];
-  mount();
-  expect(
-    await screen.findByText("median moved 400→300, inside the band only on 6 of 8 agents"),
-  ).toBeTruthy();
-  expect(screen.getByText("Partially established")).toBeTruthy();
-  expect(screen.getByText("two agents regressed")).toBeTruthy();
+  const second = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-gate-errors")).toBeTruthy());
+  // The gate report keeps its structured shape end to end: line + message
+  // render visibly for both findings lists, not "[object Object]".
+  expect(screen.getByText(/12: weak wording/)).toBeTruthy();
+  expect(screen.getByTestId("legislation-gate-warnings")).toBeTruthy();
+  expect(screen.getByText(/12: clause overlaps an existing rule/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Rework" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Preview diff" })).toBeNull();
+  second.unmount();
 
-  fireEvent.click(screen.getByRole("button", { name: /Record verification/ }));
-  const form = await screen.findByTestId("proposal-verify-form");
-  // The server refuses an evidence-less verdict; the form does not offer it.
-  const submitButton = Array.from(form.querySelectorAll("button")).find(
-    (b) => b.textContent === "Submit verification",
-  ) as HTMLButtonElement;
-  expect(submitButton.disabled).toBe(true);
-  fireEvent.change(screen.getByLabelText("Evidence"), {
-    target: { value: "post-adopt week: zero nightly failures" },
-  });
-  expect(submitButton.disabled).toBe(false);
+  // Rejected rows stay on the record and offer the owner the restore path.
+  state.proposals = [proposal({ id: "prop-c", status: "rejected", rollback_reason: "covered by an existing clause" })];
+  const third = mount();
+  await waitFor(() =>
+    expect(screen.getByText(/covered by an existing clause/)).toBeTruthy(),
+  );
+  expect(screen.getByRole("button", { name: "Restore to draft" })).toBeTruthy();
+  third.unmount();
+
+  // Enacted rows surface their enacted version and offer no lifecycle action.
+  state.proposals = [proposal({ id: "prop-d", status: "enacted", enacted_version: 4 })];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-detail")).toBeTruthy());
+  expect(screen.getByText("Enacted version: 4")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Rework" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Restore to draft" })).toBeNull();
+});
+
+it("keeps creation available to a member while hiding every lifecycle control", async () => {
+  state.role = "member";
+  state.proposals = [proposal({ created_by_id: "u-1" })];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  expect(screen.getByRole("button", { name: "New proposal" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Preview diff" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Rework" })).toBeNull();
+});
+
+it("refuses to send the approval before the diff is rendered and confirmed", async () => {
+  state.role = "owner";
+  state.approved = [];
+  state.proposals = [proposal({ status: "pending_owner" })];
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Preview diff" }));
+
+  const dialog = await screen.findByTestId("proposal-preview-dialog");
+  // The sandbox diff is shown before any confirmation is possible.
+  await waitFor(() => expect(screen.getByText(/开工前回报当日计划/)).toBeTruthy());
+  const confirm = screen.getByTestId("proposal-preview-confirm") as HTMLButtonElement;
+  expect(confirm.disabled).toBe(true);
+
+  // Role queries skip the visually-hidden twin input the label also points at.
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: "I have reviewed the full-text diff" }),
+  );
+  await waitFor(() => expect(confirm.disabled).toBe(false));
+  fireEvent.click(confirm);
+  await waitFor(() =>
+    expect(state.approved).toEqual([{ id: "prop-1", confirmDiffPreviewed: true }]),
+  );
+  void dialog;
+});
+
+it("gates the batch approval behind per-id diffs and the same confirmation", async () => {
+  state.role = "owner";
+  state.batchApproved = [];
+  state.proposals = [
+    proposal({ id: "prop-a", status: "pending_owner" }),
+    proposal({ id: "prop-b", status: "pending_owner", clause_name: "交付留证" }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  fireEvent.click(screen.getByLabelText("select-prop-a"));
+  fireEvent.click(screen.getByLabelText("select-prop-b"));
+  fireEvent.click(screen.getByRole("button", { name: /Approve selected/ }));
+
+  await waitFor(() => expect(screen.getByTestId("proposal-preview-diffs")).toBeTruthy());
+  expect(screen.getAllByText("# Workspace Context").length).toBe(2);
+  const confirm = screen.getByTestId("proposal-preview-confirm") as HTMLButtonElement;
+  expect(confirm.disabled).toBe(true);
+
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: "I have reviewed the full-text diff" }),
+  );
+  fireEvent.click(confirm);
+  await waitFor(() =>
+    expect(state.batchApproved).toEqual([
+      { ids: ["prop-a", "prop-b"], confirmDiffPreviewed: true },
+    ]),
+  );
 });

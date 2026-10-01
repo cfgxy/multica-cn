@@ -2955,6 +2955,10 @@ func discoverDeerflowModels(ctx context.Context, runtimeCmd Command) (Catalog, e
 		tmpdirPrefix: "multica-deerflow-discovery-",
 		acpArgs:      []string{"acp"},
 		processDir:   strings.TrimSpace(os.Getenv(deerflowHomeEnv)),
+		// RUYI-321 stage 2: the same session/new carries the thinking switch
+		// (id `thinking`, on/off), so the session's current model gets the
+		// picker — same deal as zcode above.
+		annotate: annotateACPThinkingForSessionModel,
 	})
 	if err != nil || len(models) == 0 {
 		if err != nil {
@@ -2990,8 +2994,11 @@ func discoverDimModels(ctx context.Context, runtimeCmd Command) (Catalog, error)
 //
 // zcode-acp carries its catalog in the session's `model` config option rather
 // than a models block, which discoverACPModels' parseACPConfigOptionModels
-// fallback already reads. Enumeration needs a configured ZCode provider; on any
-// failure the caller falls back to the manual-entry field.
+// fallback already reads. The same handshake carries the `thought` selector
+// (category `thought_level`) with a per-model vocabulary, so annotate fills in
+// the effort catalog for the session's current model — same deal as reasonix
+// and hermes. Enumeration needs a configured ZCode provider; on any failure
+// the caller falls back to the manual-entry field.
 //
 // Note the ids come back ungrouped. Provider inference in acpModelEntry keys on
 // a `provider:model` colon, and zcode formats third-party ids with a backslash
@@ -3004,6 +3011,7 @@ func discoverZcodeModels(ctx context.Context, runtimeCmd Command) (Catalog, erro
 		clientName:   "multica-model-discovery",
 		tmpdirPrefix: "multica-zcode-discovery-",
 		acpArgs:      []string{"acp"},
+		annotate:     annotateACPThinkingForSessionModel,
 	})
 	if err != nil || len(models) == 0 {
 		if err != nil {
