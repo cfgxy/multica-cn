@@ -695,7 +695,15 @@
       "add_dialog_confirm_default": "添加",
       "add_dialog_confirm_other": "添加 {{count}} 个 skill",
       "add_dialog_cancel": "取消",
-      "add_failed_toast": "添加 skill 失败"
+      "add_failed_toast": "添加 skill 失败",
+      "source_runtime": "运行时",
+      "source_plugin": "插件",
+      "add_dialog_discoveries_title": "运行时发现",
+      "add_dialog_discovery_hint": "已连接运行时上发现的技能目录。导入后会创建可分配的工作区技能；在此之前仅作可见性展示。",
+      "add_dialog_discovery_import": "导入",
+      "add_dialog_discovery_importing": "导入中…",
+      "add_dialog_discovery_imported_toast": "技能已导入，现在可选择。",
+      "add_dialog_discovery_import_failed_toast": "导入失败，请检查运行时连接后重试。"
     },
     "integrations": {
       "intro": "把这个智能体连接到外部聊天平台，让大家在自己熟悉的工具里直接与它协作。",

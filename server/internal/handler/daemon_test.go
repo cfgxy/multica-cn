@@ -2674,6 +2674,8 @@ type claimRuntimeGuardTask struct {
 	PriorContextBrief             string          `json:"prior_context_brief"`
 	ChatMessage                   string          `json:"chat_message"`
 	ThreadName                    string          `json:"thread_name"`
+	QuizPrompt                    string          `json:"quiz_prompt"`
+	QuickCreatePrompt             string          `json:"quick_create_prompt"`
 	QuickCreateAttachmentIDs      []string        `json:"quick_create_attachment_ids"`
 	QuickCreatePriority           string          `json:"quick_create_priority"`
 	QuickCreateDueDate            string          `json:"quick_create_due_date"`
@@ -3416,6 +3418,11 @@ func TestClaimTask_QuickCreatePopulatesThreadName(t *testing.T) {
 	task := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
 	if task.ThreadName != quickPrompt {
 		t.Fatalf("quick-create task thread_name = %q, want prompt", task.ThreadName)
+	}
+	// Quiz extraction (RUYI-286) must not swallow quick-create contexts: the
+	// prompt stays on its own channel.
+	if task.QuizPrompt != "" {
+		t.Fatalf("quick-create task leaked into the quiz prompt field: %q", task.QuizPrompt)
 	}
 	if len(task.QuickCreateAttachmentIDs) != 1 || task.QuickCreateAttachmentIDs[0] != attachmentID {
 		t.Fatalf("quick-create attachment ids = %#v, want [%q]", task.QuickCreateAttachmentIDs, attachmentID)

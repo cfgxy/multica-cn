@@ -1,17 +1,37 @@
 // @vitest-environment jsdom
 
 import { it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { toast } from "sonner";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { SkillTab } from "./skill-tab";
 
-const state = vi.hoisted(() => ({ canRestore: false, tokenSamples: 1, versionCount: 1, measured: true, invoked: true, effectSamples: 6 }));
+const state = vi.hoisted(() => ({ canRestore: false, tokenSamples: 1, versionCount: 1, measured: true, invoked: true, effectSamples: 6, importStatus: "completed" }));
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 vi.mock("@multica/core/api", () => ({
   api: {
+    listSkillCatalog: () => Promise.resolve([
+      {
+        kind: "skill", id: "skill-1", name: "review-helper", description: "Review code",
+        source: "workspace", created_by: "user-1", created_at: "2026-09-28T00:00:00Z", updated_at: "2026-09-28T00:00:00Z",
+      },
+      {
+        kind: "discovery", name: "deploy-helper", description: "Deploy the stack", source: "runtime",
+        runtime_id: "rt-1", key: "deploy-helper", source_path: "/skills/deploy-helper",
+        last_seen_at: "2026-09-29T12:00:00Z",
+      },
+      {
+        kind: "discovery", name: "review-helper", source: "runtime", runtime_id: "rt-1", key: "review-helper",
+        source_path: "/skills/review-helper", last_seen_at: "2026-09-29T12:00:00Z", matching_skill_id: "skill-1",
+      },
+    ]),
+    initiateImportLocalSkill: () => Promise.resolve({ id: "req-1", status: state.importStatus }),
+    getImportLocalSkillResult: () => Promise.resolve({ id: "req-1", status: state.importStatus }),
     listSkills: () => Promise.resolve([{
       id: "skill-1", name: "review-helper", description: "Review code", workspace_id: "ws-1",
       config: {}, created_at: "2026-09-28T00:00:00Z", updated_at: "2026-09-28T00:00:00Z",
@@ -214,4 +234,48 @@ it("renders the version event timeline with per-side windows", async () => {
   expect(await screen.findByText(/v1 → v2/)).toBeTruthy();
   expect(screen.getByText(/Before: 1 runs · Median 150 tokens · 30-day window/)).toBeTruthy();
   expect(screen.getByText(/After: 1 runs · Median 180 tokens · 30-day window/)).toBeTruthy();
+});
+
+it("surfaces runtime discoveries under the authored skill and marks covered ones", async () => {
+  state.canRestore = false;
+  state.tokenSamples = 1;
+  state.versionCount = 1;
+  state.measured = true;
+  state.invoked = true;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <I18nProvider locale="en" resources={{ en: { common: enCommon, "self-evolution": enSelfEvolution } }}>
+        <SkillTab wsId="ws-1" />
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("heading", { name: "review-helper" })).toBeTruthy());
+  expect(await screen.findByRole("heading", { name: "Discovered on runtimes" })).toBeTruthy();
+  expect(screen.getByText("deploy-helper")).toBeTruthy();
+  expect(screen.getByText("Already a skill")).toBeTruthy();
+  expect(screen.getByText(/Selectable rows are skills already imported into this workspace/)).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "Import" }).length).toBe(1);
+});
+
+it("imports a discovered skill through the runtime flow and reports success", async () => {
+  state.canRestore = false;
+  state.tokenSamples = 1;
+  state.versionCount = 1;
+  state.measured = true;
+  state.invoked = true;
+  state.importStatus = "completed";
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <I18nProvider locale="en" resources={{ en: { common: enCommon, "self-evolution": enSelfEvolution } }}>
+        <SkillTab wsId="ws-1" />
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByRole("heading", { name: "review-helper" })).toBeTruthy());
+  const [importButton] = await screen.findAllByRole("button", { name: "Import" });
+  fireEvent.click(importButton!);
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Skill imported. It is now selectable with its own version history."));
+  expect(toast.error).not.toHaveBeenCalled();
 });

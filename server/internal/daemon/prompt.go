@@ -259,6 +259,9 @@ func buildPromptBody(task Task, provider string) string {
 	if task.AutopilotRunID != "" {
 		return buildAutopilotPrompt(task)
 	}
+	if task.QuizPrompt != "" {
+		return buildQuizPrompt(task)
+	}
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
@@ -277,6 +280,23 @@ func buildPromptBody(task Task, provider string) string {
 	// Mid-run queued-message adoption (RUYI-53): same exposure as the
 	// comment-triggered path — a mention arriving mid-run queues separately.
 	b.WriteString(execenv.BuildConsumeQueuedHint(task.IssueID))
+	return b.String()
+}
+
+// buildQuizPrompt renders a prompt-quiz measurement run (RUYI-286). The item
+// under test is the run's entire assignment, and the frame around it is
+// deliberately minimal and identical for every item and every run — anything
+// richer would itself become part of the measurement and break comparability
+// (A2). The grader reads the run's last text message, so the one structural
+// fact the frame adds is where the answer goes.
+func buildQuizPrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are running as a local coding agent for a Multica workspace. This run is a prompt-evaluation measurement. The text below is the item under test; it is your entire assignment.\n\n")
+	b.WriteString("Read it and answer it. Your final text message is recorded as the answer and is the only thing evaluated — put the complete answer there, not in a file.\n\n")
+	b.WriteString("Item under test:\n\n")
+	b.WriteString(task.QuizPrompt)
+	b.WriteString("\n\n")
+	b.WriteString("This run has no issue, no comment thread, and no codebase task attached: do not run `multica issue get`, do not read comment history, and do not create issues. Just answer the item.\n")
 	return b.String()
 }
 
