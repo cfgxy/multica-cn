@@ -1,0 +1,117 @@
+/**
+ * Prompt legislation (RUYI-305 E2) and the daily retrospective (E3).
+ *
+ * A proposal is a clause-level draft against one of the four prompt carriers.
+ * The state machine draft → pending_owner → (gate) → enacted | gate_failed |
+ * rejected is enforced server-side; rejected rows stay retrievable and a
+ * gate-failed row returns to draft through rework. Approval runs the
+ * legislation gate in a sandbox synthesis and only enacts on a clean pass —
+ * the client never writes carrier content itself (E5: the carrier write and
+ * the prompt_version snapshot stay behind the server boundary).
+ */
+
+export type PromptProposalCarrierScope = "workspace" | "project" | "squad" | "agent";
+
+export type PromptProposalChangeKind = "add_clause" | "remove_clause";
+
+/**
+ * One gate report line, mirroring the server's legislation.Finding: the
+ * carrier-relative line number when known, the severity, and the message.
+ */
+export interface LegislationGateFinding {
+  line?: number;
+  level: string;
+  message: string;
+}
+
+/** Provenance of a pool-merged proposal: which run merged in which issue. */
+export interface PromptProposalMergeRef {
+  issue_id: string;
+  run_id: string;
+}
+
+export interface PromptProposal {
+  id: string;
+  workspace_id: string;
+  carrier_scope: PromptProposalCarrierScope;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: PromptProposalChangeKind;
+  clause_name: string;
+  clause_text: string;
+  /** The content-gate five answers, all required before submission. */
+  gate_answer_layer: string;
+  gate_answer_retention: string;
+  gate_answer_cost: string;
+  gate_answer_conflict: string;
+  gate_answer_dedup: string;
+  evidence_anchors: { issue_id?: string; quote?: string }[];
+  status: string;
+  gate_errors: LegislationGateFinding[];
+  gate_warnings: LegislationGateFinding[];
+  enacted_version?: number;
+  rollback_reason: string;
+  merged_from: PromptProposalMergeRef[];
+  source: string;
+  created_by_type: string;
+  created_by_id?: string;
+  audit_log: unknown[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PromptProposalDraftRequest {
+  carrier_scope: PromptProposalCarrierScope;
+  carrier_scope_id: string;
+  target_section?: string;
+  change_kind: PromptProposalChangeKind;
+  clause_name: string;
+  clause_text?: string;
+  gate_answer_layer: string;
+  gate_answer_retention: string;
+  gate_answer_cost: string;
+  gate_answer_conflict: string;
+  gate_answer_dedup: string;
+  evidence_anchors?: { issue_id?: string; quote?: string }[];
+}
+
+/** One line of the sandbox full-carrier diff shown before approval. */
+export interface LegislationDiffLine {
+  kind: "context" | "add" | "del";
+  text: string;
+}
+
+export interface PromptProposalPreview {
+  proposal: PromptProposal;
+  diff: LegislationDiffLine[];
+  current_sha256: string;
+  baseline_used: boolean;
+}
+
+/** Per-id outcome of a batch approve, in input order. status is the HTTP code. */
+export interface PromptProposalBatchOutcome {
+  id: string;
+  status: number;
+  body: string;
+}
+
+export interface RetrospectiveConfig {
+  enabled: boolean;
+  include_in_review: boolean;
+  window_days: number;
+}
+
+export interface RetrospectiveRun {
+  id: string;
+  status: string;
+  trigger: string;
+  window_start: string;
+  window_end: string;
+  issues_scanned: number;
+  issues_analyzed: number;
+  proposals_created: number;
+  proposals_merged: number;
+  duplicates_skipped: number;
+  error: string;
+  created_at: string;
+}

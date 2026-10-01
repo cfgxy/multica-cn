@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -63,14 +65,25 @@ func parsePromptVersionScope(s string) (promptVersionScope, bool) {
 // same lock, so the empty-content guard in commitPromptGovernanceVersion
 // compares against live text that cannot change before the UPDATE.
 func (h *Handler) lockScopeEntity(w http.ResponseWriter, r *http.Request, qtx *db.Queries, scope promptVersionScope, workspaceID, scopeID pgtype.UUID) (string, bool) {
-	ctx := r.Context()
+	current, err := lockScopeEntityResult(r.Context(), qtx, scope, workspaceID, scopeID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "scope not found in this workspace")
+		return "", false
+	}
+	return current, true
+}
+
+// lockScopeEntityResult is the write-path carrier lock without the HTTP
+// plumbing: the legislation approve/enact core calls it inside its own
+// transaction and renders its own error. Locking the entity row is what
+// serializes concurrent gate runs against the same carrier.
+func lockScopeEntityResult(ctx context.Context, qtx *db.Queries, scope promptVersionScope, workspaceID, scopeID pgtype.UUID) (string, error) {
 	var current string
 	var err error
 	switch scope {
 	case promptVersionScopeWorkspace:
 		if scopeID != workspaceID {
-			writeError(w, http.StatusNotFound, "scope not found in this workspace")
-			return "", false
+			return "", errors.New("scope not found in this workspace")
 		}
 		var row db.LockWorkspaceForPromptVersionRow
 		row, err = qtx.LockWorkspaceForPromptVersion(ctx, scopeID)
@@ -89,10 +102,9 @@ func (h *Handler) lockScopeEntity(w http.ResponseWriter, r *http.Request, qtx *d
 		current = row.EffectiveContent
 	}
 	if err != nil {
-		writeError(w, http.StatusNotFound, "scope not found in this workspace")
-		return "", false
+		return "", err
 	}
-	return current, true
+	return current, nil
 }
 
 // seedPromptVersionV1 writes the v1 baseline row for a scope that was just
@@ -547,6 +559,29 @@ func (h *Handler) commitPromptGovernanceVersion(w http.ResponseWriter, r *http.R
 		slog.Error("prompt effective content write failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save prompt version")
 		return
+	}
+
+	// Rollback audit hook (RUYI-305): a switch/rollback write marks every
+	// enacted legislation proposal on this carrier as rolled back, in the
+	// same transaction — the proposal line's audit trail stays bound to the
+	// carrier's version history even though E1–E4 enact never writes the
+	// carrier itself (RUYI-285 owns that binding).
+	if pw.source == "revert" {
+		revertAudit, _ := json.Marshal([]map[string]any{{
+			"action": "carrier_rollback", "actor_type": "member", "actor_id": pw.authorUserID,
+			"version": pw.sourceVer, "at": time.Now().UTC().Format(time.RFC3339),
+		}})
+		if _, err := qtx.AppendPromptProposalRollbackAudit(ctx, db.AppendPromptProposalRollbackAuditParams{
+			WorkspaceID:    workspaceID,
+			CarrierScope:   string(scope),
+			CarrierScopeID: scopeID,
+			Audit:          revertAudit,
+			Reason:         pw.changeNote,
+		}); err != nil {
+			slog.Error("proposal rollback audit failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to save prompt version")
+			return
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

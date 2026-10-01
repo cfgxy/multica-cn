@@ -754,6 +754,13 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PromptQuizJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quiz_sweep job", "error", err)
 	}
+	// RUYI-305 E3: the daily retrospective distills completed issues into
+	// Prompt legislation drafts. It writes only to the proposal pool and its
+	// own run records — never to issues — and is inert until a workspace
+	// owner enables it (retrospective_config).
+	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(pool, h.LLM, "")); err != nil {
+		slog.Warn("scheduler: failed to register prompt_retrospective job", "error", err)
+	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed
 	// scheduler. The job owns its plan_times via PlansForScope (each
 	// trigger has its own cron expression, so the Cadence planner does

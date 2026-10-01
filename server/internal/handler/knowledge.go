@@ -464,12 +464,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 	_, _ = h.DB.Exec(ctx,
 		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID)
 
-	// A candidate source whose first scan found entries enters the proposal
-	// pool exactly once (RUYI-289 §4): one system proposal per directory,
-	// database-enforced by uidx_proposal_system_dir.
-	if batch.Added > 0 {
-		h.maybeCreateSystemProposal(ctx, workspaceID, dirID, path, len(memories))
-	}
 	return batch, nil
 }
 
