@@ -28,14 +28,23 @@ export {
   useDeletePromptQuizItem,
 } from "./quiz-queries";
 export {
-  proposalKeys,
-  proposalListOptions,
-  useCreateProposal,
-  useAdoptProposal,
-  useRejectProposal,
-  useRestoreProposal,
-  useVerifyProposal,
-} from "./proposal-queries";
+  promptProposalKeys,
+  promptProposalListOptions,
+  useCreatePromptProposal,
+  useUpdatePromptProposalDraft,
+  useSubmitPromptProposal,
+  useApprovePromptProposal,
+  useBatchApprovePromptProposals,
+  useRejectPromptProposal,
+  useRestorePromptProposal,
+  useReworkPromptProposal,
+  useEnactPromptProposal,
+  retrospectiveKeys,
+  retrospectiveConfigOptions,
+  retrospectiveRunsOptions,
+  useUpdateRetrospectiveConfig,
+  useTriggerRetrospectiveRun,
+} from "./legislation-queries";
 export {
   knowledgeKeys,
   knowledgeDirsOptions,

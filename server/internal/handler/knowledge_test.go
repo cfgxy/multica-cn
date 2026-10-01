@@ -40,16 +40,6 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	return created.ID
 }
 
-// cleanupSystemProposals removes the pool rows auto-discovery created during
-// the test (keyed on the generation snapshot's knowledge_dir_id).
-func cleanupSystemProposals(t *testing.T) {
-	t.Helper()
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM proposal WHERE workspace_id = $1 AND created_by_type = 'system'`, testWorkspaceID)
-	})
-}
-
 func knowledgeEntries(t *testing.T, dirID string) []KnowledgeEntryResponse {
 	t.Helper()
 	var entries []KnowledgeEntryResponse
@@ -404,100 +394,6 @@ func TestKnowledgeResultsLandsScans(t *testing.T) {
 	}
 	if dir := knowledgeDirState(t, candidate); dir.HealthState != "no_access" {
 		t.Fatalf("foreign daemon report must not touch health, got %q", dir.HealthState)
-	}
-}
-
-// TestKnowledgeSystemProposalOncePerDirectory pins §4: the first scan of a
-// newly discovered candidate_auto source with entries creates exactly one
-// system proposal with a B1-valid prophecy and source evidence; later scans,
-// and ultimate/candidate_cli kinds, never create one.
-func TestKnowledgeSystemProposalOncePerDirectory(t *testing.T) {
-	if testHandler == nil {
-		t.Fatal("database fixture is required")
-	}
-	cleanupSystemProposals(t)
-	const daemonID = "daemon-under-test"
-
-	discovered := postKnowledgeResults(t, daemonID, map[string]any{
-		"discoveries": []map[string]any{{
-			"workspace_id": testWorkspaceID, "path": "/tmp/project-alpha", "label": "project-alpha",
-		}},
-	})
-	if discovered["discoveries_registered"].(float64) != 1 {
-		t.Fatalf("discovery not registered: %v", discovered)
-	}
-	var dirID string
-	if err := testPool.QueryRow(context.Background(), `
-SELECT id FROM knowledge_dir WHERE workspace_id = $1 AND path = '/tmp/project-alpha'`,
-		testWorkspaceID).Scan(&dirID); err != nil {
-		t.Fatalf("discovered dir missing: %v", err)
-	}
-	testPool.Exec(context.Background(), `UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1`, dirID, daemonID)
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM knowledge_dir WHERE id = $1`, dirID)
-	})
-
-	// Re-reporting the same discovery must not duplicate the row.
-	again := postKnowledgeResults(t, daemonID, map[string]any{
-		"discoveries": []map[string]any{{
-			"workspace_id": testWorkspaceID, "path": "/tmp/project-alpha", "label": "project-alpha",
-		}},
-	})
-	if again["discoveries_registered"].(float64) != 0 {
-		t.Fatalf("duplicate discovery registered: %v", again)
-	}
-
-	postKnowledgeResults(t, daemonID, map[string]any{
-		"scans": []map[string]any{{
-			"dir_id": dirID, "trigger_source": "initial", "ok": true,
-			"memories": map[string]string{"k1": "one", "k2": "two"},
-		}},
-	})
-	var proposals []ProposalResponse
-	testutil.Call(t, testHandler.GetProposals, newRequest(http.MethodGet, "/api/proposals", nil)).
-		Want(http.StatusOK).JSON(&proposals)
-	var system []ProposalResponse
-	for _, proposal := range proposals {
-		if proposal.CreatedByType == "system" {
-			system = append(system, proposal)
-		}
-	}
-	if len(system) != 1 {
-		t.Fatalf("system proposals after first scan: %d, want exactly 1", len(system))
-	}
-	created := system[0]
-	if created.Type != "project_cognition" {
-		t.Fatalf("system proposal type: %q", created.Type)
-	}
-	if created.Prophecy["outcome_text"] == "" || created.Prophecy["falsify_condition"] == "" {
-		t.Fatalf("system proposal prophecy is not B1-valid: %v", created.Prophecy)
-	}
-	if created.GenerationSnapshot["knowledge_dir_id"] != dirID {
-		t.Fatalf("generation snapshot must name the source dir: %v", created.GenerationSnapshot)
-	}
-	evidence, _ := created.Evidence[0].(map[string]any)
-	if evidence["path"] != "/tmp/project-alpha" || evidence["entry_count"].(float64) != 2 {
-		t.Fatalf("system proposal evidence: %v", evidence)
-	}
-
-	// A later changed scan must not create a second proposal.
-	postKnowledgeResults(t, daemonID, map[string]any{
-		"scans": []map[string]any{{
-			"dir_id": dirID, "trigger_source": "scheduled", "ok": true,
-			"memories": map[string]string{"k1": "one", "k2": "two", "k3": "three"},
-		}},
-	})
-	proposals = nil
-	testutil.Call(t, testHandler.GetProposals, newRequest(http.MethodGet, "/api/proposals", nil)).
-		Want(http.StatusOK).JSON(&proposals)
-	system = system[:0]
-	for _, proposal := range proposals {
-		if proposal.CreatedByType == "system" {
-			system = append(system, proposal)
-		}
-	}
-	if len(system) != 1 {
-		t.Fatalf("system proposals after second scan: %d, want still 1", len(system))
 	}
 }
 
