@@ -276,12 +276,14 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// (below): the bridge validates the id against its own list and refuses
 	// unknown ones, which fails the turn visibly instead of silently running
 	// it on the default model.
-	if opts.ThinkingLevel != "" {
-		b.cfg.Logger.Warn("deerflow cannot set a thinking level per session; DEERFLOW_ACP_THINKING owns that switch",
-			"backend", "deerflow",
-			"requested_level", opts.ThinkingLevel,
-		)
-	}
+	//
+	// The thinking switch rides the same per-turn discipline: the bridge
+	// broadcasts a thinking config option (id `thinking`, category
+	// `thought_level`, options on/off) on BOTH session/new and
+	// session/resume and applies session/set_config_option to a per-session
+	// override threaded into DeerFlowClient.stream as thinking_enabled, so
+	// applyACPEffortOption below delivers opts.ThinkingLevel where this
+	// backend used to drop it with a warning.
 
 	timeout := opts.Timeout
 	runCtx, cancel := runContext(ctx, timeout)
@@ -460,6 +462,10 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			return
 		}
 
+		// sessionResult is whichever of session/new or session/resume
+		// produced this turn's session — the response the thinking switch is
+		// read from.
+		var sessionResult json.RawMessage
 		if opts.ResumeSessionID != "" {
 			// session/resume, not session/load. Both restore the DeerFlow
 			// thread, but load also replays the retained transcript back as
@@ -496,6 +502,7 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 				}
 				return
 			}
+			sessionResult = result
 			var changed bool
 			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
 			if changed {
@@ -527,6 +534,7 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
+			sessionResult = result
 			sessionID = extractACPSessionID(result)
 			if sessionID == "" {
 				finalStatus = "failed"
@@ -569,6 +577,17 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			}
 			b.cfg.Logger.Info("deerflow session model set", "session_id", sessionID, "model", opts.Model)
 		}
+
+		// Apply the persisted thinking switch on BOTH fresh and resumed
+		// sessions — the same per-turn replay the model pick above follows,
+		// for the same reason: this backend spawns a fresh bridge process per
+		// turn, so a resumed session carries no override. The option id and
+		// on/off vocabulary are read off sessionResult, and stateIsCurrent
+		// stays true because the bridge's thinking option does not depend on
+		// the session's model (the engine switch is global), so the set_model
+		// above cannot stale it. A configuration failure never blocks the
+		// task; see the helper for what the warnings mean.
+		applyACPEffortOption(runCtx, c.request, "deerflow", b.cfg.Logger, sessionID, sessionResult, opts.ThinkingLevel, true)
 
 		userText := prompt
 		if opts.SystemPrompt != "" {

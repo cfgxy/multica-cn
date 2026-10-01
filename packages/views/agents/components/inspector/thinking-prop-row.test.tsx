@@ -275,4 +275,69 @@ describe("ThinkingPropRow", () => {
     // CLAUDE_MODEL (Default) advertises Low/Medium/High — the picker shows them.
     expect((await screen.findAllByText("Follow CLI config")).length).toBeGreaterThan(0);
   });
+
+  it("offers the conservative fallback for a claude model the catalog has no entry for", async () => {
+    // claude-super-9 is an org alias / newer-than-catalog release: no catalog
+    // entry can answer for it, so the row mirrors the server's
+    // ValidateThinkingLevelWith fallback — exactly low/medium/high, never
+    // xhigh/max, so every offered level survives the daemon guard.
+    renderRow({ model: "claude-super-9", value: "" });
+
+    await screen.findByText("Thinking");
+    fireEvent.click(screen.getByRole("button"));
+    expect(await screen.findByText("Low")).toBeInTheDocument();
+    expect(screen.getByText("Medium")).toBeInTheDocument();
+    expect(screen.getByText("High")).toBeInTheDocument();
+    expect(screen.queryByText("Extra high")).toBeNull();
+    expect(screen.queryByText("Max")).toBeNull();
+  });
+
+  it("keeps the fallback narrow when a stale level is persisted on an out-of-list claude model", async () => {
+    // The raw orphan token stays visible and clearable, and the picker
+    // offers only the fallback subset — not a full catalog guessed from the
+    // model id.
+    renderRow({ model: "claude-super-9", value: "xhigh" });
+
+    await screen.findByText("Thinking");
+    expect(await screen.findByText("xhigh")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button"));
+    expect(await screen.findByText("Low")).toBeInTheDocument();
+    expect(screen.queryByText("Max")).toBeNull();
+  });
+
+  it("does not apply the fallback when the catalog answered with an entry lacking thinking", async () => {
+    // An entry that EXISTS with no thinking block is the catalog answering
+    // "this model takes no effort" — an empty row, not the claude fallback.
+    // (The stale-orphan tests above cover the persisted-value variant.)
+    mockInitiateListModels.mockResolvedValue(listResult([NO_THINKING_MODEL]));
+    renderRow({ provider: "claude", model: "gemini-2.5-pro", value: "" });
+
+    await waitFor(() => {
+      expect(mockInitiateListModels).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Thinking")).toBeNull();
+    });
+    expect(screen.queryByText("Low")).toBeNull();
+  });
+
+  it("does not apply the fallback for non-claude providers", async () => {
+    // The out-of-list fallback is claude's: an unknown codex model id keeps
+    // the row hidden (nothing persisted) instead of offering levels the
+    // daemon would reject.
+    mockInitiateListModels.mockResolvedValue(
+      listResult([CODEX_DEFAULT_MODEL]),
+    );
+    mockGetListModelsResult.mockResolvedValue(
+      listResult([CODEX_DEFAULT_MODEL]),
+    );
+    renderRow({ provider: "codex", model: "gpt-unknown", value: "" });
+
+    await waitFor(() => {
+      expect(mockInitiateListModels).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.queryByText("Thinking")).toBeNull();
+    });
+  });
 });
