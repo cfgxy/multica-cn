@@ -218,7 +218,7 @@ function SampleRow({
         )}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-caption text-muted-foreground">
-        <span className="min-w-0 break-all">task_id: {row.task_id}</span>
+        <span className="min-w-0 break-all">{t(($) => $.quiz.graded.taskId)}: {row.task_id}</span>
         {row.measured_at && !Number.isNaN(Date.parse(row.measured_at)) ? (
           <span>
             {t(($) => $.quiz.graded.measuredAt)}: <time dateTime={row.measured_at}>{new Date(row.measured_at).toLocaleString(locale)}</time>
