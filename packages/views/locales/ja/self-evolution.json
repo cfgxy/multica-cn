@@ -361,6 +361,7 @@
       "batchLines": "このバッチ：回答 {{answered}} · エラー {{errored}} · 採点 {{graded}}",
       "samplesTitle": "最近の採点サンプル",
       "samplesEmpty": "採点サンプルはまだありません。採点バッチを実行すると、run 完了後に根拠が表示されます。",
+      "taskId": "task_id",
       "measuredAt": "測定日時",
       "gradedAt": "採点日時",
       "version": "v{{version}}",
