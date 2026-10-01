@@ -627,7 +627,36 @@
       "source_backfill": "回填的归因",
       "source_unattributed": "未解析到责任成员"
     },
-    "usage_total_tooltip": "这个任务的 token 用量——点击查看每次运行的明细"
+    "usage_total_tooltip": "这个任务的 token 用量——点击查看每次运行的明细",
+    "status_cancel_requested": "正在停止",
+    "stop_again_tooltip": "再次发送停止请求",
+    "stop_again_aria": "再次发送停止请求",
+    "cancel_unconfirmed_banner": "停止请求已超过 30 秒仍未确认——执行端可能已离线。可再次点击停止重发请求。",
+    "filter_status_aria": "按状态筛选运行",
+    "filter_trigger_aria": "按触发来源筛选运行",
+    "filter_status_all": "全部状态",
+    "filter_status_pending": "排队中",
+    "filter_status_running": "运行中",
+    "filter_status_cancel_requested": "正在停止",
+    "filter_status_completed": "已完成",
+    "filter_status_failed": "已失败",
+    "filter_status_cancelled": "已取消",
+    "filter_trigger_all": "全部来源",
+    "filter_trigger_comment": "评论触发",
+    "filter_trigger_autopilot": "自动化触发",
+    "filter_trigger_rerun": "手动重跑",
+    "filter_trigger_system_retry": "系统重试",
+    "filter_empty": "没有符合筛选条件的运行。",
+    "clear_filters": "清除筛选",
+    "show_more": "显示更多（{{count}}）",
+    "retry_conflict_agent_busy": "未重试——该智能体在此 Issue 上已有未完成的运行",
+    "retry_conflict_descendant_active": "未重试——此运行已有未完成的重试",
+    "rerun_task_tooltip": "重新运行",
+    "rerun_task_aria": "重新运行",
+    "rerun_confirm_title": "重新运行此 task？",
+    "rerun_confirm_body": "将在同一智能体上以当前配置开启全新会话重新运行，原运行保留在历史中不变。",
+    "rerun_confirm_keep": "保持不变",
+    "rerun_confirm_confirm": "重新运行"
   },
   "usage_detail": {
     "title": "用量明细",
@@ -1056,5 +1085,19 @@
   "suppressed": {
     "badge": "已暂缓",
     "tooltip": "已指派但暂不启动，再次启动时会恢复"
+  },
+  "run_detail": {
+    "agent": "智能体",
+    "attempt": "尝试次数",
+    "attempt_value": "重试 #{{attempt}}",
+    "created": "创建时间",
+    "finished": "结束时间",
+    "usage": "用量",
+    "reason": "原因",
+    "cancelled_by": "{{name}} 请求停止 · {{time}}",
+    "raw_error": "原始错误",
+    "lineage": "运行链",
+    "lineage_rerun": "手动重跑",
+    "lineage_system_retry": "系统重试"
   }
 }
