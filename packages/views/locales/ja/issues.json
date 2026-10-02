@@ -1099,5 +1099,17 @@
     "lineage": "実行チェーン",
     "lineage_rerun": "手動再実行",
     "lineage_system_retry": "システム再試行"
+  },
+  "decisions": {
+    "title": "意思決定カード",
+    "status_answered": "回答済み",
+    "status_cancelled": "キャンセル済み",
+    "recommended": "推奨",
+    "submit_single": "回答を送信",
+    "submit_multi": "選択を送信",
+    "submitting": "送信中…",
+    "cancel_card": "カードをキャンセル",
+    "answer_failed": "回答の送信に失敗しました",
+    "cancel_failed": "カードのキャンセルに失敗しました"
   }
 }
