@@ -119,6 +119,10 @@ function commentBrief(comment: CommentInfo): Record<string, unknown> {
     // exists beyond this.
     revision: comment.revision,
     content: comment.content,
+    // roots_only reads only: orientation stats promised by the tool
+    // description; absent on other bounded reads.
+    reply_count: comment.reply_count,
+    last_activity_at: comment.last_activity_at,
   };
 }
 
