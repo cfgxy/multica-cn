@@ -1,18 +1,62 @@
 {
   "title": "自己進化",
   "description": "エージェントとスクワッドのプロンプトが時間とともにどう変化したか、その変化の要因を確認します。",
-  "empty": {
-    "title": "まだ接続されていません",
-    "description": "これはプロンプトガバナンス概要のナビゲーション骨組みです（RUYI-183 フェーズ1）。バージョン履歴、差分、採用状況のビューは今後のステージで提供されます。"
-  },
   "tabs": {
     "overview": "概要",
     "quality": "品質",
     "quiz": "クイズ",
     "skills": "Skill",
-    "proposals": "提案",
+    "proposals": "立法提案",
+    "retrospective": "ふりかえり",
     "knowledge": "ナレッジ",
     "versions": "バージョン"
+  },
+  "overview": {
+    "loading": "概要を読み込み中",
+    "error": "概要の読み込みに失敗しました",
+    "retry": "再試行",
+    "versions": {
+      "title": "プロンプトバージョン活動",
+      "empty": "どの階層にもバージョン履歴はまだありません。",
+      "currentVersion": "現在 v{{version}}",
+      "currentUnset": "{{count}} 件の対象がそれぞれ前進",
+      "count": "{{subjects}} 対象・全 {{count}} バージョン",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "品質読み取り（過去 {{days}} 日）",
+      "empty": "この期間に測定されたランはありません。",
+      "runs": "{{count}} ラン",
+      "subjects": "読み取りありエージェント {{count}}",
+      "excluded": "環境またはプロバイダ障害により {{count}} ランを除外"
+    },
+    "quiz": {
+      "title": "問題バンクの結論",
+      "empty": "記録された測定はまだありません。",
+      "versions": "ベースライン v{{baseline}} → v{{current}}",
+      "singleVersion": "現在 v{{current}}（初バージョン、ベースラインなし）",
+      "insufficientSample": "サンプル不足（ベースラインに {{baseline}} 件、現在に {{current}} 件の有効読み取りが必要）",
+      "lastMeasured": "最終測定 {{date}}"
+    },
+    "proposals": {
+      "title": "提案プール",
+      "pendingModel": "提案メトリクスは新しい提案モデル（RUYI-305）の提供後に接続されます。"
+    },
+    "knowledge": {
+      "title": "ナレッジミラー",
+      "empty": "登録ディレクトリはまだありません。",
+      "dirs": "ディレクトリ {{count}} 件",
+      "entries": "エントリ {{count}} 件",
+      "lastScan": "前回スキャン：{{result}} · {{date}}",
+      "neverScanned": "未スキャン"
+    },
+    "skills": {
+      "title": "Skill 観測",
+      "empty": "登録された skill はまだありません。",
+      "count": "skill {{count}} 件",
+      "invocations": "累計明示呼び出し {{count}} 回"
+    }
   },
   "skills": {
     "choose": "skill を選択",
@@ -75,11 +119,26 @@
     "retry": "再試行",
     "sources": {
       "create": "作成",
-      "proposal": "提案",
-      "revision": "提案による改訂",
+      "revision": "改訂",
       "edit": "編集",
       "restore": "復元"
-    }
+    },
+    "catalogSearchLabel": "検索",
+    "catalogSearchPlaceholder": "名前でスキルを検索",
+    "catalogSourceFilter": "ソース",
+    "catalogSourceAll": "すべてのソース",
+    "catalogSourceWorkspace": "ワークスペース",
+    "catalogSourceRuntime": "ランタイム",
+    "catalogSourcePlugin": "プラグイン",
+    "catalogSelectableHint": "選択可能な行はこのワークスペースにインポート済みのスキルです。下のランタイム/プラグインの検出は表示のみで、インポート後に選択できます。",
+    "catalogNoMatch": "現在の検索またはソース絞り込みに一致する検出結果はありません。",
+    "discoveriesTitle": "ランタイムで検出",
+    "discoveryImport": "インポート",
+    "discoveryImporting": "インポート中…",
+    "discoveryExists": "スキル登録済み",
+    "discoveryLastSeen": "最終検出 {{date}}",
+    "discoveryImportedToast": "スキルをインポートしました。独自のバージョン履歴付きで選択できます。",
+    "discoveryImportFailedToast": "インポートに失敗しました。ランタイム接続を確認して再試行してください。"
   },
   "quality": {
     "scopePicker": {
@@ -172,7 +231,9 @@
         "no_reviewed_issues": "この期間にレビューへ進んだ Issue がありません。",
         "below_sample_floor": "実行数が宣言された下限を下回っています。",
         "unknown": "サーバーは理由を示しませんでした。"
-      }
+      },
+      "coverage": "{{total}} 回のうち {{covered}} 回を検査",
+      "deductions": "減点明細（{{count}}）"
     },
     "perplexity": {
       "title": "D3 ルール困惑度",
@@ -294,99 +355,166 @@
         "rubricHint": "オーナーのみ閲覧でき、測定対象の実行には送信されません。保存するとこの欄の内容で既存の模範解答を全置換します。",
         "cancel": "キャンセル",
         "save": "保存"
-      }
+      },
+      "difficulty": {
+        "easy": "易",
+        "medium": "中",
+        "hard": "難"
+      },
+      "import": "標準問題セットを取り込む",
+      "importDone": "{{imported}} 件を取り込みました",
+      "importError": "標準問題セットは取り込まれませんでした。"
+    },
+    "graded": {
+      "title": "採点",
+      "description": "収集済み run の回答を問題ごとの模範解答で項目別に検証し、断言単位の根拠を示します。",
+      "summary": "採点 {{graded}} 件 · 平均 {{mean}}",
+      "ungraded": "未採点",
+      "run": "採点バッチを実行",
+      "ordered": "{{ordered}} 件のクイズ run を発行しました",
+      "refused": "{{count}} 件のエージェントは発行できませんでした",
+      "runError": "採点バッチは発行されませんでした。",
+      "batchLines": "このバッチ：回答 {{answered}} · エラー {{errored}} · 採点 {{graded}}",
+      "samplesTitle": "最近の採点サンプル",
+      "samplesEmpty": "採点サンプルはまだありません。採点バッチを実行すると、run 完了後に根拠が表示されます。",
+      "taskId": "task_id",
+      "measuredAt": "測定日時",
+      "gradedAt": "採点日時",
+      "version": "v{{version}}",
+      "answered": "回答済み",
+      "errored": "エラー",
+      "checkPassed": "{{id}}（{{kind}}）合格：{{evidence}}",
+      "checkFailed": "{{id}}（{{kind}}）不合格：{{evidence}}",
+      "notAGate": "採点は読み取り値でありゲートではありません：公開経路は参照しません。"
     }
   },
-  "proposals": {
-    "title": "提案プール",
-    "description": "提案は反証可能な予言を伴ってのみ登録されます。採用と検証は別々に記録され、却下された提案も参照可能なまま残ります。",
-    "filterAll": "すべてのステータス",
+  "legislation": {
+    "title": "プロンプト 立法提案",
+    "description": "4 つのプロンプトキャリアに対する条項レベルの草案。送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
+    "filterAll": "すべて",
     "status": {
-      "draft": "ドラフト",
-      "needs_revision": "要改訂",
-      "adopted": "採用済み",
-      "rejected": "却下",
-      "archived": "アーカイブ"
+      "draft": "下書き",
+      "pending_owner": "承認待ち",
+      "approved": "承認済み",
+      "enacted": "発効済み",
+      "gate_failed": "ゲート不通過",
+      "rejected": "却下済み"
     },
-    "type": {
-      "prompt_revision": "プロンプト改訂",
-      "skill": "スキル変更",
-      "project_cognition": "プロジェクト認知",
-      "lesson": "教訓",
-      "pitfall": "既知の落とし穴"
+    "changeKind": {
+      "add_clause": "条項追加",
+      "remove_clause": "条項削除"
     },
-    "create": "新規提案",
-    "createTitle": "新規提案",
-    "createDescription": "予言は作成時に書き込まれ、以降は変更できません。定量的な提案には指標・方向・数値帯が必要で、行動型の提案には観察可能な変化と反証条件が必要です。",
-    "typeLabel": "種別",
-    "titleLabel": "タイトル",
-    "summaryLabel": "要約",
-    "prophecyOutcome": "期待される結果",
-    "prophecyFalsify": "反証条件",
-    "prophecyObject": "指標",
-    "prophecyDirection": "予想方向",
-    "prophecyRangeLow": "帯の下限",
-    "prophecyRangeHigh": "帯の上限",
-    "direction": {
-      "down": "低下",
-      "up": "上昇",
-      "unchanged": "変化なし"
+    "carrierScope": {
+      "workspace": "ワークスペース",
+      "project": "プロジェクト",
+      "squad": "Squad",
+      "agent": "エージェント"
     },
+    "create": "新しい提案",
+    "createTitle": "新しいプロンプト立法提案",
+    "createDescription": "内容ゲートの 5 つの回答が揃って初めて送信できます。各回答は具体的に。",
+    "carrierLabel": "キャリア",
+    "sectionLabel": "対象セクション",
+    "changeKindLabel": "変更種別",
+    "clauseNameLabel": "条項名",
+    "clauseTextLabel": "条項の最終テキスト",
+    "clauseTextPlaceholder": "発効させる条項の原文。削除の場合は空。",
+    "gateAnswersTitle": "内容ゲート — 5 つの回答",
+    "gateLayer": "階層",
+    "gateLayerPlaceholder": "この条項が属する指示階層。",
+    "gateRetention": "存続理由",
+    "gateRetentionPlaceholder": "この条項が存在すべき理由。",
+    "gateCost": "コスト",
+    "gateCostPlaceholder": "これを運ぶ各ランが払う代償。",
+    "gateConflict": "競合",
+    "gateConflictPlaceholder": "触れるまたは置き換える既存条項。",
+    "gateDedup": "重複",
+    "gateDedupPlaceholder": "既存条項の重複ではない理由。",
+    "evidenceLabel": "エビデンスアンカー",
+    "evidenceAdd": "エビデンスアンカーを追加",
+    "evidenceIssue": "Issue ID",
+    "evidenceQuote": "引用",
     "cancel": "キャンセル",
-    "submit": "送信",
+    "saveDraft": "下書き保存",
+    "submit": "承認に送信",
+    "edit": "下書きを編集",
     "list": "提案一覧",
-    "detailTitle": "提案の詳細",
-    "detail": {
-      "prophecy": "登録時の予言",
-      "falsify": "反証条件",
-      "object": "指標",
-      "direction": "方向",
-      "band": "帯 [{{low}}, {{high}}]",
-      "verification": "検証記録",
-      "noVerification": "検証はまだ記録されていません。採用後に判定を追加できます。",
-      "audit": "操作監査"
-    },
-    "createdAt": "作成 {{date}}",
-    "transferError": "知識転送に失敗しました：{{error}}",
-    "adopt": "採用",
+    "detailTitle": "提案詳細",
+    "createdAt": "作成日時",
+    "enactedVersion": "発効バージョン",
+    "mergedFrom": "統合された草案",
+    "gateErrors": "ゲートエラー",
+    "gateWarnings": "ゲート警告",
+    "rejectReason": "却下理由",
+    "baselineUsed": "サンドボックス基準",
+    "preview": "diff をプレビュー",
+    "previewTitle": "全文 diff レビュー",
+    "previewDescription": "承認するとサンドボックスでキャリア全体を合成し立法ゲートを実行します。下の diff を確認してください——明示的な確認なしでは承認されません。",
+    "diffEmpty": "合成後のテキスト変更はありません。",
+    "diffLoadError": "プレビューの読み込みに失敗しました。",
+    "confirmPreviewed": "全文 diff を確認しました",
+    "approve": "承認",
+    "approveBatch": "一括承認",
+    "batchPreviewTitle": "一括承認 — 全文 diff",
+    "batchLoading": "diff を読み込み中…",
+    "selectHint": "一括承認する承認待ち提案を選択（最大 20 件）。",
+    "batchResult": "一括結果",
     "reject": "却下",
-    "restore": "ドラフトに戻す",
-    "verify": "検証を記録",
-    "verifySubmit": "検証を送信",
-    "rejectReasonLabel": "却下理由",
-    "rejectReasonPlaceholder": "監査ログに残す却下理由",
-    "verifyVerdictLabel": "判定",
-    "verifyEvidenceLabel": "エビデンス",
-    "verifyEvidencePlaceholder": "必須：判定を支えるエビデンス",
-    "verifyNoteLabel": "メモ（任意）",
-    "ownerOnly": "採用・却下・復元・検証はワークスペースのオーナーのみ実行できます。",
-    "verdict": {
-      "established": "成立",
-      "partial": "部分的に成立",
-      "refuted": "反証された",
-      "undeterminable": "判定不能"
+    "restore": "下書きに戻す",
+    "rework": "手直し",
+    "enact": "発効",
+    "enactHint": "ゲートを再実行。クリア時のみ発効します。",
+    "rejectDialogTitle": "提案を却下",
+    "rejectPlaceholder": "却下理由は記録に残ります。",
+    "rejectConfirm": "却下する",
+    "ownerOnly": "オーナーのみ",
+    "source": {
+      "manual": "手動",
+      "retrospective": "日次ふりかえり",
+      "merged": "統合"
     },
-    "empty": {
-      "title": "提案はありません",
-      "description": "プールは空です。反証可能な予言を添えた提案を作成すると登録されます。"
+    "empty": "提案はまだありません。",
+    "emptyHint": "実際の実行エビデンスから起草するか、日次ふりかえりに任せてください。",
+    "error": "書き込みに失敗しました。入力を確認して再試行してください。",
+    "batchPartial": "一括処理で発効しなかった提案があります——各結果を確認してください。"
+  },
+  "retrospective": {
+    "title": "日次ふりかえり",
+    "description": "組み込みスケジューラがウィンドウ内の完了 Issue の実際の実行内容を読み、プロンプト改善草案を立法プールへ投入します。実行が Issue コメントを投稿することはありません。",
+    "enabled": "定期実行を有効化",
+    "includeInReview": "in_review の Issue も対象にする",
+    "windowDays": "参照ウィンドウ（日）",
+    "save": "設定を保存",
+    "runs": "実行履歴",
+    "trigger": "今すぐ実行",
+    "status": {
+      "succeeded": "成功",
+      "failed": "失敗",
+      "running": "実行中"
     },
-    "error": {
-      "read": "提案の読み込みに失敗しました",
-      "write": "操作は完了しませんでした。",
-      "retry": "再試行"
-    }
+    "window": "ウィンドウ",
+    "scanned": "スキャン",
+    "analyzed": "分析",
+    "created": "作成",
+    "merged": "統合",
+    "duplicates": "重複スキップ",
+    "errorLabel": "エラー",
+    "empty": "実行履歴はまだありません。",
+    "llmUnavailable": "LLM が未設定です——実行は不足設定を示す失敗レコードを残します。",
+    "saveOk": "ふりかえり設定を保存しました。",
+    "triggerOk": "ふりかえり実行が完了しました。"
   },
   "knowledge": {
-    "title": "ナレッジミラー",
-    "description": "候補の bd memories ディレクトリは読み取り専用でミラーされ、唯一の書き込み経路はオーナーによる最終ライブラリへの採用転送です。",
+    "title": "ナレッジライブラリ",
+    "description": "bd memories ディレクトリは接続済みプロジェクトから自動検出されるか、下から手動追加します。エントリは読み取り専用でミラーされ、採用するとバックグラウンドでナレッジハブへ転送されます。",
     "register": "ディレクトリを登録",
     "registerTitle": "ナレッジディレクトリを登録",
-    "registerDescription": "登録すると最初の読み取り専用スキャンが実行されます。最終ライブラリは別途指定され、このフォームからは登録しません。",
+    "registerDescription": "このパスを手動追加ソースとして登録します。初回の読み取り専用スキャンはバックグラウンドで実行されます。ナレッジハブは別途指定し、ここでは登録しません。",
     "kindLabel": "ディレクトリ種別",
     "kind": {
-      "ultimate": "最終ライブラリ",
-      "candidate_cli": "候補（手動登録）",
-      "candidate_auto": "候補（自動検出）"
+      "ultimate": "ナレッジハブ",
+      "candidate_cli": "手動追加",
+      "candidate_auto": "自動検出"
     },
     "pathLabel": "ディレクトリパス",
     "labelLabel": "表示ラベル",
@@ -398,6 +526,7 @@
     "entryCount": "{{n}} 件",
     "lastScan": "前回スキャン（{{result}}）：追加 {{added}}、更新 {{updated}}、削除 {{removed}}",
     "neverScanned": "未スキャン",
+    "scanRequested": "スキャン待ち",
     "health": {
       "ok": "正常",
       "unhealthy": "異常"
@@ -409,6 +538,8 @@
     },
     "scan": "今すぐスキャン",
     "unregister": "登録解除",
+    "advancedTitle": "詳細：外部ソースを追加",
+    "advancedDescription": "このマシン上の bd memories ディレクトリを指定します。表示名は任意です。",
     "allDirs": "すべてのディレクトリ",
     "searchPlaceholder": "キーまたは内容を検索",
     "mirrorState": {
@@ -418,6 +549,7 @@
     },
     "adoptionState": {
       "pending": "未採用",
+      "transferring": "転送中",
       "adopted": "採用済み",
       "failed": "採用失敗"
     },
@@ -425,7 +557,7 @@
     "adoptedFrom": "{{key}} から採用",
     "emptyDirs": {
       "title": "登録済みディレクトリはありません",
-      "description": "候補の bd memories ディレクトリを登録すると、内容が読み取り専用でミラーされます。"
+      "description": "接続済みデーモンが bd memories を持つプロジェクトを検出すると自動的にここに表示されます。「詳細」から手動追加もできます。"
     },
     "emptyEntries": "現在のフィルターではエントリーがありません。",
     "error": {

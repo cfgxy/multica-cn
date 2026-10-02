@@ -9,6 +9,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -280,6 +281,59 @@ func TestPromptQualityDashboardKeepsRuntimeProfilesApart(t *testing.T) {
 	}
 	if bands["member"] != "low" || bands["leader_task"] != "high" {
 		t.Errorf("bands = %v, want the two profiles reported separately", bands)
+	}
+}
+
+// The D2 median must not be a number with no trail: the deductions stored
+// beside it travel to the API unchanged, each carrying the run it came from,
+// so a score on the card can be traced to the runs that lowered it (RUYI-287).
+func TestPromptQualityDashboardReturnsDisciplineDeductions(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := qualityAgent(t, "quality-deductions")
+	const taskID = "0198ffff-0000-7000-8000-0000000000ea"
+	qualityDay(t, agentID, 1, 1, testutil.Cols{
+		"finished_runs":           10,
+		"discipline_covered_runs": 2,
+		"discipline_score_median": testutil.Raw(`'90'::numeric`),
+		"discipline_deductions": testutil.Raw(fmt.Sprintf(
+			`'[{"task_id":%q,"rule":"unscoped_go_test","points":10,"seq":3},
+			   {"task_id":%q,"rule":"comment_body_outside_workdir","points":5,"seq":7}]'::jsonb`,
+			taskID, taskID)),
+	})
+
+	_, resp := getQualityDashboard(t, agentID, "")
+	if len(resp.Window.Deductions) != 2 {
+		t.Fatalf("window deductions = %d, want both stored breaches", len(resp.Window.Deductions))
+	}
+	if got := resp.Window.Deductions[0]; got.TaskID != taskID || got.Rule != "unscoped_go_test" || got.Points != 10 || got.Seq != 3 {
+		t.Errorf("window deduction[0] = %+v, want the stored row unchanged", got)
+	}
+	if got := resp.Window.Deductions[1]; got.Rule != "comment_body_outside_workdir" || got.Points != 5 || got.Seq != 7 {
+		t.Errorf("window deduction[1] = %+v, want the stored row unchanged", got)
+	}
+	if len(resp.Versions) != 1 || len(resp.Versions[0].Deductions) != 2 {
+		t.Fatalf("per-version deductions = %v, want the same rows under the version group", resp.Versions)
+	}
+
+	// A deduction blob that will not decode costs the drill-down, not the
+	// request: the card still answers, with an empty list rather than an error.
+	brokenID := qualityAgent(t, "quality-deductions-broken")
+	qualityDay(t, brokenID, 1, 1, testutil.Cols{
+		"finished_runs":           10,
+		"discipline_covered_runs": 1,
+		"discipline_deductions":   testutil.Raw(`'{"not":"a list"}'::jsonb`),
+	})
+	code, resp := getQualityDashboard(t, brokenID, "")
+	if code != http.StatusOK {
+		t.Fatalf("malformed deductions: expected 200, got %d", code)
+	}
+	if len(resp.Window.Deductions) != 0 {
+		t.Errorf("malformed deductions decoded to %d items, want none", len(resp.Window.Deductions))
+	}
+	if resp.Window.Measures.RetryRate.State != promptquality.StateOK {
+		t.Error("D5 degraded by an undecodable D2 drill-down blob")
 	}
 }
 

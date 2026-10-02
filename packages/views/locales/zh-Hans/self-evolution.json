@@ -1,18 +1,62 @@
 {
   "title": "自进化",
   "description": "查看智能体与小队 prompt 随时间的变化，以及变化的来源。",
-  "empty": {
-    "title": "尚未接入数据",
-    "description": "这是 prompt 治理总览的导航骨架（RUYI-183 阶段一）。版本历史、diff 与采用情况视图将在后续阶段交付。"
-  },
   "tabs": {
     "overview": "总览",
     "quality": "质量",
     "quiz": "题库测验",
     "skills": "Skill",
-    "proposals": "提案池",
+    "proposals": "立法提案",
+    "retrospective": "每日总复盘",
     "knowledge": "知识库",
     "versions": "版本"
+  },
+  "overview": {
+    "loading": "正在加载总览",
+    "error": "总览加载失败",
+    "retry": "重试",
+    "versions": {
+      "title": "Prompt 版本活动",
+      "empty": "各层级暂无版本记录。",
+      "currentVersion": "当前 v{{version}}",
+      "currentUnset": "{{count}} 个对象各自推进",
+      "count": "{{count}} 个版本 / {{subjects}} 个对象",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "质量读数（最近 {{days}} 天）",
+      "empty": "窗口内没有任何已度量的运行。",
+      "runs": "{{count}} 次运行",
+      "subjects": "{{count}} 个智能体有读数",
+      "excluded": "已剔除 {{count}} 次环境或供应商故障"
+    },
+    "quiz": {
+      "title": "题库测验结论",
+      "empty": "尚无任何已记录的测量。",
+      "versions": "基线 v{{baseline}} → v{{current}}",
+      "singleVersion": "当前 v{{current}}（首个版本，暂无基线）",
+      "insufficientSample": "样本不足（基线需 {{baseline}}、当前需 {{current}} 条可用读数）",
+      "lastMeasured": "最近测量 {{date}}"
+    },
+    "proposals": {
+      "title": "提案池动态",
+      "pendingModel": "提案指标将随新提案模型（RUYI-305）落地后接入。"
+    },
+    "knowledge": {
+      "title": "知识库沉淀",
+      "empty": "暂无注册目录。",
+      "dirs": "{{count}} 个目录",
+      "entries": "{{count}} 条条目",
+      "lastScan": "最近扫描：{{result}} · {{date}}",
+      "neverScanned": "尚未扫描"
+    },
+    "skills": {
+      "title": "Skill 观测",
+      "empty": "暂无注册 skill。",
+      "count": "共 {{count}} 个 skill",
+      "invocations": "累计显式调用 {{count}} 次"
+    }
   },
   "skills": {
     "choose": "选择 skill",
@@ -75,11 +119,26 @@
     "retry": "重试",
     "sources": {
       "create": "创建",
-      "proposal": "提案转化",
-      "revision": "提案修订",
+      "revision": "修订",
       "edit": "编辑",
       "restore": "恢复"
-    }
+    },
+    "catalogSearchLabel": "搜索",
+    "catalogSearchPlaceholder": "按名称搜索技能",
+    "catalogSourceFilter": "来源",
+    "catalogSourceAll": "全部来源",
+    "catalogSourceWorkspace": "工作区",
+    "catalogSourceRuntime": "运行时",
+    "catalogSourcePlugin": "插件",
+    "catalogSelectableHint": "可选项是已导入本工作区的技能；下方运行时与插件发现仅可见，导入后才可选择。",
+    "catalogNoMatch": "没有发现项匹配当前搜索或来源筛选。",
+    "discoveriesTitle": "运行时发现",
+    "discoveryImport": "导入",
+    "discoveryImporting": "导入中…",
+    "discoveryExists": "已是技能",
+    "discoveryLastSeen": "最近发现于 {{date}}",
+    "discoveryImportedToast": "技能已导入，现在可选择并带独立版本历史。",
+    "discoveryImportFailedToast": "导入失败，请检查运行时连接后重试。"
   },
   "quality": {
     "scopePicker": {
@@ -172,7 +231,9 @@
         "no_reviewed_issues": "该窗口内没有 Issue 进入评审。",
         "below_sample_floor": "运行数低于声明阈值。",
         "unknown": "服务端未说明原因。"
-      }
+      },
+      "coverage": "{{total}} 次运行中可评 {{covered}} 次",
+      "deductions": "扣分明细（{{count}}）"
     },
     "perplexity": {
       "title": "D3 规则困惑度",
@@ -294,99 +355,170 @@
         "rubricHint": "仅所有者可见，绝不随题面发送给被测 run。保存时会用本字段的内容整体替换已存的标准答案。",
         "cancel": "取消",
         "save": "保存"
-      }
+      },
+      "difficulty": {
+        "easy": "简单",
+        "medium": "中等",
+        "hard": "困难"
+      },
+      "import": "导入标准题库",
+      "importDone": "已导入 {{imported}} 道题",
+      "importError": "标准题库未导入。"
+    },
+    "graded": {
+      "title": "评分",
+      "description": "按题目的标准答案逐项核对已采集 run 的回答；逐条证据可反查到具体断言。",
+      "summary": "已评分 {{graded}} 条 · 均分 {{mean}}",
+      "ungraded": "尚未评分",
+      "run": "运行一轮评分",
+      "ordered": "已下单 {{ordered}} 条测验 run",
+      "refused": "{{count}} 个代理未能下单，其余已执行",
+      "runError": "评分批次未下单。",
+      "batchLines": "本轮：已回答 {{answered}} · 出错 {{errored}} · 已评分 {{graded}}",
+      "samplesTitle": "最近评分样本",
+      "samplesEmpty": "暂无评分样本。先运行一轮评分，等 run 完成后这里会出现逐条证据。",
+      "taskId": "task_id",
+      "measuredAt": "测量时间",
+      "gradedAt": "评分时间",
+      "version": "v{{version}}",
+      "answered": "已回答",
+      "errored": "出错",
+      "checkPassed": "{{id}}（{{kind}}）通过：{{evidence}}",
+      "checkFailed": "{{id}}（{{kind}}）未过：{{evidence}}",
+      "notAGate": "评分是读数不是闸门：发布路径不读取它。"
     }
   },
-  "proposals": {
-    "title": "提案池",
-    "description": "每个提案入池时必须附可证伪预言；采纳与验证分开记录，被拒绝的提案保留可查。",
-    "filterAll": "全部状态",
+  "legislation": {
+    "title": "Prompt 立法提案",
+    "description": "针对四个 Prompt 载体的条款级草案。提交后进入 Owner 审批；批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
+    "filterAll": "全部",
     "status": {
       "draft": "草稿",
-      "needs_revision": "待修订",
-      "adopted": "已采纳",
-      "rejected": "已拒绝",
-      "archived": "已归档"
+      "pending_owner": "待 Owner 审批",
+      "approved": "已批准",
+      "enacted": "已生效",
+      "gate_failed": "门闸未过",
+      "rejected": "已驳回"
     },
-    "type": {
-      "prompt_revision": "Prompt 修订",
-      "skill": "Skill 变更",
-      "project_cognition": "项目认知",
-      "lesson": "经验教训",
-      "pitfall": "已知陷阱"
+    "changeKind": {
+      "add_clause": "新增条款",
+      "remove_clause": "移除条款"
+    },
+    "carrierScope": {
+      "workspace": "工作区",
+      "project": "项目",
+      "squad": "Squad",
+      "agent": "Agent"
+    },
+    "source": {
+      "system": "系统",
+      "member": "成员"
     },
     "create": "新建提案",
-    "createTitle": "新建提案",
-    "createDescription": "预言在创建时写入且此后不可改；数量型提案需给出指标、方向与数值区间，行为型提案需给出可观察变化与证伪条件。",
-    "typeLabel": "类型",
-    "titleLabel": "标题",
-    "summaryLabel": "摘要",
-    "prophecyOutcome": "预期结果",
-    "prophecyFalsify": "证伪条件",
-    "prophecyObject": "指标名",
-    "prophecyDirection": "预期方向",
-    "prophecyRangeLow": "区间下限",
-    "prophecyRangeHigh": "区间上限",
-    "direction": {
-      "down": "下降",
-      "up": "上升",
-      "unchanged": "不变"
-    },
+    "createTitle": "新建 Prompt 立法提案",
+    "createDescription": "内容闸五答齐全才能提交，每一答请写具体。",
+    "carrierLabel": "载体",
+    "sectionLabel": "目标章节",
+    "changeKindLabel": "变更类型",
+    "clauseNameLabel": "条款名",
+    "clauseTextLabel": "条款最终文本",
+    "clauseTextPlaceholder": "要生效的条款原文；移除类留空。",
+    "gateAnswersTitle": "内容闸——五答",
+    "gateLayer": "层次归属",
+    "gateLayerPlaceholder": "该条款属于哪一层指令。",
+    "gateRetention": "去留判据",
+    "gateRetentionPlaceholder": "为什么这条条款必须存在。",
+    "gateCost": "代价声明",
+    "gateCostPlaceholder": "携带它的每一轮 run 付出什么。",
+    "gateConflict": "冲突裁决",
+    "gateConflictPlaceholder": "它触碰或替代了哪条既有条款。",
+    "gateDedup": "重复检查",
+    "gateDedupPlaceholder": "它为什么不是既有条款的重复。",
+    "evidenceLabel": "证据锚",
+    "evidenceAdd": "添加证据锚",
+    "evidenceIssue": "Issue 编号",
+    "evidenceQuote": "引文",
     "cancel": "取消",
-    "submit": "提交",
+    "saveDraft": "保存草稿",
+    "submit": "提交审批",
+    "edit": "编辑草稿",
     "list": "提案列表",
     "detailTitle": "提案详情",
-    "detail": {
-      "prophecy": "入池预言",
-      "falsify": "证伪条件",
-      "object": "指标",
-      "direction": "方向",
-      "band": "区间 [{{low}}, {{high}}]",
-      "verification": "验证记录",
-      "noVerification": "尚未记录任何验证；采纳后可补充判定与证据。",
-      "audit": "操作审计"
-    },
-    "createdAt": "创建于 {{date}}",
-    "transferError": "知识转移失败：{{error}}",
-    "adopt": "采纳",
-    "reject": "拒绝",
+    "createdAt": "创建时间",
+    "enactedVersion": "生效版本",
+    "mergedFrom": "合并的草稿",
+    "gateErrors": "门闸错误",
+    "gateWarnings": "门闸警告",
+    "rejectReason": "驳回理由",
+    "baselineUsed": "沙箱基线",
+    "preview": "预览 diff",
+    "previewTitle": "全文 diff 审核",
+    "previewDescription": "批准会在沙箱合成整个载体并运行立法门闸。请先审阅下方 diff——未显式确认不予批准。",
+    "diffEmpty": "合成后无文本变化。",
+    "diffLoadError": "预览加载失败。",
+    "confirmPreviewed": "我已审阅全文 diff",
+    "approve": "批准",
+    "approveBatch": "批量批准",
+    "batchPreviewTitle": "批量批准——全文 diff",
+    "batchLoading": "正在加载 diff…",
+    "selectHint": "勾选待审批提案一次通过（最多 20 条）。",
+    "batchResult": "批量结果",
+    "reject": "驳回",
     "restore": "恢复为草稿",
-    "verify": "记录验证",
-    "verifySubmit": "提交验证",
-    "rejectReasonLabel": "拒绝理由",
-    "rejectReasonPlaceholder": "填写留痕用的拒绝理由",
-    "verifyVerdictLabel": "判定",
-    "verifyEvidenceLabel": "证据",
-    "verifyEvidencePlaceholder": "必填：支持该判定的证据",
-    "verifyNoteLabel": "备注（可选）",
-    "ownerOnly": "采纳、拒绝、恢复与验证仅工作空间 Owner 可操作。",
-    "verdict": {
-      "established": "成立",
-      "partial": "部分成立",
-      "refuted": "被证伪",
-      "undeterminable": "无法判定"
+    "rework": "返工",
+    "enact": "执行生效",
+    "enactHint": "重新运行门闸；只有干净通过才生效。",
+    "rejectDialogTitle": "驳回提案",
+    "rejectPlaceholder": "驳回理由将留档可查。",
+    "rejectConfirm": "确认驳回",
+    "ownerOnly": "仅 Owner",
+    "source": {
+      "manual": "人工",
+      "retrospective": "每日总复盘",
+      "merged": "合并"
     },
-    "empty": {
-      "title": "暂无提案",
-      "description": "提案池为空。新建提案时附上可证伪预言即可入池。"
+    "empty": "这里还没有提案。",
+    "emptyHint": "从真实执行证据起草一条，或让每日总复盘来提案。",
+    "error": "写入失败。请检查输入后重试。",
+    "batchPartial": "批量中有提案未生效——请查看逐条结果。"
+  },
+  "retrospective": {
+    "title": "每日总复盘",
+    "description": "底座内置定时任务读取窗口内已完成 Issue 的真实执行内容，提炼 Prompt 改进草案批量入立法池。运行不产生任何 Issue 评论。",
+    "enabled": "启用定时运行",
+    "includeInReview": "同时扫描 in_review 的 Issue",
+    "windowDays": "回看窗口（天）",
+    "save": "保存配置",
+    "runs": "运行记录",
+    "trigger": "立即运行",
+    "status": {
+      "succeeded": "成功",
+      "failed": "失败",
+      "running": "运行中"
     },
-    "error": {
-      "read": "提案加载失败",
-      "write": "操作未完成。",
-      "retry": "重试"
-    }
+    "window": "窗口",
+    "scanned": "扫描",
+    "analyzed": "分析",
+    "created": "新建",
+    "merged": "合并",
+    "duplicates": "去重跳过",
+    "errorLabel": "错误",
+    "empty": "还没有运行记录。",
+    "llmUnavailable": "LLM 未配置——运行会记录一条指明缺失配置的失败记录。",
+    "saveOk": "总复盘配置已保存。",
+    "triggerOk": "总复盘运行已结束。"
   },
   "knowledge": {
-    "title": "知识库镜像",
-    "description": "候选 bd memories 目录以只读方式镜像；唯一写路径是 Owner 采纳后转移到最终权威库。",
+    "title": "知识库",
+    "description": "自动发现或手动添加的 bd memories 目录以只读方式镜像；Owner 采纳后由后台转移到知识总库。",
     "register": "注册目录",
     "registerTitle": "注册知识目录",
-    "registerDescription": "注册即执行首次只读扫描。最终权威库另行指定，不在本表单注册。",
+    "registerDescription": "登记为手动添加的外部来源，首次只读扫描在后台执行。知识总库另行指定，不在此登记。",
     "kindLabel": "目录类型",
     "kind": {
-      "ultimate": "最终权威库",
-      "candidate_cli": "候选（手动注册）",
-      "candidate_auto": "候选（自动发现）"
+      "ultimate": "知识总库",
+      "candidate_cli": "手动添加",
+      "candidate_auto": "自动发现"
     },
     "pathLabel": "目录路径",
     "labelLabel": "显示名",
@@ -398,6 +530,7 @@
     "entryCount": "{{n}} 条",
     "lastScan": "上次扫描（{{result}}）：新增 {{added}}，更新 {{updated}}，移除 {{removed}}",
     "neverScanned": "尚未扫描",
+    "scanRequested": "扫描待执行",
     "health": {
       "ok": "健康",
       "unhealthy": "异常"
@@ -409,6 +542,8 @@
     },
     "scan": "立即扫描",
     "unregister": "注销",
+    "advancedTitle": "高级：添加外部来源",
+    "advancedDescription": "指向本机上的 bd memories 目录，显示名为可选项。",
     "allDirs": "全部目录",
     "searchPlaceholder": "搜索 key 或内容",
     "mirrorState": {
@@ -418,6 +553,7 @@
     },
     "adoptionState": {
       "pending": "待采纳",
+      "transferring": "转移中",
       "adopted": "已采纳",
       "failed": "采纳失败"
     },
@@ -425,7 +561,7 @@
     "adoptedFrom": "采纳自 {{key}}",
     "emptyDirs": {
       "title": "暂无注册目录",
-      "description": "注册一个候选 bd memories 目录后，其内容会以只读方式镜像到这里。"
+      "description": "已连接的守护进程发现项目自带的 bd memories 后会自动出现在这里；也可以在下方「高级」中手动添加外部来源。"
     },
     "emptyEntries": "当前筛选下没有条目。",
     "error": {

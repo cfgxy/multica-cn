@@ -45,6 +45,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"autopilot_trigger":               workspaceDelete,
 	"channel_binding_token":           workspaceDelete,
 	"channel_chat_context_generation": workspaceDelete,
+	// Run-trigger intents (RUYI-304) own nothing outside the database: the
+	// cascade deletes them directly instead of settling through a reconciler.
+	"channel_chat_run_intent":         workspaceDelete,
 	"channel_chat_session_binding":    workspaceDelete,
 	"channel_inbound_audit":           workspaceDelete,
 	"channel_inbound_message_dedup":   workspaceDelete,
@@ -78,13 +81,19 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_suite": workspaceDelete,
 	"inbox_item":                      workspaceDelete,
 	"issue":                           workspaceDelete,
-	// Self-evolution surfaces (RUYI-265): proposals, registered knowledge
-	// directories, their read-only mirror entries and the scan log all go
-	// with the workspace (DeleteWorkspaceSelfEvolutionData).
-	"knowledge_dir":        workspaceDelete,
-	"knowledge_entry":      workspaceDelete,
-	"knowledge_scan_batch": workspaceDelete,
-	"proposal":             workspaceDelete,
+	// Self-evolution surfaces (RUYI-265/RUYI-305): the prompt-legislation
+	// pool, its structure baselines, the retrospective config/run/watermark
+	// tables, registered knowledge directories, their read-only mirror
+	// entries and the scan log all go with the workspace
+	// (DeleteWorkspaceSelfEvolutionData).
+	"knowledge_dir":                 workspaceDelete,
+	"knowledge_entry":               workspaceDelete,
+	"knowledge_scan_batch":          workspaceDelete,
+	"prompt_proposal":               workspaceDelete,
+	"prompt_structure_baseline":     workspaceDelete,
+	"retrospective_config":          workspaceDelete,
+	"retrospective_issue_watermark": workspaceDelete,
+	"retrospective_run":             workspaceDelete,
 	// Published marketplace listings (RUYI-99) are owned by the workspace that
 	// published them and go with it. Not Settle: the tombstone reserves a name
 	// so its owner can republish, and a deleted workspace has no owner left to
@@ -158,9 +167,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_quiz_result": workspaceDelete,
 	// The sweep's single-row cursor has no workspace_id: it is the deployment's
 	// scheduler state, not any workspace's data.
-	"prompt_quiz_sweep_state":        workspaceDeleteKeep,
-	"quick_action":                   workspaceDelete,
-	"runtime_profile":                workspaceDelete,
+	"prompt_quiz_sweep_state": workspaceDeleteKeep,
+	"quick_action":            workspaceDelete,
+	"runtime_profile":         workspaceDelete,
+	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
+	// metadata; the whole set goes away with the workspace.
+	"runtime_skill_discovery":        workspaceDelete,
 	"schema_migrations":              workspaceDeleteKeep,
 	"seat_capacity_outbox":           workspaceDeleteSettle,
 	"skill":                          workspaceDelete,

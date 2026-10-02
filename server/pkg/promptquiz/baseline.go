@@ -79,6 +79,20 @@ const NoiseSigma = 1.96
 type Sample struct {
 	// Values are the per-measurement readings, one per graded repeat.
 	Values []float64
+	// Scores are the graded readings of the SAME rows Values was built from
+	// (RUYI-286): an item id plus its weighted pass ratio, present only when
+	// the row was graded. Same cohort filter, so "comparable and graded" —
+	// a score that a bank edit or a runtime switch made incomparable stays
+	// out, exactly where its token sibling stays out.
+	Scores []ScoredReading
+}
+
+// ScoredReading is one graded measurement reduced to what score aggregation
+// needs. No answer text, no evidence: those live in score_detail and stay
+// behind the Owner-only read that returns them.
+type ScoredReading struct {
+	ItemID string
+	Score  float64
 }
 
 // Summary is the stored form of a baseline: mean, dispersion, N.

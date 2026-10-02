@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_prompt_proposal_workspace_status;

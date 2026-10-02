@@ -890,6 +890,37 @@ export interface Skill extends SkillSummary {
   files: SkillFile[];
 }
 
+/**
+ * One row of the workspace skill catalog (GET /api/skills/catalog, RUYI-288):
+ * skills already authored in the workspace unioned with metadata-only
+ * runtime-local discovery sightings not imported yet. `source` classifies
+ * the origin — patent/pattern packs are ordinary `workspace` rows, never a
+ * hardcoded universe. Discovery rows never carry skill bodies; importing
+ * one goes through the existing runtime-local import flow.
+ */
+export interface SkillCatalogEntry {
+  kind: "skill" | "discovery";
+  name: string;
+  description?: string;
+  source: "workspace" | "runtime" | "plugin";
+  // Kind "skill".
+  id?: string;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+  // Kind "discovery".
+  runtime_id?: string;
+  provider?: string;
+  root?: string;
+  plugin_name?: string;
+  key?: string;
+  source_path?: string;
+  file_count?: number;
+  last_seen_at?: string;
+  /** Set on discovery rows whose name collides with an authored skill. */
+  matching_skill_id?: string;
+}
+
 export interface SkillFile {
   id: string;
   skill_id: string;
@@ -908,7 +939,6 @@ export interface SkillVersionSummary {
   source: string;
   can_restore?: boolean;
   source_version?: number;
-  source_proposal_id?: string;
   author_user_id?: string;
   created_at: string;
 }
@@ -973,42 +1003,6 @@ export interface SkillEffect {
   }[];
 }
 
-/**
- * GET/POST /api/proposals — the self-evolution proposal pool (§A B1–B3).
- * The prophecy is required at creation and frozen afterwards; adoption and
- * verification are separate records, and rejected rows stay retrievable.
- */
-export interface Proposal {
-  id: string;
-  type: string;
-  status: string;
-  title: string;
-  summary: string;
-  evidence: unknown[];
-  prophecy: Record<string, unknown>;
-  generation_snapshot: Record<string, unknown>;
-  adoption_snapshot?: Record<string, unknown>;
-  verification?: Record<string, unknown>;
-  audit_log: unknown[];
-  transfer_error?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface CreateProposalRequest {
-  type: string;
-  title: string;
-  summary: string;
-  evidence?: unknown[];
-  prophecy: Record<string, unknown>;
-}
-
-export interface VerifyProposalRequest {
-  verdict: string;
-  evidence: string;
-  note?: string;
-}
-
 /** One scan of one knowledge directory — every batch is logged, even no-ops. */
 export interface KnowledgeScanBatch {
   id: string;
@@ -1033,6 +1027,9 @@ export interface KnowledgeDir {
   health_state: string;
   health_note: string;
   removed: boolean;
+  /** Set on registration or by an explicit rescan request; cleared once the
+   * hosting daemon lands the scan (RUYI-289). */
+  scan_requested?: boolean;
   entry_count: number;
   last_scan?: KnowledgeScanBatch;
   created_at: string;

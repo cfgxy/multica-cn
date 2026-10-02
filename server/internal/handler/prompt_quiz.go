@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -11,6 +14,14 @@ import (
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
+)
+
+// The two read failures a baseline can hit, kept as sentinels so the shared
+// reader (promptQuizBaselineData) and its two HTTP callers render the same
+// messages the endpoint wrote before the overview joined it.
+var (
+	errQuizVersionRead = errors.New("failed to read the prompt version")
+	errQuizSampleRead  = errors.New("failed to read quiz measurements")
 )
 
 // Quiz bank maintenance and the regression reading (RUYI-185, self-evolution
@@ -34,13 +45,19 @@ import (
 // the owner role; a struct without the field cannot leak it by being handed the
 // wrong row.
 type PromptQuizItemResponse struct {
-	ID             string `json:"id"`
-	Slug           string `json:"slug"`
-	Title          string `json:"title"`
-	Body           string `json:"body"`
-	Revision       int32  `json:"revision"`
-	RuntimeProfile string `json:"runtime_profile"`
-	Active         bool   `json:"active"`
+	ID       string `json:"id"`
+	Slug     string `json:"slug"`
+	Title    string `json:"title"`
+	Body     string `json:"body"`
+	Revision int32  `json:"revision"`
+	// Tags and Difficulty are member-visible presentation metadata (migration
+	// 950): what a question covers and how hard it is. They are NOT the
+	// answer key — that stays split between rubric and rubric_checks, which
+	// only the owner-gated detail read returns.
+	Tags           []string `json:"tags,omitempty"`
+	Difficulty     string   `json:"difficulty,omitempty"`
+	RuntimeProfile string   `json:"runtime_profile"`
+	Active         bool     `json:"active"`
 	// Discrimination is the A4 mark: whether this question's readings still
 	// spread enough to tell two prompt versions apart. Empty on responses that
 	// did not compute it, which a reader must treat as "not judged" rather than
@@ -50,11 +67,15 @@ type PromptQuizItemResponse struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
-// PromptQuizItemDetailResponse adds the private half, for the owner-only read
-// and for the writes whose author just supplied it.
+// PromptQuizItemDetailResponse adds the private halves, for the owner-only
+// read and for the writes whose author just supplied them.
 type PromptQuizItemDetailResponse struct {
 	PromptQuizItemResponse
 	Rubric string `json:"rubric"`
+	// RubricChecks is the structured half of the answer key (migration 950).
+	// Same gating as Rubric: this struct is only ever built on the owner
+	// group's routes, and the member-visible list type has no field for it.
+	RubricChecks json.RawMessage `json:"rubric_checks,omitempty"`
 }
 
 func promptQuizItemToResponse(item db.PromptQuizItem) PromptQuizItemResponse {
@@ -64,6 +85,8 @@ func promptQuizItemToResponse(item db.PromptQuizItem) PromptQuizItemResponse {
 		Title:          item.Title,
 		Body:           item.Body,
 		Revision:       item.Revision,
+		Tags:           item.Tags,
+		Difficulty:     item.Difficulty,
 		RuntimeProfile: item.RuntimeProfile,
 		Active:         item.Active,
 		CreatedAt:      formatQuizTime(item.CreatedAt),
@@ -75,11 +98,14 @@ func promptQuizItemToDetail(item db.PromptQuizItem) PromptQuizItemDetailResponse
 	return PromptQuizItemDetailResponse{
 		PromptQuizItemResponse: promptQuizItemToResponse(item),
 		Rubric:                 item.Rubric,
+		RubricChecks:           item.RubricChecks,
 	}
 }
 
 // promptQuizItemRowToResponse converts the member-visible list row, which is a
-// different type from db.PromptQuizItem precisely because it has no rubric.
+// different type from db.PromptQuizItem precisely because it has no rubric and
+// no rubric_checks (migration 950 keeps the named-column discipline: tags and
+// difficulty DO travel, the answer key's two halves do not).
 func promptQuizItemRowToResponse(row db.ListPromptQuizItemsRow) PromptQuizItemResponse {
 	return PromptQuizItemResponse{
 		ID:             uuidToString(row.ID),
@@ -87,6 +113,8 @@ func promptQuizItemRowToResponse(row db.ListPromptQuizItemsRow) PromptQuizItemRe
 		Title:          row.Title,
 		Body:           row.Body,
 		Revision:       row.Revision,
+		Tags:           row.Tags,
+		Difficulty:     row.Difficulty,
 		RuntimeProfile: row.RuntimeProfile,
 		Active:         row.Active,
 		CreatedAt:      formatQuizTime(row.CreatedAt),
@@ -108,9 +136,17 @@ type promptQuizItemWrite struct {
 	Body string `json:"body"`
 	// Rubric is the private half — the expected answer and the grading points.
 	// Optional: an item with no answer key yet is a normal state.
-	Rubric         string `json:"rubric"`
-	RuntimeProfile string `json:"runtime_profile"`
-	Active         *bool  `json:"active"`
+	Rubric string `json:"rubric"`
+	// RubricChecks is the structured half of the answer key (migration 950):
+	// machine-checkable assertions the collector grades answers against.
+	// Optional; gated by promptquiz.ValidateChecks like the free-text half is
+	// by ValidateRubric.
+	RubricChecks json.RawMessage `json:"rubric_checks"`
+	// Tags and Difficulty are member-visible metadata (migration 950).
+	Tags           []string `json:"tags"`
+	Difficulty     string   `json:"difficulty"`
+	RuntimeProfile string   `json:"runtime_profile"`
+	Active         *bool    `json:"active"`
 }
 
 func (pw promptQuizItemWrite) profile() string {
@@ -120,12 +156,45 @@ func (pw promptQuizItemWrite) profile() string {
 	return "member"
 }
 
+// difficulty normalizes the write's difficulty to a CHECK-legal value. An
+// omitted difficulty means "medium", not "unchanged": the write path replaces
+// the item wholesale, same as the rest of the fields.
+func (pw promptQuizItemWrite) normalizedDifficulty() string {
+	switch pw.Difficulty {
+	case "easy", "hard":
+		return pw.Difficulty
+	default:
+		return "medium"
+	}
+}
+
+// cleanTags trims, drops empties and duplicates, and caps the list. Tags are
+// presentation metadata; the cap keeps one import from turning the member
+// list into a tag cloud.
+func cleanTags(tags []string) []string {
+	out := make([]string, 0, len(tags))
+	seen := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] || len(out) == 8 {
+			continue
+		}
+		if len(tag) > 32 {
+			tag = tag[:32]
+		}
+		seen[tag] = true
+		out = append(out, tag)
+	}
+	return out
+}
+
 // decodePromptQuizItemWrite reads the body and applies the isolation gate.
 //
 // The gate's refusal is returned verbatim to the author: it names the kind of
 // reference and its offset, and never echoes the matched text, so the error is
 // actionable without widening the disclosure surface of a workspace-private
-// body (Owner Q8).
+// body (Owner Q8). The checks gate follows the same rule — it names the
+// offending assertion, never the phrase that tripped it.
 func decodePromptQuizItemWrite(w http.ResponseWriter, r *http.Request) (promptQuizItemWrite, bool) {
 	var pw promptQuizItemWrite
 	if err := json.NewDecoder(r.Body).Decode(&pw); err != nil {
@@ -143,6 +212,19 @@ func decodePromptQuizItemWrite(w http.ResponseWriter, r *http.Request) (promptQu
 	if v := promptquiz.ValidateRubric(pw.Rubric); !v.OK() {
 		writeError(w, http.StatusBadRequest, v.RubricReason())
 		return pw, false
+	}
+	if v := promptquiz.ValidateChecks(pw.RubricChecks); !v.OK() {
+		writeError(w, http.StatusBadRequest, v.Reason)
+		return pw, false
+	}
+	// Tags are always normalized (never nil: the column is NOT NULL, and an
+	// omitted field means "no tags", not SQL NULL).
+	pw.Tags = cleanTags(pw.Tags)
+	// A JSON null or empty payload means "no checks": SQL NULL, not a jsonb
+	// null — the DDL CHECK admits SQL NULL or an array only, and a jsonb null
+	// is neither.
+	if t := strings.TrimSpace(string(pw.RubricChecks)); t == "" || t == "null" {
+		pw.RubricChecks = nil
 	}
 	return pw, true
 }
@@ -234,6 +316,9 @@ func (h *Handler) CreatePromptQuizItem(w http.ResponseWriter, r *http.Request) {
 		Title:          pw.Title,
 		Body:           pw.Body,
 		Rubric:         pw.Rubric,
+		RubricChecks:   pw.RubricChecks,
+		Tags:           pw.Tags,
+		Difficulty:     pw.normalizedDifficulty(),
 		RuntimeProfile: pw.profile(),
 	}
 	userID, ok := requireUserID(w, r)
@@ -275,6 +360,9 @@ func (h *Handler) UpdatePromptQuizItem(w http.ResponseWriter, r *http.Request) {
 		Title:          pw.Title,
 		Body:           pw.Body,
 		Rubric:         pw.Rubric,
+		RubricChecks:   pw.RubricChecks,
+		Tags:           pw.Tags,
+		Difficulty:     pw.normalizedDifficulty(),
 		RuntimeProfile: pw.profile(),
 		Active:         active,
 	})
@@ -350,6 +438,14 @@ type PromptQuizBaselineResponse struct {
 	// to tell that from a collection failure.
 	Incomparable         int `json:"incomparable"`
 	BaselineIncomparable int `json:"baseline_incomparable"`
+	// Scores is the graded side of the current group (RUYI-286), computed
+	// over the SAME cohort-selected sample the token summary reads. Nil when
+	// no cohort exists. An aggregate of counts and means only — no per-run
+	// evidence travels on this member-visible endpoint; the drill-down behind
+	// it (score_detail) is Owner-only by route.
+	Scores *promptquiz.ScoreSummary `json:"scores,omitempty"`
+	// BaselineScores is the graded side of the baseline group, same rules.
+	BaselineScores *promptquiz.ScoreSummary `json:"baseline_scores,omitempty"`
 }
 
 // GetPromptQuizBaseline — GET /api/prompt-governance/{scope}/{scopeId}/quiz
@@ -372,7 +468,34 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	current, err := h.Queries.GetLatestPromptVersion(r.Context(), db.GetLatestPromptVersionParams{
+	resp, err := h.promptQuizBaselineData(r.Context(), scope, scopeID)
+	if err != nil {
+		if errors.Is(err, errQuizVersionRead) {
+			writeError(w, http.StatusInternalServerError, errQuizVersionRead.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, errQuizSampleRead.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// promptQuizBaselineData is the read both the per-scope quiz endpoint and the
+// workspace overview (RUYI-284) serve. One function owns what a baseline
+// comparison is, so the two surfaces cannot drift apart; callers have already
+// established that scopeID belongs to the workspace. Every field a reader
+// needs to recompute the verdict travels on the response — nothing here is
+// collapsed into a bare label.
+func (h *Handler) promptQuizBaselineData(ctx context.Context, scope promptVersionScope, scopeID pgtype.UUID) (PromptQuizBaselineResponse, error) {
+	resp := PromptQuizBaselineResponse{
+		Scope:          string(scope),
+		ScopeID:        uuidToString(scopeID),
+		RequiredSample: promptquiz.NewVersionSampleSize,
+		RequiredBase:   promptquiz.BaselineSampleSize,
+		Outcomes:       map[string]int{},
+	}
+
+	current, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
 		Scope:   string(scope),
 		ScopeID: scopeID,
 	})
@@ -380,31 +503,15 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			// No version, therefore nothing to compare. An empty reading, not
 			// an error and not a zero score.
-			writeJSON(w, http.StatusOK, PromptQuizBaselineResponse{
-				Scope: string(scope), ScopeID: uuidToString(scopeID),
-				RequiredSample: promptquiz.NewVersionSampleSize,
-				RequiredBase:   promptquiz.BaselineSampleSize,
-				Outcomes:       map[string]int{},
-			})
-			return
+			return resp, nil
 		}
-		writeError(w, http.StatusInternalServerError, "failed to read the prompt version")
-		return
+		return resp, fmt.Errorf("%w: %v", errQuizVersionRead, err)
 	}
+	resp.CurrentVersion = current.Version
 
-	resp := PromptQuizBaselineResponse{
-		Scope:          string(scope),
-		ScopeID:        uuidToString(scopeID),
-		CurrentVersion: current.Version,
-		RequiredSample: promptquiz.NewVersionSampleSize,
-		RequiredBase:   promptquiz.BaselineSampleSize,
-		Outcomes:       map[string]int{},
-	}
-
-	currentRows, outcomes, err := h.readQuizSample(r, scope, scopeID, current.Version)
+	currentRows, outcomes, err := h.readQuizSample(ctx, scope, scopeID, current.Version)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read quiz measurements")
-		return
+		return resp, fmt.Errorf("%w: %v", errQuizSampleRead, err)
 	}
 	resp.Outcomes = outcomes
 
@@ -416,27 +523,32 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		// No usable reading yet, so no cohort and no sample. Every stored row is
 		// still counted in Outcomes above.
-		writeJSON(w, http.StatusOK, resp)
-		return
+		return resp, nil
 	}
 	currentSample, incomparable := cohort.Select(currentRows)
 	resp.Incomparable = incomparable
 	resp.Current = promptquiz.Summarize(currentSample)
+	// Graded side of the same sample. Kept OUT of Summarize: the token
+	// distribution and the pass ratio are different units, and folding them
+	// would let a reader subtract tokens from correctness.
+	scores := promptquiz.SummarizeScores(currentSample)
+	resp.Scores = &scores
 	resp.Measured = len(currentSample.Values) > 0
 
 	if current.Version > 1 {
 		resp.BaselineVersion = current.Version - 1
-		baseRows, _, err := h.readQuizSample(r, scope, scopeID, resp.BaselineVersion)
+		baseRows, _, err := h.readQuizSample(ctx, scope, scopeID, resp.BaselineVersion)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read quiz measurements")
-			return
+			return resp, fmt.Errorf("%w: %v", errQuizSampleRead, err)
 		}
 		baseSample, baseIncomparable := cohort.Select(baseRows)
 		resp.BaselineIncomparable = baseIncomparable
+		baseScores := promptquiz.SummarizeScores(baseSample)
+		resp.BaselineScores = &baseScores
 		cmp := promptquiz.Compare(baseSample, currentSample)
 		resp.Comparison = &cmp
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // quizSampleLimit bounds one read. Generous relative to the required group
@@ -461,8 +573,8 @@ const quizSampleLimit = 500
 // Errored rows never enter a sample — a run that never answered measured nothing
 // about the prompt, and folding its absent cost in would let an outage read as a
 // cost improvement. Runaway but completed runs stay in.
-func (h *Handler) readQuizSample(r *http.Request, scope promptVersionScope, scopeID pgtype.UUID, version int32) ([]promptquiz.Measurement, map[string]int, error) {
-	rows, err := h.Queries.ListPromptQuizSamples(r.Context(), db.ListPromptQuizSamplesParams{
+func (h *Handler) readQuizSample(ctx context.Context, scope promptVersionScope, scopeID pgtype.UUID, version int32) ([]promptquiz.Measurement, map[string]int, error) {
+	rows, err := h.Queries.ListPromptQuizSamples(ctx, db.ListPromptQuizSamplesParams{
 		Scope:    string(scope),
 		ScopeID:  scopeID,
 		Version:  version,
@@ -493,6 +605,12 @@ func (h *Handler) readQuizSample(r *http.Request, scope promptVersionScope, scop
 		}
 		if row.RunTokens.Valid {
 			m.Value, m.Valued = float64(row.RunTokens.Int64), true
+		}
+		// Score rides along (RUYI-286) but never into the token statistics:
+		// SummarizeScores reads it over the cohort-selected sample in the
+		// handler, which is a display aggregate, not the comparison.
+		if row.Score.Valid {
+			m.Score, m.Scored = float64(row.Score.Float32), true
 		}
 		out = append(out, m)
 	}

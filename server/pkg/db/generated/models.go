@@ -369,6 +369,28 @@ type ChannelChatContextGeneration struct {
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 }
 
+type ChannelChatRunIntent struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	ContextRevision int64              `json:"context_revision"`
+	InitiatorUserID pgtype.UUID        `json:"initiator_user_id"`
+	ForceFresh      bool               `json:"force_fresh"`
+	BindingID       pgtype.UUID        `json:"binding_id"`
+	RouteRevision   int64              `json:"route_revision"`
+	InstallationID  pgtype.UUID        `json:"installation_id"`
+	State           string             `json:"state"`
+	FireAt          pgtype.Timestamptz `json:"fire_at"`
+	Attempts        int32              `json:"attempts"`
+	NextAttemptAt   pgtype.Timestamptz `json:"next_attempt_at"`
+	ClaimedBy       pgtype.UUID        `json:"claimed_by"`
+	ClaimExpiresAt  pgtype.Timestamptz `json:"claim_expires_at"`
+	DeadReason      pgtype.Text        `json:"dead_reason"`
+	LastError       pgtype.Text        `json:"last_error"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ChannelChatSessionBinding struct {
 	ID                     pgtype.UUID        `json:"id"`
 	ChatSessionID          pgtype.UUID        `json:"chat_session_id"`
@@ -989,18 +1011,20 @@ type IssueViewPreference struct {
 
 // Registered bd memories directories: read-only candidate sources plus one per-workspace ultimate adoption target.
 type KnowledgeDir struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Kind        string             `json:"kind"`
-	Path        string             `json:"path"`
-	ProjectID   pgtype.UUID        `json:"project_id"`
-	Label       string             `json:"label"`
-	HealthState string             `json:"health_state"`
-	HealthNote  string             `json:"health_note"`
-	Removed     bool               `json:"removed"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Kind          string             `json:"kind"`
+	Path          string             `json:"path"`
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	Label         string             `json:"label"`
+	HealthState   string             `json:"health_state"`
+	HealthNote    string             `json:"health_note"`
+	Removed       bool               `json:"removed"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	DaemonID      string             `json:"daemon_id"`
+	ScanRequested bool               `json:"scan_requested"`
 }
 
 // Read-only mirror of bd memories entries; adoption_state=adopted only after transfer into the ultimate bd confirmed by read-back.
@@ -1380,6 +1404,36 @@ type PromptPerplexityScore struct {
 	ScoredAt       pgtype.Timestamptz `json:"scored_at"`
 }
 
+// Prompt legislation proposal pool (RUYI-305 E2): clause drafts for the four prompt carriers with the content-gate five answers, the draft→pending_owner→(gate)→enacted/gate_failed/rejected state machine, and owner-only approve/reject. Replaces the RUYI-265 prophecy pool (dropped in 957).
+type PromptProposal struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	CarrierScope        string             `json:"carrier_scope"`
+	CarrierScopeID      pgtype.UUID        `json:"carrier_scope_id"`
+	TargetSection       string             `json:"target_section"`
+	ChangeKind          string             `json:"change_kind"`
+	ClauseName          string             `json:"clause_name"`
+	ClauseText          string             `json:"clause_text"`
+	GateAnswerLayer     string             `json:"gate_answer_layer"`
+	GateAnswerRetention string             `json:"gate_answer_retention"`
+	GateAnswerCost      string             `json:"gate_answer_cost"`
+	GateAnswerConflict  string             `json:"gate_answer_conflict"`
+	GateAnswerDedup     string             `json:"gate_answer_dedup"`
+	EvidenceAnchors     []byte             `json:"evidence_anchors"`
+	Status              string             `json:"status"`
+	GateErrors          []byte             `json:"gate_errors"`
+	GateWarnings        []byte             `json:"gate_warnings"`
+	EnactedVersion      pgtype.Int4        `json:"enacted_version"`
+	RollbackReason      string             `json:"rollback_reason"`
+	MergedFrom          []byte             `json:"merged_from"`
+	Source              string             `json:"source"`
+	CreatedByType       string             `json:"created_by_type"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	AuditLog            []byte             `json:"audit_log"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.
 type PromptQualityDaily struct {
 	ID                     pgtype.UUID        `json:"id"`
@@ -1431,6 +1485,12 @@ type PromptQuizItem struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	// Private half of the item: expected answer and grading points. Never sent to a measuring run and never returned by the member-visible bank list. Empty string means no rubric has been written yet, which is why it is not NULL-able.
 	Rubric string `json:"rubric"`
+	// Bank presentation metadata, member-visible. One entry per coverage category (discipline / conflict / boundary / tool / format / context / refusal / regression), which is what makes type coverage mechanically checkable.
+	Tags []string `json:"tags"`
+	// Bank presentation metadata, member-visible: easy / medium / hard.
+	Difficulty string `json:"difficulty"`
+	// Structured half of the answer key: machine-checkable assertions graded against the run answer at collection time. Private like rubric (migration 935): never sent to a measuring run, never returned by the member-visible list. NULL or [] = the item is not scored.
+	RubricChecks []byte `json:"rubric_checks"`
 }
 
 // RUYI-185 quiz measurements at one-row-per-repeat grain — the grain the distribution baseline needs and prompt_quality_daily cannot express. batch_id is a column because a batch has no fact of its own; task_id joins back to the quiz run in agent_task_queue (originator_source=quiz, issue_id IS NULL).
@@ -1454,6 +1514,12 @@ type PromptQuizResult struct {
 	RuntimeID pgtype.UUID `json:"runtime_id"`
 	// The model(s) the daemon reported usage under for the measuring run, comma-joined when a run spanned more than one. Part of the cohort key for the same reason as runtime_id. NULL means the daemon reported no usage, which also leaves run_tokens NULL.
 	RunModel pgtype.Text `json:"run_model"`
+	// Weighted pass ratio over the item's rubric_checks, 0..1, computed at collection. NULL = not graded: no checks on the item, no answer text, or an errored run. Independent of outcome by design (migration 933).
+	Score pgtype.Float4 `json:"score"`
+	// Per-assertion verdicts with evidence — the explanation the grade can be re-traced from. Evidence names the assertion and the verdict, never quotes the answer; the answer stays in task_message (join via task_id).
+	ScoreDetail []byte `json:"score_detail"`
+	// When the grade was computed (collection tick). measured_at is when the measurement row was stored; grading happens in the same tick today but the two are independent facts.
+	GradedAt pgtype.Timestamptz `json:"graded_at"`
 }
 
 type PromptQuizSweepState struct {
@@ -1463,6 +1529,18 @@ type PromptQuizSweepState struct {
 	LastEnqueued      int32              `json:"last_enqueued"`
 	LastCollected     int32              `json:"last_collected"`
 	LastError         pgtype.Text        `json:"last_error"`
+}
+
+// Legislation gate structure baseline per carrier (RUYI-305 E4): approved `## ` section set/order + registered clause names; rebuilt from the synthesized full text on every enacted.
+type PromptStructureBaseline struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	CarrierScope   string             `json:"carrier_scope"`
+	CarrierScopeID pgtype.UUID        `json:"carrier_scope_id"`
+	Sections       []byte             `json:"sections"`
+	Clauses        []byte             `json:"clauses"`
+	ContentSha256  string             `json:"content_sha256"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
 // Version history for the four prompt tiers (RUYI-183). History/audit only — the business column on workspace/project/squad/agent stays the single read source for currently effective content. Append-only: switching or rolling back writes a new row, never mutates or deletes an existing one.
@@ -1484,27 +1562,6 @@ type PromptVersion struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
-// Self-evolution proposals: falsifiable prophecy fixed at creation (B1), adoption and verification recorded separately (B2), rejected proposals retained without version links (B3).
-type Proposal struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Type               string             `json:"type"`
-	Status             string             `json:"status"`
-	Title              string             `json:"title"`
-	Summary            string             `json:"summary"`
-	Evidence           []byte             `json:"evidence"`
-	Prophecy           []byte             `json:"prophecy"`
-	GenerationSnapshot []byte             `json:"generation_snapshot"`
-	AdoptionSnapshot   []byte             `json:"adoption_snapshot"`
-	Verification       []byte             `json:"verification"`
-	AuditLog           []byte             `json:"audit_log"`
-	TransferError      string             `json:"transfer_error"`
-	CreatedByType      string             `json:"created_by_type"`
-	CreatedByID        pgtype.UUID        `json:"created_by_id"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-}
-
 type QuickAction struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -1523,6 +1580,43 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Daily retrospective config per workspace (RUYI-305 E3): enabled flag, done/in_review scan scope, window days. Owner-writable.
+type RetrospectiveConfig struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Enabled         bool               `json:"enabled"`
+	IncludeInReview bool               `json:"include_in_review"`
+	WindowDays      int32              `json:"window_days"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Per-issue retrospective idempotency watermark (RUYI-305 E3): an analyzed issue is never analyzed again, window overlap cannot duplicate drafts.
+type RetrospectiveIssueWatermark struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	LastRunID   pgtype.UUID        `json:"last_run_id"`
+	AnalyzedAt  pgtype.Timestamptz `json:"analyzed_at"`
+}
+
+// Retrospective run records (RUYI-305 E3): window, counts, error. The only surface retrospective failures ever appear on.
+type RetrospectiveRun struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Status            string             `json:"status"`
+	Trigger           string             `json:"trigger"`
+	WindowStart       pgtype.Timestamptz `json:"window_start"`
+	WindowEnd         pgtype.Timestamptz `json:"window_end"`
+	IssuesScanned     int32              `json:"issues_scanned"`
+	IssuesAnalyzed    int32              `json:"issues_analyzed"`
+	ProposalsCreated  int32              `json:"proposals_created"`
+	ProposalsMerged   int32              `json:"proposals_merged"`
+	DuplicatesSkipped int32              `json:"duplicates_skipped"`
+	Error             string             `json:"error"`
+	Detail            []byte             `json:"detail"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	FinishedAt        pgtype.Timestamptz `json:"finished_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1536,6 +1630,22 @@ type RuntimeProfile struct {
 	Enabled        bool               `json:"enabled"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type RuntimeSkillDiscovery struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RuntimeID   string             `json:"runtime_id"`
+	Provider    string             `json:"provider"`
+	Root        string             `json:"root"`
+	Plugin      string             `json:"plugin"`
+	Key         string             `json:"key"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	SourcePath  string             `json:"source_path"`
+	FileCount   int32              `json:"file_count"`
+	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
 }
 
 type SeatCapacityOutbox struct {
@@ -1587,20 +1697,19 @@ type SkillToLabel struct {
 }
 
 type SkillVersion struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	SkillID          pgtype.UUID        `json:"skill_id"`
-	Version          int32              `json:"version"`
-	Name             string             `json:"name"`
-	Description      string             `json:"description"`
-	Content          string             `json:"content"`
-	Config           []byte             `json:"config"`
-	Files            []byte             `json:"files"`
-	Source           string             `json:"source"`
-	SourceVersion    pgtype.Int4        `json:"source_version"`
-	SourceProposalID pgtype.UUID        `json:"source_proposal_id"`
-	AuthorUserID     pgtype.UUID        `json:"author_user_id"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	SkillID       pgtype.UUID        `json:"skill_id"`
+	Version       int32              `json:"version"`
+	Name          string             `json:"name"`
+	Description   string             `json:"description"`
+	Content       string             `json:"content"`
+	Config        []byte             `json:"config"`
+	Files         []byte             `json:"files"`
+	Source        string             `json:"source"`
+	SourceVersion pgtype.Int4        `json:"source_version"`
+	AuthorUserID  pgtype.UUID        `json:"author_user_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type Squad struct {

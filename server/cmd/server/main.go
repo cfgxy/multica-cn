@@ -554,6 +554,7 @@ func main() {
 	var httpMetrics *obsmetrics.HTTPMetrics
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
+	var channelChatRunMetrics *obsmetrics.ChannelChatRunReconcilerMetrics
 	var channelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
 	var larkMetrics *obsmetrics.LarkMetrics
@@ -568,6 +569,7 @@ func main() {
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
+		channelChatRunMetrics = metricsRegistry.ChannelChatRun
 		channelLeaseMetrics = metricsRegistry.ChannelLease
 		wecomMetrics = metricsRegistry.Wecom
 		larkMetrics = metricsRegistry.Lark
@@ -708,6 +710,14 @@ func main() {
 		go h.ChannelMediaReconciler.Run(sweepCtx)
 	}
 
+	// Channel chat run-intent reconciler (RUYI-304): re-drives debounced run
+	// windows whose in-memory flush never happened. An independent worker so
+	// enqueue latency spikes cannot starve any other sweeper's cadence.
+	if h.ChannelChatRunReconciler != nil {
+		h.ChannelChatRunReconciler.Metrics = channelChatRunMetrics
+		go h.ChannelChatRunReconciler.Run(sweepCtx)
+	}
+
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
 	// `sys_cron_executions` table into the distributed lease + audit
 	// log for internal periodic jobs. The first job is
@@ -743,6 +753,13 @@ func main() {
 	// cannot hold a release (Owner Q10).
 	if err := schedulerMgr.Register(scheduler.PromptQuizJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quiz_sweep job", "error", err)
+	}
+	// RUYI-305 E3: the daily retrospective distills completed issues into
+	// Prompt legislation drafts. It writes only to the proposal pool and its
+	// own run records — never to issues — and is inert until a workspace
+	// owner enables it (retrospective_config).
+	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(pool, h.LLM, "")); err != nil {
+		slog.Warn("scheduler: failed to register prompt_retrospective job", "error", err)
 	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed
 	// scheduler. The job owns its plan_times via PlansForScope (each

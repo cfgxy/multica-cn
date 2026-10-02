@@ -30,6 +30,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -1839,6 +1840,27 @@ var ErrChatQuickActionsBusy = errors.New("chat quick actions: session busy")
 // a race with archiving the session and therefore must not persist a new turn.
 var ErrChatSessionArchived = errors.New("chat task: session archived")
 
+// ErrChatTaskAgentMissing signals that the agent row backing a chat session
+// disappeared between session load and enqueue lock — a broken-reference
+// invariant violation, terminal for the run-intent ledger (RUYI-304). The
+// wrap sites join it with the underlying pgx.ErrNoRows so existing
+// errors.Is(err, pgx.ErrNoRows) callers keep matching.
+var ErrChatTaskAgentMissing = errors.New("chat task: agent missing")
+
+// ErrChatRouteFenceMismatch signals that the channel route a run was armed
+// against no longer accepts runs for this session: the binding row is gone,
+// the binding has been retired by a newer generation, or the route revision
+// moved (superseded by /new). Terminal for the run-intent ledger; never
+// user-notified because supersession is intentional. Wrap sites join it with
+// pgx.ErrNoRows for the same compatibility reason as ErrChatTaskAgentMissing.
+var ErrChatRouteFenceMismatch = errors.New("chat task: channel route fence mismatch")
+
+// ErrChatRunIntentAlreadyFired signals that another flush or the compensating
+// reconciler already settled the run-intent row for this (session, revision)
+// window, so this enqueue must not create a second task (RUYI-304 exactly-once
+// guard). Callers skip silently; the winner owns the user-facing outcome.
+var ErrChatRunIntentAlreadyFired = errors.New("chat task: run intent already settled")
+
 // PreparedChatTaskEnqueue is an opaque, side-effect-free input snapshot built
 // before a caller opens a task-enqueue transaction.
 type PreparedChatTaskEnqueue struct {
@@ -1858,7 +1880,7 @@ func (s *TaskService) PrepareChatTaskEnqueue(
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		slog.Error("chat task preparation failed", "agent_id", util.UUIDToString(agentID), "error", err)
-		return PreparedChatTaskEnqueue{}, fmt.Errorf("load agent: %w", err)
+		return PreparedChatTaskEnqueue{}, fmt.Errorf("load agent: %w: %w", ErrChatTaskAgentMissing, err)
 	}
 	if agent.ArchivedAt.Valid {
 		return PreparedChatTaskEnqueue{}, ErrChatTaskAgentArchived
@@ -1977,6 +1999,30 @@ func (s *TaskService) EnqueuePreparedChannelChatTaskInTx(
 	)
 }
 
+// MarkChatRunIntentDead settles a still-pending run-intent row after the flush
+// failed terminally (RUYI-304): the debounced trigger will never fire again,
+// so the row must not stay armed for the reconciler. Winner-of-CAS semantics:
+// rows==1 means this caller flipped the row and owns the user-visible terminal
+// notice; rows==0 means a settled row already exists (flush raced the
+// reconciler) and the caller stays silent.
+func (s *TaskService) MarkChatRunIntentDead(
+	ctx context.Context,
+	chatSessionID pgtype.UUID,
+	contextRevision int64,
+	deadReason, lastError string,
+) (bool, error) {
+	rows, err := s.Queries.FailChatRunIntentByRevision(ctx, db.FailChatRunIntentByRevisionParams{
+		DeadReason:      pgtype.Text{String: deadReason, Valid: deadReason != ""},
+		LastError:       pgtype.Text{String: lastError, Valid: lastError != ""},
+		ChatSessionID:   chatSessionID,
+		ContextRevision: contextRevision,
+	})
+	if err != nil {
+		return false, fmt.Errorf("mark channel chat run intent dead: %w", err)
+	}
+	return rows == 1, nil
+}
+
 func (s *TaskService) enqueueChatTaskTx(
 	ctx context.Context,
 	qtx *db.Queries,
@@ -1999,7 +2045,7 @@ func (s *TaskService) enqueueChatTaskTx(
 
 	agent, err := qtx.GetAgentForClaimUpdate(ctx, chatSession.AgentID)
 	if err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("reload chat agent: %w", err)
+		return db.AgentTaskQueue{}, fmt.Errorf("reload chat agent: %w: %w", ErrChatTaskAgentMissing, err)
 	}
 	if agent.ArchivedAt.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentArchived
@@ -2014,16 +2060,16 @@ func (s *TaskService) enqueueChatTaskTx(
 	}
 	if requireDelivery {
 		if errors.Is(bindingErr, pgx.ErrNoRows) {
-			return db.AgentTaskQueue{}, fmt.Errorf("lock channel chat binding: %w", pgx.ErrNoRows)
+			return db.AgentTaskQueue{}, fmt.Errorf("lock channel chat binding: %w: %w", pgx.ErrNoRows, ErrChatRouteFenceMismatch)
 		}
 		routeMatches := expectedBindingID.Valid &&
 			binding.ID == expectedBindingID &&
 			binding.RouteRevision == expectedRouteRevision
 		if binding.RetiredAt.Valid && !routeMatches {
-			return db.AgentTaskQueue{}, fmt.Errorf("lock retired channel chat binding: %w", pgx.ErrNoRows)
+			return db.AgentTaskQueue{}, fmt.Errorf("lock retired channel chat binding: %w: %w", pgx.ErrNoRows, ErrChatRouteFenceMismatch)
 		}
 		if expectedBindingID.Valid && !routeMatches {
-			return db.AgentTaskQueue{}, fmt.Errorf("lock expected channel chat route: %w", pgx.ErrNoRows)
+			return db.AgentTaskQueue{}, fmt.Errorf("lock expected channel chat route: %w: %w", pgx.ErrNoRows, ErrChatRouteFenceMismatch)
 		}
 	}
 
@@ -2059,6 +2105,34 @@ func (s *TaskService) enqueueChatTaskTx(
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		mediaPendingUntil = pgtype.Timestamptz{}
+	}
+
+	// RUYI-304: settle the durable run-intent inside the same transaction
+	// that commits the task — the enqueue is the window's single winner.
+	// Rollback restores 'pending' so the compensating reconciler retries;
+	// commit means the task row exists and 'fired' is true. A zero-row CAS
+	// with no settled row means no ledger row ever existed (pre-ledger
+	// caller or non-channel path) and enqueues as before.
+	if requireDelivery {
+		fired, err := qtx.FireChatRunIntents(ctx, db.FireChatRunIntentsParams{
+			ChatSessionID:   chatSession.ID,
+			ContextRevision: contextRevision,
+		})
+		if err != nil {
+			return db.AgentTaskQueue{}, fmt.Errorf("fire channel chat run intent: %w", err)
+		}
+		if len(fired) == 0 {
+			_, settledErr := qtx.GetSettledChatRunIntentState(ctx, db.GetSettledChatRunIntentStateParams{
+				ChatSessionID:   chatSession.ID,
+				ContextRevision: contextRevision,
+			})
+			switch {
+			case settledErr == nil:
+				return db.AgentTaskQueue{}, ErrChatRunIntentAlreadyFired
+			case !errors.Is(settledErr, pgx.ErrNoRows):
+				return db.AgentTaskQueue{}, fmt.Errorf("read settled channel chat run intent: %w", settledErr)
+			}
+		}
 	}
 
 	task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
@@ -7067,6 +7141,7 @@ func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.Agen
 // ResolveTaskWorkspaceID determines the workspace ID for a task.
 // For issue tasks, it comes from the issue. For chat tasks, from the chat session.
 // For autopilot tasks, from the autopilot via its run.
+// For quiz runs, from the workspace of the quiz item the context names.
 // Returns "" when none of the links resolve — callers treat that as "not found".
 func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentTaskQueue) string {
 	if task.IssueID.Valid {
@@ -7093,6 +7168,19 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return qc.WorkspaceID
+	}
+	// Quiz runs (prompt-governance measurement) are the other linkless kind:
+	// their context names the quiz item, and the item's workspace is the
+	// authority both ordering paths (sweep tick and batch endpoint) already
+	// scope everything under. Returning "" here repeated the quick-create
+	// failure mode on RUYI-286: every daemon call a claimed run makes 404'd
+	// and the ordered runs stuck at dispatched. An item whose row is gone
+	// stays unresolvable — the daemon reads that as 404, which is right for
+	// a measurement that lost its anchor.
+	if itemID, ok := s.parseQuizContext(task); ok {
+		if wsID, err := s.Queries.GetPromptQuizItemWorkspace(ctx, itemID); err == nil {
+			return util.UUIDToString(wsID)
+		}
 	}
 	return ""
 }
@@ -7402,6 +7490,38 @@ func (s *TaskService) parseQuickCreateContext(task db.AgentTaskQueue) (QuickCrea
 		return QuickCreateContext{}, false
 	}
 	return qc, true
+}
+
+// parseQuizContext returns the quiz item id if the task's context JSONB is a
+// quiz run payload — kind == promptquiz.TaskKind and a quiz_item_id, the shape
+// promptquizsweep.TaskContextPayload writes and both ordering paths share.
+// Otherwise the bool is false so callers can short-circuit. Tasks linked to an
+// issue / chat / autopilot are never quiz runs even if they happen to carry a
+// context blob, so those are filtered up front — same shape as
+// parseQuickCreateContext, whose payloads this stays disjoint from:
+// quick-create tags "type", quiz tags "kind".
+func (s *TaskService) parseQuizContext(task db.AgentTaskQueue) (pgtype.UUID, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return pgtype.UUID{}, false
+	}
+	if len(task.Context) == 0 {
+		return pgtype.UUID{}, false
+	}
+	var payload struct {
+		Kind       string `json:"kind"`
+		QuizItemID string `json:"quiz_item_id"`
+	}
+	if err := json.Unmarshal(task.Context, &payload); err != nil {
+		return pgtype.UUID{}, false
+	}
+	if payload.Kind != promptquiz.TaskKind {
+		return pgtype.UUID{}, false
+	}
+	itemID, err := util.ParseUUID(payload.QuizItemID)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return itemID, true
 }
 
 func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) (bool, error) {

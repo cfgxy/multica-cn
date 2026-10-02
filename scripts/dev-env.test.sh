@@ -352,6 +352,29 @@ FAIL_DROP=1 dev_env destroy drop-fails-904 --yes > "$out" 2>&1 || status=$?
 require_contains "$out" "manifest and slot were kept"
 dev_env destroy drop-fails-904 --yes > "$out" 2>&1 || fail "retrying destroy after database recovery failed"
 
+# A vanished checkout leaves no env file to cross-check against; the registry
+# manifest is then the only record of the database, and destroy must still drop
+# it and release the slot. gc collects exactly these orphans, so a refusal here
+# would wedge every directory-gone environment (and `dev_env gc`) forever.
+write_manifest "orphan-destroy-906" "$tmp_dir/vanished-checkout" 906
+dev_env destroy orphan-destroy-906 --yes > "$out" 2>&1 \
+  || fail "destroy of a directory-gone environment must succeed"
+[ -f "$MULTICA_DEV_HOME/envs/orphan-destroy-906/manifest.env" ] \
+  && fail "destroy of a directory-gone environment must consume the manifest"
+
+# The boundary of that exception: when the checkout EXISTS and its env file
+# names a different database than the manifest, the drop stays refused.
+write_manifest "mismatch-907" "$tmp_dir/mismatch-checkout" 907
+mkdir -p "$tmp_dir/mismatch-checkout"
+printf 'POSTGRES_DB=multica_some_other_db\nDATABASE_URL=postgres://multica:multica@localhost:5432/multica_some_other_db?sslmode=disable\n' \
+  > "$tmp_dir/mismatch-checkout/.env.example"
+status=0
+dev_env destroy mismatch-907 --yes > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "destroy must refuse the drop when the env file names another database"
+[ -f "$MULTICA_DEV_HOME/envs/mismatch-907/manifest.env" ] \
+  || fail "a refused drop must keep the manifest"
+require_contains "$out" "refusing to drop database"
+
 # ---------------------------------------------------------------------------
 # destroy consumes the manifest: the slot is free afterwards, which is what
 # makes the registry an allocator rather than a second place to leak.

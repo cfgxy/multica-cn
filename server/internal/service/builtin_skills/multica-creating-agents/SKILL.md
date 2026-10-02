@@ -221,13 +221,20 @@ backends may consume protocol selectors before launch:
   parameter. `zeroclaw acp` has no such CLI flag. Set one of these custom args
   when ZeroClaw has multiple agents and no `[acp].default_agent`; omit it for a
   sole-agent config so ZeroClaw can auto-select that agent.
-- DeerFlow ignores `model` and `thinking_level` entirely: the bridge pins its
-  model from its own `DEERFLOW_ACP_MODEL` at process start and answers
-  `session/set_model` and `session/set_config_option` with -32601. Both fields
-  are logged as ignored rather than failing the task. Its `custom_env` must
-  carry `MULTICA_DEERFLOW_HOME` pointing at the DeerFlow deployment root, or
-  turns fail with backend-unavailable — DeerFlow resolves its own
-  `config.yaml` relative to the bridge process's working directory.
+- DeerFlow honours `model` but ignores `thinking_level`: the bridge registers
+  a session-scoped `session/set_model` validated against its own model list,
+  so the model picker is offered and the pick is re-applied before every
+  prompt; an unknown model id fails the turn rather than silently running the
+  bridge default. `session/set_config_option` still answers -32601, so no
+  thinking level is negotiated. The bridge process must start in the DeerFlow
+  deployment root — DeerFlow resolves its own `config.yaml` relative to its
+  working directory. Point it at `custom_env` `DEERFLOW_HOME` (no `MULTICA_`
+  prefix — custom_env keys carrying that prefix are stripped before launch);
+  without it the daemon-level `MULTICA_DEERFLOW_HOME` (`backends.deerflow.home`
+  in config.json) applies, and failing both, the bridge starts in the task
+  workdir and turns fail with backend-unavailable. A per-agent `DEERFLOW_HOME`
+  steers execution only — the model picker's catalog is discovered from the
+  daemon-level deployment root.
 - DeerFlow also rejects a non-empty `mcp_config` (-32602 rather than ignoring
   it), so its MCP tab is hidden and a saved value would fail the task. ZCode
   forwards MCP servers normally and honours both `model` (through the bridge's

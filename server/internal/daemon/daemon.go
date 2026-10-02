@@ -2085,6 +2085,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// interval — far too slow for "install a CLI, see it under Runtimes".
 	go d.agentDiscoveryLoop(ctx)
 
+	// Knowledge pipeline (RUYI-289): a pull cycle for source scans, bd
+	// discovery and adoption transfers — every bd IO stays on this host,
+	// the server only ever sees reported results.
+	go d.knowledgeLoop(ctx)
+
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
 	go d.heartbeatLoop(ctx)
@@ -7268,6 +7273,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ChatSessionID:                    task.ChatSessionID,
 		ChatChannelType:                  task.ChatChannelType,
 		ChatChannelDeliversFiles:         task.ChatChannelDeliversFiles,
+		QuizPrompt:                       task.QuizPrompt,
 		AutopilotRunID:                   task.AutopilotRunID,
 		AutopilotID:                      task.AutopilotID,
 		AutopilotTitle:                   task.AutopilotTitle,

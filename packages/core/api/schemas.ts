@@ -112,6 +112,7 @@ import type {
   PromptVersion,
 } from "../types/prompt-market";
 import type { PromptQualityDashboard } from "../types/prompt-quality";
+import type { SelfEvolutionOverview } from "../types/self-evolution-overview";
 import type { PromptQuizBaseline, PromptQuizItemDetail } from "../types/prompt-quiz";
 import type {
   PromptGovernanceVersion,
@@ -2594,6 +2595,7 @@ export const InboxItemListSchema = z.array(
       body: z.string().nullish(),
       issue_status: z.string().nullish(),
       issue_priority: z.string().nullish(),
+      issue_identifier: z.string().nullish(),
       read: z.boolean(),
       archived: z.boolean(),
       created_at: z.string(),
@@ -3382,7 +3384,6 @@ export const SkillVersionSummarySchema = z.object({
   source: z.string(),
   can_restore: z.boolean().optional().default(false),
   source_version: z.number().int().positive().optional(),
-  source_proposal_id: z.string().optional(),
   author_user_id: z.string().optional(),
   created_at: z.string(),
 });
@@ -4079,6 +4080,14 @@ export const PromptQualityMeasuresSchema = z.object({
   first_pass_rate: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
 });
 
+// One recorded D2 breach, traced to the run that produced it (RUYI-287).
+export const PromptQualityDeductionSchema = z.object({
+  task_id: z.string().default(""),
+  rule: z.string().default(""),
+  points: z.number().default(0),
+  seq: z.number().default(0),
+});
+
 export const PromptQualityVersionMeasuresSchema = z.object({
   version: z.number().default(0),
   days: z.number().default(0),
@@ -4088,6 +4097,9 @@ export const PromptQualityVersionMeasuresSchema = z.object({
   measures: PromptQualityMeasuresSchema.default(NO_DATA_MEASURES),
   failure_reasons: z.record(z.string(), z.number()).default({}),
   excluded_failed_runs: z.number().default(0),
+  // D2 drill-down. Optional on the wire so a backend without the field still
+  // parses; absence is not read as "no deductions" anywhere.
+  discipline_deductions: z.array(PromptQualityDeductionSchema).optional(),
 });
 
 // Evidence carries locations and notes only — which tier and section a rule
@@ -4245,6 +4257,10 @@ export const PromptQuizItemSchema = z.object({
   // Server-driven and absent on a build that predates it; "" narrows to
   // "pending" in core/self-evolution/quiz.ts rather than to a verdict.
   discrimination: z.string().default(""),
+  // RUYI-286 presentation metadata. Optional so an older backend still parses;
+  // neither field is a private half, so the list schema carrying them is safe.
+  tags: z.array(z.string()).optional(),
+  difficulty: z.string().optional(),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 });
@@ -4259,6 +4275,9 @@ export const PromptQuizItemSchema = z.object({
  */
 export const PromptQuizItemDetailSchema = PromptQuizItemSchema.extend({
   rubric: z.string().default(""),
+  // The structured answer key passes through untyped for the editor
+  // round-trip; like `rubric`, it must never be rendered from a list.
+  rubric_checks: z.unknown().optional(),
 });
 
 /**
@@ -4314,6 +4333,62 @@ export const PromptQuizComparisonSchema = z.object({
   verdict: z.string().default("insufficient"),
 });
 
+export const PromptQuizScoreSummarySchema = z.object({
+  graded: z.number().default(0),
+  mean: z.number().default(0),
+  items: z
+    .array(
+      z.object({
+        item_id: z.string(),
+        graded: z.number().default(0),
+        mean: z.number().default(0),
+      }),
+    )
+    .default([]),
+});
+
+export const PromptQuizSampleRowSchema = z.object({
+  task_id: z.string().default(""),
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  version: z.number().default(0),
+  item_id: z.string().default(""),
+  item_revision: z.number().default(0),
+  item_slug: z.string().optional(),
+  item_title: z.string().optional(),
+  outcome: z.string().default(""),
+  score: z.number().nullable().optional(),
+  score_detail: z.unknown().optional(),
+  graded_at: z.string().optional(),
+  measured_at: z.string().optional(),
+  run_tokens: z.number().nullable().optional(),
+  task_status: z.string().optional(),
+});
+
+export const PromptQuizBatchCreateResponseSchema = z.object({
+  batch_id: z.string().default(""),
+  ordered: z.number().default(0),
+  refused_agents: z
+    .array(z.object({ agent_id: z.string(), reason: z.string() }))
+    .optional(),
+});
+
+export const PromptQuizSampleListSchema = z.object({
+  rows: z.array(PromptQuizSampleRowSchema).default([]),
+});
+
+export const PromptQuizBatchResponseSchema = z.object({
+  batch_id: z.string().default(""),
+  rows: z.array(PromptQuizSampleRowSchema).default([]),
+  counts: z.record(z.string(), z.number()).default({}),
+  scores: PromptQuizScoreSummarySchema.optional(),
+});
+
+export const PromptQuizBankImportResponseSchema = z.object({
+  imported: z.number().default(0),
+  slugs: z.array(z.string()).default([]),
+});
+
 export const PromptQuizBaselineSchema = z.object({
   scope: z.string().default(""),
   scope_id: z.string().default(""),
@@ -4329,6 +4404,9 @@ export const PromptQuizBaselineSchema = z.object({
   // excluded", which is what such a backend actually did.
   incomparable: z.number().default(0),
   baseline_incomparable: z.number().default(0),
+  // RUYI-286 graded side; optional so an older backend still parses.
+  scores: PromptQuizScoreSummarySchema.optional(),
+  baseline_scores: PromptQuizScoreSummarySchema.optional(),
 });
 
 /**
@@ -4354,24 +4432,91 @@ export const EMPTY_PROMPT_QUIZ_BASELINE: PromptQuizBaseline = {
   baseline_incomparable: 0,
 };
 
-export const ProposalSchema = z.object({
+// The gate report keeps the server's legislation.Finding shape (structured
+// line/level/message, jsonb passthrough) — flattening these to strings would
+// make parseWithFallback drop every real gate_failed row into its fallback.
+export const LegislationGateFindingSchema = z.object({
+  line: z.number().optional(),
+  level: z.string(),
+  message: z.string(),
+});
+
+export const PromptProposalMergeRefSchema = z.object({
+  issue_id: z.string(),
+  run_id: z.string(),
+});
+
+export const PromptProposalSchema = z.object({
   id: z.string(),
-  type: z.string(),
+  workspace_id: z.string(),
+  carrier_scope: z.string(),
+  carrier_scope_id: z.string(),
+  target_section: z.string(),
+  change_kind: z.string(),
+  clause_name: z.string(),
+  clause_text: z.string(),
+  gate_answer_layer: z.string(),
+  gate_answer_retention: z.string(),
+  gate_answer_cost: z.string(),
+  gate_answer_conflict: z.string(),
+  gate_answer_dedup: z.string(),
+  evidence_anchors: z.array(z.record(z.string(), z.unknown())),
   status: z.string(),
-  title: z.string(),
-  summary: z.string(),
-  evidence: z.array(z.unknown()),
-  prophecy: z.record(z.string(), z.unknown()),
-  generation_snapshot: z.record(z.string(), z.unknown()),
-  adoption_snapshot: z.record(z.string(), z.unknown()).optional(),
-  verification: z.record(z.string(), z.unknown()).optional(),
+  gate_errors: z.array(LegislationGateFindingSchema),
+  gate_warnings: z.array(LegislationGateFindingSchema),
+  enacted_version: z.number().optional(),
+  rollback_reason: z.string(),
+  merged_from: z.array(PromptProposalMergeRefSchema),
+  source: z.string(),
+  created_by_type: z.string(),
+  created_by_id: z.string().optional(),
   audit_log: z.array(z.unknown()),
-  transfer_error: z.string().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 }).loose();
 
-export const ProposalListSchema = z.array(ProposalSchema);
+export const PromptProposalListSchema = z.array(PromptProposalSchema);
+
+export const LegislationDiffLineSchema = z.object({
+  kind: z.enum(["context", "add", "del"]),
+  text: z.string(),
+});
+
+export const PromptProposalPreviewSchema = z.object({
+  proposal: PromptProposalSchema,
+  diff: z.array(LegislationDiffLineSchema),
+  current_sha256: z.string(),
+  baseline_used: z.boolean(),
+});
+
+export const PromptProposalBatchOutcomeSchema = z.object({
+  id: z.string(),
+  status: z.number(),
+  body: z.string(),
+});
+
+export const RetrospectiveConfigSchema = z.object({
+  enabled: z.boolean(),
+  include_in_review: z.boolean(),
+  window_days: z.number(),
+});
+
+export const RetrospectiveRunSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  trigger: z.string(),
+  window_start: z.string(),
+  window_end: z.string(),
+  issues_scanned: z.number(),
+  issues_analyzed: z.number(),
+  proposals_created: z.number(),
+  proposals_merged: z.number(),
+  duplicates_skipped: z.number(),
+  error: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const RetrospectiveRunListSchema = z.array(RetrospectiveRunSchema);
 
 export const KnowledgeScanBatchSchema = z.object({
   id: z.string(),
@@ -4422,3 +4567,98 @@ export const KnowledgeEntrySchema = z.object({
 }).loose();
 
 export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);
+
+// --- Self-evolution workspace overview (RUYI-284) ---
+//
+// One read-only aggregate across the six data planes the tabs serve. Every
+// field defaults rather than rejects, and the defaults are the honest ones:
+// zero counts, an unmeasured window (no_data measures, never a fabricated 0%),
+// and a quiz verdict of "insufficient" — the branch that claims nothing.
+
+const SelfEvolutionOverviewTierSchema = z.object({
+  scope: z.string().default(""),
+  version_count: z.number().default(0),
+  subject_count: z.number().default(0),
+  current_version: z.number().optional(),
+  last_change_at: z.string().optional(),
+  last_actor: z.string().optional(),
+});
+
+const SelfEvolutionOverviewQuizSchema = z.object({
+  scope_id: z.string().optional(),
+  scope_name: z.string().optional(),
+  current_version: z.number().optional(),
+  baseline_version: z.number().optional(),
+  verdict: z.string().default("insufficient"),
+  measured: z.boolean().default(false),
+  required_sample: z.number().default(0),
+  required_baseline: z.number().default(0),
+  last_measured_at: z.string().optional(),
+});
+
+const SelfEvolutionOverviewScanSchema = z.object({
+  result: z.string().default(""),
+  trigger_source: z.string().default(""),
+  started_at: z.string().default(""),
+});
+
+const SelfEvolutionOverviewKnowledgeSchema = z.object({
+  dirs: z.number().default(0),
+  entries: z.number().default(0),
+  last_scan: SelfEvolutionOverviewScanSchema.optional(),
+});
+
+const SelfEvolutionOverviewSkillsSchema = z.object({
+  count: z.number().default(0),
+  invocations: z.number().default(0),
+});
+
+export const SelfEvolutionOverviewSchema = z.object({
+  versions: z.array(SelfEvolutionOverviewTierSchema).default([]),
+  quality: z
+    .object({
+      since: z.string().default(""),
+      days: z.number().default(0),
+      runs: z.number().default(0),
+      subjects_measured: z.number().default(0),
+      measures: PromptQualityMeasuresSchema.default(NO_DATA_MEASURES),
+      excluded_failed_runs: z.number().default(0),
+    })
+    .default({
+      since: "",
+      days: 0,
+      runs: 0,
+      subjects_measured: 0,
+      measures: NO_DATA_MEASURES,
+      excluded_failed_runs: 0,
+    }),
+  // `.default()` takes the section's parsed output, so each fallback is the
+  // full object — a section that arrives as null parses into its own honest
+  // zero, never a missing field.
+  quiz: SelfEvolutionOverviewQuizSchema.default({
+    verdict: "insufficient",
+    measured: false,
+    required_sample: 0,
+    required_baseline: 0,
+  }),
+  knowledge: SelfEvolutionOverviewKnowledgeSchema.default({ dirs: 0, entries: 0 }),
+  skills: SelfEvolutionOverviewSkillsSchema.default({ count: 0, invocations: 0 }),
+});
+
+// The fallback for a response that did not parse: no tier rows, an unmeasured
+// window, no quiz scope, an empty mirror and no skills. None of
+// these may arrive as a zero pretending to be a reading.
+export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
+  versions: [],
+  quality: {
+    since: "",
+    days: 0,
+    runs: 0,
+    subjects_measured: 0,
+    measures: NO_DATA_MEASURES,
+    excluded_failed_runs: 0,
+  },
+  quiz: { verdict: "insufficient", measured: false, required_sample: 0, required_baseline: 0 },
+  knowledge: { dirs: 0, entries: 0 },
+  skills: { count: 0, invocations: 0 },
+};

@@ -44,6 +44,7 @@ export type {
   UpdateAgentEnvRequest,
   Skill,
   SkillSummary,
+  SkillCatalogEntry,
   AgentSkillSummary,
   DisabledRuntimeSkill,
   SetAgentRuntimeSkillEnabledRequest,
@@ -52,9 +53,6 @@ export type {
   SkillVersionSummary,
   SkillUsage,
   SkillEffect,
-  Proposal,
-  CreateProposalRequest,
-  VerifyProposalRequest,
   KnowledgeScanBatch,
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
@@ -101,6 +99,7 @@ export type {
   UpdateAgentWebhookRequest,
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES } from "./agent";
+export type { PromptProposal, PromptProposalDraftRequest, PromptProposalCarrierScope, PromptProposalChangeKind, LegislationGateFinding, PromptProposalMergeRef, LegislationDiffLine, PromptProposalPreview, PromptProposalBatchOutcome, RetrospectiveConfig, RetrospectiveRun } from "./legislation";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type {
   MarketplaceItem,
@@ -136,6 +135,7 @@ export type {
 export type {
   PromptQualityScope,
   PromptQualityDimension,
+  PromptQualityDeduction,
   PromptQualityMeasure,
   PromptQualityMeasures,
   PromptQualityVersionMeasures,
@@ -152,8 +152,15 @@ export type {
   PromptQuizSummary,
   PromptQuizComparison,
   PromptQuizBaseline,
+  PromptQuizItemScore,
+  PromptQuizScoreSummary,
+  PromptQuizSampleRow,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
+  CreatePromptQuizBatchRequest,
+  PromptQuizBatchCreateResponse,
+  PromptQuizBatchResponse,
+  PromptQuizBankImportResponse,
 } from "./prompt-quiz";
 export type {
   PromptGovernanceVersion,
@@ -417,3 +424,12 @@ export type {
   WorkspaceSubscriptionSeatReconcileResult,
   CreateWorkspaceSubscriptionPortalResponse,
 } from "./billing";
+export type {
+  SelfEvolutionOverview,
+  SelfEvolutionOverviewTier,
+  SelfEvolutionOverviewQuality,
+  SelfEvolutionOverviewQuiz,
+      SelfEvolutionOverviewScan,
+  SelfEvolutionOverviewKnowledge,
+  SelfEvolutionOverviewSkills,
+} from "./self-evolution-overview";
