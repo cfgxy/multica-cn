@@ -87,12 +87,19 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 		return
 	}
 	inFlight := map[string]bool{}
+	// listFailed marks a pass whose in-flight evidence is incomplete. The
+	// matrix's kill branch keys off TaskInFlight=false, so a task missing
+	// after a failed listing would read as "provably orphaned" and its live
+	// unit would be killed on a guess — the exact daemon-redeploy scenario
+	// this package exists to survive. Any failure therefore disables the
+	// kill path for the whole pass; the next healthy pass reclassifies.
+	listFailed := false
 	for _, rid := range d.allRuntimeIDs() {
 		tasks, err := d.client.ListInFlightTasks(ctx, rid)
 		if err != nil {
-			// One workspace listing failing must not downgrade the whole
-			// matrix to kill-everything; record and keep what loaded.
-			d.logger.Warn("supervisor reconcile: in-flight list failed", "runtime_id", rid, "error", err)
+			listFailed = true
+			d.logger.Warn("supervisor reconcile: in-flight list failed; kill decisions disabled for this pass",
+				"runtime_id", rid, "error", err)
 			continue
 		}
 		for _, t := range tasks {
@@ -103,8 +110,12 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 		Mgr:   d.supervisor.Manager(),
 		Units: d.supervisor.Systemd(),
 		Log:   d.logger,
-		// Unknown server state must not enable the kill path.
-		TaskInFlight: func(taskID string) bool { return inFlight[taskID] },
+		// On a failed listing every task reads as in flight: active units
+		// resolve to Resume (non-destructive) and dead-unit classifications
+		// are untouched (they never consult TaskInFlight), so the one
+		// irreversible action in the matrix never runs on incomplete
+		// evidence.
+		TaskInFlight: func(taskID string) bool { return listFailed || inFlight[taskID] },
 	}
 	results, err := rec.Run(ctx)
 	if err != nil {

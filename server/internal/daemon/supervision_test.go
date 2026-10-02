@@ -1,8 +1,16 @@
 package daemon
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/pkg/agent"
@@ -120,3 +128,161 @@ func TestPlanSupervisedRun(t *testing.T) {
 }
 
 var _ = agent.Supervision{}
+
+// writeSystemctlShim drops a minimal `systemctl` onto binDir: it answers the
+// two verbs a reconcile pass uses (list-units from $FAKE_ACTIVE_UNITS, kill
+// appended to $FAKE_KILL_LOG) so the kill path is observable in-process. The
+// caller must t.Setenv PATH (and the two env vars) before NewSystemdCtl —
+// the controller snapshots os.Environ() at construction.
+func writeSystemctlShim(t *testing.T, binDir string) {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+*list-units*)
+	for u in $FAKE_ACTIVE_UNITS; do
+		printf '%%s loaded active running -\n' "$u"
+	done
+	exit 0
+	;;
+*)
+	unit=""
+	for a in "$@"; do unit="$a"; done
+	printf '%%s\n' "$unit" >> "$FAKE_KILL_LOG"
+	exit 0
+	;;
+esac
+`)
+	if err := os.WriteFile(filepath.Join(binDir, "systemctl"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write systemctl shim: %v", err)
+	}
+}
+
+// killLogEntries returns the units the shim recorded as killed; nil when the
+// log was never created (no kill invocation happened).
+func killLogEntries(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read kill log: %v", err)
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// reconcileTestRunID is the one seeded supervised run every harness pass
+// reconciles: manifest present, no exit record, unit reported active.
+const reconcileTestRunID = "77770000-0000-0000-0000-000000000007"
+
+// newReconcileHarness wires a daemon for a full in-process reconcile pass:
+// one live supervised run seeded into a temp run store, a shimmed systemctl
+// reporting that unit active, an httptest server answering ListInFlightTasks
+// per runtime, and workspaces registered so allRuntimeIDs sees the runtimes.
+func newReconcileHarness(t *testing.T, runtimeIDs []string, respond func(runtimeID string) (int, string)) (*Daemon, *supervisor.Manager, string, string) {
+	t.Helper()
+	binDir := t.TempDir()
+	killLog := filepath.Join(t.TempDir(), "kills.log")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_KILL_LOG", killLog)
+	t.Setenv("FAKE_ACTIVE_UNITS", supervisor.UnitName(reconcileTestRunID))
+	writeSystemctlShim(t, binDir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rid := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/daemon/runtimes/"), "/tasks/in-flight")
+		code, body := respond(rid)
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	mgr, err := supervisor.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := mgr.WriteManifest(&supervisor.Manifest{
+		Version: 1, RunID: reconcileTestRunID, TaskID: testTaskID, Runtime: "claude",
+		Unit: supervisor.UnitName(reconcileTestRunID), State: supervisor.StateRunning, StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed manifest: %v", err)
+	}
+	sys := supervisor.NewSystemdCtl(nil)
+	sup, err := supervisor.New(mgr, sys, "/tmp/fake-daemon", nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d := &Daemon{
+		client:     NewClient(srv.URL),
+		supervisor: sup,
+		logger:     slog.Default(),
+		workspaces: map[string]*workspaceState{
+			"ws-under-test": {workspaceID: "ws-under-test", runtimeIDs: runtimeIDs},
+		},
+	}
+	return d, mgr, reconcileTestRunID, killLog
+}
+
+// The reconcile kill path may only fire on complete in-flight evidence: a
+// failed server listing must never downgrade a live unit to StopOrphan —
+// that is the daemon-redeploy scenario this package exists to survive.
+func TestReconcileSupervisedRunsKillSafety(t *testing.T) {
+	manifestUntouched := func(t *testing.T, mgr *supervisor.Manager, runID string) {
+		t.Helper()
+		man, err := mgr.ReadManifest(runID)
+		if err != nil || man == nil {
+			t.Fatalf("read manifest: %v (man %+v)", err, man)
+		}
+		if man.Exit != nil || man.State != supervisor.StateRunning {
+			t.Fatalf("manifest was converged by the reconcile pass: state=%s exit=%+v", man.State, man.Exit)
+		}
+	}
+
+	t.Run("list failure keeps every live unit alive", func(t *testing.T) {
+		d, mgr, runID, killLog := newReconcileHarness(t, []string{"rt-1"}, func(string) (int, string) {
+			return http.StatusInternalServerError, "boom"
+		})
+		d.reconcileSupervisedRuns(context.Background())
+		if kills := killLogEntries(t, killLog); kills != nil {
+			t.Fatalf("list failure must not kill anything, shim recorded %q", kills)
+		}
+		manifestUntouched(t, mgr, runID)
+	})
+
+	t.Run("partial list failure keeps units of healthy runtimes alive too", func(t *testing.T) {
+		d, mgr, runID, killLog := newReconcileHarness(t, []string{"rt-1", "rt-2"}, func(rid string) (int, string) {
+			if rid == "rt-1" {
+				return http.StatusOK, "[]" // healthy runtime: task provably not in flight
+			}
+			return http.StatusInternalServerError, "boom" // flaky runtime
+		})
+		d.reconcileSupervisedRuns(context.Background())
+		if kills := killLogEntries(t, killLog); kills != nil {
+			t.Fatalf("one failing runtime must disable the kill path for the whole pass, shim recorded %q", kills)
+		}
+		manifestUntouched(t, mgr, runID)
+	})
+
+	t.Run("healthy listings still recover real orphans", func(t *testing.T) {
+		d, mgr, runID, killLog := newReconcileHarness(t, []string{"rt-1"}, func(string) (int, string) {
+			return http.StatusOK, "[]"
+		})
+		d.reconcileSupervisedRuns(context.Background())
+		kills := killLogEntries(t, killLog)
+		if len(kills) != 1 || kills[0] != supervisor.UnitName(runID) {
+			t.Fatalf("orphaned live unit must be stopped precisely, shim recorded %q", kills)
+		}
+		man, err := mgr.ReadManifest(runID)
+		if err != nil || man == nil {
+			t.Fatalf("read manifest: %v (man %+v)", err, man)
+		}
+		if man.Exit == nil || man.Exit.Source != supervisor.ExitSourceSupervisor {
+			t.Fatalf("orphan stop must leave a supervisor exit record, got %+v", man.Exit)
+		}
+	})
+}
