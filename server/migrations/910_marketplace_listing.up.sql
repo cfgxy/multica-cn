@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 911, 912, 913 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 910.up.sql (RUYI-359 consolidation)
+
 -- Skill / MCP marketplace publishing (RUYI-99): the curated compile-time
 -- catalog gains a workspace-published half.
 --
@@ -100,3 +110,33 @@ COMMENT ON TABLE marketplace_listing IS
 
 COMMENT ON COLUMN marketplace_listing.config_template IS
     'MCP entry template authored in the publish wizard. Credential-bearing fields must be registered ${placeholder} tokens; the local workspace_mcp_server.config is never read to build this.';
+
+-- >>> absorbed from 911.up.sql (RUYI-359 consolidation)
+
+-- D3-A: `kind` + lowercase-normalised name is globally unique across every
+-- workspace, and the uniqueness survives withdrawal — a tombstone keeps its
+-- name reserved so a withdrawn listing cannot be impersonated by a different
+-- publisher.
+--
+-- Inlined by RUYI-359 (marketplace_listing is created above in this same
+-- implicit transaction, so the build does not need CONCURRENTLY).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_listing_kind_name_key
+    ON marketplace_listing (kind, name_key);
+
+-- >>> absorbed from 912.up.sql (RUYI-359 consolidation)
+
+-- Discovery lists published rows by kind then name, matching the static
+-- catalog's own ordering so the merged listing is stable. Partial on state
+-- because withdrawn tombstones are only ever read by (kind, name_key) or by
+-- source workspace.
+CREATE INDEX IF NOT EXISTS idx_marketplace_listing_discovery
+    ON marketplace_listing (kind, name_key)
+    WHERE state = 'published';
+
+-- >>> absorbed from 913.up.sql (RUYI-359 consolidation)
+
+-- "What has this workspace published" is its own management view, and the
+-- withdrawal / republication authority check reads by source workspace on every
+-- publish, update and withdraw.
+CREATE INDEX IF NOT EXISTS idx_marketplace_listing_source_workspace
+    ON marketplace_listing (source_workspace_id, kind, name_key);

@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 963, 964 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 962.up.sql (RUYI-359 consolidation)
+
 -- RUYI-305 E3: the daily retrospective — a base-layer scheduled task that
 -- analyzes the real execution content of issues completed inside the window
 -- (descriptions, comments, PR links, status transitions — the B-semantics
@@ -12,7 +22,8 @@
 -- is the run record the page renders. retrospective_issue_watermark is the
 -- per-issue idempotency水位 (dry-run patch 2): an issue analyzed by a run is
 -- never analyzed again, so overlapping windows cannot produce duplicate
--- drafts. PKs inline by convention; secondary indexes in 956/957.
+-- drafts. PKs inline by convention; secondary indexes inlined below
+-- (RUYI-359 consolidation; the old "956/957" pointer here was already stale).
 CREATE TABLE retrospective_config (
     workspace_id UUID PRIMARY KEY,
     enabled BOOLEAN NOT NULL DEFAULT false,
@@ -57,3 +68,13 @@ COMMENT ON TABLE retrospective_run IS
     'Retrospective run records (RUYI-305 E3): window, counts, error. The only surface retrospective failures ever appear on.';
 COMMENT ON TABLE retrospective_issue_watermark IS
     'Per-issue retrospective idempotency watermark (RUYI-305 E3): an analyzed issue is never analyzed again, window overlap cannot duplicate drafts.';
+
+-- >>> absorbed from 963.up.sql (RUYI-359 consolidation)
+
+CREATE INDEX idx_retrospective_run_workspace
+ON retrospective_run (workspace_id, created_at DESC);
+
+-- >>> absorbed from 964.up.sql (RUYI-359 consolidation)
+
+CREATE UNIQUE INDEX uidx_retrospective_watermark_issue
+ON retrospective_issue_watermark (issue_id);

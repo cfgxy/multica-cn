@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 942 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 941.up.sql (RUYI-359 consolidation)
+
 CREATE TABLE IF NOT EXISTS skill_version (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
@@ -24,3 +34,8 @@ SELECT s.workspace_id, s.id, 1, s.name, s.description, s.content, s.config,
        'create', s.created_by, s.created_at
 FROM skill s
 WHERE NOT EXISTS (SELECT 1 FROM skill_version v WHERE v.skill_id = s.id);
+
+-- >>> absorbed from 942.up.sql (RUYI-359 consolidation)
+
+CREATE UNIQUE INDEX idx_skill_version_identity
+ON skill_version (skill_id, version);

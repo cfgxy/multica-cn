@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 946, 947, 948, 951, 952 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 945.up.sql (RUYI-359 consolidation)
+
 -- bd memories unified collection (RUYI-265, phase-4 spec §K). The platform
 -- keeps a READ-ONLY mirror of bd memories from registered directories; the
 -- source bd files are never written. The only write path in the whole flow
@@ -70,3 +80,42 @@ CREATE TABLE knowledge_scan_batch (
 COMMENT ON TABLE knowledge_dir IS 'Registered bd memories directories: read-only candidate sources plus one per-workspace ultimate adoption target.';
 COMMENT ON TABLE knowledge_entry IS 'Read-only mirror of bd memories entries; adoption_state=adopted only after transfer into the ultimate bd confirmed by read-back.';
 COMMENT ON TABLE knowledge_scan_batch IS 'Per-directory scan batch log; zero-change batches are logged too so incremental ingestion stays recomputable.';
+
+-- >>> absorbed from 946.up.sql (RUYI-359 consolidation)
+
+CREATE INDEX idx_knowledge_dir_workspace
+ON knowledge_dir (workspace_id);
+
+-- >>> absorbed from 947.up.sql (RUYI-359 consolidation)
+
+CREATE UNIQUE INDEX uidx_knowledge_entry_identity
+ON knowledge_entry (dir_id, key);
+
+-- >>> absorbed from 948.up.sql (RUYI-359 consolidation)
+
+CREATE INDEX idx_knowledge_scan_batch_dir
+ON knowledge_scan_batch (dir_id, started_at DESC);
+
+-- >>> absorbed from 951.up.sql (RUYI-359 consolidation)
+
+-- RUYI-289: auto-discovery now registers candidate directories from daemons
+-- instead of the single server process, so the (workspace_id, path) duplicate
+-- check that used to be an application-level count query needs a database
+-- backstop: two daemons discovering the same directory concurrently must not
+-- produce two rows. Unregistered (removed) paths may re-register, hence the
+-- partial index.
+CREATE UNIQUE INDEX uidx_knowledge_dir_ws_path
+ON knowledge_dir (workspace_id, path)
+WHERE removed = FALSE;
+
+-- >>> absorbed from 952.up.sql (RUYI-359 consolidation)
+
+-- RUYI-289: the ultimate knowledge directory is now auto-designated by
+-- daemons (bd init + register on a daemon-managed path) instead of only by
+-- the Owner through the management channel. Multiple daemons can race to
+-- designate one for the same workspace; the existing single-ultimate rule
+-- becomes a database constraint so exactly one registration wins and the
+-- losers get a conflict instead of a second row.
+CREATE UNIQUE INDEX uidx_knowledge_dir_ultimate_active
+ON knowledge_dir (workspace_id)
+WHERE kind = 'ultimate' AND removed = FALSE;
