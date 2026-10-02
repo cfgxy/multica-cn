@@ -1,12 +1,13 @@
 /**
  * The RUYI-82 v1 MCP tool surface.
  *
- * Read: list_workspaces, list_agents, list_projects, list_issues, get_issue,
+ * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
  *       search_issues, progress_digest.
  * Write: create_issue (general — any workspace, any project), add_comment,
  *       update_issue_status, assign_issue (assign/reassign/unassign an
  *       existing issue — agent/squad assignment triggers a real run, the
- *       tool description must say so).
+ *       tool description must say so), create_project, update_project
+ *       (project metadata; never spawns agent runs).
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
@@ -16,7 +17,9 @@
  * callers always name their target.
  *
  * v1 deliberately exposes no delete, no permission/member management, and no
- * cross-user administration (Owner-confirmed security envelope).
+ * cross-user administration (Owner-confirmed security envelope). Project
+ * deletion is additionally a hard delete, so there is no delete_project
+ * either (RUYI-354 scope decision).
  */
 
 import { DIGEST_TRACKED_STATUSES, buildDigest } from "./digest.js";
@@ -34,8 +37,10 @@ import type {
   CancelRunResult,
   CommentInfo,
   IssueInfo,
+  ProjectInfo,
   SearchIssueInfo,
   UpdateIssueBody,
+  UpdateProjectBody,
 } from "./types.js";
 
 export interface JsonSchemaProperty {
@@ -58,6 +63,12 @@ export interface ToolDefinition {
 const PRIORITY_ENUM = ["urgent", "high", "medium", "low", "none"] as const;
 const ASSIGNER_TYPES = ["member", "agent", "squad"] as const;
 const ASSIGN_ISSUE_TYPES = [...ASSIGNER_TYPES, "unassigned"] as const;
+// Mirrors the backend CHECK constraint on project.status (migration 034) and
+// the handler's validProjectStatuses pre-validation.
+const PROJECT_STATUS_ENUM = ["planned", "in_progress", "paused", "completed", "cancelled"] as const;
+const PROJECT_LEAD_TYPES = ["member", "agent"] as const;
+// The backend caps project instructions at 32,000 runes (maxProjectInstructionsLen).
+const PROJECT_INSTRUCTIONS_MAX = 32_000;
 
 const DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
@@ -106,6 +117,78 @@ function commentBrief(comment: CommentInfo): Record<string, unknown> {
     created_at: comment.created_at,
     content: comment.content,
   };
+}
+
+// The full base-field projection the project tools return (RUYI-354). Flat on
+// purpose: get_project is the read entry, create/update echo it so the caller
+// always walks away with the revision it needs for the next write.
+function projectFull(project: ProjectInfo): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    id: project.id,
+    title: project.title,
+    status: project.status,
+    priority: project.priority,
+    revision: project.revision,
+  };
+  if (project.workspace_id !== undefined) out.workspace_id = project.workspace_id;
+  if (project.description !== undefined) out.description = project.description;
+  if (project.instructions !== undefined) out.instructions = project.instructions;
+  if (project.icon !== undefined) out.icon = project.icon;
+  if (project.lead_type !== undefined) out.lead_type = project.lead_type;
+  if (project.lead_id !== undefined) out.lead_id = project.lead_id;
+  if (project.start_date !== undefined) out.start_date = project.start_date;
+  if (project.due_date !== undefined) out.due_date = project.due_date;
+  if (project.created_at !== undefined) out.created_at = project.created_at;
+  if (project.updated_at !== undefined) out.updated_at = project.updated_at;
+  if (project.issue_count !== undefined) out.issue_count = project.issue_count;
+  if (project.done_count !== undefined) out.done_count = project.done_count;
+  if (project.resource_count !== undefined) out.resource_count = project.resource_count;
+  return out;
+}
+
+function projectDateProperty(): JsonSchemaProperty {
+  return { type: "string", description: "Calendar date, YYYY-MM-DD.", pattern: DATE_PATTERN };
+}
+
+// PATCH field helpers. The server decides "clear vs keep" by rawFields: a key
+// present as JSON null clears the field, an absent key keeps the current
+// value. optionalString/optionalEnum would collapse null to "absent", so the
+// nullable variants below detect null first and pass it through untouched.
+
+function validateProjectDate(args: Record<string, unknown>, key: string): string | undefined {
+  const value = optionalString(args, key);
+  if (value !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new ToolInputError(`'${key}' must be formatted YYYY-MM-DD (got '${value}')`);
+  }
+  return value;
+}
+
+function nullableString(
+  args: Record<string, unknown>,
+  key: string,
+  options: { maxLength?: number } = {},
+): string | null | undefined {
+  if (args[key] === undefined) return undefined;
+  if (args[key] === null) return null;
+  return optionalString(args, key, options);
+}
+
+function nullableEnum<T extends string>(
+  args: Record<string, unknown>,
+  key: string,
+  allowed: readonly T[],
+): T | null | undefined {
+  if (args[key] === undefined) return undefined;
+  if (args[key] === null) return null;
+  return optionalEnum(args, key, allowed);
+}
+
+// Dates: absent keeps, null or "" clears (the server treats an empty string
+// as an explicit clear too), a valid YYYY-MM-DD sets.
+function nullableDate(args: Record<string, unknown>, key: string): string | null | undefined {
+  if (args[key] === undefined) return undefined;
+  if (args[key] === null) return null;
+  return validateProjectDate(args, key) ?? null;
 }
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -179,6 +262,175 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           status: project.status,
           issue_count: project.issue_count,
         })),
+      };
+    },
+  },
+  {
+    name: "get_project",
+    description:
+      "Get ONE project in a workspace with its full metadata and the optimistic-lock revision. " +
+      "Read-only. `instructions` is project-level prompt text injected into every task brief in the project. " +
+      "Use list_projects to find project ids.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+      },
+      required: ["workspace", "project_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const project = await client.getProject(workspace, projectId);
+      return projectFull(project);
+    },
+  },
+  {
+    name: "create_project",
+    description:
+      "Create a project in a workspace. Returns the new project id and its revision (starts at 1) — pass that revision as expected_revision on update_project. " +
+      "Metadata-only: creating a project does not create issues and never triggers agent runs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        title: { type: "string", description: "Project title (required)." },
+        description: { type: "string", description: "Project description." },
+        instructions: {
+          type: "string",
+          description:
+            "Project-level prompt text injected into every task brief in the project (max 32,000 characters). Set deliberately.",
+        },
+        icon: { type: "string", description: "Project icon." },
+        status: {
+          type: "string",
+          enum: [...PROJECT_STATUS_ENUM],
+          description: "One of: planned (default) | in_progress | paused | completed | cancelled.",
+        },
+        priority: { type: "string", enum: [...PRIORITY_ENUM], description: "Default 'none'." },
+        lead_type: { type: "string", enum: [...PROJECT_LEAD_TYPES], description: "Lead kind: member or agent." },
+        lead_id: {
+          type: "string",
+          description: "Lead UUID. Required when lead_type is set.",
+        },
+        start_date: projectDateProperty(),
+        due_date: projectDateProperty(),
+      },
+      required: ["workspace", "title"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const title = requireString(args, "title");
+      const leadType = optionalEnum(args, "lead_type", PROJECT_LEAD_TYPES);
+      const leadId = optionalString(args, "lead_id");
+      if (leadType !== undefined && leadId === undefined) {
+        throw new ToolInputError("'lead_id' is required when 'lead_type' is set");
+      }
+      if (leadId !== undefined && leadType === undefined) {
+        throw new ToolInputError("'lead_type' is required when 'lead_id' is set");
+      }
+      const project = await client.createProject(workspace, {
+        title,
+        description: optionalString(args, "description"),
+        instructions: optionalString(args, "instructions", { maxLength: PROJECT_INSTRUCTIONS_MAX }),
+        icon: optionalString(args, "icon"),
+        status: optionalEnum(args, "status", PROJECT_STATUS_ENUM),
+        priority: optionalEnum(args, "priority", PRIORITY_ENUM),
+        lead_type: leadType,
+        lead_id: leadId,
+        start_date: validateProjectDate(args, "start_date"),
+        due_date: validateProjectDate(args, "due_date"),
+      });
+      return {
+        created: true,
+        ...projectFull(project),
+      };
+    },
+  },
+  {
+    name: "update_project",
+    description:
+      "Update project metadata (PATCH): omitted fields keep their current value, an explicit null clears a nullable field (description, instructions, icon, lead_type/lead_id, start_date, due_date). " +
+      "Pass expected_revision (from a previous read or write) for optimistic locking — a stale value fails with a structured revision_conflict instead of overwriting a concurrent change. " +
+      "Metadata-only: updating a project never triggers agent runs or creates tasks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects or a previous result." },
+        title: { type: "string", description: "New title. Omit to keep the current one." },
+        description: {
+          type: "string",
+          description: "New description. Pass null to clear; omit to keep.",
+        },
+        instructions: {
+          type: "string",
+          description:
+            "Project-level prompt text injected into every task brief in the project (max 32,000 characters). Pass null to clear; omit to keep.",
+        },
+        icon: { type: "string", description: "New icon. Pass null to clear; omit to keep." },
+        status: {
+          type: "string",
+          enum: [...PROJECT_STATUS_ENUM],
+          description: "One of: planned | in_progress | paused | completed | cancelled.",
+        },
+        priority: { type: "string", enum: [...PRIORITY_ENUM], description: "One of: urgent | high | medium | low | none." },
+        lead_type: {
+          type: "string",
+          enum: [...PROJECT_LEAD_TYPES],
+          description: "Lead kind: member or agent. Pass null (with lead_id null) to clear; omit to keep.",
+        },
+        lead_id: {
+          type: "string",
+          description: "Lead UUID. Pass null (with lead_type null) to clear; omit to keep.",
+        },
+        start_date: {
+          type: "string",
+          description: "Start date, YYYY-MM-DD. Pass null to clear; omit to keep.",
+          pattern: DATE_PATTERN,
+        },
+        due_date: {
+          type: "string",
+          description: "Due date, YYYY-MM-DD. Pass null to clear; omit to keep.",
+          pattern: DATE_PATTERN,
+        },
+        expected_revision: {
+          type: "integer",
+          description:
+            "Optimistic-lock revision from a previous read/write of this project; the write fails with revision_conflict if the project changed since.",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "project_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      // The lead is one concept with two columns: set or clear it as a pair,
+      // never half — a half-updated lead reads as lead_id without a kind.
+      const leadTypeGiven = args.lead_type !== undefined;
+      const leadIdGiven = args.lead_id !== undefined;
+      if (leadTypeGiven !== leadIdGiven) {
+        throw new ToolInputError("'lead_type' and 'lead_id' must be set (or cleared) together");
+      }
+      const body: UpdateProjectBody = {
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
+        title: optionalString(args, "title"),
+        status: optionalEnum(args, "status", PROJECT_STATUS_ENUM),
+        priority: optionalEnum(args, "priority", PRIORITY_ENUM),
+        description: nullableString(args, "description"),
+        instructions: nullableString(args, "instructions", { maxLength: PROJECT_INSTRUCTIONS_MAX }),
+        icon: nullableString(args, "icon"),
+        lead_type: nullableEnum(args, "lead_type", PROJECT_LEAD_TYPES),
+        lead_id: nullableString(args, "lead_id"),
+        start_date: nullableDate(args, "start_date"),
+        due_date: nullableDate(args, "due_date"),
+      };
+      const project = await client.updateProject(workspace, projectId, body);
+      return {
+        updated: true,
+        ...projectFull(project),
       };
     },
   },

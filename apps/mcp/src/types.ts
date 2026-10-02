@@ -23,9 +23,55 @@ export interface AgentInfo {
 
 export interface ProjectInfo {
   id: string;
+  workspace_id?: string;
   title: string;
+  description?: string;
+  /** Project-level prompt text injected into every task brief in the project. */
+  instructions?: string;
+  icon?: string;
   status?: string;
+  priority?: string;
+  lead_type?: string;
+  lead_id?: string;
+  start_date?: string;
+  due_date?: string;
+  created_at?: string;
+  updated_at?: string;
   issue_count?: number;
+  done_count?: number;
+  resource_count?: number;
+  /** Optimistic-lock token: send back as expected_revision on update. */
+  revision?: number;
+}
+
+export interface CreateProjectBody {
+  title: string;
+  description?: string;
+  instructions?: string;
+  icon?: string;
+  status?: string;
+  priority?: string;
+  lead_type?: string;
+  lead_id?: string;
+  start_date?: string;
+  due_date?: string;
+}
+
+// PATCH semantics mirror the Go handler's rawFields contract: an omitted key
+// keeps the current value, an explicit JSON null clears a nullable field.
+// The nulls must survive serialization (same rule as UpdateIssueBody).
+export interface UpdateProjectBody {
+  expected_revision?: number;
+  title?: string;
+  description?: string | null;
+  instructions?: string | null;
+  icon?: string | null;
+  status?: string;
+  priority?: string;
+  lead_type?: string | null;
+  lead_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
 }
 
 export interface IssueInfo {
