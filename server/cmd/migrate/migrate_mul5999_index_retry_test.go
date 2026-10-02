@@ -85,7 +85,7 @@ func TestEveryConcurrentUpBuildHasCleanup(t *testing.T) {
 	assertEveryConcurrentBuildHasCleanup(t, "up", concurrentIndexCleanups)
 }
 
-func assertEveryConcurrentBuildHasCleanup(t *testing.T, direction string, cleanups map[string]string) {
+func assertEveryConcurrentBuildHasCleanup(t *testing.T, direction string, cleanups map[string][]string) {
 	t.Helper()
 	suffix := "." + direction + ".sql"
 	paths, err := filepath.Glob(filepath.Join("..", "..", "migrations", "*"+suffix))
@@ -117,40 +117,68 @@ func assertEveryConcurrentBuildHasCleanup(t *testing.T, direction string, cleanu
 			t.Errorf("%s: builds %q concurrently on %s but has no %s cleanup", version, indexName, direction, direction)
 			continue
 		}
-		if registered != indexName {
-			t.Errorf("%s: %s cleanup registers %q, migration builds %q", version, direction, registered, indexName)
+		if len(registered) != 1 || registered[0] != indexName {
+			t.Errorf("%s: %s cleanup registers %v, migration builds %q", version, direction, registered, indexName)
 		}
 	}
 }
 
 func assertConcurrentIndexCleanupsMatchTheirMigrations(
 	t *testing.T,
-	cleanups map[string]string,
+	cleanups map[string][]string,
 	hooks map[string]preMigrationHook,
 	direction string,
 ) {
 	t.Helper()
-	for version, indexName := range cleanups {
+	for version, indexNames := range cleanups {
 		path := filepath.Join("..", "..", "migrations", version+"."+direction+".sql")
 		body, err := os.ReadFile(path)
 		if err != nil {
 			t.Errorf("%s: read migration: %v", version, err)
 			continue
 		}
+		stripped := stripSQLLineComments(body)
 		// The comment headers on these migrations mention CREATE INDEX
 		// CONCURRENTLY in prose, so match statements only.
-		match := concurrentIndexNamePattern.FindSubmatch(stripSQLLineComments(body))
-		if match == nil {
-			t.Errorf("%s: has a cleanup hook but builds no index concurrently", version)
-			continue
-		}
-		if got := string(match[1]); got != indexName {
-			t.Errorf("%s: hook cleans %q but the migration builds %q", version, indexName, got)
+		concurrent := concurrentIndexNamePattern.FindSubmatch(stripped)
+		if concurrent != nil {
+			// Legacy single-statement shape (pre-9xx migrations, plus the
+			// consolidation holdouts 953/954): exactly one concurrently-built
+			// index, which is the only name the entry may register.
+			if len(indexNames) != 1 {
+				t.Errorf("%s: builds one index concurrently but registers %v", version, indexNames)
+				continue
+			}
+			if got := string(concurrent[1]); got != indexNames[0] {
+				t.Errorf("%s: hook cleans %q but the migration builds %q", version, indexNames[0], got)
+			}
+		} else {
+			// Consolidated lead (RUYI-359): every registered name must be
+			// built by a plain CREATE [UNIQUE] INDEX statement in the file.
+			built := builtIndexNames(stripped)
+			for _, indexName := range indexNames {
+				if !built[indexName] {
+					t.Errorf("%s: hook cleans %q but the migration does not build it", version, indexName)
+				}
+			}
 		}
 		if hooks[version] == nil {
 			t.Errorf("%s: no pre-migration hook registered", version)
 		}
 	}
+}
+
+var plainIndexNamePattern = regexp.MustCompile(
+	`(?i)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z0-9_]+)`)
+
+// builtIndexNames collects every index name a file builds with a plain
+// (non-concurrent) CREATE [UNIQUE] INDEX statement.
+func builtIndexNames(stripped []byte) map[string]bool {
+	names := map[string]bool{}
+	for _, m := range plainIndexNamePattern.FindAllSubmatch(stripped, -1) {
+		names[string(m[1])] = true
+	}
+	return names
 }
 
 // TestRunMigrationsRepairsInvalidRuntimeIDIndex is the MUL-5999 counterpart of

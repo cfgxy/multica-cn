@@ -1,2 +1,0 @@
-CREATE UNIQUE INDEX CONCURRENTLY uidx_retrospective_watermark_issue
-ON retrospective_issue_watermark (issue_id);

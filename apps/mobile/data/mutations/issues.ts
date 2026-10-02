@@ -803,3 +803,35 @@ export function useCancelTask(issueId: string) {
     },
   });
 }
+
+// Task retry entries (RUYI-343) — mobile mirror of web's
+// execution-log-section / TaskCommentRetryButton calls. Both must target a
+// specific run: retryIssueRun is the RUYI-292 run-level endpoint (its
+// anti-storm gates answer structured 409s the UI localizes via
+// lib/task-retry.ts), and rerunIssue without task_id would fall back to
+// the issue's current assignee and wake the wrong agent.
+export function useRetryIssueRun(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (runId: string) => api.retryIssueRun(issueId, runId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
+    },
+  });
+}
+
+export function useRerunIssue(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (taskId: string) => api.rerunIssue(issueId, taskId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
+    },
+  });
+}
