@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -876,6 +877,17 @@ func holderBackendPID(t *testing.T, ctx context.Context, tx pgx.Tx) int {
 // committed state, and pass even with its lock removed. Attributing the waiter
 // to this transaction's PID removes that false-green path.
 //
+// The wait_event whitelist is the other half of the attribution. A backend
+// building an index CONCURRENTLY (every migration test does, from sandbox
+// schemas) parks in wait-for-old-transactions phases that wait for EVERY
+// transaction already open in the database, whatever it touched — surfacing as
+// wait_event 'virtualxid' with every waited-for tx in pg_blocking_pids. Those
+// long-lived holder transactions look exactly like blockers to a raw probe
+// that never conflicts with them, which failed this suite once per loaded
+// batch (RUYI-342). Only row-level lock waits — waiting for a transaction to
+// finish ('transactionid') or for a tuple lock itself ('tuple') — mean
+// "parked on a lock another transaction holds", so only those count.
+//
 // Returns false only after the deadline with no attributable waiter, which is
 // the signal that the path under test never took the lock. A probe error is
 // fatal rather than swallowed: a permissions or connectivity failure must not
@@ -890,6 +902,7 @@ func waitForWaiterBlockedBy(t *testing.T, holderPID int, timeout time.Duration) 
 			WHERE datname = current_database()
 			  AND state = 'active'
 			  AND wait_event_type = 'Lock'
+			  AND wait_event IN ('transactionid', 'tuple')
 			  AND $1::int = ANY(pg_blocking_pids(pid))
 		`, holderPID).Scan(&waiting); err != nil {
 			t.Fatalf("probe pg_stat_activity for waiters blocked by pid %d: %v", holderPID, err)
@@ -1385,5 +1398,122 @@ func TestWaitForWaiterBlockedByIgnoresUnrelatedWaiters(t *testing.T) {
 	case <-blocked:
 	case <-time.After(10 * time.Second):
 		t.Fatal("unrelated waiter did not finish after its blocker released")
+	}
+}
+
+// virtualxidWaiterBlockedBy reports whether some backend is currently in a
+// CREATE INDEX CONCURRENTLY-style phase wait (wait_event 'virtualxid') that
+// names holderPID among the transactions it is waiting for. This is the raw
+// shape waitForWaiterBlockedBy must NOT count as a row-lock waiter, pinned
+// here so the precondition of the test below is observed before it asserts.
+func virtualxidWaiterBlockedBy(t *testing.T, holderPID int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var waiting int
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database()
+			  AND state = 'active'
+			  AND wait_event_type = 'Lock'
+			  AND wait_event = 'virtualxid'
+			  AND $1::int = ANY(pg_blocking_pids(pid))
+		`, holderPID).Scan(&waiting); err != nil {
+			t.Fatalf("probe pg_stat_activity for virtualxid waiters blocked by pid %d: %v", holderPID, err)
+		}
+		if waiting > 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// CREATE INDEX CONCURRENTLY waits, at each phase transition, for every
+// transaction in the database that was open before its snapshot horizon —
+// regardless of which tables those transactions touched. The wait surfaces as
+// wait_event 'virtualxid' with pg_blocking_pids listing every waited-for
+// transaction, so a migration test building an index concurrently in a
+// sandbox schema while this suite runs puts our long-lived holder tx into
+// that waiter's blocker list even though it touches no index target. The
+// unfiltered probe read that as "someone waits on our row lock" and failed
+// the suite once per loaded batch (RUYI-342): this pins the filter — a CIC
+// politeness waiter attributed to our holder must not count.
+func TestWaitForWaiterBlockedByIgnoresConcurrentIndexBuilds(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	// Scratch relation for the concurrent build. Per-iteration name so
+	// -count=N reruns never collide with a predecessor's leftovers; the
+	// leading DROP IF EXISTS self-heals residue from a run that died before
+	// its cleanup.
+	table := strings.ReplaceAll(handlerTestSlug("probe_cic"), "-", "_") + "_" + fmt.Sprint(time.Now().UnixNano())
+	if _, err := testPool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
+		t.Fatalf("drop stale probe table: %v", err)
+	}
+	defer func() {
+		// The build cannot outlive holderTx's rollback (deferred above by
+		// LIFO once the tx exists), but under a fully loaded batch it may
+		// need extra phase transitions to finish. Bound the drop instead of
+		// failing the suite on environment stalls.
+		dropCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if _, err := testPool.Exec(dropCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
+			t.Logf("drop probe table %s: %v (row lingers until pool recycle)", table, err)
+		}
+	}()
+	if _, err := testPool.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id int)", table)); err != nil {
+		t.Fatalf("create probe table: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, fmt.Sprintf("INSERT INTO %s (id) VALUES (1)", table)); err != nil {
+		t.Fatalf("seed probe table: %v", err)
+	}
+
+	mine := newBuilderSession(t)
+	holderTx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	defer holderTx.Rollback(context.Background())
+	holderPID := holderBackendPID(t, ctx, holderTx)
+	if _, err := holderTx.Exec(ctx, `SELECT id FROM chat_session WHERE id = $1 FOR UPDATE`, mine.SessionID); err != nil {
+		t.Fatalf("hold our own session lock: %v", err)
+	}
+
+	cicDone := make(chan error, 1)
+	go func() {
+		_, err := testPool.Exec(context.Background(), fmt.Sprintf(
+			"CREATE INDEX CONCURRENTLY %s_idx ON %s (id)", table, table))
+		cicDone <- err
+	}()
+
+	// With holderTx open, the build cannot pass its wait-for-old-transactions
+	// phase: it must end up parked on our transaction, however fast the rest
+	// of the database drains. That observed shape is the precondition.
+	if !virtualxidWaiterBlockedBy(t, holderPID, 10*time.Second) {
+		t.Fatal("the concurrent index build never waited for our transaction; this test cannot prove anything")
+	}
+
+	if waitForWaiterBlockedBy(t, holderPID, 500*time.Millisecond) {
+		t.Fatal("probe counted a CREATE INDEX CONCURRENTLY politeness waiter as a row-lock waiter; a parallel migration test's index build fails this suite")
+	}
+
+	if err := holderTx.Rollback(ctx); err != nil {
+		t.Fatalf("release our own session lock: %v", err)
+	}
+	select {
+	case err := <-cicDone:
+		if err != nil {
+			t.Fatalf("concurrent index build: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		// The assertion is already made; the deferred rollback above (and
+		// the bounded drop) settle the rest instead of failing on
+		// batch-load phase latency.
+		t.Logf("concurrent index build still finishing after 30s; drop handles it")
 	}
 }
