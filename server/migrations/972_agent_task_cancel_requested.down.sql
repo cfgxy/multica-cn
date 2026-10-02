@@ -1,3 +1,18 @@
+-- RUYI-359 consolidation: absorbs 973 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 973.down.sql (RUYI-359 consolidation)
+
+ALTER TABLE agent_task_queue DROP COLUMN IF EXISTS cancel_requested_by_user_id;
+ALTER TABLE agent_task_queue DROP COLUMN IF EXISTS cancel_requested_at;
+
+-- >>> lead 972.down.sql (drops the structures created above)
+
 -- Converge any in-flight cancel_requested rows before shrinking the CHECK, so
 -- the constraint swap cannot fail on live data. They are mid-cancellation by
 -- definition; cancelled is the honest terminal summary once the old code no

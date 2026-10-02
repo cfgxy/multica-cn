@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 944, 955 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 943.up.sql (RUYI-359 consolidation)
+
 -- Self-evolution daily proposals (RUYI-265, phase-4 spec §A, B1–B3).
 -- A proposal is dead weight until it carries a falsifiable prophecy (B1):
 -- the prophecy JSONB is fixed at creation and no endpoint rewrites it.
@@ -47,3 +57,20 @@ CREATE TABLE proposal (
 );
 
 COMMENT ON TABLE proposal IS 'Self-evolution proposals: falsifiable prophecy fixed at creation (B1), adoption and verification recorded separately (B2), rejected proposals retained without version links (B3).';
+
+-- >>> absorbed from 944.up.sql (RUYI-359 consolidation)
+
+CREATE INDEX idx_proposal_workspace_status
+ON proposal (workspace_id, status);
+
+-- >>> absorbed from 955.up.sql (RUYI-359 consolidation)
+
+-- RUYI-289: every newly discovered knowledge source whose first scan finds
+-- entries generates exactly one system proposal into the pool. The dir id is
+-- recorded inside generation_snapshot; this partial unique index makes the
+-- "one proposal per directory, ever" rule database-enforced, so a daemon
+-- re-report or a server retry cannot mint a second proposal for the same
+-- source. Human/member proposals never carry the key and are unaffected.
+CREATE UNIQUE INDEX uidx_proposal_system_dir
+ON proposal ((generation_snapshot->>'knowledge_dir_id'))
+WHERE generation_snapshot ? 'knowledge_dir_id';

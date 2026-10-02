@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 959 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 958.up.sql (RUYI-359 consolidation)
+
 -- RUYI-305 E2: the rebuilt proposal pool. A proposal is a Prompt
 -- improvement draft (条款草案) targeting one of the four prompt carriers
 -- (workspace context / project instructions / squad instructions / agent
@@ -25,8 +35,8 @@
 -- RUYI-285-thread scope; this column is the interface they will fill.
 --
 -- No foreign keys by house rule; carrier_scope_id is validated against the
--- scope's owning table on every write path. Secondary indexes live in the
--- following CONCURRENTLY-only migration (959).
+-- scope's owning table on every write path. Secondary indexes are inlined
+-- below (RUYI-359 consolidation of the former separate index migration).
 CREATE TABLE prompt_proposal (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
@@ -86,3 +96,8 @@ CREATE TABLE prompt_proposal (
 
 COMMENT ON TABLE prompt_proposal IS
     'Prompt legislation proposal pool (RUYI-305 E2): clause drafts for the four prompt carriers with the content-gate five answers, the draft→pending_owner→(gate)→enacted/gate_failed/rejected state machine, and owner-only approve/reject. Replaces the RUYI-265 prophecy pool (dropped in 957).';
+
+-- >>> absorbed from 959.up.sql (RUYI-359 consolidation)
+
+CREATE INDEX idx_prompt_proposal_workspace_status
+ON prompt_proposal (workspace_id, status, created_at DESC);
