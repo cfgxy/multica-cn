@@ -108,3 +108,37 @@ export function optionalEnum<T extends string>(
   }
   return hit;
 }
+
+/**
+ * PATCH argument that may be explicitly cleared (RUYI-350 update_issue).
+ * Absent → undefined (keep: the key stays out of the request body); null or
+ * "" → null (clear: the null must survive JSON serialization — the server
+ * decides "clear" by rawFields key presence, server/internal/handler/
+ * issue.go UpdateIssue); otherwise the trimmed string.
+ */
+export function optionalClearableString(
+  args: Record<string, unknown>,
+  key: string,
+  options: { pattern?: RegExp; patternMessage?: string } = {},
+): string | null | undefined {
+  if (!(key in args) || args[key] === undefined) {
+    return undefined;
+  }
+  const value = args[key];
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new ToolInputError(`'${key}' must be a string or null`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (options.pattern !== undefined && !options.pattern.test(trimmed)) {
+    throw new ToolInputError(
+      options.patternMessage ?? `'${key}' has an invalid format (got '${trimmed}')`,
+    );
+  }
+  return trimmed;
+}
