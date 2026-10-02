@@ -276,7 +276,7 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                   >
                     {canCheck ? (
                       <Checkbox
-                        aria-label={`select-${p.id}`}
+                        aria-label={t(($) => $.legislation.selectProposal, { id: p.id })}
                         checked={checkedIds.includes(p.id)}
                         onCheckedChange={(v) =>
                           setCheckedIds((prev) =>

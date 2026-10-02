@@ -161,7 +161,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
         ) : runsList.length === 0 ? (
           <Empty data-testid="retrospective-empty">
             <EmptyHeader>
-              <EmptyMedia variant="icon">↻</EmptyMedia>
+              <EmptyMedia variant="icon">{t(($) => $.retrospective.emptyIcon)}</EmptyMedia>
               <EmptyTitle>{t(($) => $.retrospective.empty)}</EmptyTitle>
               <EmptyDescription>{t(($) => $.retrospective.llmUnavailable)}</EmptyDescription>
             </EmptyHeader>
