@@ -1376,6 +1376,7 @@ type Project struct {
 	StartDate    pgtype.Date        `json:"start_date"`
 	DueDate      pgtype.Date        `json:"due_date"`
 	Instructions pgtype.Text        `json:"instructions"`
+	Revision     int64              `json:"revision"`
 }
 
 type ProjectResource struct {
