@@ -1103,6 +1103,10 @@
         "blocked": "차단된 작업이 없습니다.",
         "completed": "아직 완료한 작업이 없습니다."
       },
+      "filtered_empty": {
+        "title": "필터 조건에 맞는 태스크가 없습니다",
+        "clear_button": "필터 해제"
+      },
       "filters": {
         "status_locked": "상태: {{tab}} (탭에서 결정)",
         "section_mine": "나와의 관계",

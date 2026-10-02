@@ -1103,6 +1103,10 @@
         "blocked": "没有被阻塞的任务",
         "completed": "还没有已完成的任务"
       },
+      "filtered_empty": {
+        "title": "没有符合当前筛选的任务",
+        "clear_button": "清除筛选"
+      },
       "filters": {
         "status_locked": "状态：{{tab}}（由页签决定）",
         "section_mine": "我的关系",

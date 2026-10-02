@@ -652,7 +652,7 @@ function TasksEmptyState({
     <View className="flex-1 items-center justify-center px-6 gap-3">
       <Text className="text-sm text-muted-foreground text-center">
         {hasActiveFilters
-          ? t("filtered_empty.title", "No issues match these filters")
+          ? t("mobile.tasks.filtered_empty.title", "No issues match these filters")
           : t(`mobile.tasks.empty.${tab}`, "Nothing in {{tab}} yet.", {
               tab: tabLabel(tab),
             })}
@@ -662,7 +662,7 @@ function TasksEmptyState({
           variant="outline"
           onPress={() => useTasksViewStore.getState().clearFilters()}
         >
-          <Text>{t("filtered_empty.clear_button", "Clear filters")}</Text>
+          <Text>{t("mobile.tasks.filtered_empty.clear_button", "Clear filters")}</Text>
         </Button>
       ) : null}
     </View>
