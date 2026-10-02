@@ -22,6 +22,7 @@ import type {
   CommentListParams,
   CreateCommentBody,
   CreateIssueBody,
+  CreateProjectBody,
   IssueInfo,
   IssueListParams,
   IssueListResult,
@@ -32,6 +33,7 @@ import type {
   SearchIssueInfo,
   UpdateCommentBody,
   UpdateIssueBody,
+  UpdateProjectBody,
   WorkspaceInfo,
 } from "./types.js";
 
@@ -114,6 +116,30 @@ export class MulticaClient {
       workspace,
       query: { limit: params.limit, offset: params.offset },
     });
+  }
+
+  async getProject(workspace: string, projectId: string): Promise<ProjectInfo> {
+    return this.request<ProjectInfo>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}`,
+      { workspace },
+    );
+  }
+
+  async createProject(workspace: string, body: CreateProjectBody): Promise<ProjectInfo> {
+    return this.request<ProjectInfo>("POST", "/api/projects", { workspace, body });
+  }
+
+  async updateProject(
+    workspace: string,
+    projectId: string,
+    body: UpdateProjectBody,
+  ): Promise<ProjectInfo> {
+    return this.request<ProjectInfo>(
+      "PUT",
+      `/api/projects/${encodeURIComponent(projectId)}`,
+      { workspace, body },
+    );
   }
 
   async listIssues(

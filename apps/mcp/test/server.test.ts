@@ -76,11 +76,13 @@ describe("createMcpServer (via in-memory client)", () => {
       "assign_issue",
       "cancel_run",
       "create_issue",
+      "create_project",
       "delete_comment",
       "dispatch_agent",
       "edit_comment",
       "get_comment",
       "get_issue",
+      "get_project",
       "get_run",
       "list_agents",
       "list_comments",
@@ -92,6 +94,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "retry_run",
       "search_issues",
       "update_issue_status",
+      "update_project",
     ]);
     for (const tool of tools) {
       expect(tool.inputSchema).toMatchObject({ type: "object" });
