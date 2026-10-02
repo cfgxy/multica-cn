@@ -42,16 +42,27 @@ esac
 EOF
 chmod 755 "$BIN_DIR/go"
 
+assert_calls() {
+  local expected="$1"
+  local actual
+  actual=$(cat "$CALLS_FILE")
+  if [ "$actual" != "$expected" ]; then
+    echo "unexpected go test calls:" >&2
+    printf '%s\n' "$actual" >&2
+    exit 1
+  fi
+}
+
 PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race
 
-expected_calls='test -race github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon
+assert_calls 'test -race github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon
 test -race -p 2 -parallel 2 ./pkg/agent/...'
-actual_calls=$(cat "$CALLS_FILE")
-if [ "$actual_calls" != "$expected_calls" ]; then
-  echo "unexpected go test calls:" >&2
-  printf '%s\n' "$actual_calls" >&2
-  exit 1
-fi
+
+: >"$CALLS_FILE"
+PATH="$BIN_DIR:$PATH" bash "$SCRIPT_DIR/test-go.sh" --race --verbose
+
+assert_calls 'test -race -v github.com/multica-ai/multica/server github.com/multica-ai/multica/server/internal/daemon
+test -race -v -p 2 -parallel 2 ./pkg/agent/...'
 
 : >"$CALLS_FILE"
 set +e
@@ -69,7 +80,7 @@ if [ -s "$CALLS_FILE" ]; then
   cat "$CALLS_FILE" >&2
   exit 1
 fi
-if ! grep -q '^usage: .*test-go.sh \[--race\]$' "$OUTPUT_FILE"; then
+if ! grep -q '^usage: .*test-go.sh \[--race\] \[--verbose\]$' "$OUTPUT_FILE"; then
   echo "unknown option did not print usage" >&2
   cat "$OUTPUT_FILE" >&2
   exit 1
