@@ -276,6 +276,8 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                   >
                     {canCheck ? (
                       <Checkbox
+                        // Token prefix, not copy.
+                        // eslint-disable-next-line no-restricted-syntax
                         aria-label={`select-${p.id}`}
                         checked={checkedIds.includes(p.id)}
                         onCheckedChange={(v) =>

@@ -20,6 +20,7 @@
  */
 
 import { DIGEST_TRACKED_STATUSES, buildDigest } from "./digest.js";
+import { MulticaApiError } from "./rest.js";
 import type { MulticaClient } from "./rest.js";
 import {
   optionalBoolean,
@@ -30,6 +31,7 @@ import {
   ToolInputError,
 } from "./schemas.js";
 import type {
+  CancelRunResult,
   CommentInfo,
   IssueInfo,
   SearchIssueInfo,
@@ -629,6 +631,202 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         dispatched: true,
         task_id: result.task_id,
         note: "Agent run enqueued. The agent will work asynchronously and report back on the issue.",
+      };
+    },
+  },
+  {
+    name: "list_issue_runs",
+    description:
+      "List the execution runs of ONE issue (RUYI-292): every run — parallel ones included — with status, agent, trigger source, timing and failure summary. " +
+      "Read-only. status filter takes a comma-separated list of raw statuses (queued, dispatched, deferred, waiting_local_directory, running, cancel_requested, completed, failed, cancelled) or the 'pending' alias for the queued-family display bucket (queued+dispatched+deferred+waiting_local_directory); 'cancel_requested' means a stop was accepted and is awaiting runtime confirmation. " +
+      "trigger filter buckets: comment (issue-comment triggered), autopilot, rerun (manual), system_retry. " +
+      "Unknown filter values match nothing and return an empty list. Use get_run for one run's detail and retry chain.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        status: {
+          type: "string",
+          description:
+            "Comma-separated raw statuses or 'pending' (queued-family bucket). Omit for all runs.",
+        },
+        trigger: {
+          type: "string",
+          enum: ["comment", "autopilot", "rerun", "system_retry"],
+          description: "Trigger-source filter (optional).",
+        },
+        limit: {
+          type: "integer",
+          description: "Max runs to return, 1–1000 (default 200, newest first).",
+          minimum: 1,
+          maximum: 1000,
+        },
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const status = optionalString(args, "status");
+      const trigger = optionalEnum(args, "trigger", ["comment", "autopilot", "rerun", "system_retry"]);
+      if (args.trigger !== undefined && trigger === undefined) {
+        throw new ToolInputError("'trigger' must be one of: comment, autopilot, rerun, system_retry");
+      }
+      const limit = optionalInt(args, "limit", { min: 1, max: 1000 });
+      // listIssueRuns resolves to the server's bare array — see rest.ts.
+      const tasks = await client.listIssueRuns(workspace, issueId, {
+        status,
+        trigger,
+        limit,
+      });
+      return {
+        total: tasks.length,
+        runs: tasks.map((t) => ({
+          id: t.id,
+          status: t.status,
+          agent_id: t.agent_id,
+          created_at: t.created_at,
+          started_at: t.started_at ?? null,
+          completed_at: t.completed_at ?? null,
+          trigger: t.autopilot_run_id
+            ? "autopilot"
+            : t.retry_of_task_id
+              ? "system_retry"
+              : t.rerun_of_task_id
+                ? "rerun"
+                : t.trigger_comment_id
+                  ? "comment"
+                  : "other",
+          failure_reason: t.failure_reason ?? null,
+          attempt: t.attempt,
+        })),
+        note: "cancel_requested = stop accepted, awaiting runtime confirmation. Use get_run for detail and retry chain.",
+      };
+    },
+  },
+  {
+    name: "get_run",
+    description:
+      "Get ONE run of an issue in detail (RUYI-292): status (including the two-phase 'cancel_requested' stop-in-progress state), timing, failure reason and raw error, cancel attribution (who asked to stop, when), and the full retry chain (ancestors + descendants across both manual-rerun and system-retry lineage). " +
+      "Read-only. Errors: 404 if the run id does not exist or belongs to a different issue; 403 if you lack workspace access.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        run_id: {
+          type: "string",
+          description: "Run (task) UUID, from list_issue_runs or a dispatch result.",
+        },
+      },
+      required: ["workspace", "issue", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const runId = requireString(args, "run_id");
+      const detail = await client.getIssueRun(workspace, issueId, runId);
+      const t = detail.task;
+      return {
+        id: t.id,
+        status: t.status,
+        agent_id: t.agent_id,
+        issue_id: t.issue_id,
+        created_at: t.created_at,
+        dispatched_at: t.started_at ?? null,
+        started_at: t.started_at ?? null,
+        completed_at: t.completed_at ?? null,
+        error: t.error ?? null,
+        failure_reason: t.failure_reason ?? null,
+        attempt: t.attempt,
+        rerun_of_task_id: t.rerun_of_task_id ?? null,
+        retry_of_task_id: t.retry_of_task_id ?? null,
+        cancel_requested_at: t.cancel_requested_at ?? null,
+        cancel_requested_by_user_id: t.cancel_requested_by_user_id ?? null,
+        ancestors: detail.ancestors,
+        descendants: detail.descendants,
+      };
+    },
+  },
+  {
+    name: "cancel_run",
+    description:
+      "Stop ONE specific run of an issue by run id (RUYI-292). SIDE EFFECT: requests a real stop — for an in-flight run (running/dispatched/deferred/waiting_local_directory) the status moves to cancel_requested and the runtime interrupts the agent process tree, then confirms; the row only becomes 'cancelled' after that confirmation. A queued run (never started) is cancelled immediately. " +
+      "Other parallel runs of the same issue are NOT affected. " +
+      "Semantics: repeat against cancel_requested → already_cancelling (the interrupt nudge is re-sent); repeat against cancelled → already_cancelled (idempotent); completed/failed runs answer 409 not_cancellable — a finished run cannot be stopped. " +
+      "Errors: 403 no workspace access, 404 unknown run, 409 finished run. A stop that stays unconfirmed keeps cancel_requested — retry the cancel after ~30s (the call is safe to repeat).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        run_id: {
+          type: "string",
+          description: "Run (task) UUID to stop, from list_issue_runs.",
+        },
+      },
+      required: ["workspace", "issue", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const runId = requireString(args, "run_id");
+      let result: CancelRunResult;
+      try {
+        result = await client.cancelIssueRun(workspace, issueId, runId);
+      } catch (error) {
+        // A finished run answering 409 is a defined outcome, not a transport
+        // failure — surface it with the same shape as the 200 family.
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return {
+            code: "not_cancellable",
+            cancelled: false,
+            message:
+              "run already finished (completed/failed); nothing to stop",
+          };
+        }
+        throw error;
+      }
+      return {
+        code: result.code,
+        cancelled: result.code === "cancelled" || result.code === "already_cancelled",
+        stop_pending: result.code === "cancel_requested" || result.code === "already_cancelling",
+        message: result.message,
+        task: { id: result.task.id, status: result.task.status },
+      };
+    },
+  },
+  {
+    name: "retry_run",
+    description:
+      "Retry ONE finished run of an issue (RUYI-292): failed and cancelled runs can be retried; retrying creates a NEW run on the SAME agent with the agent's CURRENT configuration (not a snapshot), in a fresh session, linked to the source run so the full retry chain stays traceable. The old run is never modified. " +
+      "SIDE EFFECT: enqueues a real agent run and consumes the token owner's quota — use only when the user explicitly asks to re-run the work. " +
+      "Anti-storm rules: if the agent already has an unfinished run on this issue → 409 agent_already_queued; if this source already has an unfinished retry → 409 retry_descendant_active; a repeat within ~5 seconds returns the run the first call created (idempotent, HTTP 200 vs 202 for a fresh enqueue). " +
+      "Errors: 403 you may no longer invoke this agent, 404 unknown run, 409 source run has not finished.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        run_id: {
+          type: "string",
+          description: "Finished run (task) UUID to retry, from list_issue_runs.",
+        },
+      },
+      required: ["workspace", "issue", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const runId = requireString(args, "run_id");
+      const t = await client.retryIssueRun(workspace, issueId, runId);
+      return {
+        retried: true,
+        new_run_id: t.id,
+        status: t.status,
+        rerun_of_task_id: t.rerun_of_task_id ?? null,
+        note: "New run enqueued on the source run's agent with its current configuration, fresh session. The source run is kept unchanged for history.",
       };
     },
   },

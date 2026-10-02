@@ -40,6 +40,7 @@ const (
 	EventTaskFailed                = "task:failed"    // running → failed
 	EventTaskMessage               = "task:message"
 	EventTaskCancelled             = "task:cancelled" // * → cancelled
+	EventTaskCancelRequested       = "task:cancel_requested" // in-flight → cancel_requested (RUYI-292 two-phase cancel acceptance)
 
 	// Inbox events
 	EventInboxNew           = "inbox:new"

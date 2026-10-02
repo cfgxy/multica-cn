@@ -608,6 +608,7 @@
         "dispatched": "ディスパッチ済み",
         "waiting_local_directory": "ディレクトリ待機中",
         "running": "実行中",
+        "cancel_requested": "停止中",
         "completed": "成功",
         "failed": "失敗",
         "cancelled": "キャンセル済み"

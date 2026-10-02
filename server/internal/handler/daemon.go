@@ -4947,6 +4947,12 @@ type TaskCancelAckRequest struct {
 	// preserved worktree is the only pointer left to the agent's work.
 	ErrorMessage  string `json:"error_message,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
+	// Confirmed: true when the daemon interrupted a live process tree for
+	// this stop (RUYI-292 two-phase cancel). Observability only — the flip to
+	// cancelled is driven by the ack itself, flag or not: a daemon that acks
+	// without it (older build, or the task-gone pre-completion check) has
+	// still reported the run as stopped.
+	Confirmed bool `json:"confirmed,omitempty"`
 }
 
 func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
@@ -4980,7 +4986,29 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// (Exec reports no error), so the ack still returns 200 — there is
 	// nothing for the daemon to retry — and the rebroadcast below is guarded
 	// by the same status check inside RebroadcastCancelledTask.
+	// delivered: a payload field landed. confirmedFlip: the row was in
+	// cancel_requested and THIS ack recorded the confirmed stop (RUYI-292) —
+	// CAS on status='cancel_requested', so replays and rows already flipped
+	// are no-ops. The flip must happen BEFORE the field writes: they CAS on
+	// status='cancelled', and a two-phase stop's branch/workdir/error should
+	// stick on the row this ack is terminalizing.
 	delivered := false
+	confirmedFlip := false
+	// The CAS is :one, so a row not in cancel_requested (already flipped,
+	// terminal from another path) surfaces as ErrNoRows — that miss is the
+	// documented no-op, not a persistence failure.
+	confirmed, err := h.Queries.ConvergeCancelRequestedToCancelled(r.Context(), task.ID)
+	switch {
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		slog.Error("cancel ack: confirm cancel_requested failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to confirm cancellation")
+		return
+	case err == nil && confirmed.ID.Valid:
+		confirmedFlip = true
+		slog.Info("cancel ack: cancel_requested confirmed cancelled",
+			"task_id", taskID, "daemon_confirmed", req.Confirmed,
+			"confirmed_at", confirmed.CompletedAt.Time.UTC().Format(time.RFC3339Nano))
+	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{
 			ID:             task.ID,
@@ -5019,10 +5047,11 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		}
 		delivered = true
 	}
-	if delivered {
+	if delivered || confirmedFlip {
 		// The task:cancelled broadcast fired at cancel time, before this ack —
 		// clients may already hold a refetched row without the branch/error
-		// and will not refetch again on their own.
+		// and will not refetch again on their own. After a confirmedFlip the
+		// broadcast carries the terminal status itself.
 		h.TaskService.RebroadcastCancelledTask(r.Context(), task.ID)
 	}
 	h.TaskService.FinalizeDeferredCancelledChat(r.Context(), task.ID)
@@ -5144,19 +5173,43 @@ func (h *Handler) CancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.TaskService.CancelTaskByUser(r.Context(), existing.ID)
+	// RUYI-292: the user-facing single-run cancel now answers with the cancel
+	// matrix instead of an unconditional terminal flip. In-flight rows are
+	// accepted for stop (cancel_requested) and confirmed by the daemon's
+	// cancel-ack; completed/failed rows answer 409 not_cancellable; repeats
+	// are idempotent. Body shape {code, task} — same codes the MCP cancel_run
+	// tool and the CLI print, one dialect across ports.
+	cancellerID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	canceller, ok := parseUUIDOrBadRequest(w, cancellerID, "user id")
+	if !ok {
+		return
+	}
+
+	outcome, err := h.TaskService.CancelRunByUser(r.Context(), existing.ID, canceller)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "task not found")
+			return
+		}
 		slog.Warn("cancel task failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	slog.Info("task cancelled by user", "task_id", taskID, "issue_id", uuidToString(task.IssueID))
-	resp := taskToResponse(*task, uuidToString(issue.WorkspaceID))
+	slog.Info("task cancel accepted", "task_id", taskID, "issue_id", uuidToString(issue.ID),
+		"code", outcome.Code, "status", outcome.Task.Status)
+	resp := taskToResponse(outcome.Task, uuidToString(issue.WorkspaceID))
 	// Keep this issue-scoped surface consistent with the list endpoints so a
-	// cancelled row keeps its resolved "on behalf of" name in the UI.
+	// cancelling/cancelled row keeps its resolved "on behalf of" name in the UI.
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
-	writeJSON(w, http.StatusOK, resp)
+	status := http.StatusOK
+	if outcome.Code == service.RunCancelCodeNotCancellable {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, map[string]any{"code": outcome.Code, "message": service.RunCancelCodeMessages[outcome.Code], "task": resp})
 }
 
 // familyActiveRunCap bounds a scope=family read.
@@ -5186,6 +5239,14 @@ const familyActiveRunCap = 20
 // signal rides a header because the response body is a bare array that existing
 // callers parse positionally.
 const HeaderActiveRunsTruncated = "X-Active-Runs-Truncated"
+
+// RUYI-292 run-list paging bounds for the filtered path. The default page is
+// the shape of a long-lived issue's execution history; the cap exists so a
+// caller cannot turn the filter into an unbounded scan with one parameter.
+const (
+	runListDefaultLimit = 200
+	runListMaxLimit     = 1000
+)
 
 // ActiveRunSummary is one in-flight run as the coordination read reports it:
 // which issue, which agent, what state, since when, and the task id to follow
@@ -5306,12 +5367,56 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-292 run-list filters. status takes a comma-separated list of raw
+	// statuses with the 'pending' alias expanding to the queued-family display
+	// bucket; trigger takes the user-facing source buckets (comment /
+	// autopilot / rerun / system_retry) with a raw trigger_evidence_kind
+	// fallback. Unknown values match nothing and answer an empty list under
+	// 200 — a caller asking for an impossible slice is not a bad request.
+	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+	triggerFilter := strings.TrimSpace(r.URL.Query().Get("trigger"))
+	listLimit := runListDefaultLimit
+	// Only an explicitly passed limit truncates; the absent-param default must
+	// stay the full history (see the default branch below).
+	limitExplicit := false
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		n, parseErr := strconv.Atoi(limitStr)
+		if parseErr != nil || n < 1 || n > runListMaxLimit {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid limit parameter; expected integer in [1,%d]", runListMaxLimit))
+			return
+		}
+		listLimit = n
+		limitExplicit = true
+	}
+
 	var tasks []db.AgentTaskQueue
 	var err error
-	if activeOnly {
+	switch {
+	case statusFilter != "" || triggerFilter != "":
+		// Filtered path skips usage hydration below: the runs panel renders
+		// status/timing/trigger, and the detail drawer fetches its own row.
+		tasks, err = h.Queries.ListTasksByIssueFiltered(r.Context(), db.ListTasksByIssueFilteredParams{
+			IssueID:       issue.ID,
+			StatusFilter:  pgtype.Text{String: statusFilter, Valid: statusFilter != ""},
+			TriggerFilter: pgtype.Text{String: triggerFilter, Valid: triggerFilter != ""},
+			RowLimit:      int32(listLimit),
+		})
+	case activeOnly:
 		tasks, err = h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
-	} else {
-		tasks, err = h.Queries.ListTasksByIssue(r.Context(), issue.ID)
+	default:
+		// An explicit limit truncates the execution log (RUYI-292 rework: it
+		// used to be silently ignored here). No limit keeps the full history
+		// the issue sidebar and the CLI short-task-ID resolver read —
+		// ListTasksByIssue keeps that unlimited contract, and comment
+		// conversation routing depends on it too.
+		if limitExplicit {
+			tasks, err = h.Queries.ListTasksByIssueWithLimit(r.Context(), db.ListTasksByIssueWithLimitParams{
+				IssueID:  issue.ID,
+				RowLimit: int32(listLimit),
+			})
+		} else {
+			tasks, err = h.Queries.ListTasksByIssue(r.Context(), issue.ID)
+		}
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list tasks")
@@ -5331,7 +5436,7 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	// task the issue ever ran, so hydrating it on the active path would keep
 	// paying the full-history cost this filter exists to remove — and pay it
 	// for a column that is near-empty on runs that have not finished.
-	if !activeOnly {
+	if !activeOnly && statusFilter == "" && triggerFilter == "" {
 		h.hydrateTaskUsage(r.Context(), issue.ID, resp)
 	}
 
