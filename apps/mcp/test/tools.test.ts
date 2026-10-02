@@ -631,7 +631,7 @@ describe("comment management tools (RUYI-352)", () => {
           callsOf(client).push({ method: "listComments", args: [issue, params] });
           expect(issue).toBe("VOI-1");
           return [
-            commentFixture({ parent_id: undefined, revision: 3, updated_at: "2026-10-03T02:00:00Z" }),
+            commentFixture({ parent_id: undefined, revision: 3, updated_at: "2026-10-03T02:00:00Z", reply_count: 2, last_activity_at: "2026-10-03T02:30:00Z" }),
             commentFixture({ id: "c2", parent_id: "c1" }),
           ];
         },
@@ -648,6 +648,8 @@ describe("comment management tools (RUYI-352)", () => {
       expect(result.total).toBe(2);
       expect(result.comments[0]?.revision).toBe(3);
       expect(result.comments[0]?.updated_at).toBe("2026-10-03T02:00:00Z");
+      expect(result.comments[0]?.reply_count).toBe(2);
+      expect(result.comments[0]?.last_activity_at).toBe("2026-10-03T02:30:00Z");
     });
 
     it("rejects exclusive mode combinations before hitting the API", async () => {

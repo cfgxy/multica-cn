@@ -78,6 +78,9 @@ export interface CommentInfo {
    * audit trail; there is no per-edit content history beyond this.
    */
   revision?: number;
+  /** roots_only listings only: orientation stats for the thread under this root. */
+  reply_count?: number;
+  last_activity_at?: string;
   /** Present on create/edit: per-explicit-@ dispatch outcome for mentioned agents. */
   trigger_outcomes?: Array<{
     target_type?: string;
