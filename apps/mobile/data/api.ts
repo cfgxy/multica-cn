@@ -16,15 +16,21 @@
 import i18n from "i18next";
 import type {
   Agent,
+  AgentEnvResponse,
   AgentTask,
+  AgentWebhook,
   Attachment,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
   Comment,
+  CreateAgentRequest,
+  CreateAgentWebhookRequest,
+  AddSquadMemberRequest,
   CreateIssueRequest,
   CreateLabelRequest,
   CreateProjectRequest,
+  CreateSquadRequest,
   CreateProjectResourceRequest,
   GitHubPullRequest,
   InboxItem,
@@ -46,17 +52,25 @@ import type {
   ProjectResource,
   Reaction,
   ReorderPinsRequest,
+  RemoveSquadMemberRequest,
   RuntimeDevice,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ListIssueStatusesResponse,
   SendChatMessageResponse,
   Squad,
+  SquadMember,
+  SquadMemberStatusListResponse,
+  SetAgentSkillsRequest,
   SkillSummary,
+  UpdateSquadMemberRoleRequest,
+  UpdateSquadRequest,
   NotificationPreferenceResponse,
   NotificationPreferences,
   TaskMessagePayload,
-  TimelineEntry,
+  UpdateAgentEnvRequest,
+  UpdateAgentRequest,
+  UpdateAgentWebhookRequest,
   UpdateIssueRequest,
   UpdateMeRequest,
   UpdateProjectRequest,
@@ -69,18 +83,32 @@ import {
   type TimelineQueryData,
 } from "@multica/core/issues/timeline-query";
 import {
+  AgentEnvResponseSchema,
+  AgentWebhookListSchema,
+  AgentWebhookSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
+  EMPTY_AGENT_ENV,
+  EMPTY_AGENT_WEBHOOK,
+  EMPTY_AGENT_WEBHOOK_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
+  EMPTY_SQUAD,
+  EMPTY_SQUAD_MEMBER,
+  EMPTY_SQUAD_MEMBER_LIST,
+  EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
   IssuePullRequestsResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  SquadMemberListSchema,
+  SquadMemberSchema,
+  SquadMemberStatusListResponseSchema,
+  SquadSchema,
   TimelineEntriesSchema,
   SkillSummaryListSchema,
   WorkspaceSubscriptionSummarySchema,
@@ -89,6 +117,7 @@ import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
   AgentListSchema,
+  AgentSchema,
   AgentTaskListSchema,
   AttachmentListSchema,
   AttachmentSchema,
@@ -98,6 +127,7 @@ import {
   ChatSessionListSchema,
   ChatSessionSchema,
   EMPTY_ACTIVE_TASKS_RESPONSE,
+  EMPTY_AGENT_FALLBACK,
   EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
   EMPTY_ATTACHMENT_LIST,
@@ -121,6 +151,8 @@ import {
   EMPTY_SQUAD_LIST,
   EMPTY_USER,
   EMPTY_WORKSPACE_LIST,
+  AgentCancelTasksResponseSchema,
+  EMPTY_AGENT_CANCEL_TASKS_RESPONSE,
   InboxListSchema,
   InboxUnreadSummarySchema,
   NotificationPreferenceResponseSchema,
@@ -641,6 +673,276 @@ class ApiClient {
     return parseWithFallback(raw, SquadListSchema, EMPTY_SQUAD_LIST, {
       endpoint: "listSquads",
     });
+  }
+
+  // --- Agents & Squads management (RUYI-346) ---
+  // Endpoint paths mirror packages/core/api/client.ts (web) one-for-one —
+  // behavioral parity starts with the same wire contract. Reads go through
+  // fetchValidated with core-whitelisted schemas; writes that return an
+  // entity we feed back into the cache go through fetchValidatedWith. Void
+  // writes use bare fetch — nothing to parse.
+
+  // GET /api/agents/:id — full Agent payload incl. the attached-skills list
+  // the settings screens edit. Same shape as list rows, so the mobile
+  // AgentSchema parses both.
+  async getAgent(id: string, opts?: { signal?: AbortSignal }): Promise<Agent> {
+    return this.fetchValidated(
+      `/api/agents/${id}`,
+      AgentSchema,
+      EMPTY_AGENT_FALLBACK,
+      { ...opts, endpoint: "getAgent" },
+    );
+  }
+
+  async createAgent(data: CreateAgentRequest): Promise<Agent> {
+    return this.fetchValidatedWith(
+      "/api/agents",
+      AgentSchema,
+      EMPTY_AGENT_FALLBACK,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "createAgent" },
+    );
+  }
+
+  async updateAgent(id: string, data: UpdateAgentRequest): Promise<Agent> {
+    return this.fetchValidatedWith(
+      `/api/agents/${id}`,
+      AgentSchema,
+      EMPTY_AGENT_FALLBACK,
+      { method: "PUT", body: JSON.stringify(data) },
+      { endpoint: "updateAgent" },
+    );
+  }
+
+  async archiveAgent(id: string): Promise<Agent> {
+    return this.fetchValidatedWith(
+      `/api/agents/${id}/archive`,
+      AgentSchema,
+      EMPTY_AGENT_FALLBACK,
+      { method: "POST" },
+      { endpoint: "archiveAgent" },
+    );
+  }
+
+  async restoreAgent(id: string): Promise<Agent> {
+    return this.fetchValidatedWith(
+      `/api/agents/${id}/restore`,
+      AgentSchema,
+      EMPTY_AGENT_FALLBACK,
+      { method: "POST" },
+      { endpoint: "restoreAgent" },
+    );
+  }
+
+  // Bulk-cancel every active task (queued/dispatched/running) for the agent.
+  // Server broadcasts task:cancelled per row, so realtime clears the run
+  // lists; the response count only feeds the confirmation toast.
+  async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
+    return this.fetchValidatedWith(
+      `/api/agents/${id}/cancel-tasks`,
+      AgentCancelTasksResponseSchema,
+      EMPTY_AGENT_CANCEL_TASKS_RESPONSE,
+      { method: "POST" },
+      { endpoint: "cancelAgentTasks" },
+    );
+  }
+
+  // GET /api/agents/:id/env — PLAINTEXT env map. Admits the agent's owner or
+  // a workspace owner/admin; every successful call writes an
+  // `agent_env_revealed` audit row server-side (MUL-2600). Mobile therefore
+  // never prefetches this into a query cache — only an explicit user
+  // confirmation may trigger it. See components/agents/env-editor.tsx.
+  async getAgentEnv(id: string, opts?: { signal?: AbortSignal }): Promise<AgentEnvResponse> {
+    return this.fetchValidated(
+      `/api/agents/${id}/env`,
+      AgentEnvResponseSchema,
+      EMPTY_AGENT_ENV,
+      { ...opts, endpoint: "getAgentEnv" },
+    );
+  }
+
+  // PUT /api/agents/:id/env — replaces custom_env wholesale. Values equal to
+  // "****" are preserved server-side (the **** guard), so the editor must
+  // keep masked values verbatim in its payload. Writes an
+  // `agent_env_updated` audit row.
+  async updateAgentEnv(id: string, data: UpdateAgentEnvRequest): Promise<AgentEnvResponse> {
+    return this.fetchValidatedWith(
+      `/api/agents/${id}/env`,
+      AgentEnvResponseSchema,
+      EMPTY_AGENT_ENV,
+      { method: "PUT", body: JSON.stringify(data) },
+      { endpoint: "updateAgentEnv" },
+    );
+  }
+
+  // Agent webhooks (RUYI-52). webhook_token/path/url come back only for
+  // managers — the server strips them for anyone else; the UI keys its
+  // manage affordances off their presence.
+  async listAgentWebhooks(agentId: string, opts?: { signal?: AbortSignal }): Promise<AgentWebhook[]> {
+    return this.fetchValidated(
+      `/api/agents/${agentId}/webhooks`,
+      AgentWebhookListSchema,
+      EMPTY_AGENT_WEBHOOK_LIST,
+      { ...opts, endpoint: "listAgentWebhooks" },
+    );
+  }
+
+  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/webhooks`,
+      AgentWebhookSchema,
+      EMPTY_AGENT_WEBHOOK,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "createAgentWebhook" },
+    );
+  }
+
+  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/webhooks/${webhookId}`,
+      AgentWebhookSchema,
+      EMPTY_AGENT_WEBHOOK,
+      { method: "PUT", body: JSON.stringify(data) },
+      { endpoint: "updateAgentWebhook" },
+    );
+  }
+
+  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/webhooks/${webhookId}/enabled`,
+      AgentWebhookSchema,
+      EMPTY_AGENT_WEBHOOK,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+      { endpoint: "setAgentWebhookEnabled" },
+    );
+  }
+
+  // POST rotate — mints a new token; the old URL stops working immediately.
+  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/webhooks/${webhookId}/rotate`,
+      AgentWebhookSchema,
+      EMPTY_AGENT_WEBHOOK,
+      { method: "POST", body: JSON.stringify({}) },
+      { endpoint: "rotateAgentWebhook" },
+    );
+  }
+
+  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
+    await this.fetch<void>(`/api/agents/${agentId}/webhooks/${webhookId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // Incremental attach — POST /skills/add only inserts the given ids (server
+  // upserts with ON CONFLICT DO NOTHING), mirroring web's addAgentSkills.
+  async addAgentSkills(agentId: string, data: SetAgentSkillsRequest): Promise<void> {
+    await this.fetch<void>(`/api/agents/${agentId}/skills/add`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Workspace-registry skill toggle (vs the runtime-local endpoint below the
+  // web skills-tab also has — mobile P0 surfaces attached skills only).
+  async setAgentSkillEnabled(agentId: string, skillId: string, enabled: boolean): Promise<void> {
+    await this.fetch<void>(
+      `/api/agents/${agentId}/skills/${skillId}/enabled`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+  }
+
+  async removeAgentSkill(agentId: string, skillId: string): Promise<void> {
+    await this.fetch<void>(`/api/agents/${agentId}/skills/${skillId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // --- Squads management ---
+
+  async getSquad(id: string, opts?: { signal?: AbortSignal }): Promise<Squad> {
+    return this.fetchValidated(
+      `/api/squads/${id}`,
+      SquadSchema,
+      EMPTY_SQUAD,
+      { ...opts, endpoint: "getSquad" },
+    );
+  }
+
+  async createSquad(data: CreateSquadRequest): Promise<Squad> {
+    return this.fetchValidatedWith(
+      "/api/squads",
+      SquadSchema,
+      EMPTY_SQUAD,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "createSquad" },
+    );
+  }
+
+  async updateSquad(id: string, data: UpdateSquadRequest): Promise<Squad> {
+    return this.fetchValidatedWith(
+      `/api/squads/${id}`,
+      SquadSchema,
+      EMPTY_SQUAD,
+      { method: "PUT", body: JSON.stringify(data) },
+      { endpoint: "updateSquad" },
+    );
+  }
+
+  // DELETE /api/squads/:id — archive = one-way delete. There is no restore
+  // endpoint; the UI confirmation copy states this explicitly.
+  async deleteSquad(id: string): Promise<void> {
+    await this.fetch<void>(`/api/squads/${id}`, { method: "DELETE" });
+  }
+
+  async listSquadMembers(squadId: string, opts?: { signal?: AbortSignal }): Promise<SquadMember[]> {
+    return this.fetchValidated(
+      `/api/squads/${squadId}/members`,
+      SquadMemberListSchema,
+      EMPTY_SQUAD_MEMBER_LIST,
+      { ...opts, endpoint: "listSquadMembers" },
+    );
+  }
+
+  async addSquadMember(squadId: string, data: AddSquadMemberRequest): Promise<SquadMember> {
+    return this.fetchValidatedWith(
+      `/api/squads/${squadId}/members`,
+      SquadMemberSchema,
+      EMPTY_SQUAD_MEMBER,
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "addSquadMember" },
+    );
+  }
+
+  // Members are addressed by the (member_type, member_id) pair — the row id
+  // is never used on the wire (server contract, types/squad.ts requests).
+  async removeSquadMember(squadId: string, data: RemoveSquadMemberRequest): Promise<void> {
+    await this.fetch<void>(`/api/squads/${squadId}/members`, {
+      method: "DELETE",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateSquadMemberRole(squadId: string, data: UpdateSquadMemberRoleRequest): Promise<SquadMember> {
+    return this.fetchValidatedWith(
+      `/api/squads/${squadId}/members/role`,
+      SquadMemberSchema,
+      EMPTY_SQUAD_MEMBER,
+      { method: "PATCH", body: JSON.stringify(data) },
+      { endpoint: "updateSquadMemberRole" },
+    );
+  }
+
+  // Per-squad derived member status (working/idle/offline/unstable/archived,
+  // server-derived). Parsed with the lenient core schema so a new status
+  // value degrades to a neutral pill instead of failing the screen (#2143).
+  async getSquadMemberStatus(squadId: string, opts?: { signal?: AbortSignal }): Promise<SquadMemberStatusListResponse> {
+    return this.fetchValidated<SquadMemberStatusListResponse>(
+      `/api/squads/${squadId}/members/status`,
+      SquadMemberStatusListResponseSchema,
+      EMPTY_SQUAD_MEMBER_STATUS_LIST,
+      { ...opts, endpoint: "getSquadMemberStatus" },
+    );
   }
 
   // --- Issues ---
