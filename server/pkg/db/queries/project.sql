@@ -32,6 +32,11 @@ INSERT INTO project (
 ) RETURNING *;
 
 -- name: UpdateProject :one
+-- expected_revision is the optimistic lock (RUYI-354): when set, the write
+-- only lands if the row still carries the revision the caller read. The
+-- predicate lives in the UPDATE's own WHERE (not just the handler pre-check)
+-- so a concurrent writer between the handler's read and this statement loses
+-- the race with 0 rows instead of silently overwriting.
 UPDATE project SET
     title = COALESCE(sqlc.narg('title'), title),
     description = sqlc.narg('description'),
@@ -43,8 +48,10 @@ UPDATE project SET
     lead_id = sqlc.narg('lead_id'),
     start_date = sqlc.narg('start_date'),
     due_date = sqlc.narg('due_date'),
-    updated_at = now()
+    updated_at = now(),
+    revision = revision + 1
 WHERE id = $1
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
 RETURNING *;
 
 -- name: DeleteProject :exec

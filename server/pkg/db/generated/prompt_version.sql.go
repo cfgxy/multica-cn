@@ -530,9 +530,9 @@ func (q *Queries) UpdateAgentInstructionsForPromptVersion(ctx context.Context, a
 }
 
 const updateProjectInstructionsForPromptVersion = `-- name: UpdateProjectInstructionsForPromptVersion :one
-UPDATE project SET instructions = $2, updated_at = now()
+UPDATE project SET instructions = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, instructions
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, instructions, revision
 `
 
 type UpdateProjectInstructionsForPromptVersionParams struct {
@@ -540,6 +540,9 @@ type UpdateProjectInstructionsForPromptVersionParams struct {
 	Instructions pgtype.Text `json:"instructions"`
 }
 
+// Bumps revision (RUYI-354): this is a real project-metadata write, so a
+// client holding an expected_revision from before the activation/rollback
+// must lose the race instead of overwriting the restored instructions.
 func (q *Queries) UpdateProjectInstructionsForPromptVersion(ctx context.Context, arg UpdateProjectInstructionsForPromptVersionParams) (Project, error) {
 	row := q.db.QueryRow(ctx, updateProjectInstructionsForPromptVersion, arg.ID, arg.Instructions)
 	var i Project
@@ -558,6 +561,7 @@ func (q *Queries) UpdateProjectInstructionsForPromptVersion(ctx context.Context,
 		&i.StartDate,
 		&i.DueDate,
 		&i.Instructions,
+		&i.Revision,
 	)
 	return i, err
 }
