@@ -197,6 +197,76 @@ describe("MulticaClient", () => {
     expect(await client.getActiveTask("ws", "issue-1")).toBeNull();
   });
 
+  it("PUTs comment edits to /api/comments/:commentId with the workspace header", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(
+      makeFetch(200, { id: "c1", content: "edited", revision: 2 }, calls),
+    );
+    const comment = await client.updateComment("ws", "c1", {
+      content: "edited",
+      expected_revision: 1,
+      suppress_agent_ids: ["a1"],
+    });
+    expect(calls[0]?.init.method).toBe("PUT");
+    expect(calls[0]?.url.pathname).toBe("/api/comments/c1");
+    const headers = calls[0]?.init.headers as Record<string, string>;
+    expect(headers["X-Workspace-Slug"]).toBe("ws");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      content: "edited",
+      expected_revision: 1,
+      suppress_agent_ids: ["a1"],
+    });
+    expect(comment.revision).toBe(2);
+  });
+
+  it("DELETEs comments and resolves the empty 204 body", async () => {
+    const calls: CapturedCall[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      calls.push({ url, init: init ?? {} });
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const client = makeClient(fetchImpl);
+    await expect(client.deleteComment("ws", "c1")).resolves.toBeUndefined();
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.url.pathname).toBe("/api/comments/c1");
+  });
+
+  it("keeps the parsed JSON error body on MulticaApiError for structured outcomes", async () => {
+    const conflictBody = {
+      error: "resource changed since it was loaded",
+      code: "revision_conflict",
+      resource_type: "comment",
+      resource_id: "c1",
+      expected_revision: 2,
+      actual_revision: 5,
+    };
+    const client = makeClient(makeFetch(409, conflictBody));
+    const err = await client
+      .updateComment("ws", "c1", { content: "x", expected_revision: 2 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MulticaApiError);
+    expect((err as MulticaApiError).status).toBe(409);
+    expect((err as MulticaApiError).body).toEqual(conflictBody);
+    expect((err as MulticaApiError).body?.actual_revision).toBe(5);
+  });
+
+  it("leaves body undefined for non-JSON error responses", async () => {
+    const fetchImpl = (async () =>
+      new Response("<html>oops</html>", { status: 502 })) as typeof fetch;
+    const client = makeClient(fetchImpl);
+    const err = await client.listWorkspaces().catch((e: unknown) => e);
+    expect((err as MulticaApiError).body).toBeUndefined();
+  });
+
+  it("passes the fold projection through as a query param", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, [], calls));
+    await client.listComments("ws", "issue-1", { fold: true, summary: true });
+    expect(calls[0]?.url.searchParams.get("fold")).toBe("true");
+    expect(calls[0]?.url.searchParams.get("summary")).toBe("true");
+  });
+
   it("logs method, path template and status — never query or token", async () => {
     const calls: CapturedCall[] = [];
     const logger = silentLogger();

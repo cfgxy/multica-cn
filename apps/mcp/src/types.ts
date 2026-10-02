@@ -72,7 +72,13 @@ export interface CommentInfo {
   parent_id?: string;
   created_at?: string;
   updated_at?: string;
-  /** Present on create: per-explicit-@ dispatch outcome for mentioned agents. */
+  /**
+   * Optimistic-lock counter, bumped on every content edit. revision > 1 (or
+   * updated_at > created_at) marks an edited comment — the recognizable
+   * audit trail; there is no per-edit content history beyond this.
+   */
+  revision?: number;
+  /** Present on create/edit: per-explicit-@ dispatch outcome for mentioned agents. */
   trigger_outcomes?: Array<{
     target_type?: string;
     target_id?: string;
@@ -106,6 +112,7 @@ export interface CommentListParams {
   tail?: number;
   roots_only?: boolean;
   summary?: boolean;
+  fold?: boolean;
 }
 
 export interface CreateIssueBody {
@@ -134,6 +141,22 @@ export interface QuickCreateBody {
 export interface CreateCommentBody {
   content: string;
   parent_id?: string;
+}
+
+export interface UpdateCommentBody {
+  content: string;
+  /**
+   * Optimistic lock: the edit lands only when the stored revision still
+   * equals this value; otherwise the server answers 409 revision_conflict
+   * carrying the current revision.
+   */
+  expected_revision?: number;
+  /**
+   * Agent/squad ids whose dispatch is suppressed when the edit re-runs the
+   * comment's trigger computation (content-changing edits recompute the
+   * trigger surface of the new body).
+   */
+  suppress_agent_ids?: string[];
 }
 
 export interface UpdateIssueBody {
