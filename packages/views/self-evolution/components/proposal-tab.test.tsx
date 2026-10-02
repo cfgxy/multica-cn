@@ -206,8 +206,9 @@ it("gates the batch approval behind per-id diffs and the same confirmation", asy
   ];
   mount();
   await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
-  fireEvent.click(screen.getByLabelText("select-prop-a"));
-  fireEvent.click(screen.getByLabelText("select-prop-b"));
+  // aria-label renders through the en dictionary (legislation.selectProposal).
+  fireEvent.click(screen.getByLabelText("Select proposal prop-a"));
+  fireEvent.click(screen.getByLabelText("Select proposal prop-b"));
   fireEvent.click(screen.getByRole("button", { name: /Approve selected/ }));
 
   await waitFor(() => expect(screen.getByTestId("proposal-preview-diffs")).toBeTruthy());
