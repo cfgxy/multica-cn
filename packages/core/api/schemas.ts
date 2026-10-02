@@ -3,6 +3,8 @@ import type {
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
   AgentBuilderSessionSummary,
+  AgentEnvResponse,
+  AgentWebhook,
   Attachment,
   AutopilotRun,
   BillingBalance,
@@ -87,6 +89,7 @@ import type {
   SkillVersion,
   SkillImportResult,
   Squad,
+  SquadMember,
   TimelineEntry,
   User,
 } from "../types";
@@ -2195,6 +2198,74 @@ export const SquadMemberStatusListResponseSchema = z.object({
 }).loose();
 
 export const EMPTY_SQUAD_MEMBER_STATUS_LIST = { members: [] };
+
+// Agent env — GET/PUT /api/agents/:id/env (MUL-2600). The plaintext map is
+// only reachable for the agent's owner or a workspace owner/admin and every
+// call writes an `agent_env_revealed`/`agent_env_updated` audit row
+// server-side. A parse failure degrades to an empty map, which the UI renders
+// as "nothing configured" — never as plausible-looking secrets.
+export const AgentEnvResponseSchema = z.object({
+  agent_id: z.string().default(""),
+  custom_env: z.record(z.string(), z.string()).default({}),
+}).loose();
+export const EMPTY_AGENT_ENV: AgentEnvResponse = { agent_id: "", custom_env: {} };
+
+// Agent webhooks (RUYI-52) — public trigger URLs bound to a fixed prompt.
+// webhook_token/path/url come back only for managers; the server strips them
+// for anyone else, so the three fields are nullable/optional and the UI keys
+// its "can manage" affordances off their presence (not off workspace role).
+export const AgentWebhookSchema = z.object({
+  id: z.string(),
+  agent_id: z.string().default(""),
+  name: z.string().default(""),
+  prompt: z.string().default(""),
+  enabled: z.boolean().default(true),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  webhook_path_masked: z.string().default(""),
+  webhook_token: z.string().nullable().optional().transform((v) => v ?? null),
+  webhook_path: z.string().nullable().optional().transform((v) => v ?? null),
+  webhook_url: z.string().nullable().optional().transform((v) => v ?? null),
+}).loose();
+export const AgentWebhookListSchema = z.array(AgentWebhookSchema).default([]);
+export const EMPTY_AGENT_WEBHOOK_LIST: AgentWebhook[] = [];
+export const EMPTY_AGENT_WEBHOOK: AgentWebhook = {
+  id: "",
+  agent_id: "",
+  name: "",
+  prompt: "",
+  enabled: true,
+  created_at: "",
+  updated_at: "",
+  webhook_path_masked: "",
+  webhook_token: null,
+  webhook_path: null,
+  webhook_url: null,
+};
+
+// Squad members — GET/POST /api/squads/:id/members, PATCH .../members/role.
+// Members are addressed by the (member_type, member_id) pair, never by row
+// id. member_type passes through as a plain string (UI switch has a neutral
+// fallback) so a new server-side member type degrades instead of failing the
+// parse — mirrors SquadMemberStatusSchema above.
+export const SquadMemberSchema = z.object({
+  id: z.string(),
+  squad_id: z.string().default(""),
+  member_type: z.string(),
+  member_id: z.string(),
+  role: z.string().default(""),
+  created_at: z.string().default(""),
+}).loose();
+export const SquadMemberListSchema = z.array(SquadMemberSchema).default([]);
+export const EMPTY_SQUAD_MEMBER_LIST: SquadMember[] = [];
+export const EMPTY_SQUAD_MEMBER: SquadMember = {
+  id: "",
+  squad_id: "",
+  member_type: "agent",
+  member_id: "",
+  role: "",
+  created_at: "",
+};
 
 // ---------------------------------------------------------------------------
 // Structured error body — POST /api/workspaces/:wsId/issues 409 conflict.

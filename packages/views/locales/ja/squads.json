@@ -199,5 +199,10 @@
     "filter_label": "フィルター",
     "filter_active_count_other": "{{count}} 件のフィルター",
     "clear_filters": "フィルターをクリア"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "スクワッドを検索…"
+    }
   }
 }
