@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_project_resource_local_dir_daemon;

@@ -1,2 +1,0 @@
-CREATE UNIQUE INDEX CONCURRENTLY uidx_prompt_structure_baseline_carrier
-ON prompt_structure_baseline (carrier_scope, carrier_scope_id);
