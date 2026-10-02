@@ -141,6 +141,42 @@ describe("MulticaClient", () => {
     expect(raw).not.toContain('""');
   });
 
+  it("routes project CRUD to the /api/projects surface (RUYI-354)", async () => {
+    const calls: CapturedCall[] = [];
+    const project = {
+      id: "p1",
+      workspace_id: "w1",
+      title: "Proj",
+      status: "planned",
+      revision: 1,
+    };
+    const client = makeClient(makeFetch(200, project, calls));
+    await client.getProject("ws", "p1");
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1");
+
+    await client.createProject("ws", { title: "Proj", priority: "high" });
+    expect(calls[1]?.init.method).toBe("POST");
+    expect(calls[1]?.url.pathname).toBe("/api/projects");
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({
+      title: "Proj",
+      priority: "high",
+    });
+
+    await client.updateProject("ws", "p1", {
+      expected_revision: 1,
+      description: null,
+      title: "v2",
+    });
+    expect(calls[2]?.init.method).toBe("PUT");
+    expect(calls[2]?.url.pathname).toBe("/api/projects/p1");
+    const raw = String(calls[2]?.init.body);
+    // expected_revision rides along; explicit nulls survive serialization so
+    // the server's rawFields contract sees a clear instead of a keep.
+    expect(raw).toContain('"expected_revision":1');
+    expect(raw).toContain('"description":null');
+  });
+
   it("maps non-2xx to MulticaApiError with the server message", async () => {
     const client = makeClient(
       makeFetch(409, { code: "active_duplicate_issue", error: "duplicate" }),

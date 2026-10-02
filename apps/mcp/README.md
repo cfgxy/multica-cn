@@ -14,6 +14,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `list_workspaces` | 当前用户所属工作区 |
 | 读 | `list_agents` | 工作区内可派发的 agent |
 | 读 | `list_projects` | 工作区项目清单 |
+| 读 | `get_project` | 单个项目完整元数据与 revision（RUYI-354） |
 | 读 | `list_issues` | 按状态/项目/负责人过滤 |
 | 读 | `get_issue` | 单条 issue（默认含评论线程） |
 | 读 | `search_issues` | 关键词检索 |
@@ -21,6 +22,8 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `list_comments` | 评论有界读：线程/最近活跃/仅根/since/summary/fold |
 | 读 | `get_comment` | 单条评论全文（含 revision，可辨认编辑痕迹） |
 | 写 | `create_issue` | 通用创建：任意空间、任意项目 |
+| 写 | `create_project` | 创建项目（纯元数据，不触发 run）（RUYI-354） |
+| 写 | `update_project` | PATCH 更新项目元数据，`expected_revision` 乐观锁（RUYI-354） |
 | 写 | `add_comment` | 追加评论（@agent 会触发真实派发） |
 | 写 | `edit_comment` | 编辑评论（作者/admin 权限；`expected_revision` 乐观锁；内容变更按新内容重算触发面，mention 副作用经 `trigger_outcomes` 回报） |
 | 写 | `delete_comment` | 删除评论（作者/admin 权限；级联删除回复子树；连带取消该评论触发的排队 run） |
