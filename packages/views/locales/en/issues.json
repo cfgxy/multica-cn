@@ -1142,6 +1142,10 @@
         "blocked": "No blocked tasks.",
         "completed": "No completed tasks yet."
       },
+      "filtered_empty": {
+        "title": "No issues match these filters",
+        "clear_button": "Clear filters"
+      },
       "filters": {
         "status_locked": "Status: {{tab}} (set by tab)",
         "section_mine": "My relation",

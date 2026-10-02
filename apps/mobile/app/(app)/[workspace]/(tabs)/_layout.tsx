@@ -104,8 +104,9 @@ export default function TabsLayout() {
           name="tasks"
           options={{
             // RUYI-344: the tab graduates from personal "My Issues" to
-            // full-space task management; the label is the existing 任务.
-            title: i18n.t("layout:nav.issues", "Tasks"),
+            // full-space task management; the label uses the mobile-scoped
+            // key so the shared layout:nav.issues copy stays Web-owned.
+            title: i18n.t("issues:mobile.tasks.page.title", "Tasks"),
             tabBarIcon: Platform.OS === "ios"
               ? ({ color, size, focused }) => (
                   <Image
