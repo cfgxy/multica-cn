@@ -434,6 +434,7 @@ const PREFIX_VALUES: Record<string, string[]> = {
   // both the pill labels and the per-tab empty-state copy.
   "issues:mobile.tasks.tabs": ["all", "open", "active", "blocked", "completed"],
   "issues:mobile.tasks.empty": ["all", "open", "active", "blocked", "completed"],
+  "issues:mobile.tasks.filtered_empty": ["title", "clear_button"],
 };
 
 const MOBILE_ROOT = join(__dirname, "..");

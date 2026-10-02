@@ -1103,6 +1103,10 @@
         "blocked": "ブロックされているタスクはありません。",
         "completed": "完了したタスクはまだありません。"
       },
+      "filtered_empty": {
+        "title": "フィルター条件に一致するタスクがありません",
+        "clear_button": "フィルターを解除"
+      },
       "filters": {
         "status_locked": "ステータス：{{tab}}（タブで固定）",
         "section_mine": "自分との関係",
