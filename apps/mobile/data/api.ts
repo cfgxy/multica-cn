@@ -625,8 +625,13 @@ class ApiClient {
     });
   }
 
+  // `include_archived` is on unconditionally, mirroring web's
+  // agentListOptions (packages/core/workspace/queries.ts:75): the archived
+  // scope and its count are filtered client-side from this one list, so
+  // without the flag the archived segment renders permanently empty
+  // (RUYI-346 defect #1).
   async listAgents(opts?: { signal?: AbortSignal }): Promise<Agent[]> {
-    const raw = await this.fetch<unknown>("/api/agents", {
+    const raw = await this.fetch<unknown>("/api/agents?include_archived=true", {
       signal: opts?.signal,
     });
     return parseWithFallback(raw, AgentListSchema, EMPTY_AGENT_LIST, {
