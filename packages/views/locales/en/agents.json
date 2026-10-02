@@ -1044,6 +1044,25 @@
     "tasks": {
       "empty": "No active runs right now.",
       "agent_missing": "Agent not found."
+    },
+    "row": {
+      "edit": "Edit"
+    },
+    "detail": {
+      "edit_profile": "Edit Profile",
+      "tab_active": "Active",
+      "fact_status": "Status",
+      "fact_runtime_unbound": "No runtime"
+    },
+    "edit": {
+      "model_placeholder": "Leave empty for the runtime default"
+    },
+    "env": {
+      "add_row": "Add variable"
+    },
+    "webhooks": {
+      "copy_aria": "Copy webhook link",
+      "rotated_title": "New link generated"
     }
   }
 }

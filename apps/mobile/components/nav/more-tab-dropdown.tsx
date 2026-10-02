@@ -96,6 +96,9 @@ export function MoreTabDropdownAnchor({
     { label: i18n.t("layout:sidebar.pinned_label", "Pinned"), icon: "pin", androidIcon: "pin", path: "/more/pins" },
     { label: i18n.t("layout:nav.issues", "Issues"), icon: "list.bullet", androidIcon: "list-outline", path: "/more/issues" },
     { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
+    // RUYI-346: 智能体与小队管理入口（P0）。
+    { label: i18n.t("layout:nav.agents", "Agents"), icon: "cpu", androidIcon: "hardware-chip-outline", path: "/more/agents" },
+    { label: i18n.t("layout:nav.squads", "Squads"), icon: "person.3", androidIcon: "people-outline", path: "/more/squads" },
   ];
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);

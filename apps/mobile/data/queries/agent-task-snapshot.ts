@@ -7,9 +7,15 @@ import { api } from "@/data/api";
 // cancelled) but DELIBERATELY skips task:progress and task:message — those
 // fire many times per active task and would invalidate-storm cellular data.
 // See data/realtime/use-presence-realtime.ts.
+export const agentTaskSnapshotKeys = {
+  all: (wsId: string | null) => ["agent-task-snapshot", wsId] as const,
+  current: (wsId: string | null) =>
+    [...agentTaskSnapshotKeys.all(wsId), "current"] as const,
+};
+
 export const agentTaskSnapshotOptions = (wsId: string | null) =>
   queryOptions({
-    queryKey: ["agent-task-snapshot", wsId] as const,
+    queryKey: agentTaskSnapshotKeys.current(wsId),
     queryFn: ({ signal }) => api.listAgentTaskSnapshot({ signal }),
     enabled: !!wsId,
   });
