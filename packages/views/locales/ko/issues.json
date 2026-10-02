@@ -1079,7 +1079,42 @@
       "submit_a11y": "태스크 만들기"
     },
     "tasks": {
-      "issue_unavailable": "작업을 볼 수 없음"
+      "issue_unavailable": "작업을 볼 수 없음",
+      "page": {
+        "title": "작업"
+      },
+      "tabs": {
+        "all": "전체",
+        "open": "대기 중",
+        "active": "진행 중",
+        "blocked": "차단됨",
+        "completed": "완료됨"
+      },
+      "sort": {
+        "title": "정렬",
+        "updated_at": "업데이트 시간",
+        "created_at": "생성 시간",
+        "a11y": "정렬"
+      },
+      "empty": {
+        "all": "이 워크스페이스에는 아직 작업이 없습니다.",
+        "open": "처리 대기 중인 작업이 없습니다.",
+        "active": "진행 중인 작업이 없습니다.",
+        "blocked": "차단된 작업이 없습니다.",
+        "completed": "아직 완료한 작업이 없습니다."
+      },
+      "filters": {
+        "status_locked": "상태: {{tab}} (탭에서 결정)",
+        "section_mine": "나와의 관계",
+        "mine_assigned": "나에게 할당됨",
+        "mine_created": "내가 생성함",
+        "mine_involved": "내가 관련됨",
+        "agent_running": "에이전트 실행 중",
+        "selected_count": "{{count}}개 선택됨",
+        "group_members": "멤버",
+        "group_agents": "에이전트",
+        "group_squads": "스쿼드"
+      }
     }
   },
   "suppressed": {
