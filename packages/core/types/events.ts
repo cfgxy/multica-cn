@@ -32,6 +32,7 @@ export type WSEventType =
   | "task:failed"
   | "task:message"
   | "task:cancelled"
+  | "task:cancel_requested"
   | "inbox:new"
   | "inbox:read"
   | "inbox:unread"
@@ -364,6 +365,19 @@ export interface TaskCancelledPayload {
   status: string;
 }
 
+// RUYI-292 two-phase cancel acceptance: the user asked to stop an in-flight
+// run and the server flipped it to cancel_requested (the daemon's interrupt
+// has NOT been confirmed yet — task:cancelled remains the confirmation).
+// Same shape as every other lifecycle frame; the generic `task:` prefix
+// invalidation in use-realtime-sync picks it up without a dedicated handler.
+export interface TaskCancelRequestedPayload {
+  task_id: string;
+  agent_id: string;
+  issue_id: string;
+  chat_session_id?: string;
+  status: string;
+}
+
 export interface ReactionAddedPayload {
   reaction: Reaction;
   issue_id: string;
@@ -581,6 +595,7 @@ export interface WSEventPayloadMap {
   "task:failed": TaskFailedPayload;
   "task:message": TaskMessagePayload;
   "task:cancelled": TaskCancelledPayload;
+  "task:cancel_requested": TaskCancelRequestedPayload;
   "task:progress": unknown;
   "inbox:new": InboxNewPayload;
   "inbox:read": InboxReadPayload;

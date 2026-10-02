@@ -5327,6 +5327,13 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 //     the agent was running. Without this we'd let the local agent keep
 //     emitting tool calls against a dead task for its full timeout window.
 //
+//  3. status is "cancel_requested" (RUYI-292 two-phase cancel) — the user
+//     asked to stop THIS run and the server accepted the request. The row is
+//     deliberately NOT terminal (GC/billing/snapshot consumers treat it as
+//     unfinished), but the daemon is the only party that can make the stop
+//     real: interrupt, then confirm via cancel-ack, which flips the row to
+//     cancelled.
+//
 // All other errors (transient network, 5xx, ...) intentionally do NOT
 // trigger cancellation — the next tick will retry and we don't want a
 // flaky link to kill an in-flight agent.
@@ -5334,7 +5341,7 @@ func shouldInterruptAgent(status string, err error) bool {
 	if err != nil {
 		return isTaskNotFoundError(err)
 	}
-	return isAgentTaskTerminal(status)
+	return isAgentTaskTerminal(status) || status == "cancel_requested"
 }
 
 // watchTaskCancellation polls the server for the task's status on the given
@@ -5539,7 +5546,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// run errors stay discarded: on a cancelled run they are expected
 		// noise (context canceled, killed process), and persisting them would
 		// stamp a bogus reason on every ordinary mid-run cancel.
-		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}
+		ack := TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, Confirmed: true}
 		var preserved *worktreePreservedError
 		if errors.As(err, &preserved) {
 			ack.ErrorMessage = preserved.Error()
@@ -5594,7 +5601,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// completed/failed rows the complete/fail callback is the
 		// authoritative channel and a stale run's late ack must not touch
 		// them.
-		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir}); ackErr != nil {
+		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, Confirmed: true}); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
 		return

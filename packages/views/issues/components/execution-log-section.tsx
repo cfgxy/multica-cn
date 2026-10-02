@@ -4,10 +4,21 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Loader2, RotateCcw, Square } from "lucide-react";
 import { toast } from "sonner";
-import { api, dispatchReasonCode } from "@multica/core/api";
+import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
 import { issueKeys } from "@multica/core/issues/queries";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
 import type { AgentTask } from "@multica/core/types";
+import { CANCEL_UNCONFIRMED_AFTER_MS } from "@multica/core/types";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
 import { useTimeAgo } from "../../i18n";
 import {
   Tooltip,
@@ -27,6 +38,7 @@ import {
 } from "../../runtimes/utils";
 import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 import { IssueUsageDialog } from "./issue-usage-dialog";
+import { RunDetailDrawer } from "./run-detail-drawer";
 import { TaskStatusIcon } from "./task-status-icon";
 import { useStatusLabel, useTriggerText } from "./task-run-labels";
 
@@ -69,11 +81,64 @@ const PAST_STATUS_RANK: Record<string, number> = {
   completed: 2,
 };
 
+// ─── Run list filters (RUYI-292) ───────────────────────────────────────────
+
+// Status filter values are the USER-VISIBLE states, not raw statuses: the
+// queued-family display bucket merges into one "pending" option (D8 status
+// merge), matching the server-side `ListTasksByIssueFiltered` alias — the
+// two ports must never disagree about what "pending" means. The UI filters
+// client-side over the one list query it already holds; the server-side
+// parameter exists for callers that must not download the full list (MCP).
+type StatusFilter =
+  | ""
+  | "pending"
+  | "running"
+  | "cancel_requested"
+  | "completed"
+  | "failed"
+  | "cancelled";
+type TriggerFilter = "" | "comment" | "autopilot" | "rerun" | "system_retry";
+
+// status is an open string on the wire (the DB carries `deferred`, a state
+// the UI type union folds away), so buckets match on string, not the union.
+const STATUS_FILTER_BUCKETS: Record<string, readonly string[]> = {
+  pending: ["queued", "dispatched", "deferred", "waiting_local_directory"],
+};
+
+function matchesStatusFilter(task: AgentTask, filter: StatusFilter): boolean {
+  if (!filter) return true;
+  const bucket = STATUS_FILTER_BUCKETS[filter];
+  return bucket ? bucket.includes(task.status) : task.status === filter;
+}
+
+// Trigger-source buckets mirror the server mapping: comment triggers carry
+// their comment id, autopilot its run id, and the two retry lineages stay
+// distinct (manual rerun vs system retry — MUL-4302 §5 keeps the columns
+// apart for accounting, so a filter can't merge them back).
+function matchesTriggerFilter(task: AgentTask, filter: TriggerFilter): boolean {
+  switch (filter) {
+    case "": return true;
+    case "comment": return !!task.trigger_comment_id;
+    case "autopilot": return !!task.autopilot_run_id;
+    case "rerun": return !!task.rerun_of_task_id;
+    case "system_retry": return !!task.retry_of_task_id;
+  }
+}
+
+// The past-runs list renders in pages — a long-lived issue can accumulate
+// hundreds of terminal runs and the sidebar row list is the wrong place to
+// scroll them all at once.
+const PAST_PAGE_SIZE = 20;
+
 export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSectionProps) {
   const { t } = useT("issues");
   const [open, setOpen] = useState(true);
   const [showPast, setShowPast] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
+  const [triggerFilter, setTriggerFilter] = useState<TriggerFilter>("");
+  const [visiblePastCount, setVisiblePastCount] = useState(PAST_PAGE_SIZE);
+  const [detailTask, setDetailTask] = useState<AgentTask | null>(null);
 
   // Cache key registered in `issueKeys.tasks` (packages/core/issues/queries.ts)
   // so the global useRealtimeSync `task:` prefix path invalidates it via
@@ -97,7 +162,11 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
           // (waiting on a path lock), not terminal. Surfacing it here is
           // what tells the user the agent is alive and will resume.
           t.status === "waiting_local_directory" ||
-          t.status === "running",
+          t.status === "running" ||
+          // RUYI-292 two-phase cancel: stop accepted, confirmation pending.
+          // The run is mid-stop, not terminal — it belongs with the active
+          // rows until the daemon's ack lands.
+          t.status === "cancel_requested",
       ),
     [tasks],
   );
@@ -120,6 +189,27 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
       );
     });
   }, [tasks]);
+
+  const filteredPastTasks = useMemo(
+    () =>
+      pastTasks.filter(
+        (t) =>
+          matchesStatusFilter(t, statusFilter) &&
+          matchesTriggerFilter(t, triggerFilter),
+      ),
+    [pastTasks, statusFilter, triggerFilter],
+  );
+
+  // A filter change restarts pagination — otherwise narrowing the list could
+  // leave the user looking at a slice past the new result set's end.
+  useEffect(() => {
+    setVisiblePastCount(PAST_PAGE_SIZE);
+  }, [statusFilter, triggerFilter]);
+
+  const clearFilters = () => {
+    setStatusFilter("");
+    setTriggerFilter("");
+  };
 
   if (activeTasks.length === 0 && pastTasks.length === 0) return null;
 
@@ -194,9 +284,50 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
               </button>
               {showPast && (
                 <div className="mt-0.5 space-y-0.5">
-                  {pastTasks.map((task) => (
-                    <PastRow key={task.id} task={task} issueId={issueId} />
-                  ))}
+                  {pastTasks.length >= 2 && (
+                    <RunListFilters
+                      statusFilter={statusFilter}
+                      triggerFilter={triggerFilter}
+                      onStatusFilter={setStatusFilter}
+                      onTriggerFilter={setTriggerFilter}
+                      filterActive={!!(statusFilter || triggerFilter)}
+                      onClear={clearFilters}
+                    />
+                  )}
+                  {filteredPastTasks.length === 0 ? (
+                    <div className="flex items-center gap-2 px-1 py-2 text-caption text-muted-foreground">
+                      <span>{t(($) => $.execution_log.filter_empty)}</span>
+                      <button
+                        type="button"
+                        onClick={clearFilters}
+                        className="shrink-0 rounded px-1 text-caption text-info underline-offset-2 hover:underline"
+                      >
+                        {t(($) => $.execution_log.clear_filters)}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      {filteredPastTasks.slice(0, visiblePastCount).map((task) => (
+                        <PastRow
+                          key={task.id}
+                          task={task}
+                          issueId={issueId}
+                          onOpenDetail={() => setDetailTask(task)}
+                        />
+                      ))}
+                      {filteredPastTasks.length > visiblePastCount && (
+                        <button
+                          type="button"
+                          onClick={() => setVisiblePastCount((n) => n + PAST_PAGE_SIZE)}
+                          className="w-full rounded px-1 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                        >
+                          {t(($) => $.execution_log.show_more, {
+                            count: filteredPastTasks.length - visiblePastCount,
+                          })}
+                        </button>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </>
@@ -208,6 +339,13 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
         onOpenChange={setUsageOpen}
         identifier={identifier ?? ""}
         tasks={tasks}
+      />
+      <RunDetailDrawer
+        issueId={issueId}
+        task={detailTask}
+        onOpenChange={(o) => {
+          if (!o) setDetailTask(null);
+        }}
       />
     </div>
   );
@@ -284,6 +422,81 @@ export function IssueUsageTotal({
 // Trigger description and status labels live in ./task-run-labels so the
 // usage dialog lists a run exactly the way this section does.
 
+// ─── Run list filters ───────────────────────────────────────────────────────
+
+// Two compact dropdowns (status bucket, trigger source) above the past-runs
+// list. Native selects, not the styled Select primitive: the rail is 260–420px
+// and these sit between the toggle row and the rows themselves — a form control
+// the width of the panel is the whole budget. A "clear" link appears only when
+// a filter is active; with everything visible the row is pure noise.
+function RunListFilters({
+  statusFilter,
+  triggerFilter,
+  onStatusFilter,
+  onTriggerFilter,
+  filterActive,
+  onClear,
+}: {
+  statusFilter: StatusFilter;
+  triggerFilter: TriggerFilter;
+  onStatusFilter: (v: StatusFilter) => void;
+  onTriggerFilter: (v: TriggerFilter) => void;
+  filterActive: boolean;
+  onClear: () => void;
+}) {
+  const { t } = useT("issues");
+  const statusOptions: { value: StatusFilter; label: string }[] = [
+    { value: "", label: t(($) => $.execution_log.filter_status_all) },
+    { value: "pending", label: t(($) => $.execution_log.filter_status_pending) },
+    { value: "running", label: t(($) => $.execution_log.filter_status_running) },
+    { value: "cancel_requested", label: t(($) => $.execution_log.filter_status_cancel_requested) },
+    { value: "completed", label: t(($) => $.execution_log.filter_status_completed) },
+    { value: "failed", label: t(($) => $.execution_log.filter_status_failed) },
+    { value: "cancelled", label: t(($) => $.execution_log.filter_status_cancelled) },
+  ];
+  const triggerOptions: { value: TriggerFilter; label: string }[] = [
+    { value: "", label: t(($) => $.execution_log.filter_trigger_all) },
+    { value: "comment", label: t(($) => $.execution_log.filter_trigger_comment) },
+    { value: "autopilot", label: t(($) => $.execution_log.filter_trigger_autopilot) },
+    { value: "rerun", label: t(($) => $.execution_log.filter_trigger_rerun) },
+    { value: "system_retry", label: t(($) => $.execution_log.filter_trigger_system_retry) },
+  ];
+
+  return (
+    <div className="flex items-center gap-1 py-0.5">
+      <select
+        aria-label={t(($) => $.execution_log.filter_status_aria)}
+        value={statusFilter}
+        onChange={(e) => onStatusFilter(e.target.value as StatusFilter)}
+        className="h-6 min-w-0 flex-1 rounded border border-border bg-background px-1 text-micro text-foreground"
+      >
+        {statusOptions.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      <select
+        aria-label={t(($) => $.execution_log.filter_trigger_aria)}
+        value={triggerFilter}
+        onChange={(e) => onTriggerFilter(e.target.value as TriggerFilter)}
+        className="h-6 min-w-0 flex-1 rounded border border-border bg-background px-1 text-micro text-foreground"
+      >
+        {triggerOptions.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      {filterActive && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="shrink-0 rounded px-1 text-micro text-info underline-offset-2 hover:underline"
+        >
+          {t(($) => $.execution_log.clear_filters)}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Row visual config ─────────────────────────────────────────────────────
 
 const STATUS_TONE: Record<AgentTask["status"], string> = {
@@ -293,6 +506,9 @@ const STATUS_TONE: Record<AgentTask["status"], string> = {
   // task is parked, but distinguished by the status label.
   waiting_local_directory: "text-warning",
   running: "text-info",
+  // RUYI-292: stop accepted, confirmation pending — warning tone, distinct
+  // "stopping" label, plus the unconfirmed-stop banner past 30s.
+  cancel_requested: "text-warning",
   completed: "text-success",
   failed: "text-destructive",
   cancelled: "text-muted-foreground",
@@ -319,12 +535,16 @@ export function ActiveTaskRow({
   const tone = STATUS_TONE[task.status];
   const label = useStatusLabel(task.status);
   const trigger = useTriggerText(task);
+  // RUYI-292: stop accepted by the server, daemon confirmation still pending.
+  // The stop icon stays but re-fires the request directly (the server re-broadcasts
+  // the interrupt nudge; the confirm dialog already happened on first click).
+  const stopRequested = task.status === "cancel_requested";
 
   // Running rows show a live-ticking elapsed timer (the ticking digits carry
   // "alive", the duration carries "how long"). Only running rows tick.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (task.status !== "running") return;
+    if (task.status !== "running" && task.status !== "cancel_requested") return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [task.status]);
@@ -335,6 +555,18 @@ export function ActiveTaskRow({
           now,
         )
       : "";
+
+  // A stop that outlives CANCEL_UNCONFIRMED_AFTER_MS is flagged honestly:
+  // the daemon may be offline, the run may keep consuming tokens, and the
+  // user CAN act — repeat the cancel to re-broadcast. The server never
+  // auto-flips the row (D4), so this banner is the only "stuck" signal.
+  const requestedAtMs = task.cancel_requested_at
+    ? new Date(task.cancel_requested_at).getTime()
+    : null;
+  const stopUnconfirmed =
+    stopRequested &&
+    requestedAtMs !== null &&
+    now - requestedAtMs >= CANCEL_UNCONFIRMED_AFTER_MS;
 
   // Transcript only meaningful once messages exist — pure-queued and
   // waiting_local_directory tasks haven't streamed any agent output yet.
@@ -365,71 +597,99 @@ export function ActiveTaskRow({
   // test that asserts a scenario production cannot produce. Restore it in the
   // same change that adds incremental reporting + cache invalidation.
   return (
-    <RowShell task={task}>
-      <TriggerText text={trigger} />
-      <TaskCommentCoverage task={task} />
-      <RowStatus title={label}>
-        {task.status === "running" ? (
-          <>
-            <span className="text-info tabular-nums">{elapsed}</span>
-            <span className="sr-only">{label}</span>
-          </>
-        ) : (
-          <span className={`${tone} min-w-0 truncate`}>{label}</span>
-        )}
-      </RowStatus>
-      <RowActions>
-        {showTranscript && (
-          <TranscriptButton
-            task={task}
-            agentName=""
-            isLive={task.status === "running"}
-            title={t(($) => $.execution_log.transcript_tooltip)}
-            onOpenChange={onTranscriptOpenChange}
-          />
-        )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <button
-                type="button"
-                onClick={requestCancel}
-                disabled={cancelling}
-                aria-label={t(($) => $.execution_log.cancel_task_aria)}
-              />
-            }
-            className="flex items-center justify-center rounded p-1 text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {cancelling ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Square className="h-3.5 w-3.5" />
-            )}
-          </TooltipTrigger>
-          <TooltipContent>{t(($) => $.execution_log.cancel_task_tooltip)}</TooltipContent>
-        </Tooltip>
-      </RowActions>
-      <TerminateTaskConfirmDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        onConfirm={() => void handleCancel()}
-        showRunningNote={
-          task.status === "running" ||
-          task.status === "dispatched" ||
-          task.status === "waiting_local_directory"
-        }
-      />
-    </RowShell>
+    <div>
+      <RowShell task={task}>
+        <TriggerText text={trigger} />
+        <TaskCommentCoverage task={task} />
+        <RowStatus title={label}>
+          {task.status === "running" ? (
+            <>
+              <span className="text-info tabular-nums">{elapsed}</span>
+              <span className="sr-only">{label}</span>
+            </>
+          ) : (
+            <span className={`${tone} min-w-0 truncate`}>{label}</span>
+          )}
+        </RowStatus>
+        <RowActions>
+          {showTranscript && (
+            <TranscriptButton
+              task={task}
+              agentName=""
+              isLive={task.status === "running"}
+              title={t(($) => $.execution_log.transcript_tooltip)}
+              onOpenChange={onTranscriptOpenChange}
+            />
+          )}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={stopRequested ? handleCancel : requestCancel}
+                  disabled={cancelling}
+                  aria-label={
+                    stopRequested
+                      ? t(($) => $.execution_log.stop_again_aria)
+                      : t(($) => $.execution_log.cancel_task_aria)
+                  }
+                />
+              }
+              className="flex items-center justify-center rounded p-1 text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {cancelling ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Square className="h-3.5 w-3.5" />
+              )}
+            </TooltipTrigger>
+            <TooltipContent>
+              {stopRequested
+                ? t(($) => $.execution_log.stop_again_tooltip)
+                : t(($) => $.execution_log.cancel_task_tooltip)}
+            </TooltipContent>
+          </Tooltip>
+        </RowActions>
+        <TerminateTaskConfirmDialog
+          open={confirmOpen}
+          onOpenChange={setConfirmOpen}
+          onConfirm={() => void handleCancel()}
+          showRunningNote={
+            task.status === "running" ||
+            task.status === "dispatched" ||
+            task.status === "waiting_local_directory" ||
+            task.status === "cancel_requested"
+          }
+        />
+      </RowShell>
+      {stopUnconfirmed && (
+        <p
+          role="status"
+          className="mt-0.5 rounded bg-warning/10 px-1.5 py-1 pl-8 text-micro leading-snug text-warning"
+        >
+          {t(($) => $.execution_log.cancel_unconfirmed_banner)}
+        </p>
+      )}
+    </div>
   );
 }
 
 // ─── Past row ──────────────────────────────────────────────────────────────
 
-function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
+function PastRow({
+  task,
+  issueId,
+  onOpenDetail,
+}: {
+  task: AgentTask;
+  issueId: string;
+  onOpenDetail: () => void;
+}) {
   const { t } = useT("issues");
   const { t: tAgents } = useT("agents");
   const timeAgo = useTimeAgo();
   const [retrying, setRetrying] = useState(false);
+  const [retryConfirmOpen, setRetryConfirmOpen] = useState(false);
   const label = useStatusLabel(task.status);
   const trigger = useTriggerText(task);
   const time = task.completed_at ? timeAgo(task.completed_at) : "—";
@@ -483,17 +743,25 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
     if (retrying) return;
     setRetrying(true);
     try {
-      await api.rerunIssue(issueId, task.id);
+      // The run-level retry endpoint (RUYI-292), not the legacy /rerun: it
+      // carries the anti-storm gates, so a conflict comes back as a
+      // structured 409 the row can localize instead of a generic failure.
+      await api.retryIssueRun(issueId, task.id);
     } catch (e) {
-      // A rerun is now re-gated on the operator's invoke permission (MUL-4525):
-      // a structured 403 means the agent can't be triggered, not a transient
-      // failure — localize it instead of echoing the server's generic message.
+      const code = errorCode(e);
       toast.error(
-        dispatchReasonCode(e) === "invocation_not_allowed"
-          ? t(($) => $.execution_log.retry_blocked)
-          : e instanceof Error
-            ? e.message
-            : t(($) => $.execution_log.retry_failed),
+        code === "agent_already_queued"
+          ? t(($) => $.execution_log.retry_conflict_agent_busy)
+          : code === "retry_descendant_active"
+            ? t(($) => $.execution_log.retry_conflict_descendant_active)
+            : dispatchReasonCode(e) === "invocation_not_allowed"
+              ? // A rerun is re-gated on the operator's invoke permission
+                // (MUL-4525): a structured 403 means the agent can't be
+                // triggered, not a transient failure.
+                t(($) => $.execution_log.retry_blocked)
+              : e instanceof Error
+                ? e.message
+                : t(($) => $.execution_log.retry_failed),
       );
     } finally {
       // Reset on both success and failure: the past row stays mounted
@@ -503,8 +771,18 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
     }
   };
 
+  // A cancelled run was stopped on purpose — re-running it should be a
+  // deliberate act, so its entry routes through a confirm dialog and reads
+  // as "Run again" rather than "Retry" (nothing failed). A failed run keeps
+  // the one-click retry it always had.
+  const requestRetry = () => {
+    if (retrying) return;
+    if (task.status === "cancelled") setRetryConfirmOpen(true);
+    else void handleRetry();
+  };
+
   return (
-    <RowShell task={task} title={rowTitle}>
+    <RowShell task={task} title={rowTitle} onClick={onOpenDetail}>
       <TriggerText text={trigger} />
       <TaskCommentCoverage task={task} />
       <RowStatus title={statusTitle}>
@@ -526,9 +804,13 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
               render={
                 <button
                   type="button"
-                  onClick={handleRetry}
+                  onClick={requestRetry}
                   disabled={retrying}
-                  aria-label={t(($) => $.execution_log.retry_task_aria)}
+                  aria-label={
+                    task.status === "cancelled"
+                      ? t(($) => $.execution_log.rerun_task_aria)
+                      : t(($) => $.execution_log.retry_task_aria)
+                  }
                 />
               }
               className="flex items-center justify-center rounded p-1 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
@@ -539,11 +821,63 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
                 <RotateCcw className="h-3.5 w-3.5" />
               )}
             </TooltipTrigger>
-            <TooltipContent>{t(($) => $.execution_log.retry_task_tooltip)}</TooltipContent>
+            <TooltipContent>
+              {task.status === "cancelled"
+                ? t(($) => $.execution_log.rerun_task_tooltip)
+                : t(($) => $.execution_log.retry_task_tooltip)}
+            </TooltipContent>
           </Tooltip>
         )}
       </RowActions>
+      <RetryRunConfirmDialog
+        open={retryConfirmOpen}
+        onOpenChange={setRetryConfirmOpen}
+        onConfirm={() => void handleRetry()}
+      />
     </RowShell>
+  );
+}
+
+// Confirm step for re-running a run the user (or system) deliberately
+// stopped. Same AlertDialog pattern as TerminateTaskConfirmDialog; the copy
+// is about re-running work, not stopping it.
+function RetryRunConfirmDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useT("issues");
+  if (!open) return null;
+  return (
+    <AlertDialog open onOpenChange={onOpenChange}>
+      <AlertDialogContent
+        // Stop clicks from bubbling to the row underneath — the dialog can
+        // render inside a clickable ExecutionLogSection row.
+        onClick={(e) => e.stopPropagation()}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t(($) => $.execution_log.rerun_confirm_title)}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t(($) => $.execution_log.rerun_confirm_body)}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t(($) => $.execution_log.rerun_confirm_keep)}</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              onOpenChange(false);
+              onConfirm();
+            }}
+          >
+            {t(($) => $.execution_log.rerun_confirm_confirm)}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -552,6 +886,7 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
 function RowShell({
   task,
   title,
+  onClick,
   children,
 }: {
   task: AgentTask;
@@ -560,12 +895,30 @@ function RowShell({
    *  is swapped out for the action buttons on hover — a title there would
    *  disappear at exactly the moment the pointer arrives. */
   title?: string;
+  /** Past rows open the run-detail drawer; a div (not a button) because the
+   *  row already contains real buttons, which a button ancestor forbids. */
+  onClick?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <div
       title={title || undefined}
-      className="group/execution-log-row flex items-center gap-2 overflow-hidden rounded px-1 py-1.5 transition-colors hover:bg-accent/40"
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      className={`group/execution-log-row flex items-center gap-2 overflow-hidden rounded px-1 py-1.5 transition-colors hover:bg-accent/40 ${
+        onClick ? "cursor-pointer" : ""
+      }`}
     >
       {task.agent_id ? (
         <ActorAvatar
@@ -592,6 +945,7 @@ function supportsCommentCoverage(status: AgentTask["status"]): boolean {
     case "dispatched":
     case "waiting_local_directory":
     case "running":
+    case "cancel_requested":
     case "completed":
     case "failed":
     case "cancelled":
@@ -647,10 +1001,16 @@ function RowStatus({
 }
 
 // Action slot — visible by default for touch devices. On hover-capable
-// surfaces, it replaces the status column in place on row hover.
+// surfaces, it replaces the status column in place on row hover. The click
+// never reaches the row shell: past rows open the detail drawer on click,
+// and firing the drawer behind a transcript/retry press would be a misclick
+// the user can't see coming.
 function RowActions({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-7 items-center gap-0.5 [@media(hover:hover)]:hidden [@media(hover:hover)]:group-hover/execution-log-row:flex">
+    <div
+      onClick={(e) => e.stopPropagation()}
+      className="flex h-7 items-center gap-0.5 [@media(hover:hover)]:hidden [@media(hover:hover)]:group-hover/execution-log-row:flex"
+    >
       {children}
     </div>
   );
