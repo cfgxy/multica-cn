@@ -775,7 +775,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
                 description: "Assignee UUID; required unless assignee_type is 'unassigned'.",
               },
               project_id: { type: "string", description: "Project UUID within the target workspace." },
-              parent_issue_id: { type: "string", description: "Parent issue id/identifier." },
+              parent_issue_id: { type: "string", description: "Parent issue UUID within the target workspace (identifiers not accepted)." },
               start_date: { type: "string", description: "Start date, YYYY-MM-DD.", pattern: DATE_PATTERN },
               due_date: { type: "string", description: "Due date, YYYY-MM-DD.", pattern: DATE_PATTERN },
               handoff_note: {
