@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { MulticaApiError, MulticaClient } from "../src/rest.js";
+import { MulticaApiError, MulticaClient, MulticaRequestError } from "../src/rest.js";
 import { findTool, TOOL_DEFINITIONS } from "../src/tools.js";
 import { ToolInputError } from "../src/schemas.js";
 import type { IssueInfo } from "../src/types.js";
@@ -64,6 +64,7 @@ describe("tool surface", () => {
       [
         "add_comment",
         "assign_issue",
+        "bulk_update_issues",
         "cancel_run",
         "create_issue",
         "dispatch_agent",
@@ -83,7 +84,7 @@ describe("tool surface", () => {
   });
 
   it("documents the quota cost on dispatch and comment tools", () => {
-    for (const name of ["dispatch_agent", "add_comment", "update_issue_status", "assign_issue"]) {
+    for (const name of ["dispatch_agent", "add_comment", "update_issue_status", "assign_issue", "bulk_update_issues"]) {
       const tool = findTool(name);
       expect(tool?.description).toMatch(/quota|run/i);
     }
@@ -586,5 +587,318 @@ describe("run lifecycle tools (RUYI-292)", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MulticaApiError);
     expect((err as MulticaApiError).message).toContain("agent_already_queued");
+  });
+});
+
+describe("bulk_update_issues (RUYI-353)", () => {
+  function updateIssueCalls(
+    client: MulticaClient,
+  ): Array<{ id: string; body: Record<string, unknown> }> {
+    return callsOf(client)
+      .filter((call) => call.method === "updateIssue")
+      .map((call) => ({ id: call.args[0] as string, body: call.args[1] as Record<string, unknown> }));
+  }
+
+  it("applies each item through the single-issue write path and reports index-aligned per-item results", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        return issueFixture({ id, identifier: id, revision: 5 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-2", priority: "high", project_id: "p1" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    const calls = updateIssueCalls(client);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ id: "VOI-1", body: { status: "done" } });
+    expect(calls[1]).toEqual({ id: "VOI-2", body: { priority: "high", project_id: "p1" } });
+    expect(result.total).toBe(2);
+    expect(result.updated).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(result.skipped).toBe(0);
+    const results = result.results as Array<Record<string, unknown>>;
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({
+      index: 0,
+      issue: "VOI-1",
+      outcome: "updated",
+      id: "VOI-1",
+      revision: 5,
+    });
+    expect(results[1]).toMatchObject({ index: 1, issue: "VOI-2", outcome: "updated" });
+  });
+
+  it("mixed batch: success, conflict and forbidden each get their own result — nothing silently skipped", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        if (id === "VOI-STALE") {
+          throw new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+        }
+        if (id === "VOI-DENIED") {
+          throw new MulticaApiError(403, "you do not have permission to assign work to this agent");
+        }
+        if (id === "VOI-GONE") {
+          throw new MulticaApiError(404, "issue not found in this workspace");
+        }
+        return issueFixture({ id, identifier: id, revision: 6 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          { issue: "VOI-OK", status: "done" },
+          { issue: "VOI-STALE", status: "done", expected_revision: 4 },
+          { issue: "VOI-DENIED", assignee_type: "agent", assignee_id: "a9" },
+          { issue: "VOI-GONE", status: "blocked" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(updateIssueCalls(client)).toHaveLength(4); // continue mode attempts every item
+    expect(result.updated).toBe(1);
+    expect(result.failed).toBe(3);
+    expect(result.skipped).toBe(0);
+    const results = result.results as Array<Record<string, unknown>>;
+    expect(results.map((item) => item.issue)).toEqual([
+      "VOI-OK",
+      "VOI-STALE",
+      "VOI-DENIED",
+      "VOI-GONE",
+    ]);
+    expect(results[1]?.outcome).toBe("failed");
+    expect(results[1]?.error).toMatchObject({ code: "conflict" });
+    expect((results[1]?.error as { message: string }).message).toContain("revision_conflict");
+    expect(results[2]?.error).toMatchObject({ code: "forbidden" });
+    expect((results[2]?.error as { message: string }).message).toContain(
+      "you do not have permission to assign work to this agent",
+    );
+    expect(results[3]?.error).toMatchObject({ code: "not_found" });
+    // A failed item carries only its own identifier and failure class — no
+    // other item's content leaks through it.
+    expect(JSON.stringify(results[2])).not.toContain("VOI-OK");
+  });
+
+  it("on_error='stop' stops at the first failure and marks the rest not_attempted", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        if (id === "VOI-2") {
+          throw new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+        }
+        return issueFixture({ id, identifier: id, revision: 9 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        on_error: "stop",
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-2", status: "done" },
+          { issue: "VOI-3", status: "done" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(updateIssueCalls(client)).toHaveLength(2); // VOI-3 was never attempted
+    expect(result.updated).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect((result.results as Array<Record<string, unknown>>)[2]).toEqual({
+      index: 2,
+      issue: "VOI-3",
+      outcome: "skipped",
+      reason: "not_attempted",
+    });
+  });
+
+  it("rejects a batch over the 50-item limit wholesale before any write", async () => {
+    const client = fakeClient();
+    const tool = findTool("bulk_update_issues");
+    const updates = Array.from({ length: 51 }, (_, i) => ({ issue: `VOI-${i + 1}`, status: "done" }));
+    await expect(tool?.handler({ workspace: WS, updates }, client)).rejects.toThrow(/50/);
+    expect(updateIssueCalls(client)).toHaveLength(0);
+  });
+
+  it("rejects empty and non-array updates before any write", async () => {
+    const tool = findTool("bulk_update_issues");
+    for (const updates of [[], "VOI-1", undefined]) {
+      const client = fakeClient();
+      await expect(tool?.handler({ workspace: WS, updates }, client)).rejects.toThrow(ToolInputError);
+      expect(updateIssueCalls(client)).toHaveLength(0);
+    }
+  });
+
+  it("validates every item up front; any bad item means zero API calls", async () => {
+    const badUpdates: Array<Record<string, unknown>> = [
+      { status: "done" }, // missing issue
+      { issue: "VOI-1" }, // no writable field
+      { issue: "VOI-1", title: "rename", status: "done" }, // unsupported field would be a silent no-op
+      { issue: "VOI-1", assignee_type: "member" }, // assignee_id missing
+      { issue: "VOI-1", assignee_id: "u1" }, // assignee_type missing
+      { issue: "VOI-1", assignee_type: "unassigned", assignee_id: "u1" },
+      { issue: "VOI-1", due_date: "30/09/2026" },
+      { issue: "VOI-1", priority: "asap" },
+      { issue: "VOI-1", status: "done", expected_revision: 0 }, // server requires a positive revision
+    ];
+    const tool = findTool("bulk_update_issues");
+    for (const bad of badUpdates) {
+      const client = fakeClient();
+      await expect(
+        tool?.handler(
+          { workspace: WS, updates: [bad, { issue: "VOI-2", status: "done" }] },
+          client,
+        ),
+      ).rejects.toThrow(ToolInputError);
+      expect(updateIssueCalls(client)).toHaveLength(0);
+    }
+    const client = fakeClient();
+    await expect(
+      tool?.handler(
+        { workspace: WS, updates: [{ issue: "VOI-1", status: "done" }], on_error: "rewind" },
+        client,
+      ),
+    ).rejects.toThrow(/on_error/);
+    expect(updateIssueCalls(client)).toHaveLength(0);
+  });
+
+  it("suppress_run: batch-level default fills items, per-item value wins, unset omits the key", async () => {
+    const tool = findTool("bulk_update_issues");
+    const client = fakeClient();
+    await tool?.handler(
+      {
+        workspace: WS,
+        suppress_run: true,
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-2", status: "done", suppress_run: false },
+        ],
+      },
+      client,
+    );
+    const bodies = updateIssueCalls(client).map((call) => call.body);
+    expect(bodies[0]).toEqual({ status: "done", suppress_run: true });
+    expect(bodies[1]).toEqual({ status: "done", suppress_run: false });
+
+    const unset = fakeClient();
+    await tool?.handler({ workspace: WS, updates: [{ issue: "VOI-1", status: "done" }] }, unset);
+    const body = updateIssueCalls(unset)[0]?.body ?? {};
+    // Single-tool default: no suppress_run on the wire, runs trigger as usual.
+    expect(Object.hasOwn(body, "suppress_run")).toBe(false);
+  });
+
+  it("per-item unassign sends the explicit JSON nulls the server contract requires", async () => {
+    const client = fakeClient();
+    const tool = findTool("bulk_update_issues");
+    await tool?.handler(
+      { workspace: WS, updates: [{ issue: "VOI-1", assignee_type: "unassigned" }] },
+      client,
+    );
+    const body = updateIssueCalls(client)[0]?.body ?? {};
+    expect(body.assignee_type).toBeNull();
+    expect(body.assignee_id).toBeNull();
+    const wire = JSON.stringify(body);
+    expect(wire).toContain('"assignee_type":null');
+    expect(wire).toContain('"assignee_id":null');
+  });
+
+  it("passes expected_revision and handoff_note through per item", async () => {
+    const client = fakeClient();
+    const tool = findTool("bulk_update_issues");
+    await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          {
+            issue: "VOI-1",
+            status: "in_review",
+            expected_revision: 8,
+            handoff_note: "先跑回归再收",
+          },
+        ],
+      },
+      client,
+    );
+    expect(updateIssueCalls(client)[0]?.body).toEqual({
+      status: "in_review",
+      expected_revision: 8,
+      handoff_note: "先跑回归再收",
+    });
+  });
+
+  it("classifies transport failures as transport_error and keeps attempting in continue mode", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        if (id === "VOI-TIMEOUT") {
+          throw new MulticaRequestError("Multica API request PUT /api/issues/VOI-TIMEOUT timed out after 30000ms");
+        }
+        return issueFixture({ id, identifier: id, revision: 2 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-TIMEOUT", status: "done" },
+          { issue: "VOI-2", status: "done" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(updateIssueCalls(client)).toHaveLength(3);
+    const results = result.results as Array<Record<string, unknown>>;
+    expect(results[1]?.outcome).toBe("failed");
+    expect(results[1]?.error).toMatchObject({ code: "transport_error" });
+    expect(results[2]).toMatchObject({ outcome: "updated" });
+  });
+
+  it("idempotent replay: re-sent items already applied fail as conflicts instead of writing twice", async () => {
+    const revisions: Record<string, number> = { "VOI-1": 4, "VOI-2": 7 };
+    let applied = 0;
+    const apply = async (_ws: string, id: string, body: Record<string, unknown>) => {
+      const current = revisions[id];
+      if (current === undefined) {
+        throw new MulticaApiError(404, "issue not found in this workspace");
+      }
+      if (body.expected_revision !== undefined && body.expected_revision !== current) {
+        throw new MulticaApiError(
+          409,
+          `revision_conflict: expected ${body.expected_revision}, actual ${current}`,
+        );
+      }
+      applied += 1;
+      revisions[id] = current + 1;
+      return issueFixture({ id, identifier: id, revision: current + 1 });
+    };
+    const updates = [
+      { issue: "VOI-1", status: "done", expected_revision: 4 },
+      { issue: "VOI-2", status: "cancelled", expected_revision: 7 },
+    ];
+    const tool = findTool("bulk_update_issues");
+    const first = (await tool?.handler({ workspace: WS, updates }, fakeClient({ updateIssue: apply }))) as Record<string, unknown>;
+    expect(first.updated).toBe(2);
+    const second = (await tool?.handler({ workspace: WS, updates }, fakeClient({ updateIssue: apply }))) as Record<string, unknown>;
+    expect(second.updated).toBe(0);
+    expect(second.failed).toBe(2);
+    for (const item of second.results as Array<{ error: { code: string } }>) {
+      expect(item.error.code).toBe("conflict");
+    }
+    expect(applied).toBe(2); // the replay produced no additional write
   });
 });
