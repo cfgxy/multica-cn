@@ -5,13 +5,13 @@ description: How agent prompts change over time, and what changed them — the p
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Self-Evolution is the prompt-governance workbench of a workspace. Open **Self-Evolution** in the workspace sidebar to inspect the version history and quality measurements of [agent](/agents) prompts, run regression quizzes against a fixed question bank, and turn observations into improvements through the proposal pool and the knowledge mirror.
+Self-Evolution is the prompt-governance workbench of a workspace. Open **Self-Evolution** in the workspace sidebar to inspect the version history and quality measurements of [agent](/agents) prompts, run regression quizzes against a fixed question bank, and turn observations into improvements through legislation proposals and the knowledge mirror.
 
-The page has seven tabs: Overview, Quality, Versions, Quiz, Skills, Proposals and Knowledge. It opens on Quality by default.
+The page has eight tabs: Overview, Quality, Versions, Quiz, Skills, Legislation, Retrospective and Knowledge. It opens on Quality by default.
 
 ## Overview
 
-A placeholder for the prompt-governance overview. No data is wired up yet; the entries to the other tabs work as usual.
+The overview aggregates the core readings of the other tabs into six cards: Prompt version activity (current versions and recent changes per carrier), quality readings (per time window, with environment and vendor failures excluded), quiz conclusion (baseline vs. current comparison), proposal pool (metrics pending), knowledge mirror (registered directories and entry counts) and skill observations (count and cumulative explicit invocations).
 
 ## Quality
 
@@ -35,22 +35,24 @@ The dashboard reads seven dimensions:
 
 The Versions tab is the entry to the prompt version lifecycle. One rule governs it: **every effective change appends a version; history is never rewritten**.
 
-Pick the agent with the **Subject** selector at the top first; without a subject the page only shows a placeholder.
+The version line covers six prompt carriers: workspace, project, squad, agent, autopilot and skill. The page offers no content editing: a version is created by taking a snapshot of the carrier's currently effective configuration; to change a carrier's content, use the carrier's own management entry.
 
-### Creating a version
+Pick the **carrier type** at the top first, then the **carrier** under it. The workspace type needs no second pick — it is this workspace itself. Without a carrier the page only shows a placeholder.
 
-1. After choosing a subject (agent), click **New version** at the top right.
-2. The editor is preloaded with the agent's currently effective prompt; edit it in place.
-3. Fill in the **change note**: what changed and why.
-4. Click **Save version**. The content is appended as the next version and takes effect immediately.
+### Taking a snapshot
+
+1. After picking a carrier type and a carrier, click **Snapshot** at the top right and confirm.
+2. The carrier's currently effective configuration is recorded as a new version (source badge "Snapshot"); the carrier's own content is not changed.
+3. Snapshots may be repeated: unchanged content can be snapshotted again, and every snapshot appends a new version.
+4. A snapshot's change note defaults to a fixed text ("snapshot of the current effective configuration").
 
 <Callout type="warning">
-Saving runs a secret scan: if the prompt appears to contain credentials, the save is rejected with the matched rules, line numbers and masked samples. Remove the flagged content and save again.
+Snapshots pass the same gates as every version write: the snapshot is refused when the carrier's effective content is empty or exceeds 200 KB (400), and refused when it appears to contain credentials (422) — with the matched rules, line numbers and masked samples. Remove the flagged content on the carrier's own management entry first, then take the snapshot again.
 </Callout>
 
 ### Activating and rolling back
 
-The version list is ordered newest first. Each row carries a source badge (Baseline / Edit / Rollback / Auto snapshot), the change note, the creation date, a content fingerprint prefix and a quality badge; the newest row also shows a **Latest** badge.
+The version list is ordered newest first. Each row carries a source badge (Baseline / Edit / Rollback / Auto snapshot / Snapshot), the change note, the creation date, a content fingerprint prefix and a quality badge; the newest row also shows a **Latest** badge.
 
 Activating any historical version (**Activate**) performs a rollback: its content is copied forward as a new latest version and takes effect immediately, while the old rows stay untouched. Versions created by a rollback show "from vN". You can later activate an even older version to undo the switch — history only grows, and every switch leaves a complete trail.
 
@@ -64,7 +66,7 @@ Quality evaluation binds each run to the prompt version it claimed. The badge on
 
 ### Write access
 
-Reading versions is open to every member; **New version** and **Activate** are workspace-owner only (admins are not included). Non-owners see no write controls.
+Reading versions is open to every member; **Snapshot** and **Activate** are workspace-owner only (admins are not included). Non-owners see no write controls.
 
 ## Quiz
 
@@ -84,27 +86,37 @@ Differences across versions are observational and do not prove that the skill ca
 
 Restoring a historical version is append-only too: an owner clicks **Restore version** and the content becomes a new version; assignments remain unchanged.
 
-## Proposals
+## Legislation
 
-The Proposals tab manages improvement proposals. A proposal enters the pool only with a falsifiable prophecy: quantitative proposals carry a metric, an expected direction and a numeric band; behavior proposals an observable change and a falsification condition. The prophecy is written at creation and frozen afterwards.
+The Legislation tab manages clause-level Prompt improvement drafts for the four Prompt carriers (workspace, project, squad, agent). Each proposal binds a target section and a change kind (add clause / remove clause), carries the final clause text and evidence anchors (issue number + quote); submitting for approval requires completing the five content-gate answers: layer assignment, retention rationale, cost statement, conflict ruling and duplicate check.
 
-Proposals move through draft, needs revision, adopted, rejected and archived. Rejected proposals stay retrievable; after adoption, verification records (established / partially established / refuted / undeterminable) require evidence.
+Proposals flow draft → pending owner → approved → enacted. Gate-failed and rejected proposals stay on record and can be reworked for resubmission or restored to draft. Source labels distinguish manual drafts, daily-retrospective automation and merges.
 
-Adopting, rejecting, restoring to draft and recording verification are workspace-owner only.
+Every member can draft, edit and submit their own proposals; approving (including batch approval, up to 20 per batch), rejecting, restoring to draft and enacting are workspace-owner only. Approval requires previewing the full-carrier diff in the sandbox and confirming it explicitly; enacting reruns the legislation gate and writes the effective configuration only on a clean pass.
+
+## Retrospective
+
+The Retrospective tab is a built-in scheduler: it reads the real execution content of completed issues inside the lookback window, distills Prompt improvement drafts and drops them into legislation proposals in batches, without ever posting issue comments.
+
+The config area offers a scheduled-run toggle, an "also scan in_review issues" option and the lookback window in days; saving applies the config, and "Run now" triggers a manual pass. The runs list shows each run's status (succeeded / failed / running), window, scanned / analyzed / created / merged / duplicate-skipped counts and errors.
+
+Without an LLM configured, a run records a failed entry naming the missing configuration. Viewing the config and runs is open to every member; changing the config and running now are workspace-owner only.
 
 ## Knowledge
 
-The Knowledge tab mirrors candidate bd memories directories read-only. After registering a directory you can run scans (showing added / updated / removed counts) and search the entry mirror by key or content.
+The Knowledge tab mirrors bd memories directories read-only: the connected daemon auto-discovers project-local bd memories, and local directories can be added manually. After registering a directory you can run scans (showing added / updated / removed counts) and search the entry mirror by key or content.
 
-The mirror itself is read-only: the only write path is an owner adopting a pending entry, which transfers the content into the ultimate library. Registering, scanning, unregistering and adopting are workspace-owner only.
+The mirror itself is read-only: the only write path is an owner adopting a pending entry, which transfers the content into the knowledge hub. Registering, scanning, unregistering and adopting are workspace-owner only.
 
 ## Permission summary
 
 | Action | Permission |
 |---|---|
 | Viewing all tabs and readings | Every member |
-| Creating versions, activating (rolling back) versions | Workspace owner |
+| Taking snapshots, activating (rolling back) versions | Workspace owner |
 | Adding / editing / deleting quiz questions | Workspace owner |
 | Restoring skill versions | Workspace owner |
-| Adopting / rejecting / restoring / verifying proposals | Workspace owner |
+| Drafting / editing / submitting / previewing / reworking proposals | Every member (own drafts) |
+| Approving / rejecting / restoring / enacting proposals | Workspace owner |
+| Configuring / running the retrospective | Workspace owner |
 | Registering / scanning / unregistering / adopting knowledge directories | Workspace owner |
