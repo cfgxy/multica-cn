@@ -117,6 +117,16 @@ func finalStems() []string {
 	return stems
 }
 
+// postConsolidationStems are the 9xx stems added after the RUYI-359
+// consolidation snapshot. The on-disk equality below requires the 17
+// canonical stems plus everything registered here, so stray or deleted 9xx
+// files still fail; each new 9xx migration appends its stem in the same
+// change that adds the files.
+var postConsolidationStems = []string{
+	"958_issue_dependency_type_widen",  // RUYI-351
+	"959_issue_dependency_unique_edge", // RUYI-351
+}
+
 // originalStems are the 72 stems the pre-consolidation tree defined at
 // fb42ab58b46de24dcae64459647f5671d88d57be.
 func originalStems() []string {
@@ -177,7 +187,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 		}
 	}
 	wantDisk := map[string]bool{}
-	for _, f := range finalStems() {
+	for _, f := range append(append([]string{}, finalStems()...), postConsolidationStems...) {
 		wantDisk[f] = true
 	}
 	if !reflect.DeepEqual(onDisk, wantDisk) {
@@ -213,7 +223,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			objects: []string{"ALL"},
 		},
 		{
-			name: "new-tree-idempotent",
+			name:    "new-tree-idempotent",
 			initial: append([]string{"untouched"}, finalStems()...),
 			want:    nil, // computed below: unchanged
 			objects: []string{"ALL"},
@@ -320,7 +330,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			for _, version := range tc.initial {
 				if _, err := conn.Exec(ctx,
 					"INSERT INTO schema_migrations VALUES ($1, '2026-01-01T00:00:00Z')", version); err != nil {
-				t.Fatal(err)
+					t.Fatal(err)
 				}
 			}
 			if tc.breakObject != "" {
