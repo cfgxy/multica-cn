@@ -14,12 +14,12 @@ import (
 // schema-manifest tests structurally red), missing = branch migrations the
 // database has not applied.
 func TestLedgerDrift(t *testing.T) {
-	branch := []string{"001_init", "029_daemon_token", "953_knowledge_dir_daemon_idx"}
+	branch := []string{"001_init", "029_daemon_token", "911_knowledge"}
 
 	extras, missing := ledgerDrift(branch, []string{
 		"001_init",
 		"029_daemon_token",
-		"953_knowledge_dir_daemon_idx",
+		"911_knowledge",
 	})
 	if len(extras) != 0 || len(missing) != 0 {
 		t.Fatalf("aligned sets must not drift: extras=%v missing=%v", extras, missing)
@@ -28,10 +28,10 @@ func TestLedgerDrift(t *testing.T) {
 	extras, missing = ledgerDrift(branch, []string{
 		"001_init",
 		"029_daemon_token",
-		"953_knowledge_dir_daemon_idx",
-		"972_agent_task_cancel_requested",
+		"911_knowledge",
+		"916_agent_task_queue",
 	})
-	if len(extras) != 1 || extras[0] != "972_agent_task_cancel_requested" {
+	if len(extras) != 1 || extras[0] != "916_agent_task_queue" {
 		t.Fatalf("superset ledger must surface the extra version, got extras=%v", extras)
 	}
 	if len(missing) != 0 {
