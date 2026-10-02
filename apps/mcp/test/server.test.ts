@@ -74,14 +74,18 @@ describe("createMcpServer (via in-memory client)", () => {
     expect(names).toEqual([
       "add_comment",
       "assign_issue",
+      "cancel_run",
       "create_issue",
       "dispatch_agent",
       "get_issue",
+      "get_run",
       "list_agents",
+      "list_issue_runs",
       "list_issues",
       "list_projects",
       "list_workspaces",
       "progress_digest",
+      "retry_run",
       "search_issues",
       "update_issue_status",
     ]);

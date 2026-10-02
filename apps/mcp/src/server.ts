@@ -35,6 +35,8 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "get_issue",
   "search_issues",
   "progress_digest",
+  "list_issue_runs",
+  "get_run",
 ]);
 
 export function createMcpServer(client: MulticaClient): Server {

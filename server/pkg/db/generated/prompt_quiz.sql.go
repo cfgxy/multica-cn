@@ -121,12 +121,13 @@ func (q *Queries) CountPromptQuizMeasurementsForVersion(ctx context.Context, arg
 const createPromptQuizItem = `-- name: CreatePromptQuizItem :one
 
 INSERT INTO prompt_quiz_item (
-    workspace_id, slug, title, body, rubric, runtime_profile, created_by_user_id
+    workspace_id, slug, title, body, rubric, rubric_checks, tags, difficulty, runtime_profile, created_by_user_id
 ) VALUES (
     $1, $2, $3, $4,
-    $5, $6, $7
+    $5, $6, $7, $8,
+    $9, $10
 )
-RETURNING id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric
+RETURNING id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric, tags, difficulty, rubric_checks
 `
 
 type CreatePromptQuizItemParams struct {
@@ -135,6 +136,9 @@ type CreatePromptQuizItemParams struct {
 	Title           string      `json:"title"`
 	Body            string      `json:"body"`
 	Rubric          string      `json:"rubric"`
+	RubricChecks    []byte      `json:"rubric_checks"`
+	Tags            []string    `json:"tags"`
+	Difficulty      string      `json:"difficulty"`
 	RuntimeProfile  string      `json:"runtime_profile"`
 	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
 }
@@ -152,6 +156,9 @@ func (q *Queries) CreatePromptQuizItem(ctx context.Context, arg CreatePromptQuiz
 		arg.Title,
 		arg.Body,
 		arg.Rubric,
+		arg.RubricChecks,
+		arg.Tags,
+		arg.Difficulty,
 		arg.RuntimeProfile,
 		arg.CreatedByUserID,
 	)
@@ -169,6 +176,9 @@ func (q *Queries) CreatePromptQuizItem(ctx context.Context, arg CreatePromptQuiz
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Rubric,
+		&i.Tags,
+		&i.Difficulty,
+		&i.RubricChecks,
 	)
 	return i, err
 }
@@ -189,7 +199,7 @@ SELECT
     $1, $2, NULL::uuid, 'queued', $3,
     $4, 'quiz', 'quiz_item', $5
 WHERE lock_task_owner_rows($1, NULL::uuid, $2)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at
 `
 
 type CreatePromptQuizTaskParams struct {
@@ -278,6 +288,8 @@ func (q *Queries) CreatePromptQuizTask(ctx context.Context, arg CreatePromptQuiz
 		&i.DurableWorkDir,
 		&i.ChannelContextRevision,
 		&i.PromptVersions,
+		&i.CancelRequestedByUserID,
+		&i.CancelRequestedAt,
 	)
 	return i, err
 }
@@ -302,7 +314,7 @@ func (q *Queries) DeletePromptQuizItem(ctx context.Context, arg DeletePromptQuiz
 }
 
 const getPromptQuizItem = `-- name: GetPromptQuizItem :one
-SELECT id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric
+SELECT id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric, tags, difficulty, rubric_checks
 FROM prompt_quiz_item
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
@@ -329,8 +341,29 @@ func (q *Queries) GetPromptQuizItem(ctx context.Context, arg GetPromptQuizItemPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Rubric,
+		&i.Tags,
+		&i.Difficulty,
+		&i.RubricChecks,
 	)
 	return i, err
+}
+
+const getPromptQuizItemWorkspace = `-- name: GetPromptQuizItemWorkspace :one
+SELECT workspace_id
+FROM prompt_quiz_item
+WHERE id = $1::uuid
+`
+
+// Workspace resolution for quiz runs (RUYI-286 rework). ResolveTaskWorkspaceID
+// knows only the task, so this is the one item read that cannot be
+// workspace-scoped: it looks the workspace UP from the item id the task's
+// context carries, instead of filtering by one. Selects the id alone — the
+// private halves must not travel on an access-control path.
+func (q *Queries) GetPromptQuizItemWorkspace(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getPromptQuizItemWorkspace, id)
+	var workspace_id pgtype.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
 }
 
 const getPromptQuizSweepState = `-- name: GetPromptQuizSweepState :one
@@ -358,6 +391,34 @@ func (q *Queries) GetPromptQuizSweepState(ctx context.Context) (GetPromptQuizSwe
 		&i.LastError,
 	)
 	return i, err
+}
+
+const getPromptQuizTaskAnswer = `-- name: GetPromptQuizTaskAnswer :one
+SELECT content
+FROM task_message
+WHERE task_id = $1::uuid
+  AND type = 'text'
+  AND content IS NOT NULL
+ORDER BY seq DESC
+LIMIT 1
+`
+
+// The answer a quiz run produced: its last text message (RUYI-286 grading).
+//
+// 'text' is the assistant-output message type the daemon writes (thinking /
+// tool_use / tool_result / error are the others); the LAST one by seq is the
+// run's conclusion. task_message is the single transcript — this reads it,
+// it does not copy it, so grading evidence can point at the run without the
+// result row growing a second copy of the answer.
+//
+// ErrNoRows is the "no answer" case (errored run, or a completed run that
+// somehow produced no text): the collector maps it to a NULL score, which is
+// the "measured but not graded" state migration 950 defines.
+func (q *Queries) GetPromptQuizTaskAnswer(ctx context.Context, taskID pgtype.UUID) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, getPromptQuizTaskAnswer, taskID)
+	var content pgtype.Text
+	err := row.Scan(&content)
+	return content, err
 }
 
 const latestQuizMeasuredScopeByWorkspace = `-- name: LatestQuizMeasuredScopeByWorkspace :one
@@ -604,6 +665,104 @@ func (q *Queries) ListPromptQuizBatchOutcomes(ctx context.Context, batchID pgtyp
 	return items, nil
 }
 
+const listPromptQuizGradedSamples = `-- name: ListPromptQuizGradedSamples :many
+SELECT
+    r.task_id,
+    r.batch_id,
+    r.item_id,
+    r.item_revision,
+    r.item_body_sha256,
+    r.outcome,
+    r.score,
+    r.score_detail,
+    r.graded_at,
+    r.measured_at,
+    r.run_tokens,
+    i.slug AS item_slug,
+    i.title AS item_title
+FROM prompt_quiz_result r
+LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
+WHERE r.workspace_id = $1::uuid
+  AND r.scope = $2::text
+  AND r.scope_id = $3::uuid
+  AND r.version = $4::int
+ORDER BY r.measured_at DESC
+LIMIT $5::int
+`
+
+type ListPromptQuizGradedSamplesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Scope       string      `json:"scope"`
+	ScopeID     pgtype.UUID `json:"scope_id"`
+	Version     int32       `json:"version"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+type ListPromptQuizGradedSamplesRow struct {
+	TaskID         pgtype.UUID        `json:"task_id"`
+	BatchID        pgtype.UUID        `json:"batch_id"`
+	ItemID         pgtype.UUID        `json:"item_id"`
+	ItemRevision   int32              `json:"item_revision"`
+	ItemBodySha256 string             `json:"item_body_sha256"`
+	Outcome        string             `json:"outcome"`
+	Score          pgtype.Float4      `json:"score"`
+	ScoreDetail    []byte             `json:"score_detail"`
+	GradedAt       pgtype.Timestamptz `json:"graded_at"`
+	MeasuredAt     pgtype.Timestamptz `json:"measured_at"`
+	RunTokens      pgtype.Int8        `json:"run_tokens"`
+	ItemSlug       pgtype.Text        `json:"item_slug"`
+	ItemTitle      pgtype.Text        `json:"item_title"`
+}
+
+// One scope-version's graded samples, newest first, for the drill-down
+// (RUYI-286): the row the quality page reads to answer "what did this version
+// score on this question, when, and on what evidence". Owner-only at the
+// route for the same reason as the batch list above.
+//
+// Like ListPromptQuizResultsForBatch: LEFT JOIN so deleting an item keeps its
+// readings readable; errored rows return with their outcome intact so "not
+// graded because the run errored" stays visible rather than collapsing into
+// the graded population.
+func (q *Queries) ListPromptQuizGradedSamples(ctx context.Context, arg ListPromptQuizGradedSamplesParams) ([]ListPromptQuizGradedSamplesRow, error) {
+	rows, err := q.db.Query(ctx, listPromptQuizGradedSamples,
+		arg.WorkspaceID,
+		arg.Scope,
+		arg.ScopeID,
+		arg.Version,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPromptQuizGradedSamplesRow{}
+	for rows.Next() {
+		var i ListPromptQuizGradedSamplesRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.BatchID,
+			&i.ItemID,
+			&i.ItemRevision,
+			&i.ItemBodySha256,
+			&i.Outcome,
+			&i.Score,
+			&i.ScoreDetail,
+			&i.GradedAt,
+			&i.MeasuredAt,
+			&i.RunTokens,
+			&i.ItemSlug,
+			&i.ItemTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPromptQuizItemDiscrimination = `-- name: ListPromptQuizItemDiscrimination :many
 WITH current_wording AS (
     SELECT DISTINCT ON (r.item_id)
@@ -695,6 +854,8 @@ SELECT
     title,
     body,
     revision,
+    tags,
+    difficulty,
     runtime_profile,
     active,
     created_by_user_id,
@@ -718,6 +879,8 @@ type ListPromptQuizItemsRow struct {
 	Title           string             `json:"title"`
 	Body            string             `json:"body"`
 	Revision        int32              `json:"revision"`
+	Tags            []string           `json:"tags"`
+	Difficulty      string             `json:"difficulty"`
 	RuntimeProfile  string             `json:"runtime_profile"`
 	Active          bool               `json:"active"`
 	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
@@ -728,8 +891,10 @@ type ListPromptQuizItemsRow struct {
 // The member-visible bank. Columns are named rather than selected with * so that
 // rubric — the private half (migration 935) — cannot reach this response by
 // being added to the table: the Go type this generates simply has no field for
-// it. Reading a rubric goes through GetPromptQuizItem, which the router puts
-// behind the owner role.
+// it. The same holds for rubric_checks (migration 950), the structured half of
+// the answer key: tags and difficulty are member-visible presentation metadata
+// and DO travel; the two answer-key halves never do. Reading a private half
+// goes through GetPromptQuizItem, which the router puts behind the owner role.
 func (q *Queries) ListPromptQuizItems(ctx context.Context, arg ListPromptQuizItemsParams) ([]ListPromptQuizItemsRow, error) {
 	rows, err := q.db.Query(ctx, listPromptQuizItems, arg.WorkspaceID, arg.ActiveOnly)
 	if err != nil {
@@ -746,11 +911,107 @@ func (q *Queries) ListPromptQuizItems(ctx context.Context, arg ListPromptQuizIte
 			&i.Title,
 			&i.Body,
 			&i.Revision,
+			&i.Tags,
+			&i.Difficulty,
 			&i.RuntimeProfile,
 			&i.Active,
 			&i.CreatedByUserID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPromptQuizResultsForBatch = `-- name: ListPromptQuizResultsForBatch :many
+SELECT
+    r.task_id,
+    r.scope,
+    r.scope_id,
+    r.version,
+    r.item_id,
+    r.item_revision,
+    r.outcome,
+    r.score,
+    r.score_detail,
+    r.graded_at,
+    r.measured_at,
+    r.run_tokens,
+    i.slug AS item_slug,
+    i.title AS item_title,
+    atq.status AS task_status
+FROM prompt_quiz_result r
+LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
+JOIN agent_task_queue atq ON atq.id = r.task_id
+WHERE r.workspace_id = $1::uuid
+  AND r.batch_id = $2::uuid
+ORDER BY r.measured_at DESC
+LIMIT $3::int
+`
+
+type ListPromptQuizResultsForBatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+type ListPromptQuizResultsForBatchRow struct {
+	TaskID       pgtype.UUID        `json:"task_id"`
+	Scope        string             `json:"scope"`
+	ScopeID      pgtype.UUID        `json:"scope_id"`
+	Version      int32              `json:"version"`
+	ItemID       pgtype.UUID        `json:"item_id"`
+	ItemRevision int32              `json:"item_revision"`
+	Outcome      string             `json:"outcome"`
+	Score        pgtype.Float4      `json:"score"`
+	ScoreDetail  []byte             `json:"score_detail"`
+	GradedAt     pgtype.Timestamptz `json:"graded_at"`
+	MeasuredAt   pgtype.Timestamptz `json:"measured_at"`
+	RunTokens    pgtype.Int8        `json:"run_tokens"`
+	ItemSlug     pgtype.Text        `json:"item_slug"`
+	ItemTitle    pgtype.Text        `json:"item_title"`
+	TaskStatus   string             `json:"task_status"`
+}
+
+// One batch's rows for the traceability view (RUYI-286): per sample — which
+// item, which agent/version, outcome, score, and the task id that joins back
+// to the run. Owner-only at the route: it exposes score_detail's assertion
+// evidence, which is the private half's grading output.
+//
+// LEFT JOIN, not JOIN: an item hard-deleted after the batch ran must not erase
+// the batch's history — the reading stays interpretable through item_revision
+// and item_body_sha256, which is exactly why the item is not a version table.
+func (q *Queries) ListPromptQuizResultsForBatch(ctx context.Context, arg ListPromptQuizResultsForBatchParams) ([]ListPromptQuizResultsForBatchRow, error) {
+	rows, err := q.db.Query(ctx, listPromptQuizResultsForBatch, arg.WorkspaceID, arg.BatchID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPromptQuizResultsForBatchRow{}
+	for rows.Next() {
+		var i ListPromptQuizResultsForBatchRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.Scope,
+			&i.ScopeID,
+			&i.Version,
+			&i.ItemID,
+			&i.ItemRevision,
+			&i.Outcome,
+			&i.Score,
+			&i.ScoreDetail,
+			&i.GradedAt,
+			&i.MeasuredAt,
+			&i.RunTokens,
+			&i.ItemSlug,
+			&i.ItemTitle,
+			&i.TaskStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -770,6 +1031,7 @@ SELECT
     r.runtime_id,
     r.run_model,
     r.outcome,
+    r.score,
     r.run_tokens,
     r.duration_ms,
     r.measured_at
@@ -795,6 +1057,7 @@ type ListPromptQuizSamplesRow struct {
 	RuntimeID      pgtype.UUID        `json:"runtime_id"`
 	RunModel       pgtype.Text        `json:"run_model"`
 	Outcome        string             `json:"outcome"`
+	Score          pgtype.Float4      `json:"score"`
 	RunTokens      pgtype.Int8        `json:"run_tokens"`
 	DurationMs     pgtype.Int8        `json:"duration_ms"`
 	MeasuredAt     pgtype.Timestamptz `json:"measured_at"`
@@ -838,6 +1101,7 @@ func (q *Queries) ListPromptQuizSamples(ctx context.Context, arg ListPromptQuizS
 			&i.RuntimeID,
 			&i.RunModel,
 			&i.Outcome,
+			&i.Score,
 			&i.RunTokens,
 			&i.DurationMs,
 			&i.MeasuredAt,
@@ -937,19 +1201,25 @@ UPDATE prompt_quiz_item
 SET title = $1,
     body = $2,
     rubric = $3,
-    runtime_profile = $4,
-    active = $5,
+    rubric_checks = $4,
+    tags = $5,
+    difficulty = $6,
+    runtime_profile = $7,
+    active = $8,
     revision = CASE WHEN body = $2 THEN revision ELSE revision + 1 END,
     updated_at = now()
-WHERE id = $6::uuid
-  AND workspace_id = $7::uuid
-RETURNING id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric
+WHERE id = $9::uuid
+  AND workspace_id = $10::uuid
+RETURNING id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric, tags, difficulty, rubric_checks
 `
 
 type UpdatePromptQuizItemParams struct {
 	Title          string      `json:"title"`
 	Body           string      `json:"body"`
 	Rubric         string      `json:"rubric"`
+	RubricChecks   []byte      `json:"rubric_checks"`
+	Tags           []string    `json:"tags"`
+	Difficulty     string      `json:"difficulty"`
 	RuntimeProfile string      `json:"runtime_profile"`
 	Active         bool        `json:"active"`
 	ID             pgtype.UUID `json:"id"`
@@ -960,12 +1230,17 @@ type UpdatePromptQuizItemParams struct {
 // rewriting its rubric, must not orphan the measurements already taken against
 // its wording, and bumping on every save would do exactly that. The rubric is
 // deliberately not part of the test: it never reached the run being measured, so
-// editing it changes nothing about what was measured.
+// editing it changes nothing about what was measured. rubric_checks follows the
+// rubric for the same reason — it grades answers, it is not part of what was
+// measured (migration 950).
 func (q *Queries) UpdatePromptQuizItem(ctx context.Context, arg UpdatePromptQuizItemParams) (PromptQuizItem, error) {
 	row := q.db.QueryRow(ctx, updatePromptQuizItem,
 		arg.Title,
 		arg.Body,
 		arg.Rubric,
+		arg.RubricChecks,
+		arg.Tags,
+		arg.Difficulty,
 		arg.RuntimeProfile,
 		arg.Active,
 		arg.ID,
@@ -985,6 +1260,86 @@ func (q *Queries) UpdatePromptQuizItem(ctx context.Context, arg UpdatePromptQuiz
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Rubric,
+		&i.Tags,
+		&i.Difficulty,
+		&i.RubricChecks,
+	)
+	return i, err
+}
+
+const upsertPromptQuizBankItem = `-- name: UpsertPromptQuizBankItem :one
+INSERT INTO prompt_quiz_item (
+    workspace_id, slug, title, body, rubric, rubric_checks, tags, difficulty, runtime_profile, created_by_user_id
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9, $10
+)
+ON CONFLICT (workspace_id, slug) DO UPDATE SET
+    title = EXCLUDED.title,
+    body = EXCLUDED.body,
+    rubric = EXCLUDED.rubric,
+    rubric_checks = EXCLUDED.rubric_checks,
+    tags = EXCLUDED.tags,
+    difficulty = EXCLUDED.difficulty,
+    revision = CASE WHEN prompt_quiz_item.body = EXCLUDED.body
+                    THEN prompt_quiz_item.revision
+                    ELSE prompt_quiz_item.revision + 1 END,
+    updated_at = now()
+RETURNING id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric, tags, difficulty, rubric_checks
+`
+
+type UpsertPromptQuizBankItemParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	Slug            string      `json:"slug"`
+	Title           string      `json:"title"`
+	Body            string      `json:"body"`
+	Rubric          string      `json:"rubric"`
+	RubricChecks    []byte      `json:"rubric_checks"`
+	Tags            []string    `json:"tags"`
+	Difficulty      string      `json:"difficulty"`
+	RuntimeProfile  string      `json:"runtime_profile"`
+	CreatedByUserID pgtype.UUID `json:"created_by_user_id"`
+}
+
+// Bank import (RUYI-286): upsert on the item's (workspace_id, slug) identity so
+// re-importing the benchmark catalog updates the shipped wording in place
+// instead of duplicating it. Revision semantics mirror UpdatePromptQuizItem: the
+// body is the only field whose change orphans old measurements, so only a body
+// change advances it — a rubric/checks/tags/difficulty edit regrades future
+// runs and re-renders the bank without rewriting history. created_by_user_id
+// keeps the original author on conflict: an import refreshes content, it does
+// not re-attribute it.
+func (q *Queries) UpsertPromptQuizBankItem(ctx context.Context, arg UpsertPromptQuizBankItemParams) (PromptQuizItem, error) {
+	row := q.db.QueryRow(ctx, upsertPromptQuizBankItem,
+		arg.WorkspaceID,
+		arg.Slug,
+		arg.Title,
+		arg.Body,
+		arg.Rubric,
+		arg.RubricChecks,
+		arg.Tags,
+		arg.Difficulty,
+		arg.RuntimeProfile,
+		arg.CreatedByUserID,
+	)
+	var i PromptQuizItem
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Slug,
+		&i.Title,
+		&i.Body,
+		&i.Revision,
+		&i.RuntimeProfile,
+		&i.Active,
+		&i.CreatedByUserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Rubric,
+		&i.Tags,
+		&i.Difficulty,
+		&i.RubricChecks,
 	)
 	return i, err
 }
@@ -994,44 +1349,58 @@ INSERT INTO prompt_quiz_result (
     workspace_id, scope, scope_id, version,
     item_id, item_revision, item_body_sha256,
     runtime_id, run_model,
-    batch_id, task_id, outcome, run_tokens, duration_ms, measured_at
+    batch_id, task_id, outcome, run_tokens, duration_ms, measured_at,
+    score, score_detail, graded_at
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
     $8, $9,
     $10, $11, $12,
-    $13, $14, now()
+    $13, $14, now(),
+    $15, $16, $17
 )
 ON CONFLICT (task_id) DO UPDATE SET
     outcome = EXCLUDED.outcome,
     run_tokens = EXCLUDED.run_tokens,
     run_model = EXCLUDED.run_model,
     duration_ms = EXCLUDED.duration_ms,
+    score = EXCLUDED.score,
+    score_detail = EXCLUDED.score_detail,
+    graded_at = EXCLUDED.graded_at,
     measured_at = now()
-RETURNING id, workspace_id, scope, scope_id, version, item_id, item_revision, item_body_sha256, batch_id, task_id, outcome, run_tokens, duration_ms, measured_at, runtime_id, run_model
+RETURNING id, workspace_id, scope, scope_id, version, item_id, item_revision, item_body_sha256, batch_id, task_id, outcome, run_tokens, duration_ms, measured_at, runtime_id, run_model, score, score_detail, graded_at
 `
 
 type UpsertPromptQuizResultParams struct {
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-	Scope          string      `json:"scope"`
-	ScopeID        pgtype.UUID `json:"scope_id"`
-	Version        int32       `json:"version"`
-	ItemID         pgtype.UUID `json:"item_id"`
-	ItemRevision   int32       `json:"item_revision"`
-	ItemBodySha256 string      `json:"item_body_sha256"`
-	RuntimeID      pgtype.UUID `json:"runtime_id"`
-	RunModel       pgtype.Text `json:"run_model"`
-	BatchID        pgtype.UUID `json:"batch_id"`
-	TaskID         pgtype.UUID `json:"task_id"`
-	Outcome        string      `json:"outcome"`
-	RunTokens      pgtype.Int8 `json:"run_tokens"`
-	DurationMs     pgtype.Int8 `json:"duration_ms"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	ScopeID        pgtype.UUID        `json:"scope_id"`
+	Version        int32              `json:"version"`
+	ItemID         pgtype.UUID        `json:"item_id"`
+	ItemRevision   int32              `json:"item_revision"`
+	ItemBodySha256 string             `json:"item_body_sha256"`
+	RuntimeID      pgtype.UUID        `json:"runtime_id"`
+	RunModel       pgtype.Text        `json:"run_model"`
+	BatchID        pgtype.UUID        `json:"batch_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	Outcome        string             `json:"outcome"`
+	RunTokens      pgtype.Int8        `json:"run_tokens"`
+	DurationMs     pgtype.Int8        `json:"duration_ms"`
+	Score          pgtype.Float4      `json:"score"`
+	ScoreDetail    []byte             `json:"score_detail"`
+	GradedAt       pgtype.Timestamptz `json:"graded_at"`
 }
 
 // Collection is keyed on task_id, so a sweep that is re-entered after a crash
 // rewrites the measurement it already wrote instead of doubling the sample —
 // the property the distribution baseline depends on, since N is counted from
 // these rows.
+//
+// score / score_detail / graded_at (migration 950) ride the same upsert: the
+// grade is computed by the collector just before this call, so a re-collected
+// task re-grades instead of keeping a stale verdict. A NULL score is a stored
+// state, not an omission: an item without checks, an errored run, and a run
+// that left no answer text are all "measured but not graded".
 func (q *Queries) UpsertPromptQuizResult(ctx context.Context, arg UpsertPromptQuizResultParams) (PromptQuizResult, error) {
 	row := q.db.QueryRow(ctx, upsertPromptQuizResult,
 		arg.WorkspaceID,
@@ -1048,6 +1417,9 @@ func (q *Queries) UpsertPromptQuizResult(ctx context.Context, arg UpsertPromptQu
 		arg.Outcome,
 		arg.RunTokens,
 		arg.DurationMs,
+		arg.Score,
+		arg.ScoreDetail,
+		arg.GradedAt,
 	)
 	var i PromptQuizResult
 	err := row.Scan(
@@ -1067,6 +1439,9 @@ func (q *Queries) UpsertPromptQuizResult(ctx context.Context, arg UpsertPromptQu
 		&i.MeasuredAt,
 		&i.RuntimeID,
 		&i.RunModel,
+		&i.Score,
+		&i.ScoreDetail,
+		&i.GradedAt,
 	)
 	return i, err
 }

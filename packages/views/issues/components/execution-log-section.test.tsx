@@ -7,6 +7,27 @@ import { renderWithI18n } from "../../test/i18n";
 
 const mockState = vi.hoisted(() => ({
   taskMessagesOptions: vi.fn(),
+  retryIssueRun: vi.fn(),
+  drawerProps: [] as { task: { id: string } | null }[],
+}));
+
+vi.mock("sonner", () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
+}));
+
+vi.mock("@multica/core/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/api")>();
+  return {
+    ...actual,
+    api: { ...actual.api, retryIssueRun: mockState.retryIssueRun },
+  };
+});
+
+vi.mock("./run-detail-drawer", () => ({
+  RunDetailDrawer: (props: { task: { id: string } | null }) => {
+    mockState.drawerProps.push(props);
+    return null;
+  },
 }));
 
 vi.mock("@multica/core/chat/queries", () => ({
@@ -34,7 +55,7 @@ import {
   IssueUsageTotal,
 } from "./execution-log-section";
 import type { TaskUsage } from "@multica/core/types";
-import { act, within } from "@testing-library/react";
+import { act, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { issueKeys } from "@multica/core/issues/queries";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
@@ -113,6 +134,7 @@ describe("TaskCommentCoverage", () => {
     "dispatched",
     "waiting_local_directory",
     "running",
+    "cancel_requested",
     "completed",
     "failed",
   ])("shows merged comment coverage for %s tasks", (status) => {
@@ -446,5 +468,264 @@ describe("IssueUsageTotal pricing", () => {
 
     // 1M input tokens at $7/M, without any refetch.
     expect(screen.getByText("$7.00")).toBeInTheDocument();
+  });
+});
+
+// ─── RUYI-292 run lifecycle UI ─────────────────────────────────────────────
+
+import { ApiError } from "@multica/core/api";
+import { toast } from "sonner";
+
+// cancel_requested is a sixth ACTIVE state: the row sits in the active
+// bucket, reads "Stopping", and its stop button re-fires the request
+// (aria "Resend stop request") instead of re-opening the confirm dialog.
+describe("cancel_requested (two-phase stop)", () => {
+  it("renders a stopping run in the active bucket with a resend action", () => {
+    renderWithI18n(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "cancel_requested",
+          cancel_requested_at: "2026-06-08T08:04:50Z",
+        })}
+        issueId="issue-1"
+      />,
+    );
+
+    expect(screen.getByText("Stopping")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Resend stop request" }),
+    ).toBeInTheDocument();
+  });
+
+  it("flags a stop as unconfirmed only past the 30s window", () => {
+    // 14s in — accepted, still within the confirmation window: no banner.
+    const { rerender } = renderWithI18n(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "cancel_requested",
+          cancel_requested_at: "2026-06-08T08:04:50Z",
+        })}
+        issueId="issue-1"
+      />,
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    // 34s in — the daemon has not acked: the banner is the honest signal,
+    // and the row stays cancel_requested (the server never auto-flips).
+    rerender(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "cancel_requested",
+          cancel_requested_at: "2026-06-08T08:04:30Z",
+        })}
+        issueId="issue-1"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/30 seconds/);
+  });
+
+  it("counts a cancel_requested run in the section's active chip", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(issueKeys.tasks("issue-1"), [
+      makeTask({
+        status: "cancel_requested",
+        cancel_requested_at: "2026-06-08T08:04:50Z",
+      }),
+    ]);
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <ExecutionLogSection issueId="issue-1" />
+      </QueryClientProvider>,
+    );
+
+    // The active-run count chip renders without expanding anything — a
+    // cancel_requested row must not vanish into the collapsed past list.
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("Stopping")).toBeInTheDocument();
+  });
+});
+
+function lifecycleLogClient(tasks: AgentTask[]) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  queryClient.setQueryData(issueKeys.tasks("issue-1"), tasks);
+  return queryClient;
+}
+
+function renderLifecycleLog(tasks: AgentTask[], locale?: Parameters<typeof renderWithI18n>[1]) {
+  return renderWithI18n(
+    <QueryClientProvider client={lifecycleLogClient(tasks)}>
+      <ExecutionLogSection issueId="issue-1" />
+    </QueryClientProvider>,
+    locale,
+  );
+}
+
+function expandPastRuns(name = /Show past runs \(\d+\)/) {
+  fireEvent.click(screen.getByRole("button", { name }));
+}
+
+// Three past runs with distinct trigger shapes, sharing one trigger text so
+// row counting via text works for the pagination test.
+const lifecycleTasks: AgentTask[] = [
+  makeTask({
+    id: "run-completed",
+    status: "completed",
+    completed_at: "2026-06-08T08:04:00Z",
+    trigger_comment_id: "comment-1",
+  }),
+  makeTask({
+    id: "run-failed-rerun",
+    status: "failed",
+    completed_at: "2026-06-08T08:03:00Z",
+    rerun_of_task_id: "run-root",
+  }),
+  makeTask({
+    id: "run-cancelled",
+    status: "cancelled",
+    completed_at: "2026-06-08T08:02:00Z",
+  }),
+];
+
+describe("run list filters", () => {
+  it("filters past runs by status and trigger source", () => {
+    vi.useRealTimers();
+    renderLifecycleLog(lifecycleTasks);
+    expandPastRuns();
+
+    fireEvent.change(screen.getByLabelText("Filter runs by status"), {
+      target: { value: "failed" },
+    });
+    const rows = screen.getAllByText("Started from comment");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.closest("[role='button']")?.textContent).toContain("Failed");
+
+    fireEvent.change(screen.getByLabelText("Filter runs by trigger source"), {
+      target: { value: "rerun" },
+    });
+    // The failed run above is also the only manual rerun — same row.
+    expect(screen.getAllByText("Started from comment")).toHaveLength(1);
+
+    // completed + rerun intersect to nothing: the empty state, not silence.
+    fireEvent.change(screen.getByLabelText("Filter runs by status"), {
+      target: { value: "completed" },
+    });
+    expect(screen.getByText("No runs match the current filters.")).toBeInTheDocument();
+
+    // The clear affordance exists twice while filtered-and-empty (the filter
+    // row's link and the empty state's button); either resets the view.
+    fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+    expect(screen.getAllByText("Started from comment")).toHaveLength(3);
+  });
+
+  it("pages the past list twenty rows at a time", () => {
+    vi.useRealTimers();
+    const many = Array.from({ length: 25 }, (_, i) =>
+      makeTask({
+        id: `run-${i}`,
+        status: "completed",
+        completed_at: new Date(Date.parse("2026-06-08T08:04:00Z") - i * 1000).toISOString(),
+      }),
+    );
+    renderLifecycleLog(many);
+    expandPastRuns();
+
+    expect(screen.getAllByText("Started from comment")).toHaveLength(20);
+    fireEvent.click(screen.getByRole("button", { name: "Show 5 more" }));
+    expect(screen.getAllByText("Started from comment")).toHaveLength(25);
+  });
+});
+
+describe("run detail drawer entry", () => {
+  it("opens from a past-row click with the clicked run", () => {
+    vi.useRealTimers();
+    mockState.drawerProps.length = 0;
+    const { container } = renderLifecycleLog(lifecycleTasks);
+    expandPastRuns();
+
+    const failedRow = screen
+      .getAllByText("Started from comment")
+      .map((el) => el.closest("[role='button']"))
+      .find((el) => el?.textContent?.includes("Failed"));
+    expect(failedRow).toBeTruthy();
+    fireEvent.click(failedRow!);
+
+    const last = mockState.drawerProps.at(-1);
+    expect(last?.task?.id).toBe("run-failed-rerun");
+    void container;
+  });
+});
+
+describe("run retry gates", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("localizes the agent_already_queued conflict", async () => {
+    mockState.retryIssueRun.mockRejectedValueOnce(
+      new ApiError("agent_already_queued: busy", 409, "Conflict", {
+        code: "agent_already_queued",
+      }),
+    );
+    renderLifecycleLog([lifecycleTasks[1]!]);
+    expandPastRuns();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Not retried — this agent already has an unfinished run on this issue",
+      ),
+    );
+  });
+
+  it("localizes the retry_descendant_active conflict", async () => {
+    mockState.retryIssueRun.mockRejectedValueOnce(
+      new ApiError("retry_descendant_active: busy", 409, "Conflict", {
+        code: "retry_descendant_active",
+      }),
+    );
+    renderLifecycleLog([lifecycleTasks[1]!]);
+    expandPastRuns();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Not retried — this run already has an unfinished retry",
+      ),
+    );
+  });
+
+  it("routes a cancelled run's retry through a confirm dialog", async () => {
+    mockState.retryIssueRun.mockResolvedValueOnce({ id: "child" });
+    renderLifecycleLog([lifecycleTasks[2]!]);
+    expandPastRuns();
+
+    // The cancelled entry reads "Run again", not "Retry" — nothing failed.
+    fireEvent.click(screen.getByRole("button", { name: "Run again" }));
+    expect(mockState.retryIssueRun).not.toHaveBeenCalled();
+    expect(screen.getByText("Run this task again?")).toBeInTheDocument();
+
+    // Confirm inside the dialog (the last "Run again" button is the dialog's
+    // action; the row's own trigger is the first).
+    const buttons = screen.getAllByRole("button", { name: "Run again" });
+    fireEvent.click(buttons[buttons.length - 1]!);
+    await waitFor(() =>
+      expect(mockState.retryIssueRun).toHaveBeenCalledWith("issue-1", "run-cancelled"),
+    );
+  });
+
+  it("retries a failed run directly without a dialog", async () => {
+    mockState.retryIssueRun.mockResolvedValueOnce({ id: "child" });
+    renderLifecycleLog([lifecycleTasks[1]!]);
+    expandPastRuns();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
+    await waitFor(() =>
+      expect(mockState.retryIssueRun).toHaveBeenCalledWith("issue-1", "run-failed-rerun"),
+    );
+    expect(screen.queryByText("Run this task again?")).not.toBeInTheDocument();
   });
 });

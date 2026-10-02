@@ -30,6 +30,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -4365,9 +4366,21 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	guardConverged := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		// RUYI-292 terminal guard: a completion landing on a cancel_requested
+		// row lost the cancel race ("first terminal writer wins") and must
+		// converge to cancelled instead of stamping completed over a stopping
+		// run. Short-circuits the rest of the completion transaction.
+		if converged, gerr := qtx.ConvergeCancelRequestedToCancelled(ctx, taskID); gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return fmt.Errorf("cancel-race guard: %w", gerr)
+		} else if converged.ID.Valid {
+			task = converged
+			guardConverged = true
+			return nil
 		}
 		t, err := qtx.CompleteAgentTask(ctx, db.CompleteAgentTaskParams{
 			ID:                    taskID,
@@ -4470,6 +4483,14 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		return nil, fmt.Errorf("complete task: %w", err)
 	}
 
+	if guardConverged {
+		// The cancel race was lost above; the row is cancelled, not completed.
+		// Skip every completed-specific side effect (chat outcome, completed
+		// broadcast, notifications) — the cancel/ack path owns this row now.
+		slog.Info("task completion converged to cancelled (cancel race lost)",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		return &task, nil
+	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
 
@@ -4845,9 +4866,20 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
+	guardConverged := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		// RUYI-292 terminal guard: a failure landing on a cancel_requested row
+		// lost the cancel race and converges to cancelled (first terminal
+		// writer wins); the auto-retry child below must not spawn either.
+		if converged, gerr := qtx.ConvergeCancelRequestedToCancelled(ctx, taskID); gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return fmt.Errorf("cancel-race guard: %w", gerr)
+		} else if converged.ID.Valid {
+			task = converged
+			guardConverged = true
+			return nil
 		}
 		t, err := qtx.FailAgentTask(ctx, db.FailAgentTaskParams{
 			ID:             taskID,
@@ -5074,6 +5106,16 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			)
 		}
 		return nil, fmt.Errorf("fail task: %w", err)
+	}
+
+	if guardConverged {
+		// The cancel race was lost above; the row is cancelled, not failed.
+		// Skip every failure-specific side effect (auto-retry spawn, delegated
+		// recovery, failure comments, inbox notifications) — the cancel/ack
+		// path owns this row now, same contract as the completion guard.
+		slog.Info("task failure converged to cancelled (cancel race lost)",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		return &task, nil
 	}
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
@@ -5824,6 +5866,16 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 func (s *TaskService) FailTasksForOfflineRuntimes(ctx context.Context, arg db.FailTasksForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.FailTasksForOfflineRuntimes(ctx, arg)
+	})
+}
+
+// ConvergeCancelRequestedForOfflineRuntimes closes out runs whose stop was
+// accepted (cancel_requested) but whose runtime died before the daemon could
+// ack-confirm it: they converge to cancelled, not failed — the user ended
+// these runs, the runtime merely made the confirmation impossible (RUYI-292).
+func (s *TaskService) ConvergeCancelRequestedForOfflineRuntimes(ctx context.Context, arg db.ConvergeCancelRequestedForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.ConvergeCancelRequestedForOfflineRuntimes(ctx, arg)
 	})
 }
 
@@ -7140,6 +7192,7 @@ func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.Agen
 // ResolveTaskWorkspaceID determines the workspace ID for a task.
 // For issue tasks, it comes from the issue. For chat tasks, from the chat session.
 // For autopilot tasks, from the autopilot via its run.
+// For quiz runs, from the workspace of the quiz item the context names.
 // Returns "" when none of the links resolve — callers treat that as "not found".
 func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentTaskQueue) string {
 	if task.IssueID.Valid {
@@ -7166,6 +7219,19 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return qc.WorkspaceID
+	}
+	// Quiz runs (prompt-governance measurement) are the other linkless kind:
+	// their context names the quiz item, and the item's workspace is the
+	// authority both ordering paths (sweep tick and batch endpoint) already
+	// scope everything under. Returning "" here repeated the quick-create
+	// failure mode on RUYI-286: every daemon call a claimed run makes 404'd
+	// and the ordered runs stuck at dispatched. An item whose row is gone
+	// stays unresolvable — the daemon reads that as 404, which is right for
+	// a measurement that lost its anchor.
+	if itemID, ok := s.parseQuizContext(task); ok {
+		if wsID, err := s.Queries.GetPromptQuizItemWorkspace(ctx, itemID); err == nil {
+			return util.UUIDToString(wsID)
+		}
 	}
 	return ""
 }
@@ -7475,6 +7541,38 @@ func (s *TaskService) parseQuickCreateContext(task db.AgentTaskQueue) (QuickCrea
 		return QuickCreateContext{}, false
 	}
 	return qc, true
+}
+
+// parseQuizContext returns the quiz item id if the task's context JSONB is a
+// quiz run payload — kind == promptquiz.TaskKind and a quiz_item_id, the shape
+// promptquizsweep.TaskContextPayload writes and both ordering paths share.
+// Otherwise the bool is false so callers can short-circuit. Tasks linked to an
+// issue / chat / autopilot are never quiz runs even if they happen to carry a
+// context blob, so those are filtered up front — same shape as
+// parseQuickCreateContext, whose payloads this stays disjoint from:
+// quick-create tags "type", quiz tags "kind".
+func (s *TaskService) parseQuizContext(task db.AgentTaskQueue) (pgtype.UUID, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return pgtype.UUID{}, false
+	}
+	if len(task.Context) == 0 {
+		return pgtype.UUID{}, false
+	}
+	var payload struct {
+		Kind       string `json:"kind"`
+		QuizItemID string `json:"quiz_item_id"`
+	}
+	if err := json.Unmarshal(task.Context, &payload); err != nil {
+		return pgtype.UUID{}, false
+	}
+	if payload.Kind != promptquiz.TaskKind {
+		return pgtype.UUID{}, false
+	}
+	itemID, err := util.ParseUUID(payload.QuizItemID)
+	if err != nil {
+		return pgtype.UUID{}, false
+	}
+	return itemID, true
 }
 
 func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) (bool, error) {

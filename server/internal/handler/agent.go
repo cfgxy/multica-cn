@@ -465,7 +465,20 @@ type AgentTaskResponse struct {
 	// verbatim: it is a ref inside the user's own repo, not a filesystem path.
 	// Populated on both terminal paths — a failed run can still have committed
 	// partial work, and that is when the pointer matters most.
-	BranchName               string                 `json:"branch_name,omitempty"`
+	BranchName               string `json:"branch_name,omitempty"`
+	// RUYI-292: who asked to stop this run and when the stop was accepted
+	// (status → cancel_requested). The run detail surfaces show the canceller;
+	// clients compute the unconfirmed-stop warning by comparing
+	// cancel_requested_at against the shared 30s threshold
+	// (CANCEL_UNCONFIRMED_AFTER_MS in packages/core/types/agent.ts) rather
+	// than each port hardcoding its own number.
+	CancelRequestedAt       *string `json:"cancel_requested_at,omitempty"`
+	CancelRequestedByUserID string  `json:"cancel_requested_by_user_id,omitempty"`
+	// RUYI-292: which earlier run this one re-attempts, through either lineage
+	// column (manual rerun vs system retry). One or the other is set on retry
+	// children; the full chain itself lives on the run-detail payload.
+	RerunOfTaskID *string `json:"rerun_of_task_id,omitempty"`
+	RetryOfTaskID *string `json:"retry_of_task_id,omitempty"`
 	TriggerCommentID         *string                `json:"trigger_comment_id,omitempty"`          // comment that triggered this task
 	CoalescedCommentIDs      []string               `json:"coalesced_comment_ids,omitempty"`       // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
 	CoalescedComments        []CoalescedCommentData `json:"coalesced_comments,omitempty"`          // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
@@ -496,6 +509,7 @@ type AgentTaskResponse struct {
 	QuickCreateDueDate       string                 `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs []string               `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
 	QuickCreateSourceContext json.RawMessage        `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
+	QuizPrompt               string                 `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
 	HandoffNote              string                 `json:"handoff_note,omitempty"`                // assignment handoff instruction; rendered into the run's opening prompt + issue_context.md (omitempty so old daemons ignore it)
 	SquadID                  string                 `json:"squad_id,omitempty"`                    // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
 	SquadName                string                 `json:"squad_name,omitempty"`                  // display name for the picker squad
@@ -830,6 +844,10 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		Error:                  textToPtr(t.Error),
 		FailureReason:          failureReason,
 		BranchName:             branchName,
+		CancelRequestedAt:      timestampToPtr(t.CancelRequestedAt),
+		CancelRequestedByUserID: uuidToString(t.CancelRequestedByUserID),
+		RerunOfTaskID:          uuidToPtr(t.RerunOfTaskID),
+		RetryOfTaskID:          uuidToPtr(t.RetryOfTaskID),
 		Attempt:                t.Attempt,
 		MaxAttempts:            t.MaxAttempts,
 		ParentTaskID:           uuidToPtr(t.ParentTaskID),

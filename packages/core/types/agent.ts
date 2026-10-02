@@ -290,11 +290,19 @@ export interface AgentTask {
   // because another task currently owns the same on-disk path lock.
   // Treated as an active (non-terminal) state alongside queued/dispatched/
   // running by every consumer that buckets tasks into "active vs done".
+  // `cancel_requested` is the RUYI-292 two-phase cancel acceptance state:
+  // the user asked to stop an in-flight run and the daemon has not yet
+  // confirmed the interrupt — it stays here (still active, stop pending)
+  // until the cancel-ack flips it to `cancelled`. UIs surface it as
+  // "stopping" and allow a repeat cancel, which re-broadcasts the interrupt
+  // nudge; a run stuck here past
+  // {@link CANCEL_UNCONFIRMED_AFTER_MS} shows the unconfirmed-stop warning.
   status:
     | "queued"
     | "dispatched"
     | "waiting_local_directory"
     | "running"
+    | "cancel_requested"
     | "completed"
     | "failed"
     | "cancelled";
@@ -439,6 +447,84 @@ export interface AgentTask {
   compactions?: number;
   max_context_tokens?: number;
   context_tokens?: number;
+  /**
+   * When the user's stop request was accepted (status → cancel_requested),
+   * and which member asked for it. Present only on rows that have been (or
+   * still are) in the cancel_requested state; older backends omit them —
+   * render conditionally. The run detail surfaces show the canceller, and
+   * clients compute the unconfirmed-stop warning by comparing
+   * cancel_requested_at against {@link CANCEL_UNCONFIRMED_AFTER_MS}.
+   */
+  cancel_requested_at?: string;
+  cancel_requested_by_user_id?: string;
+  /**
+   * Which earlier run this one re-attempts, through either lineage column:
+   * `rerun_of_task_id` for a manual rerun/retry the user clicked,
+   * `retry_of_task_id` for a system-initiated retry. One or the other is
+   * set on retry children; the full chain lives on the run-detail payload
+   * (GET /api/issues/:id/tasks/:runId → ancestors/descendants).
+   */
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+}
+
+/**
+ * How long a run may sit in `cancel_requested` before the UI flags the stop
+ * as unconfirmed (RUYI-292 D-decision: no server-side auto-flip — a run
+ * whose daemon is wedged stays honest in cancel_requested with a yellow
+ * banner, and the user can repeat the cancel to re-broadcast the interrupt).
+ * The server's agent.go comment names this exact symbol; change both sides
+ * together.
+ */
+export const CANCEL_UNCONFIRMED_AFTER_MS = 30_000;
+
+/**
+ * One node of a run's retry chain (RUYI-292), as the run-detail endpoint
+ * reports ancestors/descendants. Enough to draw the chain — who, what state,
+ * when, which lineage edge — without the full per-run payload.
+ */
+export interface RunLineageEntry {
+  id: string;
+  agent_id: string;
+  status: string;
+  created_at?: string;
+  completed_at?: string;
+  attempt: number;
+  failure_reason?: string;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  /** Member who asked to stop this run, when it was cancelled by a user. */
+  cancel_requested_by_user_id?: string;
+}
+
+/**
+ * GET /api/issues/:issueId/tasks/:runId — one run plus its full retry chain
+ * following BOTH lineage columns (manual rerun + system retry), so a mixed
+ * chain — including forks — stays visible in a detail drawer without a
+ * second call.
+ */
+export interface RunDetail {
+  task: AgentTask;
+  ancestors: RunLineageEntry[];
+  descendants: RunLineageEntry[];
+}
+
+/**
+ * POST /api/issues/:issueId/tasks/:runId/cancel — the cancel matrix answer
+ * (RUYI-292). `code` is the machine-readable outcome; `message` is its
+ * localized-on-server English twin (UIs re-localize from the code); `task`
+ * is the row as it stands after the call. 409 not_cancellable rides the
+ * same envelope in the response body.
+ */
+export interface CancelRunResult {
+  code:
+    | "cancelled"
+    | "cancel_requested"
+    | "already_cancelling"
+    | "already_cancelled"
+    | "not_cancellable";
+  message?: string;
+  task: AgentTask;
 }
 
 /**
@@ -890,6 +976,37 @@ export interface Skill extends SkillSummary {
   files: SkillFile[];
 }
 
+/**
+ * One row of the workspace skill catalog (GET /api/skills/catalog, RUYI-288):
+ * skills already authored in the workspace unioned with metadata-only
+ * runtime-local discovery sightings not imported yet. `source` classifies
+ * the origin — patent/pattern packs are ordinary `workspace` rows, never a
+ * hardcoded universe. Discovery rows never carry skill bodies; importing
+ * one goes through the existing runtime-local import flow.
+ */
+export interface SkillCatalogEntry {
+  kind: "skill" | "discovery";
+  name: string;
+  description?: string;
+  source: "workspace" | "runtime" | "plugin";
+  // Kind "skill".
+  id?: string;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+  // Kind "discovery".
+  runtime_id?: string;
+  provider?: string;
+  root?: string;
+  plugin_name?: string;
+  key?: string;
+  source_path?: string;
+  file_count?: number;
+  last_seen_at?: string;
+  /** Set on discovery rows whose name collides with an authored skill. */
+  matching_skill_id?: string;
+}
+
 export interface SkillFile {
   id: string;
   skill_id: string;
@@ -908,7 +1025,6 @@ export interface SkillVersionSummary {
   source: string;
   can_restore?: boolean;
   source_version?: number;
-  source_proposal_id?: string;
   author_user_id?: string;
   created_at: string;
 }
@@ -971,46 +1087,6 @@ export interface SkillEffect {
     before_mode: string;
     after_mode: string;
   }[];
-}
-
-/**
- * GET/POST /api/proposals — the self-evolution proposal pool (§A B1–B3).
- * The prophecy is required at creation and frozen afterwards; adoption and
- * verification are separate records, and rejected rows stay retrievable.
- */
-export interface Proposal {
-  id: string;
-  type: string;
-  status: string;
-  title: string;
-  summary: string;
-  evidence: unknown[];
-  prophecy: Record<string, unknown>;
-  generation_snapshot: Record<string, unknown>;
-  adoption_snapshot?: Record<string, unknown>;
-  verification?: Record<string, unknown>;
-  audit_log: unknown[];
-  /** "system" rows are seeded by knowledge auto-discovery (RUYI-289). */
-  created_by_type?: string;
-  /** Non-empty while a knowledge transfer rides the daemon queue. */
-  transfer_state?: string;
-  transfer_error?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface CreateProposalRequest {
-  type: string;
-  title: string;
-  summary: string;
-  evidence?: unknown[];
-  prophecy: Record<string, unknown>;
-}
-
-export interface VerifyProposalRequest {
-  verdict: string;
-  evidence: string;
-  note?: string;
 }
 
 /** One scan of one knowledge directory — every batch is logged, even no-ops. */

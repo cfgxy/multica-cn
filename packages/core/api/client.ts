@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
@@ -36,6 +37,8 @@ import type {
   WorkspaceWorkingAgent,
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
+  RunDetail,
+  CancelRunResult,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -73,23 +76,32 @@ import type {
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
+  PromptQuizSampleRow,
+  PromptQuizBatchCreateResponse,
+  PromptQuizBatchResponse,
+  PromptQuizBankImportResponse,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
   PromptGovernanceVersion,
   PromptGovernanceVersionList,
   SavePromptGovernanceVersionRequest,
+  CreatePromptQuizBatchRequest,
   MarketplaceListing,
   MarketplacePlaceholder,
   MemberWithUser,
   User,
   Skill,
   SkillSummary,
+  SkillCatalogEntry,
   SkillVersion,
   SkillVersionSummary,
   SkillUsage,
-  Proposal,
-  CreateProposalRequest,
-  VerifyProposalRequest,
+  PromptProposal,
+  PromptProposalDraftRequest,
+  PromptProposalPreview,
+  PromptProposalBatchOutcome,
+  RetrospectiveConfig,
+  RetrospectiveRun,
   KnowledgeScanBatch,
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
@@ -487,7 +499,13 @@ import {
   SkillRestoreResultSchema,
   SkillUsageSchema,
   SkillEffectSchema,
-  ProposalListSchema,
+  PromptProposalListSchema,
+  PromptProposalSchema,
+  PromptProposalPreviewSchema,
+  PromptProposalBatchOutcomeSchema,
+  RetrospectiveConfigSchema,
+  RetrospectiveRunListSchema,
+  RetrospectiveRunSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
   SkillImportResultSchema,
@@ -544,6 +562,10 @@ import {
   PromptQuizItemDetailSchema,
   PromptQuizItemListSchema,
   PromptQuizBaselineSchema,
+  PromptQuizSampleListSchema,
+  PromptQuizBatchResponseSchema,
+  PromptQuizBatchCreateResponseSchema,
+  PromptQuizBankImportResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
   MarketplaceListingSchema,
@@ -2724,14 +2746,75 @@ export class ApiClient {
     });
   }
 
+  // ---- run lifecycle (RUYI-292) -------------------------------------------
+
+  // Filtered run list: status takes a comma-separated list of raw statuses
+  // ("pending" expands server-side to the queued-family display bucket),
+  // trigger takes the user-facing source buckets. Unknown values match
+  // nothing and answer an empty list under 200.
+  async listIssueRuns(
+    issueId: string,
+    params: { status?: string; trigger?: string; limit?: number } = {},
+  ): Promise<{ tasks: AgentTask[] }> {
+    const query = new URLSearchParams();
+    if (params.status) query.set("status", params.status);
+    if (params.trigger) query.set("trigger", params.trigger);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return this.fetch<{ tasks: AgentTask[] }>(
+      `/api/issues/${issueId}/task-runs${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  // One run plus its full retry chain (both lineage columns) for the detail
+  // drawer — no second call needed to draw cancelled→retried→completed.
+  async getIssueRun(issueId: string, runId: string): Promise<RunDetail> {
+    return this.fetch<RunDetail>(
+      `/api/issues/${issueId}/tasks/${runId}`,
+    );
+  }
+
+  // The cancel matrix answer: `code` is the machine-readable outcome, `task`
+  // the row as it stands after the call. A 409 not_cancellable still resolves
+  // to the envelope in the response body.
+  async cancelIssueRun(issueId: string, runId: string): Promise<CancelRunResult> {
+    return this.fetch<CancelRunResult>(
+      `/api/issues/${issueId}/tasks/${runId}/cancel`,
+      { method: "POST" },
+    );
+  }
+
+  // Re-attempt one finished run as a NEW run on the source run's agent with
+  // its current configuration, in a fresh session. 202 = this call enqueued
+  // the retry; 200 = an identical in-window retry already created the child
+  // and the response carries it.
+  async retryIssueRun(issueId: string, runId: string): Promise<AgentTask> {
+    return this.fetch<AgentTask>(
+      `/api/issues/${issueId}/tasks/${runId}/retry`,
+      { method: "POST" },
+    );
+  }
+
   async getIssueUsage(issueId: string): Promise<IssueUsageSummary> {
     return this.fetch(`/api/issues/${issueId}/usage`);
   }
 
+  // The single-run cancel now answers with the RUYI-292 cancel matrix:
+  // in-flight rows are accepted for stop (status → cancel_requested), and
+  // completed/failed rows answer 409 not_cancellable. Both shapes ride the
+  // {code, message, task} envelope — unwrap to the row for the existing
+  // callers; cancelIssueRun exposes the full envelope.
   async cancelTask(issueId: string, taskId: string): Promise<AgentTask> {
-    return this.fetch(`/api/issues/${issueId}/tasks/${taskId}/cancel`, {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/tasks/${taskId}/cancel`, {
       method: "POST",
     });
+    const envelope = raw as { code?: string; task?: unknown } | null;
+    const taskRaw = envelope && typeof envelope === "object" && "task" in envelope ? envelope.task : raw;
+    const parsed = parseWithFallback<AgentTask | null>(taskRaw, AgentTaskSchema, null, {
+      endpoint: "POST /api/issues/:id/tasks/:taskId/cancel",
+    });
+    if (!parsed) throw new Error("Invalid cancel task response");
+    return parsed;
   }
 
   async rerunIssue(issueId: string, taskId?: string): Promise<AgentTask> {
@@ -3344,6 +3427,76 @@ export class ApiClient {
     return parseWithFallback(raw, PromptQuizBaselineSchema, EMPTY_PROMPT_QUIZ_BASELINE, {
       endpoint: "GET /api/prompt-governance/{scope}/{id}/quiz",
     });
+  }
+
+  /**
+   * Owner actions for the graded side of the quiz (RUYI-286). All four sit
+   * behind the server's owner route guard, because the read-backs expose
+   * score_detail — the grading output of the private half of each item.
+   */
+
+  /** Imports the shipped benchmark bank (idempotent per slug). */
+  async importPromptQuizBank(): Promise<PromptQuizBankImportResponse> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/bank/import`, { method: "POST" });
+    return parseWithFallback(raw, PromptQuizBankImportResponseSchema, { imported: 0, slugs: [] }, {
+      endpoint: "POST /api/prompt-quiz/bank/import",
+    });
+  }
+
+  /**
+   * Orders real quiz runs — the same agent_task_queue rows the sweep creates —
+   * for the named agents against the active member-profile bank.
+   */
+  async createPromptQuizBatch(body: CreatePromptQuizBatchRequest): Promise<PromptQuizBatchCreateResponse> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/batches`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchCreateResponseSchema,
+      { batch_id: "", ordered: 0 },
+      { endpoint: "POST /api/prompt-quiz/batches" },
+    );
+  }
+
+  /** One batch's read-back: per-run rows, outcome counts, and the graded mean. */
+  async getPromptQuizBatch(batchId: string): Promise<PromptQuizBatchResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/batches/${encodeURIComponent(batchId)}`,
+    );
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchResponseSchema,
+      { batch_id: batchId, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/{id}" },
+    );
+  }
+
+  /**
+   * The workspace's newest graded samples. score may be null — unmeasured is
+   * not zero, and the schema keeps that distinction for an older backend.
+   */
+  async getPromptQuizSamples(params?: {
+    scope?: string;
+    scopeId?: string;
+    version?: number;
+    limit?: number;
+  }): Promise<PromptQuizSampleRow[]> {
+    const query = new URLSearchParams();
+    if (params?.scope !== undefined) query.set("scope", params.scope);
+    if (params?.scopeId !== undefined) query.set("scope_id", params.scopeId);
+    if (params?.version !== undefined) query.set("version", String(params.version));
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/samples${suffix}`);
+    const parsed = await parseWithFallback(
+      raw,
+      PromptQuizSampleListSchema,
+      { rows: [] as PromptQuizSampleRow[] },
+      { endpoint: "GET /api/prompt-quiz/samples" },
+    );
+    return parsed.rows;
   }
 
   /** The workspace's install library. Holding a row changes no prompt. */
@@ -3982,6 +4135,16 @@ export class ApiClient {
     });
   }
 
+  // Workspace skill catalog (RUYI-288): authored skills unioned with
+  // metadata-only runtime discovery sightings.
+  async listSkillCatalog(): Promise<SkillCatalogEntry[]> {
+    return this.fetch<SkillCatalogEntry[]>("/api/skills/catalog");
+  }
+
+  async syncSkillCatalog(): Promise<{ triggered: number }> {
+    return this.fetch("/api/skills/catalog/sync", { method: "POST" });
+  }
+
   async getSkill(id: string): Promise<Skill> {
     return this.fetch(`/api/skills/${id}`);
   }
@@ -4024,43 +4187,150 @@ export class ApiClient {
     });
   }
 
-  async listProposals(params?: { status?: string; type?: string }): Promise<Proposal[]> {
+  async listPromptProposals(params?: { status?: string }): Promise<PromptProposal[]> {
     const query = new URLSearchParams();
     if (params?.status) query.set("status", params.status);
-    if (params?.type) query.set("type", params.type);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    const raw = await this.fetch<unknown>(`/api/proposals${suffix}`);
-    return parseWithFallback(raw, ProposalListSchema, [], {
-      endpoint: "GET /api/proposals",
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals${suffix}`);
+    return parseWithFallback(raw, PromptProposalListSchema, [], {
+      endpoint: "GET /api/prompt-legislation/proposals",
     });
   }
 
-  async createProposal(data: CreateProposalRequest): Promise<{ id: string }> {
-    return this.fetch("/api/proposals", {
+  async createPromptProposal(data: PromptProposalDraftRequest): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals", {
       method: "POST",
       body: JSON.stringify(data),
     });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals",
+    });
   }
 
-  async adoptProposal(id: string): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  async updatePromptProposalDraft(id: string, data: PromptProposalDraftRequest): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "PATCH /api/prompt-legislation/proposals/{id}",
+    });
   }
 
-  async rejectProposal(id: string, reason: string): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/reject`, {
+  async submitPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/submit`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/submit",
+    });
+  }
+
+  async previewPromptProposal(id: string): Promise<PromptProposalPreview> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalPreviewSchema, raw as PromptProposalPreview, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/preview",
+    });
+  }
+
+  async approvePromptProposal(id: string, confirmDiffPreviewed: boolean): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_diff_previewed: confirmDiffPreviewed }),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/approve",
+    });
+  }
+
+  async batchApprovePromptProposals(
+    ids: string[],
+    confirmDiffPreviewed: boolean,
+  ): Promise<PromptProposalBatchOutcome[]> {
+    const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals/approve-batch", {
+      method: "POST",
+      body: JSON.stringify({ ids, confirm_diff_previewed: confirmDiffPreviewed }),
+    });
+    return parseWithFallback(raw, z.array(PromptProposalBatchOutcomeSchema), raw as PromptProposalBatchOutcome[], {
+      endpoint: "POST /api/prompt-legislation/proposals/approve-batch",
+    });
+  }
+
+  async rejectPromptProposal(id: string, reason: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/reject`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/reject",
+    });
   }
 
-  async restoreProposal(id: string): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/restore`, { method: "POST" });
-  }
-
-  async verifyProposal(id: string, data: VerifyProposalRequest): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/verify`, {
+  async restorePromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/restore`, {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/restore",
+    });
+  }
+
+  async reworkPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/rework`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/rework",
+    });
+  }
+
+  async enactPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/enact`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/enact",
+    });
+  }
+
+  async getRetrospectiveConfig(): Promise<RetrospectiveConfig> {
+    const raw = await this.fetch<unknown>("/api/retrospective/config");
+    return parseWithFallback(raw, RetrospectiveConfigSchema, raw as RetrospectiveConfig, {
+      endpoint: "GET /api/retrospective/config",
+    });
+  }
+
+  async updateRetrospectiveConfig(patch: Partial<RetrospectiveConfig>): Promise<RetrospectiveConfig> {
+    const raw = await this.fetch<unknown>("/api/retrospective/config", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, RetrospectiveConfigSchema, raw as RetrospectiveConfig, {
+      endpoint: "PUT /api/retrospective/config",
+    });
+  }
+
+  async listRetrospectiveRuns(): Promise<RetrospectiveRun[]> {
+    const raw = await this.fetch<unknown>("/api/retrospective/runs");
+    return parseWithFallback(raw, RetrospectiveRunListSchema, [], {
+      endpoint: "GET /api/retrospective/runs",
+    });
+  }
+
+  async triggerRetrospectiveRun(): Promise<RetrospectiveRun> {
+    const raw = await this.fetch<unknown>("/api/retrospective/run", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, RetrospectiveRunSchema, raw as RetrospectiveRun, {
+      endpoint: "POST /api/retrospective/run",
     });
   }
 

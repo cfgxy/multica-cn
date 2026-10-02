@@ -596,7 +596,15 @@
       "add_dialog_confirm_default": "추가",
       "add_dialog_confirm_other": "스킬 {{count}}개 추가",
       "add_dialog_cancel": "취소",
-      "add_failed_toast": "스킬을 추가하지 못했습니다"
+      "add_failed_toast": "스킬을 추가하지 못했습니다",
+      "source_runtime": "런타임",
+      "source_plugin": "플러그인",
+      "add_dialog_discoveries_title": "런타임에서 발견",
+      "add_dialog_discovery_hint": "연결된 런타임에서 발견된 스킬 폴더입니다. 가져오면 할당 가능한 워크스페이스 스킬이 되며, 그 전에는 표시만 됩니다.",
+      "add_dialog_discovery_import": "가져오기",
+      "add_dialog_discovery_importing": "가져오는 중…",
+      "add_dialog_discovery_imported_toast": "스킬을 가져왔습니다. 이제 선택할 수 있습니다.",
+      "add_dialog_discovery_import_failed_toast": "가져오기에 실패했습니다. 런타임 연결을 확인한 후 다시 시도하세요."
     },
     "integrations": {
       "intro": "이 에이전트를 외부 채팅 플랫폼에 연결해 팀원이 평소 사용하는 도구에서 바로 함께 작업할 수 있도록 합니다.",
@@ -608,6 +616,7 @@
         "dispatched": "디스패치됨",
         "waiting_local_directory": "디렉터리 대기 중",
         "running": "실행 중",
+        "cancel_requested": "정지 중",
         "completed": "성공",
         "failed": "실패",
         "cancelled": "취소됨"

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -57,7 +56,7 @@ type KnowledgePlanDir struct {
 }
 
 type KnowledgePlanAdopt struct {
-	Kind          string `json:"kind"` // entry | proposal
+	Kind          string `json:"kind"` // entry
 	ID            string `json:"id"`
 	Key           string `json:"key"`
 	Content       string `json:"content"`
@@ -104,7 +103,7 @@ type KnowledgeScanReport struct {
 }
 
 type KnowledgeAdoptReport struct {
-	Kind string `json:"kind"` // entry | proposal
+	Kind string `json:"kind"` // entry
 	ID   string `json:"id"`
 	OK   bool   `json:"ok"`
 	// UltimateDirID is the directory the daemon actually transferred into, so
@@ -317,9 +316,7 @@ WHERE workspace_id = ANY($1) AND kind = 'ultimate' AND removed = FALSE`, workspa
 		}
 	}
 
-	// Queued adoption transfers. Entry jobs carry the source key/content;
-	// proposal jobs compose key/content the same way the old synchronous flow
-	// did (proposal-<short id> / title + blank line + summary).
+	// Queued adoption transfers: entry jobs carry the source key/content.
 	entryRows, err := h.DB.Query(r.Context(), `
 SELECT e.id::text, e.workspace_id::text, e.key, e.content, COALESCE(e.adopted_by::text, '')
 FROM knowledge_entry e
@@ -345,29 +342,6 @@ WHERE e.workspace_id = ANY($1) AND e.adoption_state = 'transferring'`, workspace
 		pendingByWorkspace[workspaceID] = append(pendingByWorkspace[workspaceID], job)
 	}
 	entryRows.Close()
-
-	proposalRows, err := h.DB.Query(r.Context(), `
-SELECT p.id::text, p.workspace_id::text, p.title, p.summary
-FROM proposal p
-WHERE p.workspace_id = ANY($1) AND p.transfer_state = 'transferring'`, workspaceIDs)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
-		return
-	}
-	for proposalRows.Next() {
-		var job pendingJob
-		var workspaceID, title, summary string
-		if err := proposalRows.Scan(&job.plan.ID, &workspaceID, &title, &summary); err != nil {
-			proposalRows.Close()
-			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
-			return
-		}
-		job.plan.Kind = "proposal"
-		job.plan.Key = "proposal-" + job.plan.ID[:8]
-		job.plan.Content = title + "\n\n" + summary
-		pendingByWorkspace[workspaceID] = append(pendingByWorkspace[workspaceID], job)
-	}
-	proposalRows.Close()
 
 	for workspaceID, jobs := range pendingByWorkspace {
 		wsPlan := planByWorkspace[workspaceID]
@@ -548,73 +522,6 @@ WHERE id = $1 AND adoption_state = 'transferring'`, id, ultimateDirID)
 UPDATE knowledge_entry SET adoption_state = 'failed', adoption_error = $2
 WHERE id = $1 AND adoption_state = 'transferring'`, id, failureReason)
 		return err == nil && tag.RowsAffected() > 0
-	case "proposal":
-		if ok {
-			tag, err := h.DB.Exec(ctx, `
-UPDATE proposal SET status = 'adopted', transfer_state = '', transfer_error = '', updated_at = now()
-WHERE id = $1 AND transfer_state = 'transferring'`, id)
-			if err == nil && tag.RowsAffected() > 0 {
-				h.proposalAppendAudit(ctx, id, "adopt", nil, "daemon")
-				return true
-			}
-			return false
-		}
-		tag, err := h.DB.Exec(ctx, `
-UPDATE proposal SET transfer_state = '', transfer_error = $2, adoption_snapshot = NULL, updated_at = now()
-WHERE id = $1 AND transfer_state = 'transferring'`, id, failureReason)
-		if err == nil && tag.RowsAffected() > 0 {
-			h.proposalAppendAudit(ctx, id, "adopt_failed", map[string]any{"reason": failureReason}, "daemon")
-			return true
-		}
-		return false
 	}
 	return false
-}
-
-// maybeCreateSystemProposal puts one system proposal into the pool for a
-// newly discovered candidate_auto source whose scan found entries. The
-// prophecy goes through the same server-side validation as the form path
-// (B1: 无预言不入池), and uidx_proposal_system_dir makes the one-per-directory
-// rule database-enforced.
-func (h *Handler) maybeCreateSystemProposal(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	path string, entryCount int) {
-	var kind, label string
-	if err := h.DB.QueryRow(ctx,
-		`SELECT kind, label FROM knowledge_dir WHERE id = $1`, dirID).Scan(&kind, &label); err != nil {
-		return
-	}
-	if kind != "candidate_auto" {
-		return
-	}
-	if label == "" {
-		label = path
-	}
-	proposalType := "project_cognition"
-	prophecy := map[string]any{
-		"object":            map[string]any{"knowledge_dir": label, "path": path},
-		"outcome_text":      "该知识源的条目已进入统一知识库镜像并持续同步，来源与条目规模可追溯",
-		"falsify_condition": "该知识源的条目未出现在知识库镜像中，或其扫描连续失败导致镜像停更",
-	}
-	if message := validateProposalProphecy(proposalType, prophecy); message != "" {
-		return
-	}
-	evidence := []any{map[string]any{
-		"kind": "knowledge_dir", "dir_id": uuidToString(dirID), "path": path, "entry_count": entryCount,
-	}}
-	generation := h.proposalPromptSnapshot(ctx, workspaceID)
-	generation["knowledge_dir_id"] = uuidToString(dirID)
-	generation["source_path"] = path
-	generation["entry_count"] = entryCount
-	encodedProphecy, _ := json.Marshal(prophecy)
-	encodedEvidence, _ := json.Marshal(evidence)
-	encodedGeneration, _ := json.Marshal(generation)
-	_, _ = h.DB.Exec(ctx, `
-INSERT INTO proposal (workspace_id, type, title, summary, evidence, prophecy, generation_snapshot, created_by_type)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'system')
-ON CONFLICT DO NOTHING`,
-		workspaceID, proposalType,
-		"Auto-discovered knowledge source: "+label,
-		"Knowledge auto-discovery found "+strconv.Itoa(entryCount)+" entries at "+path+
-			" and mirrored them into the unified knowledge base. Adopting this proposal keeps the finding on record; rejecting it does not remove the mirrored source.",
-		encodedEvidence, encodedProphecy, encodedGeneration)
 }
