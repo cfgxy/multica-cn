@@ -654,7 +654,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         target_issue: {
           type: "string",
           description:
-            "The other issue (identifier or UUID); required for set_parent, add_relation and remove_relation, must be omitted for clear_parent.",
+            "The other issue's UUID (as returned by list_issues / search_issues / get_issue); required for set_parent, add_relation and remove_relation, must be omitted for clear_parent.",
         },
         expected_revision: {
           type: "integer",
