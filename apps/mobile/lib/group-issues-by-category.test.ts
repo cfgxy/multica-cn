@@ -89,3 +89,50 @@ describe("groupIssuesByCategory", () => {
     expect(groupIssuesByCategory([])).toEqual([]);
   });
 });
+
+// RUYI-344: the full-space Tasks tab's "全部" view is the one surface that
+// must also show cancelled issues — as its own section, pinned last, and
+// self-hiding when empty. The default call keeps the cancelled-less shape
+// every other list relies on.
+describe("groupIssuesByCategory({ includeCancelled })", () => {
+  it("appends a cancelled section after the canonical ones", () => {
+    const sections = groupIssuesByCategory(
+      [
+        issue("a", "cancelled"),
+        issue("b", "done"),
+        issue("c", "backlog"),
+        issue("d", "blocked"),
+      ],
+      { includeCancelled: true },
+    );
+    expect(sections.map((s) => s.category)).toEqual([
+      "backlog",
+      "done",
+      "blocked",
+      "cancelled",
+    ]);
+    expect(sections[3].data.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("keeps a custom cancelled-category status in that section", () => {
+    const sections = groupIssuesByCategory(
+      [issue("a", "wont_do", "cancelled")],
+      { includeCancelled: true },
+    );
+    expect(sections).toHaveLength(1);
+    expect(sections[0].category).toBe("cancelled");
+  });
+
+  it("hides the cancelled section when it has no rows", () => {
+    const sections = groupIssuesByCategory([issue("a", "todo")], {
+      includeCancelled: true,
+    });
+    expect(sections.map((s) => s.category)).toEqual(["todo"]);
+  });
+
+  it("leaves the default call untouched (no cancelled section)", () => {
+    expect(
+      groupIssuesByCategory([issue("a", "cancelled")], {}),
+    ).toEqual([]);
+  });
+});
