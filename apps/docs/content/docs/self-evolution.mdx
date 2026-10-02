@@ -35,22 +35,24 @@ The dashboard reads seven dimensions:
 
 The Versions tab is the entry to the prompt version lifecycle. One rule governs it: **every effective change appends a version; history is never rewritten**.
 
-Pick the agent with the **Subject** selector at the top first; without a subject the page only shows a placeholder.
+The version line covers six prompt carriers: workspace, project, squad, agent, autopilot and skill. The page offers no content editing: a version is created by taking a snapshot of the carrier's currently effective configuration; to change a carrier's content, use the carrier's own management entry.
 
-### Creating a version
+Pick the **carrier type** at the top first, then the **carrier** under it. The workspace type needs no second pick — it is this workspace itself. Without a carrier the page only shows a placeholder.
 
-1. After choosing a subject (agent), click **New version** at the top right.
-2. The editor is preloaded with the agent's currently effective prompt; edit it in place.
-3. Fill in the **change note**: what changed and why.
-4. Click **Save version**. The content is appended as the next version and takes effect immediately.
+### Taking a snapshot
+
+1. After picking a carrier type and a carrier, click **Snapshot** at the top right and confirm.
+2. The carrier's currently effective configuration is recorded as a new version (source badge "Snapshot"); the carrier's own content is not changed.
+3. Snapshots may be repeated: unchanged content can be snapshotted again, and every snapshot appends a new version.
+4. A snapshot's change note defaults to a fixed text ("snapshot of the current effective configuration").
 
 <Callout type="warning">
-Saving runs a secret scan: if the prompt appears to contain credentials, the save is rejected with the matched rules, line numbers and masked samples. Remove the flagged content and save again.
+Snapshots pass the same gates as every version write: the snapshot is refused when the carrier's effective content is empty or exceeds 200 KB (400), and refused when it appears to contain credentials (422) — with the matched rules, line numbers and masked samples. Remove the flagged content on the carrier's own management entry first, then take the snapshot again.
 </Callout>
 
 ### Activating and rolling back
 
-The version list is ordered newest first. Each row carries a source badge (Baseline / Edit / Rollback / Auto snapshot), the change note, the creation date, a content fingerprint prefix and a quality badge; the newest row also shows a **Latest** badge.
+The version list is ordered newest first. Each row carries a source badge (Baseline / Edit / Rollback / Auto snapshot / Snapshot), the change note, the creation date, a content fingerprint prefix and a quality badge; the newest row also shows a **Latest** badge.
 
 Activating any historical version (**Activate**) performs a rollback: its content is copied forward as a new latest version and takes effect immediately, while the old rows stay untouched. Versions created by a rollback show "from vN". You can later activate an even older version to undo the switch — history only grows, and every switch leaves a complete trail.
 
@@ -64,7 +66,7 @@ Quality evaluation binds each run to the prompt version it claimed. The badge on
 
 ### Write access
 
-Reading versions is open to every member; **New version** and **Activate** are workspace-owner only (admins are not included). Non-owners see no write controls.
+Reading versions is open to every member; **Snapshot** and **Activate** are workspace-owner only (admins are not included). Non-owners see no write controls.
 
 ## Quiz
 
@@ -103,7 +105,7 @@ The mirror itself is read-only: the only write path is an owner adopting a pendi
 | Action | Permission |
 |---|---|
 | Viewing all tabs and readings | Every member |
-| Creating versions, activating (rolling back) versions | Workspace owner |
+| Taking snapshots, activating (rolling back) versions | Workspace owner |
 | Adding / editing / deleting quiz questions | Workspace owner |
 | Restoring skill versions | Workspace owner |
 | Adopting / rejecting / restoring / verifying proposals | Workspace owner |
