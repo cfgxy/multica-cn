@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,27 @@ const (
 	maxUntrackedFiles = 2000
 	maxUntrackedBytes = 200 << 20 // 200 MiB
 
+	// excludedAsideInfix marks the directory a finalized worktree's budget
+	// exclusions are preserved under, alongside the worktree's own
+	// .trash-<ts> fallback; both live in the env root and are reclaimed by
+	// the workspace GC with it.
+	excludedAsideInfix = ".excluded-"
+)
+
+// stagingBudget is the untracked-content budget the finalize/baseline staging
+// add is held to. The numbers reuse maxUntrackedFiles/maxUntrackedBytes on
+// purpose: those already bound how much untracked content the daemon will
+// replay through a worktree at Prepare time, and git hashing the same order
+// of magnitude at finalize is what the OOM budget can absorb (a research run
+// once handed the finalize add ~15 GB of model-weight caches, RUYI-337).
+var untrackedStageBudget = stagingBudget{files: maxUntrackedFiles, bytes: maxUntrackedBytes}
+
+type stagingBudget struct {
+	files int
+	bytes int64
+}
+
+const (
 	// snapshotIndexFileName is the private index captureUserSnapshot builds the
 	// user's snapshot in. It lives in the task's env root, never in the user's
 	// repository: pointing GIT_INDEX_FILE at our own file is what keeps the
@@ -293,6 +315,31 @@ type LocalWorktreeOutcome struct {
 	// changes. The worktree at this path was intentionally left on disk because
 	// it is the only remaining copy of that work.
 	PreservedPath string
+	// Excluded lists the untracked top-level entries the staging budget guard
+	// kept out of the delivered commit. They are never deleted: Finalize moves
+	// each one out of the worktree before removing it, and AsidePath records
+	// where that copy now lives. Empty on the ordinary path.
+	Excluded []StagedExclusion
+}
+
+// StagedExclusion is one top-level entry the staging budget guard kept out of
+// a commit, with the size that earned the exclusion and, once Finalize has
+// run, the path the content was preserved at.
+type StagedExclusion struct {
+	// Name is the entry's path relative to the worktree root — a directory
+	// ("hf_cache") or a single top-level file ("weights.bin").
+	Name string
+	// Files and Bytes are the untracked regular-file count and byte total
+	// under (or in) Name at the time it was measured.
+	Files int
+	Bytes int64
+	// AsidePath is where Finalize moved the content when the worktree itself
+	// was removed; empty until then.
+	AsidePath string
+	// dir distinguishes a whole top-level directory from a single top-level
+	// file; it decides the pathspec shape that keeps the entry out of the
+	// add. Bookkeeping for the staging path, not part of the outcome.
+	dir bool
 }
 
 // PrepareLocalWorktree creates the task's worktree and replays the user's
@@ -641,7 +688,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		dirty = true
 	}
 	if dirty {
-		committed, err := w.commitAll(logger)
+		committed, excluded, err := w.commitAll(logger)
 		if err != nil {
 			outcome.PreservedPath = w.Path
 			if logger != nil {
@@ -653,6 +700,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 				w.Branch, err, w.Path, w.GitRoot)
 		}
 		outcome.AutoCommitted = committed
+		outcome.Excluded = excluded
 	}
 
 	// A branch still sitting exactly on its base commit means the task changed
@@ -732,27 +780,47 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		}
 	}
 
-	// Best-effort cleanup only: by this point the delivery point is recorded
-	// and the branch is continuable, so a failed directory removal must never
-	// flip the run to failed. Orphaned tool processes from an earlier daemon
-	// generation can hold cwd or open files inside the tree and repopulate it
-	// mid-removal — untidy, not a delivery failure. Rename aside what cannot
-	// be deleted so the handoff path stays clear for the next task; the
-	// renamed directory is inert and reclaimed by the workspace GC.
-	if removeErr := removeLocalWorktreeDir(w.GitRoot, w.Path, logger); removeErr != nil {
-		aside := fmt.Sprintf("%s.trash-%d", w.Path, time.Now().Unix())
-		if renameErr := os.Rename(w.Path, aside); renameErr == nil {
-			if logger != nil {
-				logger.Warn("execenv: finalized worktree could not be removed (held files?); renamed aside for GC",
-					"path", w.Path, "aside", aside, "error", removeErr)
+	// Budget exclusions are preserved, never deleted: the excluded content is
+	// regenerable, but silent loss is exactly what this outcome must not do.
+	// Move each excluded top-level entry out of the worktree first (same-
+	// filesystem renames, so multi-GB entries move instantly), then remove
+	// the worktree around the hole. If any move fails, rename the whole
+	// worktree aside — the same inert leftover removal's own failure path
+	// leaves — because deleting it would destroy content the guard promised
+	// to keep. The aside directories live next to the worktree in the env
+	// root and are reclaimed by the workspace GC with it.
+	if len(outcome.Excluded) > 0 {
+		asideDir := fmt.Sprintf("%s%s%d", w.Path, excludedAsideInfix, time.Now().Unix())
+		if moveErr := moveExcludedAside(w.Path, asideDir, outcome.Excluded); moveErr != nil {
+			trash := fmt.Sprintf("%s.trash-%d", w.Path, time.Now().Unix())
+			if renameErr := os.Rename(w.Path, trash); renameErr == nil {
+				for i := range outcome.Excluded {
+					if outcome.Excluded[i].AsidePath == "" {
+						outcome.Excluded[i].AsidePath = filepath.Join(trash, outcome.Excluded[i].Name)
+					}
+				}
+				if logger != nil {
+					logger.Warn("execenv: budget-excluded entries could not be moved aside; renamed the finalized worktree aside whole",
+						"path", w.Path, "aside", trash, "error", moveErr)
+				}
+			} else {
+				// Nothing was deleted: the worktree stays put and keeps every
+				// excluded entry. The delivered work is unaffected.
+				outcome.PreservedPath = w.Path
+				if logger != nil {
+					logger.Warn("execenv: finalized worktree cleanup failed; the delivered work is unaffected",
+						"path", w.Path, "move_error", moveErr, "rename_error", renameErr)
+				}
 			}
 		} else {
-			outcome.PreservedPath = w.Path
 			if logger != nil {
-				logger.Warn("execenv: finalized worktree cleanup failed; the delivered work is unaffected",
-					"path", w.Path, "remove_error", removeErr, "rename_error", renameErr)
+				logger.Info("execenv: staging budget excluded untracked content; preserved aside",
+					"path", w.Path, "aside", asideDir, "entries", outcome.Excluded)
 			}
+			removeFinalizedWorktree(w.GitRoot, w.Path, &outcome, logger)
 		}
+	} else {
+		removeFinalizedWorktree(w.GitRoot, w.Path, &outcome, logger)
 	}
 
 	if dropped {
@@ -770,6 +838,50 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		)
 	}
 	return outcome, nil
+}
+
+// moveExcludedAside moves the staging budget's excluded top-level entries out
+// of the worktree into asideDir, before the worktree directory itself is
+// removed. Same-filesystem renames, so multi-GB entries move instantly. Each
+// entry's AsidePath is filled as it moves, so a mid-way failure still reports
+// where the entries that did move ended up.
+func moveExcludedAside(worktreePath, asideDir string, excluded []StagedExclusion) error {
+	if err := os.MkdirAll(asideDir, 0o755); err != nil {
+		return fmt.Errorf("create exclusion aside dir %q: %w", asideDir, err)
+	}
+	for i := range excluded {
+		if err := os.Rename(filepath.Join(worktreePath, excluded[i].Name), filepath.Join(asideDir, excluded[i].Name)); err != nil {
+			return fmt.Errorf("preserve excluded entry %q: %w", excluded[i].Name, err)
+		}
+		excluded[i].AsidePath = filepath.Join(asideDir, excluded[i].Name)
+	}
+	return nil
+}
+
+// removeFinalizedWorktree removes the worktree directory once everything
+// worth keeping is committed and recorded. Best-effort only: a failed
+// directory removal must never flip the run to failed. Orphaned tool
+// processes from an earlier daemon generation can hold cwd or open files
+// inside the tree and repopulate it mid-removal — untidy, not a delivery
+// failure. Rename aside what cannot be deleted so the handoff path stays
+// clear for the next task; the renamed directory is inert and reclaimed by
+// the workspace GC.
+func removeFinalizedWorktree(gitRoot, worktreePath string, outcome *LocalWorktreeOutcome, logger *slog.Logger) {
+	if removeErr := removeLocalWorktreeDir(gitRoot, worktreePath, logger); removeErr != nil {
+		aside := fmt.Sprintf("%s.trash-%d", worktreePath, time.Now().Unix())
+		if renameErr := os.Rename(worktreePath, aside); renameErr == nil {
+			if logger != nil {
+				logger.Warn("execenv: finalized worktree could not be removed (held files?); renamed aside for GC",
+					"path", worktreePath, "aside", aside, "error", removeErr)
+			}
+		} else {
+			outcome.PreservedPath = worktreePath
+			if logger != nil {
+				logger.Warn("execenv: finalized worktree cleanup failed; the delivered work is unaffected",
+					"path", worktreePath, "remove_error", removeErr, "rename_error", renameErr)
+			}
+		}
+	}
 }
 
 // Discard tears a worktree down without delivering anything: unregister it,
@@ -829,7 +941,12 @@ func commitBaseline(worktreePath string, continued bool) (string, error) {
 	if continued {
 		message = "chore(agent): uncommitted work from the local directory since the previous turn"
 	}
-	if _, err := commitEverything(worktreePath, message); err != nil {
+	// Baseline exclusions are not preserved like finalize's: this runs right
+	// after the replay, whose own budget (checkUntrackedReplayable) has just
+	// bounded the same content, so the guard here is defence in depth. Should
+	// it ever fire, the entries stay in the worktree and finalize's guard
+	// preserves them when the task ends.
+	if _, _, err := commitEverything(worktreePath, message); err != nil {
 		return "", err
 	}
 	tip, err := runGitTrimmed(worktreePath, "rev-parse", "--verify", "HEAD")
@@ -840,18 +957,104 @@ func commitBaseline(worktreePath string, continued bool) (string, error) {
 }
 
 // commitAll stages and commits everything the agent left behind. Returns
-// whether a commit was actually created; an error means the changes are still
-// only on disk and the caller must not delete the worktree.
-func (w *LocalWorktree) commitAll(logger *slog.Logger) (bool, error) {
+// whether a commit was actually created, plus the staging budget's exclusions
+// for the caller to preserve; an error means the changes are still only on
+// disk and the caller must not delete the worktree.
+func (w *LocalWorktree) commitAll(logger *slog.Logger) (bool, []StagedExclusion, error) {
 	// Never --allow-empty here: an empty commit would make a read-only turn look
 	// like it produced work and leave its branch behind.
 	return commitEverything(w.Path, "chore(agent): uncommitted changes from task")
 }
 
+// planUntrackedStaging meters the untracked content a staging `git add -A`
+// would pick up — the same --exclude-standard view git itself uses, so
+// .gitignore is honoured by construction — and, when it exceeds
+// untrackedStageBudget, picks whole top-level entries to exclude, largest
+// first, until the remainder fits. Excluding largest-first is what rescues
+// small real deliverables: a research run's multi-GB caches go, its few-MB
+// results stay. A stat-level walk only; no file content is read.
+func planUntrackedStaging(worktreePath string) ([]StagedExclusion, error) {
+	out, err := runGitStdout(worktreePath, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("execenv: could not meter the untracked content in %q: %w", worktreePath, err)
+	}
+	tops := map[string]*StagedExclusion{}
+	var totalFiles int
+	var totalBytes int64
+	for _, rel := range strings.Split(out, "\x00") {
+		// The name lists are pruned from the add itself, so metering them
+		// would only spend the budget on content that is not going in anyway.
+		if rel == "" || isMulticaSidecarPath(rel) || isRuntimeStatePath(rel) || isReplayableCachePath(rel) {
+			continue
+		}
+		info, statErr := os.Lstat(filepath.Join(worktreePath, rel))
+		if statErr != nil {
+			// Listed a moment ago, gone now: runtimes churn state right up to
+			// process exit, and git will not find the file either.
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			// Symlinks are recorded as the link itself and git never adds
+			// sockets, FIFOs or devices, so none of them costs memory.
+			continue
+		}
+		top, isDir := rel, false
+		if i := strings.IndexByte(rel, '/'); i >= 0 {
+			top, isDir = rel[:i], true
+		}
+		e := tops[top]
+		if e == nil {
+			e = &StagedExclusion{Name: top, dir: isDir}
+			tops[top] = e
+		}
+		e.Files++
+		e.Bytes += info.Size()
+		totalFiles++
+		totalBytes += info.Size()
+	}
+	if totalFiles <= untrackedStageBudget.files && totalBytes <= untrackedStageBudget.bytes {
+		return nil, nil
+	}
+	names := make([]string, 0, len(tops))
+	for name := range tops {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return tops[names[i]].Bytes > tops[names[j]].Bytes })
+	excluded := make([]StagedExclusion, 0, len(names))
+	for _, name := range names {
+		if totalFiles <= untrackedStageBudget.files && totalBytes <= untrackedStageBudget.bytes {
+			break
+		}
+		e := tops[name]
+		excluded = append(excluded, *e)
+		totalFiles -= e.Files
+		totalBytes -= e.Bytes
+	}
+	return excluded, nil
+}
+
+// exclusionSpecs turns budget exclusions into the pathspecs that keep each
+// entry out of the add: a directory excludes everything under it (git records
+// no empty directories, so the directory entry itself needs no spec), a
+// single top-level file excludes the path itself.
+func exclusionSpecs(excluded []StagedExclusion) []string {
+	specs := make([]string, 0, len(excluded))
+	for _, e := range excluded {
+		if e.dir {
+			specs = append(specs, ":(exclude,glob)"+e.Name+"/**")
+		} else {
+			specs = append(specs, ":(exclude,glob)"+e.Name)
+		}
+	}
+	return specs
+}
+
 // commitEverything returns (false, nil) for the benign "there was nothing to
 // commit" case and (false, err) for a real failure — the distinction callers
-// need to decide whether the tree is safe to discard.
-func commitEverything(worktreePath, message string) (bool, error) {
+// need to decide whether the tree is safe to discard. The middle return value
+// lists the top-level entries the staging budget kept out of the add; their
+// content stays on disk until the caller preserves or discards it.
+func commitEverything(worktreePath, message string) (bool, []StagedExclusion, error) {
 	// Two steps rather than one `add -A`. Agent runtimes create and delete
 	// state files (.omc/, .zcode/, ...) in the worktree right up to the moment
 	// the agent exits, and a plain `add -A` walks those untracked directories:
@@ -863,11 +1066,22 @@ func commitEverything(worktreePath, message string) (bool, error) {
 	// pruned by pathspec. A genuinely tracked file under one of them is repo
 	// content, not noise, and the first step still commits it.
 	if out, err := runGit(worktreePath, "add", "-u"); err != nil {
-		return false, fmt.Errorf("git add -u: %s: %w", strings.TrimSpace(out), err)
+		return false, nil, fmt.Errorf("git add -u: %s: %w", strings.TrimSpace(out), err)
+	}
+	// The staging budget keeps the second step from hashing an unbounded tree:
+	// a research run leaving ~15 GB of regenerable caches untracked used to
+	// OOM-kill this add (signal: killed) and mislabel an already-delivered run
+	// as a final failure. The meter ran a moment before the add, so a file
+	// created in between can still slip in — this bounds the common case, it
+	// is not a lock (RUYI-337).
+	excluded, err := planUntrackedStaging(worktreePath)
+	if err != nil {
+		return false, nil, err
 	}
 	addArgs := append([]string{"add", "-A", "--"}, stagingExcludes()...)
+	addArgs = append(addArgs, exclusionSpecs(excluded)...)
 	if out, err := runGit(worktreePath, addArgs...); err != nil {
-		return false, fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
+		return false, nil, fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
 	}
 	// Nothing staged means nothing to record. Asking the index directly rather
 	// than parsing git's wording: with the runtime directories excluded, the
@@ -878,10 +1092,10 @@ func commitEverything(worktreePath, message string) (bool, error) {
 	// look like it produced work.
 	staged, err := runGit(worktreePath, "diff", "--cached", "--name-only")
 	if err != nil {
-		return false, fmt.Errorf("git diff --cached: %s: %w", strings.TrimSpace(staged), err)
+		return false, nil, fmt.Errorf("git diff --cached: %s: %w", strings.TrimSpace(staged), err)
 	}
 	if strings.TrimSpace(staged) == "" {
-		return false, nil
+		return false, excluded, nil
 	}
 	// --no-verify: the user's commit hooks are written for the user's own
 	// workflow (interactive linters, test suites, signing prompts) and a hook
@@ -892,11 +1106,11 @@ func commitEverything(worktreePath, message string) (bool, error) {
 	args = append(args, "-m", message)
 	if out, err := runGit(worktreePath, args...); err != nil {
 		if strings.Contains(out, "nothing to commit") {
-			return false, nil
+			return false, excluded, nil
 		}
-		return false, fmt.Errorf("git commit: %s: %w", strings.TrimSpace(out), err)
+		return false, nil, fmt.Errorf("git commit: %s: %w", strings.TrimSpace(out), err)
 	}
-	return true, nil
+	return true, excluded, nil
 }
 
 // commitIdentityArgs supplies a committer identity only when the repo doesn't
@@ -1359,12 +1573,15 @@ func randomHex(n int) string {
 // task's worktree — where the agent would read it as its own context — and
 // commit it to the branch. They also prune the state directories agent CLIs
 // and editors churn while a task runs (runtimeStateDirNames), whose vanishing
-// files used to kill the finalize add outright. Matched at any depth, because
-// a resource may point at a subdirectory of this repo.
+// files used to kill the finalize add outright, and the dependency/cache
+// directories (replayableCacheDirNames) a research run can fill with gigabytes
+// of regenerable content. Matched at any depth, because a resource may point
+// at a subdirectory of this repo.
 func stagingExcludes() []string {
-	names := make([]string, 0, len(multicaSidecarDirNames)+len(runtimeStateDirNames))
+	names := make([]string, 0, len(multicaSidecarDirNames)+len(runtimeStateDirNames)+len(replayableCacheDirNames))
 	names = append(names, multicaSidecarDirNames...)
 	names = append(names, runtimeStateDirNames...)
+	names = append(names, replayableCacheDirNames...)
 	specs := make([]string, 0, len(names))
 	for _, name := range names {
 		specs = append(specs, ":(exclude,glob)**/"+name+"/**")
@@ -2132,6 +2349,38 @@ var runtimeStateDirNames = []string{
 func isRuntimeStatePath(rel string) bool {
 	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
 		for _, name := range runtimeStateDirNames {
+			if seg == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// replayableCacheDirNames are the dependency and cache directories no normal
+// repository tracks — package installs, virtualenvs, bytecode and tool
+// caches. They are pruned from every staging add like the lists above, and
+// skipped by the staging budget meter, because a research run can fill them
+// with gigabytes of perfectly regenerable content (model-weight caches alone
+// killed a finalize add with 8+ GB, RUYI-337). Deliberately conservative:
+// build output directories (dist/, build/, target/) are NOT listed — some
+// repos do commit them — so those are the staging budget's job instead.
+var replayableCacheDirNames = []string{
+	".cache",
+	".mypy_cache",
+	".pytest_cache",
+	".venv",
+	"__pycache__",
+	"node_modules",
+	"venv",
+}
+
+// isReplayableCachePath reports whether a repo-relative path lives under a
+// dependency/cache directory, matched as a whole path segment at ANY depth
+// like isRuntimeStatePath.
+func isReplayableCachePath(rel string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		for _, name := range replayableCacheDirNames {
 			if seg == name {
 				return true
 			}
