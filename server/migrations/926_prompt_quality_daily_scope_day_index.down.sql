@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_prompt_quality_daily_scope_day;
