@@ -3,7 +3,7 @@
     "inbox": "Inbox",
     "chat": "Chat",
     "my_issues": "My Issues",
-    "issues": "Issues",
+    "issues": "Tasks",
     "projects": "Projects",
     "autopilots": "Autopilot",
     "agents": "Agents",
@@ -13,7 +13,6 @@
     "runtimes": "Runtimes",
     "skills": "Skills",
     "settings": "Settings",
-
     "admin": "Admin"
   },
   "tab": {
