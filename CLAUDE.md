@@ -105,7 +105,7 @@ pnpm ui:add badge     # shadcn/Base UI component into packages/ui
 
 Worktrees share the PostgreSQL container and the main database `multica`; `.env.worktree` isolates ports, profiles, process state and Desktop data, not application rows. `make dev` auto-detects this. For manual setup use `make worktree-env`, `make setup-worktree`, and `make start-worktree`. Direct `pnpm dev:desktop` self-isolates from the path; `make up C=desktop` overrides that fallback with the registry-allocated renderer port and app name so Desktop shares the environment ledger.
 
-CI runs Node 22, the latest Go 1.26 patch, and a `pgvector/pgvector:pg17` PostgreSQL service.
+CI runs Node 22, the latest Go 1.26 patch, and `pgvector/pgvector:pg17` PostgreSQL and `redis:7-alpine` services; the latter provides `REDIS_TEST_URL` for the Redis-gated Go suites.
 
 ## Database and Migration Rules
 
@@ -213,6 +213,8 @@ Tests follow the code:
 | Platform wiring such as cookies, redirects, search params | `apps/web/*.test.tsx` or `apps/desktop/` |
 | End-to-end flows | `e2e/*.spec.ts` |
 | Backend | `server/` Go tests |
+
+Redis-gated backend suites run against `REDIS_TEST_URL`. `make test` assembles one automatically via `scripts/ensure-redis.sh` (reuse whatever already listens on `127.0.0.1:6379`, otherwise start a throwaway `multica-test-redis` container; `make test-redis-down` removes it). With no reachable Redis those suites skip with a named reason rather than fail.
 
 Rules:
 

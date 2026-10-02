@@ -558,7 +558,11 @@ jobs:
 
       - name: Test
         if: ${{ needs.changes.outputs.backend == 'true' }}
-        run: bash scripts/test-go.sh --race
+        # --verbose keeps per-test lines in the log: at package level a bare
+        # `ok` cannot distinguish a redis-gated suite that passed from one
+        # that silently skipped, so the gated coverage would be unprovable
+        # from CI output (RUYI-331).
+        run: bash scripts/test-go.sh --race --verbose
 
   # Keep the live vulnerability database from hiding build and test results.
   # The aggregate backend job below still treats both jobs as one merge gate.
