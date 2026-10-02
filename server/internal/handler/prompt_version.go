@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -34,8 +35,9 @@ import (
 // Every write requires RequireHumanActor + workspace Owner role (wired in
 // router.go), per PM spec §3.6: writes are Owner-only, not Owner-or-admin.
 
-// promptVersionScope is one of the four supported tiers. The literal set
-// mirrors the prompt_version.scope CHECK constraint.
+// promptVersionScope is one of the supported versioned prompt carriers: the
+// four tiers plus autopilot run prompts and skill bodies (RUYI-285 rework).
+// The literal set mirrors the prompt_version.scope CHECK constraint.
 type promptVersionScope string
 
 const (
@@ -43,11 +45,14 @@ const (
 	promptVersionScopeProject   promptVersionScope = "project"
 	promptVersionScopeSquad     promptVersionScope = "squad"
 	promptVersionScopeAgent     promptVersionScope = "agent"
+	promptVersionScopeAutopilot promptVersionScope = "autopilot"
+	promptVersionScopeSkill     promptVersionScope = "skill"
 )
 
 func parsePromptVersionScope(s string) (promptVersionScope, bool) {
 	switch promptVersionScope(s) {
-	case promptVersionScopeWorkspace, promptVersionScopeProject, promptVersionScopeSquad, promptVersionScopeAgent:
+	case promptVersionScopeWorkspace, promptVersionScopeProject, promptVersionScopeSquad, promptVersionScopeAgent,
+		promptVersionScopeAutopilot, promptVersionScopeSkill:
 		return promptVersionScope(s), true
 	default:
 		return "", false
@@ -100,6 +105,14 @@ func lockScopeEntityResult(ctx context.Context, qtx *db.Queries, scope promptVer
 		var row db.LockAgentForPromptVersionRow
 		row, err = qtx.LockAgentForPromptVersion(ctx, db.LockAgentForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
 		current = row.EffectiveContent
+	case promptVersionScopeAutopilot:
+		var row db.LockAutopilotForPromptVersionRow
+		row, err = qtx.LockAutopilotForPromptVersion(ctx, db.LockAutopilotForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		current = row.EffectiveContent
+	case promptVersionScopeSkill:
+		var row db.LockSkillForPromptVersionRow
+		row, err = qtx.LockSkillForPromptVersion(ctx, db.LockSkillForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		current = row.EffectiveContent
 	}
 	if err != nil {
 		return "", err
@@ -145,6 +158,10 @@ func (h *Handler) writeScopeEffectiveContent(ctx context.Context, qtx *db.Querie
 		_, err = qtx.UpdateSquadInstructionsForPromptVersion(ctx, db.UpdateSquadInstructionsForPromptVersionParams{ID: scopeID, Instructions: content})
 	case promptVersionScopeAgent:
 		_, err = qtx.UpdateAgentInstructionsForPromptVersion(ctx, db.UpdateAgentInstructionsForPromptVersionParams{ID: scopeID, Instructions: content})
+	case promptVersionScopeAutopilot:
+		_, err = qtx.UpdateAutopilotDescriptionForPromptVersion(ctx, db.UpdateAutopilotDescriptionForPromptVersionParams{ID: scopeID, Description: strToText(content)})
+	case promptVersionScopeSkill:
+		_, err = qtx.UpdateSkillContentForPromptVersion(ctx, db.UpdateSkillContentForPromptVersionParams{ID: scopeID, Content: content})
 	}
 	return err
 }
@@ -290,6 +307,10 @@ func (h *Handler) locklessScopeCheck(w http.ResponseWriter, r *http.Request, sco
 		_, err = h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: scopeID, WorkspaceID: workspaceID})
 	case promptVersionScopeAgent:
 		_, err = h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: scopeID, WorkspaceID: workspaceID})
+	case promptVersionScopeAutopilot:
+		_, err = h.Queries.GetAutopilotInWorkspace(ctx, db.GetAutopilotInWorkspaceParams{ID: scopeID, WorkspaceID: workspaceID})
+	case promptVersionScopeSkill:
+		_, err = h.Queries.GetSkillInWorkspace(ctx, db.GetSkillInWorkspaceParams{ID: scopeID, WorkspaceID: workspaceID})
 	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, "scope not found in this workspace")
@@ -467,6 +488,127 @@ func (h *Handler) SwitchPromptGovernanceVersion(w http.ResponseWriter, r *http.R
 		sourceVer:    &sv,
 		authorUserID: userID,
 	})
+}
+
+// SnapshotPromptGovernanceVersionRequest is the optional body of a snapshot
+// call. There is no content field by design: the snapshot's whole point is
+// that the server, not the caller, supplies the text being versioned.
+type SnapshotPromptGovernanceVersionRequest struct {
+	ChangeNote string `json:"change_note"`
+}
+
+// snapshotDefaultChangeNote is used when the caller passes no change_note.
+const snapshotDefaultChangeNote = "快照当前生效配置"
+
+// SnapshotPromptGovernanceVersion — POST /api/prompt-governance/{scope}/{scopeId}/versions/snapshot
+// Owner-only (same middleware group as the other writes in router.go).
+// Records the carrier's currently effective content as a new version row
+// (source='snapshot') inside one transaction: lock the entity row, read the
+// live text under that lock, run the same legislative gate every other write
+// passes, assign the next version, insert — and stop there. A snapshot never
+// writes the business column (nothing changed to write) and never rewrites
+// or deletes an existing version row, so repeated snapshots of identical
+// content are allowed: the line is evidence, not a cache.
+func (h *Handler) SnapshotPromptGovernanceVersion(w http.ResponseWriter, r *http.Request) {
+	scope, ok := parsePromptVersionScope(chi.URLParam(r, "scope"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unknown scope")
+		return
+	}
+	scopeID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "scopeId"), "scope_id")
+	if !ok {
+		return
+	}
+	var req SnapshotPromptGovernanceVersionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	changeNote := req.ChangeNote
+	if changeNote == "" {
+		changeNote = snapshotDefaultChangeNote
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+
+	ctx := r.Context()
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to snapshot prompt version")
+		return
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+
+	// The snapshot's content is whatever is effective right now, read under
+	// the entity row lock so a concurrent edit cannot slide between the read
+	// and the insert.
+	currentContent, ok := h.lockScopeEntity(w, r, qtx, scope, workspaceID, scopeID)
+	if !ok {
+		return
+	}
+
+	// Same gate as every other write path (RUYI-285 rework): a carrier with
+	// no effective content has nothing to version (400), and live text that
+	// trips the secret scanner must not enter the version line (422) — a
+	// snapshot is a write into prompt_version like any other.
+	scan, gateOK, badReason := promptGovernanceGate(currentContent)
+	if badReason != "" {
+		writeError(w, http.StatusBadRequest, badReason)
+		return
+	}
+	if !gateOK {
+		slog.Info("prompt version snapshot blocked by secret scan", append(logger.RequestAttrs(r),
+			"scope", string(scope), "scope_id", chi.URLParam(r, "scopeId"),
+			"findings", len(scan.Findings), "scanner_revision", scan.Revision)...)
+		writePromptScanBlocked(w, scan)
+		return
+	}
+
+	next, err := qtx.NextPromptVersion(ctx, db.NextPromptVersionParams{Scope: string(scope), ScopeID: scopeID})
+	if err != nil {
+		slog.Error("prompt version number failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to snapshot prompt version")
+		return
+	}
+
+	gateBlob, err := json.Marshal(scan.Findings)
+	if err != nil {
+		gateBlob = []byte("[]")
+	}
+
+	created, err := qtx.CreatePromptVersion(ctx, db.CreatePromptVersionParams{
+		WorkspaceID:     workspaceID,
+		Scope:           string(scope),
+		ScopeID:         scopeID,
+		Version:         next,
+		Content:         currentContent,
+		ContentSha256:   sha256Hex(currentContent),
+		Source:          "snapshot",
+		ChangeNote:      changeNote,
+		ScannerRevision: scan.Revision,
+		GateResult:      gateBlob,
+		AuthorUserID:    parseUUID(userID),
+	})
+	if err != nil {
+		slog.Error("prompt version insert failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to snapshot prompt version")
+		return
+	}
+
+	// Deliberately no writeScopeEffectiveContent here: the snapshot captured
+	// content the carrier already has, so the business column is left exactly
+	// as the locked read found it.
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to snapshot prompt version")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, promptGovVersionToResponse(created))
 }
 
 // promptGovWrite carries the fields that differ between an edit-save and a

@@ -1,24 +1,28 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { ApiError } from "@multica/core/api";
-import type { PromptQualityDashboard } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import enPromptMarket from "../../locales/en/prompt-market.json";
 import { VersionsTab } from "./versions-tab";
 
 /**
- * The version lifecycle tab's wiring (RUYI-285).
+ * The version lifecycle tab's wiring after the RUYI-285 rework.
  *
- * What only a mount can show is asserted here: the lifecycle actions exist and
- * reach their mutations with the right payloads (save carries the preloaded
- * effective content plus the change note; switch carries the target version),
- * a non-owner sees no write controls, and the per-version quality binding is
- * visible on the row.
+ * The tab creates versions only by snapshotting a carrier's effective
+ * content, so the load-bearing assertions are the negatives: no prompt
+ * content editor exists anywhere in the tab, and nothing renders (or
+ * requests) until a carrier is picked. The positives — the snapshot confirm
+ * reaching its mutation, the timeline refreshing after it, secret-scan
+ * findings surfacing instead of a fake success, copy-forward activation, and
+ * the two-pick comparison — ride on the real core hooks with only the API
+ * transport mocked, so the queries' no-subject guard and the post-snapshot
+ * invalidation are exercised for real.
  */
 
 const TEST_RESOURCES = {
@@ -47,7 +51,7 @@ const state = vi.hoisted(() => {
   return {
     role: "owner" as string | null,
     agents: [{ id: "agent-1", name: "Gu Xiaoyu" }],
-    instructions: "live instructions text",
+    projects: [{ id: "proj-1", title: "Atlas" }],
     versions: {
       versions: [
         version(2, "edit", "收紧工具使用纪律"),
@@ -55,34 +59,72 @@ const state = vi.hoisted(() => {
       ],
       total: 2,
     },
+    versionRequests: [] as string[],
+    qualityRequests: [] as string[],
     qualityVersions: [
       { version: 2, runs: 12 },
       { version: 1, runs: 0 },
     ],
-    saved: [] as unknown[],
-    switched: [] as unknown[],
-    saveError: null as unknown,
+    snapshotted: [] as unknown[],
+    switched: [] as number[],
+    snapshotError: null as unknown,
   };
 });
 
-vi.mock("@multica/core/workspace/queries", () => ({
-  agentListOptions: () => ({
-    queryKey: ["agents"],
-    queryFn: () => Promise.resolve(state.agents),
-  }),
-  agentDetailOptions: (_wsId: string, agentId: string) => ({
-    queryKey: ["agent", agentId],
-    queryFn: () =>
-      Promise.resolve({ id: agentId, name: "Gu Xiaoyu", instructions: state.instructions }),
-  }),
-}));
-
-vi.mock("@multica/core/permissions", () => ({
-  useCurrentMember: () => ({ userId: "u-1", role: state.role, member: null, isLoading: false }),
-}));
-
 vi.mock("@multica/core/api", () => ({
-  api: {},
+  api: {
+    listAgents: () => Promise.resolve(state.agents),
+    // Wrapped: projectListOptions selects `data.projects` off the envelope.
+    listProjects: () => Promise.resolve({ projects: state.projects }),
+    listPromptGovernanceVersions: (_scope: string, scopeId: string) => {
+      state.versionRequests.push(scopeId);
+      return Promise.resolve(state.versions);
+    },
+    getPromptQualityDashboard: (_scope: string, scopeId: string) => {
+      state.qualityRequests.push(scopeId);
+      return Promise.resolve({ versions: state.qualityVersions });
+    },
+    snapshotPromptGovernanceVersion: (
+      _scope: string,
+      _scopeId: string,
+      body: unknown,
+    ) => {
+      // A refused snapshot lands nowhere; the component reads the error below.
+      if (state.snapshotError) return Promise.reject(state.snapshotError);
+      state.snapshotted.push(body);
+      return Promise.resolve({
+        id: "pv-3",
+        scope: "agent",
+        scope_id: "agent-1",
+        version: 3,
+        content: "first baseline\nsecond line\n",
+        content_sha256: "sha-3",
+        source: "snapshot",
+        change_note: "Snapshot of current effective config",
+        scanner_revision: "rev-1",
+        created_at: "2026-09-29T12:00:00.000Z",
+      });
+    },
+    switchPromptGovernanceVersion: (
+      _scope: string,
+      _scopeId: string,
+      v: number,
+    ) => {
+      state.switched.push(v);
+      return Promise.resolve({
+        id: `pv-${v}`,
+        scope: "agent",
+        scope_id: "agent-1",
+        version: v,
+        content: "first baseline\nsecond line\n",
+        content_sha256: `sha-${v}`,
+        source: "revert",
+        change_note: "",
+        scanner_revision: "rev-1",
+        created_at: "2026-09-29T12:00:00.000Z",
+      });
+    },
+  },
   ApiError: class ApiError extends Error {
     status: number;
     body: unknown;
@@ -95,49 +137,18 @@ vi.mock("@multica/core/api", () => ({
   clientErrorMessage: (e: unknown) => (e instanceof Error ? e.message : undefined),
 }));
 
-vi.mock("@multica/core/self-evolution", async () => {
-  const actual =
-    await vi.importActual<typeof import("@multica/core/self-evolution")>(
-      "@multica/core/self-evolution",
-    );
-  return {
-    ...actual,
-    promptGovernanceVersionsOptions: () => ({
-      queryKey: ["prompt-governance-versions", "agent-1"],
-      queryFn: () => Promise.resolve(state.versions),
-    }),
-    promptQualityDashboardOptions: () => ({
-      queryKey: ["prompt-quality", "agent-1"],
-      queryFn: () =>
-        Promise.resolve({
-          versions: state.qualityVersions,
-        } as unknown as PromptQualityDashboard),
-    }),
-    useSavePromptVersion: () => ({
-      isPending: false,
-      mutate: (body: unknown) => {
-        // A refused save lands nowhere; the component reads the error below.
-        if (state.saveError) return;
-        state.saved.push(body);
-      },
-      error: state.saveError,
-    }),
-    useSwitchPromptVersion: () => ({
-      isPending: false,
-      mutate: (version: number) => state.switched.push(version),
-      error: null,
-    }),
-  };
-});
+vi.mock("@multica/core/permissions", () => ({
+  useCurrentMember: () => ({ userId: "u-1", role: state.role, member: null, isLoading: false }),
+}));
 
-function renderTab({ initialAgentId = "agent-1" }: { initialAgentId?: string } = {}) {
+function renderTab({ initialSubjectId = "agent-1" }: { initialSubjectId?: string } = {}) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider resources={TEST_RESOURCES} locale="en">
-        <VersionsTab wsId="ws-1" initialAgentId={initialAgentId} />
+        <VersionsTab wsId="ws-1" initialSubjectId={initialSubjectId} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -145,10 +156,16 @@ function renderTab({ initialAgentId = "agent-1" }: { initialAgentId?: string } =
 
 beforeEach(() => {
   state.role = "owner";
-  state.saved = [];
+  state.versionRequests = [];
+  state.qualityRequests = [];
+  state.snapshotted = [];
   state.switched = [];
-  state.saveError = null;
+  state.snapshotError = null;
 });
+
+// Explicit because the type-switch test drives real portals: a leftover
+// tree from the previous test would double every global query.
+afterEach(cleanup);
 
 describe("VersionsTab", () => {
   it("renders the version line with source, note and the quality binding", async () => {
@@ -160,54 +177,54 @@ describe("VersionsTab", () => {
     expect(screen.getByText("Baseline")).toBeInTheDocument();
     // Quality evaluation binding, per version.
     expect(screen.getByText("12 runs")).toBeInTheDocument();
-    expect(screen.getByText("No quality data")).toBeInTheDocument();
+    expect(screen.getByText("No quality data"));
+    // One read of each kind, bound to the picked carrier.
+    expect(state.versionRequests).toEqual(["agent-1"]);
+    expect(state.qualityRequests).toEqual(["agent-1"]);
   });
 
-  it("hides every write control from a non-owner", async () => {
-    state.role = "member";
+  it("keeps the tab free of any prompt-content editor", async () => {
     renderTab();
 
     await screen.findByText("收紧工具使用纪律");
+    // The rework removed the edit dialog: creation happens by snapshot in the
+    // carrier's own feature entry, so no textarea can exist here.
+    expect(document.querySelector("textarea")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new version/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /activate/i })).not.toBeInTheDocument();
-    // Reads, including comparison, stay available.
-    expect(screen.getAllByRole("button", { name: /^v\d+$/ }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /snapshot/i })).toBeInTheDocument();
   });
 
-  it("blocks the new-version entry until a subject is picked", async () => {
-    renderTab({ initialAgentId: "" });
+  it("blocks the snapshot entry until a carrier is picked", async () => {
+    renderTab({ initialSubjectId: "" });
 
-    // The empty-state copy replaces the version line, and the entry is inert.
+    // The empty-state copy replaces the version line, and no read fires.
     await screen.findByText("Pick a subject");
-    const newButton = screen.getByRole("button", { name: /new version/i });
-    expect(newButton).toBeDisabled();
+    expect(state.versionRequests).toEqual([]);
+    expect(state.qualityRequests).toEqual([]);
 
-    // Clicking opens no editor, so no save request can ever leave the tab.
-    fireEvent.click(newButton);
-    expect(screen.queryByRole("button", { name: /save version/i })).not.toBeInTheDocument();
-    expect(state.saved).toHaveLength(0);
+    const snapshotButton = screen.getByRole("button", { name: /snapshot/i });
+    expect(snapshotButton).toBeDisabled();
+    fireEvent.click(snapshotButton);
+    expect(screen.queryByRole("button", { name: /take snapshot/i })).not.toBeInTheDocument();
+    expect(state.snapshotted).toHaveLength(0);
   });
 
-  it("saves an edited draft as a new version with the change note", async () => {
+  it("snapshots the carrier's effective content after confirm and refreshes the line", async () => {
     renderTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: /new version/i }));
-    const content = await screen.findByRole("textbox", { name: /prompt content/i });
-    expect(content).toHaveValue("live instructions text");
-    fireEvent.change(screen.getByLabelText(/change note/i), {
-      target: { value: "tighten tool discipline" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /save version/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /snapshot/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /take snapshot/i }));
 
-    await waitFor(() => expect(state.saved).toHaveLength(1));
-    expect(state.saved[0]).toEqual({
-      content: "live instructions text",
-      change_note: "tighten tool discipline",
-    });
+    await waitFor(() => expect(state.snapshotted).toEqual([{}]));
+    // The confirm dialog closes, and the timeline refetches (the second read).
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /take snapshot/i })).not.toBeInTheDocument(),
+    );
+    await waitFor(() => expect(state.versionRequests).toHaveLength(2));
   });
 
-  it("surfaces a secret-scan block instead of pretending the save landed", async () => {
-    state.saveError = new ApiError(
+  it("surfaces a secret-scan block instead of pretending the snapshot landed", async () => {
+    state.snapshotError = new ApiError(
       "the prompt appears to contain credentials and cannot be published",
       422,
       "Unprocessable Entity",
@@ -219,10 +236,10 @@ describe("VersionsTab", () => {
     );
     renderTab();
 
-    fireEvent.click(await screen.findByRole("button", { name: /new version/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /save version/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /snapshot/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /take snapshot/i }));
 
-    expect(state.saved).toHaveLength(0);
+    expect(state.snapshotted).toHaveLength(0);
     expect(
       await screen.findByText("Not saved: the prompt appears to contain credentials."),
     ).toBeInTheDocument();
@@ -251,5 +268,31 @@ describe("VersionsTab", () => {
     // Picking the second version opens the comparison by itself.
     expect(await screen.findByText(/Compare v/)).toBeInTheDocument();
     expect(screen.getByText(/1 removed/)).toBeInTheDocument();
+  });
+
+  it("clears the picked version and carrier when the type changes", async () => {
+    const user = userEvent.setup();
+    renderTab();
+
+    // One pick only: two would open the comparison dialog, and a modal
+    // dialog makes the pickers outside it inert.
+    fireEvent.click((await screen.findAllByRole("button", { name: /^v\d+$/ }))[0]!);
+
+    await user.click(screen.getByRole("combobox", { name: "Carrier type" }));
+    await user.click(await screen.findByRole("option", { name: "Project" }));
+
+    // The type switch also resets the entity, so the line is replaced by
+    // the empty state until a new carrier is picked.
+    await screen.findByText("Pick a subject");
+    expect(screen.queryByRole("button", { name: /^v\d+$/ })).not.toBeInTheDocument();
+
+    // Picking a carrier on the new type loads a fresh line; if the stale
+    // version pick had survived the type switch, two picks would reopen the
+    // comparison by themselves.
+    await user.click(screen.getByRole("combobox", { name: "Carrier" }));
+    await user.click(await screen.findByRole("option", { name: "Atlas" }));
+
+    await screen.findByText("收紧工具使用纪律");
+    expect(screen.queryByText(/Compare v/)).not.toBeInTheDocument();
   });
 });

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
+import { Camera } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,7 +19,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
@@ -29,7 +28,6 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@multica/ui/components/ui/empty";
-import { Input } from "@multica/ui/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -38,18 +36,18 @@ import {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
 import {
   promptGovernanceVersionsOptions,
   promptQualityDashboardOptions,
-  useSavePromptVersion,
+  useSnapshotPromptVersion,
   useSwitchPromptVersion,
 } from "@multica/core/self-evolution";
-import { agentDetailOptions, agentListOptions } from "@multica/core/workspace/queries";
+import { agentListOptions, squadListOptions, skillListOptions } from "@multica/core/workspace/queries";
+import { projectListOptions } from "@multica/core/projects/queries";
+import { autopilotListOptions } from "@multica/core/autopilots/queries";
 import { ApiError, clientErrorMessage } from "@multica/core/api";
 import type {
-  Agent,
   PromptGovernanceVersion,
   PromptSecretFinding,
 } from "@multica/core/types";
@@ -58,30 +56,48 @@ import { useT } from "../../i18n";
 import { PromptDiffView } from "../../market/prompt-diff-view";
 
 /**
- * The prompt version lifecycle tab (RUYI-285): the entry the quality page
- * lacked. Every effective change is an append — the editor saves the text
- * below as the next version, activating a historical version copies it
- * forward, and nothing in the line is ever rewritten.
+ * The prompt version lifecycle tab (RUYI-285 rework). The self-evolution page
+ * owns no content editing: a version is created by snapshotting the selected
+ * carrier's currently effective configuration, and every effective change
+ * still happens in the carrier's own feature entry. Activating a historical
+ * version remains the copy-forward path, and nothing in the line is ever
+ * rewritten.
  *
- * The scope picker is agent-only for the same reason the quality and quiz
- * tabs are: the endpoint takes all four tiers, so widening this is a picker
- * change rather than a data change.
+ * The picker is two-level — carrier type, then entity — because the version
+ * line now covers all three prompt-carrying families: the four tiers plus
+ * autopilot run prompts and skill bodies. The workspace tier needs no entity
+ * pick: its effective content is this workspace's own.
  */
-const SCOPE = "agent";
+const SUBJECT_TYPES = [
+  "workspace",
+  "project",
+  "squad",
+  "agent",
+  "autopilot",
+  "skill",
+] as const;
+
+type SubjectType = (typeof SUBJECT_TYPES)[number];
 
 export function VersionsTab({
   wsId,
-  initialAgentId = "",
+  initialSubjectType = "agent",
+  initialSubjectId = "",
 }: {
   wsId: string;
-  /** Preselects the subject. The page leaves it empty; tests supply one. */
-  initialAgentId?: string;
+  /** Preselects the carrier type. The page leaves the default; tests supply one. */
+  initialSubjectType?: SubjectType;
+  /** Preselects the entity (ignored for the workspace type). Empty = nothing picked. */
+  initialSubjectId?: string;
 }) {
   const { t } = useT("self-evolution");
 
-  const [agentId, setAgentId] = useState(initialAgentId);
+  const [subjectType, setSubjectType] = useState<SubjectType>(initialSubjectType);
+  const [subjectId, setSubjectId] = useState(
+    initialSubjectType === "workspace" ? wsId : initialSubjectId,
+  );
   const [selected, setSelected] = useState<number[]>([]);
-  const [editorOpen, setEditorOpen] = useState(false);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
   const [switchTarget, setSwitchTarget] = useState<PromptGovernanceVersion | null>(null);
 
   const currentMember = useCurrentMember(wsId);
@@ -89,15 +105,26 @@ export function VersionsTab({
   // "owner"); admin is deliberately not included there, so not here either.
   const canManage = currentMember.role === "owner";
 
-  const agents = useQuery(agentListOptions(wsId));
-  const versions = useQuery(promptGovernanceVersionsOptions(wsId, SCOPE, agentId));
+  const typeId = subjectType === "workspace" ? wsId : subjectId;
+
+  // Each catalog loads only while its type is the picked one; an unpicked
+  // list stays disabled and never fires.
+  const agents = useQuery({ ...agentListOptions(wsId), enabled: subjectType === "agent" });
+  const projects = useQuery({ ...projectListOptions(wsId), enabled: subjectType === "project" });
+  const squads = useQuery({ ...squadListOptions(wsId), enabled: subjectType === "squad" });
+  const autopilots = useQuery({
+    ...autopilotListOptions(wsId),
+    enabled: subjectType === "autopilot",
+  });
+  const skills = useQuery({ ...skillListOptions(wsId), enabled: subjectType === "skill" });
+
+  const versions = useQuery(promptGovernanceVersionsOptions(wsId, subjectType, typeId));
   // A wide window: the badges only report which version the evaluation bound
   // each run to, and a longer window binds more versions.
-  const quality = useQuery(promptQualityDashboardOptions(wsId, SCOPE, agentId, 90));
-  const agentDetail = useQuery(agentDetailOptions(wsId, agentId));
+  const quality = useQuery(promptQualityDashboardOptions(wsId, subjectType, typeId, 90));
 
-  const saveVersion = useSavePromptVersion(wsId, SCOPE, agentId);
-  const switchVersion = useSwitchPromptVersion(wsId, SCOPE, agentId);
+  const snapshotVersion = useSnapshotPromptVersion(wsId, subjectType, typeId);
+  const switchVersion = useSwitchPromptVersion(wsId, subjectType, typeId);
 
   const rows = useMemo(
     () => [...(versions.data?.versions ?? [])].sort((a, b) => b.version - a.version),
@@ -112,62 +139,121 @@ export function VersionsTab({
     return map;
   }, [quality.data]);
 
-  const agentItems = useMemo(
-    () => (agents.data ?? []).map((a: Agent) => ({ value: a.id, label: a.name })),
-    [agents.data],
+  const entityItems = useMemo(() => {
+    if (subjectType === "workspace") {
+      return [{ value: wsId, label: t(($) => $.versions.workspaceEntity) }];
+    }
+    const raw: { value: string; label: string }[] =
+      subjectType === "agent"
+        ? (agents.data ?? []).map((a) => ({ value: a.id, label: a.name }))
+        : subjectType === "project"
+          ? (projects.data ?? []).map((p) => ({ value: p.id, label: p.title }))
+          : subjectType === "squad"
+            ? (squads.data ?? []).map((s) => ({ value: s.id, label: s.name }))
+            : subjectType === "autopilot"
+              ? (autopilots.data ?? []).map((a) => ({ value: a.id, label: a.title }))
+              : (skills.data ?? []).map((s) => ({ value: s.id, label: s.name }));
+    return raw.sort((a, b) => a.label.localeCompare(b.label));
+  }, [subjectType, wsId, t, agents.data, projects.data, squads.data, autopilots.data, skills.data]);
+
+  // Stable identity across renders: the select refuses to open its popup
+  // over an items array that changes identity on every render.
+  const typeItems = useMemo(
+    () => SUBJECT_TYPES.map((value) => ({ value, label: subjectTypeLabel(t, value) })),
+    [t],
   );
 
   const latest = rows[0] ?? null;
   const left = findRow(rows, selected[0]);
   const right = findRow(rows, selected[1]);
 
+  const pickType = (next: SubjectType) => {
+    setSubjectType(next);
+    setSubjectId(next === "workspace" ? wsId : "");
+    // A different type is a different line; stale selections and dialogs
+    // would otherwise render state from a carrier no longer on screen.
+    setSelected([]);
+    setSnapshotOpen(false);
+    setSwitchTarget(null);
+  };
+  const pickEntity = (next: string) => {
+    setSubjectId(next);
+    setSelected([]);
+    setSwitchTarget(null);
+  };
+
+  const snapshotBlocked = secretScanBody(snapshotVersion.error);
+  const snapshotFailed =
+    !snapshotBlocked && snapshotVersion.error !== null && snapshotVersion.error !== undefined;
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-col gap-1.5">
-          <span className="text-caption text-muted-foreground">
-            {t(($) => $.quality.scopePicker.subjectLabel)}
-          </span>
-          <Select
-            items={agentItems}
-            value={agentId}
-            onValueChange={(next) => {
-              if (typeof next === "string") {
-                setAgentId(next);
-                setSelected([]);
-                setEditorOpen(false);
-                setSwitchTarget(null);
-              }
-            }}
-          >
-            <SelectTrigger size="sm" className="w-56">
-              <SelectValue>
-                {agentItems.find((i) => i.value === agentId)?.label ??
-                  t(($) => $.quality.scopePicker.subjectPlaceholder)}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent align="start" className="max-h-72">
-              {agentItems.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-caption text-muted-foreground">
+              {t(($) => $.versions.subjectTypeLabel)}
+            </span>
+            <Select
+              items={typeItems}
+              value={subjectType}
+              onValueChange={(next) => {
+                if (typeof next === "string") pickType(next as SubjectType);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-40" aria-label={t(($) => $.versions.subjectTypeLabel)}>
+                <SelectValue>{subjectTypeLabel(t, subjectType)}</SelectValue>
+              </SelectTrigger>
+              <SelectContent align="start">
+                {SUBJECT_TYPES.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {subjectTypeLabel(t, value)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-caption text-muted-foreground">
+              {t(($) => $.versions.subjectEntityLabel)}
+            </span>
+            <Select
+              items={entityItems}
+              value={typeId}
+              disabled={subjectType === "workspace"}
+              onValueChange={(next) => {
+                if (typeof next === "string") pickEntity(next);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-56" aria-label={t(($) => $.versions.subjectEntityLabel)}>
+                <SelectValue>
+                  {entityItems.find((i) => i.value === typeId)?.label ??
+                    t(($) => $.versions.subjectEntityPlaceholder)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent align="start" className="max-h-72">
+                {entityItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
         {canManage ? (
           <Button
             size="sm"
-            disabled={agentId === ""}
-            onClick={() => setEditorOpen(true)}
+            disabled={typeId === ""}
+            onClick={() => setSnapshotOpen(true)}
           >
-            <Plus className="h-4 w-4" />
-            {t(($) => $.versions.newVersion)}
+            <Camera className="h-4 w-4" />
+            {t(($) => $.versions.snapshot)}
           </Button>
         ) : null}
       </div>
 
-      {agentId === "" ? (
+      {typeId === "" ? (
         <Empty>
           <EmptyHeader>
             <EmptyTitle>{t(($) => $.quality.noSubject.title)}</EmptyTitle>
@@ -190,6 +276,36 @@ export function VersionsTab({
           <p className="text-caption text-muted-foreground">
             {t(($) => $.versions.bindingNote)}
           </p>
+
+          {snapshotBlocked ? (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2">
+              <p className="text-caption font-medium">{t(($) => $.versions.secretBlocked)}</p>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {snapshotBlocked.findings.map((finding: PromptSecretFinding, index: number) => (
+                  <li
+                    key={`${finding.rule}-${finding.line}-${index}`}
+                    className="flex flex-wrap items-baseline gap-x-2 text-caption"
+                  >
+                    <span className="font-medium">{finding.category}</span>
+                    <span className="text-muted-foreground">{finding.rule}</span>
+                    <span className="text-muted-foreground tabular-nums">
+                      {t(($) => $.versions.findingLine, { line: finding.line })}
+                    </span>
+                    {/* `mask` is a fixed-width mask minted server-side, never
+                        a prefix of the matched value. */}
+                    <span className="font-mono text-faint-foreground">{finding.mask}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : snapshotFailed ? (
+            <p className="text-caption text-destructive">
+              {t(($) => $.versions.snapshotFailed)}
+              {clientErrorMessage(snapshotVersion.error)
+                ? `: ${clientErrorMessage(snapshotVersion.error)}`
+                : ""}
+            </p>
+          ) : null}
 
           {versions.isPending ? (
             <div className="flex flex-col gap-2">
@@ -269,21 +385,39 @@ export function VersionsTab({
         </section>
       )}
 
-      <NewVersionDialog
-        open={editorOpen}
-        pending={saveVersion.isPending}
-        currentContent={agentDetail.data?.instructions ?? ""}
-        error={saveVersion.error}
-        onOpenChange={setEditorOpen}
-        onSubmit={(draft) => {
-          saveVersion.mutate(draft, {
-            onSuccess: () => {
-              setEditorOpen(false);
-              setSelected([]);
-            },
-          });
+      <AlertDialog
+        open={snapshotOpen}
+        onOpenChange={(next) => {
+          if (!next) setSnapshotOpen(false);
         }}
-      />
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.versions.snapshotTitle)}</AlertDialogTitle>
+            <AlertDialogDescription>{t(($) => $.versions.snapshotBody)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t(($) => $.versions.cancel)}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                snapshotVersion.mutate(
+                  {},
+                  // change_note stays at its server default: the snapshot
+                  // records what was effective, not an authored message.
+                  {
+                    onSuccess: () => {
+                      setSnapshotOpen(false);
+                      setSelected([]);
+                    },
+                  },
+                );
+              }}
+            >
+              {t(($) => $.versions.snapshotConfirm)}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={switchTarget !== null}
@@ -336,117 +470,24 @@ export function VersionsTab({
   );
 }
 
-/**
- * The editor that turns the tier's current effective text into the next
- * version. The textarea preloads the agent's live instructions; the first
- * keystroke forks the draft, so a refetch landing mid-edit cannot clobber it.
- */
-function NewVersionDialog({
-  open,
-  pending,
-  currentContent,
-  error,
-  onOpenChange,
-  onSubmit,
-}: {
-  open: boolean;
-  pending: boolean;
-  currentContent: string;
-  error: unknown;
-  onOpenChange: (open: boolean) => void;
-  onSubmit: (draft: { content: string; change_note: string }) => void;
-}) {
-  const { t } = useT("self-evolution");
-  // null = untouched, rendering the live content; a string = a forked draft.
-  const [draft, setDraft] = useState<string | null>(null);
-  const [note, setNote] = useState("");
-
-  useEffect(() => {
-    if (open) {
-      setDraft(null);
-      setNote("");
-    }
-  }, [open]);
-
-  const content = draft ?? currentContent;
-  const blocked = secretScanBody(error);
-  const failed = !blocked && error !== null && error !== undefined;
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>{t(($) => $.versions.editorTitle)}</DialogTitle>
-          <DialogDescription>{t(($) => $.versions.editorDescription)}</DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-caption text-muted-foreground">
-              {t(($) => $.versions.contentLabel)}
-            </span>
-            <Textarea
-              rows={14}
-              className="font-mono text-caption"
-              value={content}
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <span className="text-caption text-muted-foreground">
-              {t(($) => $.versions.contentHint)}
-            </span>
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-caption text-muted-foreground">
-              {t(($) => $.versions.noteLabel)}
-            </span>
-            <Input
-              value={note}
-              placeholder={t(($) => $.versions.notePlaceholder)}
-              onChange={(e) => setNote(e.target.value)}
-            />
-          </label>
-          {blocked ? (
-            <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2">
-              <p className="text-caption font-medium">{t(($) => $.versions.secretBlocked)}</p>
-              <ul className="mt-1 flex flex-col gap-0.5">
-                {blocked.findings.map((finding: PromptSecretFinding, index: number) => (
-                  <li
-                    key={`${finding.rule}-${finding.line}-${index}`}
-                    className="flex flex-wrap items-baseline gap-x-2 text-caption"
-                  >
-                    <span className="font-medium">{finding.category}</span>
-                    <span className="text-muted-foreground">{finding.rule}</span>
-                    <span className="text-muted-foreground tabular-nums">
-                      {t(($) => $.versions.findingLine, { line: finding.line })}
-                    </span>
-                    {/* `mask` is a fixed-width mask minted server-side, never
-                        a prefix of the matched value. */}
-                    <span className="font-mono text-faint-foreground">{finding.mask}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {failed ? (
-            <p className="text-caption text-destructive">
-              {t(($) => $.versions.saveFailed)}
-              {clientErrorMessage(error) ? `: ${clientErrorMessage(error)}` : ""}
-            </p>
-          ) : null}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t(($) => $.versions.cancel)}
-          </Button>
-          <Button
-            disabled={pending || content.trim() === ""}
-            onClick={() => onSubmit({ content, change_note: note })}
-          >
-            {pending ? t(($) => $.versions.saving) : t(($) => $.versions.save)}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+function subjectTypeLabel(
+  t: ReturnType<typeof useT<"self-evolution">>["t"],
+  type: SubjectType,
+): string {
+  switch (type) {
+    case "workspace":
+      return t(($) => $.versions.typeWorkspace);
+    case "project":
+      return t(($) => $.versions.typeProject);
+    case "squad":
+      return t(($) => $.versions.typeSquad);
+    case "agent":
+      return t(($) => $.versions.typeAgent);
+    case "autopilot":
+      return t(($) => $.versions.typeAutopilot);
+    case "skill":
+      return t(($) => $.versions.typeSkill);
+  }
 }
 
 /** The 422 body a secret-scan block returns, or null for any other failure. */
@@ -486,5 +527,6 @@ function sourceLabel(t: ReturnType<typeof useT<"self-evolution">>["t"], source: 
   if (source === "edit") return t(($) => $.versions.sourceEdit);
   if (source === "revert") return t(($) => $.versions.sourceRevert);
   if (source === "auto_snapshot") return t(($) => $.versions.sourceAuto);
+  if (source === "snapshot") return t(($) => $.versions.sourceSnapshot);
   return source;
 }
