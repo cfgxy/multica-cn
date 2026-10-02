@@ -20,6 +20,9 @@ export type {
   TaskAttribution,
   AttributionUser,
   TaskEvidence,
+  RunLineageEntry,
+  RunDetail,
+  CancelRunResult,
   AgentActivityBucket,
   AgentRunCount,
   WorkspaceWorkingAgent,
@@ -98,7 +101,7 @@ export type {
   CreateAgentWebhookRequest,
   UpdateAgentWebhookRequest,
 } from "./agent";
-export { RUNTIME_PROFILE_PROTOCOL_FAMILIES } from "./agent";
+export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, CANCEL_UNCONFIRMED_AFTER_MS } from "./agent";
 export type { PromptProposal, PromptProposalDraftRequest, PromptProposalCarrierScope, PromptProposalChangeKind, LegislationGateFinding, PromptProposalMergeRef, LegislationDiffLine, PromptProposalPreview, PromptProposalBatchOutcome, RetrospectiveConfig, RetrospectiveRun } from "./legislation";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type {

@@ -627,7 +627,36 @@
       "source_backfill": "バックフィルされた帰属",
       "source_unattributed": "責任メンバーを解決できません"
     },
-    "usage_total_tooltip": "このタスクのトークン使用量 — クリックで実行ごとの内訳"
+    "usage_total_tooltip": "このタスクのトークン使用量 — クリックで実行ごとの内訳",
+    "status_cancel_requested": "停止中",
+    "stop_again_tooltip": "停止リクエストを再送信",
+    "stop_again_aria": "停止リクエストを再送信",
+    "cancel_unconfirmed_banner": "停止リクエストから 30 秒以上経過しても未確認です——ランタイムがオフラインの可能性があります。もう一度停止をクリックして再送信してください。",
+    "filter_status_aria": "ステータスで実行を絞り込む",
+    "filter_trigger_aria": "トリガー元で実行を絞り込む",
+    "filter_status_all": "すべてのステータス",
+    "filter_status_pending": "待機中",
+    "filter_status_running": "実行中",
+    "filter_status_cancel_requested": "停止中",
+    "filter_status_completed": "完了",
+    "filter_status_failed": "失敗",
+    "filter_status_cancelled": "キャンセル済み",
+    "filter_trigger_all": "すべてのトリガー",
+    "filter_trigger_comment": "コメント",
+    "filter_trigger_autopilot": "オートパイロット",
+    "filter_trigger_rerun": "手動再実行",
+    "filter_trigger_system_retry": "システム再試行",
+    "filter_empty": "フィルターに一致する実行はありません。",
+    "clear_filters": "フィルターをクリア",
+    "show_more": "さらに表示（{{count}}）",
+    "retry_conflict_agent_busy": "未再試行——このエージェントにはこの Issue 上に未完了の実行があります",
+    "retry_conflict_descendant_active": "未再試行——この実行には未完了の再試行があります",
+    "rerun_task_tooltip": "再実行",
+    "rerun_task_aria": "再実行",
+    "rerun_confirm_title": "このタスクを再実行しますか？",
+    "rerun_confirm_body": "同じエージェント上で現在の設定・新しいセッションで再実行します。この実行は履歴にそのまま残ります。",
+    "rerun_confirm_keep": "そのままにする",
+    "rerun_confirm_confirm": "再実行"
   },
   "usage_detail": {
     "title": "使用量の内訳",
@@ -1056,5 +1085,19 @@
   "suppressed": {
     "badge": "保留中",
     "tooltip": "割り当て済み・未開始 — 開始すると再開します"
+  },
+  "run_detail": {
+    "agent": "エージェント",
+    "attempt": "試行回数",
+    "attempt_value": "再試行 #{{attempt}}",
+    "created": "作成日時",
+    "finished": "終了日時",
+    "usage": "使用量",
+    "reason": "理由",
+    "cancelled_by": "{{name}} が停止をリクエスト · {{time}}",
+    "raw_error": "原始エラー",
+    "lineage": "実行チェーン",
+    "lineage_rerun": "手動再実行",
+    "lineage_system_retry": "システム再試行"
   }
 }

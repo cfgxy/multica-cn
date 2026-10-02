@@ -616,6 +616,7 @@
         "dispatched": "디스패치됨",
         "waiting_local_directory": "디렉터리 대기 중",
         "running": "실행 중",
+        "cancel_requested": "정지 중",
         "completed": "성공",
         "failed": "실패",
         "cancelled": "취소됨"

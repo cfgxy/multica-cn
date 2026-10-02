@@ -805,6 +805,8 @@ function taskStatusLabel(status: AgentTask["status"], t: AgentsT): string {
       return t(($) => $.tab_body.activity.status.waiting_local_directory);
     case "running":
       return t(($) => $.tab_body.activity.status.running);
+    case "cancel_requested":
+      return t(($) => $.tab_body.activity.status.cancel_requested);
     case "completed":
       return t(($) => $.tab_body.activity.status.completed);
     case "failed":

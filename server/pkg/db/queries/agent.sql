@@ -2835,6 +2835,17 @@ SELECT * FROM agent_task_queue
 WHERE issue_id = $1
 ORDER BY created_at DESC;
 
+-- name: ListTasksByIssueWithLimit :many
+-- RUYI-292: ListTasksByIssue under an explicit ?limit=N. A separate query on
+-- purpose: the unlimited ListTasksByIssue is a contract, not an oversight —
+-- the issue-detail execution log and the CLI short-task-ID resolver read the
+-- full history, and comment conversation routing scans it too. The handler
+-- routes here only when the caller actually passed a limit.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+ORDER BY created_at DESC
+LIMIT @row_limit;
+
 -- name: UpdateAgentStatus :one
 UPDATE agent SET status = $2, updated_at = now()
 WHERE id = $1
@@ -2918,3 +2929,160 @@ WHERE agent_id = $1 AND issue_id = $2
   AND started_at IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
 LIMIT 1;
+
+-- name: RequestAgentTaskCancel :one
+-- RUYI-292 phase 1 of the user-initiated two-phase cancel: accept the stop
+-- request against an in-flight run. The daemon observes the new status via its
+-- poll/reconcile channels, interrupts the agent process tree, and confirms via
+-- cancel-ack (ConvergeCancelRequestedToCancelled). CAS on the non-terminal
+-- in-flight set: a row that reached a terminal state first keeps it and the
+-- caller maps the miss to the conflict matrix. 'queued' is absent on purpose —
+-- with no process to stop the server flips it straight to 'cancelled'
+-- (CancelAgentTask* family), per the product cancel matrix.
+UPDATE agent_task_queue
+SET status = 'cancel_requested',
+    cancel_requested_by_user_id = sqlc.narg('cancel_requested_by_user_id'),
+    cancel_requested_at = now(),
+    prepare_lease_expires_at = NULL
+WHERE id = $1
+  AND status IN ('dispatched', 'running', 'waiting_local_directory', 'deferred')
+RETURNING *;
+
+-- name: ConvergeCancelRequestedToCancelled :one
+-- RUYI-292 phase 2 + terminal guard. The daemon's cancel-ack calls this to
+-- record the CONFIRMED stop (completed_at = ack time, per the product spec).
+-- The /complete and /fail callbacks call it first as a terminal guard: a write
+-- landing on a cancel_requested row loses the race ("cancel wins") and must
+-- converge to cancelled instead of stamping completed/failed over a stopping
+-- run. CAS on status='cancel_requested' makes both entries idempotent and
+-- keeps a completed/failed row untouched.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = COALESCE(completed_at, now())
+WHERE id = $1 AND status = 'cancel_requested'
+RETURNING *;
+
+-- name: HasActiveTaskForIssueAgent :one
+-- RUYI-292 retry gate: does (issue, agent) already hold an unfinished run?
+-- Includes cancel_requested: that row is mid-stop and still occupies the
+-- serialization slot, so a retry must surface the conflict instead of racing it.
+SELECT EXISTS(
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = $1 AND agent_id = $2
+      AND status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory', 'running', 'cancel_requested')
+) AS has_active;
+
+-- name: HasActiveRetryDescendant :one
+-- RUYI-292 retry gate: does the source run already have an unfinished direct
+-- descendant? Both manual (rerun_of_task_id) and system (retry_of_task_id)
+-- lineage count — the product rule caps retries-per-source regardless of which
+-- lineage column carries the link.
+SELECT EXISTS(
+    SELECT 1 FROM agent_task_queue d
+    WHERE (d.rerun_of_task_id = $1 OR d.retry_of_task_id = $1)
+      AND d.status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory', 'running', 'cancel_requested')
+) AS has_active;
+
+-- name: FindRecentRetryDescendant :one
+-- RUYI-292 idempotent retry within the throttle window: the still-unfinished
+-- child created seconds ago IS the answer to a double-clicked retry — return it
+-- instead of enqueueing a sibling. Outside the window (or once the child has
+-- finished) the caller falls through to the normal retry path.
+SELECT d.* FROM agent_task_queue d
+WHERE (d.rerun_of_task_id = $1 OR d.retry_of_task_id = $1)
+  AND d.created_at > now() - make_interval(secs => @throttle_secs::double precision)
+  AND d.status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory', 'running', 'cancel_requested')
+ORDER BY d.created_at DESC
+LIMIT 1;
+
+-- name: ListRunAncestry :many
+-- RUYI-292 full ancestor chain of a run, following BOTH lineage columns so a
+-- mixed manual-retry / system-retry chain stays visible (MUL-4302 §5 keeps the
+-- columns distinct; the read unions them). Each recursion step walks from a
+-- chain node to that node's OWN parent row (rerun_of preferred, retry_of
+-- fallback; NULL at the root ends the walk), so the chain reads parent-ward
+-- from the requested run. Depth is bounded in practice — each run points at
+-- one parent.
+WITH RECURSIVE ancestry AS (
+    SELECT root.id AS node_id,
+           CASE
+               WHEN root.rerun_of_task_id IS NOT NULL THEN root.rerun_of_task_id
+               ELSE root.retry_of_task_id
+           END AS next_ancestor_id
+    FROM agent_task_queue root WHERE root.id = $1
+    UNION
+    SELECT parent.id AS node_id,
+           CASE
+               WHEN parent.rerun_of_task_id IS NOT NULL THEN parent.rerun_of_task_id
+               ELSE parent.retry_of_task_id
+           END AS next_ancestor_id
+    FROM agent_task_queue parent
+    JOIN ancestry a ON parent.id = a.next_ancestor_id
+)
+SELECT t.* FROM agent_task_queue t
+JOIN ancestry a ON t.id = a.node_id
+ORDER BY t.created_at ASC;
+
+-- name: ListRunDescendants :many
+-- RUYI-292 full descendant chain of a run (reverse of ListRunAncestry), so a
+-- run detail can show the whole retry fan-out, including cross-lineage forks.
+WITH RECURSIVE descend AS (
+    SELECT root.id AS node_id FROM agent_task_queue root WHERE root.id = $1
+    UNION
+    SELECT child.id AS node_id
+    FROM agent_task_queue child
+    JOIN descend d ON child.rerun_of_task_id = d.node_id OR child.retry_of_task_id = d.node_id
+)
+SELECT t.* FROM agent_task_queue t
+JOIN descend ON t.id = descend.node_id
+ORDER BY t.created_at ASC;
+
+-- name: ListTasksByIssueFiltered :many
+-- RUYI-292: the execution history behind the issue runs list, with status and
+-- trigger-source filters. status_filter takes a comma-separated list of raw
+-- statuses; the 'pending' alias expands to the queued-family display bucket
+-- (D8 status merge) so callers filter by user-visible state. trigger_filter
+-- maps the user-facing trigger buckets to their columns, falling through to a
+-- raw trigger_evidence_kind match for kinds this query doesn't name.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND (
+        sqlc.narg('status_filter')::text IS NULL
+        OR (@status_filter::text = 'pending' AND status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory'))
+        OR status = ANY(string_to_array(@status_filter::text, ','))
+      )
+  AND (
+        sqlc.narg('trigger_filter')::text IS NULL
+        OR (@trigger_filter::text = 'comment' AND trigger_comment_id IS NOT NULL)
+        OR (@trigger_filter::text = 'autopilot' AND autopilot_run_id IS NOT NULL)
+        OR (@trigger_filter::text = 'rerun' AND rerun_of_task_id IS NOT NULL)
+        OR (@trigger_filter::text = 'system_retry' AND retry_of_task_id IS NOT NULL)
+        OR trigger_evidence_kind = @trigger_filter::text
+      )
+ORDER BY created_at DESC
+LIMIT @row_limit;
+
+-- name: ConvergeCancelRequestedForOfflineRuntimes :many
+-- RUYI-292: a cancel_requested row whose runtime died mid-stop can never be
+-- confirmed by a daemon cancel-ack. The stop was already accepted, so the
+-- honest terminal summary is cancelled — the offline sweeper fails every
+-- other in-flight row on a dead runtime, but failing a row the user asked to
+-- STOP would misreport who ended it. Same victims shape and bounds as
+-- FailTasksForOfflineRuntimes so the sweeper transaction stays bounded.
+WITH victims AS (
+  SELECT task.id
+  FROM agent_task_queue task
+  JOIN agent_runtime runtime ON runtime.id = task.runtime_id
+  WHERE task.status = 'cancel_requested'
+    AND runtime.status = 'offline'
+    AND COALESCE(runtime.last_seen_at, runtime.updated_at) <
+        now() - make_interval(secs => @reconnect_grace_secs::double precision)
+  ORDER BY COALESCE(runtime.last_seen_at, runtime.updated_at), task.created_at
+  LIMIT @max_per_tick::int
+  FOR UPDATE OF task SKIP LOCKED
+)
+UPDATE agent_task_queue AS task
+SET status = 'cancelled', completed_at = COALESCE(task.completed_at, now())
+FROM victims
+WHERE task.id = victims.id
+  AND task.status = 'cancel_requested'
+RETURNING task.*;
