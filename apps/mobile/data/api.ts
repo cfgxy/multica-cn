@@ -1324,6 +1324,25 @@ class ApiClient {
     await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
   }
 
+  // Task retry entries (RUYI-343). Mirrors packages/core/api/client.ts —
+  // retryIssueRun is the RUYI-292 run-level endpoint whose anti-storm gates
+  // answer structured 409s ({code, message, task}); rerunIssue is the
+  // legacy issue-level rerun, which MUST carry task_id or the server falls
+  // back to the issue's current assignee and can wake the wrong agent.
+  async retryIssueRun(issueId: string, runId: string): Promise<AgentTask> {
+    return this.fetch<AgentTask>(
+      `/api/issues/${issueId}/tasks/${runId}/retry`,
+      { method: "POST" },
+    );
+  }
+
+  async rerunIssue(issueId: string, taskId?: string): Promise<AgentTask> {
+    return this.fetch<AgentTask>(`/api/issues/${issueId}/rerun`, {
+      method: "POST",
+      body: JSON.stringify(taskId ? { task_id: taskId } : {}),
+    });
+  }
+
   /** Live execution timeline for a task — used by the chat screen to
    *  render the "thinking → tool_use → tool_result → final text" trace
    *  beneath an in-flight assistant bubble. `task:message` WS events
