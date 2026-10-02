@@ -59,6 +59,9 @@ export function useStatusLabel(status: AgentTask["status"]): string {
     case "waiting_local_directory":
       return t(($) => $.execution_log.status_waiting_local_directory);
     case "running": return t(($) => $.execution_log.status_running);
+    // RUYI-292 two-phase cancel: stop accepted, runtime confirmation pending.
+    // A distinct word from "Cancelled" — the run may still be winding down.
+    case "cancel_requested": return t(($) => $.execution_log.status_cancel_requested);
     case "completed": return t(($) => $.execution_log.status_completed);
     case "failed": return t(($) => $.execution_log.status_failed);
     case "cancelled": return t(($) => $.execution_log.status_cancelled);

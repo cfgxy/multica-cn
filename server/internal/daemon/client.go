@@ -441,6 +441,10 @@ type TaskCancelAck struct {
 	// swallow it entirely.
 	ErrorMessage  string
 	FailureReason string
+	// Confirmed: true when the daemon interrupted a live process tree for
+	// this stop (RUYI-292). Observability only — the server flips a
+	// cancel_requested row to cancelled on the ack itself.
+	Confirmed bool
 }
 
 // AckTaskCancelled tells the server this daemon observed the task's
@@ -466,6 +470,9 @@ func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCa
 	}
 	if ack.FailureReason != "" {
 		body["failure_reason"] = ack.FailureReason
+	}
+	if ack.Confirmed {
+		body["confirmed"] = true
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/cancel-ack", taskID), body, nil, defaultTerminalRetrySchedule)
 }

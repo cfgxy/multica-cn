@@ -4366,9 +4366,21 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	guardConverged := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		// RUYI-292 terminal guard: a completion landing on a cancel_requested
+		// row lost the cancel race ("first terminal writer wins") and must
+		// converge to cancelled instead of stamping completed over a stopping
+		// run. Short-circuits the rest of the completion transaction.
+		if converged, gerr := qtx.ConvergeCancelRequestedToCancelled(ctx, taskID); gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return fmt.Errorf("cancel-race guard: %w", gerr)
+		} else if converged.ID.Valid {
+			task = converged
+			guardConverged = true
+			return nil
 		}
 		t, err := qtx.CompleteAgentTask(ctx, db.CompleteAgentTaskParams{
 			ID:                    taskID,
@@ -4471,6 +4483,14 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		return nil, fmt.Errorf("complete task: %w", err)
 	}
 
+	if guardConverged {
+		// The cancel race was lost above; the row is cancelled, not completed.
+		// Skip every completed-specific side effect (chat outcome, completed
+		// broadcast, notifications) — the cancel/ack path owns this row now.
+		slog.Info("task completion converged to cancelled (cancel race lost)",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		return &task, nil
+	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
 
@@ -4846,9 +4866,20 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
+	guardConverged := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		// RUYI-292 terminal guard: a failure landing on a cancel_requested row
+		// lost the cancel race and converges to cancelled (first terminal
+		// writer wins); the auto-retry child below must not spawn either.
+		if converged, gerr := qtx.ConvergeCancelRequestedToCancelled(ctx, taskID); gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return fmt.Errorf("cancel-race guard: %w", gerr)
+		} else if converged.ID.Valid {
+			task = converged
+			guardConverged = true
+			return nil
 		}
 		t, err := qtx.FailAgentTask(ctx, db.FailAgentTaskParams{
 			ID:             taskID,
@@ -5075,6 +5106,16 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			)
 		}
 		return nil, fmt.Errorf("fail task: %w", err)
+	}
+
+	if guardConverged {
+		// The cancel race was lost above; the row is cancelled, not failed.
+		// Skip every failure-specific side effect (auto-retry spawn, delegated
+		// recovery, failure comments, inbox notifications) — the cancel/ack
+		// path owns this row now, same contract as the completion guard.
+		slog.Info("task failure converged to cancelled (cancel race lost)",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		return &task, nil
 	}
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
@@ -5825,6 +5866,16 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 func (s *TaskService) FailTasksForOfflineRuntimes(ctx context.Context, arg db.FailTasksForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.FailTasksForOfflineRuntimes(ctx, arg)
+	})
+}
+
+// ConvergeCancelRequestedForOfflineRuntimes closes out runs whose stop was
+// accepted (cancel_requested) but whose runtime died before the daemon could
+// ack-confirm it: they converge to cancelled, not failed — the user ended
+// these runs, the runtime merely made the confirmation impossible (RUYI-292).
+func (s *TaskService) ConvergeCancelRequestedForOfflineRuntimes(ctx context.Context, arg db.ConvergeCancelRequestedForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.ConvergeCancelRequestedForOfflineRuntimes(ctx, arg)
 	})
 }
 

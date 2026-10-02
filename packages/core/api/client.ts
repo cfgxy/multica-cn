@@ -37,6 +37,8 @@ import type {
   WorkspaceWorkingAgent,
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
+  RunDetail,
+  CancelRunResult,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,
@@ -2744,14 +2746,75 @@ export class ApiClient {
     });
   }
 
+  // ---- run lifecycle (RUYI-292) -------------------------------------------
+
+  // Filtered run list: status takes a comma-separated list of raw statuses
+  // ("pending" expands server-side to the queued-family display bucket),
+  // trigger takes the user-facing source buckets. Unknown values match
+  // nothing and answer an empty list under 200.
+  async listIssueRuns(
+    issueId: string,
+    params: { status?: string; trigger?: string; limit?: number } = {},
+  ): Promise<{ tasks: AgentTask[] }> {
+    const query = new URLSearchParams();
+    if (params.status) query.set("status", params.status);
+    if (params.trigger) query.set("trigger", params.trigger);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return this.fetch<{ tasks: AgentTask[] }>(
+      `/api/issues/${issueId}/task-runs${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  // One run plus its full retry chain (both lineage columns) for the detail
+  // drawer — no second call needed to draw cancelled→retried→completed.
+  async getIssueRun(issueId: string, runId: string): Promise<RunDetail> {
+    return this.fetch<RunDetail>(
+      `/api/issues/${issueId}/tasks/${runId}`,
+    );
+  }
+
+  // The cancel matrix answer: `code` is the machine-readable outcome, `task`
+  // the row as it stands after the call. A 409 not_cancellable still resolves
+  // to the envelope in the response body.
+  async cancelIssueRun(issueId: string, runId: string): Promise<CancelRunResult> {
+    return this.fetch<CancelRunResult>(
+      `/api/issues/${issueId}/tasks/${runId}/cancel`,
+      { method: "POST" },
+    );
+  }
+
+  // Re-attempt one finished run as a NEW run on the source run's agent with
+  // its current configuration, in a fresh session. 202 = this call enqueued
+  // the retry; 200 = an identical in-window retry already created the child
+  // and the response carries it.
+  async retryIssueRun(issueId: string, runId: string): Promise<AgentTask> {
+    return this.fetch<AgentTask>(
+      `/api/issues/${issueId}/tasks/${runId}/retry`,
+      { method: "POST" },
+    );
+  }
+
   async getIssueUsage(issueId: string): Promise<IssueUsageSummary> {
     return this.fetch(`/api/issues/${issueId}/usage`);
   }
 
+  // The single-run cancel now answers with the RUYI-292 cancel matrix:
+  // in-flight rows are accepted for stop (status → cancel_requested), and
+  // completed/failed rows answer 409 not_cancellable. Both shapes ride the
+  // {code, message, task} envelope — unwrap to the row for the existing
+  // callers; cancelIssueRun exposes the full envelope.
   async cancelTask(issueId: string, taskId: string): Promise<AgentTask> {
-    return this.fetch(`/api/issues/${issueId}/tasks/${taskId}/cancel`, {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/tasks/${taskId}/cancel`, {
       method: "POST",
     });
+    const envelope = raw as { code?: string; task?: unknown } | null;
+    const taskRaw = envelope && typeof envelope === "object" && "task" in envelope ? envelope.task : raw;
+    const parsed = parseWithFallback<AgentTask | null>(taskRaw, AgentTaskSchema, null, {
+      endpoint: "POST /api/issues/:id/tasks/:taskId/cancel",
+    });
+    if (!parsed) throw new Error("Invalid cancel task response");
+    return parsed;
   }
 
   async rerunIssue(issueId: string, taskId?: string): Promise<AgentTask> {

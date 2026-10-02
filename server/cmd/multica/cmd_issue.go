@@ -362,9 +362,24 @@ var issueCancelTaskCmd = &cobra.Command{
 	Short: "Cancel a running or queued task (interrupts in-flight agent)",
 	Long: "Cancel a single task by its ID. Accepts the short ID prefix shown by `issue runs`. " +
 		"Use --issue to scope short-ID resolution to a specific issue when ambiguous. " +
-		"Triggers daemon-side interrupt of any in-flight agent so it stops emitting tool calls promptly.",
+		"Triggers daemon-side interrupt of any in-flight agent so it stops emitting tool calls promptly. " +
+		"In-flight runs first report status=cancel_requested (stop accepted) and settle to cancelled " +
+		"once the runtime confirms; a finished run answers 409 not_cancellable.",
 	Args: exactArgs(1),
 	RunE: runIssueCancelTask,
+}
+
+var issueRetryTaskCmd = &cobra.Command{
+	Use:   "retry-task <task-id>",
+	Short: "Retry a finished run as a new run on the same agent (RUYI-292)",
+	Long: "Retry one specific finished run (failed or cancelled) by its ID — accepts the short ID " +
+		"prefix shown by `issue runs`; use --issue when ambiguous. Creates a NEW run on the same " +
+		"agent with its current configuration, in a fresh session, linked to the source run; the " +
+		"old run is kept unchanged. Anti-storm rules: the agent already holding an unfinished run " +
+		"on this issue, or an unfinished retry of this source, answers 409; a repeat within ~5 " +
+		"seconds returns the run the first call created.",
+	Args: exactArgs(1),
+	RunE: runIssueRetryTask,
 }
 
 var issueConsumeQueuedCmd = &cobra.Command{
@@ -484,6 +499,7 @@ func init() {
 	issueCmd.AddCommand(issueUsageCmd)
 	issueCmd.AddCommand(issueRerunCmd)
 	issueCmd.AddCommand(issueCancelTaskCmd)
+	issueCmd.AddCommand(issueRetryTaskCmd)
 	issueCmd.AddCommand(issueConsumeQueuedCmd)
 	issueCmd.AddCommand(issueSearchCmd)
 
@@ -604,6 +620,8 @@ func init() {
 	// issue cancel-task
 	issueCancelTaskCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCancelTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short task ID prefix resolution")
+	issueRetryTaskCmd.Flags().String("output", "json", "Output format: table or json")
+	issueRetryTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short task ID prefix resolution")
 	// issue run-messages
 	issueRunMessagesCmd.Flags().String("output", "json", "Output format: table or json")
 	issueRunMessagesCmd.Flags().Int("since", 0, "Only return messages after this sequence number")
@@ -2492,8 +2510,16 @@ func runIssueCancelTask(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve task run: %w", err)
 	}
 
+	// RUYI-292: when the run's issue is known, cancel through the issue-domain
+	// route so the answer is the cancel matrix ({code, message, task}) instead
+	// of a bare task — a completed/failed run answers 409 not_cancellable and
+	// an in-flight run answers cancel_requested while the daemon confirms the
+	// stop. A bare task UUID without --issue keeps the legacy global route.
 	var result map[string]any
 	path := "/api/tasks/" + url.PathEscape(taskRef.ID) + "/cancel"
+	if issueScope != "" {
+		path = "/api/issues/" + url.PathEscape(issueScope) + "/tasks/" + url.PathEscape(taskRef.ID) + "/cancel"
+	}
 	if err := client.PostJSON(ctx, path, map[string]any{}, &result); err != nil {
 		return fmt.Errorf("cancel task: %w", err)
 	}
@@ -2502,11 +2528,63 @@ func runIssueCancelTask(cmd *cobra.Command, args []string) error {
 	if output == "json" {
 		return cli.PrintJSON(os.Stdout, result)
 	}
+	// Matrix responses carry the verdict in code + message; the legacy route
+	// answers the bare task shape and keeps the old output.
 	status := strVal(result, "status")
+	if code := strVal(result, "code"); code != "" {
+		task, _ := result["task"].(map[string]any)
+		if task != nil {
+			status = strVal(task, "status")
+		}
+		if status == "" {
+			status = code
+		}
+		fmt.Fprintf(os.Stdout, "Task %s -> status=%s (%s)\n", taskRef.ID, status, strVal(result, "message"))
+		return nil
+	}
 	if status == "" {
 		status = "cancelled"
 	}
 	fmt.Fprintf(os.Stdout, "Task %s -> status=%s\n", taskRef.ID, status)
+	return nil
+}
+
+func runIssueRetryTask(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueScope := ""
+	if issueInput, _ := cmd.Flags().GetString("issue"); issueInput != "" {
+		issueRef, err := resolveIssueRef(ctx, client, issueInput)
+		if err != nil {
+			return fmt.Errorf("resolve issue: %w", err)
+		}
+		issueScope = issueRef.ID
+	}
+	taskRef, err := resolveTaskRunID(ctx, client, issueScope, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve task run: %w", err)
+	}
+	if issueScope == "" {
+		return fmt.Errorf("retry-task requires --issue <issue-id> to locate the run's issue (or pass a short ID prefix with --issue)")
+	}
+
+	var result map[string]any
+	path := "/api/issues/" + url.PathEscape(issueScope) + "/tasks/" + url.PathEscape(taskRef.ID) + "/retry"
+	if err := client.PostJSON(ctx, path, map[string]any{}, &result); err != nil {
+		return fmt.Errorf("retry task: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+	fmt.Fprintf(os.Stdout, "Retry enqueued: new run %s (source %s kept for history)\n", strVal(result, "id"), taskRef.ID)
 	return nil
 }
 

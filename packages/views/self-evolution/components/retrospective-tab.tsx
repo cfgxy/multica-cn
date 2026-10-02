@@ -161,6 +161,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
         ) : runsList.length === 0 ? (
           <Empty data-testid="retrospective-empty">
             <EmptyHeader>
+              {/* eslint-disable-next-line i18next/no-literal-string -- icon glyph, not copy */}
               <EmptyMedia variant="icon">↻</EmptyMedia>
               <EmptyTitle>{t(($) => $.retrospective.empty)}</EmptyTitle>
               <EmptyDescription>{t(($) => $.retrospective.llmUnavailable)}</EmptyDescription>
