@@ -386,6 +386,11 @@ function formatActivity(
 // new array on every render and bust React.memo on CommentCard / ResolvedThreadBar.
 const EMPTY_REPLIES: TimelineEntry[] = [];
 
+// Same discipline for the decision-card feed (RUYI-345): the query starts as
+// `undefined` and only settles later, so an inline default would churn the
+// items useMemo (and Virtuoso's data identity) on every render until it does.
+const EMPTY_DECISION_CARDS: IssueDecision[] = [];
+
 // ---------------------------------------------------------------------------
 // Sidebar progressive disclosure
 // ---------------------------------------------------------------------------
@@ -1592,7 +1597,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Decision cards (RUYI-345) interleave by created_at between comment and
   // activity rows. Timeline timestamps are second-precision while card ones
   // carry sub-seconds, so compare parsed ms rather than strings.
-  const { data: issueDecisions = [] } = useQuery(issueDecisionsQueryOptions(id));
+  const { data: decisionsData } = useQuery(issueDecisionsQueryOptions(id));
+  const issueDecisions = decisionsData ?? EMPTY_DECISION_CARDS;
   const items = useMemo<TimelineItem[]>(() => {
     const base = flattenGroups(timelineView.groups, expandedResolved);
     if (issueDecisions.length === 0) return base;
