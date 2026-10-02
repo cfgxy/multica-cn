@@ -180,8 +180,18 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 	for _, f := range finalStems() {
 		wantDisk[f] = true
 	}
-	if !reflect.DeepEqual(onDisk, wantDisk) {
-		t.Fatalf("on-disk 9xx stems %v do not match canonical targets %v", onDisk, wantDisk)
+	// Post-consolidation 9xx migrations (917+) are ordinary new files, so the
+	// disk set grows past the canonical 17. The lasting invariants are: every
+	// consolidated stem is present, and no pre-consolidation stem came back.
+	for _, f := range finalStems() {
+		if !onDisk[f] {
+			t.Fatalf("consolidated stem %s missing from disk", f)
+		}
+	}
+	for _, s := range originalStems() {
+		if !wantDisk[s] && onDisk[s] {
+			t.Fatalf("pre-consolidation stem %s must not return to disk", s)
+		}
 	}
 
 	var allSources []string
