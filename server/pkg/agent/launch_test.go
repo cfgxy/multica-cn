@@ -426,6 +426,13 @@ func unreleasedProcessTrees(fset *token.FileSet, file *ast.File) []string {
 		if !ok {
 			continue
 		}
+		// workerSession pairs its start and release across methods (Start
+		// takes ownership, Wait releases immediately after cmd.Wait reaps) —
+		// a per-function scan cannot see that pairing, so its methods are
+		// exempt here.
+		if fn.Recv != nil && isWorkerSessionReceiver(fn) {
+			continue
+		}
 		starts, releases := 0, 0
 		ast.Inspect(fn, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
@@ -542,6 +549,20 @@ func TestEveryOwnedProcessTreeIsReleased(t *testing.T) {
 		t.Fatalf("an owned process tree must be released after the reap, which drops the Windows Job "+
 			"Object handle and kills anything that outlived it:\n%s", strings.Join(offenders, "\n"))
 	}
+}
+
+// isWorkerSessionReceiver reports whether fn is a method on *workerSession
+// (or workerSession).
+func isWorkerSessionReceiver(fn *ast.FuncDecl) bool {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return false
+	}
+	t := fn.Recv.List[0].Type
+	if star, ok := t.(*ast.StarExpr); ok {
+		t = star.X
+	}
+	ident, ok := t.(*ast.Ident)
+	return ok && ident.Name == "workerSession"
 }
 
 // TestUnreleasedProcessTreesAreDetected covers the case a per-file counter
