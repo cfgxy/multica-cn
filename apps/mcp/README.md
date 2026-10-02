@@ -22,6 +22,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 写 | `add_comment` | 追加评论（@agent 会触发真实派发） |
 | 写 | `update_issue_status` | 状态流转（`suppress_run` 可避免连带派发） |
 | 写 | `assign_issue` | 已有 issue 的指派/改派/取消指派（agent/squad 指派触发真实 run） |
+| 写 | `bulk_update_issues` | 批量按项更新已有 issue：逐项结果与失败分类、逐项 `expected_revision`、`suppress_run` 分层控制、上限 50 项 |
 | 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
 
 v1 不暴露：删除类操作、权限/成员变更、跨用户管理。
