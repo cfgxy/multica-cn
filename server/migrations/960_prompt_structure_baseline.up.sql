@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 961 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 960.up.sql (RUYI-359 consolidation)
+
 -- RUYI-305 E4: per-carrier structure baseline for the legislation gate.
 --
 -- The baseline is the carrier's approved section set and order (the `## `
@@ -12,7 +22,8 @@
 -- goes through the gate.
 --
 -- No foreign keys by house rule; carrier_scope_id validated on write. The
--- unique index is a separate CONCURRENTLY migration (961).
+-- unique index is inlined below (RUYI-359 consolidation of the former
+-- separate index migration).
 CREATE TABLE prompt_structure_baseline (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
@@ -26,3 +37,8 @@ CREATE TABLE prompt_structure_baseline (
 
 COMMENT ON TABLE prompt_structure_baseline IS
     'Legislation gate structure baseline per carrier (RUYI-305 E4): approved `## ` section set/order + registered clause names; rebuilt from the synthesized full text on every enacted.';
+
+-- >>> absorbed from 961.up.sql (RUYI-359 consolidation)
+
+CREATE UNIQUE INDEX uidx_prompt_structure_baseline_carrier
+ON prompt_structure_baseline (carrier_scope, carrier_scope_id);

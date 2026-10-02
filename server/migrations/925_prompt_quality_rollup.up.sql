@@ -1,3 +1,13 @@
+-- RUYI-359 consolidation: absorbs 926, 927, 928 into this file
+-- (previously separate single-statement migrations; stems retired). Statement
+-- bodies are unchanged except CREATE/DROP INDEX lost the CONCURRENTLY keyword,
+-- which is safe because every index target is created/altered in this same
+-- file (914 precedent) and the whole file runs as one implicit transaction.
+-- Mapping and ledger-rewrite rules: server/cmd/migrate/9xx-consolidation.md.
+
+
+-- >>> absorbed from 925.up.sql (RUYI-359 consolidation)
+
 -- Prompt quality rollup (RUYI-184, self-evolution phase 2): the landing
 -- structures for the seven quality dimensions D1..D7, materialised per
 -- (prompt tier scope, version, UTC day).
@@ -32,9 +42,10 @@
 -- application layer's job, and the rollup job re-derives every key from
 -- agent_task_queue on each tick.
 --
--- Indexes other than the inline uniqueness constraints are not created here:
--- every CREATE INDEX must be CONCURRENTLY, which cannot run inside a
--- multi-statement file — see 926 / 927.
+-- Secondary indexes beyond the inline uniqueness constraints are inlined at
+-- the bottom of this file (RUYI-359 consolidation): they build without
+-- CONCURRENTLY because the tables are created in this same implicit
+-- transaction (914 precedent).
 CREATE TABLE prompt_quality_daily (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     workspace_id UUID NOT NULL,
@@ -42,7 +53,7 @@ CREATE TABLE prompt_quality_daily (
     scope_id UUID NOT NULL,
 
     -- The prompt version this day's runs were claimed with, read from
-    -- agent_task_queue.prompt_versions (migration 917). A run whose claim
+    -- agent_task_queue.prompt_versions (added by migration 916). A run whose claim
     -- did not inject this tier contributes to no row here at all.
     version INT NOT NULL CHECK (version > 0),
     day DATE NOT NULL,
@@ -180,3 +191,27 @@ CREATE TABLE prompt_quality_rollup_state (
     last_error TEXT
 );
 INSERT INTO prompt_quality_rollup_state (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- >>> absorbed from 926.up.sql (RUYI-359 consolidation)
+
+-- The dashboard's only read shape: one scope, all versions, last 30/90 days,
+-- newest first. The unique constraint from 925 leads with (scope, scope_id,
+-- version), which cannot serve a range on day without scanning every version
+-- of the scope, so the range column comes second here.
+CREATE INDEX IF NOT EXISTS idx_prompt_quality_daily_scope_day
+    ON prompt_quality_daily (scope, scope_id, day DESC);
+
+-- >>> absorbed from 927.up.sql (RUYI-359 consolidation)
+
+-- Workspace teardown and cross-scope audit reads. prompt_quality_daily rows
+-- are keyed by scope, so deleting a workspace has no other way to find them
+-- than a full scan (see the workspace_delete manifest).
+CREATE INDEX IF NOT EXISTS idx_prompt_quality_daily_workspace
+    ON prompt_quality_daily (workspace_id);
+
+-- >>> absorbed from 928.up.sql (RUYI-359 consolidation)
+
+-- Same reason as 927: the only key on prompt_perplexity_score is the scope
+-- tuple, and workspace teardown deletes by workspace_id.
+CREATE INDEX IF NOT EXISTS idx_prompt_perplexity_score_workspace
+    ON prompt_perplexity_score (workspace_id);
