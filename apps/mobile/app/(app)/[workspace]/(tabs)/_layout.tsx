@@ -101,9 +101,11 @@ export default function TabsLayout() {
           }}
         />
         <Tabs.Screen
-          name="my-issues"
+          name="tasks"
           options={{
-            title: i18n.t("layout:nav.my_issues", "My Issues"),
+            // RUYI-344: the tab graduates from personal "My Issues" to
+            // full-space task management; the label is the existing 任务.
+            title: i18n.t("layout:nav.issues", "Tasks"),
             tabBarIcon: Platform.OS === "ios"
               ? ({ color, size, focused }) => (
                   <Image
