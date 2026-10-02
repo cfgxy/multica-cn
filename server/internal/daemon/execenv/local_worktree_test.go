@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -2720,5 +2721,246 @@ func TestEmbedGitlinkChildRejectsPathEscapingRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "escapes its repository root") {
 		t.Errorf("error should name the boundary violation, got: %v", err)
+	}
+}
+
+// ---- finalize staging budget guard ----
+//
+// A research run can leave tens of GB of reproducible caches (model weights,
+// custom-named venvs, tool copies) untracked in the worktree. The finalize
+// `git add -A` used to walk and hash all of it and die to the OOM killer,
+// mislabelling an already-delivered run as a final failure (RUYI-337). The
+// guard below keeps that add within a byte/file budget by excluding whole
+// top-level entries, largest first, while small real deliverables still
+// commit and the run itself never fails.
+
+func setStagingBudget(t *testing.T, files int, bytes int64) {
+	t.Helper()
+	old := untrackedStageBudget
+	untrackedStageBudget = stagingBudget{files: files, bytes: bytes}
+	t.Cleanup(func() { untrackedStageBudget = old })
+}
+
+func writeBinary(t *testing.T, path string, size int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, bytes.Repeat([]byte{0xa5}, size), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// Dependency and cache directory names are never work: they must stay out of
+// the delivered branch even when small, like the runtime state dirs before
+// them. A real output file alongside them still commits.
+func TestFinalizeSkipsReplayableCacheDirs(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeFile(t, filepath.Join(wt.Path, "agent-output.txt"), "work product\n")
+	writeFile(t, filepath.Join(wt.Path, "node_modules", "pkg", "index.js"), "js\n")
+	writeFile(t, filepath.Join(wt.Path, "venv", "lib", "site.py"), "py\n")
+	writeFile(t, filepath.Join(wt.Path, "sub", "__pycache__", "x.pyc"), "pyc\n")
+	writeFile(t, filepath.Join(wt.Path, ".pytest_cache", "v", "cache.json"), "{}\n")
+	writeFile(t, filepath.Join(wt.Path, "deep", "nested", ".mypy_cache", "1.13", "meta.json"), "{}\n")
+
+	outcome := finalizeOK(t, wt)
+
+	if !outcome.AutoCommitted {
+		t.Error("AutoCommitted = false, want true")
+	}
+	if got := gitRun(t, repo, "show", wt.Branch+":agent-output.txt"); got != "work product" {
+		t.Errorf("branch does not carry agent output, got %q", got)
+	}
+	for _, unwanted := range []string{
+		wt.Branch + ":node_modules/pkg/index.js",
+		wt.Branch + ":venv/lib/site.py",
+		wt.Branch + ":sub/__pycache__/x.pyc",
+		wt.Branch + ":.pytest_cache/v/cache.json",
+		wt.Branch + ":deep/nested/.mypy_cache/1.13/meta.json",
+	} {
+		if _, err := gitTry(t, repo, "show", unwanted); err == nil {
+			t.Errorf("branch carries replayable cache content %s", unwanted)
+		}
+	}
+	if len(outcome.Excluded) != 0 {
+		t.Errorf("Excluded = %v, want empty: list-pruned dirs never reach the budget meter", outcome.Excluded)
+	}
+}
+
+// The RUYI-293 shape: a multi-GB untracked cache dir plus a few small real
+// deliverables. The oversized entry must be excluded (not committed, not
+// deleted — moved aside), the deliverables must land on the branch, and the
+// run must finish successfully.
+func TestFinalizeBudgetExcludesOversizedKeepsSmallDeliverables(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	// 1.2 MiB of untracked cache in one top-level dir; budget is 1 MiB below.
+	writeBinary(t, filepath.Join(wt.Path, "hf_cache", "weights.bin"), 600*1024)
+	writeBinary(t, filepath.Join(wt.Path, "hf_cache", "embeddings.bin"), 600*1024)
+	writeFile(t, filepath.Join(wt.Path, "results4", "summary.json"), "{}\n")
+	writeFile(t, filepath.Join(wt.Path, "modelcards", "card.md"), "# card\n")
+
+	setStagingBudget(t, 2000, 1<<20)
+
+	outcome := finalizeOK(t, wt)
+
+	if got := gitRun(t, repo, "show", wt.Branch+":results4/summary.json"); got != "{}" {
+		t.Errorf("small deliverable did not land on the branch, got %q", got)
+	}
+	if _, err := gitTry(t, repo, "show", wt.Branch+":hf_cache/weights.bin"); err == nil {
+		t.Error("branch carries the oversized untracked entry hf_cache")
+	}
+	if len(outcome.Excluded) != 1 || outcome.Excluded[0].Name != "hf_cache" {
+		t.Fatalf("Excluded = %+v, want exactly hf_cache", outcome.Excluded)
+	}
+	if excl := outcome.Excluded[0]; excl.Bytes != 2*600*1024 || excl.Files != 2 {
+		t.Errorf("Excluded[0] = %+v, want bytes=%d files=2", excl, 2*600*1024)
+	}
+	// Preserved, not silently deleted: the aside copy must be readable and the
+	// worktree itself must be gone.
+	aside := outcome.Excluded[0].AsidePath
+	if aside == "" {
+		t.Fatal("Excluded[0].AsidePath is empty; the excluded content has no recorded destination")
+	}
+	if _, err := os.Stat(filepath.Join(aside, "weights.bin")); err != nil {
+		t.Errorf("excluded content not preserved at %s: %v", aside, err)
+	}
+	if _, err := os.Lstat(wt.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("worktree still present after finalize: %v", err)
+	}
+}
+
+// Greedy direction: excluding the largest entry first must rescue the smaller
+// ones, not the other way around.
+func TestFinalizeBudgetGreedyExcludesLargestFirst(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeBinary(t, filepath.Join(wt.Path, "big_a.bin"), 900*1024)
+	writeBinary(t, filepath.Join(wt.Path, "big_b.bin"), 400*1024)
+	writeFile(t, filepath.Join(wt.Path, "small.txt"), "keep\n")
+
+	setStagingBudget(t, 2000, 1<<20)
+
+	outcome := finalizeOK(t, wt)
+
+	if len(outcome.Excluded) != 1 || outcome.Excluded[0].Name != "big_a.bin" {
+		t.Fatalf("Excluded = %+v, want exactly big_a.bin (the largest)", outcome.Excluded)
+	}
+	for _, kept := range []string{"big_b.bin", "small.txt"} {
+		if _, err := gitTry(t, repo, "show", wt.Branch+":"+kept); err != nil {
+			t.Errorf("branch lost %s, which fits the budget once big_a.bin is excluded: %v", kept, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outcome.Excluded[0].AsidePath)); err != nil {
+		t.Errorf("excluded content not preserved: %v", err)
+	}
+}
+
+// Within the budget the finalize behaviour is unchanged: every untracked file
+// commits, gitignore stays respected, and no entry is excluded.
+func TestFinalizeBudgetWithinBudgetStagesEverything(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeFile(t, filepath.Join(wt.Path, "out1.txt"), "one\n")
+	writeFile(t, filepath.Join(wt.Path, "out2.txt"), "two\n")
+	writeFile(t, filepath.Join(wt.Path, ".gitignore"), "ignored.txt\n")
+	writeFile(t, filepath.Join(wt.Path, "ignored.txt"), "noise\n")
+
+	outcome := finalizeOK(t, wt)
+
+	for _, wanted := range []string{"out1.txt", "out2.txt"} {
+		if _, err := gitTry(t, repo, "show", wt.Branch+":"+wanted); err != nil {
+			t.Errorf("branch lost untracked file %s: %v", wanted, err)
+		}
+	}
+	if _, err := gitTry(t, repo, "show", wt.Branch+":ignored.txt"); err == nil {
+		t.Error("branch carries a gitignored file")
+	}
+	if len(outcome.Excluded) != 0 {
+		t.Errorf("Excluded = %v, want empty inside the budget", outcome.Excluded)
+	}
+}
+
+// Cache dirs already pruned by the name list must not inflate the budget
+// meter: a huge node_modules alone must not push real content out.
+func TestFinalizeBudgetIgnoresListedCacheDirs(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeBinary(t, filepath.Join(wt.Path, "node_modules", "bundle.js"), 2*1024*1024)
+	writeFile(t, filepath.Join(wt.Path, "report.txt"), "deliverable\n")
+
+	setStagingBudget(t, 2000, 1<<20)
+
+	outcome := finalizeOK(t, wt)
+
+	if got := gitRun(t, repo, "show", wt.Branch+":report.txt"); got != "deliverable" {
+		t.Errorf("deliverable did not land on the branch, got %q", got)
+	}
+	if _, err := gitTry(t, repo, "show", wt.Branch+":node_modules/bundle.js"); err == nil {
+		t.Error("branch carries node_modules content")
+	}
+	if len(outcome.Excluded) != 0 {
+		t.Errorf("Excluded = %v, want empty: listed cache dirs are name-pruned, not budget-excluded", outcome.Excluded)
+	}
+}
+
+// A run that produced nothing but oversized reproducible content is still a
+// clean read-only run: no branch, no error, content preserved aside.
+func TestFinalizeExcludedOnlyIsReadOnlyRun(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeBinary(t, filepath.Join(wt.Path, "kev_venv", "python-objects.bin"), 1500*1024)
+
+	setStagingBudget(t, 2000, 1<<20)
+
+	outcome := finalizeOK(t, wt)
+
+	if outcome.Branch != "" {
+		t.Errorf("Branch = %q, want empty: excluded cache content is not work", outcome.Branch)
+	}
+	if outcome.AutoCommitted {
+		t.Error("AutoCommitted = true, but only excluded content existed")
+	}
+	if len(outcome.Excluded) != 1 || outcome.Excluded[0].Name != "kev_venv" {
+		t.Fatalf("Excluded = %+v, want exactly kev_venv", outcome.Excluded)
+	}
+	if _, err := os.Stat(filepath.Join(outcome.Excluded[0].AsidePath, "python-objects.bin")); err != nil {
+		t.Errorf("excluded content not preserved: %v", err)
+	}
+}
+
+// commitEverything is shared by finalize and the baseline commit; the budget
+// guard must hold on that shared path directly, returning the exclusions for
+// the caller to preserve.
+func TestCommitEverythingExcludesOversizedUntracked(t *testing.T) {
+	repo := newTestRepo(t)
+
+	writeBinary(t, filepath.Join(repo, "blob_dir", "big.bin"), 1500*1024)
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "edited\n")
+
+	setStagingBudget(t, 2000, 1<<20)
+
+	committed, excluded, err := commitEverything(repo, "test commit")
+	if err != nil {
+		t.Fatalf("commitEverything: %v", err)
+	}
+	if !committed {
+		t.Error("committed = false, want true (the tracked edit must still land)")
+	}
+	if len(excluded) != 1 || excluded[0].Name != "blob_dir" {
+		t.Fatalf("excluded = %+v, want exactly blob_dir", excluded)
+	}
+	if got := gitRun(t, repo, "show", "HEAD:tracked.txt"); got != "edited" {
+		t.Errorf("tracked edit did not land, got %q", got)
+	}
+	if _, err := gitTry(t, repo, "show", "HEAD:blob_dir/big.bin"); err == nil {
+		t.Error("commit carries the oversized untracked entry blob_dir")
 	}
 }
