@@ -1,3 +1,9 @@
+-- Renumbered per Owner instruction (RUYI-345): the table and its companion
+-- index previously shipped as two migrations and now land as one atomic
+-- migration. A database that applied the earlier pair rewrites its ledger
+-- identity rows to this stem in place, preserving applied_at — no DDL is
+-- re-executed (rewrite rules: server/cmd/migrate/9xx-consolidation.md).
+
 -- RUYI-345: issue decision cards (Phase 1). An agent (or member) raises a
 -- structured question with 2-4 options during a run; a human member answers
 -- by picking options; the platform echoes the answer as a comment that
@@ -24,3 +30,10 @@ CREATE TABLE issue_decisions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- >>> index statement absorbed from the former single-statement concurrent
+-- index migration (RUYI-345 renumber): inlined because the table is created
+-- in this same implicit transaction — a build either lands valid or rolls
+-- back whole, so no INVALID-leftover cleanup can ever be needed.
+CREATE INDEX IF NOT EXISTS idx_issue_decisions_issue
+    ON issue_decisions (issue_id, created_at);
