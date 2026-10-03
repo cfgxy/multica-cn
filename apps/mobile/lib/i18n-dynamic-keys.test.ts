@@ -430,6 +430,11 @@ const PREFIX_VALUES: Record<string, string[]> = {
   "projects:priority": PROJECT_PRIORITIES,
   "agents:availability": ["online", "unstable", "offline", "archived"],
   "agents:workload": ["working", "queued", "idle"],
+  // RUYI-344: the Tasks tab interpolates the five quadrant TAB keys into
+  // both the pill labels and the per-tab empty-state copy.
+  "issues:mobile.tasks.tabs": ["all", "open", "active", "blocked", "completed"],
+  "issues:mobile.tasks.empty": ["all", "open", "active", "blocked", "completed"],
+  "issues:mobile.tasks.filtered_empty": ["title", "clear_button"],
 };
 
 const MOBILE_ROOT = join(__dirname, "..");
