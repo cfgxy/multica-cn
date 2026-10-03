@@ -159,6 +159,39 @@ func TestRecordBackpressure_TransitionAuditLogs(t *testing.T) {
 	}
 }
 
+func TestRecordBackpressure_FirstReportNoPriorKey_EntersAudit(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := dbfx.Runtime(t, "BP first-enter rt", testutil.Cols{
+		"device_info": "backpressure first-enter fixture",
+	})
+	rtUUID := mustParseUUID(t, runtimeID)
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// First-ever report on a runtime whose metadata has no backpressure key
+	// (fresh registration or a post-restart re-registered row): the write
+	// must land AND the ENTERED transition must be audited. A NULL previous
+	// report means wasActive=false, not a storage failure.
+	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.1, 83, 12))
+
+	if _, present := readStoredBackpressure(t, ctx, runtimeID); !present {
+		t.Fatal("first report was not persisted")
+	}
+	captured := logs.String()
+	if !containsField(captured, "daemon backpressure ENTERED", runtimeID) {
+		t.Fatalf("missing ENTERED audit log on first report, got: %s", captured)
+	}
+	if strings.Contains(captured, "record backpressure failed") {
+		t.Fatalf("first report logged a spurious failure, got: %s", captured)
+	}
+}
+
 func containsField(hay, msg, runtimeID string) bool {
 	return strings.Contains(hay, msg) && strings.Contains(hay, "runtime_id="+runtimeID)
 }
