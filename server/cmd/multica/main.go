@@ -10,6 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 )
 
 var (
@@ -104,6 +105,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	// Hidden launcher entrypoint (RUYI-349): the daemon re-execs this binary
+	// inside a systemd transient unit as the worker's resident parent. Not a
+	// cobra command on purpose — it must be invisible and unguessable.
+	if len(os.Args) == 2 && os.Args[1] == supervisor.LauncherSubcommand {
+		os.Exit(supervisor.RunWorkerLauncher())
 	}
 	cli.CleanupStaleUpdateArtifacts()
 	if err := rootCmd.Execute(); err != nil {
