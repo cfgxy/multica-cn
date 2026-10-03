@@ -7,6 +7,10 @@
  * Saves through the existing useEditComment mutation — same optimistic
  * timeline patch + server replace as web's edit flow; the "(edited)"
  * suffix renders from updated_at ≠ created_at (comment-card CommentBody).
+ * The CAS baseline (`content_base`) is anchored to `initialContent`, the
+ * content snapshot captured when the modal opened: reading it from the
+ * timeline cache inside the mutation would pick up the text `onMutate`
+ * already rewrote and fail every real edit with a 409 conflict.
  * An empty-on-trim draft can't be saved (mobile composer's
  * requireVisibleText parity). Errors keep the modal open with the server
  * message surfaced in a native alert (contentBase conflict included).
@@ -53,7 +57,7 @@ export function CommentEditModal({
   const onSave = useCallback(() => {
     if (!canSave) return;
     editComment.mutate(
-      { commentId, content },
+      { commentId, content, contentBase: initialContent },
       {
         onSuccess: () => onClose(),
         onError: (err) =>
@@ -63,7 +67,7 @@ export function CommentEditModal({
           ),
       },
     );
-  }, [canSave, editComment, commentId, content, onClose, t]);
+  }, [canSave, editComment, commentId, content, initialContent, onClose, t]);
 
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
