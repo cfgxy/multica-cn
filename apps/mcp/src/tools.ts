@@ -4,13 +4,15 @@
  * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
  *       get_issue, search_issues, progress_digest, list_comments, get_comment.
  * Write: create_issue (general — any workspace, any project), add_comment,
- *       update_issue_status, assign_issue (assign/reassign/unassign an
- *       existing issue — agent/squad assignment triggers a real run, the
- *       tool description must say so), bulk_update_issues (per-item results,
- *       same write path and run semantics as the single-issue tools),
- *       create_project, update_project (project metadata; never spawns agent
- *       runs), edit_comment, delete_comment (RUYI-352 comment management:
- *       the product's own author-or-admin gate is enforced server-side;
+ *       update_issue_status, update_issue (edit an existing issue's core
+ *       fields in place — pure metadata, never starts a run), assign_issue
+ *       (assign/reassign/unassign an existing issue — agent/squad assignment
+ *       triggers a real run, the tool description must say so),
+ *       bulk_update_issues (per-item results, same write path and run
+ *       semantics as the single-issue tools), create_project,
+ *       update_project (project metadata; never spawns agent runs),
+ *       edit_comment, delete_comment (RUYI-352 comment management: the
+ *       product's own author-or-admin gate is enforced server-side;
  *       content-changing edits re-run the comment's trigger computation, so
  *       the edit_comment description must declare the mention side effects,
  *       and defined failures come back as structured results keyed by `code`
@@ -37,6 +39,7 @@ import { MulticaApiError, MulticaRequestError } from "./rest.js";
 import type { MulticaClient } from "./rest.js";
 import {
   optionalBoolean,
+  optionalClearableString,
   optionalEnum,
   optionalInt,
   optionalString,
@@ -55,7 +58,9 @@ import type {
 } from "./types.js";
 
 export interface JsonSchemaProperty {
-  type: string;
+  // string | string[] per JSON Schema: nullable PATCH fields declare
+  // ["string", "null"] so callers can pass an explicit clearing null.
+  type: string | string[];
   description: string;
   enum?: string[];
   items?: {
@@ -1173,6 +1178,145 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         title: issue.title,
         status: issue.status,
         revision: issue.revision,
+      };
+    },
+  },
+  {
+    name: "update_issue",
+    description:
+      "Edit an EXISTING issue's core fields in place: title, description (Markdown), priority, project, parent, start/due dates. " +
+      "PATCH semantics: omitted fields stay unchanged; pass null (or '') for project_id, parent_issue_id, start_date or due_date to clear that value. " +
+      "The issue keeps its identifier, UUID, comments, history and relations — this is an in-place rewrite, not a replacement. " +
+      "NEVER triggers an agent run and consumes no quota: pure metadata edits start no run; assignee and status changes have dedicated tools (assign_issue, update_issue_status). " +
+      "Done and cancelled issues stay editable, matching the web app's rules. " +
+      "Pass expected_revision (from a previous get_issue/update_issue result) for optimistic locking: if the issue changed since your read, the tool returns code 'revision_conflict' (HTTP 409) without writing — re-read with get_issue and retry. " +
+      "Returns the updated scalar fields plus the new revision; the description body is not echoed, read it back with get_issue.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        title: {
+          type: "string",
+          description: "New title, max 500 chars. Omit to keep the current one.",
+        },
+        description: {
+          type: "string",
+          description: "New issue body, Markdown supported, max 50000 chars. Omit to keep the current one.",
+        },
+        priority: {
+          type: "string",
+          enum: [...PRIORITY_ENUM],
+          description: "New priority. Omit to keep.",
+        },
+        project_id: {
+          type: ["string", "null"],
+          description:
+            "Project UUID to move the issue into, or null to remove it from its project. Omit to keep.",
+        },
+        parent_issue_id: {
+          type: ["string", "null"],
+          description:
+            "Parent issue UUID to attach this issue under (sub-issue), or null to detach it. Omit to keep.",
+        },
+        start_date: {
+          type: ["string", "null"],
+          description: "Start date, YYYY-MM-DD. Pass null or '' to clear. Omit to keep.",
+          pattern: DATE_PATTERN,
+        },
+        due_date: {
+          type: ["string", "null"],
+          description: "Due date, YYYY-MM-DD. Pass null or '' to clear. Omit to keep.",
+          pattern: DATE_PATTERN,
+        },
+        expected_revision: {
+          type: "integer",
+          description:
+            "Optimistic-lock revision from a previous read; a mismatch answers code 'revision_conflict' (HTTP 409) and writes nothing.",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const title = optionalString(args, "title", { maxLength: 500 });
+      const description = optionalString(args, "description", { maxLength: 50_000 });
+      const priority = optionalEnum(args, "priority", PRIORITY_ENUM);
+      const projectId = optionalClearableString(args, "project_id");
+      const parentIssueId = optionalClearableString(args, "parent_issue_id");
+      const startDate = optionalClearableString(args, "start_date", {
+        pattern: /^\d{4}-\d{2}-\d{2}$/,
+        patternMessage: "'start_date' must be formatted YYYY-MM-DD (or null to clear)",
+      });
+      const dueDate = optionalClearableString(args, "due_date", {
+        pattern: /^\d{4}-\d{2}-\d{2}$/,
+        patternMessage: "'due_date' must be formatted YYYY-MM-DD (or null to clear)",
+      });
+      if (
+        title === undefined &&
+        description === undefined &&
+        priority === undefined &&
+        projectId === undefined &&
+        parentIssueId === undefined &&
+        startDate === undefined &&
+        dueDate === undefined
+      ) {
+        throw new ToolInputError(
+          "nothing to update: pass at least one of title, description, priority, " +
+            "project_id, parent_issue_id, start_date, due_date",
+        );
+      }
+      const body: UpdateIssueBody = {
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
+      };
+      if (title !== undefined) body.title = title;
+      if (description !== undefined) body.description = description;
+      if (priority !== undefined) body.priority = priority;
+      if (projectId !== undefined) body.project_id = projectId;
+      if (parentIssueId !== undefined) body.parent_issue_id = parentIssueId;
+      if (startDate !== undefined) body.start_date = startDate;
+      if (dueDate !== undefined) body.due_date = dueDate;
+
+      let issue: IssueInfo;
+      try {
+        issue = await client.updateIssue(workspace, issueId, body);
+      } catch (error) {
+        // A stale expected_revision is a defined outcome, not a transport
+        // failure — surface it with the same structured dialect as
+        // cancel_run's 409 handling so the caller can re-read and retry.
+        // (The server answers both revision and field conflicts with code
+        // "revision_conflict"; this tool sends no baselines, so any 409 here
+        // is a lost optimistic-lock race.)
+        if (
+          error instanceof MulticaApiError &&
+          error.status === 409 &&
+          error.message.includes("revision_conflict")
+        ) {
+          return {
+            updated: false,
+            code: "revision_conflict",
+            message: "the issue changed since it was read; nothing was written",
+            hint: "Re-read the issue with get_issue, then retry with the fresh " +
+              "expected_revision or re-apply your change on top of the current content.",
+          };
+        }
+        throw error;
+      }
+      return {
+        updated: true,
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+        priority: issue.priority,
+        project_id: issue.project_id ?? null,
+        parent_issue_id: issue.parent_issue_id ?? null,
+        start_date: issue.start_date ?? null,
+        due_date: issue.due_date ?? null,
+        revision: issue.revision,
+        updated_at: issue.updated_at,
       };
     },
   },
