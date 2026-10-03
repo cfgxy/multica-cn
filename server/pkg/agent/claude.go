@@ -96,6 +96,12 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
 	hideAgentWindow(cmd)
+	// RUYI-349: the session abstraction decides at Start whether this worker
+	// is a direct child (legacy) or a supervised transient unit. Everything
+	// below talks to sess instead of exec.Cmd; the cancellation goroutine's
+	// process-group branch degrades to a no-op under supervision (cmd.Process
+	// stays nil there) because the session's own cancel driver owns the kill.
+	sess := newWorkerSession(cmd, opts.Supervision)
 	// Take over context cancellation: the default kills the whole group the
 	// instant runCtx is done. We instead drive a graceful group-wide
 	// SIGTERM→SIGKILL from the cancellation goroutine below and close stdout
@@ -122,12 +128,12 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		return nil, err
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("claude stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("claude stdin pipe: %w", err)
@@ -142,13 +148,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[claude:stderr] "), agentStderrTailBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		closeStdin()
 		cancel()
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
-	b.cfg.Logger.Info("claude started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("claude started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	// The process started — transfer temp file ownership to the goroutine.
 	mcpFileCleanup = nil
@@ -176,9 +182,14 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// timeout.
 	writeDone := make(chan error, 1)
 	go func() {
-		err := writeClaudeInput(stdin, prompt)
-		if err != nil {
-			closeStdin()
+		// A reattached worker consumed its prompt before the previous daemon
+		// died (RUYI-349); stdin stays open for control frames only.
+		var err error
+		if !sess.Reattaching() {
+			err = writeClaudeInput(stdin, prompt)
+			if err != nil {
+				closeStdin()
+			}
 		}
 		writeDone <- err
 	}()
@@ -383,7 +394,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		closeStdin()
 
 		// Wait for process exit, then release the cancellation handler.
-		exitErr := cmd.Wait()
+		exitErr := sess.Wait(runCtx)
 		close(procDone)
 		// The leader is reaped; drop ownership. On Windows that closes the Job
 		// Object, which kills anything still inside it — precisely what should
@@ -447,7 +458,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			anthropicBaseURLConfigured: strings.TrimSpace(b.cfg.Env["ANTHROPIC_BASE_URL"]) != "",
 		})
 
-		b.cfg.Logger.Info("claude finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("claude finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		// The account-binding 400 arrives in the result event (finalError);
 		// "no conversation found" is printed to stderr. Check both.
