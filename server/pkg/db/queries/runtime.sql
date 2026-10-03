@@ -243,9 +243,12 @@ WHERE id = $1;
 --
 -- Returns the PREVIOUS report when a write happened, letting the caller log
 -- the entered/exited transition by comparing prev.active with the incoming
--- report.
+-- report. A first-ever report has no backpressure key yet, so prev would be
+-- NULL even though the UPDATE succeeded; the CTE COALESCEs it to '{}' (an
+-- empty, inactive report) so the caller reads wasActive=false and still
+-- audits the transition instead of failing the row scan and dropping it.
 WITH previous AS (
-    SELECT metadata->'backpressure' AS prev
+    SELECT COALESCE(metadata->'backpressure', '{}'::jsonb) AS prev
     FROM agent_runtime
     WHERE id = @id
     FOR UPDATE
