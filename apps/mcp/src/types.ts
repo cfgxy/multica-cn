@@ -210,6 +210,11 @@ export interface UpdateCommentBody {
 
 export interface UpdateIssueBody {
   status?: string;
+  priority?: string;
+  project_id?: string;
+  parent_issue_id?: string;
+  start_date?: string;
+  due_date?: string;
   expected_revision?: number;
   suppress_run?: boolean;
   // Assignee change. A string pair assigns/reassigns; explicit nulls clear
