@@ -108,23 +108,28 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("mcode stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("mcode stdin pipe: %w", err)
 	}
 	providerErr := newACPProviderErrorSniffer("mcode")
-	stderr, err := cmd.StderrPipe()
+	stderr, err := sess.StderrPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("mcode stderr pipe: %w", err)
 	}
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start mcode: %w", err)
 	}
@@ -136,7 +141,7 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		_, _ = io.Copy(stderrSink, stderr)
 	}()
 
-	b.cfg.Logger.Info("mcode acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.cfg.Logger.Info("mcode acp started", "pid", sess.PID(), "cwd", opts.Cwd)
 	msgStream := newMcodeMessageStream(256)
 	resCh := make(chan Result, 1)
 	var deliverable acpDeliverableTracker
@@ -198,7 +203,7 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			// descendant may ignore stdin EOF, so waiting first can deadlock every
 			// early-return path, including a rejected session resume.
 			cancel()
-			_ = cmd.Wait()
+			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
 

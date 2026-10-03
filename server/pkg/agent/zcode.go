@@ -240,12 +240,17 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	}
 	cmd.Env = buildEnv(execEnv)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("zcode stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("zcode stdin pipe: %w", err)
@@ -254,13 +259,13 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	// fires before the failure-promotion decision; see hermes.go for why the
 	// io.MultiWriter form races with stopReason=end_turn under load.
 	providerErr := newACPProviderErrorSniffer("zcode")
-	stderr, err := cmd.StderrPipe()
+	stderr, err := sess.StderrPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("zcode stderr pipe: %w", err)
 	}
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start zcode-acp: %w", err)
 	}
@@ -272,7 +277,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		_, _ = io.Copy(stderrSink, stderr)
 	}()
 
-	b.cfg.Logger.Info("zcode-acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.cfg.Logger.Info("zcode-acp started", "pid", sess.PID(), "cwd", opts.Cwd)
 
 	msgStream := newZcodeMessageStream(256)
 	resCh := make(chan Result, 1)
@@ -391,7 +396,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		defer close(resCh)
 		defer func() {
 			stdin.Close()
-			_ = cmd.Wait()
+			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
 
@@ -636,7 +641,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("zcode finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("zcode finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		stdin.Close()
 		cancel()
