@@ -356,6 +356,40 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                   </ul>
                 </div>
               ) : null}
+              {(() => {
+                const jev = selected.jev_advisory;
+                if (!jev) return null;
+                return jev.available ? (
+                  <div
+                    className={
+                      jev.warn
+                        ? "text-body text-amber-600 dark:text-amber-400"
+                        : "text-muted-foreground text-body"
+                    }
+                    data-testid="legislation-jev-advisory"
+                  >
+                    <span className="font-medium">{t(($) => $.legislation.jevAdvisoryLabel)}</span>
+                    {" · "}
+                    {t(($) => $.legislation.jevStage[jev.stage])}
+                    {jev.engine ? ` · ${jev.engine}` : ""}
+                    {jev.p_failure != null ? ` · p_failure=${jev.p_failure.toFixed(3)}` : ""}
+                    {jev.threshold != null
+                      ? ` / ${t(($) => $.legislation.jevThreshold)}=${jev.threshold.toFixed(3)}`
+                      : ""}
+                    {jev.warn ? ` · ${t(($) => $.legislation.jevWarnFlag)}` : ""}
+                    <div className="text-muted-foreground text-caption">
+                      {t(($) => $.legislation.jevDisclaimer)}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className="text-muted-foreground text-caption"
+                    data-testid="legislation-jev-advisory-unavailable"
+                  >
+                    {t(($) => $.legislation.jevAdvisoryLabel)}: {t(($) => $.legislation.jevUnavailable)}
+                  </div>
+                );
+              })()}
               {selected.rollback_reason ? (
                 <div className="text-muted-foreground text-body">
                   {t(($) => $.legislation.rejectReason)}: {selected.rollback_reason}
