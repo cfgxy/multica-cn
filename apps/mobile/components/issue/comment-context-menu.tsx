@@ -4,12 +4,19 @@
  * ring while the sheet is on screen).
  *
  * Uses useActionSheet() hook: iOS delegates to ActionSheetIOS native,
- * Android uses a Modal-based bottom sheet.
+ * Android uses a Modal-based bottom sheet. The main menu and the nested
+ * React… sheet each own their own modalProps — the caller must mount one
+ * <ActionSheetModal> per prop set. (Merging the two into a single spread
+ * bound the modal to whichever sheet came last, so on Android the main
+ * menu never became visible.)
  *
  * Item set (conditional, mirrors web's comment context menu):
  *   Reply (stub) · React… (opens nested sheet) · Copy · Select Text ·
- *   Copy Link · Resolve/Unresolve Thread (root only) · Delete (own only) ·
- *   Cancel
+ *   Copy Link · Resolve/Unresolve Thread (root only) · Edit (own, or
+ *   moderator on member comments) · Delete (own only) · Cancel
+ *
+ * Edit routes through `isEditing`/`closeEdit` — the caller mounts
+ * <CommentEditModal> when isEditing is true.
  *
  * The nested React… sheet (5 quick emojis + More reactions… + Cancel) is
  * fired from INSIDE the outer sheet's completion callback rather than
@@ -20,6 +27,7 @@
  */
 import React, { useCallback, useState } from "react";
 import { Alert } from "react-native";
+import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -30,11 +38,17 @@ import { getWebUrl } from "@/data/server-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 import { useActorLookup } from "@/data/use-actor-name";
+import { memberListOptions } from "@/data/queries/members";
 import {
   useDeleteComment,
   useResolveComment,
   useToggleCommentReaction,
 } from "@/data/mutations/issues";
+import {
+  buildCommentMenu,
+  canEditCommentEntry,
+  type CommentMenuActionKind,
+} from "@/lib/comment-menu";
 import { QUICK_EMOJIS } from "@/lib/quick-emojis";
 import {
   useActionSheet,
@@ -48,17 +62,44 @@ export function useCommentLongPress(
   entry: TimelineEntry,
   issueId: string,
   issueIdentifier: string | undefined,
-): { onLongPress: () => void; isPressed: boolean; modalProps: React.ComponentProps<typeof ActionSheetModal> } {
+): {
+  onLongPress: () => void;
+  isPressed: boolean;
+  /** True while the Edit flow is open — the caller mounts CommentEditModal. */
+  isEditing: boolean;
+  closeEdit: () => void;
+  mainModalProps: React.ComponentProps<typeof ActionSheetModal>;
+  reactModalProps: React.ComponentProps<typeof ActionSheetModal>;
+} {
   const { t } = useT("issues");
   const [isPressed, setIsPressed] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const mainSheet = useActionSheet();
   const reactSheet = useActionSheet();
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const userId = useAuthStore((s) => s.user?.id);
+  // Workspace owners/admins moderate member comments (web parity:
+  // packages/views/issues/components/issue-detail.tsx canModerateComments,
+  // mirroring backend comment.go). React Query dedupes the request across
+  // rows, same as issueAttachmentsOptions.
+  const { data: members } = useQuery(memberListOptions(wsId));
+  const canModerate = !!userId
+    && !!members?.some(
+      (m) => m.user_id === userId && (m.role === "owner" || m.role === "admin"),
+    );
   const toggleReaction = useToggleCommentReaction(issueId);
   const deleteComment = useDeleteComment(issueId);
   const resolveComment = useResolveComment(issueId);
   const { getName } = useActorLookup();
+
+  const closeEdit = useCallback(() => setIsEditing(false), []);
+
+  // show is a stable useCallback inside useActionSheet, while the hook's
+  // return object is recreated every render — destructure so the deps of
+  // onLongPress stay referentially stable.
+  const { show: showMainSheet } = mainSheet;
+  const { show: showReactSheet } = reactSheet;
 
   const onLongPress = useCallback(() => {
     const isOwn = entry.actor_type === "member" && entry.actor_id === userId;
@@ -69,61 +110,45 @@ export function useCommentLongPress(
     // 能否复制链接只取决于 slug / identifier 是否就绪(RUYI-4)。
     const webUrl = getWebUrl();
     const canCopyLink = !!(wsSlug && issueIdentifier);
-    const reactions = (entry.reactions ?? []) as Reaction[];
+    const canEdit = canEditCommentEntry(entry, userId, canModerate);
+
+    const menu = buildCommentMenu({
+      hasContent,
+      canCopyLink,
+      isRoot,
+      resolved,
+      canEdit,
+      isOwn,
+      labels: {
+        reply: "Reply",
+        react: "React…",
+        edit: "Edit",
+        copy: "Copy",
+        select: "Select Text",
+        copyLink: "Copy Link",
+        resolve: "Resolve Thread",
+        unresolve: "Unresolve Thread",
+        delete: "Delete",
+        cancel: "Cancel",
+      },
+    });
 
     Haptics.selectionAsync().catch(() => {});
     setIsPressed(true);
 
-    type Action =
-      | { kind: "reply" }
-      | { kind: "react" }
-      | { kind: "copy" }
-      | { kind: "select" }
-      | { kind: "copyLink" }
-      | { kind: "resolve" }
-      | { kind: "delete" }
-      | { kind: "cancel" };
-
-    const options: string[] = [];
-    const actions: Action[] = [];
-    const push = (label: string, action: Action) => {
-      options.push(label);
-      actions.push(action);
-    };
-
-    push("Reply", { kind: "reply" });
-    push("React…", { kind: "react" });
-    if (hasContent) {
-      push("Copy", { kind: "copy" });
-      push("Select Text", { kind: "select" });
-    }
-    if (canCopyLink) push("Copy Link", { kind: "copyLink" });
-    if (isRoot) {
-      push(resolved ? "Unresolve Thread" : "Resolve Thread", {
-        kind: "resolve",
-      });
-    }
-    if (isOwn) push("Delete", { kind: "delete" });
-    push("Cancel", { kind: "cancel" });
-
-    const cancelButtonIndex = options.length - 1;
-    const destructiveButtonIndex = isOwn
-      ? actions.findIndex((a) => a.kind === "delete")
-      : undefined;
-
-    mainSheet.show({
-      options,
-      cancelButtonIndex,
-      ...(destructiveButtonIndex !== undefined &&
-      destructiveButtonIndex >= 0
-        ? { destructiveButtonIndex }
+    showMainSheet({
+      options: menu.options,
+      cancelButtonIndex: menu.cancelButtonIndex,
+      ...(menu.destructiveButtonIndex !== undefined &&
+      menu.destructiveButtonIndex >= 0
+        ? { destructiveButtonIndex: menu.destructiveButtonIndex }
         : {}),
       onSelect: (i) => {
         setIsPressed(false);
-        const action = actions[i];
-        if (!action || action.kind === "cancel") return;
+        const action = menu.actions[i] as CommentMenuActionKind | undefined;
+        if (!action || action === "cancel") return;
 
-        switch (action.kind) {
+        switch (action) {
           case "reply": {
             // Set the reply target — the InlineCommentComposer subscribes
             // to this store, auto-expands, and threads the next submit
@@ -146,7 +171,6 @@ export function useCommentLongPress(
             // callback — see file header for why.
             presentReactSheet({
               entry,
-              reactions,
               userId,
               wsSlug,
               issueId,
@@ -156,7 +180,7 @@ export function useCommentLongPress(
                   emoji,
                   existing,
                 }),
-              reactSheet,
+              reactSheet: { show: showReactSheet },
             });
             return;
           case "copy":
@@ -184,6 +208,11 @@ export function useCommentLongPress(
               commentId: entry.id,
               resolved: !entry.resolved_at,
             });
+            return;
+          case "edit":
+            // The caller mounts <CommentEditModal> while isEditing is
+            // true; the modal owns the edit mutation and its own dismiss.
+            setIsEditing(true);
             return;
           case "delete":
             // web 的 comment.delete_title 无问号、delete_desc_with_replies 措辞
@@ -216,6 +245,9 @@ export function useCommentLongPress(
     issueIdentifier,
     userId,
     wsSlug,
+    canModerate,
+    showMainSheet,
+    showReactSheet,
     toggleReaction,
     deleteComment,
     resolveComment,
@@ -223,19 +255,25 @@ export function useCommentLongPress(
     getName,
   ]);
 
-  return { onLongPress, isPressed, modalProps: { ...mainSheet.modalProps, ...reactSheet.modalProps } };
+  return {
+    onLongPress,
+    isPressed,
+    isEditing,
+    closeEdit,
+    mainModalProps: mainSheet.modalProps,
+    reactModalProps: reactSheet.modalProps,
+  };
 }
 
 function presentReactSheet(args: {
   entry: TimelineEntry;
-  reactions: Reaction[];
   userId: string | undefined;
   wsSlug: string | null;
   issueId: string;
   toggle: (emoji: string, existing: Reaction | undefined) => void;
-  reactSheet: ReturnType<typeof useActionSheet>;
+  reactSheet: { show: ReturnType<typeof useActionSheet>["show"] };
 }) {
-  const { entry, reactions, userId, wsSlug, issueId, toggle, reactSheet } = args;
+  const { entry, userId, wsSlug, issueId, toggle, reactSheet } = args;
   const emojis = QUICK_EMOJIS.slice(0, QUICK_ROW_SIZE);
   const options = [...emojis, "More reactions…", "Cancel"];
   const cancelButtonIndex = options.length - 1;
@@ -260,7 +298,7 @@ function presentReactSheet(args: {
       }
       const emoji = emojis[i];
       if (!emoji) return;
-      const existing = reactions.find(
+      const existing = ((entry.reactions ?? []) as Reaction[]).find(
         (r) =>
           r.emoji === emoji &&
           r.actor_type === "member" &&
