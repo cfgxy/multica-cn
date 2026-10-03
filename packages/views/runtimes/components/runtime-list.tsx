@@ -66,6 +66,7 @@ import {
   pctChange,
 } from "../utils";
 import { runtimeRowLabel } from "./runtime-machines";
+import { BackpressureBadge } from "./runtime-backpressure-badge";
 import {
   customRuntimeRegistrationFailure,
   isDisabledCustomRuntime,
@@ -215,6 +216,7 @@ function RuntimeNameCell({
         <RuntimeKindBadge runtime={runtime} />
         <PendingRuntimeBadge runtime={runtime} />
         <VisibilityBadge runtime={runtime} />
+        <BackpressureBadge runtime={runtime} />
       </div>
     </ListGridCell>
   );
