@@ -29,6 +29,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 写 | `delete_comment` | 删除评论（作者/admin 权限；级联删除回复子树；连带取消该评论触发的排队 run） |
 | 写 | `update_issue_status` | 状态流转（`suppress_run` 可避免连带派发） |
 | 写 | `assign_issue` | 已有 issue 的指派/改派/取消指派（agent/squad 指派触发真实 run） |
+| 写 | `bulk_update_issues` | 批量按项更新已有 issue：逐项结果与失败分类、逐项 `expected_revision`、`suppress_run` 分层控制、上限 50 项 |
 | 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
 
 评论编辑/删除（RUYI-352）沿用产品自身的作者-or-管理员权限闸与服务端审计

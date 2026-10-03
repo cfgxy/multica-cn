@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
@@ -109,6 +110,11 @@ type Client struct {
 	version  string
 	os       string
 
+	// workerSupervision advertises the worker-supervisor capability
+	// (RUYI-349) on every control-plane request and WS handshake. Set once
+	// at daemon startup once the supervisor's systemd probe has answered.
+	workerSupervision atomic.Bool
+
 	workspaceMu                    sync.Mutex
 	workspaceETag                  string
 	workspaceCache                 []WorkspaceInfo
@@ -178,7 +184,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 	if c.os != "" {
 		req.Header.Set("X-Client-OS", c.os)
 	}
-	req.Header.Set("X-Client-Capabilities", daemonClientCapabilities())
+	req.Header.Set("X-Client-Capabilities", daemonClientCapabilities(c.workerSupervision.Load()))
 }
 
 // daemonClientCapabilities is the X-Client-Capabilities value the daemon
@@ -186,8 +192,8 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 // claim built over WS gets the same capability gating (skill refs,
 // coalesced-comments) as the HTTP path. rpc-v1 advertises WS request/response
 // support (MUL-4257).
-func daemonClientCapabilities() string {
-	return strings.Join([]string{
+func daemonClientCapabilities(workerSupervision bool) string {
+	caps := []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
 		protocol.DaemonCapabilityExecutionManifestV1,
@@ -196,8 +202,17 @@ func daemonClientCapabilities() string {
 		protocol.DaemonCapabilityLocalWorktreeV1,
 		protocol.DaemonCapabilitySourceContextQuickCreateV1,
 		protocol.DaemonCapabilityRPCV1,
-	}, ",")
+	}
+	if workerSupervision {
+		caps = append(caps, protocol.DaemonCapabilityWorkerSupervisorV1)
+	}
+	return strings.Join(caps, ",")
 }
+
+// SetWorkerSupervision flips the worker-supervisor capability advertisement
+// (RUYI-349). The daemon calls it right after setupSupervisor, before the
+// first re-register can carry it.
+func (c *Client) SetWorkerSupervision(on bool) { c.workerSupervision.Store(on) }
 
 // SetToken sets the auth token for authenticated requests.
 func (c *Client) SetToken(token string) {
