@@ -399,7 +399,12 @@ SELECT
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+-- RUYI-384: the run fence also refuses a cancelled issue. issue_accepts_runs
+-- FOR SHARE-locks the issue row, so an enqueue either commits before the
+-- issue's cancellation (whose cascade then cancels the new row) or blocks and
+-- re-reads the committed cancelled status — the enqueue writes no row. Both
+-- orderings leave no run behind on a cancelled issue.
+WHERE lock_task_owner_rows($1, $3, $2) AND issue_accepts_runs($3) AND issue_accepts_runs($3)
 RETURNING *;
 
 -- name: CreateDeferredChannelIssueTask :one
@@ -442,7 +447,7 @@ SELECT
     sqlc.narg(trigger_evidence_ref_id),
     @fire_at,
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+WHERE lock_task_owner_rows($1, $3, $2) AND issue_accepts_runs($3)
 RETURNING *;
 
 -- name: PromoteDeferredChannelIssueTask :one
@@ -530,7 +535,7 @@ SELECT
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+WHERE lock_task_owner_rows($1, $3, $2) AND issue_accepts_runs($3)
 RETURNING *;
 
 -- name: LinkTaskToIssue :exec
@@ -657,6 +662,7 @@ SELECT
 FROM agent_task_queue p
 WHERE p.id = $1
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
+  AND issue_accepts_runs(p.issue_id)
 ON CONFLICT (issue_id, agent_id) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
@@ -712,11 +718,58 @@ WHERE id = sqlc.arg(task_id)
 -- caller can reconcile each agent's status and broadcast task:cancelled events
 -- (#1587). Prior :exec form silently dropped that info, leaving agents stuck at
 -- status="working" with no self-correction. Only issue-deletion cleanup calls
--- this now; a status flip to cancelled/done no longer does (MUL-4465).
+-- this now (MUL-4465): it terminalizes in-flight rows outright, which is right
+-- for "the issue is GONE" and wrong for "the issue was cancelled" — that flow
+-- is CancelOpenAgentTasksByIssueCancellation (RUYI-384), which keeps in-flight
+-- rows two-phase.
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
+
+-- name: CancelOpenAgentTasksByIssueCancellation :many
+-- RUYI-384: the cascade an issue→cancelled flip runs against its open runs.
+-- One statement applies the RUYI-292 cancel matrix per row:
+--   * queued/deferred rows never started — no process anywhere — so they flip
+--     straight to 'cancelled' with failure_reason='issue_cancelled' recording
+--     who ended them. ('deferred' goes here rather than to cancel_requested
+--     unlike the single-run matrix: a cancel_requested deferred row on a
+--     HEALTHY runtime has no convergence path — no daemon ever saw it, the
+--     promote sweep matches only status='deferred', the offline sweep matches
+--     only dead runtimes — so routing it through cancel_requested would strand
+--     it non-terminal forever. The server is authoritative for never-started
+--     rows either way.)
+--   * dispatched/running/waiting_local_directory rows flip to
+--     'cancel_requested' (stamping cancel_requested_by/at for the audit) and
+--     settle through the normal two-phase machinery: daemon poll → interrupt →
+--     cancel-ack, with /complete and /fail as terminal guards and
+--     ConvergeCancelRequestedForOfflineRuntimes as the dead-runtime backstop.
+-- Terminal rows never match, and a row already in cancel_requested (an earlier
+-- single-run cancel) keeps its original requester and timestamp — the service
+-- layer re-nudges those via ListCancellingAgentTasksByIssue instead of
+-- rewriting them. Idempotent: a second cascade pass matches nothing.
+UPDATE agent_task_queue
+SET status = CASE WHEN status IN ('queued', 'deferred')
+                  THEN 'cancelled' ELSE 'cancel_requested' END,
+    completed_at = CASE WHEN status IN ('queued', 'deferred') THEN now() END,
+    cancel_requested_at = CASE WHEN status IN ('dispatched', 'running', 'waiting_local_directory')
+                               THEN now() END,
+    cancel_requested_by_user_id = CASE WHEN status IN ('dispatched', 'running', 'waiting_local_directory')
+                                       THEN sqlc.narg('cancel_requested_by_user_id')::uuid END,
+    prepare_lease_expires_at = NULL,
+    failure_reason = CASE WHEN status IN ('queued', 'deferred') THEN 'issue_cancelled' END
+WHERE issue_id = $1
+  AND status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory')
+RETURNING *;
+
+-- name: ListCancellingAgentTasksByIssue :many
+-- RUYI-384: rows the issue-cancellation cascade found ALREADY in
+-- cancel_requested (from an earlier single-run cancel). They must not be
+-- rewritten — their original cancel_requested_by/at is the audit trail — but
+-- they still need the interrupt nudge re-broadcast so any daemon that
+-- resubscribed late sees the stop. Read-only on purpose.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1 AND status = 'cancel_requested';
 
 -- name: CancelPendingTasksByIssueAndAgent :many
 -- Cancels the not-yet-started tasks for a single (issue, agent) pair, so the
@@ -878,6 +931,20 @@ WHERE id = (
                 AND active.autopilot_run_id IS NULL
               )
             )
+      )
+      -- RUYI-384: a queued row whose issue is cancelled is never claimed. The
+      -- enqueue fence (issue_accepts_runs) stops NEW rows on a cancelled issue
+      -- and the issue-cancel cascade flips existing ones, but a claim racing
+      -- that cascade can read the row before the cascade's UPDATE lands — this
+      -- fenceless read is the belt to the fence's braces, and it makes the
+      -- last-ditch window close: claim and cancel cannot both win.
+      AND (
+          atq.issue_id IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM issue ci
+              WHERE ci.id = atq.issue_id
+                AND issue_effective_status(ci.workspace_id, ci.status) = 'cancelled'
+          )
       )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
