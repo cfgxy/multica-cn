@@ -117,7 +117,7 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	}
 	// Advertise the same capabilities as the HTTP path so a claim built over
 	// this WS connection gets identical capability gating (MUL-4257).
-	headers.Set("X-Client-Capabilities", daemonClientCapabilities())
+	headers.Set("X-Client-Capabilities", daemonClientCapabilities(d.client.workerSupervision.Load()))
 
 	// A hand-built websocket.Dialer has Proxy == nil, which gorilla reads as
 	// "dial direct" — unlike websocket.DefaultDialer, it does not fall back to

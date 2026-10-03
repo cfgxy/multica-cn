@@ -210,6 +210,22 @@ export interface UpdateCommentBody {
 
 export interface UpdateIssueBody {
   status?: string;
+  // Core field edit (RUYI-350 update_issue). PATCH semantics: an omitted key
+  // keeps the current value. For the four nullable fields an EXPLICIT null
+  // clears the value — the null must survive serialization, because the
+  // server decides "clear" by rawFields key presence (server/internal/handler/
+  // issue.go), exactly like the assignee nulls below. title/description/
+  // priority are plain writes: the server models them as *string, so a JSON
+  // null decodes to nil and means "keep" — the tool layer never sends null
+  // for them. bulk_update_issues (RUYI-353) shares this body type but its
+  // items only ever assign plain strings, so omitted keys keep the current
+  // value there.
+  title?: string;
+  description?: string;
+  priority?: string;
+  project_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
   expected_revision?: number;
   suppress_run?: boolean;
   // Assignee change. A string pair assigns/reassigns; explicit nulls clear
