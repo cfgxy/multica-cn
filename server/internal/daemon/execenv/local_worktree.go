@@ -496,9 +496,9 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	// Replay the user's directory into the worktree.
 	//
 	// A branch forked from HEAD carries none of it, so the whole snapshot goes
-	// in. A continued branch already carries the snapshot the previous turn
-	// recorded, and the agent's commits sit on top of it, so only what the user
-	// changed after that is new information there.
+	// in. A continued branch already carries the edits the previous turn
+	// replayed, and the agent's commits sit on top of them, so only the user's
+	// new edits are new information there.
 	replay, replayErr := replayUserState(worktreePath, plan, userState, logger)
 	if replayErr != nil {
 		rollback()
@@ -1739,8 +1739,9 @@ type taskBranchPlan struct {
 	// the user's HEAD, so the checkout already carries that turn's work.
 	continues bool
 	// priorState is the user snapshot that branch is recorded as already
-	// carrying. Set only when continues is true; it is the merge base for this
-	// turn's replay.
+	// carrying. Set only when continues is true; the edit set that snapshot
+	// holds against the checkout HEAD it was captured on is what this turn's
+	// replay treats as already in the branch.
 	priorState string
 	// priorCheckpoint is the commit that branch was recorded at and still
 	// contains — this turn's proof that the branch is the conversation's. The
@@ -1980,15 +1981,18 @@ type replayResult struct {
 
 // replayUserState brings the user's directory into the worktree.
 //
-// Both branch kinds run the same operation against a different starting point:
-// cherry-pick the difference between the state the checkout already carries and
-// the state the user is in now. For a branch forked from HEAD the first is HEAD
-// itself, so the whole snapshot applies and cannot conflict. For a continued
-// branch it is the snapshot that branch recorded, which is what makes this a
-// replay of the user's LAST-TURN-TO-NOW edits rather than of their whole tree.
+// Both branch kinds cherry-pick the user's edits and differ only in which of
+// them are new here. A branch forked from HEAD carries none, so the whole
+// snapshot applies and cannot conflict. A continued branch already carries the
+// edit set the previous turn replayed, and each snapshot is the user's edits
+// against the checkout's HEAD as of its capture, so the new information is the
+// delta between that carried edit set and the snapshot's — taken against the
+// current checkout with the carried edits applied on top (replayBaseCommit),
+// not between the two snapshots' trees: a pull between turns would otherwise
+// ride in as if the user had typed the whole mainline advance (RUYI-380).
 //
-// Replaying the whole tree onto a continued branch is the tempting version and
-// it is wrong: that merge takes the user's HEAD as its base, so it re-proposes
+// Diffing against the user's HEAD itself is the tempting version and it is
+// wrong: that merge takes the user's HEAD as its base, so it re-proposes
 // work the branch already has, and conflicts against the agent's edits to the
 // same lines — which is to say, it conflicts exactly when the agent did what it
 // was asked to do. Verified: with the user's directory untouched between turns,
@@ -2010,14 +2014,32 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 	}
 	// Nothing new since the state this checkout already carries. On a follow-up
 	// turn that is the ordinary case: the user commented, they did not edit.
+	// Equal trees also mean equal edit sets — the checkout's own files are what
+	// carries a snapshot's tree beyond its edit set, so a HEAD that moved
+	// without the tree moving has nothing to replay either.
 	if _, err := runGit(worktreePath, "diff", "--quiet", carried, snapshot); err == nil {
 		return replayResult{}, nil
 	}
 
-	// A commit whose parent is the carried state and whose tree is the user's
-	// current one. Its parent is what git uses as the merge base, and that is
-	// the entire point: it is not reachable any other way.
-	args := append(commitIdentityArgs(worktreePath), "commit-tree", snapshot+"^{tree}", "-p", carried,
+	// A commit whose parent is what the checkout already carries of the user's
+	// work and whose tree is the user's current one. Its parent is what git
+	// uses as the merge base, and that is the entire point: it is not reachable
+	// any other way.
+	base := carried
+	if plan.continues {
+		commit, err := replayBaseCommit(worktreePath, carried, snapshot)
+		if err != nil {
+			return replayResult{}, err
+		}
+		if commit == "" {
+			// The edit set is unchanged and the trees differ only by the
+			// checkout advancing under the user. Replay nothing and invent no
+			// baseline: a mainline pull is not the user's work (RUYI-380).
+			return replayResult{}, nil
+		}
+		base = commit
+	}
+	args := append(commitIdentityArgs(worktreePath), "commit-tree", snapshot+"^{tree}", "-p", base,
 		"-m", "multica: local directory edits to replay")
 	increment, err := runGitTrimmed(worktreePath, args...)
 	if err != nil || increment == "" {
@@ -2059,6 +2081,73 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 			"path", worktreePath, "branch", plan.name, "files", conflicts)
 	}
 	return replayResult{conflicts: conflicts}, nil
+}
+
+// replayBaseCommit builds the parent of a continued turn's replay commit: the
+// checkout's current tree with the edit set the branch already carries applied
+// on top. Each snapshot is rooted at the checkout's HEAD as of its capture, so
+// diffing the fresh snapshot against this composite leaves exactly the user's
+// new edits — a pull moved the snapshot's parent without touching either edit
+// set, so the advance itself is never replay content (RUYI-380).
+//
+// An empty string means the two edit sets are identical and there is nothing
+// to replay. An error means the carried edits and the checkout's advance
+// cannot be reconciled at all — unreachable for a pull, which refuses to
+// touch files the user has dirty — and fails the turn closed rather than
+// starting on a tree the user would not recognise.
+func replayBaseCommit(worktreePath, priorState, snapshot string) (string, error) {
+	priorBase, err := carriedSnapshotHead(worktreePath, priorState)
+	if err != nil {
+		return "", err
+	}
+	snapshotBase, err := runGitTrimmed(worktreePath, "rev-parse", "--verify", snapshot+"^")
+	if err != nil {
+		return "", fmt.Errorf("execenv: could not resolve the checkout state behind the current snapshot (%s): %w", snapshot, err)
+	}
+	merged, err := runGitTrimmed(worktreePath, "merge-tree", "--write-tree",
+		"--merge-base="+priorBase, snapshotBase, priorState)
+	if err != nil {
+		return "", fmt.Errorf("execenv: cannot line the branch's carried edits up against the checkout's current state: %w", err)
+	}
+	tree, err := runGitTrimmed(worktreePath, "rev-parse", "--verify", snapshot+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("execenv: could not resolve the current snapshot's tree (%s): %w", snapshot, err)
+	}
+	if merged == tree {
+		return "", nil
+	}
+	commit, err := runGitTrimmed(worktreePath, append(commitIdentityArgs(worktreePath), "commit-tree", merged,
+		"-m", "multica: replay base — the checkout now, with the edits this branch already carries")...)
+	if err != nil || commit == "" {
+		return "", fmt.Errorf("execenv: could not build the replay base for the task worktree: %w", err)
+	}
+	return commit, nil
+}
+
+// carriedSnapshotHead resolves the checkout HEAD the branch's carried edit set
+// is defined against. What a branch records is a wrapper commit — its tree is
+// the user snapshot's tree, and it is parented on that snapshot and on the
+// branch tip; a re-record without a delivered commit wraps the previous
+// wrapper. The first-parent line therefore walks down wrappers to the first
+// single-parent commit — the snapshot itself, whose parent is the checkout's
+// HEAD as of its capture (RUYI-380).
+func carriedSnapshotHead(worktreePath, priorState string) (string, error) {
+	cur := priorState
+	for hop := 0; hop < 8; hop++ {
+		out, err := runGitTrimmed(worktreePath, "rev-list", "--parents", "-n", "1", cur)
+		if err != nil {
+			return "", fmt.Errorf("execenv: could not walk the branch's recorded state (%s) to the user snapshot: %w", priorState, err)
+		}
+		fields := strings.Fields(out)
+		if len(fields) < 2 {
+			return "", fmt.Errorf("execenv: the branch's recorded state (%s) has no parent to define its edits against", priorState)
+		}
+		if len(fields) == 2 {
+			return fields[1], nil
+		}
+		cur = fields[1]
+	}
+	return "", fmt.Errorf("execenv: the branch's recorded state (%s) wraps too many re-records to walk to the user snapshot", priorState)
 }
 
 // quotedPaths renders repository paths for a human-facing message. Quoted
