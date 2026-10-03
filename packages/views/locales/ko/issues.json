@@ -1036,7 +1036,8 @@
       "running": "실행 중",
       "completed": "완료",
       "failed": "실패",
-      "cancelled": "취소됨"
+      "cancelled": "취소됨",
+      "cancel_requested": "정지 중"
     },
     "runs": {
       "title": "에이전트 실행 기록",

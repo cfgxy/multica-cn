@@ -1036,7 +1036,8 @@
       "running": "実行中",
       "completed": "完了",
       "failed": "失敗",
-      "cancelled": "キャンセル済み"
+      "cancelled": "キャンセル済み",
+      "cancel_requested": "停止中"
     },
     "runs": {
       "title": "エージェントの実行履歴",

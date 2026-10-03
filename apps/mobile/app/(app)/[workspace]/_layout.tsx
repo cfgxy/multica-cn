@@ -17,6 +17,7 @@ import { useChatSessionsRealtime } from "@/data/realtime/use-chat-sessions-realt
 import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
+import { useSquadsRealtime } from "@/data/realtime/use-squads-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { shouldResolveWorkspaceMembership } from "@/lib/workspace-route";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
@@ -87,6 +88,9 @@ function RealtimeSubscriptions() {
   useChatSessionsRealtime();
   useProjectsRealtime();
   usePinsRealtime();
+  // RUYI-346: squad:created/updated/deleted → squad 缓存前缀整体失效
+  // （管理侧订阅，低频名册变更；详见 use-squads-realtime.ts）。
+  useSquadsRealtime();
   // Presence: warm the three queries up front so avatars don't flash a
   // dotless first render, and listen for daemon/agent/task events to keep
   // the runtime + snapshot caches fresh. See use-presence-realtime.ts for
@@ -426,6 +430,52 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/agents/[id]"
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
+        />
+        {/* RUYI-346: 智能体与小队管理（P0）。创建走 modal；agent 域
+            skills/env/webhooks 与 squad 域 add-member 走 formSheet
+            （body 自绘 header）。squad 详情用原生 header，body 内以
+            Stack.Screen 动态写 title。 */}
+        <Stack.Screen
+          name="more/agents/new"
+          options={{
+            presentation: "modal",
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/edit-profile"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/skills"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/env"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/webhooks"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/squads"
+          options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/squads/[id]"
+          options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/squads/new"
+          options={{
+            presentation: "modal",
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="more/squads/[id]/add-member"
+          options={SHEET_OPTIONS}
         />
         <Stack.Screen
           name="more/pins"

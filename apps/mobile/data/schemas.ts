@@ -717,6 +717,45 @@ export const AgentSchema: z.ZodType<Agent> = z.object({
 export const AgentListSchema = z.array(AgentSchema).default([]);
 export const EMPTY_AGENT_LIST: Agent[] = [];
 
+// Single-agent fallback used by getAgent / createAgent / updateAgent /
+// archiveAgent / restoreAgent. Same sentinel contract as EMPTY_ISSUE_FALLBACK:
+// `id: ""` flags drift or "not found" downstream — the detail screen treats
+// it as its empty state and mutations fall back to invalidating the list.
+export const EMPTY_AGENT_FALLBACK: Agent = {
+  id: "",
+  workspace_id: "",
+  runtime_id: "",
+  name: "",
+  description: "",
+  instructions: "",
+  conversation_starters: [],
+  avatar_url: null,
+  runtime_mode: "daemon" as Agent["runtime_mode"],
+  runtime_config: {},
+  custom_args: [],
+  has_custom_env: false,
+  custom_env_key_count: 0,
+  visibility: "workspace" as Agent["visibility"],
+  permission_mode: "private",
+  invocation_targets: [],
+  status: "active" as Agent["status"],
+  max_concurrent_tasks: 1,
+  model: "",
+  owner_id: null,
+  skills: [],
+  created_at: "",
+  updated_at: "",
+  archived_at: null,
+  archived_by: null,
+};
+
+// POST /api/agents/:id/cancel-tasks — bulk-cancel every active task for the
+// agent. Server returns the cancelled-row count; the screen toasts it.
+export const AgentCancelTasksResponseSchema = z.object({
+  cancelled: z.number().default(0),
+}).loose();
+export const EMPTY_AGENT_CANCEL_TASKS_RESPONSE = { cancelled: 0 };
+
 // Runtime device — the daemon (local or cloud) an agent binds to. Mobile reads
 // it for the presence dot: `status` + `last_seen_at` drive the three-state
 // availability derivation in @multica/core/agents/derive-presence. All other

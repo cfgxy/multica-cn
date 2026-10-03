@@ -24,6 +24,33 @@ const timelineEntry = {
   created_at: "2026-09-05T09:00:00Z",
 };
 
+describe("ApiClient.listAgents", () => {
+  afterEach(() => {
+    api.setToken(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // Scope counts and the archived segment are computed client-side from this
+  // single list (web parity: packages/core/workspace/queries.ts:75 passes
+  // include_archived: true unconditionally) — without it the archived scope
+  // is permanently empty (RUYI-346 defect #1).
+  it("always requests archived agents so scope filters work client-side", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([]),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(api.listAgents()).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/agents?include_archived=true",
+      expect.anything(),
+    );
+  });
+});
+
 describe("ApiClient.listTimeline", () => {
   afterEach(() => {
     api.setToken(null);
