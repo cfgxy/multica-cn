@@ -37,9 +37,22 @@ describe("resolveAppGate", () => {
     });
   });
 
-  it("sends an unconfigured startup to server selection", () => {
+  it("routes a converged explicit-selection state to the picker", () => {
+    // RUYI-346 round 3: "select" is not an in-flight startup phase — the
+    // store parks there only when startup converged on "the user must pick
+    // a server". This is the one navigation the startup window may emit:
+    // no deep-link content can render without a connected server.
     expect(resolveAppGate("select", false, true, false, false)).toEqual({
       kind: "server-select",
+    });
+  });
+
+  it("holds while session restoration settles after the startup store converges", () => {
+    // RUYI-346: after the phase flips to ready, auth initialize() may still
+    // be restoring the session; a login redirect here discards a cold-start
+    // deep link exactly like a startup-window navigation would.
+    expect(resolveAppGate("ready", false, true, false, false)).toEqual({
+      kind: "startup-hold",
     });
   });
 

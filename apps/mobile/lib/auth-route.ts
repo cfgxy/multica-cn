@@ -26,10 +26,22 @@ export type AppGateDecision =
   | { kind: "stack" };
 
 /**
- * The (app)/_layout gate decision. Ordering matters: startup resolution
- * wins over auth, and while it resolves the gate must HOLD rather than
- * redirect — a cold-start deep link's target route is already in the
- * stack at that point, and any navigation here discards it.
+ * The (app)/_layout gate decision. Ordering matters: the gate must never
+ * navigate while startup is in flight — a cold-start deep link's target
+ * route is already in the stack at that point, and any navigation here
+ * discards it (RUYI-346 QA rounds 1-2: force-start deep links landed on
+ * the default Inbox).
+ *
+ * Phase semantics (RUYI-346 round 3):
+ * - "checking" — startup is in flight; the store auto-connects a resolvable
+ *   target during this phase, so the only correct decision is to hold.
+ * - "select"   — startup has CONVERGED on "the user must pick a server"
+ *   (multiple servers, none resolvable as previous). This is the one
+ *   navigation the startup window may emit: no deep-link content can render
+ *   without a connected server.
+ * - "ready"    — the startup store has converged, but auth session
+ *   restoration (initialize) may still be in flight; hold until it settles
+ *   so the restored session — not the login screen — claims the route.
  */
 export function resolveAppGate(
   startupPhase: StartupPhase,
@@ -40,6 +52,9 @@ export function resolveAppGate(
 ): AppGateDecision {
   if (startupPhase === "select") return { kind: "server-select" };
   if (startupPhase !== "ready") return { kind: "startup-hold" };
+  if (!hasUser && isLoading && !hadAuthenticatedSession) {
+    return { kind: "startup-hold" };
+  }
   if (
     !shouldRenderAuthenticatedStack(
       hasUser,
