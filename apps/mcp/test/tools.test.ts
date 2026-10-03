@@ -92,32 +92,42 @@ function callsOf(client: MulticaClient): Array<{ method: string; args: unknown[]
 describe("tool surface", () => {
   it("exposes exactly the v1 tool set", () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name).sort()).toEqual(
-        [
-          "add_comment",
-          "assign_issue",
-          "cancel_run",
-          "create_issue",
-          "create_project",
-          "dispatch_agent",
-          "get_issue",
-          "get_project",
-          "get_run",
-          "list_agents",
-          "list_issue_runs",
-          "list_issues",
-          "list_projects",
-          "list_workspaces",
-          "progress_digest",
-          "retry_run",
-          "search_issues",
-          "update_issue_status",
-          "update_project",
-        ].sort(),
+      [
+        "add_comment",
+        "assign_issue",
+        "cancel_run",
+        "create_issue",
+        "create_project",
+        "delete_comment",
+        "dispatch_agent",
+        "edit_comment",
+        "get_comment",
+        "get_issue",
+        "get_project",
+        "get_run",
+        "list_agents",
+        "list_comments",
+        "list_issue_runs",
+        "list_issues",
+        "list_projects",
+        "list_workspaces",
+        "progress_digest",
+        "retry_run",
+        "search_issues",
+        "update_issue_status",
+        "update_project",
+      ].sort(),
     );
   });
 
   it("documents the quota cost on dispatch and comment tools", () => {
-    for (const name of ["dispatch_agent", "add_comment", "update_issue_status", "assign_issue"]) {
+    for (const name of [
+      "dispatch_agent",
+      "add_comment",
+      "edit_comment",
+      "update_issue_status",
+      "assign_issue",
+    ]) {
       const tool = findTool(name);
       expect(tool?.description).toMatch(/quota|run/i);
     }
@@ -128,6 +138,15 @@ describe("tool surface", () => {
     for (const name of TOOL_DEFINITIONS.map((t) => t.name).filter((n) => n !== "list_workspaces")) {
       expect(findTool(name)?.inputSchema.required).toContain("workspace");
     }
+  });
+
+  it("registers comment reads as read-only and comment writes as mutating", () => {
+    for (const readTool of ["get_comment", "list_comments"]) {
+      expect(findTool(readTool)?.description).toMatch(/read-only/i);
+    }
+    // The mutating comment tools declare their destructive/run side effects.
+    expect(findTool("edit_comment")?.description).toMatch(/WARNING \(run side effects\)/);
+    expect(findTool("delete_comment")?.description).toMatch(/SIDE EFFECTS/i);
   });
 });
 
@@ -789,5 +808,342 @@ describe("run lifecycle tools (RUYI-292)", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MulticaApiError);
     expect((err as MulticaApiError).message).toContain("agent_already_queued");
+  });
+});
+
+describe("comment management tools (RUYI-352)", () => {
+  function commentFixture(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      id: "c1",
+      issue_id: "i1",
+      author_type: "agent",
+      author_id: "a1",
+      parent_id: null,
+      created_at: "2026-10-03T01:00:00Z",
+      updated_at: "2026-10-03T01:00:00Z",
+      revision: 1,
+      content: "first draft",
+      ...over,
+    };
+  }
+
+  describe("list_comments", () => {
+    it("passes bounded-read modes through and returns briefs with revision", async () => {
+      const client = fakeClient({
+        listComments: async (_ws: string, issue: string, params: Record<string, unknown>) => {
+          callsOf(client).push({ method: "listComments", args: [issue, params] });
+          expect(issue).toBe("VOI-1");
+          return [
+            commentFixture({ parent_id: undefined, revision: 3, updated_at: "2026-10-03T02:00:00Z", reply_count: 2, last_activity_at: "2026-10-03T02:30:00Z" }),
+            commentFixture({ id: "c2", parent_id: "c1" }),
+          ];
+        },
+      });
+      const tool = findTool("list_comments");
+      const result = (await tool?.handler(
+        { workspace: WS, issue: "VOI-1", thread: "c1", tail: 10, summary: true },
+        client,
+      )) as { total: number; comments: Array<Record<string, unknown>> };
+      expect(callsOf(client)[0]?.args).toEqual([
+        "VOI-1",
+        { thread: "c1", tail: 10, roots_only: undefined, summary: true, fold: undefined },
+      ]);
+      expect(result.total).toBe(2);
+      expect(result.comments[0]?.revision).toBe(3);
+      expect(result.comments[0]?.updated_at).toBe("2026-10-03T02:00:00Z");
+      expect(result.comments[0]?.reply_count).toBe(2);
+      expect(result.comments[0]?.last_activity_at).toBe("2026-10-03T02:30:00Z");
+    });
+
+    it("rejects exclusive mode combinations before hitting the API", async () => {
+      const tool = findTool("list_comments");
+      for (const args of [
+        { workspace: WS, issue: "VOI-1", roots_only: true, thread: "c1" },
+        { workspace: WS, issue: "VOI-1", roots_only: true, recent: 5 },
+        { workspace: WS, issue: "VOI-1", roots_only: true, tail: 2 },
+        { workspace: WS, issue: "VOI-1", tail: 2 },
+        { workspace: WS, issue: "VOI-1", fold: true, roots_only: true },
+        { workspace: WS, issue: "VOI-1", fold: true, since: "2026-10-01T00:00:00Z" },
+        { workspace: WS, issue: "VOI-1", fold: true, thread: "c1", tail: 3 },
+      ]) {
+        await expect(tool?.handler(args, fakeClient())).rejects.toThrow(ToolInputError);
+      }
+    });
+  });
+
+  describe("get_comment", () => {
+    it("locates one comment via the thread read and reports its audit fields", async () => {
+      const client = fakeClient({
+        listComments: async (_ws: string, _issue: string, params: Record<string, unknown>) => {
+          callsOf(client).push({ method: "listComments", args: [params] });
+          return [
+            commentFixture({ parent_id: undefined }),
+            commentFixture({ id: "c2", parent_id: "c1" }),
+          ];
+        },
+      });
+      const tool = findTool("get_comment");
+      const result = (await tool?.handler(
+        { workspace: WS, issue: "VOI-1", comment_id: "c2" },
+        client,
+      )) as { found: boolean; comment: Record<string, unknown> };
+      expect(callsOf(client)[0]?.args).toEqual([{ thread: "c2" }]);
+      expect(result.found).toBe(true);
+      expect(result.comment.id).toBe("c2");
+      expect(result.comment.thread_root_id).toBe("c1");
+      expect(result.comment.revision).toBe(1);
+      expect(result.comment.content).toBe("first draft");
+    });
+
+    it("maps an unknown/deleted anchor to the structured not_found outcome", async () => {
+      const client = fakeClient({
+        listComments: async () => {
+          throw new MulticaApiError(404, "thread anchor not found in this issue");
+        },
+      });
+      const result = (await findTool("get_comment")?.handler(
+        { workspace: WS, issue: "VOI-1", comment_id: "gone" },
+        client,
+      )) as { found: boolean; code: string; comment: unknown };
+      expect(result.found).toBe(false);
+      expect(result.code).toBe("not_found");
+      expect(result.comment).toBeNull();
+    });
+
+    it("answers not_found when the anchor id is absent from the resolved thread", async () => {
+      const client = fakeClient({
+        listComments: async () => [commentFixture({ id: "other", parent_id: undefined })],
+      });
+      const result = (await findTool("get_comment")?.handler(
+        { workspace: WS, issue: "VOI-1", comment_id: "c1" },
+        client,
+      )) as { found: boolean; code: string };
+      expect(result.found).toBe(false);
+      expect(result.code).toBe("not_found");
+    });
+  });
+
+  describe("edit_comment", () => {
+    it("maps the edit fields onto the PUT body and returns the audit snapshot", async () => {
+      const client = fakeClient({
+        updateComment: async (_ws: string, id: string, body: Record<string, unknown>) => {
+          callsOf(client).push({ method: "updateComment", args: [id, body] });
+          return commentFixture({
+            content: String(body.content),
+            revision: 2,
+            updated_at: "2026-10-03T03:00:00Z",
+            trigger_outcomes: [{ target_type: "agent", target_id: "a1", status: "queued" }],
+          });
+        },
+      });
+      const tool = findTool("edit_comment");
+      const result = (await tool?.handler(
+        {
+          workspace: WS,
+          comment_id: "c1",
+          content: "revised body",
+          expected_revision: 1,
+          suppress_agent_ids: ["a2"],
+        },
+        client,
+      )) as Record<string, unknown>;
+      expect(callsOf(client)[0]?.args).toEqual([
+        "c1",
+        { content: "revised body", expected_revision: 1, suppress_agent_ids: ["a2"] },
+      ]);
+      expect(result.edited).toBe(true);
+      expect(result.id).toBe("c1");
+      expect(result.revision).toBe(2);
+      expect(result.updated_at).toBe("2026-10-03T03:00:00Z");
+      expect(result.trigger_outcomes).toEqual([
+        { target_type: "agent", target_id: "a1", status: "queued" },
+      ]);
+    });
+
+    it("reports zero dispatches for an ordinary content edit (no implicit run surface)", async () => {
+      // Backend contract: a content-changing edit re-runs the trigger
+      // computation, and an edit that stores identical content triggers
+      // nothing — both arrive here as a response without trigger_outcomes.
+      // The tool normalizes that to a visible empty array so "no runs" is an
+      // asserted surface, never an absent field.
+      const client = fakeClient({
+        updateComment: async () => commentFixture({ revision: 2 }),
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "typo fix" },
+        client,
+      )) as { edited: boolean; trigger_outcomes: unknown[] };
+      expect(result.edited).toBe(true);
+      expect(result.trigger_outcomes).toEqual([]);
+    });
+
+    it("surfaces a revision conflict structurally with the current revision", async () => {
+      const conflict = new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+      (conflict as { body?: Record<string, unknown> }).body = {
+        code: "revision_conflict",
+        expected_revision: 1,
+        actual_revision: 4,
+      };
+      const client = fakeClient({
+        updateComment: async () => {
+          throw conflict;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "x", expected_revision: 1 },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("revision_conflict");
+      expect(result.expected_revision).toBe(1);
+      expect(result.actual_revision).toBe(4);
+    });
+
+    it("surfaces a permission denial as a distinct structured outcome (removing the mapping fails this)", async () => {
+      // Valid-permission assertion: the denial is keyed on the 403 STATUS, not
+      // on message text, and is returned as code permission_denied — a
+      // different denial must not collapse into it, and without the mapping
+      // the handler would throw instead of answering structurally.
+      const client = fakeClient({
+        updateComment: async () => {
+          const denial = new MulticaApiError(403, "only comment author or admin can edit");
+          (denial as { body?: Record<string, unknown> }).body = {
+            error: "only comment author or admin can edit",
+          };
+          throw denial;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "x" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("permission_denied");
+
+      // A non-403 failure with the SAME message text must NOT be classified
+      // as a permission denial — the status is the discriminator.
+      const misclassified = new MulticaApiError(500, "only comment author or admin can edit");
+      const broken = fakeClient({
+        updateComment: async () => {
+          throw misclassified;
+        },
+      });
+      await expect(
+        findTool("edit_comment")?.handler(
+          { workspace: WS, comment_id: "c1", content: "x" },
+          broken,
+        ),
+      ).rejects.toThrow(MulticaApiError);
+    });
+
+    it("surfaces blocked mention admission with the invalid spans", async () => {
+      const denial = new MulticaApiError(422, "invalid_agent_mentions: one or more agent mentions cannot be invoked");
+      (denial as { body?: Record<string, unknown> }).body = {
+        error: "one or more agent mentions cannot be invoked",
+        code: "invalid_agent_mentions",
+        invalid_mentions: [{ start: 3, end: 40 }],
+      };
+      const client = fakeClient({
+        updateComment: async () => {
+          throw denial;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "@ghost" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("invalid_mentions");
+      expect(result.invalid_mentions).toEqual([{ start: 3, end: 40 }]);
+    });
+
+    it("distinguishes an already-deleted comment as not_found", async () => {
+      const client = fakeClient({
+        updateComment: async () => {
+          const gone = new MulticaApiError(404, "comment not found");
+          (gone as { body?: Record<string, unknown> }).body = { error: "comment not found" };
+          throw gone;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "x" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("not_found");
+    });
+
+    it("rejects expected_revision below 1 before hitting the API", async () => {
+      const tool = findTool("edit_comment");
+      await expect(
+        tool?.handler(
+          { workspace: WS, comment_id: "c1", content: "x", expected_revision: 0 },
+          fakeClient(),
+        ),
+      ).rejects.toThrow(ToolInputError);
+    });
+  });
+
+  describe("delete_comment", () => {
+    it("deletes by id and returns the confirmation", async () => {
+      const client = fakeClient({
+        deleteComment: async (_ws: string, id: string) => {
+          callsOf(client).push({ method: "deleteComment", args: [id] });
+          return undefined;
+        },
+      });
+      const result = (await findTool("delete_comment")?.handler(
+        { workspace: WS, comment_id: "c1" },
+        client,
+      )) as Record<string, unknown>;
+      expect(callsOf(client)[0]?.args).toEqual(["c1"]);
+      expect(result.deleted).toBe(true);
+      expect(result.id).toBe("c1");
+    });
+
+    it("surfaces permission denial and already-deleted as distinct structured outcomes", async () => {
+      const forbidden = new MulticaApiError(403, "only comment author or admin can delete");
+      (forbidden as { body?: Record<string, unknown> }).body = {
+        error: "only comment author or admin can delete",
+      };
+      const deniedClient = fakeClient({
+        deleteComment: async () => {
+          throw forbidden;
+        },
+      });
+      const denied = (await findTool("delete_comment")?.handler(
+        { workspace: WS, comment_id: "c1" },
+        deniedClient,
+      )) as Record<string, unknown>;
+      expect(denied.deleted).toBe(false);
+      expect(denied.code).toBe("permission_denied");
+
+      const gone = new MulticaApiError(404, "comment not found");
+      (gone as { body?: Record<string, unknown> }).body = { error: "comment not found" };
+      const goneClient = fakeClient({
+        deleteComment: async () => {
+          throw gone;
+        },
+      });
+      const deleted = (await findTool("delete_comment")?.handler(
+        { workspace: WS, comment_id: "c1" },
+        goneClient,
+      )) as Record<string, unknown>;
+      expect(deleted.deleted).toBe(false);
+      expect(deleted.code).toBe("not_found");
+      // The two outcomes stay structurally distinguishable.
+      expect(deleted.code).not.toBe(denied.code);
+    });
+
+    it("rethrows failures outside the defined outcome matrix", async () => {
+      const client = fakeClient({
+        deleteComment: async () => {
+          throw new MulticaApiError(500, "failed to delete comment");
+        },
+      });
+      await expect(
+        findTool("delete_comment")?.handler({ workspace: WS, comment_id: "c1" }, client),
+      ).rejects.toThrow(MulticaApiError);
+    });
   });
 });
