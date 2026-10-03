@@ -205,5 +205,10 @@
     "filter_active_count_one": "{{count}} filter",
     "filter_active_count_other": "{{count}} filters",
     "clear_filters": "Clear filters"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "Search squads…"
+    }
   }
 }

@@ -1073,7 +1073,8 @@
       "running": "Running",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "cancel_requested": "Stopping"
     },
     "runs": {
       "title": "Agent Runs",

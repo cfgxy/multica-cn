@@ -272,6 +272,7 @@ const STATUS_LABEL: Record<AgentTask["status"], string> = {
   completed: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
+  cancel_requested: "Stopping",
 };
 
 const STATUS_CLASS: Record<AgentTask["status"], string> = {
@@ -282,4 +283,5 @@ const STATUS_CLASS: Record<AgentTask["status"], string> = {
   completed: "text-muted-foreground",
   failed: "text-destructive",
   cancelled: "text-muted-foreground",
+  cancel_requested: "text-muted-foreground",
 };
