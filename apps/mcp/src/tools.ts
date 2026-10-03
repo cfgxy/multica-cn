@@ -17,7 +17,10 @@
  *       the edit_comment description must declare the mention side effects,
  *       and defined failures come back as structured results keyed by `code`
  *       — permission_denied, revision_conflict, not_found, invalid_mentions —
- *       never as exception strings).
+ *       never as exception strings), get_issue_relations +
+ *       manage_issue_relations (RUYI-351 structured issue relations — pure
+ *       relationship changes never trigger a run, and the descriptions must
+ *       say so explicitly).
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
@@ -111,6 +114,8 @@ export interface BulkUpdateResult {
 const PRIORITY_ENUM = ["urgent", "high", "medium", "low", "none"] as const;
 const ASSIGNER_TYPES = ["member", "agent", "squad"] as const;
 const ASSIGN_ISSUE_TYPES = [...ASSIGNER_TYPES, "unassigned"] as const;
+const RELATION_TYPES = ["blocks", "blocked_by", "relates_to", "supersedes", "superseded_by"] as const;
+const RELATION_ACTIONS = ["set_parent", "clear_parent", "add_relation", "remove_relation"] as const;
 // Mirrors the backend CHECK constraint on project.status (migration 034) and
 // the handler's validProjectStatuses pre-validation.
 const PROJECT_STATUS_ENUM = ["planned", "in_progress", "paused", "completed", "cancelled"] as const;
@@ -1418,6 +1423,142 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       };
     },
   },
+  {
+    name: "get_issue_relations",
+    description:
+      "Get one issue's structured relations (RUYI-351): parent plus the five edge views — blocks, blocked_by, relates_to, supersedes, superseded_by — each a list of issue briefs (id, identifier, title, status). Read-only. " +
+      "Each edge is visible from both endpoints in each side's frame: a blocks edge on one issue reads as blocked_by on the other, a supersedes edge as superseded_by; relates_to reads the same both ways. " +
+      "Use manage_issue_relations to change any of these.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const relations = await client.getIssueRelations(workspace, issueId);
+      return {
+        issue_id: relations.issue_id,
+        identifier: relations.identifier,
+        revision: relations.revision,
+        parent: relations.parent ?? null,
+        blocks: relations.blocks,
+        blocked_by: relations.blocked_by,
+        relates_to: relations.relates_to,
+        supersedes: relations.supersedes,
+        superseded_by: relations.superseded_by,
+      };
+    },
+  },
+  {
+    name: "manage_issue_relations",
+    description:
+      "Manage one EXISTING issue's structured relations (RUYI-351). Actions: set_parent (target_issue required — re-parents the issue; the server rejects cycles), clear_parent (target_issue must be omitted), add_relation / remove_relation (relation_type plus target_issue required). " +
+      "relation_type is one of blocks, blocked_by, relates_to, supersedes, superseded_by, named from THIS issue's perspective: blocked_by(A→B) stores 'B blocks A', superseded_by(A→B) stores 'B supersedes A', relates_to is symmetric — adding it from either side dedupes to one edge. " +
+      "SIDE EFFECTS: NONE on agent runs — establishing, remounting or removing relations NEVER dispatches, wakes, or queues an agent run and consumes no run quota (unlike assign_issue or dispatch_agent, no suppress flag is involved). " +
+      "A committed change bumps BOTH endpoints' issue revisions. Pass expected_revision (from a previous read) for optimistic concurrency: a stale value answers the structured revision_conflict error and nothing changes. " +
+      "Other structured errors: relation_exists (409, duplicate edge incl. symmetric relates_to), relation_not_found (404, removing an unknown edge), 400 for self relations, unknown types, or targets outside the workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        action: {
+          type: "string",
+          enum: [...RELATION_ACTIONS],
+          description: "set_parent, clear_parent, add_relation or remove_relation.",
+        },
+        relation_type: {
+          type: "string",
+          enum: [...RELATION_TYPES],
+          description: "One of the five relation types; required for add_relation / remove_relation.",
+        },
+        target_issue: {
+          type: "string",
+          description:
+            "The other issue's UUID (as returned by list_issues / search_issues / get_issue); required for set_parent, add_relation and remove_relation, must be omitted for clear_parent.",
+        },
+        expected_revision: {
+          type: "integer",
+          description:
+            "Optimistic-lock revision of THIS issue from a previous read; the write fails with revision_conflict if it changed since.",
+          minimum: 0,
+        },
+      },
+      required: ["workspace", "issue", "action"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const action = optionalEnum(args, "action", RELATION_ACTIONS);
+      if (action === undefined) {
+        throw new ToolInputError(
+          "'action' is required: set_parent, clear_parent, add_relation or remove_relation",
+        );
+      }
+      const target = optionalString(args, "target_issue");
+      const relationType = optionalEnum(args, "relation_type", RELATION_TYPES);
+      const expectedRevision = optionalInt(args, "expected_revision", { min: 0 });
+      const noRunNote =
+        "No agent run: pure relationship changes never dispatch, wake, or queue one.";
+
+      if (action === "set_parent" || action === "clear_parent") {
+        if (action === "set_parent" && target === undefined) {
+          throw new ToolInputError("'target_issue' is required for action 'set_parent'");
+        }
+        if (action === "clear_parent" && target !== undefined) {
+          throw new ToolInputError("'target_issue' must be omitted for action 'clear_parent'");
+        }
+        const issue = await client.updateIssue(workspace, issueId, {
+          parent_issue_id: action === "set_parent" ? target : null,
+          expected_revision: expectedRevision,
+        });
+        return {
+          updated: true,
+          action,
+          id: issue.id,
+          identifier: issue.identifier,
+          parent_issue_id: action === "set_parent" ? (issue.parent_issue_id ?? null) : null,
+          revision: issue.revision,
+          note: noRunNote,
+        };
+      }
+
+      if (relationType === undefined) {
+        throw new ToolInputError(`'relation_type' is required for action '${action}'`);
+      }
+      if (target === undefined) {
+        throw new ToolInputError(`'target_issue' is required for action '${action}'`);
+      }
+      if (action === "add_relation") {
+        const result = await client.addIssueRelation(workspace, issueId, {
+          type: relationType,
+          target_issue_id: target,
+          expected_revision: expectedRevision,
+        });
+        return {
+          updated: true,
+          action,
+          relation: result.relation,
+          revision: result.issue.revision,
+          note: noRunNote,
+        };
+      }
+      const result = await client.removeIssueRelation(workspace, issueId, relationType, target, expectedRevision);
+      return {
+        updated: true,
+        action,
+        relation: result.relation,
+        revision: result.issue.revision,
+        note: noRunNote,
+      };
+    },
+  },
+
   {
     name: "bulk_update_issues",
     description:
