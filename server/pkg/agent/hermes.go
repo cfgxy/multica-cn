@@ -308,12 +308,17 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	env = append(env, "HERMES_YOLO_MODE=1")
 	cmd.Env = env
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("hermes stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("hermes stdin pipe: %w", err)
@@ -336,13 +341,13 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// CI load and surfaced as a flaky test
 	// (TestHermesBackendPromotesProviderErrorWithNonEmptyOutput).
 	providerErr := newACPProviderErrorSniffer("hermes")
-	stderr, err := cmd.StderrPipe()
+	stderr, err := sess.StderrPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("hermes stderr pipe: %w", err)
 	}
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start hermes: %w", err)
 	}
@@ -354,7 +359,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		_, _ = io.Copy(stderrSink, stderr)
 	}()
 
-	b.cfg.Logger.Info("hermes acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.cfg.Logger.Info("hermes acp started", "pid", sess.PID(), "cwd", opts.Cwd)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -438,7 +443,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// process alive; waiting first would then block until the overall
 			// task timeout and make a later deferred cancel ineffective.
 			cancel()
-			_ = cmd.Wait()
+			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
 
@@ -691,7 +696,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("hermes finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("hermes finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		// Close stdin first so Hermes can observe EOF and exit cleanly. Keep the
 		// process alive while stdout/stderr drain; cancelling at the prompt
@@ -710,7 +715,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// before accessing their buffers.
 		if !waitForHermesPipeDrain(readerDone, stderrDone, hermesReaderDrainGrace) {
 			b.cfg.Logger.Warn("hermes did not close output pipes after stdin EOF; forcing shutdown",
-				"pid", cmd.Process.Pid,
+				"pid", sess.PID(),
 				"grace", hermesReaderDrainGrace.String(),
 			)
 			cancel()

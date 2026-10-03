@@ -16,6 +16,8 @@
 import { stderrLogger, type Logger } from "./log.js";
 import type {
   ActiveTaskInfo,
+  AddIssueRelationBody,
+  AddIssueRelationResult,
   AgentInfo,
   CancelRunResult,
   CommentInfo,
@@ -26,8 +28,11 @@ import type {
   IssueInfo,
   IssueListParams,
   IssueListResult,
+  IssueRelationType,
+  IssueRelationsInfo,
   ProjectInfo,
   QuickCreateBody,
+  RemoveIssueRelationResult,
   RunDetail,
   RunInfo,
   SearchIssueInfo,
@@ -254,6 +259,44 @@ export class MulticaClient {
       "PUT",
       `/api/issues/${encodeURIComponent(issueId)}`,
       { workspace, body },
+    );
+  }
+
+  // ---- structured issue relations (RUYI-351) -----------------------------
+  // Pure relationship changes: the server guarantees these never start,
+  // wake, or queue an agent run.
+
+  async getIssueRelations(workspace: string, issueId: string): Promise<IssueRelationsInfo> {
+    return this.request(
+      "GET",
+      `/api/issues/${encodeURIComponent(issueId)}/relations`,
+      { workspace },
+    );
+  }
+
+  async addIssueRelation(
+    workspace: string,
+    issueId: string,
+    body: AddIssueRelationBody,
+  ): Promise<AddIssueRelationResult> {
+    return this.request(
+      "POST",
+      `/api/issues/${encodeURIComponent(issueId)}/relations`,
+      { workspace, body },
+    );
+  }
+
+  async removeIssueRelation(
+    workspace: string,
+    issueId: string,
+    relationType: IssueRelationType,
+    targetIssueId: string,
+    expectedRevision?: number,
+  ): Promise<RemoveIssueRelationResult> {
+    return this.request(
+      "DELETE",
+      `/api/issues/${encodeURIComponent(issueId)}/relations/${encodeURIComponent(relationType)}/${encodeURIComponent(targetIssueId)}`,
+      { workspace, query: { expected_revision: expectedRevision } },
     );
   }
 

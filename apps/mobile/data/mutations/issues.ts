@@ -38,10 +38,7 @@ import { inboxKeys } from "@/data/queries/inbox";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
-import {
-  commentContentFromTimeline,
-  shouldAcceptServerRevision,
-} from "@/data/revision";
+import { shouldAcceptServerRevision } from "@/data/revision";
 import {
   advanceCommentRevision,
   onIssueAuxiliaryRevision,
@@ -259,10 +256,16 @@ export function useToggleCommentReaction(issueId: string) {
 /**
  * Edit an existing comment. Replaces `content` (and optionally
  * `attachment_ids`) on the server and patches the matching TimelineEntry
- * in the timeline cache. Mirrors web `useEditComment` semantics.
+ * in the timeline cache.
  *
- * Server returns the full updated Comment; we map it into the timeline's
- * TimelineEntry shape (`type: "comment"`, the rest of Comment fields flat).
+ * `contentBase` is the CAS baseline the server compares against and must
+ * be captured by the caller BEFORE `mutate` runs — e.g. the content shown
+ * when the edit sheet opened. It cannot be read from the timeline cache
+ * inside the mutation: TanStack Query runs `onMutate` before `mutationFn`,
+ * so the optimistic patch has already rewritten the cached content to the
+ * new text by the time the request fires — reading the cache here would
+ * send the new content as its own baseline and every real edit would fail
+ * with 409 revision_conflict.
  */
 export function useEditComment(issueId: string) {
   const qc = useQueryClient();
@@ -272,22 +275,15 @@ export function useEditComment(issueId: string) {
     mutationFn: ({
       commentId,
       content,
+      contentBase,
       attachmentIds,
     }: {
       commentId: string;
       content: string;
+      /** Pre-edit content snapshot taken before the mutation starts. */
+      contentBase: string;
       attachmentIds?: string[];
-    }) => {
-      const timeline = qc.getQueryData<TimelineQueryData>(
-        issueKeys.timeline(wsId, issueId),
-      );
-      return api.updateComment(
-        commentId,
-        content,
-        attachmentIds,
-        commentContentFromTimeline(timeline?.entries, commentId),
-      );
-    },
+    }) => api.updateComment(commentId, content, attachmentIds, contentBase),
     onMutate: async ({ commentId, content }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
@@ -522,7 +518,7 @@ function statusCategoryPatch(status: IssueStatus | undefined): Partial<Issue> {
  * cache; description stays authoritative because the server resolves it
  * against description_base and hidden channel-media markers. Settle invalidates
  * the my-issues list so a status change re-buckets the SectionList in
- * (tabs)/my-issues.tsx automatically.
+ * more/my-issues.tsx automatically.
  *
  * Mobile cache is flat `Issue[]` (not bucketed `byStatus`), so we DON'T mirror
  * web's `patchIssueInBuckets` rebalancing — settling via `invalidate` is

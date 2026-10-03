@@ -109,11 +109,16 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 
 // postConsolidationStems are domain migrations added after the RUYI-359
 // consolidation, in the reserved tail range 917-999 (9xx-consolidation.md).
-// New 9xx migrations register here so the on-disk guard keeps covering the
-// whole 9xx tree. The repair script's one-hop rewrite only outputs the
-// consolidation tree itself — post-consolidation stems were never applied on
-// a pre-consolidation database and reach its ledger via the normal migrator.
-var postConsolidationStems = []string{"920_project_revision"}
+// New 9xx migrations register here in the same change that adds their files,
+// so the on-disk equality below keeps covering the whole 9xx tree: stray or
+// deleted 9xx files still fail. The repair script's one-hop rewrite only
+// outputs the consolidation tree itself — post-consolidation stems were
+// never applied on a pre-consolidation database and reach its ledger via the
+// normal migrator.
+var postConsolidationStems = []string{
+	"919_issue_dependency_relationships", // RUYI-351 (consolidates 958+959)
+	"920_project_revision",               // RUYI-354
+}
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
 // in migration order.
@@ -227,7 +232,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			objects: []string{"ALL"},
 		},
 		{
-			name: "new-tree-idempotent",
+			name:    "new-tree-idempotent",
 			initial: append([]string{"untouched"}, finalStems()...),
 			want:    nil, // computed below: unchanged
 			objects: []string{"ALL"},
@@ -334,7 +339,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			for _, version := range tc.initial {
 				if _, err := conn.Exec(ctx,
 					"INSERT INTO schema_migrations VALUES ($1, '2026-01-01T00:00:00Z')", version); err != nil {
-				t.Fatal(err)
+					t.Fatal(err)
 				}
 			}
 			if tc.breakObject != "" {

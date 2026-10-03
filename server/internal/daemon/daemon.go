@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -558,6 +559,12 @@ type Daemon struct {
 
 	cancelFunc context.CancelFunc // set by Run(); called by triggerRestart
 	rootCtx    context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
+
+	// supervisor is the RUYI-349 worker supervisor (systemd transient units).
+	// nil — on hosts without a usable systemd user bus, or before
+	// setupSupervisor runs — keeps every worker on the legacy direct-child
+	// path; that nil IS the fallback switch.
+	supervisor *supervisor.Supervisor
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -2070,9 +2077,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// invariant (renew first) is enforced at one site instead of
 	// scattered into Run, and tests can exercise the failure paths
 	// without the full Run setup.
+	//
+	// Worker supervision (RUYI-349) is built FIRST: preflightAuth performs
+	// the initial register, and that register must already carry the
+	// worker-supervisor capability the supervisor probe just decided.
+	d.setupSupervisor()
+	d.client.SetWorkerSupervision(d.supervisor != nil)
 	if err := d.preflightAuth(ctx); err != nil {
 		return err
 	}
+
+	// Converge any runs the previous daemon left behind BEFORE the claim
+	// loop starts, so a live unit is never racing this process's first
+	// launch of the same task.
+	d.reconcileSupervisedRuns(ctx)
 
 	// Deregister runtimes on shutdown (uses a fresh context since ctx will be cancelled).
 	defer d.deregisterRuntimes()
@@ -2106,6 +2124,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
+	// Detach-before-teardown (RUYI-349): the root context is about to unwind
+	// and every running Execute will see cancellation. Flip the supervisor to
+	// detaching FIRST so supervised sessions respond to that cancellation by
+	// detaching (worker keeps running for the next daemon) instead of killing
+	// the unit — killing here would reintroduce the exact loss this exists to
+	// prevent. Legacy children are unaffected by this flag.
+	if d.supervisor != nil {
+		d.supervisor.SetDetaching()
+	}
 	return err
 }
 
@@ -5323,6 +5350,7 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 //     CompleteTask/FailTask callback is guaranteed to fail and just adds log
 //     noise. Reusing isAgentTaskTerminal keeps this set in lockstep with the
 //     GC's notion of a terminal task.
+//
 //  2. err is a 404 with "task not found" — the task row was deleted while
 //     the agent was running. Without this we'd let the local agent keep
 //     emitting tool calls against a dead task for its full timeout window.
@@ -8233,6 +8261,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
+	// Worker supervision (RUYI-349): nil unless this provider is on the
+	// supervised whitelist and the host runs a usable systemd user manager.
+	// Attempt 1: the segmented-continuation retry below takes attempt 2 with
+	// its own run id — one worker per Execute.
+	execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 1)
+
 	taskLog.Debug("invoking backend",
 		"provider", provider,
 		"model", model,
@@ -8304,6 +8338,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		// The previous supervised worker exited with its budget stop recorded
+		// in its manifest; planSupervisedRun steps to the next generation so
+		// this retry launches a fresh unit instead of reentering the old one.
+		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
