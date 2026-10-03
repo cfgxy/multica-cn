@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -1757,9 +1758,17 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 	if len(invalid) > 0 {
 		triggers = nil
 	}
+	// RUYI-391: the preview must not promise a run the submit path refuses.
+	// Same gate, same projection: resolvable targets surface as blocked with
+	// the issue-status reason instead of appearing in `agents`.
+	blocked := commentBlockedTargetOutcomes(targets)
+	if !commentTriggersAdmitted(r.Context(), h.Queries, issue) {
+		triggers = nil
+		blocked = commentStatusBlockedOutcomes(targets)
+	}
 	resp := CommentTriggerPreviewResponse{
 		Agents:          make([]CommentTriggerAgentResponse, 0, len(triggers)),
-		Blocked:         commentBlockedTargetOutcomes(targets),
+		Blocked:         blocked,
 		InvalidMentions: invalid,
 	}
 	for _, trigger := range triggers {
@@ -2073,9 +2082,63 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		OriginatorUserID:        originatorUserID,
 	})
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
+	// RUYI-391: the status gate sits AFTER resolution (so explicit mention
+	// targets are known and get an honest per-target outcome) but BEFORE any
+	// dispatch work — no merge, no planned-id registration, no enqueue, and no
+	// runtime-unusable notices, because nothing will run to need one. The
+	// comment is already saved by the caller; blocking here is a partial
+	// success, not a write failure (MUL-4525 §2).
+	if !commentTriggersAdmitted(ctx, h.Queries, issue) {
+		return commentStatusBlockedOutcomes(targets)
+	}
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 	return commentTriggerOutcomes(targets, enqueued)
+}
+
+// commentTriggersAdmitted reports whether the issue's CURRENT status category
+// admits comment-triggered runs (RUYI-391). The allowed set is exactly the
+// execution statuses — todo, in_progress, in_review, done — so the gate is a
+// whitelist, not a blacklist: backlog keeps parking (matching assignment
+// semantics), blocked halts, cancelled stays closed (RUYI-384's statement-level
+// fence remains the race backstop), and a status the catalog cannot resolve
+// fails safe to non-dispatchable, the same direction Effective uses everywhere
+// else ("left alone rather than auto-triggered"). Custom statuses are judged by
+// their category, never by their key.
+//
+// The check runs before every dispatch decision a comment can cause — create,
+// edit re-trigger, quick action, cancelled-batch replay, completion reconcile —
+// so a comment on a non-admitted issue never creates, queues, or coalesces into
+// a run, and never pays the enqueue path's reads to find out.
+func commentTriggersAdmitted(ctx context.Context, q issuestatus.Querier, issue db.Issue) bool {
+	switch issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) {
+	case issuestatus.Todo, issuestatus.InProgress, issuestatus.InReview, issuestatus.Done:
+		return true
+	default:
+		return false
+	}
+}
+
+// commentStatusBlockedOutcomes projects EVERY explicit mention target as
+// blocked under the issue-status gate (RUYI-391), so the composer's partial
+// success surface explains why nothing ran. Resolvable targets normally appear
+// in the preview `agents` list; under the gate there is no agents list to join,
+// so they surface here instead — with a reason code that names the fix (move
+// the issue's status), not the target.
+func commentStatusBlockedOutcomes(targets []commentMentionTarget) []CommentTriggerOutcome {
+	if len(targets) == 0 {
+		return nil
+	}
+	outcomes := make([]CommentTriggerOutcome, 0, len(targets))
+	for _, t := range targets {
+		outcomes = append(outcomes, CommentTriggerOutcome{
+			TargetType: t.TargetType,
+			TargetID:   t.TargetID,
+			Status:     DispatchBlocked,
+			ReasonCode: ReasonIssueStatusNotDispatchable,
+		})
+	}
+	return outcomes
 }
 
 // noteBlockedRuntimeTargets leaves one system comment per agent refused for an
@@ -3665,6 +3728,15 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 // and lets the latest real comment restamp originator + connected-app context.
 func (h *Handler) retriggerCancelledTaskSurvivors(ctx context.Context, issue db.Issue, cancelled []db.AgentTaskQueue, excludedCommentID pgtype.UUID) {
 	if len(cancelled) == 0 {
+		return
+	}
+	// RUYI-391: replaying a cancelled batch is comment-triggered dispatch like
+	// any other. Under a non-admitted status the batch stays cancelled — the
+	// edit that cancelled it already retracted those triggers, and the status
+	// gate refuses to resurrect them.
+	if !commentTriggersAdmitted(ctx, h.Queries, issue) {
+		slog.Info("retrigger cancelled comment batch skipped: issue status does not admit comment runs",
+			"issue_id", uuidToString(issue.ID), "status", issue.Status, "cancelled_tasks", len(cancelled))
 		return
 	}
 	targetsByComment := make(map[string]map[string]pgtype.UUID)
