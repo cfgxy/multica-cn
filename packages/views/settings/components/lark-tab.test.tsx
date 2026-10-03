@@ -29,6 +29,13 @@ const mockBeginInstall = vi.hoisted(() => vi.fn());
 const mockGetStatus = vi.hoisted(() => vi.fn());
 const mockDeleteInstallation = vi.hoisted(() => vi.fn());
 const mockInvalidate = vi.hoisted(() => vi.fn());
+const mockRecheckPermissions = vi.hoisted(() => vi.fn());
+// The static capability→scope catalog the bind dialog declares up front
+// (RUYI-400). Null = the query has no data (server without the catalog
+// or still loading) and the dialog must omit the declaration.
+const catalogRef = vi.hoisted(() => ({
+  current: null as { capabilities: unknown[] } | null,
+}));
 
 type MemberRole = "owner" | "admin" | "member" | "guest";
 
@@ -50,6 +57,9 @@ vi.mock("@tanstack/react-query", () => ({
     if (key.includes("members")) return { data: membersRef.current, isLoading: false };
     if (key.includes("installations")) {
       return { data: installationsRef.current, isLoading: false };
+    }
+    if (key.includes("permission-catalog")) {
+      return { data: catalogRef.current, isLoading: false };
     }
     return { data: undefined, isLoading: false };
   },
@@ -101,6 +111,10 @@ vi.mock("@multica/core/lark", () => ({
     queryKey: ["lark", "installations"],
     queryFn: vi.fn(),
   }),
+  larkPermissionCatalogOptions: () => ({
+    queryKey: ["lark", "permission-catalog"],
+    queryFn: vi.fn(),
+  }),
   larkKeys: { installations: (wsId: string) => ["lark", "installations", wsId] },
 }));
 
@@ -109,6 +123,7 @@ vi.mock("@multica/core/api", () => ({
     beginLarkInstall: mockBeginInstall,
     getLarkInstallStatus: mockGetStatus,
     deleteLarkInstallation: mockDeleteInstallation,
+    recheckLarkPermissions: mockRecheckPermissions,
   },
   ApiError,
 }));
@@ -181,6 +196,7 @@ function resetFixtures() {
     configured: true,
     install_supported: true,
   };
+  catalogRef.current = null;
   agentNameByIdRef.current = new Map();
 }
 
@@ -774,5 +790,228 @@ describe("LarkTab connected bots list (agent identity rendering)", () => {
     expect(screen.getByText(/Unknown Agent/)).toBeTruthy();
     // Disconnect stays reachable so the orphan row can be cleaned up.
     expect(screen.getByRole("button", { name: /Disconnect/i })).toBeTruthy();
+  });
+});
+
+describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
+  beforeEach(resetFixtures);
+
+  function activeInstallation(extra: Record<string, unknown> = {}) {
+    return {
+      id: "inst-1",
+      workspace_id: "ws-1",
+      agent_id: "agent-1",
+      app_id: "cli_test_app",
+      bot_open_id: "ou_bot",
+      installer_user_id: "user-1",
+      status: "active",
+      region: "feishu",
+      installed_at: "2026-06-03T00:00:00Z",
+      created_at: "2026-06-03T00:00:00Z",
+      updated_at: "2026-06-03T00:00:00Z",
+      ...extra,
+    };
+  }
+
+  it("renders no permission surface when the server predates the capabilities field (API compat)", () => {
+    installationsRef.current.installations = [activeInstallation()];
+    const { container } = render(<LarkTab />, { wrapper: I18nWrapper });
+    expect(screen.getByTestId("actor-avatar")).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="lark-capability-panel"]'),
+    ).toBeNull();
+  });
+
+  it("shows the not-checked hint and a first-check button for a never-probed bot (capabilities: [])", () => {
+    installationsRef.current.installations = [
+      activeInstallation({ capabilities: [] }),
+    ];
+    render(<LarkTab />, { wrapper: I18nWrapper });
+    expect(screen.getByTestId("lark-capability-panel")).toBeTruthy();
+    expect(screen.getByText(/not been checked/i)).toBeTruthy();
+    expect(screen.getByTestId("lark-permissions-recheck")).toBeTruthy();
+    expect(
+      screen.queryByTestId("lark-permissions-missing"),
+    ).toBeNull();
+  });
+
+  it("renders granted chips and no 补授权 block when every capability passed", () => {
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [
+          {
+            capability: "send_messages",
+            status: "granted",
+            detail: "",
+            required_scopes: [],
+            checked_at: "2026-10-03T00:00:00Z",
+          },
+          {
+            capability: "download_media",
+            status: "granted",
+            detail: "",
+            required_scopes: [],
+            checked_at: "2026-10-03T00:00:00Z",
+          },
+        ],
+      }),
+    ];
+    render(<LarkTab />, { wrapper: I18nWrapper });
+    expect(screen.getByTestId("lark-capability-send_messages")).toBeTruthy();
+    expect(screen.getByTestId("lark-capability-download_media")).toBeTruthy();
+    expect(screen.getByText(/All permissions are granted/i)).toBeTruthy();
+    expect(screen.queryByTestId("lark-permissions-missing")).toBeNull();
+  });
+
+  it("renders the 补授权 block with missing scopes, console deep link and honest admin-approval copy", () => {
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [
+          {
+            capability: "read_history",
+            status: "missing",
+            detail: "",
+            required_scopes: [
+              "im:message.history:readonly",
+              "im:message:readonly",
+              "im:message.group_msg",
+            ],
+            checked_at: "2026-10-03T00:00:00Z",
+          },
+          {
+            capability: "send_messages",
+            status: "granted",
+            detail: "",
+            required_scopes: [],
+            checked_at: "2026-10-03T00:00:00Z",
+          },
+        ],
+      }),
+    ];
+    render(<LarkTab />, { wrapper: I18nWrapper });
+    const missing = screen.getByTestId("lark-permissions-missing");
+    expect(missing.textContent).toContain("im:message.group_msg");
+    expect(missing.textContent).toMatch(/enterprise admin/i);
+    const link = screen.getByTestId("lark-permissions-console-link");
+    expect(link.getAttribute("href")).toBe(
+      "https://open.feishu.cn/app/cli_test_app/auth",
+    );
+    // The granted capability must NOT be listed inside the missing block.
+    expect(missing.textContent).not.toContain("Send messages");
+  });
+
+  it("links missing-scope recovery to the Lark console for a region=lark bot", () => {
+    installationsRef.current.installations = [
+      activeInstallation({
+        region: "lark",
+        capabilities: [
+          {
+            capability: "send_messages",
+            status: "missing",
+            detail: "",
+            required_scopes: ["im:message:send_as_bot"],
+            checked_at: "2026-10-03T00:00:00Z",
+          },
+        ],
+      }),
+    ];
+    render(<LarkTab />, { wrapper: I18nWrapper });
+    expect(
+      screen
+        .getByTestId("lark-permissions-console-link")
+        .getAttribute("href")
+        ?.startsWith("https://open.larksuite.com/app/cli_test_app/auth"),
+    ).toBe(true);
+  });
+
+  it("recheck calls the API for this installation and invalidates the listings cache", async () => {
+    mockRecheckPermissions.mockResolvedValueOnce({ capabilities: [] });
+    installationsRef.current.installations = [
+      activeInstallation({ capabilities: [] }),
+    ];
+    const user = userEvent.setup();
+    render(<LarkTab />, { wrapper: I18nWrapper });
+    await user.click(screen.getByTestId("lark-permissions-recheck"));
+    await waitFor(() => {
+      expect(mockRecheckPermissions).toHaveBeenCalledWith(
+        "workspace-1",
+        "inst-1",
+      );
+    });
+    expect(mockInvalidate).toHaveBeenCalled();
+  });
+
+  it("toasts an error instead of faking success when the recheck call fails", async () => {
+    mockRecheckPermissions.mockRejectedValueOnce(new Error("probe failed"));
+    installationsRef.current.installations = [
+      activeInstallation({ capabilities: [] }),
+    ];
+    const user = userEvent.setup();
+    render(<LarkTab />, { wrapper: I18nWrapper });
+    await user.click(screen.getByTestId("lark-permissions-recheck"));
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("probe failed");
+    });
+  });
+});
+
+describe("LarkInstallDialog upfront permission declaration (RUYI-400)", () => {
+  beforeEach(() => {
+    resetFixtures();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockBeginInstall.mockResolvedValue({
+      session_id: "sess-1",
+      qr_code_url: "https://accounts.feishu.cn/oauth/v1/device?u=abc",
+      expires_in_seconds: 300,
+      poll_interval_seconds: 2,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function openDialog() {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<LarkAgentBindButton agentId="agent-1" agentName="Bot" />, {
+      wrapper: I18nWrapper,
+    });
+    await user.click(screen.getByRole("button", { name: /Bind to Feishu/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("qr-code")).toBeTruthy();
+    });
+  }
+
+  it("lists the required scopes above the QR before the user authorizes", async () => {
+    catalogRef.current = {
+      capabilities: [
+        {
+          id: "receive_messages",
+          probeable: false,
+          scopes: [
+            ["im:message.group_at_msg", "im:message.group_at_msg:readonly"],
+            ["im:message.p2p_msg", "im:message.p2p_msg:readonly"],
+          ],
+        },
+        {
+          id: "send_messages",
+          probeable: true,
+          scopes: [["im:message", "im:message:send_as_bot"]],
+        },
+      ],
+    };
+    await openDialog();
+    const panel = screen.getByTestId("lark-install-permissions");
+    expect(panel.textContent).toContain("Permissions this bot needs");
+    // Scope identifiers render verbatim — they are the exact strings the
+    // user checks off in the Feishu console.
+    expect(panel.textContent).toContain("im:message.group_at_msg:readonly");
+    expect(panel.textContent).toContain("im:message:send_as_bot");
+  });
+
+  it("omits the declaration when the catalog is unavailable instead of rendering an empty block", async () => {
+    catalogRef.current = null;
+    await openDialog();
+    expect(screen.queryByTestId("lark-install-permissions")).toBeNull();
   });
 });

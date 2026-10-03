@@ -291,6 +291,11 @@ doomed AS (
 cleared_dingtalk_group_presence AS (
     DELETE FROM dingtalk_group_presence WHERE installation_id IN (SELECT id FROM doomed)
 ),
+cleared_capability_states AS (
+    -- RUYI-400: probe diagnostics key on installation_id with no FK; sweep
+    -- them alongside the other installation-dependent rows.
+    DELETE FROM channel_capability_state WHERE installation_id IN (SELECT id FROM doomed)
+),
 cleared_dingtalk_bot_identity AS (
     DELETE FROM dingtalk_bot_identity WHERE installation_id IN (SELECT id FROM doomed)
 ),
@@ -1215,3 +1220,29 @@ SELECT EXISTS (
       AND workspace_id = @workspace_id
       AND url = @storage_url
 ) AS referenced;
+
+-- name: UpsertChannelCapabilityState :exec
+-- RUYI-400: persist one capability probe verdict for an installation. The
+-- (installation_id, channel_type, capability) unique index (migration 920) is
+-- the conflict target: a recheck overwrites the previous verdict in place, so
+-- the table always carries the LATEST probe result per capability, never a
+-- history. required_scopes freezes the catalog snapshot at check time so the
+-- 补授权 panel can name the scopes to add even after the catalog evolves.
+INSERT INTO channel_capability_state (
+    id, installation_id, channel_type, capability, status, detail, required_scopes, checked_at
+) VALUES (
+    @id, @installation_id, @channel_type, @capability, @status, @detail, @required_scopes, now()
+)
+ON CONFLICT (installation_id, channel_type, capability) DO UPDATE
+SET status          = EXCLUDED.status,
+    detail          = EXCLUDED.detail,
+    required_scopes = EXCLUDED.required_scopes,
+    checked_at      = EXCLUDED.checked_at;
+
+-- name: ListChannelCapabilityStates :many
+-- Latest probe verdicts for one installation, capability-ordered for stable
+-- UI rendering.
+SELECT id, installation_id, channel_type, capability, status, detail, required_scopes, checked_at, created_at
+FROM channel_capability_state
+WHERE installation_id = @installation_id
+ORDER BY capability;

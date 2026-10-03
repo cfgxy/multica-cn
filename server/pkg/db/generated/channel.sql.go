@@ -896,6 +896,11 @@ doomed AS (
 cleared_dingtalk_group_presence AS (
     DELETE FROM dingtalk_group_presence WHERE installation_id IN (SELECT id FROM doomed)
 ),
+cleared_capability_states AS (
+    -- RUYI-400: probe diagnostics key on installation_id with no FK; sweep
+    -- them alongside the other installation-dependent rows.
+    DELETE FROM channel_capability_state WHERE installation_id IN (SELECT id FROM doomed)
+),
 cleared_dingtalk_bot_identity AS (
     DELETE FROM dingtalk_bot_identity WHERE installation_id IN (SELECT id FROM doomed)
 ),
@@ -1700,6 +1705,45 @@ func (q *Queries) ListAllActiveChannelInstallations(ctx context.Context) ([]Chan
 			&i.InstalledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChannelCapabilityStates = `-- name: ListChannelCapabilityStates :many
+SELECT id, installation_id, channel_type, capability, status, detail, required_scopes, checked_at, created_at
+FROM channel_capability_state
+WHERE installation_id = $1
+ORDER BY capability
+`
+
+// Latest probe verdicts for one installation, capability-ordered for stable
+// UI rendering.
+func (q *Queries) ListChannelCapabilityStates(ctx context.Context, installationID pgtype.UUID) ([]ChannelCapabilityState, error) {
+	rows, err := q.db.Query(ctx, listChannelCapabilityStates, installationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChannelCapabilityState{}
+	for rows.Next() {
+		var i ChannelCapabilityState
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstallationID,
+			&i.ChannelType,
+			&i.Capability,
+			&i.Status,
+			&i.Detail,
+			&i.RequiredScopes,
+			&i.CheckedAt,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2744,6 +2788,48 @@ type UpdateChannelOutboundCardStatusParams struct {
 
 func (q *Queries) UpdateChannelOutboundCardStatus(ctx context.Context, arg UpdateChannelOutboundCardStatusParams) error {
 	_, err := q.db.Exec(ctx, updateChannelOutboundCardStatus, arg.ID, arg.Status)
+	return err
+}
+
+const upsertChannelCapabilityState = `-- name: UpsertChannelCapabilityState :exec
+INSERT INTO channel_capability_state (
+    id, installation_id, channel_type, capability, status, detail, required_scopes, checked_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, now()
+)
+ON CONFLICT (installation_id, channel_type, capability) DO UPDATE
+SET status          = EXCLUDED.status,
+    detail          = EXCLUDED.detail,
+    required_scopes = EXCLUDED.required_scopes,
+    checked_at      = EXCLUDED.checked_at
+`
+
+type UpsertChannelCapabilityStateParams struct {
+	ID             pgtype.UUID `json:"id"`
+	InstallationID pgtype.UUID `json:"installation_id"`
+	ChannelType    string      `json:"channel_type"`
+	Capability     string      `json:"capability"`
+	Status         string      `json:"status"`
+	Detail         string      `json:"detail"`
+	RequiredScopes []byte      `json:"required_scopes"`
+}
+
+// RUYI-400: persist one capability probe verdict for an installation. The
+// (installation_id, channel_type, capability) unique index (migration 920) is
+// the conflict target: a recheck overwrites the previous verdict in place, so
+// the table always carries the LATEST probe result per capability, never a
+// history. required_scopes freezes the catalog snapshot at check time so the
+// 补授权 panel can name the scopes to add even after the catalog evolves.
+func (q *Queries) UpsertChannelCapabilityState(ctx context.Context, arg UpsertChannelCapabilityStateParams) error {
+	_, err := q.db.Exec(ctx, upsertChannelCapabilityState,
+		arg.ID,
+		arg.InstallationID,
+		arg.ChannelType,
+		arg.Capability,
+		arg.Status,
+		arg.Detail,
+		arg.RequiredScopes,
+	)
 	return err
 }
 
