@@ -39,7 +39,7 @@ func TestAgentRuntimeLookupSourcesAreDistinct(t *testing.T) {
 	before := lookupSnapshot(t, m)
 
 	if _, err := testHandler.HandleDaemonWSHeartbeat(ctx,
-		daemonws.ClientIdentity{WorkspaceID: testWorkspaceID}, runtimeID, false); err != nil {
+		daemonws.ClientIdentity{WorkspaceID: testWorkspaceID}, runtimeID, false, nil); err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: %v", err)
 	}
 
