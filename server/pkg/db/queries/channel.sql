@@ -1223,7 +1223,7 @@ SELECT EXISTS (
 
 -- name: UpsertChannelCapabilityState :exec
 -- RUYI-400: persist one capability probe verdict for an installation. The
--- (installation_id, channel_type, capability) unique index (migration 920) is
+-- (installation_id, channel_type, capability) unique index (migration 922) is
 -- the conflict target: a recheck overwrites the previous verdict in place, so
 -- the table always carries the LATEST probe result per capability, never a
 -- history. required_scopes freezes the catalog snapshot at check time so the
