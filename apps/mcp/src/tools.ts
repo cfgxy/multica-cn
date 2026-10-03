@@ -1162,7 +1162,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         expected_revision: {
           type: "integer",
           description: "Optimistic-lock revision from a previous read; the write fails if the issue changed since.",
-          minimum: 0,
+          minimum: 1,
         },
       },
       required: ["workspace", "issue", "status"],
@@ -1174,7 +1174,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       const issue = await client.updateIssue(workspace, issueId, {
         status,
         suppress_run: optionalBoolean(args, "suppress_run"),
-        expected_revision: optionalInt(args, "expected_revision", { min: 0 }),
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
       });
       return {
         updated: true,
@@ -1365,7 +1365,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         expected_revision: {
           type: "integer",
           description: "Optimistic-lock revision from a previous read; the write fails if the issue changed since.",
-          minimum: 0,
+          minimum: 1,
         },
       },
       required: ["workspace", "issue", "assignee_type"],
@@ -1383,7 +1383,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       const body: UpdateIssueBody = {
         suppress_run: optionalBoolean(args, "suppress_run"),
         handoff_note: optionalString(args, "handoff_note", { maxLength: 5_000 }),
-        expected_revision: optionalInt(args, "expected_revision", { min: 0 }),
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
       };
       if (assigneeType === "unassigned") {
         if (assigneeId !== undefined) {
@@ -1486,7 +1486,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "integer",
           description:
             "Optimistic-lock revision of THIS issue from a previous read; the write fails with revision_conflict if it changed since.",
-          minimum: 0,
+          minimum: 1,
         },
       },
       required: ["workspace", "issue", "action"],
@@ -1502,7 +1502,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       }
       const target = optionalString(args, "target_issue");
       const relationType = optionalEnum(args, "relation_type", RELATION_TYPES);
-      const expectedRevision = optionalInt(args, "expected_revision", { min: 0 });
+      const expectedRevision = optionalInt(args, "expected_revision", { min: 1 });
       const noRunNote =
         "No agent run: pure relationship changes never dispatch, wake, or queue one.";
 

@@ -37,6 +37,7 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "progress_digest",
   "list_comments",
   "get_comment",
+  "get_issue_relations",
   "list_issue_runs",
   "get_run",
 ]);
