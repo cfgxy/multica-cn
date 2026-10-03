@@ -12,9 +12,12 @@ import { useStartupServerStore } from "@/data/startup-server-store";
  * While startup resolves, the gate holds the current route instead of
  * redirecting: expo-router has already placed a cold-start deep link's
  * target in the stack, and navigating now would discard it (RUYI-346 QA
- * round 2 — force-stop + deep link landed on the default Inbox tab). Once
- * the phase flips, the pending route mounts intact — the same pattern
- * [workspace]/_layout uses while the membership list loads.
+ * rounds 1-2 — force-stop + deep link landed on the default Inbox tab).
+ * The hold covers the whole unconverged window — startup store resolving
+ * (the store auto-connects a resolvable target during it) AND the session
+ * restore still settling after the phase flips. Once both settle, the
+ * pending route mounts intact — the same pattern [workspace]/_layout uses
+ * while the membership list loads.
  *
  * Workspace membership is enforced one level deeper at [workspace]/_layout —
  * not here — because select-workspace.tsx itself is auth-required but
