@@ -19,15 +19,22 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `get_issue` | 单条 issue（默认含评论线程） |
 | 读 | `search_issues` | 关键词检索 |
 | 读 | `progress_digest` | 进度摘要（状态计数 + 逾期/临期 + 最近活跃） |
+| 读 | `list_comments` | 评论有界读：线程/最近活跃/仅根/since/summary/fold |
+| 读 | `get_comment` | 单条评论全文（含 revision，可辨认编辑痕迹） |
 | 写 | `create_issue` | 通用创建：任意空间、任意项目 |
 | 写 | `create_project` | 创建项目（纯元数据，不触发 run）（RUYI-354） |
 | 写 | `update_project` | PATCH 更新项目元数据，`expected_revision` 乐观锁（RUYI-354） |
 | 写 | `add_comment` | 追加评论（@agent 会触发真实派发） |
+| 写 | `edit_comment` | 编辑评论（作者/admin 权限；`expected_revision` 乐观锁；内容变更按新内容重算触发面，mention 副作用经 `trigger_outcomes` 回报） |
+| 写 | `delete_comment` | 删除评论（作者/admin 权限；级联删除回复子树；连带取消该评论触发的排队 run） |
 | 写 | `update_issue_status` | 状态流转（`suppress_run` 可避免连带派发） |
 | 写 | `assign_issue` | 已有 issue 的指派/改派/取消指派（agent/squad 指派触发真实 run） |
 | 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
 
-v1 不暴露：删除类操作、权限/成员变更、跨用户管理。
+评论编辑/删除（RUYI-352）沿用产品自身的作者-or-管理员权限闸与服务端审计
+（revision + updated_at）；定义内的失败（权限拒绝、revision 冲突、已删除、
+mention 准入拒绝）以结构化 `code` 返回，不复用异常字符串。仍然不暴露：
+权限/成员变更、跨用户管理。
 
 ## 凭据解析（与 CLI 同源）
 

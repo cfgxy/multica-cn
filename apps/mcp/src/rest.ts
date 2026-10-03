@@ -36,6 +36,7 @@ import type {
   RunDetail,
   RunInfo,
   SearchIssueInfo,
+  UpdateCommentBody,
   UpdateIssueBody,
   UpdateProjectBody,
   WorkspaceInfo,
@@ -50,11 +51,19 @@ export function isUuid(value: string): boolean {
 
 export class MulticaApiError extends Error {
   readonly status: number;
+  /**
+   * Parsed JSON object body when the server answered with one (undefined
+   * otherwise). Structured error codes — e.g. the 409 `revision_conflict`
+   * payload's `actual_revision` — are read from here, never from the
+   * flattened message string.
+   */
+  readonly body: Record<string, unknown> | undefined;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: Record<string, unknown>) {
     super(`Multica API ${status}: ${message}`);
     this.name = "MulticaApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -196,6 +205,7 @@ export class MulticaClient {
         tail: params.tail,
         roots_only: params.roots_only === undefined ? undefined : String(params.roots_only),
         summary: params.summary === undefined ? undefined : String(params.summary),
+        fold: params.fold === undefined ? undefined : String(params.fold),
       },
     });
   }
@@ -221,6 +231,23 @@ export class MulticaClient {
       `/api/issues/${encodeURIComponent(issueId)}/comments`,
       { workspace, body },
     );
+  }
+
+  async updateComment(
+    workspace: string,
+    commentId: string,
+    body: UpdateCommentBody,
+  ): Promise<CommentInfo> {
+    return this.request<CommentInfo>(
+      "PUT",
+      `/api/comments/${encodeURIComponent(commentId)}`,
+      { workspace, body },
+    );
+  }
+
+  async deleteComment(workspace: string, commentId: string): Promise<void> {
+    // The handler answers 204 with an empty body; request() resolves undefined.
+    await this.request("DELETE", `/api/comments/${encodeURIComponent(commentId)}`, { workspace });
   }
 
   async updateIssue(
@@ -393,7 +420,11 @@ export class MulticaClient {
 
     const rawBody = await response.text();
     if (!response.ok) {
-      throw new MulticaApiError(response.status, describeErrorBody(rawBody, response.status));
+      throw new MulticaApiError(
+        response.status,
+        describeErrorBody(rawBody, response.status),
+        parseErrorObject(rawBody),
+      );
     }
     if (rawBody.length === 0) {
       return undefined as T;
@@ -425,4 +456,17 @@ function describeErrorBody(rawBody: string, status: number): string {
     // Fall through to the generic description.
   }
   return `HTTP ${status}`;
+}
+
+/** Keeps the parsed JSON object body on MulticaApiError.body for structured outcomes. */
+function parseErrorObject(rawBody: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(rawBody);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Non-JSON error bodies carry no structured payload.
+  }
+  return undefined;
 }
