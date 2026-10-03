@@ -113,7 +113,7 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 // whole 9xx tree. The repair script's one-hop rewrite only outputs the
 // consolidation tree itself — post-consolidation stems were never applied on
 // a pre-consolidation database and reach its ledger via the normal migrator.
-var postConsolidationStems = []string{"977_project_revision"}
+var postConsolidationStems = []string{"920_project_revision"}
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
 // in migration order.
