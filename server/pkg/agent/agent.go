@@ -137,6 +137,15 @@ type ExecOptions struct {
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
 	ClaudeSettingsPath string
+	// Supervision, when non-nil and active, routes THIS execution's worker
+	// through the daemon-side WorkerSupervisor (RUYI-349): the worker runs in
+	// a daemon-independent lifecycle scope, survives daemon restarts, and is
+	// reentered via Reattach. It lives on ExecOptions rather than Config
+	// because a run is one Execute call — the daemon's segmented-continuation
+	// retry chain reuses one backend for several sequential workers, each
+	// needing its own run id and manifest. Nil keeps the legacy direct-child
+	// semantics — the only path on hosts without a usable systemd user bus.
+	Supervision *Supervision
 }
 
 // runContext derives the execution context for an agent subprocess from the

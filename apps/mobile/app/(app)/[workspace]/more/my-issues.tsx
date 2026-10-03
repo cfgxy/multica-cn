@@ -1,5 +1,10 @@
 /**
- * "My Issues" tab. Scopes mirror web's
+ * "My Issues" — the personal view, preserved intact (scopes/filters/
+ * actionable merge) when RUYI-344 promoted the bottom tab to the
+ * full-space Tasks screen. Reached from the More dropdown
+ * (`/more/my-issues`); header chrome comes from the parent Stack.
+ *
+ * Scopes mirror web's
  * `packages/views/my-issues/components/my-issues-page.tsx:48-65` —
  * assigned / created / agents — plus the mobile-only merged
  * `actionable`（待我推进）scope (RUYI-76 ①): the client-side union of the
@@ -39,8 +44,6 @@ import type {
 } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { Header } from "@/components/ui/header";
-import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
 import { IssuesLoading } from "@/components/issue/issues-loading";
@@ -226,10 +229,9 @@ export default function MyIssues() {
 
   return (
     <View className="flex-1 bg-background">
-      <Header
-        title={t("mobile.page.title", "My Issues")}
-        right={<HeaderActions />}
-      />
+      {/* RUYI-344: the page moved from a tab to the More stack — header
+          chrome (back + title) now comes from the parent Stack Screen,
+          same as more/pins / more/projects. */}
       <ScopeToolbar
         scopes={scopes}
         scope={scope}

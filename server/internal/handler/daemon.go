@@ -4160,6 +4160,13 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		return
 	}
 	agentID := uuidToString(task.AgentID)
+	// RUYI-391: replaying an uncovered comment into a fresh run is a
+	// comment-triggered dispatch like any other, so it respects the same
+	// status gate — an issue that moved to a non-admitted status while its run
+	// was in flight stops waking agents the moment the run completes. The
+	// delegated-failure branch below is untouched: it keeps its own
+	// source-issue policy (loadDelegatedFailureRecoveryTarget).
+	commentsAdmitted := commentTriggersAdmitted(ctx, h.Queries, issue)
 	scheduled := 0
 	for i := range comments {
 		c := comments[i]
@@ -4186,6 +4193,9 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 			} else {
 				scheduled++
 			}
+			continue
+		}
+		if !commentsAdmitted {
 			continue
 		}
 		var parentComment *db.Comment

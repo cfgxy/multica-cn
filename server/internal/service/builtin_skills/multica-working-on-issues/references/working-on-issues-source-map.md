@@ -128,7 +128,7 @@ and is hidden from the PR list.
 | Backlog → `todo` / `in_progress` effective category enqueues on update; `blocked` / `in_review` / `done` / `cancelled` do not | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`, `issuestatus.Effective` and `RunSourceStatus` case); `server/internal/handler/issue.go` (`UpdateIssue`, `WillEnqueueRun` dispatch) | `:2523` |
 | Same contract in batch update | `server/internal/handler/issue.go` (`BatchUpdateIssues`, `WillEnqueueRun` dispatch) | new citation |
 | Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:66` (`notifyParentOfChildDone`; doc comment at `:15`; barrier gate at `:115`) | func def `:51` |
-| Status change (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2652-2658` (`UpdateIssue`) and `:3170-3171` (`BatchUpdateIssues`); deletion still cancels at `:2863` (`DeleteIssue`) / `:3239` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1229`) | new citation |
+| Issue → `cancelled` cascades to its open runs: never-started rows (queued/deferred) terminalize with `failure_reason='issue_cancelled'`, in-flight rows take `cancel_requested` and settle via daemon ack / offline sweeper, terminal rows untouched; idempotent (RUYI-384) | `server/internal/service/task.go` (`CancelRunsForCancelledIssue`, `ErrIssueCancelled`); cascade query `CancelOpenAgentTasksByIssueCancellation` + re-nudge `ListCancellingAgentTasksByIssue` (`server/pkg/db/queries/agent.sql`); hooks in `server/internal/handler/issue.go` (`UpdateIssue` / `BatchUpdateIssues`); enqueue fence `issue_accepts_runs` (migration `917`) called by the `CreateAgentTask`/`CreateDeferred*`/`CreateRetryTask` inserts, claim guard + `WillEnqueueRun` cancelled check; issue deletion still cancels outright at `DeleteIssue` / `BatchDeleteIssues` via `CancelTasksForIssue` | new citation |
 | `StartTask` / `CompleteTask` do not write issue status (agent CLI owns progress) | `server/internal/service/task.go` (`StartTask` / `CompleteTask` comments) | new citation |
 | Runtime brief: status written whenever the work changes it, mid-turn included — starting the issue's own ask → `in_progress` immediately (workflow step 3); delivery → `in_review`, continuing → `in_progress`, stuck → `blocked`; a turn producing none of the issue's own deliverable → no write at any point; the activity kind never decides (research/design/planning/review count as work when they are the ask); no assignee gate; squad leader dispatch is not delivery (MUL-6417) | `server/internal/daemon/execenv/runtime_config_sections.go` (`writeWorkflowIssue`) | new citation |
 | Failed task may roll `in_progress` → `todo` when no active task remains | `server/internal/service/task.go` (`HandleFailedTasks`) | new citation |
@@ -146,10 +146,11 @@ set but no trigger. A later status-only move from `backlog` to the effective
 
 Moving an issue to `cancelled` used to call `CancelTasksForIssue` and stop every
 active task on it (the old #940 behavior). MUL-4465 removed that from both
-`UpdateIssue` and `BatchUpdateIssues`: a status flip — `cancelled` included —
-never cancels tasks now. `CancelTasksForIssue` fires only from the issue-deletion
-paths (`DeleteIssue` / `BatchDeleteIssues`), where the owning issue row is going
-away, so no task is left orphaned.
+`UpdateIssue` and `BatchUpdateIssues`. RUYI-384 restored a narrower coupling:
+the → `cancelled` transition now runs `CancelRunsForCancelledIssue`, which
+applies the two-phase cancel matrix instead of terminalizing in-flight rows
+outright. `CancelTasksForIssue` itself remains deletion-only
+(`DeleteIssue` / `BatchDeleteIssues`), where the owning issue row is going away.
 
 ## Ownership-only assignment and duplicate-run awareness
 

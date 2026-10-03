@@ -78,8 +78,8 @@ func newAutopilotDelegationFixture(t *testing.T, targetAgentID, autopilotCreator
 	}
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id, number, origin_type, origin_id)
-		VALUES ($1, 'agent', $2, 'MUL-4857 delegation issue', 'agent', $2, $3, $4, $5)
+		INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id, number, origin_type, origin_id, status)
+		VALUES ($1, 'agent', $2, 'MUL-4857 delegation issue', 'agent', $2, $3, $4, $5, 'todo')
 		RETURNING id
 	`, testWorkspaceID, leaderID, number, originTypeArg, originIDArg).Scan(&issueID); err != nil {
 		t.Fatalf("create issue: %v", err)
@@ -314,8 +314,8 @@ func seedBareIssue(t *testing.T, creatorAgentID string) string {
 	t.Helper()
 	var issueID string
 	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title, number)
-		VALUES ($1, 'agent', $2, 'MUL-4857 unrelated issue', $3) RETURNING id
+		INSERT INTO issue (workspace_id, creator_type, creator_id, title, number, status)
+		VALUES ($1, 'agent', $2, 'MUL-4857 unrelated issue', $3, 'todo') RETURNING id
 	`, testWorkspaceID, creatorAgentID, nextWorkspaceIssueNumber(t)).Scan(&issueID); err != nil {
 		t.Fatalf("seed bare issue: %v", err)
 	}
@@ -531,8 +531,8 @@ func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
 
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id, number, origin_type, origin_id)
-		VALUES ($1, 'agent', $2, 'MUL-4857 squad issue', 'squad', $3, $4, 'autopilot', $5) RETURNING id
+		INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id, number, origin_type, origin_id, status)
+		VALUES ($1, 'agent', $2, 'MUL-4857 squad issue', 'squad', $3, $4, 'autopilot', $5, 'todo') RETURNING id
 	`, testWorkspaceID, leaderID, squadID, nextWorkspaceIssueNumber(t), autopilotID).Scan(&issueID); err != nil {
 		t.Fatalf("create squad issue: %v", err)
 	}
