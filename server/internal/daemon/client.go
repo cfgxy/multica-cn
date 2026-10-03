@@ -280,17 +280,24 @@ const batchClaimRequestTimeout = 5 * time.Second
 // (batchClaimRequestTimeout) rather than the shared 30s control-plane timeout so
 // one slow claim cannot stall the whole batch; the deadline propagates to the
 // server and cancels the in-flight query there too.
-func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int) ([]*Task, error) {
+//
+// backpressure (RUYI-393) is an optional machine-level memory-watermark report;
+// servers that predate the field ignore it, and a nil report omits the key.
+func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, backpressure *protocol.DaemonBackpressureReport) ([]*Task, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
 	defer cancel()
 	var resp struct {
 		Tasks []*Task `json:"tasks"`
 	}
-	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", map[string]any{
+	body := map[string]any{
 		"daemon_id":   daemonID,
 		"runtime_ids": runtimeIDs,
 		"max_tasks":   maxTasks,
-	}, &resp); err != nil {
+	}
+	if backpressure != nil {
+		body["backpressure"] = backpressure
+	}
+	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", body, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Tasks, nil
@@ -654,12 +661,19 @@ type (
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*HeartbeatResponse, error) {
+// SendHeartbeat reports this runtime as alive and pulls pending actions.
+// backpressure (RUYI-393) optionally carries the host memory-watermark report;
+// servers that predate the field ignore it, and a nil report omits the key.
+func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, backpressure *protocol.DaemonBackpressureReport) (*HeartbeatResponse, error) {
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
+	body := map[string]any{
 		"runtime_id":            runtimeID,
 		"supports_batch_import": true,
-	}, &resp); err != nil {
+	}
+	if backpressure != nil {
+		body["backpressure"] = backpressure
+	}
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", body, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -47,6 +47,7 @@ import { UsageSection } from "./usage-section";
 import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
+import { BackpressureBadge } from "./runtime-backpressure-badge";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -285,6 +286,7 @@ function HeroCard({
               {runtimeName}
             </h2>
             <HealthBadge health={health} />
+            <BackpressureBadge runtime={runtime} />
             <span className="text-caption text-muted-foreground">
               {t(($) => $.detail.last_seen, { when: lastSeen })}
             </span>
