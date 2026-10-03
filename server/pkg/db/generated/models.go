@@ -864,10 +864,11 @@ type Issue struct {
 }
 
 type IssueDependency struct {
-	ID               pgtype.UUID `json:"id"`
-	IssueID          pgtype.UUID `json:"issue_id"`
-	DependsOnIssueID pgtype.UUID `json:"depends_on_issue_id"`
-	Type             string      `json:"type"`
+	ID               pgtype.UUID        `json:"id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	DependsOnIssueID pgtype.UUID        `json:"depends_on_issue_id"`
+	Type             string             `json:"type"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueLabel struct {
@@ -1376,6 +1377,7 @@ type Project struct {
 	StartDate    pgtype.Date        `json:"start_date"`
 	DueDate      pgtype.Date        `json:"due_date"`
 	Instructions pgtype.Text        `json:"instructions"`
+	Revision     int64              `json:"revision"`
 }
 
 type ProjectResource struct {

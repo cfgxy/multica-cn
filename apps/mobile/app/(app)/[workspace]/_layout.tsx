@@ -409,14 +409,20 @@ export default function WorkspaceLayout() {
         {/* Workspace switcher — reached from the More popover's collapsed
             WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />
+        {/* RUYI-344: more/issues (the old workspace-wide list) is gone —
+            its job moved into the bottom Tasks tab. The personal view
+            lives on here as more/my-issues (More dropdown entry). */}
         <Stack.Screen
-          name="more/issues"
-          options={{ title: i18n.t("layout:nav.issues", "Issues"), headerBackTitle: "Back" }}
+          name="more/my-issues"
+          options={{ title: i18n.t("layout:nav.my_issues", "My Issues"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/projects"
           options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
+        {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
+        <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
+        <Stack.Screen name="tasks-actor-picker" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/agents"
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}

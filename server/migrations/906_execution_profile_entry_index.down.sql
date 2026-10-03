@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_execution_profile_entry_profile_agent;

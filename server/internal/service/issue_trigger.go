@@ -120,6 +120,16 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 	currentStatus := issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status)
 	prevStatus := issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, in.PrevStatus)
 
+	// RUYI-384: a cancelled issue starts no runs. An assign landing in the
+	// same request as the → cancelled flip (or a write racing the
+	// cancellation) must not enqueue work the issue no longer accepts; the
+	// statement-level run fence (issue_accepts_runs, migration 917) is the
+	// backstop, this keeps the write path and the preview endpoint honest
+	// before they even try.
+	if currentStatus == "cancelled" {
+		return IssueRunTrigger{}, false
+	}
+
 	var source RunEnqueueSource
 	switch {
 	case in.IsCreate || in.AssigneeChanged:
