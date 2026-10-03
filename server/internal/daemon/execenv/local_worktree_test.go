@@ -941,6 +941,91 @@ func TestPrepareLocalWorktreeReplaysOnlyTheUserEditsSinceTheLastTurn(t *testing.
 	}
 }
 
+// A mainline advance in the user's checkout — what a `git pull` between turns
+// leaves behind — is not a user edit. The two turns' snapshots differ by
+// exactly the pulled commits, and replaying that whole-tree difference used to
+// drop the missing stretch of mainline onto the task branch as a
+// "since the previous turn" baseline (RUYI-380). The user's edit set did not
+// change, so nothing is replayed, no baseline is invented, and the branch
+// stays exactly where the conversation left it.
+func TestPrepareLocalWorktreeDoesNotReplayAMainlinePullAsUserEdits(t *testing.T) {
+	repo := newTestRepo(t)
+
+	first := prepareTurn(t, repo, "MUL-6881", turnOneTask)
+	writeFile(t, filepath.Join(first.WorkDir, "turn-one.txt"), "work from turn one\n")
+	finalizeOK(t, first)
+	firstTip := gitRun(t, repo, "rev-parse", "agent/j/mul-6881")
+
+	// Committing on main is the state a fast-forward pull produces: HEAD
+	// ahead, the new content in the checkout, nothing dirty.
+	writeFile(t, filepath.Join(repo, "mainline.txt"), "new mainline work\n")
+	gitRun(t, repo, "add", "mainline.txt")
+	gitRun(t, repo, "commit", "-m", "mainline advance")
+
+	second := prepareTurn(t, repo, "MUL-6881", turnTwoTask)
+	if !second.Continued {
+		t.Fatal("second turn reports Continued = false, want true")
+	}
+	if secondTip := gitRun(t, repo, "rev-parse", "agent/j/mul-6881"); secondTip != firstTip {
+		t.Errorf("the branch moved from %s to %s: the mainline advance was replayed onto it", firstTip, secondTip)
+	}
+	if _, err := os.Stat(filepath.Join(second.WorkDir, "mainline.txt")); !os.IsNotExist(err) {
+		t.Error("mainline.txt reached the task worktree; the pull was treated as user edits")
+	}
+	if subjects := gitRun(t, repo, "log", "--format=%s", firstTip+"..agent/j/mul-6881"); strings.Contains(subjects, "since the previous turn") {
+		t.Errorf("a polluted baseline was committed on the branch:\n%s", subjects)
+	}
+	if second.DirtyBaseCaptured {
+		t.Error("DirtyBaseCaptured = true; the user's directory was clean apart from the pull")
+	}
+}
+
+// A pull and a real edit can land in the user's checkout between the same two
+// turns. Each snapshot's edit set is read against its own parent, so the
+// replay carries the user's new edit and not the pulled commits: what reaches
+// the branch is exactly the delta between what the user had and what they
+// have (RUYI-380).
+func TestPrepareLocalWorktreeReplaysUserEditsAlongsideAPull(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "user work in progress\n")
+
+	first := prepareTurn(t, repo, "MUL-6881", turnOneTask)
+	writeFile(t, filepath.Join(first.WorkDir, "tracked.txt"), "user work in progress, finished by the agent\n")
+	finalizeOK(t, first)
+	firstTip := gitRun(t, repo, "rev-parse", "agent/j/mul-6881")
+
+	// The pull and the edit coexist. They touch disjoint files because a real
+	// pull refuses to run over dirty files, so the two changes in one turn is
+	// the honest shape of the scenario.
+	writeFile(t, filepath.Join(repo, "mainline.txt"), "new mainline work\n")
+	gitRun(t, repo, "add", "mainline.txt")
+	gitRun(t, repo, "commit", "-m", "mainline advance")
+	writeFile(t, filepath.Join(repo, "keep.txt"), "user edited this between turns\n")
+
+	second := prepareTurn(t, repo, "MUL-6881", turnTwoTask)
+	if !second.Continued {
+		t.Fatal("second turn reports Continued = false, want true")
+	}
+	if got := readFile(t, filepath.Join(second.WorkDir, "keep.txt")); got != "user edited this between turns\n" {
+		t.Errorf("the user's real edit did not reach the worktree: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(second.WorkDir, "mainline.txt")); !os.IsNotExist(err) {
+		t.Error("mainline.txt reached the task worktree alongside the user's edit")
+	}
+	if got := readFile(t, filepath.Join(second.WorkDir, "tracked.txt")); got != "user work in progress, finished by the agent\n" {
+		t.Errorf("the agent's turn-one edit was disturbed by the replay: %q", got)
+	}
+
+	// The one baseline the turn invents must contain exactly the user's edit.
+	secondTip := gitRun(t, repo, "rev-parse", "agent/j/mul-6881")
+	if subjects := gitRun(t, repo, "log", "--format=%s", firstTip+".."+secondTip); subjects != "chore(agent): uncommitted work from the local directory since the previous turn" {
+		t.Errorf("baseline commits = %q, want exactly the since-the-previous-turn baseline", subjects)
+	}
+	if names := gitRun(t, repo, "diff", "--name-only", firstTip, secondTip); names != "keep.txt" {
+		t.Errorf("the branch gained %q; want only the user's edit (keep.txt)", names)
+	}
+}
+
 // A real conflict — the user rewrites lines the agent also rewrote — belongs to
 // the agent, not to the daemon. The turn starts on the conflicted tree with
 // both versions in it, because the only alternative that does not lose the

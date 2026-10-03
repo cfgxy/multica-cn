@@ -205,12 +205,17 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("dim stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("dim stdin pipe: %w", err)
@@ -219,13 +224,13 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 	// fires before the failure-promotion decision; see hermes.go for why the
 	// io.MultiWriter form races with stopReason=end_turn under load.
 	providerErr := newACPProviderErrorSniffer("dim")
-	stderr, err := cmd.StderrPipe()
+	stderr, err := sess.StderrPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("dim stderr pipe: %w", err)
 	}
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start dim: %w", err)
 	}
@@ -237,7 +242,7 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		_, _ = io.Copy(stderrSink, stderr)
 	}()
 
-	b.cfg.Logger.Info("dim acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.cfg.Logger.Info("dim acp started", "pid", sess.PID(), "cwd", opts.Cwd)
 
 	msgStream := newDimMessageStream(256)
 	resCh := make(chan Result, 1)
@@ -315,7 +320,7 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			cancel()
 			stdin.Close()
 			waitDone := make(chan struct{})
-			go func() { _ = cmd.Wait(); close(waitDone) }()
+			go func() { _ = sess.Wait(runCtx); close(waitDone) }()
 			select {
 			case <-waitDone:
 			case <-time.After(dimProcessWaitTimeout):
@@ -617,7 +622,7 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("dim finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("dim finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		// Best-effort session/close before tearing down the process: it lets
 		// dim release the per-process session lock promptly (the next run can

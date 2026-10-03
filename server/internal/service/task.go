@@ -1302,6 +1302,13 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		task, err = s.Queries.CreateAgentTask(ctx, createParams)
 	}
 	if err != nil {
+		// RUYI-384: a fenced refusal on a cancelled issue is a typed refusal,
+		// not a failure — name it before logging so callers can map it.
+		err = s.refuseCancelledIssue(ctx, issue.ID, err)
+		if errors.Is(err, ErrIssueCancelled) {
+			slog.Info("task enqueue refused: issue is cancelled", "issue_id", util.UUIDToString(issue.ID))
+			return db.AgentTaskQueue{}, err
+		}
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
@@ -1434,6 +1441,12 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
+		// RUYI-384: same typed refusal as EnqueueTaskForIssue.
+		err = s.refuseCancelledIssue(ctx, issue.ID, err)
+		if errors.Is(err, ErrIssueCancelled) {
+			slog.Info("mention task enqueue refused: issue is cancelled", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+			return db.AgentTaskQueue{}, err
+		}
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
@@ -1499,6 +1512,14 @@ func (s *TaskService) EnqueueDeferredAssigneeFallback(ctx context.Context, issue
 		TriggerEvidenceRefID: attrEvidenceRef,
 	})
 	if err != nil {
+		// RUYI-384: a deferred fallback on a cancelled issue must never arm —
+		// the fire_at sweeper would promote it into a run the fence then has
+		// to refuse at claim time. Refuse now, typed.
+		err = s.refuseCancelledIssue(ctx, issue.ID, err)
+		if errors.Is(err, ErrIssueCancelled) {
+			slog.Info("deferred fallback enqueue refused: issue is cancelled", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+			return db.AgentTaskQueue{}, err
+		}
 		slog.Error("deferred fallback enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create deferred task: %w", err)
 	}
@@ -2663,9 +2684,10 @@ func (s *TaskService) OpenMikaOnboardingChat(ctx context.Context, session db.Cha
 //
 // Callers are explicit issue-lifecycle cleanup paths only — DeleteIssue and
 // BatchDeleteIssues, where the owning issue row is going away so its tasks
-// must not be left orphaned. A plain status flip, `cancelled` included, no
-// longer routes here (MUL-4465): cancelling an issue is not an implicit "stop
-// all runs" switch. Do not re-add a status-driven caller.
+// must not be left orphaned. Cancelling an ISSUE no longer routes here either
+// (RUYI-384): its flow is CancelRunsForCancelledIssue below, which keeps
+// in-flight rows two-phase instead of terminalizing them outright. Do not
+// re-add a status-driven caller to THIS method.
 //
 // Before #1587 this path was "cancel rows and return", which left each affected
 // agent stuck at status="working" indefinitely, requiring a manual
@@ -2700,6 +2722,118 @@ func (s *TaskService) CancelTasksForIssue(ctx context.Context, issueID pgtype.UU
 		s.ReconcileAgentStatus(ctx, agentID)
 	}
 	s.notifyTasksFinished(cancelled)
+	return nil
+}
+
+// ErrIssueCancelled is what an issue-scoped enqueue fails with when the run
+// fence (issue_accepts_runs, migration 917) refused it because the issue is
+// in the cancelled category (RUYI-384). Callers map it to their own
+// conflict/coalesced response copy — it is a refusal, never a 500.
+var ErrIssueCancelled = errors.New("issue is cancelled and accepts no new runs")
+
+// refuseCancelledIssue classifies a fenced insert's refusal. ErrNoRows from
+// CreateAgentTask* can mean "owner rows gone" (the migration-284 fence) or
+// "issue cancelled" (the migration-917 fence); re-reading the issue decides —
+// the cancellation committed before the insert was refused, so the read sees
+// it. Any lookup trouble returns the original error unchanged: classification
+// must never mask the primary failure.
+func (s *TaskService) refuseCancelledIssue(ctx context.Context, issueID pgtype.UUID, err error) error {
+	if !errors.Is(err, pgx.ErrNoRows) || !issueID.Valid {
+		return err
+	}
+	issue, gerr := s.Queries.GetIssue(ctx, issueID)
+	if gerr != nil {
+		return err
+	}
+	if issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status) == "cancelled" {
+		return ErrIssueCancelled
+	}
+	return err
+}
+
+// CancelRunsForCancelledIssue is RUYI-384's cascade: the issue just flipped
+// into the cancelled category, and its open runs follow. One statement applies
+// the RUYI-292 cancel matrix per open row (see
+// CancelOpenAgentTasksByIssueCancellation): never-started rows (queued /
+// deferred) terminalize in place with failure_reason='issue_cancelled';
+// in-flight rows (dispatched / running / waiting_local_directory) flip to
+// cancel_requested — stamped with WHO cancelled the issue — and settle through
+// the daemon's interrupt → cancel-ack machinery, with the offline sweeper as
+// the dead-runtime backstop. Rows already in cancel_requested from an earlier
+// single-run cancel keep their original requester and timestamp; they are
+// re-broadcast so any daemon that resubscribed late still sees the stop.
+//
+// Terminal rows are never touched, and a second pass matches nothing — the
+// cascade is idempotent, so a caller may re-run it after a failure.
+//
+// cancellerUserID records the acting member on the cancel_requested rows for
+// the audit trail; it may be NULL for system actors.
+func (s *TaskService) CancelRunsForCancelledIssue(ctx context.Context, issueID pgtype.UUID, cancellerUserID pgtype.UUID) error {
+	var (
+		flipped   []db.AgentTaskQueue // direct terminal flips (queued/deferred)
+		requested []db.AgentTaskQueue // newly cancel_requested (in-flight)
+		nudging   []db.AgentTaskQueue // already cancel_requested before this pass
+	)
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		affected, err := qtx.CancelOpenAgentTasksByIssueCancellation(ctx, db.CancelOpenAgentTasksByIssueCancellationParams{
+			IssueID:                 issueID,
+			CancelRequestedByUserID: cancellerUserID,
+		})
+		if err != nil {
+			return err
+		}
+		for _, t := range affected {
+			if t.Status == "cancelled" {
+				flipped = append(flipped, t)
+			} else {
+				requested = append(requested, t)
+			}
+		}
+		// Same-tx settlement for the direct flips, matching CancelTasksForIssue:
+		// a delivered-receipt settled after the cancel committed could never be
+		// repaired. cancel_requested rows are not terminal yet — their
+		// settlement rides the daemon ack path, as for any single-run cancel.
+		if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, flipped...); err != nil {
+			return err
+		}
+		nudging, err = qtx.ListCancellingAgentTasksByIssue(ctx, issueID)
+		return err
+	}); err != nil {
+		return err
+	}
+
+	// Direct flips: the full terminal side-effect set (capture, broadcast,
+	// agent reconcile, chat settlement) — the same flow a user-cancelled
+	// queued run takes.
+	for _, t := range flipped {
+		s.captureTaskCancelled(ctx, t)
+		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
+	}
+	for _, agentID := range distinctAgentIDs(flipped) {
+		s.ReconcileAgentStatus(ctx, agentID)
+	}
+	s.notifyTasksFinished(flipped)
+
+	// In-flight rows and stale cancel_requested rows: the interrupt nudge.
+	// The daemon observes it via its poll/reconcile channels and interrupts
+	// the agent process tree; shouldInterruptAgent treats cancel_requested
+	// exactly like a terminal status.
+	for _, t := range requested {
+		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelRequested, t)
+	}
+	for _, t := range nudging {
+		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelRequested, t)
+	}
+
+	if len(flipped)+len(requested)+len(nudging) > 0 {
+		slog.Info("issue cancellation cascaded to runs",
+			"issue_id", util.UUIDToString(issueID),
+			"cancelled_by_user_id", util.UUIDToString(cancellerUserID),
+			"terminalized", len(flipped),
+			"cancel_requested", len(requested),
+			"re_nudged", len(nudging),
+		)
+	}
 	return nil
 }
 
@@ -6540,6 +6674,21 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 			s.NotifyTaskEnqueued(ctx, task)
 			return delegatedFailureRecoveryReplayed, nil
+		}
+		// RUYI-384: a cancelled issue takes no recovery task either — the
+		// fence refused the insert, and the issue's owner cancelled the work
+		// the recovery would resume. Retire the recovery signal: nothing will
+		// ever consume it, and leaving it pending would re-dispatch this same
+		// covered no-op every sweep tick.
+		if errors.Is(s.refuseCancelledIssue(ctx, target.issue.ID, err), ErrIssueCancelled) {
+			if _, serr := s.Queries.SettleDelegatedFailureRecoveryComment(ctx, target.comment.ID); serr != nil {
+				return delegatedFailureRecoveryCovered, fmt.Errorf("settle cancelled-issue recovery comment: %w", serr)
+			}
+			slog.Info("delegated failure recovery skipped: issue is cancelled",
+				"failed_task_id", util.UUIDToString(target.failed.ID),
+				"issue_id", util.UUIDToString(target.issue.ID),
+			)
+			return delegatedFailureRecoveryCovered, nil
 		}
 		if !isDuplicatePendingTaskErr(err) {
 			return delegatedFailureRecoveryCovered, fmt.Errorf("create recovery task: %w", err)
