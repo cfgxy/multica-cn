@@ -83,6 +83,11 @@ vi.mock("@multica/core/runtimes", async () => ({
       "@multica/core/runtimes",
     )
   ).isRuntimeUsableForUser,
+  readRuntimeBackpressure: (
+    await vi.importActual<typeof import("@multica/core/runtimes")>(
+      "@multica/core/runtimes",
+    )
+  ).readRuntimeBackpressure,
   deriveRuntimeHealth: () => "online",
   runtimeDisplayName: (rt: { name: string; custom_name?: string | null }) =>
     rt.custom_name?.trim() || rt.name,
