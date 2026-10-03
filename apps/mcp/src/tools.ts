@@ -612,7 +612,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         lead_id: {
           type: ["string", "null"],
-          description: "Lead UUID. Pass null (with lead_id null) to clear; omit to keep.",
+          description: "Lead UUID. Pass null (with lead_type null) to clear; omit to keep.",
         },
         start_date: {
           type: ["string", "null"],
