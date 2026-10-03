@@ -649,8 +649,26 @@ class ApiClient {
     opts?: { signal?: AbortSignal },
   ): Promise<ListIssuesResponse> {
     const search = new URLSearchParams();
+    // Params whose wire name/shape differs from the TS field name get the
+    // same explicit mapping web applies (packages/core/api/client.ts:1124,
+    // :1097): sort_by→sort + sort_direction→direction, actor-ref lists as
+    // `type:id` CSV, include_no_assignee as the literal "true". Everything
+    // else keeps the generic pass-through (arrays comma-joined — the server
+    // parses a single comma-separated query value per key).
+    const ACTOR_REF_KEYS = new Set(["assignee_filters", "creator_filters"]);
     for (const [k, v] of Object.entries(params)) {
       if (v == null) continue;
+      if (k === "sort_by" || k === "sort_direction") continue;
+      if (ACTOR_REF_KEYS.has(k)) {
+        const refs = v as { type: string; id: string }[];
+        if (refs.length > 0)
+          search.set(k, refs.map((f) => `${f.type}:${f.id}`).join(","));
+        continue;
+      }
+      if (k === "include_no_assignee") {
+        if (v) search.set(k, "true");
+        continue;
+      }
       if (Array.isArray(v)) {
         // Backend parses comma-separated lists (server/internal/handler/issue.go
         // uses strings.Split on a single query value). Match web's serialization
@@ -661,6 +679,8 @@ class ApiClient {
         search.set(k, String(v));
       }
     }
+    if (params.sort_by) search.set("sort", params.sort_by);
+    if (params.sort_direction) search.set("direction", params.sort_direction);
     const qs = search.toString();
     const raw = await this.fetch<unknown>(
       `/api/issues${qs ? `?${qs}` : ""}`,
