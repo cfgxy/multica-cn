@@ -847,7 +847,14 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
             checked_at: "2026-10-03T00:00:00Z",
           },
           {
-            capability: "download_media",
+            capability: "media_resources",
+            status: "granted",
+            detail: "",
+            required_scopes: [],
+            checked_at: "2026-10-03T00:00:00Z",
+          },
+          {
+            capability: "contact_lookup",
             status: "granted",
             detail: "",
             required_scopes: [],
@@ -858,7 +865,14 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
     ];
     render(<LarkTab />, { wrapper: I18nWrapper });
     expect(screen.getByTestId("lark-capability-send_messages")).toBeTruthy();
-    expect(screen.getByTestId("lark-capability-download_media")).toBeTruthy();
+    expect(screen.getByTestId("lark-capability-media_resources")).toBeTruthy();
+    expect(screen.getByTestId("lark-capability-contact_lookup")).toBeTruthy();
+    // Capability ids must match the server catalog verbatim
+    // (server/internal/integrations/lark/permission.go); a drifted id
+    // falls back to the raw id instead of the localized label.
+    expect(screen.getByText("Send messages")).toBeTruthy();
+    expect(screen.getByText("Download message files")).toBeTruthy();
+    expect(screen.getByText("Look up sender info")).toBeTruthy();
     expect(screen.getByText(/All permissions are granted/i)).toBeTruthy();
     expect(screen.queryByTestId("lark-permissions-missing")).toBeNull();
   });
