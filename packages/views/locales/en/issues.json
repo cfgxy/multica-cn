@@ -1123,7 +1123,46 @@
       "submit_a11y": "Create issue"
     },
     "tasks": {
-      "issue_unavailable": "Issue unavailable"
+      "issue_unavailable": "Issue unavailable",
+      "page": {
+        "title": "Tasks"
+      },
+      "tabs": {
+        "all": "All",
+        "open": "Open",
+        "active": "Active",
+        "blocked": "Blocked",
+        "completed": "Completed"
+      },
+      "sort": {
+        "title": "Sort",
+        "updated_at": "Updated at",
+        "created_at": "Created at",
+        "a11y": "Sort"
+      },
+      "empty": {
+        "all": "No tasks in this workspace yet.",
+        "open": "No pending tasks yet.",
+        "active": "No active tasks.",
+        "blocked": "No blocked tasks.",
+        "completed": "No completed tasks yet."
+      },
+      "filtered_empty": {
+        "title": "No issues match these filters",
+        "clear_button": "Clear filters"
+      },
+      "filters": {
+        "status_locked": "Status: {{tab}} (set by tab)",
+        "section_mine": "My relation",
+        "mine_assigned": "Assigned to me",
+        "mine_created": "Created by me",
+        "mine_involved": "I'm involved in",
+        "agent_running": "Agent running",
+        "selected_count": "{{count}} selected",
+        "group_members": "Members",
+        "group_agents": "Agents",
+        "group_squads": "Squads"
+      }
     }
   },
   "suppressed": {

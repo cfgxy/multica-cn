@@ -25,12 +25,26 @@ export interface IssueSection {
   data: Issue[];
 }
 
+export interface GroupIssuesOptions {
+  /**
+   * Append a `cancelled` section AFTER the canonical ones (RUYI-344). Only
+   * the full-space Tasks tab's "全部" view sets this — cancelled issues are
+   * excluded from every other mobile list, and the section self-hides when
+   * empty (the `.filter` below runs over the combined map). A custom status
+   * in the cancelled category lands there like any built-in.
+   */
+  includeCancelled?: boolean;
+}
+
 /**
  * Non-empty sections in canonical category order. `cancelled` has no section on
  * mobile, so an issue in that category is omitted here exactly as the built-in
  * Cancelled always was — a custom status inherits its category's behavior.
  */
-export function groupIssuesByCategory(issues: Issue[]): IssueSection[] {
+export function groupIssuesByCategory(
+  issues: Issue[],
+  options: GroupIssuesOptions = {},
+): IssueSection[] {
   if (issues.length === 0) return [];
   const byCategory = new Map<IssueStatusCategory, Issue[]>();
   for (const issue of issues) {
@@ -39,7 +53,10 @@ export function groupIssuesByCategory(issues: Issue[]): IssueSection[] {
     if (list) list.push(issue);
     else byCategory.set(category, [issue]);
   }
-  return BOARD_CATEGORIES.map((category) => ({
+  const categories = options.includeCancelled
+    ? [...BOARD_CATEGORIES, "cancelled" as const]
+    : BOARD_CATEGORIES;
+  return categories.map((category) => ({
     category,
     data: byCategory.get(category) ?? [],
   })).filter((section) => section.data.length > 0);
