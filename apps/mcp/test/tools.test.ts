@@ -139,6 +139,7 @@ describe("tool surface", () => {
         "progress_digest",
         "retry_run",
         "search_issues",
+        "update_issue",
         "update_issue_status",
         "update_project",
       ].sort(),
@@ -408,6 +409,194 @@ describe("update_issue_status handler", () => {
     expect(body).toEqual({ status: "in_progress", suppress_run: true });
     expect(result.updated).toBe(true);
     expect(result.status).toBe("in_progress");
+  });
+});
+
+describe("update_issue handler (RUYI-350)", () => {
+  it("title-only PATCH sends only the title", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", title: "Rewritten title" },
+      client,
+    )) as Record<string, unknown>;
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ title: "Rewritten title" });
+    expect(result.updated).toBe(true);
+    expect(result.revision).toBe(3);
+  });
+
+  it("description-only PATCH sends only the description, Markdown intact", async () => {
+    const client = fakeClient();
+    const markdown = "# Rewritten body\n\n- item **one**\n- item two\n\n```go\nfmt.Println(\"hi\")\n```";
+    const tool = findTool("update_issue");
+    await tool?.handler({ workspace: WS, issue: "VOI-1", description: markdown }, client);
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ description: markdown });
+  });
+
+  it("maps every editable field on a multi-field PATCH", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      {
+        workspace: WS,
+        issue: "VOI-1",
+        title: "Multi",
+        description: "body",
+        priority: "high",
+        project_id: "p2",
+        parent_issue_id: "11111111-2222-3333-4444-555555555555",
+        start_date: "2026-10-03",
+        due_date: "2026-10-09",
+        expected_revision: 4,
+      },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({
+      title: "Multi",
+      description: "body",
+      priority: "high",
+      project_id: "p2",
+      parent_issue_id: "11111111-2222-3333-4444-555555555555",
+      start_date: "2026-10-03",
+      due_date: "2026-10-09",
+      expected_revision: 4,
+    });
+  });
+
+  it("clears nullable fields with an explicit null and keeps omitted fields absent", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      { workspace: WS, issue: "VOI-1", due_date: null, parent_issue_id: null, title: "keep-others" },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ title: "keep-others", due_date: null, parent_issue_id: null });
+  });
+
+  it("treats an empty string as a clear for nullable fields", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      { workspace: WS, issue: "VOI-1", start_date: "", project_id: "" },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ start_date: null, project_id: null });
+  });
+
+  it("rejects an empty PATCH (nothing to update)", async () => {
+    const tool = findTool("update_issue");
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("rejects malformed dates and oversized text client-side", async () => {
+    const tool = findTool("update_issue");
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", start_date: "10/03/2026" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", title: "x".repeat(501) }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", description: "x".repeat(50_001) }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", priority: "asap" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("answers a stale expected_revision with a structured revision_conflict, no write", async () => {
+    const client = fakeClient({
+      updateIssue: async () => {
+        throw new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+      },
+    });
+    const tool = findTool("update_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", title: "stale write", expected_revision: 2 },
+      client,
+    )) as Record<string, unknown>;
+    expect(result.updated).toBe(false);
+    expect(result.code).toBe("revision_conflict");
+    expect(result.hint).toMatch(/get_issue/);
+  });
+
+  it("propagates non-conflict server errors (403) intact", async () => {
+    const client = fakeClient({
+      updateIssue: async () => {
+        throw new MulticaApiError(403, "you do not have access to this workspace");
+      },
+    });
+    const tool = findTool("update_issue");
+    const err = await tool
+      ?.handler({ workspace: WS, issue: "VOI-1", title: "nope" }, client)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MulticaApiError);
+    expect((err as MulticaApiError).status).toBe(403);
+  });
+});
+
+describe("update_issue schema and serialization contract (RUYI-350)", () => {
+  it("documents the no-run guarantee, optimistic locking and clear semantics", () => {
+    const tool = findTool("update_issue");
+    expect(tool?.description).toMatch(/never triggers an agent run/i);
+    expect(tool?.description).toMatch(/no quota/i);
+    expect(tool?.description).toMatch(/revision_conflict/i);
+    expect(tool?.description).toMatch(/null/);
+    expect(tool?.description).toMatch(/assign_issue/);
+    expect(tool?.description).toMatch(/identifier|UUID/i);
+    const schema = tool?.inputSchema as Record<string, unknown>;
+    expect(schema.required).toEqual(["workspace", "issue"]);
+    const props = schema.properties as Record<
+      string,
+      { description: string; type: string | string[]; minimum?: number }
+    >;
+    for (const name of ["project_id", "parent_issue_id", "start_date", "due_date"]) {
+      expect(props[name]?.type).toContain("null");
+    }
+    expect(props.expected_revision?.description).toMatch(/revision_conflict/);
+    expect(props.expected_revision?.minimum).toBe(1);
+  });
+
+  it("serializes explicit nulls into the wire body and drops omitted fields (PATCH contract guard)", async () => {
+    // Runs the tool against the REAL MulticaClient over a mocked HTTP layer.
+    // PATCH semantics live in the JSON wire format: a clear must survive as an
+    // explicit null (the server decides by rawFields key presence) and an
+    // omitted field must stay absent. JSON.stringify drops undefined keys and
+    // keeps nulls — this pins that contract end-to-end.
+    let wireBody = "";
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      wireBody = String(init?.body ?? "");
+      return new Response(JSON.stringify(issueFixture({ revision: 9 })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new MulticaClient({
+      serverUrl: "https://api.example.com",
+      token: "mul_test",
+      fetchImpl,
+    });
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      {
+        workspace: WS,
+        issue: "VOI-1",
+        title: "wire",
+        due_date: null,
+        priority: "low",
+      },
+      client,
+    );
+    const parsed = JSON.parse(wireBody) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(["due_date", "priority", "title"]);
+    expect(parsed.due_date).toBeNull();
   });
 });
 
