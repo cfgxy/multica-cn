@@ -120,12 +120,17 @@ func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("qwen stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("qwen stdin pipe: %w", err)
@@ -134,14 +139,14 @@ func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	closeStdin := func() { closeStdinOnce.Do(func() { _ = stdin.Close() }) }
 	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[qwen:stderr] "), agentStderrTailBytes)
 	cmd.Stderr = stderrBuf
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		closeStdin()
 		cancel()
 		return nil, fmt.Errorf("start qwen: %w", err)
 	}
 	// cmd.Start succeeded; result goroutine now owns cleanup.
 	mcpFileCleanup = nil
-	b.cfg.Logger.Info("qwen started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("qwen started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	// The prompt is delivered on stdin (see buildQwenArgs). Write it from its
 	// own goroutine so it cannot deadlock against the stdout reader below: a
@@ -196,7 +201,7 @@ func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		if scanErr != nil {
 			_ = stdout.Close()
 		}
-		exitErr := cmd.Wait()
+		exitErr := sess.Wait(runCtx)
 		releaseProcessGroup(cmd)
 		duration := time.Since(started)
 
@@ -224,7 +229,7 @@ func (b *qwenBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 			scannerError: scanErr != nil, lastEventType: state.lastEventType,
 			unreadableAssistantCount: state.unreadableAssistantCount,
 		})
-		b.cfg.Logger.Info("qwen finished", "pid", cmd.Process.Pid, "status", status, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("qwen finished", "pid", sess.PID(), "status", status, "duration", duration.Round(time.Millisecond).String())
 		resCh <- Result{
 			Status: status, Output: output, Error: errMsg, DurationMs: duration.Milliseconds(),
 			SessionID: resolveSessionID(opts.ResumeSessionID, state.sessionID, status == "failed", errMsg), Usage: state.usage,

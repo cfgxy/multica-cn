@@ -3713,11 +3713,29 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// and it self-cancelled a run that reassigned the issue from inside itself.
 	// Ownership handoff no longer implies interruption; the new assignee's run,
 	// if any, is enqueued by WillEnqueueRun below and runs alongside whatever
-	// was already in flight. No status change — not even → cancelled — cancels
-	// active tasks: a user clicking "cancel" on an issue has no expectation that
-	// it stops in-flight agent runs, so that implicit coupling is gone
-	// (MUL-4465). Deleting an issue still cancels its tasks (see DeleteIssue),
-	// because the tasks' owning issue ceases to exist.
+	// was already in flight.
+	//
+	// One status transition DOES reach the runs (RUYI-384): → cancelled.
+	// Cancelling an issue means "stop this work", so its open runs follow —
+	// through the two-phase matrix (CancelRunsForCancelledIssue): never-started
+	// rows terminalize in place, in-flight rows take cancel_requested and the
+	// daemon confirms the stop, terminal rows are untouched. This narrows the
+	// MUL-4465 decoupling, which had removed status flips from run cancellation
+	// entirely; deletion still cancels outright (see DeleteIssue /
+	// CancelTasksForIssue), because the owning row ceases to exist. The
+	// transition is judged on canonical categories, so a custom status in the
+	// cancelled category entering from a non-cancelled one cascades the same
+	// way; Best-effort after the committed write — the issue IS cancelled at
+	// this point, so a cascade failure is logged with ids (the cascade is
+	// idempotent and can be re-run) rather than failing the request.
+	transitionedToCancelled := statusChanged &&
+		issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status) == "cancelled" &&
+		issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, prevIssue.Status) != "cancelled"
+	if transitionedToCancelled {
+		if err := h.TaskService.CancelRunsForCancelledIssue(r.Context(), issue.ID, parseUUID(userID)); err != nil {
+			slog.Error("issue cancellation cascade failed", "issue_id", id, "workspace_id", workspaceID, "error", err)
+		}
+	}
 	if suppressedRun {
 		h.recordSuppressedIssueRun(r.Context(), issue, trigger, actorType, actorID)
 	} else if willEnqueue {
@@ -4416,16 +4434,23 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"project_changed":  projectChanged,
 		})
 
-		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
-		// mirrors UpdateIssue. See that handler for the rationale.
+		// Same run-disposition shape as UpdateIssue: reassignment does not
+		// cancel existing tasks (#4963 / MUL-4113), but a transition INTO the
+		// cancelled category cascades to the issue's open runs (RUYI-384) —
+		// best-effort, logged on failure; see that handler for the rationale.
+		transitionedToCancelled := statusChanged &&
+			issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status) == "cancelled" &&
+			issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, prevIssue.Status) != "cancelled"
+		if transitionedToCancelled {
+			if err := h.TaskService.CancelRunsForCancelledIssue(r.Context(), issue.ID, parseUUID(userID)); err != nil {
+				slog.Error("issue cancellation cascade failed", "issue_id", issueID, "workspace_id", workspaceID, "error", err)
+			}
+		}
 		if suppressedRun {
 			h.recordSuppressedIssueRun(r.Context(), issue, trigger, actorType, actorID)
 		} else if willEnqueue {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
-
-		// No status change — not even → cancelled — cancels active tasks here,
-		// mirroring UpdateIssue (MUL-4465). See that handler for the rationale.
 
 		// Platform-driven parent notification, mirrored from UpdateIssue
 		// (MUL-2538) but DEFERRED to after the loop. Evaluating the stage
