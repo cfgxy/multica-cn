@@ -199,5 +199,10 @@
     "filter_label": "筛选",
     "filter_active_count_other": "{{count}} 项筛选",
     "clear_filters": "清除筛选"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "搜索小队…"
+    }
   }
 }

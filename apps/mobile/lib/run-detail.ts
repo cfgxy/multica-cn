@@ -363,6 +363,7 @@ const STATUS_LABEL_EN: Record<AgentTask["status"], string> = {
   completed: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
+  cancel_requested: "Stopping",
 };
 
 /** Localized status word, same key family the runs list badge uses. */
