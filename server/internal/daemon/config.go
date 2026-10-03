@@ -83,6 +83,22 @@ const (
 	// reclaimed on liveness and never touch this knob.
 	DefaultGCTaskTempLegacyTTL     = time.Duration(0)
 	DefaultAutoUpdateCheckInterval = 6 * time.Hour // how often the daemon polls GitHub for a newer CLI release
+
+	// Host memory backpressure (RUYI-393). These are INITIAL SAFETY
+	// PARAMETERS chosen from the RUYI-392 incident profile (32G host, ~1.3G
+	// available / swap 100% at the time of the连环 OOM), NOT calibrated
+	// final values — tune via env as GTI field data comes in.
+	//
+	// Trigger (OR): MemAvailable% < MemHigh OR SwapUsed% > SwapHigh.
+	// Recovery (AND): MemAvailable% >= MemRecovery AND SwapUsed% <=
+	// SwapRecovery. SwapHighPct <= 0 disables the swap condition entirely.
+	DefaultBackpressureEnabled         = true
+	DefaultBackpressureMemHighPct      = 15.0
+	DefaultBackpressureMemRecoveryPct  = 25.0
+	DefaultBackpressureSwapHighPct     = 80.0
+	DefaultBackpressureSwapRecoveryPct = 60.0
+	DefaultBackpressureSampleInterval  = 5 * time.Second
+	DefaultBackpressureWindowSize      = 6 // samples; 6 × 5s = 30s smoothing window
 )
 
 // DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
@@ -108,6 +124,13 @@ type Config struct {
 	KeepEnvAfterTask               bool                  // preserve env after task for debugging
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
+	BackpressureEnabled            bool                  // pause new task claims when host memory crosses the high watermark (default: true)
+	BackpressureMemHighPct         float64               // MemAvailable% below which new claims pause (default: 15 — initial safety parameter, see Default consts)
+	BackpressureMemRecoveryPct     float64               // MemAvailable% above which claiming resumes (default: 25)
+	BackpressureSwapHighPct        float64               // SwapUsed% above which new claims pause; <=0 disables the swap condition (default: 80)
+	BackpressureSwapRecoveryPct    float64               // SwapUsed% below which claiming resumes (default: 60)
+	BackpressureSampleInterval     time.Duration         // /proc sampling cadence for the watermark gate (default: 5s)
+	BackpressureWindowSize         int                   // smoothing window in samples before thresholds are evaluated on the mean (default: 6)
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
 	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
@@ -446,6 +469,44 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		maxConcurrentTasks = overrides.MaxConcurrentTasks
 	}
 
+	// Host memory backpressure (RUYI-393) — thresholds are initial safety
+	// parameters, to be calibrated with GTI field data via these env knobs.
+	backpressureEnabled := boolFromEnv("MULTICA_DAEMON_BACKPRESSURE", DefaultBackpressureEnabled)
+	bpMemHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", DefaultBackpressureMemHighPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpMemRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", DefaultBackpressureMemRecoveryPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpSwapHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", DefaultBackpressureSwapHighPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpSwapRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT", DefaultBackpressureSwapRecoveryPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpSampleInterval, err := durationFromEnv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", DefaultBackpressureSampleInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	bpWindowSize, err := intFromEnv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", DefaultBackpressureWindowSize)
+	if err != nil {
+		return Config{}, err
+	}
+	if backpressureEnabled {
+		if err := validateBackpressureThresholds(backpressureThresholds{
+			MemHighPct:      bpMemHigh,
+			MemRecoveryPct:  bpMemRecovery,
+			SwapHighPct:     bpSwapHigh,
+			SwapRecoveryPct: bpSwapRecovery,
+		}, bpSampleInterval, bpWindowSize); err != nil {
+			return Config{}, err
+		}
+	}
+
 	// Profile
 	profile := overrides.Profile
 
@@ -617,6 +678,13 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoReloadEnabled:               autoReloadEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
+		BackpressureEnabled:             backpressureEnabled,
+		BackpressureMemHighPct:          bpMemHigh,
+		BackpressureMemRecoveryPct:      bpMemRecovery,
+		BackpressureSwapHighPct:         bpSwapHigh,
+		BackpressureSwapRecoveryPct:     bpSwapRecovery,
+		BackpressureSampleInterval:      bpSampleInterval,
+		BackpressureWindowSize:          bpWindowSize,
 		PollInterval:                    pollInterval,
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,

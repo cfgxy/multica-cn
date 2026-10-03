@@ -337,13 +337,19 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		var resp struct {
 			Tasks []*Task `json:"tasks"`
 		}
-		// batchClaimRequestTimeout is the server-side execution budget; the
-		// daemon waits that plus the client's grace margin for the response.
-		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, map[string]any{
+		body := map[string]any{
 			"daemon_id":   daemonID,
 			"runtime_ids": runtimeIDs,
 			"max_tasks":   maxTasks,
-		}, &resp)
+		}
+		// Host memory backpressure (RUYI-393): optional machine-level report;
+		// servers that predate the field ignore it. nil = sampler not running.
+		if bp := d.backpressureReport(); bp != nil {
+			body["backpressure"] = bp
+		}
+		// batchClaimRequestTimeout is the server-side execution budget; the
+		// daemon waits that plus the client's grace margin for the response.
+		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, body, &resp)
 		if err == nil {
 			return resp.Tasks, nil
 		}
@@ -364,7 +370,7 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		}
 		d.logger.Debug("ws claim failed; falling back to http", "error", err)
 	}
-	tasks, err := d.client.ClaimTasks(ctx, daemonID, runtimeIDs, maxTasks)
+	tasks, err := d.client.ClaimTasks(ctx, daemonID, runtimeIDs, maxTasks, d.backpressureReport())
 	if err == nil {
 		return tasks, nil
 	}

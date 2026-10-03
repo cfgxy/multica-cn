@@ -229,6 +229,39 @@ SET status = 'offline',
     updated_at = now()
 WHERE id = $1;
 
+-- name: SetAgentRuntimeBackpressure :one
+-- Persists the daemon's host-memory backpressure report (RUYI-393) into the
+-- runtime's metadata bag, following the offline_reason precedent above:
+-- merged into metadata rather than a column, because registration overwrites
+-- metadata wholesale and a merged key survives unrelated metadata writes.
+--
+-- The report arrives on every heartbeat and batch claim, so the IS DISTINCT
+-- guard makes an unchanged report a zero-row no-op (surfaced to the caller as
+-- sql.ErrNoRows) and write amplification stays at "only when something
+-- changed". recorded_at is stamped server-side; the comparison strips it so
+-- a repeated identical report still dedupes against the stored one.
+--
+-- Returns the PREVIOUS report when a write happened, letting the caller log
+-- the entered/exited transition by comparing prev.active with the incoming
+-- report. A first-ever report has no backpressure key yet, so prev would be
+-- NULL even though the UPDATE succeeded; the CTE COALESCEs it to '{}' (an
+-- empty, inactive report) so the caller reads wasActive=false and still
+-- audits the transition instead of failing the row scan and dropping it.
+WITH previous AS (
+    SELECT COALESCE(metadata->'backpressure', '{}'::jsonb) AS prev
+    FROM agent_runtime
+    WHERE id = @id
+    FOR UPDATE
+)
+UPDATE agent_runtime rt
+SET metadata = rt.metadata || jsonb_build_object(
+        'backpressure', @backpressure::jsonb || jsonb_build_object('recorded_at', now())),
+    updated_at = now()
+FROM previous
+WHERE rt.id = @id
+  AND previous.prev - 'recorded_at' IS DISTINCT FROM @backpressure::jsonb
+RETURNING previous.prev::text;
+
 -- name: SelectStaleOnlineRuntimes :many
 -- Lists online runtimes whose last_seen_at exceeds the stale window. The
 -- sweeper uses this as a candidate set, then optionally filters via the

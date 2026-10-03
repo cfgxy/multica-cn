@@ -1170,6 +1170,52 @@ func (q *Queries) SelectStaleOnlineRuntimes(ctx context.Context, staleSeconds fl
 	return items, nil
 }
 
+const setAgentRuntimeBackpressure = `-- name: SetAgentRuntimeBackpressure :one
+WITH previous AS (
+    SELECT COALESCE(metadata->'backpressure', '{}'::jsonb) AS prev
+    FROM agent_runtime
+    WHERE id = $2
+    FOR UPDATE
+)
+UPDATE agent_runtime rt
+SET metadata = rt.metadata || jsonb_build_object(
+        'backpressure', $1::jsonb || jsonb_build_object('recorded_at', now())),
+    updated_at = now()
+FROM previous
+WHERE rt.id = $2
+  AND previous.prev - 'recorded_at' IS DISTINCT FROM $1::jsonb
+RETURNING previous.prev::text
+`
+
+type SetAgentRuntimeBackpressureParams struct {
+	Backpressure []byte      `json:"backpressure"`
+	ID           pgtype.UUID `json:"id"`
+}
+
+// Persists the daemon's host-memory backpressure report (RUYI-393) into the
+// runtime's metadata bag, following the offline_reason precedent above:
+// merged into metadata rather than a column, because registration overwrites
+// metadata wholesale and a merged key survives unrelated metadata writes.
+//
+// The report arrives on every heartbeat and batch claim, so the IS DISTINCT
+// guard makes an unchanged report a zero-row no-op (surfaced to the caller as
+// sql.ErrNoRows) and write amplification stays at "only when something
+// changed". recorded_at is stamped server-side; the comparison strips it so
+// a repeated identical report still dedupes against the stored one.
+//
+// Returns the PREVIOUS report when a write happened, letting the caller log
+// the entered/exited transition by comparing prev.active with the incoming
+// report. A first-ever report has no backpressure key yet, so prev would be
+// NULL even though the UPDATE succeeded; the CTE COALESCEs it to '{}' (an
+// empty, inactive report) so the caller reads wasActive=false and still
+// audits the transition instead of failing the row scan and dropping it.
+func (q *Queries) SetAgentRuntimeBackpressure(ctx context.Context, arg SetAgentRuntimeBackpressureParams) (string, error) {
+	row := q.db.QueryRow(ctx, setAgentRuntimeBackpressure, arg.Backpressure, arg.ID)
+	var previous_prev string
+	err := row.Scan(&previous_prev)
+	return previous_prev, err
+}
+
 const setAgentRuntimeOffline = `-- name: SetAgentRuntimeOffline :exec
 UPDATE agent_runtime
 SET status = 'offline', updated_at = now()
