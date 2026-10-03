@@ -25,8 +25,10 @@
  *     simplification; both options are descending).
  *
  * No persist middleware — session-scoped, matching the other view stores.
- * Workspace switches clear the filters via the shared
- * `useClearFiltersOnWorkspaceChange` hook (TAB and sort survive).
+ * Workspace switches clear the filters via `syncWorkspace`: the owning wsId
+ * lives in the state because the Tasks screen remounts per workspace with
+ * the new id already in props, which a ref-guard hook cannot see (RUYI-344
+ * item 12; TAB and sort survive the switch).
  */
 import { create } from "zustand";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
@@ -41,6 +43,8 @@ export type TaskSortKey = "updated_at" | "created_at";
 
 interface TasksViewState {
   tab: TaskTab;
+  /** Owning workspace of the current view state (see `syncWorkspace`). */
+  wsId: string | null;
   statusFilters: IssueStatus[];
   priorityFilters: IssuePriority[];
   mineRelations: Record<MineRelation, boolean>;
@@ -50,6 +54,7 @@ interface TasksViewState {
   agentRunning: boolean;
   sortBy: TaskSortKey;
   setTab: (tab: TaskTab) => void;
+  syncWorkspace: (wsId: string | null) => void;
   toggleStatusFilter: (status: IssueStatus) => void;
   togglePriorityFilter: (priority: IssuePriority) => void;
   toggleMineRelation: (relation: MineRelation) => void;
@@ -63,6 +68,7 @@ interface TasksViewState {
 
 export const useTasksViewStore = create<TasksViewState>((set) => ({
   tab: "all",
+  wsId: null,
   statusFilters: [],
   priorityFilters: [],
   mineRelations: { assigned: false, created: false, involved: false },
@@ -74,6 +80,25 @@ export const useTasksViewStore = create<TasksViewState>((set) => ({
   // Deliberately does not touch statusFilters: the selection belongs to the
   // 全部 tab and must survive a round-trip through a quadrant tab.
   setTab: (tab) => set({ tab }),
+  // Filters are workspace-scoped: the owning wsId rides in the state, so a
+  // real switch is detected even when this runs on a freshly remounted
+  // screen whose props already carry the new id. Same-workspace syncs are
+  // no-ops. A switch clears every filter; TAB and sort survive (保 TAB).
+  syncWorkspace: (wsId) =>
+    set((state) =>
+      state.wsId === wsId
+        ? {}
+        : {
+            wsId,
+            statusFilters: [],
+            priorityFilters: [],
+            mineRelations: { assigned: false, created: false, involved: false },
+            assigneeRefs: [],
+            includeNoAssignee: false,
+            creatorRefs: [],
+            agentRunning: false,
+          },
+    ),
   toggleStatusFilter: (status) =>
     set((state) => ({
       statusFilters: state.statusFilters.includes(status)
