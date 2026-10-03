@@ -411,8 +411,9 @@
       "agent": "Agent"
     },
     "source": {
-      "system": "系统",
-      "member": "成员"
+      "manual": "人工",
+      "retrospective": "每日总复盘",
+      "merged": "合并"
     },
     "create": "新建提案",
     "createTitle": "新建 Prompt 立法提案",
@@ -472,15 +473,19 @@
     "rejectPlaceholder": "驳回理由将留档可查。",
     "rejectConfirm": "确认驳回",
     "ownerOnly": "仅 Owner",
-    "source": {
-      "manual": "人工",
-      "retrospective": "每日总复盘",
-      "merged": "合并"
-    },
     "empty": "这里还没有提案。",
     "emptyHint": "从真实执行证据起草一条，或让每日总复盘来提案。",
     "error": "写入失败。请检查输入后重试。",
-    "batchPartial": "批量中有提案未生效——请查看逐条结果。"
+    "batchPartial": "批量中有提案未生效——请查看逐条结果。",
+    "jevAdvisoryLabel": "本地模型预警",
+    "jevStage": {
+      "submit": "提交预检",
+      "gate": "门闸软判据"
+    },
+    "jevThreshold": "阈值",
+    "jevWarnFlag": "预警",
+    "jevDisclaimer": "仅低成本预警参考，须结合概率依据判断，不单独作为处置依据（warn-only 旁路，不影响门闸判定）。",
+    "jevUnavailable": "不可用，已跳过（不影响主流程）"
   },
   "retrospective": {
     "title": "每日总复盘",
