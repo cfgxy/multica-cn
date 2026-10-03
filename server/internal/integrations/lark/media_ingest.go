@@ -59,7 +59,7 @@ func (r *feishuMediaResolver) HasMedia(msg channel.InboundMessage) bool {
 	if err != nil {
 		return false
 	}
-	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0
 }
 
 func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.ResolvedInstallation, _ engine.ResolvedIdentity, _ pgtype.UUID, chatMessageID pgtype.UUID, msg channel.InboundMessage) channel.InboundMessage {
@@ -74,6 +74,15 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
 		})...)
 	}
+	// Quoted-parent media rides the same download/upload path; the object
+	// key is derived from (chat message, resource message, key), so quoted
+	// and trigger resources never collide even when both reference the same
+	// file_key.
+	for _, quoted := range lm.QuotedMedia {
+		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
+		})...)
+	}
 	if len(resources) == 0 {
 		return msg
 	}
@@ -86,7 +95,7 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		r.logMediaWarn("lark media ingest skipped: installation payload unavailable", lm, nil)
 		return msg
 	}
-	creds, err := installationCredentialsFor(larkInst, r.creds)
+	creds, err := CredentialsFor(larkInst, r.creds)
 	if err != nil {
 		r.logMediaWarn("lark media ingest skipped: credentials unavailable", lm, err)
 		return msg
