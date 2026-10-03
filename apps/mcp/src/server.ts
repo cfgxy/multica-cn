@@ -31,6 +31,8 @@ const SERVER_INSTRUCTIONS =
 const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "list_workspaces",
   "list_agents",
+  "list_projects",
+  "get_project",
   "list_issues",
   "get_issue",
   "search_issues",
