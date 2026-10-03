@@ -116,9 +116,8 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 // never applied on a pre-consolidation database and reach its ledger via the
 // normal migrator.
 var postConsolidationStems = []string{
-	"958_issue_dependency_type_widen",  // RUYI-351
-	"959_issue_dependency_unique_edge", // RUYI-351
-	"977_project_revision",             // RUYI-354
+	"919_issue_dependency_relationships", // RUYI-351 (consolidates 958+959)
+	"977_project_revision",               // RUYI-354
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
