@@ -80,6 +80,18 @@ func intFromEnv(key string, fallback int) (int, error) {
 	return n, nil
 }
 
+func floatFromEnv(key string, fallback float64) (float64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid number %q: %w", key, value, err)
+	}
+	return f, nil
+}
+
 func sleepWithContext(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
