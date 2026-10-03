@@ -241,9 +241,9 @@ function useLarkCapabilityCopy() {
         return t(($) => $.lark.capability_send_messages);
       case "read_history":
         return t(($) => $.lark.capability_read_history);
-      case "download_media":
+      case "media_resources":
         return t(($) => $.lark.capability_download_media);
-      case "lookup_contacts":
+      case "contact_lookup":
         return t(($) => $.lark.capability_lookup_contacts);
       default:
         return id;
