@@ -56,6 +56,24 @@ export function optionalString(
   return trimmed;
 }
 
+export function optionalStringArray(
+  args: Record<string, unknown>,
+  key: string,
+): string[] | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new ToolInputError(`'${key}' must be an array of strings`);
+  }
+  const items = (value as string[]).map((item) => item.trim()).filter((item) => item.length > 0);
+  if (items.length === 0) {
+    return undefined;
+  }
+  return items;
+}
+
 export function optionalInt(
   args: Record<string, unknown>,
   key: string,
