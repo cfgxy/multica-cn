@@ -9,11 +9,12 @@
  * different layout — web shows recursive tree, mobile shows one bubble per
  * thread. Counts agree (no comment is dropped or duplicated).
  *
- * Interaction: long-press inside a bubble fires a native iOS
- * `ActionSheetIOS` with the comment's actions (Reply, React…, Copy,
- * Select Text, Copy Link, Resolve, Delete). While the sheet is on screen
- * the targeted bubble's border highlights. See `useCommentLongPress` in
- * `./comment-context-menu.tsx`.
+ * Interaction: long-press inside a bubble fires a cross-platform action
+ * sheet (`useActionSheet`: native `ActionSheetIOS` on iOS, Modal bottom
+ * sheet on Android) with the comment's actions (Reply, React…, Copy,
+ * Select Text, Copy Link, Resolve, Edit, Delete). While the sheet is on
+ * screen the targeted bubble's border highlights. See `useCommentLongPress`
+ * in `./comment-context-menu.tsx`; Edit opens `CommentEditModal`.
  *
  * Resolved threads render in a collapsed `<ResolvedThreadBar>` by default —
  * mirrors the same state language web uses (`packages/views/issues/
@@ -74,6 +75,7 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/use-t";
 import { ReactionBar } from "./reaction-bar";
 import { useCommentLongPress } from "./comment-context-menu";
+import { CommentEditModal } from "./comment-edit-modal";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useCommentFocusStore } from "@/data/stores/comment-focus-store";
@@ -835,8 +837,9 @@ function CommentBody({
   //     inline-insert).
   // Mirrors web's split: comment-card.tsx:124 `AttachmentList`.
   //
-  // When NOT selecting: long-press fires the native ActionSheetIOS via
-  // useCommentLongPress. Markdown is non-selectable so the long-press
+  // When NOT selecting: long-press fires the cross-platform action sheet
+  // via useCommentLongPress (native ActionSheetIOS on iOS, Modal bottom
+  // sheet on Android). Markdown is non-selectable so the long-press
   // gesture doesn't race UIKit's text selection.
   //
   // When selecting: long-press wrapper is gone, markdown is selectable.
@@ -913,7 +916,20 @@ function CommentBody({
       <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
         {body}
       </Pressable>
-      <ActionSheetModal {...longPress.modalProps} />
+      {/* One <ActionSheetModal> per sheet — the main menu and the nested
+       *  React… sheet each own their modal props; spreading them into a
+       *  single modal bound it to the react sheet only, so the main menu
+       *  never rendered on Android. */}
+      <ActionSheetModal {...longPress.mainModalProps} />
+      <ActionSheetModal {...longPress.reactModalProps} />
+      {longPress.isEditing ? (
+        <CommentEditModal
+          issueId={issueId}
+          commentId={entry.id}
+          initialContent={entry.content ?? ""}
+          onClose={longPress.closeEdit}
+        />
+      ) : null}
     </Fragment>
   );
 }
