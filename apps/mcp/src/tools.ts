@@ -2,13 +2,20 @@
  * The RUYI-82 v1 MCP tool surface.
  *
  * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
- *       search_issues, progress_digest.
+ *       get_issue, search_issues, progress_digest, list_comments, get_comment.
  * Write: create_issue (general — any workspace, any project), add_comment,
  *       update_issue_status, update_issue (edit an existing issue's core
  *       fields in place — pure metadata, never starts a run), assign_issue
  *       (assign/reassign/unassign an existing issue — agent/squad assignment
  *       triggers a real run, the tool description must say so), create_project,
- *       update_project (project metadata; never spawns agent runs).
+ *       update_project (project metadata; never spawns agent runs), edit_comment,
+ *       delete_comment (RUYI-352 comment management: the product's own
+ *       author-or-admin gate is enforced server-side; content-changing edits
+ *       re-run the comment's trigger computation, so the edit_comment
+ *       description must declare the mention side effects, and defined
+ *       failures come back as structured results keyed by `code` —
+ *       permission_denied, revision_conflict, not_found, invalid_mentions —
+ *       never as exception strings).
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
@@ -17,10 +24,12 @@
  * ambient workspace: the Owner decision makes create_issue universal, so
  * callers always name their target.
  *
- * v1 deliberately exposes no delete, no permission/member management, and no
- * cross-user administration (Owner-confirmed security envelope). Project
- * deletion is additionally a hard delete, so there is no delete_project
- * either (RUYI-354 scope decision).
+ * The security envelope (Owner-confirmed) still excludes permission/member
+ * management and cross-user administration. Project deletion is additionally
+ * a hard delete, so there is no delete_project either (RUYI-354 scope
+ * decision). Comment edit/delete are exposed with the product's own
+ * author-or-admin permission gate and audit trail (revision + updated_at) —
+ * no separate MCP-side permission layer.
  */
 
 import { DIGEST_TRACKED_STATUSES, buildDigest } from "./digest.js";
@@ -32,6 +41,7 @@ import {
   optionalEnum,
   optionalInt,
   optionalString,
+  optionalStringArray,
   requireString,
   ToolInputError,
 } from "./schemas.js";
@@ -119,8 +129,73 @@ function commentBrief(comment: CommentInfo): Record<string, unknown> {
     author_id: comment.author_id,
     parent_id: comment.parent_id,
     created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    // revision > 1 (or updated_at later than created_at) marks an edited
+    // comment — the recognizable audit trail; no per-edit content history
+    // exists beyond this.
+    revision: comment.revision,
     content: comment.content,
+    // roots_only reads only: orientation stats promised by the tool
+    // description; absent on other bounded reads.
+    reply_count: comment.reply_count,
+    last_activity_at: comment.last_activity_at,
   };
+}
+
+// ---- structured comment failures (RUYI-352) ------------------------------
+//
+// The comment management endpoints define a small outcome matrix — permission
+// denial (403), revision conflict (409), unknown/already-deleted comment (404),
+// blocked mention admission (422 invalid_agent_mentions). Tools surface these
+// as structured results keyed by `code` so callers branch on the code, never
+// on exception strings. Anything outside the matrix (auth, transport, 5xx,
+// other 422s) is rethrown to the MCP error surface unchanged.
+
+function apiErrorMessage(error: MulticaApiError): string {
+  const fromBody = error.body?.error;
+  return typeof fromBody === "string" && fromBody.length > 0 ? fromBody : error.message;
+}
+
+function intField(body: Record<string, unknown>, key: string): number | undefined {
+  const value = body[key];
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+function structuredCommentFailure(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof MulticaApiError)) return undefined;
+  const body = error.body ?? {};
+  const message = apiErrorMessage(error);
+  switch (error.status) {
+    case 403:
+      return {
+        code: "permission_denied",
+        message,
+      };
+    case 404:
+      return {
+        code: "not_found",
+        message,
+      };
+    case 409:
+      return {
+        code: "revision_conflict",
+        expected_revision: intField(body, "expected_revision") ?? null,
+        actual_revision: intField(body, "actual_revision") ?? null,
+        message,
+      };
+    case 422:
+      if (body.code === "invalid_agent_mentions") {
+        return {
+          code: "invalid_mentions",
+          invalid_mentions:
+            Array.isArray(body.invalid_mentions) ? body.invalid_mentions : [],
+          message,
+        };
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
 }
 
 // The full base-field projection the project tools return (RUYI-354). Flat on
@@ -706,6 +781,219 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         created_at: comment.created_at,
         trigger_outcomes: comment.trigger_outcomes ?? [],
       };
+    },
+  },
+  {
+    name: "list_comments",
+    description:
+      "List an issue's comments with bounded-read modes for agents (RUYI-352). Read-only. " +
+      "Modes: thread=<comment id> returns that thread's root plus every descendant (the server resolves the root from any anchor; add tail=<N> to keep only the N newest replies — the root always comes back); " +
+      "recent=<N> returns the N most recently active threads, each as root + all descendants; " +
+      "roots_only=true returns top-level comments with reply_count / last_activity_at orientation stats; " +
+      "since=<RFC3339> keeps only newer comments; summary=true clips every body to ~200 characters (content_truncated marks the cuts); " +
+      "fold=true collapses each resolved thread to root + conclusion so settled discussion costs no tokens. " +
+      "Exclusivity (mirrored client-side): roots_only excludes thread/recent/tail; tail requires thread; fold excludes roots_only/since/tail. " +
+      "Every comment carries revision — revision > 1 (or updated_at later than created_at) marks an edited comment. " +
+      "The default full list returns the newest 2000 comments; use the modes above on long issues.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        thread: { type: "string", description: "Comment UUID anchor; returns its whole thread." },
+        tail: { type: "integer", description: "With thread: keep only the N newest replies (0 = root only).", minimum: 0 },
+        recent: { type: "integer", description: "Return the N most recently active threads.", minimum: 1 },
+        roots_only: { type: "boolean", description: "Top-level comments only, with orientation stats." },
+        since: { type: "string", description: "Only comments created after this RFC3339 timestamp." },
+        summary: { type: "boolean", description: "Clip each body to ~200 characters (default false)." },
+        fold: { type: "boolean", description: "Collapse resolved threads to root + conclusion (default false)." },
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const thread = optionalString(args, "thread");
+      const tail = optionalInt(args, "tail", { min: 0 });
+      const recent = optionalInt(args, "recent", { min: 1 });
+      const rootsOnly = optionalBoolean(args, "roots_only") ?? false;
+      const since = optionalString(args, "since");
+      const summary = optionalBoolean(args, "summary") ?? false;
+      const fold = optionalBoolean(args, "fold") ?? false;
+      if (rootsOnly && (thread !== undefined || recent !== undefined || tail !== undefined)) {
+        throw new ToolInputError("'roots_only' cannot be combined with 'thread', 'recent' or 'tail'");
+      }
+      if (tail !== undefined && thread === undefined) {
+        throw new ToolInputError("'tail' requires 'thread' (it caps replies within one thread)");
+      }
+      if (fold && (rootsOnly || since !== undefined || tail !== undefined)) {
+        throw new ToolInputError("'fold' cannot be combined with 'roots_only', 'since' or 'tail'");
+      }
+      const comments = await client.listComments(workspace, issueId, {
+        thread,
+        tail,
+        recent,
+        roots_only: rootsOnly || undefined,
+        since,
+        summary: summary || undefined,
+        fold: fold || undefined,
+      });
+      return {
+        total: comments.length,
+        comments: comments.map(commentBrief),
+      };
+    },
+  },
+  {
+    name: "get_comment",
+    description:
+      "Fetch ONE comment in full: exact body, author, parent, created_at/updated_at and revision (RUYI-352). Read-only. " +
+      "revision > 1 (or updated_at later than created_at) marks an edited comment; there is no deeper per-edit history. " +
+      "Returns found=false with code not_found when the id is unknown, the comment was deleted, or it lives outside the given issue/workspace. " +
+      "Also reports thread_root_id so the caller can pull the surrounding thread with list_comments. " +
+      "Use get_issue for issue context; use list_comments for bounded thread reads.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        comment_id: { type: "string", description: "Comment UUID, from add_comment / list_comments / get_issue results." },
+      },
+      required: ["workspace", "issue", "comment_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const commentId = requireString(args, "comment_id");
+      // No dedicated single-comment GET exists server-side; thread=<id> makes
+      // the server resolve the anchor's whole thread via recursive CTE and the
+      // anchor is always part of that answer — one bounded read locates it.
+      let thread: CommentInfo[];
+      try {
+        thread = await client.listComments(workspace, issueId, { thread: commentId });
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return {
+            found: false,
+            code: "not_found",
+            comment: null,
+            message: apiErrorMessage(error),
+          };
+        }
+        throw error;
+      }
+      const comment = thread.find((candidate) => candidate.id === commentId);
+      if (comment === undefined) {
+        return {
+          found: false,
+          code: "not_found",
+          comment: null,
+          message: "comment not found in this issue (unknown id, deleted, or outside the workspace)",
+        };
+      }
+      const root = thread.find((candidate) => !candidate.parent_id);
+      return {
+        found: true,
+        comment: {
+          id: comment.id,
+          issue_id: comment.issue_id,
+          author_type: comment.author_type,
+          author_id: comment.author_id,
+          parent_id: comment.parent_id ?? null,
+          thread_root_id: (root ?? comment).id,
+          created_at: comment.created_at,
+          updated_at: comment.updated_at,
+          revision: comment.revision,
+          content: comment.content,
+        },
+      };
+    },
+  },
+  {
+    name: "edit_comment",
+    description:
+      "Edit ONE existing comment: replace its content (Markdown supported) (RUYI-352). " +
+      "Permissions: only the comment's author or a workspace admin can edit; anyone else gets the structured result code permission_denied. " +
+      "Concurrency: pass expected_revision (from a previous read of the comment) for optimistic locking — if the comment changed meanwhile, the edit is refused with code revision_conflict carrying actual_revision; re-read and retry. " +
+      "WARNING (run side effects): a content-CHANGING edit re-runs the comment's whole trigger computation on the new body, exactly as if it were posted fresh — an explicit @agent/@squad mention kept or added in the new content dispatches that agent (a REAL run consuming the token owner's quota), and a member-edited comment on an agent/squad-assigned issue can also re-reach the assignee. Every dispatch outcome is reported in trigger_outcomes. " +
+      "An edit that does not change the stored content triggers nothing. Removing a mention cancels the pending run the original comment triggered without re-dispatching it. Pass suppress_agent_ids to exclude specific agents from the re-trigger. " +
+      "Audit: every content edit bumps revision and updated_at so edited comments stay recognizable (no per-edit content history is kept). " +
+      "Defined failure codes: permission_denied, revision_conflict (with actual_revision), not_found (unknown id or already deleted), invalid_mentions (a mentioned agent cannot be invoked; invalid_mentions carries the spans).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        comment_id: { type: "string", description: "Comment UUID to edit, from a previous read or create result." },
+        content: { type: "string", description: "New comment body — replaces the stored content entirely (Markdown supported)." },
+        expected_revision: {
+          type: "integer",
+          description: "Optimistic-lock revision from a previous read; the edit fails with revision_conflict if the comment changed since.",
+          minimum: 1,
+        },
+        suppress_agent_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Agent/squad UUIDs excluded from the edit's re-trigger dispatch (structured as trigger_outcomes without them).",
+        },
+      },
+      required: ["workspace", "comment_id", "content"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const commentId = requireString(args, "comment_id");
+      const content = requireString(args, "content", { maxLength: 50_000 });
+      const expectedRevision = optionalInt(args, "expected_revision", { min: 1 });
+      const suppressAgentIds = optionalStringArray(args, "suppress_agent_ids");
+      let comment: CommentInfo;
+      try {
+        comment = await client.updateComment(workspace, commentId, {
+          content,
+          expected_revision: expectedRevision,
+          suppress_agent_ids: suppressAgentIds,
+        });
+      } catch (error) {
+        const failure = structuredCommentFailure(error);
+        if (failure === undefined) throw error;
+        return { edited: false, id: commentId, ...failure };
+      }
+      return {
+        edited: true,
+        id: comment.id,
+        issue_id: comment.issue_id,
+        revision: comment.revision,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+        trigger_outcomes: comment.trigger_outcomes ?? [],
+      };
+    },
+  },
+  {
+    name: "delete_comment",
+    description:
+      "Delete ONE comment permanently (RUYI-352). There is no tombstone: the body becomes unrecoverable, and deleting a parent comment deletes its whole reply subtree with it. " +
+      "Permissions: only the comment's author or a workspace admin can delete; anyone else gets the structured result code permission_denied. " +
+      "SIDE EFFECTS: agent runs still queued from this comment's mentions are cancelled so no run executes the deleted content; deleting itself starts no run and consumes no quota. " +
+      "Audit: the deletion bumps the issue revision and broadcasts a comment_deleted event; the comment body itself is gone. " +
+      "Defined failure codes: permission_denied, not_found (unknown id or already deleted).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        comment_id: { type: "string", description: "Comment UUID to delete, from a previous read or create result." },
+      },
+      required: ["workspace", "comment_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const commentId = requireString(args, "comment_id");
+      try {
+        await client.deleteComment(workspace, commentId);
+      } catch (error) {
+        const failure = structuredCommentFailure(error);
+        if (failure === undefined) throw error;
+        return { deleted: false, id: commentId, ...failure };
+      }
+      return { deleted: true, id: commentId };
     },
   },
   {

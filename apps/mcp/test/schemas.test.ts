@@ -6,6 +6,7 @@ import {
   optionalEnum,
   optionalInt,
   optionalString,
+  optionalStringArray,
   requireString,
   ToolInputError,
 } from "../src/schemas.js";
@@ -94,5 +95,19 @@ describe("optionalClearableString", () => {
         pattern: /^\d{4}-\d{2}-\d{2}$/,
       }),
     ).toThrow(/invalid format/);
+  });
+});
+
+describe("optionalStringArray", () => {
+  it("trims items and drops blanks; absent stays absent", () => {
+    expect(optionalStringArray({ ids: [" a1 ", ""] }, "ids")).toEqual(["a1"]);
+    expect(optionalStringArray({}, "ids")).toBeUndefined();
+    expect(optionalStringArray({ ids: null }, "ids")).toBeUndefined();
+    expect(optionalStringArray({ ids: [] }, "ids")).toBeUndefined();
+  });
+
+  it("rejects non-arrays and non-string items", () => {
+    expect(() => optionalStringArray({ ids: "a1" }, "ids")).toThrow(ToolInputError);
+    expect(() => optionalStringArray({ ids: [1] }, "ids")).toThrow(ToolInputError);
   });
 });
