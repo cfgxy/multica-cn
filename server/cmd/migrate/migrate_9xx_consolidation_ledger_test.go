@@ -107,9 +107,23 @@ func consolidationGroups() []consolidationGroup {
 // (identity files in the consolidation).
 var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions", "902_user_admin_state"}
 
-// finalStems are the 17 canonical 9xx stems of the consolidated tree, in
-// migration order.
-func finalStems() []string {
+// postConsolidationStems are domain migrations added after the RUYI-359
+// consolidation, in the reserved tail range 917-999 (9xx-consolidation.md).
+// New 9xx migrations register here in the same change that adds their files,
+// so the on-disk equality below keeps covering the whole 9xx tree: stray or
+// deleted 9xx files still fail. The repair script's one-hop rewrite only
+// outputs the consolidation tree itself — post-consolidation stems were
+// never applied on a pre-consolidation database and reach its ledger via the
+// normal migrator.
+var postConsolidationStems = []string{
+	"958_issue_dependency_type_widen",  // RUYI-351
+	"959_issue_dependency_unique_edge", // RUYI-351
+	"977_project_revision",             // RUYI-354
+}
+
+// consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
+// in migration order.
+func consolidationStems() []string {
 	stems := passThroughStems[:2:2] // 900, 901
 	for _, g := range consolidationGroups() {
 		stems = append(stems, g.target)
@@ -117,14 +131,10 @@ func finalStems() []string {
 	return stems
 }
 
-// postConsolidationStems are the 9xx stems added after the RUYI-359
-// consolidation snapshot. The on-disk equality below requires the 17
-// canonical stems plus everything registered here, so stray or deleted 9xx
-// files still fail; each new 9xx migration appends its stem in the same
-// change that adds the files.
-var postConsolidationStems = []string{
-	"958_issue_dependency_type_widen",  // RUYI-351
-	"959_issue_dependency_unique_edge", // RUYI-351
+// finalStems are the canonical 9xx stems of the consolidated tree plus the
+// post-consolidation domain migrations, in migration order.
+func finalStems() []string {
+	return append(consolidationStems(), postConsolidationStems...)
 }
 
 // originalStems are the 72 stems the pre-consolidation tree defined at
@@ -187,7 +197,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 		}
 	}
 	wantDisk := map[string]bool{}
-	for _, f := range append(append([]string{}, finalStems()...), postConsolidationStems...) {
+	for _, f := range finalStems() {
 		wantDisk[f] = true
 	}
 	if !reflect.DeepEqual(onDisk, wantDisk) {
@@ -358,7 +368,9 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 
 			want := tc.want
 			if tc.name == "full-rewrite" {
-				want = append(finalStems(), "untouched")
+				// The one-hop rewrite outputs the consolidation tree only;
+				// post-consolidation stems are not part of its output domain.
+				want = append(consolidationStems(), "untouched")
 			}
 			if tc.name == "new-tree-idempotent" {
 				want = append([]string{}, tc.initial...)

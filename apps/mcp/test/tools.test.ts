@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { MulticaApiError, MulticaClient } from "../src/rest.js";
 import { findTool, TOOL_DEFINITIONS } from "../src/tools.js";
 import { ToolInputError } from "../src/schemas.js";
-import type { IssueInfo } from "../src/types.js";
+import type { IssueInfo, ProjectInfo } from "../src/types.js";
 
 const WS = "voice-notes";
 
@@ -18,6 +18,18 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
       projects: [{ id: "p1", title: "Playground", status: "active", issue_count: 3 }],
       total: 1,
     }),
+    getProject: async (_ws: string, id: string) => {
+      calls.push({ method: "getProject", args: [id] });
+      return projectFixture();
+    },
+    createProject: async (_ws: string, body: Record<string, unknown>) => {
+      calls.push({ method: "createProject", args: [body] });
+      return { ...projectFixture(), ...body, revision: 1 };
+    },
+    updateProject: async (_ws: string, id: string, body: Record<string, unknown>) => {
+      calls.push({ method: "updateProject", args: [id, body] });
+      return { ...projectFixture(), title: "Playground v2", revision: 2 };
+    },
     listIssues: async () => ({ issues: [], total: 0 }),
     getIssue: async () => issueFixture(),
     listComments: async () => [],
@@ -76,6 +88,25 @@ function issueFixture(over: Partial<IssueInfo> = {}): IssueInfo {
   };
 }
 
+function projectFixture(over: Partial<ProjectInfo> = {}): ProjectInfo {
+  return {
+    id: "p1",
+    workspace_id: "w1",
+    title: "Playground",
+    description: "sandbox",
+    instructions: "brief text",
+    status: "in_progress",
+    priority: "high",
+    created_at: "2026-10-03T00:00:00Z",
+    updated_at: "2026-10-03T00:00:00Z",
+    issue_count: 3,
+    done_count: 1,
+    resource_count: 2,
+    revision: 1,
+    ...over,
+  };
+}
+
 function callsOf(client: MulticaClient): Array<{ method: string; args: unknown[] }> {
   return (client as unknown as { __calls: Array<{ method: string; args: unknown[] }> }).__calls;
 }
@@ -88,9 +119,11 @@ describe("tool surface", () => {
         "assign_issue",
         "cancel_run",
         "create_issue",
+        "create_project",
         "dispatch_agent",
         "get_issue",
         "get_issue_relations",
+        "get_project",
         "get_run",
         "list_agents",
         "list_issue_runs",
@@ -102,6 +135,7 @@ describe("tool surface", () => {
         "retry_run",
         "search_issues",
         "update_issue_status",
+        "update_project",
       ].sort(),
     );
   });
@@ -130,6 +164,175 @@ describe("list_projects handler", () => {
     >;
     expect(result.total).toBe(1);
     expect((result.projects as Array<{ title: string }>)[0]?.title).toBe("Playground");
+  });
+});
+
+describe("get_project handler", () => {
+  it("returns the full base-field projection including revision", async () => {
+    const client = fakeClient();
+    const tool = findTool("get_project");
+    const result = (await tool?.handler(
+      { workspace: WS, project_id: "p1" },
+      client,
+    )) as Record<string, unknown>;
+    const [id] = callsOf(client)[0]?.args as [string];
+    expect(id).toBe("p1");
+    expect(result.id).toBe("p1");
+    expect(result.title).toBe("Playground");
+    expect(result.instructions).toBe("brief text");
+    expect(result.done_count).toBe(1);
+    expect(result.resource_count).toBe(2);
+    expect(result.revision).toBe(1);
+  });
+
+  it("requires the project id", async () => {
+    const tool = findTool("get_project");
+    await expect(tool?.handler({ workspace: WS }, fakeClient())).rejects.toThrow(ToolInputError);
+  });
+});
+
+describe("create_project handler", () => {
+  it("maps creation fields to the REST body and echoes revision", async () => {
+    const client = fakeClient();
+    const tool = findTool("create_project");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        title: "  New Project  ",
+        description: "desc",
+        instructions: "brief",
+        status: "in_progress",
+        priority: "high",
+        lead_type: "member",
+        lead_id: "u1",
+        start_date: "2026-10-03",
+        due_date: "2026-10-31",
+      },
+      client,
+    )) as Record<string, unknown>;
+    const [body] = callsOf(client)[0]?.args as [Record<string, unknown>];
+    expect(body.title).toBe("New Project");
+    expect(body.status).toBe("in_progress");
+    expect(body.lead_type).toBe("member");
+    expect(body.start_date).toBe("2026-10-03");
+    expect(result.created).toBe(true);
+    expect(result.id).toBe("p1");
+    expect(result.revision).toBe(1);
+  });
+
+  it("rejects lead_type without lead_id", async () => {
+    const tool = findTool("create_project");
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", lead_type: "agent" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("rejects an unknown status and a malformed date before hitting the API", async () => {
+    const tool = findTool("create_project");
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", status: "active" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", due_date: "31/10/2026" }, fakeClient()),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+  });
+
+  it("rejects oversized instructions before hitting the API", async () => {
+    const tool = findTool("create_project");
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", instructions: "x".repeat(32_001) }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+});
+
+describe("update_project handler", () => {
+  it("maps set fields, passes expected_revision through, and echoes the new revision", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_project");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        title: "Renamed",
+        status: "paused",
+        expected_revision: 1,
+      },
+      client,
+    )) as Record<string, unknown>;
+    const [id, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(id).toBe("p1");
+    expect(body).toEqual({ title: "Renamed", status: "paused", expected_revision: 1 });
+    expect(result.updated).toBe(true);
+    expect(result.id).toBe("p1");
+    expect(result.revision).toBe(2);
+  });
+
+  it("omits absent keys and sends explicit nulls for clears", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_project");
+    await tool?.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        description: null,
+        instructions: null,
+        lead_type: null,
+        lead_id: null,
+        start_date: null,
+        due_date: "",
+      },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    // JSON round-trip is what actually goes on the wire: undefined keys must
+    // vanish, null keys must survive.
+    const wire = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+    expect(wire).toEqual({
+      description: null,
+      instructions: null,
+      lead_type: null,
+      lead_id: null,
+      start_date: null,
+      due_date: null,
+    });
+  });
+
+  it("keeps date values that are set and rejects malformed ones", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_project");
+    await tool?.handler(
+      { workspace: WS, project_id: "p1", due_date: "2026-11-30" },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body.due_date).toBe("2026-11-30");
+
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", due_date: "tomorrow" }, fakeClient()),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+  });
+
+  it("requires lead_type and lead_id together", async () => {
+    const tool = findTool("update_project");
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", lead_type: "agent" }, fakeClient()),
+    ).rejects.toThrow(/together/);
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", lead_id: "a1" }, fakeClient()),
+    ).rejects.toThrow(/together/);
+    await expect(
+      tool?.handler(
+        { workspace: WS, project_id: "p1", lead_type: null, lead_id: null },
+        fakeClient(),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects an unknown status enum", async () => {
+    const tool = findTool("update_project");
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", status: "active" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
   });
 });
 
