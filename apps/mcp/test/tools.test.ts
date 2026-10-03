@@ -43,6 +43,28 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
       calls.push({ method: "updateIssue", args: [id, body] });
       return issueFixture({ status: "in_progress", revision: 3 });
     },
+    addIssueRelation: async (_ws: string, _id: string, body: Record<string, unknown>) => {
+      calls.push({ method: "addIssueRelation", args: [body] });
+      return {
+        added: true,
+        relation: { id: "e1", type: body.type, source_issue_id: "i1", target_issue_id: body.target_issue_id },
+        issue: { id: "i1", revision: 4 },
+      };
+    },
+    removeIssueRelation: async (
+      _ws: string,
+      _id: string,
+      relationType: string,
+      targetIssueId: string,
+      expectedRevision?: number,
+    ) => {
+      calls.push({ method: "removeIssueRelation", args: [relationType, targetIssueId, expectedRevision] });
+      return {
+        removed: true,
+        relation: { type: relationType, source_issue_id: "i1", target_issue_id: targetIssueId },
+        issue: { id: "i1", revision: 5 },
+      };
+    },
     quickCreateIssue: async (ws: string, body: Record<string, unknown>) => {
       calls.push({ method: "quickCreateIssue", args: [ws, body] });
       return { task_id: "task-1" };
@@ -104,6 +126,7 @@ describe("tool surface", () => {
         "edit_comment",
         "get_comment",
         "get_issue",
+        "get_issue_relations",
         "get_project",
         "get_run",
         "list_agents",
@@ -112,6 +135,7 @@ describe("tool surface", () => {
         "list_issues",
         "list_projects",
         "list_workspaces",
+        "manage_issue_relations",
         "progress_digest",
         "retry_run",
         "search_issues",
@@ -999,6 +1023,135 @@ describe("run lifecycle tools (RUYI-292)", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MulticaApiError);
     expect((err as MulticaApiError).message).toContain("agent_already_queued");
+  });
+});
+
+describe("issue relation tools (RUYI-351)", () => {
+  it("get_issue_relations returns the structured five-view shape", async () => {
+    const client = fakeClient({
+      getIssueRelations: async () => ({
+        issue_id: "i1",
+        identifier: "VOI-1",
+        revision: 3,
+        parent: { id: "p1", identifier: "VOI-9" },
+        blocks: [{ id: "b1", identifier: "VOI-2" }],
+        blocked_by: [],
+        relates_to: [{ id: "r1", identifier: "VOI-3" }],
+        supersedes: [],
+        superseded_by: [{ id: "s1", identifier: "VOI-4" }],
+      }),
+    });
+    const tool = findTool("get_issue_relations");
+    const result = (await tool?.handler({ workspace: WS, issue: "VOI-1" }, client)) as Record<
+      string,
+      unknown
+    >;
+    expect(result.issue_id).toBe("i1");
+    expect(result.parent).toEqual({ id: "p1", identifier: "VOI-9" });
+    expect(result.blocks).toHaveLength(1);
+    expect(result.superseded_by).toHaveLength(1);
+  });
+
+  it("manage_issue_relations set_parent routes through updateIssue with the lock", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", action: "set_parent", target_issue: "VOI-9", expected_revision: 3 },
+      client,
+    )) as Record<string, unknown>;
+    const [id, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(id).toBe("VOI-1");
+    expect(body.parent_issue_id).toBe("VOI-9");
+    expect(body.expected_revision).toBe(3);
+    // The fixture issue has no parent_issue_id, so the echo falls back to null.
+    expect(result.parent_issue_id).toBe(null);
+    expect(String(result.note)).toMatch(/never/i);
+  });
+
+  it("manage_issue_relations clear_parent sends an explicit null (the server's clear marker)", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    await tool?.handler({ workspace: WS, issue: "VOI-1", action: "clear_parent" }, client);
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toHaveProperty("parent_issue_id", null);
+  });
+
+  it("manage_issue_relations add_relation forwards the semantic type and lock", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", action: "add_relation", relation_type: "blocked_by", target_issue: "VOI-2" },
+      client,
+    )) as Record<string, unknown>;
+    const [body] = callsOf(client)[0]?.args as [Record<string, unknown>];
+    // blocked_by passes through in the caller's frame; the server normalizes
+    // it to a forward blocks row.
+    expect(body.type).toBe("blocked_by");
+    expect(body.target_issue_id).toBe("VOI-2");
+    expect(result.revision).toBe(4);
+    expect(String(result.note)).toMatch(/never dispatch/i);
+  });
+
+  it("manage_issue_relations remove_relation carries the optional lock in the query", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", action: "remove_relation", relation_type: "relates_to", target_issue: "VOI-2", expected_revision: 4 },
+      client,
+    )) as Record<string, unknown>;
+    const [relationType, targetIssueId, expectedRevision] = callsOf(client)[0]?.args as [
+      string,
+      string,
+      number | undefined,
+    ];
+    expect(relationType).toBe("relates_to");
+    expect(targetIssueId).toBe("VOI-2");
+    expect(expectedRevision).toBe(4);
+    expect(result.updated).toBe(true);
+  });
+
+  it("manage_issue_relations validates the action/relation_type/target matrix", async () => {
+    const tool = findTool("manage_issue_relations");
+    const client = fakeClient();
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "set_parent" }, client),
+    ).rejects.toThrow(/target_issue.*required/i);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "clear_parent", target_issue: "VOI-2" }, client),
+    ).rejects.toThrow(/must be omitted/i);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "add_relation", target_issue: "VOI-2" }, client),
+    ).rejects.toThrow(/relation_type.*required/i);
+    await expect(
+      tool?.handler(
+        { workspace: WS, issue: "VOI-1", action: "add_relation", relation_type: "enemies_with", target_issue: "VOI-2" },
+        client,
+      ),
+    ).rejects.toThrow(/must be one of/i);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "remove_relation", relation_type: "blocks" }, client),
+    ).rejects.toThrow(/target_issue.*required/i);
+  });
+
+  it("relation tool schemas state the no-run side effect explicitly", () => {
+    const read = findTool("get_issue_relations");
+    expect(read?.description).toMatch(/read-only/i);
+    const manage = findTool("manage_issue_relations");
+    expect(manage?.description).toMatch(/NEVER dispatches, wakes, or queues an agent run/i);
+    expect(manage?.description).toMatch(/revision_conflict/i);
+    expect(manage?.inputSchema.properties.action?.enum).toEqual([
+      "set_parent",
+      "clear_parent",
+      "add_relation",
+      "remove_relation",
+    ]);
+    expect(manage?.inputSchema.properties.relation_type?.enum).toEqual([
+      "blocks",
+      "blocked_by",
+      "relates_to",
+      "supersedes",
+      "superseded_by",
+    ]);
   });
 });
 
