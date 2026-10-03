@@ -1,7 +1,7 @@
 package lark
 
 // Persistence + sweep facade for the capability-probe verdicts
-// (channel_capability_state, migration 918). The probe machinery lives in
+// (channel_capability_state, migration 920). The probe machinery lives in
 // permission.go; this file is the only writer/reader of the table.
 
 import (
