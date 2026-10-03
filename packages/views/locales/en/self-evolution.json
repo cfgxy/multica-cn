@@ -412,8 +412,9 @@
       "agent": "Agent"
     },
     "source": {
-      "system": "System",
-      "member": "Member"
+      "manual": "Manual",
+      "retrospective": "Daily retrospective",
+      "merged": "Merged"
     },
     "create": "New proposal",
     "createTitle": "New prompt legislation proposal",
@@ -473,15 +474,19 @@
     "rejectPlaceholder": "Why this proposal is rejected — the reason stays on the record.",
     "rejectConfirm": "Reject proposal",
     "ownerOnly": "Owner only",
-    "source": {
-      "manual": "Manual",
-      "retrospective": "Daily retrospective",
-      "merged": "Merged"
-    },
     "empty": "No proposals here yet.",
     "emptyHint": "Draft one from real execution evidence, or let the daily retrospective propose.",
     "error": "The write failed. Check your inputs and retry.",
-    "batchPartial": "Some proposals in the batch did not enact — check the per-item results."
+    "batchPartial": "Some proposals in the batch did not enact — check the per-item results.",
+    "jevAdvisoryLabel": "Local model advisory",
+    "jevStage": {
+      "submit": "submit precheck",
+      "gate": "gate advisory"
+    },
+    "jevThreshold": "threshold",
+    "jevWarnFlag": "warn",
+    "jevDisclaimer": "Low-cost advisory only — read it together with its probability basis; never a disposition basis on its own (warn-only sidecar, gate verdicts unaffected).",
+    "jevUnavailable": "unavailable, skipped (main flow unaffected)"
   },
   "retrospective": {
     "title": "Daily retrospective",

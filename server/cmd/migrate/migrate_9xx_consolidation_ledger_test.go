@@ -120,6 +120,7 @@ var postConsolidationStems = []string{
 	"919_issue_dependency_relationships", // RUYI-351 (consolidates 958+959)
 	"920_project_revision",               // RUYI-354
 	"921_prompt_version_snapshot_scope",  // RUYI-285
+	"923_prompt_proposal_jev_advisory",   // RUYI-347
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

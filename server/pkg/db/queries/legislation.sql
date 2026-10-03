@@ -47,8 +47,11 @@ WHERE prompt_proposal.id = @id AND prompt_proposal.workspace_id = @workspace_id
 RETURNING *;
 
 -- name: SubmitPromptProposal :one
+-- jev_advisory (RUYI-347): the submit-time risk precheck report; NULL when
+-- the advisory layer is disabled (NULL = 未检/关态).
 UPDATE prompt_proposal SET status = 'pending_owner',
-    audit_log = prompt_proposal.audit_log || @audit::jsonb, updated_at = now()
+    audit_log = prompt_proposal.audit_log || @audit::jsonb,
+    jev_advisory = @jev_advisory::jsonb, updated_at = now()
 WHERE prompt_proposal.id = @id AND prompt_proposal.workspace_id = @workspace_id
   AND prompt_proposal.status = 'draft'
 RETURNING *;
@@ -66,18 +69,24 @@ RETURNING *;
 -- name: EnactPromptProposal :one
 -- approved → enacted. enacted_version stays NULL in E1–E4 (the E5 write
 -- path fills it); gate_errors/gate_warnings are cleared by a successful run.
+-- jev_advisory (RUYI-347): the gate-stage soft-judgment report overwrites
+-- the submit-stage precheck (latest verdict is authoritative; stage field
+-- disambiguates).
 UPDATE prompt_proposal SET status = 'enacted',
     gate_errors = '[]'::jsonb, gate_warnings = @warnings::jsonb,
-    audit_log = prompt_proposal.audit_log || @audit::jsonb, updated_at = now()
+    audit_log = prompt_proposal.audit_log || @audit::jsonb,
+    jev_advisory = @jev_advisory::jsonb, updated_at = now()
 WHERE prompt_proposal.id = @id AND prompt_proposal.workspace_id = @workspace_id
   AND prompt_proposal.status = 'approved'
 RETURNING *;
 
 -- name: MarkPromptProposalGateFailed :one
 -- approved → gate_failed with the full engine report stored for the UI.
+-- jev_advisory (RUYI-347): gate-stage report, same overwrite rule as enact.
 UPDATE prompt_proposal SET status = 'gate_failed',
     gate_errors = @errors::jsonb, gate_warnings = @warnings::jsonb,
-    audit_log = prompt_proposal.audit_log || @audit::jsonb, updated_at = now()
+    audit_log = prompt_proposal.audit_log || @audit::jsonb,
+    jev_advisory = @jev_advisory::jsonb, updated_at = now()
 WHERE prompt_proposal.id = @id AND prompt_proposal.workspace_id = @workspace_id
   AND prompt_proposal.status IN ('approved', 'pending_owner')
 RETURNING *;

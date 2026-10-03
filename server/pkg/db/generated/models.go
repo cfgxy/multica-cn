@@ -1436,6 +1436,7 @@ type PromptProposal struct {
 	AuditLog            []byte             `json:"audit_log"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	JevAdvisory         []byte             `json:"jev_advisory"`
 }
 
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.

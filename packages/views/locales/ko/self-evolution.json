@@ -411,8 +411,9 @@
       "agent": "에이전트"
     },
     "source": {
-      "system": "시스템",
-      "member": "멤버"
+      "manual": "수동",
+      "retrospective": "일일 회고",
+      "merged": "병합"
     },
     "create": "새 제안",
     "createTitle": "새 프롬프트 입법 제안",
@@ -472,15 +473,19 @@
     "rejectPlaceholder": "반려 사유는 기록에 남습니다.",
     "rejectConfirm": "반려하기",
     "ownerOnly": "오너 전용",
-    "source": {
-      "manual": "수동",
-      "retrospective": "일일 회고",
-      "merged": "병합"
-    },
     "empty": "아직 제안이 없습니다.",
     "emptyHint": "실제 실행 근거로 초안을 만들거나 일일 회고에 맡기세요.",
     "error": "쓰기에 실패했습니다. 입력을 확인하고 다시 시도하세요.",
-    "batchPartial": "일괄 처리에서 발효되지 않은 제안이 있습니다——항목별 결과를 확인하세요."
+    "batchPartial": "일괄 처리에서 발효되지 않은 제안이 있습니다——항목별 결과를 확인하세요.",
+    "jevAdvisoryLabel": "로컬 모델 경고",
+    "jevStage": {
+      "submit": "제출 사전검사",
+      "gate": "게이트 소프트 판정"
+    },
+    "jevThreshold": "임계값",
+    "jevWarnFlag": "경고",
+    "jevDisclaimer": "저비용 경고 참고용입니다. 확률 근거와 함께 판단하고 단독으로 처분 근거로 삼지 마세요(warn-only 우회, 게이트 판정에는 영향 없음).",
+    "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)"
   },
   "retrospective": {
     "title": "일일 회고",
