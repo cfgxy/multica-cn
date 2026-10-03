@@ -26,8 +26,14 @@
  * Known window limit (stated in the delivery report): the server caps
  * list responses at 100 rows; like web, v1 renders that window one-shot.
  */
-import { useMemo } from "react";
-import { Pressable, SectionList, ScrollView, View } from "react-native";
+import { useEffect, useMemo } from "react";
+import {
+  Pressable,
+  SectionList,
+  ScrollView,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useIsFocused } from "@react-navigation/native";
 import { router } from "expo-router";
@@ -61,7 +67,7 @@ import type { TaskActorRef, TaskTab } from "@/data/stores/tasks-view-store";
 import { useTasksViewStore } from "@/data/stores/tasks-view-store";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { useClearFiltersOnWorkspaceChange } from "@/lib/use-clear-filters-on-workspace-change";
+import { shouldWrapTaskPills } from "@/lib/task-toolbar";
 import {
   localizedStatusLabel,
   priorityLabel,
@@ -95,10 +101,14 @@ export default function Tasks() {
   const creatorRefs = useTasksViewStore((s) => s.creatorRefs);
   const agentRunning = useTasksViewStore((s) => s.agentRunning);
 
-  useClearFiltersOnWorkspaceChange(
-    useTasksViewStore.getState().clearFilters,
-    wsId,
-  );
+  // Workspace-scoped filters live in a module-global store while this screen
+  // remounts per workspace — and switch-workspace writes the new id before
+  // the new screen mounts, so a ref-guard hook skips the transition. The
+  // owning wsId is tracked inside the store; a real switch clears filters
+  // and keeps TAB/sort (item 12: 清筛选保 TAB).
+  useEffect(() => {
+    useTasksViewStore.getState().syncWorkspace(wsId);
+  }, [wsId]);
 
   // 模块级常量会在 i18n 初始化前固化（切语言不重算），页签 label 在
   // 组件内跟 t 一起算——同 my-issues scope pills 的处理。
@@ -487,7 +497,11 @@ export default function Tasks() {
  * Toolbar mirroring my-issues' ScopeToolbar: horizontally scrolling TAB
  * pills + fixed sort / filter icon buttons on the right (both show a red
  * dot when non-default). Five pills don't fit a 375pt row even without
- * icons, so the pill row scrolls like the four-scope row it replaces.
+ * icons, so the pill row scrolls like the four-scope row it replaces —
+ * except above fontScale 1, where the row becomes an adaptive wrapping
+ * flow instead: the drag response of the scroller proved dead on device
+ * with pills clipped off (item 10, P2), so every TAB must stay visible
+ * and tappable without relying on a gesture.
  */
 function TasksToolbar({
   tabs,
@@ -509,35 +523,43 @@ function TasksToolbar({
   filterActive: boolean;
 }) {
   const { t } = useT("issues");
+  const wrapPills = shouldWrapTaskPills(useWindowDimensions().fontScale);
+  const pills = tabs.map((v) => {
+    const active = tab === v;
+    return (
+      <Button
+        key={v}
+        variant="outline"
+        size="sm"
+        onPress={() => onChange(v)}
+        className={active ? "bg-accent" : ""}
+        accessibilityState={{ selected: active }}
+      >
+        <Text
+          numberOfLines={1}
+          className={active ? "text-accent-foreground" : "text-muted-foreground"}
+        >
+          {tabLabel(v)}
+        </Text>
+      </Button>
+    );
+  });
   return (
     <View className="flex-row items-center px-4 pt-2 pb-2">
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        className="flex-1"
-        contentContainerClassName="flex-row items-center gap-1"
-      >
-        {tabs.map((v) => {
-          const active = tab === v;
-          return (
-            <Button
-              key={v}
-              variant="outline"
-              size="sm"
-              onPress={() => onChange(v)}
-              className={active ? "bg-accent" : ""}
-              accessibilityState={{ selected: active }}
-            >
-              <Text
-                numberOfLines={1}
-                className={active ? "text-accent-foreground" : "text-muted-foreground"}
-              >
-                {tabLabel(v)}
-              </Text>
-            </Button>
-          );
-        })}
-      </ScrollView>
+      {wrapPills ? (
+        <View className="flex-1 flex-row flex-wrap items-center gap-1">
+          {pills}
+        </View>
+      ) : (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          className="flex-1"
+          contentContainerClassName="flex-row items-center gap-1"
+        >
+          {pills}
+        </ScrollView>
+      )}
       <ToolbarIconButton
         onPress={onOpenSort}
         active={sortActive}

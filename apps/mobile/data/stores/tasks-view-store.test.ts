@@ -17,6 +17,7 @@ import { useTasksViewStore } from "./tasks-view-store";
 function resetState() {
   useTasksViewStore.setState({
     tab: "all",
+    wsId: null,
     statusFilters: [],
     priorityFilters: [],
     mineRelations: { assigned: false, created: false, involved: false },
@@ -156,5 +157,54 @@ describe("tasks view store", () => {
 
     getState().setSortBy("updated_at");
     expect(getState().sortBy).toBe("updated_at");
+  });
+
+  // Item 12 (P1): filters set in workspace A must not appear in workspace
+  // B. The screen remounts with the new wsId already set, so the transition
+  // is detected by the wsId stored in the state itself — syncWorkspace is
+  // the screen-facing entry point.
+  it("clears filters on a workspace switch but keeps TAB and sort", () => {
+    const { getState } = useTasksViewStore;
+    // Workspace A: QA's repro shape — Blocked TAB + Medium priority chip.
+    getState().syncWorkspace("ws-dev");
+    getState().setTab("blocked");
+    getState().togglePriorityFilter("medium");
+    getState().toggleStatusFilter("done");
+    expect(getState().wsId).toBe("ws-dev");
+
+    // Switch to workspace B (never had filters): filters must clear,
+    // TAB survives (保 TAB), sort is untouched.
+    getState().syncWorkspace("ws-backup");
+    let s = getState();
+    expect(s.wsId).toBe("ws-backup");
+    expect(s.priorityFilters).toEqual([]);
+    expect(s.statusFilters).toEqual([]);
+    expect(s.mineRelations).toEqual({
+      assigned: false,
+      created: false,
+      involved: false,
+    });
+    expect(s.assigneeRefs).toEqual([]);
+    expect(s.includeNoAssignee).toBe(false);
+    expect(s.creatorRefs).toEqual([]);
+    expect(s.agentRunning).toBe(false);
+    expect(s.tab).toBe("blocked");
+    expect(s.sortBy).toBe("updated_at");
+
+    // Reverse trip: filters set in B must not ride back into A either.
+    getState().togglePriorityFilter("high");
+    getState().syncWorkspace("ws-dev");
+    s = getState();
+    expect(s.wsId).toBe("ws-dev");
+    expect(s.priorityFilters).toEqual([]);
+    expect(s.tab).toBe("blocked");
+  });
+
+  it("syncWorkspace is a no-op while the workspace is unchanged", () => {
+    const { getState } = useTasksViewStore;
+    getState().syncWorkspace("ws-dev");
+    getState().togglePriorityFilter("high");
+    getState().syncWorkspace("ws-dev");
+    expect(getState().priorityFilters).toEqual(["high"]);
   });
 });
