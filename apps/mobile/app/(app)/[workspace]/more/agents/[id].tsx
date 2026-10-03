@@ -344,14 +344,16 @@ export default function AgentDetailPage() {
       >
         <TabsList className="mx-4 mt-2">
           <TabsTrigger value="overview">
-            {t("tabs.overview", "Overview")}
+            <Text>{t("tabs.overview", "Overview")}</Text>
           </TabsTrigger>
           <TabsTrigger value="active">
-            {t("mobile.detail.tab_active", "Active")}
-            {activeTasks.length > 0 ? ` (${activeTasks.length})` : ""}
+            <Text>
+              {t("mobile.detail.tab_active", "Active")}
+              {activeTasks.length > 0 ? ` (${activeTasks.length})` : ""}
+            </Text>
           </TabsTrigger>
           <TabsTrigger value="settings">
-            {t("tabs.settings", "Settings")}
+            <Text>{t("tabs.settings", "Settings")}</Text>
           </TabsTrigger>
         </TabsList>
 
