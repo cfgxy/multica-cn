@@ -187,12 +187,23 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 		// Cost attribution above stays unconditional: an errored run's
 		// tokens are still what it cost, even though it never enters a
 		// sample.
+		//
+		// GradedAt rides on every row the collector writes (RUYI-325): the
+		// stamp means "the grading pass has judged this task", whether that
+		// judgement produced a score or found the run not gradeable. A row
+		// with graded_at NULL is by contrast one an older, score-incapable
+		// build stored; ListFinishedPromptQuizTasks keeps serving those back
+		// so the grade gets filled in, which is what keeps a mixed-version
+		// shared database from accumulating permanent NULL placeholders.
+		// The stamp is also what retires a judged row: without it the
+		// not-gradeable NULLs would be re-collected every tick and crowd
+		// the bounded collection window.
+		params.GradedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
 		if run.Status == "completed" {
 			grade, detail := r.gradeTask(ctx, run.TaskID, item.RubricChecks)
 			if grade.Graded {
 				params.Score = pgtype.Float4{Float32: float32(grade.Score), Valid: true}
 				params.ScoreDetail = detail
-				params.GradedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
 			}
 		}
 		if _, err := r.Queries.UpsertPromptQuizResult(ctx, params); err != nil {

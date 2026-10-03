@@ -33,7 +33,10 @@ WHERE id = $1
 RETURNING *;
 
 -- name: UpdateProjectInstructionsForPromptVersion :one
-UPDATE project SET instructions = $2, updated_at = now()
+-- Bumps revision (RUYI-354): this is a real project-metadata write, so a
+-- client holding an expected_revision from before the activation/rollback
+-- must lose the race instead of overwriting the restored instructions.
+UPDATE project SET instructions = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
 RETURNING *;
 
