@@ -40,6 +40,15 @@ export type MyIssuesFilter = Pick<
 export const issueKeys = {
   all: (wsId: string | null) => ["issues", wsId] as const,
   list: (wsId: string | null) => [...issueKeys.all(wsId), "list"] as const,
+  /**
+   * Full-space Tasks tab (RUYI-344). The filter object sits INSIDE the
+   * `list(wsId)` prefix (unlike `myList`, which uses its own "my" branch) so
+   * every existing prefix invalidation on `list(wsId)` — mutations, WS
+   * reconnect — reaches the parametrized entries unchanged, and the WS
+   * patchers can cover them with one `setQueriesData` over the prefix.
+   */
+  taskList: (wsId: string | null, filter: ListIssuesParams) =>
+    [...issueKeys.list(wsId), filter] as const,
   myAll: (wsId: string | null) => [...issueKeys.all(wsId), "my"] as const,
   myList: (
     wsId: string | null,

@@ -4,17 +4,23 @@
  * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
  *       get_issue, search_issues, progress_digest, list_comments, get_comment.
  * Write: create_issue (general — any workspace, any project), add_comment,
- *       update_issue_status, assign_issue (assign/reassign/unassign an
- *       existing issue — agent/squad assignment triggers a real run, the
- *       tool description must say so), create_project, update_project
- *       (project metadata; never spawns agent runs), edit_comment,
- *       delete_comment (RUYI-352 comment management: the product's own
- *       author-or-admin gate is enforced server-side; content-changing edits
- *       re-run the comment's trigger computation, so the edit_comment
- *       description must declare the mention side effects, and defined
- *       failures come back as structured results keyed by `code` —
- *       permission_denied, revision_conflict, not_found, invalid_mentions —
- *       never as exception strings).
+ *       update_issue_status, update_issue (edit an existing issue's core
+ *       fields in place — pure metadata, never starts a run), assign_issue
+ *       (assign/reassign/unassign an existing issue — agent/squad assignment
+ *       triggers a real run, the tool description must say so),
+ *       bulk_update_issues (per-item results, same write path and run
+ *       semantics as the single-issue tools), create_project,
+ *       update_project (project metadata; never spawns agent runs),
+ *       edit_comment, delete_comment (RUYI-352 comment management: the
+ *       product's own author-or-admin gate is enforced server-side;
+ *       content-changing edits re-run the comment's trigger computation, so
+ *       the edit_comment description must declare the mention side effects,
+ *       and defined failures come back as structured results keyed by `code`
+ *       — permission_denied, revision_conflict, not_found, invalid_mentions —
+ *       never as exception strings), get_issue_relations +
+ *       manage_issue_relations (RUYI-351 structured issue relations — pure
+ *       relationship changes never trigger a run, and the descriptions must
+ *       say so explicitly).
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
@@ -32,10 +38,11 @@
  */
 
 import { DIGEST_TRACKED_STATUSES, buildDigest } from "./digest.js";
-import { MulticaApiError } from "./rest.js";
+import { MulticaApiError, MulticaRequestError } from "./rest.js";
 import type { MulticaClient } from "./rest.js";
 import {
   optionalBoolean,
+  optionalClearableString,
   optionalEnum,
   optionalInt,
   optionalString,
@@ -54,12 +61,19 @@ import type {
 } from "./types.js";
 
 export interface JsonSchemaProperty {
-  type: string;
+  // string | string[] per JSON Schema: nullable PATCH fields declare
+  // ["string", "null"] so callers can pass an explicit clearing null.
+  type: string | string[];
   description: string;
   enum?: string[];
-  items?: { type: string };
+  items?: {
+    type: string;
+    properties?: Record<string, JsonSchemaProperty>;
+    required?: string[];
+  };
   minimum?: number;
   maximum?: number;
+  maxItems?: number;
   pattern?: string;
 }
 
@@ -70,9 +84,38 @@ export interface ToolDefinition {
   handler(args: Record<string, unknown>, client: MulticaClient): Promise<unknown>;
 }
 
+export interface BulkUpdateItemError {
+  code: string;
+  message: string;
+}
+
+export type BulkUpdateItemResult =
+  | {
+      index: number;
+      issue: string;
+      outcome: "updated";
+      id: string;
+      identifier: string;
+      status: string;
+      revision?: number;
+      run_suppressed: boolean;
+    }
+  | { index: number; issue: string; outcome: "failed"; error: BulkUpdateItemError }
+  | { index: number; issue: string; outcome: "skipped"; reason: "not_attempted" };
+
+export interface BulkUpdateResult {
+  total: number;
+  updated: number;
+  failed: number;
+  skipped: number;
+  results: BulkUpdateItemResult[];
+}
+
 const PRIORITY_ENUM = ["urgent", "high", "medium", "low", "none"] as const;
 const ASSIGNER_TYPES = ["member", "agent", "squad"] as const;
 const ASSIGN_ISSUE_TYPES = [...ASSIGNER_TYPES, "unassigned"] as const;
+const RELATION_TYPES = ["blocks", "blocked_by", "relates_to", "supersedes", "superseded_by"] as const;
+const RELATION_ACTIONS = ["set_parent", "clear_parent", "add_relation", "remove_relation"] as const;
 // Mirrors the backend CHECK constraint on project.status (migration 034) and
 // the handler's validProjectStatuses pre-validation.
 const PROJECT_STATUS_ENUM = ["planned", "in_progress", "paused", "completed", "cancelled"] as const;
@@ -81,6 +124,32 @@ const PROJECT_LEAD_TYPES = ["member", "agent"] as const;
 const PROJECT_INSTRUCTIONS_MAX = 32_000;
 
 const DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
+
+const BULK_ON_ERROR = ["continue", "stop"] as const;
+const MAX_BULK_UPDATE_ITEMS = 50;
+// Fields a bulk item may carry. Unknown keys are rejected rather than
+// ignored: a silently dropped field across 50 issues is exactly the
+// "silent miss" bulk_update_issues exists to prevent.
+const BULK_ITEM_KEYS: ReadonlySet<string> = new Set([
+  "issue",
+  "status",
+  "priority",
+  "assignee_type",
+  "assignee_id",
+  "project_id",
+  "parent_issue_id",
+  "start_date",
+  "due_date",
+  "handoff_note",
+  "suppress_run",
+  "expected_revision",
+]);
+// An item carrying only these keys would write nothing.
+const BULK_META_KEYS: ReadonlySet<string> = new Set([
+  "suppress_run",
+  "expected_revision",
+  "handoff_note",
+]);
 
 function wsProperty(): JsonSchemaProperty {
   return {
@@ -136,6 +205,89 @@ function commentBrief(comment: CommentInfo): Record<string, unknown> {
     reply_count: comment.reply_count,
     last_activity_at: comment.last_activity_at,
   };
+}
+
+function buildBulkItemBody(
+  item: Record<string, unknown>,
+  batchSuppressRun: boolean | undefined,
+  index: number,
+): UpdateIssueBody {
+  const body: UpdateIssueBody = {};
+  const status = optionalString(item, "status");
+  if (status !== undefined) body.status = status;
+  const priority = optionalEnum(item, "priority", PRIORITY_ENUM);
+  if (priority !== undefined) body.priority = priority;
+  const projectId = optionalString(item, "project_id");
+  if (projectId !== undefined) body.project_id = projectId;
+  const parentIssueId = optionalString(item, "parent_issue_id");
+  if (parentIssueId !== undefined) body.parent_issue_id = parentIssueId;
+  for (const key of ["start_date", "due_date"] as const) {
+    const value = optionalString(item, key);
+    if (value !== undefined) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new ToolInputError(`updates[${index}].${key} must be formatted YYYY-MM-DD (got '${value}')`);
+      }
+      body[key] = value;
+    }
+  }
+  const assigneeType = optionalEnum(item, "assignee_type", ASSIGN_ISSUE_TYPES);
+  const assigneeId = optionalString(item, "assignee_id");
+  if (assigneeType === "unassigned") {
+    if (assigneeId !== undefined) {
+      throw new ToolInputError(`updates[${index}].assignee_id must be omitted when assignee_type is 'unassigned'`);
+    }
+    // Same wire contract as assign_issue: the server decides unassign by
+    // the keys being present as JSON nulls.
+    body.assignee_type = null;
+    body.assignee_id = null;
+  } else if (assigneeType !== undefined) {
+    if (assigneeId === undefined) {
+      throw new ToolInputError(`updates[${index}].assignee_id is required when assignee_type is '${assigneeType}'`);
+    }
+    body.assignee_type = assigneeType;
+    body.assignee_id = assigneeId;
+  } else if (assigneeId !== undefined) {
+    throw new ToolInputError(`updates[${index}].assignee_type is required when assignee_id is set`);
+  }
+  const handoffNote = optionalString(item, "handoff_note", { maxLength: 5_000 });
+  if (handoffNote !== undefined) body.handoff_note = handoffNote;
+  // Per-item value wins over the batch-level default; unset on both levels
+  // keeps the key off the wire — exactly the single-issue tools' default.
+  const suppressRun = optionalBoolean(item, "suppress_run") ?? batchSuppressRun;
+  if (suppressRun !== undefined) body.suppress_run = suppressRun;
+  // The server rejects expected_revision < 1 (positive integer), so gate at
+  // the same floor instead of letting the item die as a 400 round-trip.
+  const expectedRevision = optionalInt(item, "expected_revision", { min: 1 });
+  if (expectedRevision !== undefined) body.expected_revision = expectedRevision;
+  return body;
+}
+
+function classifyUpdateFailure(error: unknown): BulkUpdateItemError {
+  if (error instanceof MulticaApiError) {
+    // 409 covers both the revision-conflict body (code "revision_conflict")
+    // and the rarer archived-status race; the server's message stays attached
+    // so callers can tell them apart.
+    const code =
+      error.status === 409
+        ? "conflict"
+        : error.status === 403
+          ? "forbidden"
+          : error.status === 404
+            ? "not_found"
+            : error.status === 400
+              ? "invalid_input"
+              : error.status === 429
+                ? "rate_limited"
+                : "error";
+    return { code, message: error.message };
+  }
+  if (error instanceof MulticaRequestError) {
+    return {
+      code: "transport_error",
+      message: `${error.message} (the write's outcome is unknown — re-read the issue before retrying)`,
+    };
+  }
+  return { code: "error", message: error instanceof Error ? error.message : String(error) };
 }
 
 // ---- structured comment failures (RUYI-352) ------------------------------
@@ -1035,6 +1187,145 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "update_issue",
+    description:
+      "Edit an EXISTING issue's core fields in place: title, description (Markdown), priority, project, parent, start/due dates. " +
+      "PATCH semantics: omitted fields stay unchanged; pass null (or '') for project_id, parent_issue_id, start_date or due_date to clear that value. " +
+      "The issue keeps its identifier, UUID, comments, history and relations — this is an in-place rewrite, not a replacement. " +
+      "NEVER triggers an agent run and consumes no quota: pure metadata edits start no run; assignee and status changes have dedicated tools (assign_issue, update_issue_status). " +
+      "Done and cancelled issues stay editable, matching the web app's rules. " +
+      "Pass expected_revision (from a previous get_issue/update_issue result) for optimistic locking: if the issue changed since your read, the tool returns code 'revision_conflict' (HTTP 409) without writing — re-read with get_issue and retry. " +
+      "Returns the updated scalar fields plus the new revision; the description body is not echoed, read it back with get_issue.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        title: {
+          type: "string",
+          description: "New title, max 500 chars. Omit to keep the current one.",
+        },
+        description: {
+          type: "string",
+          description: "New issue body, Markdown supported, max 50000 chars. Omit to keep the current one.",
+        },
+        priority: {
+          type: "string",
+          enum: [...PRIORITY_ENUM],
+          description: "New priority. Omit to keep.",
+        },
+        project_id: {
+          type: ["string", "null"],
+          description:
+            "Project UUID to move the issue into, or null to remove it from its project. Omit to keep.",
+        },
+        parent_issue_id: {
+          type: ["string", "null"],
+          description:
+            "Parent issue UUID to attach this issue under (sub-issue), or null to detach it. Omit to keep.",
+        },
+        start_date: {
+          type: ["string", "null"],
+          description: "Start date, YYYY-MM-DD. Pass null or '' to clear. Omit to keep.",
+          pattern: DATE_PATTERN,
+        },
+        due_date: {
+          type: ["string", "null"],
+          description: "Due date, YYYY-MM-DD. Pass null or '' to clear. Omit to keep.",
+          pattern: DATE_PATTERN,
+        },
+        expected_revision: {
+          type: "integer",
+          description:
+            "Optimistic-lock revision from a previous read; a mismatch answers code 'revision_conflict' (HTTP 409) and writes nothing.",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const title = optionalString(args, "title", { maxLength: 500 });
+      const description = optionalString(args, "description", { maxLength: 50_000 });
+      const priority = optionalEnum(args, "priority", PRIORITY_ENUM);
+      const projectId = optionalClearableString(args, "project_id");
+      const parentIssueId = optionalClearableString(args, "parent_issue_id");
+      const startDate = optionalClearableString(args, "start_date", {
+        pattern: /^\d{4}-\d{2}-\d{2}$/,
+        patternMessage: "'start_date' must be formatted YYYY-MM-DD (or null to clear)",
+      });
+      const dueDate = optionalClearableString(args, "due_date", {
+        pattern: /^\d{4}-\d{2}-\d{2}$/,
+        patternMessage: "'due_date' must be formatted YYYY-MM-DD (or null to clear)",
+      });
+      if (
+        title === undefined &&
+        description === undefined &&
+        priority === undefined &&
+        projectId === undefined &&
+        parentIssueId === undefined &&
+        startDate === undefined &&
+        dueDate === undefined
+      ) {
+        throw new ToolInputError(
+          "nothing to update: pass at least one of title, description, priority, " +
+            "project_id, parent_issue_id, start_date, due_date",
+        );
+      }
+      const body: UpdateIssueBody = {
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
+      };
+      if (title !== undefined) body.title = title;
+      if (description !== undefined) body.description = description;
+      if (priority !== undefined) body.priority = priority;
+      if (projectId !== undefined) body.project_id = projectId;
+      if (parentIssueId !== undefined) body.parent_issue_id = parentIssueId;
+      if (startDate !== undefined) body.start_date = startDate;
+      if (dueDate !== undefined) body.due_date = dueDate;
+
+      let issue: IssueInfo;
+      try {
+        issue = await client.updateIssue(workspace, issueId, body);
+      } catch (error) {
+        // A stale expected_revision is a defined outcome, not a transport
+        // failure — surface it with the same structured dialect as
+        // cancel_run's 409 handling so the caller can re-read and retry.
+        // (The server answers both revision and field conflicts with code
+        // "revision_conflict"; this tool sends no baselines, so any 409 here
+        // is a lost optimistic-lock race.)
+        if (
+          error instanceof MulticaApiError &&
+          error.status === 409 &&
+          error.message.includes("revision_conflict")
+        ) {
+          return {
+            updated: false,
+            code: "revision_conflict",
+            message: "the issue changed since it was read; nothing was written",
+            hint: "Re-read the issue with get_issue, then retry with the fresh " +
+              "expected_revision or re-apply your change on top of the current content.",
+          };
+        }
+        throw error;
+      }
+      return {
+        updated: true,
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        status: issue.status,
+        priority: issue.priority,
+        project_id: issue.project_id ?? null,
+        parent_issue_id: issue.parent_issue_id ?? null,
+        start_date: issue.start_date ?? null,
+        due_date: issue.due_date ?? null,
+        revision: issue.revision,
+        updated_at: issue.updated_at,
+      };
+    },
+  },
+  {
     name: "assign_issue",
     description:
       "Assign, reassign or unassign the assignee of an EXISTING issue (the create_issue-time assignee is separate). " +
@@ -1130,6 +1421,307 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         run_suppressed: issue.run_suppressed ?? false,
         note,
       };
+    },
+  },
+  {
+    name: "get_issue_relations",
+    description:
+      "Get one issue's structured relations (RUYI-351): parent plus the five edge views — blocks, blocked_by, relates_to, supersedes, superseded_by — each a list of issue briefs (id, identifier, title, status). Read-only. " +
+      "Each edge is visible from both endpoints in each side's frame: a blocks edge on one issue reads as blocked_by on the other, a supersedes edge as superseded_by; relates_to reads the same both ways. " +
+      "Use manage_issue_relations to change any of these.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const relations = await client.getIssueRelations(workspace, issueId);
+      return {
+        issue_id: relations.issue_id,
+        identifier: relations.identifier,
+        revision: relations.revision,
+        parent: relations.parent ?? null,
+        blocks: relations.blocks,
+        blocked_by: relations.blocked_by,
+        relates_to: relations.relates_to,
+        supersedes: relations.supersedes,
+        superseded_by: relations.superseded_by,
+      };
+    },
+  },
+  {
+    name: "manage_issue_relations",
+    description:
+      "Manage one EXISTING issue's structured relations (RUYI-351). Actions: set_parent (target_issue required — re-parents the issue; the server rejects cycles), clear_parent (target_issue must be omitted), add_relation / remove_relation (relation_type plus target_issue required). " +
+      "relation_type is one of blocks, blocked_by, relates_to, supersedes, superseded_by, named from THIS issue's perspective: blocked_by(A→B) stores 'B blocks A', superseded_by(A→B) stores 'B supersedes A', relates_to is symmetric — adding it from either side dedupes to one edge. " +
+      "SIDE EFFECTS: NONE on agent runs — establishing, remounting or removing relations NEVER dispatches, wakes, or queues an agent run and consumes no run quota (unlike assign_issue or dispatch_agent, no suppress flag is involved). " +
+      "A committed change bumps BOTH endpoints' issue revisions. Pass expected_revision (from a previous read) for optimistic concurrency: a stale value answers the structured revision_conflict error and nothing changes. " +
+      "Other structured errors: relation_exists (409, duplicate edge incl. symmetric relates_to), relation_not_found (404, removing an unknown edge), 400 for self relations, unknown types, or targets outside the workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        action: {
+          type: "string",
+          enum: [...RELATION_ACTIONS],
+          description: "set_parent, clear_parent, add_relation or remove_relation.",
+        },
+        relation_type: {
+          type: "string",
+          enum: [...RELATION_TYPES],
+          description: "One of the five relation types; required for add_relation / remove_relation.",
+        },
+        target_issue: {
+          type: "string",
+          description:
+            "The other issue's UUID (as returned by list_issues / search_issues / get_issue); required for set_parent, add_relation and remove_relation, must be omitted for clear_parent.",
+        },
+        expected_revision: {
+          type: "integer",
+          description:
+            "Optimistic-lock revision of THIS issue from a previous read; the write fails with revision_conflict if it changed since.",
+          minimum: 0,
+        },
+      },
+      required: ["workspace", "issue", "action"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const action = optionalEnum(args, "action", RELATION_ACTIONS);
+      if (action === undefined) {
+        throw new ToolInputError(
+          "'action' is required: set_parent, clear_parent, add_relation or remove_relation",
+        );
+      }
+      const target = optionalString(args, "target_issue");
+      const relationType = optionalEnum(args, "relation_type", RELATION_TYPES);
+      const expectedRevision = optionalInt(args, "expected_revision", { min: 0 });
+      const noRunNote =
+        "No agent run: pure relationship changes never dispatch, wake, or queue one.";
+
+      if (action === "set_parent" || action === "clear_parent") {
+        if (action === "set_parent" && target === undefined) {
+          throw new ToolInputError("'target_issue' is required for action 'set_parent'");
+        }
+        if (action === "clear_parent" && target !== undefined) {
+          throw new ToolInputError("'target_issue' must be omitted for action 'clear_parent'");
+        }
+        const issue = await client.updateIssue(workspace, issueId, {
+          parent_issue_id: action === "set_parent" ? target : null,
+          expected_revision: expectedRevision,
+        });
+        return {
+          updated: true,
+          action,
+          id: issue.id,
+          identifier: issue.identifier,
+          parent_issue_id: action === "set_parent" ? (issue.parent_issue_id ?? null) : null,
+          revision: issue.revision,
+          note: noRunNote,
+        };
+      }
+
+      if (relationType === undefined) {
+        throw new ToolInputError(`'relation_type' is required for action '${action}'`);
+      }
+      if (target === undefined) {
+        throw new ToolInputError(`'target_issue' is required for action '${action}'`);
+      }
+      if (action === "add_relation") {
+        const result = await client.addIssueRelation(workspace, issueId, {
+          type: relationType,
+          target_issue_id: target,
+          expected_revision: expectedRevision,
+        });
+        return {
+          updated: true,
+          action,
+          relation: result.relation,
+          revision: result.issue.revision,
+          note: noRunNote,
+        };
+      }
+      const result = await client.removeIssueRelation(workspace, issueId, relationType, target, expectedRevision);
+      return {
+        updated: true,
+        action,
+        relation: result.relation,
+        revision: result.issue.revision,
+        note: noRunNote,
+      };
+    },
+  },
+
+  {
+    name: "bulk_update_issues",
+    description:
+      "Apply field updates to MANY issues in one call: each `updates` entry names an issue (identifier or UUID) " +
+      "and writes any of status, priority, assignee_type/assignee_id ('unassigned' clears), project_id, " +
+      "parent_issue_id, start_date, due_date — the same write path and semantics as update_issue_status/assign_issue, " +
+      "including per-item expected_revision optimistic locking and handoff_note. " +
+      "RUN SIDE EFFECT: an item whose write would start an agent run (status leaving backlog, agent/squad assignment) " +
+      "starts a REAL run and consumes the token owner's quota — pass suppress_run=true (batch-level, or per item to override) " +
+      "to apply the writes without starting runs. " +
+      "Results are per-item and index-aligned: outcome 'updated' (with the post-write revision and run_suppressed), " +
+      "'failed' (error code conflict | forbidden | not_found | invalid_input | rate_limited | transport_error, " +
+      "plus the server's message) or 'skipped' (reason not_attempted). " +
+      "on_error='continue' (default) attempts every item independently; on_error='stop' stops at the first failure. " +
+      "Neither mode is a transaction: items applied before a failure stay applied. " +
+      "Retries: re-send only the failed items with a fresh expected_revision — replaying an already-applied item with its " +
+      "old expected_revision fails as a conflict instead of writing twice or re-triggering a run. " +
+      `Batch limit: ${MAX_BULK_UPDATE_ITEMS} items; larger batches are rejected before any write.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        updates: {
+          type: "array",
+          description: "1-50 update items, applied in order; results line up by index.",
+          items: {
+            type: "object",
+            properties: {
+              issue: issueProperty(),
+              status: { type: "string", description: "Target status key." },
+              priority: { type: "string", enum: [...PRIORITY_ENUM], description: "Target priority." },
+              assignee_type: {
+                type: "string",
+                enum: [...ASSIGN_ISSUE_TYPES],
+                description: "'member', 'agent', 'squad', or 'unassigned' (clears the assignee).",
+              },
+              assignee_id: {
+                type: "string",
+                description: "Assignee UUID; required unless assignee_type is 'unassigned'.",
+              },
+              project_id: { type: "string", description: "Project UUID within the target workspace." },
+              parent_issue_id: { type: "string", description: "Parent issue UUID within the target workspace (identifiers not accepted)." },
+              start_date: { type: "string", description: "Start date, YYYY-MM-DD.", pattern: DATE_PATTERN },
+              due_date: { type: "string", description: "Due date, YYYY-MM-DD.", pattern: DATE_PATTERN },
+              handoff_note: {
+                type: "string",
+                description: "Injected into a triggered run's opening context; dropped when no run starts.",
+              },
+              suppress_run: {
+                type: "boolean",
+                description: "Per-item override of the batch-level suppress_run.",
+              },
+              expected_revision: {
+                type: "integer",
+                description: "Optimistic-lock revision from a previous read; the item fails if the issue changed since.",
+                minimum: 1,
+              },
+            },
+            required: ["issue"],
+          },
+          maxItems: MAX_BULK_UPDATE_ITEMS,
+        },
+        suppress_run: {
+          type: "boolean",
+          description:
+            "Batch-level default: set true to apply every item without starting the agent runs they would trigger " +
+            "(default false, matching the single-issue tools).",
+        },
+        on_error: {
+          type: "string",
+          enum: [...BULK_ON_ERROR],
+          description:
+            "'continue' (default) attempts every item independently; 'stop' stops at the first failure and reports the rest as skipped.",
+        },
+      },
+      required: ["workspace", "updates"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const onError = optionalEnum(args, "on_error", BULK_ON_ERROR) ?? "continue";
+      const batchSuppressRun = optionalBoolean(args, "suppress_run");
+      const rawUpdates = args.updates;
+      if (!Array.isArray(rawUpdates) || rawUpdates.length === 0) {
+        throw new ToolInputError("'updates' must be a non-empty array of { issue, ...fields } items");
+      }
+      if (rawUpdates.length > MAX_BULK_UPDATE_ITEMS) {
+        throw new ToolInputError(
+          `'updates' exceeds the batch limit of ${MAX_BULK_UPDATE_ITEMS} items (got ${rawUpdates.length}); ` +
+            "split the work into smaller batches — nothing was modified",
+        );
+      }
+      // Validate the whole batch before touching anything: one bad item
+      // means zero writes, never a partial application.
+      const plan = rawUpdates.map((raw, index) => {
+        if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+          throw new ToolInputError(`updates[${index}] must be an object`);
+        }
+        const item = raw as Record<string, unknown>;
+        for (const key of Object.keys(item)) {
+          if (!BULK_ITEM_KEYS.has(key)) {
+            throw new ToolInputError(
+              `updates[${index}].${key} is not a supported field; supported: ${[...BULK_ITEM_KEYS].join(", ")}`,
+            );
+          }
+        }
+        const rawIssue = item.issue;
+        if (typeof rawIssue !== "string" || rawIssue.trim().length === 0) {
+          throw new ToolInputError(`updates[${index}].issue is required and must be a non-empty string`);
+        }
+        let body: UpdateIssueBody;
+        try {
+          body = buildBulkItemBody(item, batchSuppressRun, index);
+        } catch (error) {
+          if (error instanceof ToolInputError && !error.message.startsWith("updates[")) {
+            throw new ToolInputError(`updates[${index}]: ${error.message}`);
+          }
+          throw error;
+        }
+        if (Object.keys(body).filter((key) => !BULK_META_KEYS.has(key)).length === 0) {
+          throw new ToolInputError(
+            `updates[${index}] must set at least one writable field (status, priority, ` +
+              "assignee_type/assignee_id, project_id, parent_issue_id, start_date, due_date)",
+          );
+        }
+        return { issue: rawIssue.trim(), body };
+      });
+
+      const results: BulkUpdateItemResult[] = [];
+      let stopped = false;
+      for (const [index, entry] of plan.entries()) {
+        if (stopped) {
+          results.push({ index, issue: entry.issue, outcome: "skipped", reason: "not_attempted" });
+          continue;
+        }
+        try {
+          const issue = await client.updateIssue(workspace, entry.issue, entry.body);
+          results.push({
+            index,
+            issue: entry.issue,
+            outcome: "updated",
+            id: issue.id,
+            identifier: issue.identifier,
+            status: issue.status,
+            revision: issue.revision,
+            run_suppressed: issue.run_suppressed ?? false,
+          });
+        } catch (error) {
+          results.push({
+            index,
+            issue: entry.issue,
+            outcome: "failed",
+            error: classifyUpdateFailure(error),
+          });
+          if (onError === "stop") stopped = true;
+        }
+      }
+      return {
+        total: plan.length,
+        updated: results.filter((item) => item.outcome === "updated").length,
+        failed: results.filter((item) => item.outcome === "failed").length,
+        skipped: results.filter((item) => item.outcome === "skipped").length,
+        results,
+      } satisfies BulkUpdateResult;
     },
   },
   {

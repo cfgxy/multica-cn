@@ -923,6 +923,9 @@
       "collapse": "折りたたむ",
       "collapse_a11y": "解決済みスレッドを折りたたむ",
       "edited_suffix": " ·（編集済み）",
+      "edit_title": "コメントを編集",
+      "edit_saving": "保存中…",
+      "edit_failed": "編集を保存できませんでした",
       "send_failed": "送信できませんでした",
       "retry": "再試行",
       "retry_a11y": "コメントを再送信",
@@ -952,6 +955,8 @@
       "comments_locate_failed": "そのコメントへ移動できませんでした。",
       "comments_locate_retry_a11y": "コメントへの移動を再試行",
       "comments_title": "コメント",
+      "copy_title": "タイトルをコピー",
+      "copy_description": "説明をコピー",
       "comments_search_placeholder": "作成者または本文で絞り込む…",
       "comments_empty": "コメントはまだありません。",
       "comments_no_match": "一致するコメントはありません。",
@@ -1079,7 +1084,46 @@
       "submit_a11y": "タスクを作成"
     },
     "tasks": {
-      "issue_unavailable": "タスクが表示できません"
+      "issue_unavailable": "タスクが表示できません",
+      "page": {
+        "title": "タスク"
+      },
+      "tabs": {
+        "all": "すべて",
+        "open": "未処理",
+        "active": "進行中",
+        "blocked": "ブロック",
+        "completed": "完了"
+      },
+      "sort": {
+        "title": "並べ替え",
+        "updated_at": "更新日時",
+        "created_at": "作成日時",
+        "a11y": "並べ替え"
+      },
+      "empty": {
+        "all": "このワークスペースにはまだタスクがありません。",
+        "open": "処理待ちのタスクはありません。",
+        "active": "進行中のタスクはありません。",
+        "blocked": "ブロックされているタスクはありません。",
+        "completed": "完了したタスクはまだありません。"
+      },
+      "filtered_empty": {
+        "title": "フィルター条件に一致するタスクがありません",
+        "clear_button": "フィルターを解除"
+      },
+      "filters": {
+        "status_locked": "ステータス：{{tab}}（タブで固定）",
+        "section_mine": "自分との関係",
+        "mine_assigned": "自分に割り当て済み",
+        "mine_created": "自分が作成",
+        "mine_involved": "自分が関係",
+        "agent_running": "エージェント実行中",
+        "selected_count": "{{count}} 件選択",
+        "group_members": "メンバー",
+        "group_agents": "エージェント",
+        "group_squads": "Squad"
+      }
     }
   },
   "suppressed": {

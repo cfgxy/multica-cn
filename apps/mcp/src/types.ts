@@ -210,6 +210,22 @@ export interface UpdateCommentBody {
 
 export interface UpdateIssueBody {
   status?: string;
+  // Core field edit (RUYI-350 update_issue). PATCH semantics: an omitted key
+  // keeps the current value. For the four nullable fields an EXPLICIT null
+  // clears the value — the null must survive serialization, because the
+  // server decides "clear" by rawFields key presence (server/internal/handler/
+  // issue.go), exactly like the assignee nulls below. title/description/
+  // priority are plain writes: the server models them as *string, so a JSON
+  // null decodes to nil and means "keep" — the tool layer never sends null
+  // for them. bulk_update_issues (RUYI-353) shares this body type but its
+  // items only ever assign plain strings, so omitted keys keep the current
+  // value there.
+  title?: string;
+  description?: string;
+  priority?: string;
+  project_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
   expected_revision?: number;
   suppress_run?: boolean;
   // Assignee change. A string pair assigns/reassigns; explicit nulls clear
@@ -222,6 +238,66 @@ export interface UpdateIssueBody {
   // Injected into the triggered run's opening context; dropped when the
   // write starts no run (suppress_run, backlog parking, member/unassign).
   handoff_note?: string;
+  // Parent change (RUYI-351). A string re-parents the issue (server walks
+  // the ancestor chain for cycles); explicit null clears the parent. The
+  // null must survive serialization — same rawFields rule as the assignee.
+  parent_issue_id?: string | null;
+}
+
+// RUYI-351 structured issue relations. The five caller-facing types; the
+// server stores one canonical row per edge, so blocked_by / superseded_by
+// writes land as their forward counterpart and relates_to is symmetric.
+export type IssueRelationType =
+  | "blocks"
+  | "blocked_by"
+  | "relates_to"
+  | "supersedes"
+  | "superseded_by";
+
+export interface IssueRelationRef {
+  id: string;
+  identifier?: string;
+  title?: string;
+  status?: string;
+}
+
+export interface IssueRelationsInfo {
+  issue_id: string;
+  identifier?: string;
+  revision?: number;
+  parent?: IssueRelationRef | null;
+  blocks: IssueRelationRef[];
+  blocked_by: IssueRelationRef[];
+  relates_to: IssueRelationRef[];
+  supersedes: IssueRelationRef[];
+  superseded_by: IssueRelationRef[];
+}
+
+export interface AddIssueRelationBody {
+  type: IssueRelationType;
+  target_issue_id: string;
+  expected_revision?: number;
+}
+
+export interface AddIssueRelationResult {
+  added: true;
+  relation: {
+    id?: string;
+    type: IssueRelationType;
+    source_issue_id: string;
+    target_issue_id: string;
+  };
+  issue: { id: string; revision: number };
+}
+
+export interface RemoveIssueRelationResult {
+  removed: true;
+  relation: {
+    type: IssueRelationType;
+    source_issue_id: string;
+    target_issue_id: string;
+  };
+  issue: { id: string; revision: number };
 }
 
 export interface ActiveTaskInfo {

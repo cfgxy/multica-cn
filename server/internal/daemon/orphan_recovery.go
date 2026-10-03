@@ -78,6 +78,17 @@ func (d *Daemon) recoverInFlightTasksForRuntime(ctx context.Context, runtimeID s
 			d.logger.Info("in-flight recovery: worker still alive; leaving task alone", "task", t.ID, "runtime_id", runtimeID, "work_dir", t.WorkDir)
 			continue
 		}
+		// Supervised-worker override (RUYI-349): the env-root lock above is
+		// held by the DAEMON process, so a daemon death releases it and the
+		// probe reads "dead" even while a systemd-unit worker is still
+		// running the task. When a live supervised manifest exists for the
+		// task, the worker is alive by stronger evidence — leave the task
+		// alone; startup reconciliation reattached or will reattach it.
+		if d.supervisedWorkerAlive(t.ID) {
+			d.logger.Info("in-flight recovery: supervised worker still alive; leaving task alone",
+				"task", t.ID, "runtime_id", runtimeID, "work_dir", t.WorkDir)
+			continue
+		}
 		if err := d.client.FailTask(ctx, t.ID, orphanRecoveryErrMsg, "", "", "", "runtime_recovery", false, "", ""); err != nil {
 			d.logger.Warn("in-flight recovery: fail task failed", "task", t.ID, "runtime_id", runtimeID, "error", err)
 			continue

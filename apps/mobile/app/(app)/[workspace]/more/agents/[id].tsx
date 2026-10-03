@@ -10,7 +10,7 @@
  *   - workspace presence map → availability/workload detail
  *   - agent-task-snapshot    → the active runs
  *   - workspace issue list   → issue titles for linked runs. One workspace
- *     list fetch shared with `more/issues`; when it hasn't landed (or an
+ *     list fetch shared with the Tasks tab; when it hasn't landed (or an
  *     issue became invisible) the row falls back to a static label instead
  *     of blocking the run list.
  *
