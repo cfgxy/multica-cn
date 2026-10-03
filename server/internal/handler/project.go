@@ -52,6 +52,10 @@ type ProjectResponse struct {
 	// payload to keep parent metadata and child collections separate; clients
 	// that need the list call ListProjectResources directly.
 	ResourceCount int64 `json:"resource_count"`
+	// Revision is the optimistic-lock token (RUYI-354): read it, send it back
+	// as expected_revision on update, and a concurrent metadata write fails
+	// with a structured revision_conflict instead of silently overwriting.
+	Revision int64 `json:"revision"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -70,6 +74,7 @@ func projectToResponse(p db.Project) ProjectResponse {
 		DueDate:      dateToPtr(p.DueDate),
 		CreatedAt:    timestampToString(p.CreatedAt),
 		UpdatedAt:    timestampToString(p.UpdatedAt),
+		Revision:     p.Revision,
 	}
 }
 
@@ -142,6 +147,10 @@ type UpdateProjectRequest struct {
 	LeadID       *string `json:"lead_id"`
 	StartDate    *string `json:"start_date"`
 	DueDate      *string `json:"due_date"`
+	// ExpectedRevision is the optimistic lock (RUYI-354): when set, the write
+	// only lands if the project still carries this revision, and a stale
+	// value answers 409 revision_conflict. Same contract as UpdateIssueRequest.
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
 }
 
 // validateProjectInstructions enforces the 32,000-rune cap on the per-project
@@ -582,6 +591,17 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		StartDate:    prevProject.StartDate,
 		DueDate:      prevProject.DueDate,
 	}
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		if prevProject.Revision != *req.ExpectedRevision {
+			writeRevisionConflict(w, "project", prevProject.ID, *req.ExpectedRevision, prevProject.Revision)
+			return
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
 	}
@@ -667,6 +687,18 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	project, err := h.Queries.UpdateProject(r.Context(), params)
 	if err != nil {
+		// 0 rows with an expected_revision means a concurrent writer won the
+		// race between the handler's read and the UPDATE — same recovery as
+		// UpdateIssue: reload and answer with the actual revision.
+		if errors.Is(err, pgx.ErrNoRows) && req.ExpectedRevision != nil {
+			current, reloadErr := h.Queries.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+				ID: prevProject.ID, WorkspaceID: prevProject.WorkspaceID,
+			})
+			if reloadErr == nil {
+				writeRevisionConflict(w, "project", current.ID, *req.ExpectedRevision, current.Revision)
+				return
+			}
+		}
 		h.writeProjectWriteError(w, r, err, "update")
 		return
 	}

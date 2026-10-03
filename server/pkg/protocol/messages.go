@@ -31,6 +31,15 @@ const (
 	// everyone else keeps using the HTTP claim endpoint.
 	DaemonCapabilityRPCV1 = "rpc-v1"
 
+	// DaemonCapabilityWorkerSupervisorV1 advertises that this daemon launches
+	// task workers inside systemd transient units (RUYI-349): a daemon
+	// restart no longer kills running workers, and the daemon can reenter a
+	// surviving worker instead of failing its task. Absent means a legacy
+	// direct-child daemon, whose workers provably die with the process —
+	// every server-side reader of this bit must fail closed through
+	// runtimeHasCapability.
+	DaemonCapabilityWorkerSupervisorV1 = "worker-supervisor-v1"
+
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
 	// chat:cancel_finalized as an invalidation hint plus the draft-restores

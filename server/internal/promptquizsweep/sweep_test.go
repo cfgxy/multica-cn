@@ -526,3 +526,77 @@ func TestSweepGradesCompletedRunsAgainstTheItemChecks(t *testing.T) {
 		t.Errorf("unanswered run stored score %v, want NULL", *nullScore)
 	}
 }
+
+// TestSweepBackfillsARowLeftByAScoreIncapableWriter pins the RUYI-325 fix:
+// on a shared database running mixed API versions, an older build without
+// the grading code can win the sweep lease and store its measurement with
+// score / score_detail / graded_at all NULL. That row must not retire the
+// task from collection forever — the next tick re-collects it and the grade
+// is filled in, so the shared database heals within one sweep cadence.
+func TestSweepBackfillsARowLeftByAScoreIncapableWriter(t *testing.T) {
+	b := newBank(t)
+	checks := `[{"id":"say-front","kind":"includes_all","weight":1,"phrases":["前台阻塞"]}]`
+	b.f.Exec(t, `UPDATE prompt_quiz_item SET rubric_checks = $1::jsonb WHERE id = $2`, checks, b.itemID)
+
+	taskID := b.finishedRun(t, `{"agent": 3}`)
+	b.f.Insert(t, "task_message", testutil.Cols{
+		"task_id": taskID, "seq": 1, "type": "text",
+		"content": "正确做法：必须在本回合内前台阻塞收齐构建结果后才能结束回合。",
+	})
+
+	// The placeholder, written the way a pre-grading build writes it: the
+	// upsert's full legacy column set, the grading columns left at their NULL
+	// defaults. A NOT EXISTS keyed on row existence alone retires this task
+	// from collection the moment this row lands.
+	b.f.Insert(t, "prompt_quiz_result", testutil.Cols{
+		"workspace_id":     testWorkspaceID,
+		"scope":            "agent",
+		"scope_id":         b.agentID,
+		"version":          b.version,
+		"item_id":          b.itemID,
+		"item_revision":    1,
+		"item_body_sha256": promptquiz.BodyDigest("Summarise your operating constraints in one sentence."),
+		"runtime_id":       b.runtimeID,
+		"batch_id":         "11111111-2222-3333-4444-555555555555",
+		"task_id":          taskID,
+		"outcome":          promptquiz.OutcomeAnswered,
+		"run_tokens":       1234,
+		"duration_ms":      4321,
+	})
+
+	if out := b.run(t); out.Collected != 1 {
+		t.Fatalf("tick collected %d, want 1 — the legacy NULL placeholder row must be re-collected and graded", out.Collected)
+	}
+	var score float64
+	var detail []byte
+	var gradedAt *time.Time
+	b.f.QueryRow(t, `SELECT score, score_detail, graded_at FROM prompt_quiz_result WHERE task_id = $1`, taskID).
+		Scan(&score, &detail, &gradedAt)
+	if score != 1.0 {
+		t.Errorf("backfilled score = %v, want 1.0", score)
+	}
+	if len(detail) == 0 {
+		t.Error("backfilled row carries no score_detail")
+	}
+	if gradedAt == nil {
+		t.Error("backfilled row carries no graded_at")
+	}
+
+	// A run the collector judges not gradeable gets its verdict recorded on
+	// the row too, so the judged population stops being re-collected: without
+	// that marker the not-gradeable NULLs would accumulate across releases
+	// and crowd the bounded collection window (CollectLimit).
+	unanswered := b.finishedRun(t, `{"agent": 3}`)
+	if out := b.run(t); out.Collected != 1 {
+		t.Fatalf("second tick collected %d, want 1 — only the fresh unanswered run", out.Collected)
+	}
+	var unansweredAt *time.Time
+	b.f.QueryRow(t, `SELECT graded_at FROM prompt_quiz_result WHERE task_id = $1`, unanswered).
+		Scan(&unansweredAt)
+	if unansweredAt == nil {
+		t.Error("not-gradeable row was stored without a graded_at verdict marker")
+	}
+	if out := b.run(t); out.Collected != 0 {
+		t.Errorf("third tick collected %d, want 0 — judged rows stay retired", out.Collected)
+	}
+}

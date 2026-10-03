@@ -151,6 +151,14 @@ export default function IssueDetail() {
   const onCopyLink = useCallback(() => {
     if (issueLink) Clipboard.setStringAsync(issueLink);
   }, [issueLink]);
+  // 复制标题/正文原文（raw markdown，与评论 Copy 同口径——web 端
+  // comment 菜单的 copy 也是 copyText(entry.content) 原样复制）。
+  const onCopyTitle = useCallback(() => {
+    if (issue?.title) Clipboard.setStringAsync(issue.title);
+  }, [issue]);
+  const onCopyDescription = useCallback(() => {
+    if (issue?.description) Clipboard.setStringAsync(issue.description);
+  }, [issue]);
   const onOpenOnWeb = useCallback(() => {
     if (issueLink) Linking.openURL(issueLink);
   }, [issueLink]);
@@ -274,6 +282,12 @@ export default function IssueDetail() {
                           <Text>
                             {t("mobile.detail.edit_details", "Edit details")}
                           </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onCopyTitle}>
+                          <Text>{t("mobile.detail.copy_title", "Copy title")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onCopyDescription}>
+                          <Text>{t("mobile.detail.copy_description", "Copy description")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyLink}>
                           <Text>{t("actions.copy_link", "Copy link")}</Text>

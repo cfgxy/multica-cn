@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   optionalBoolean,
+  optionalClearableString,
   optionalEnum,
   optionalInt,
   optionalString,
+  optionalStringArray,
   requireString,
   ToolInputError,
 } from "../src/schemas.js";
@@ -70,5 +72,42 @@ describe("optionalEnum", () => {
     expect(() => optionalEnum({ s: "archived" }, "s", STATUSES)).toThrow(
       /must be one of: todo, in_progress, done/,
     );
+  });
+});
+
+describe("optionalClearableString", () => {
+  it("maps absent to keep, null and empty to an explicit clearing null", () => {
+    expect(optionalClearableString({}, "a")).toBeUndefined();
+    expect(optionalClearableString({ a: undefined }, "a")).toBeUndefined();
+    expect(optionalClearableString({ a: null }, "a")).toBeNull();
+    expect(optionalClearableString({ a: "" }, "a")).toBeNull();
+    expect(optionalClearableString({ a: "   " }, "a")).toBeNull();
+  });
+
+  it("trims and passes strings through", () => {
+    expect(optionalClearableString({ a: " value " }, "a")).toBe("value");
+  });
+
+  it("rejects non-strings and pattern mismatches", () => {
+    expect(() => optionalClearableString({ a: 5 }, "a")).toThrow(ToolInputError);
+    expect(() =>
+      optionalClearableString({ a: "10/03/2026" }, "a", {
+        pattern: /^\d{4}-\d{2}-\d{2}$/,
+      }),
+    ).toThrow(/invalid format/);
+  });
+});
+
+describe("optionalStringArray", () => {
+  it("trims items and drops blanks; absent stays absent", () => {
+    expect(optionalStringArray({ ids: [" a1 ", ""] }, "ids")).toEqual(["a1"]);
+    expect(optionalStringArray({}, "ids")).toBeUndefined();
+    expect(optionalStringArray({ ids: null }, "ids")).toBeUndefined();
+    expect(optionalStringArray({ ids: [] }, "ids")).toBeUndefined();
+  });
+
+  it("rejects non-arrays and non-string items", () => {
+    expect(() => optionalStringArray({ ids: "a1" }, "ids")).toThrow(ToolInputError);
+    expect(() => optionalStringArray({ ids: [1] }, "ids")).toThrow(ToolInputError);
   });
 });
