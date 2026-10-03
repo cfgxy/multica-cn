@@ -37,9 +37,13 @@ import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { larkInstallationsOptions, larkKeys } from "@multica/core/lark";
+import { larkInstallationsOptions, larkKeys, larkPermissionCatalogOptions } from "@multica/core/lark";
 import { api, ApiError } from "@multica/core/api";
-import type { LarkInstallation, LarkInstallStatusResponse } from "@multica/core/types";
+import type {
+  LarkInstallation,
+  LarkInstallStatusResponse,
+  LarkPermissionCatalogEntry,
+} from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useLocale, useT } from "../../i18n";
 
@@ -204,6 +208,269 @@ export function LarkTab() {
   );
 }
 
+// Status chip tint. granted/missing get their own color; unknown stays
+// muted because "probe could not run" is a different claim than
+// "verified working" — and must never read as the former (RUYI-400
+// honesty rule: 禁止伪装自动成功).
+function capabilityStatusClass(status: string): string {
+  switch (status) {
+    case "granted":
+      return "bg-emerald-500/10 text-emerald-600";
+    case "missing":
+      return "bg-amber-500/10 text-amber-600";
+    default:
+      return "bg-muted text-muted-foreground";
+  }
+}
+
+// useLarkCapabilityCopy binds the id→copy helpers to the caller's own
+// `t` from useT("settings"). Taking a bare t as a parameter instead
+// would widen the i18next selector type to the all-namespaces union and
+// lose the $.lark narrowing every other call site relies on.
+//
+// Capability ids are a closed set
+// (server/internal/integrations/lark/permission.go); unknown ids fall
+// back to the raw id so a newer server never renders an empty label.
+function useLarkCapabilityCopy() {
+  const { t } = useT("settings");
+  const capabilityLabel = (id: string): string => {
+    switch (id) {
+      case "receive_messages":
+        return t(($) => $.lark.capability_receive_messages);
+      case "send_messages":
+        return t(($) => $.lark.capability_send_messages);
+      case "read_history":
+        return t(($) => $.lark.capability_read_history);
+      case "download_media":
+        return t(($) => $.lark.capability_download_media);
+      case "lookup_contacts":
+        return t(($) => $.lark.capability_lookup_contacts);
+      default:
+        return id;
+    }
+  };
+  // granted/missing get their own copy; unknown is deliberately not
+  // "failed" — the probe simply could not produce a verdict.
+  const statusLabel = (status: string): string => {
+    switch (status) {
+      case "granted":
+        return t(($) => $.lark.permission_status_granted);
+      case "missing":
+        return t(($) => $.lark.permission_status_missing);
+      default:
+        return t(($) => $.lark.permission_status_unknown);
+    }
+  };
+  return { capabilityLabel, statusLabel };
+}
+
+// LarkCapabilityPanel is the per-bot permission surface (RUYI-400): one
+// chip per capability from the latest probe, plus — when anything is
+// missing — the 补授权 block: affected scopes, the honest note that
+// admin-approved scopes may simply still be pending, and a deep link to
+// the bot's dev-console permissions page (`/app/{app_id}/auth`) where
+// the user can grant and resubmit for approval. Success is restored by
+// pressing 重新检测 — the fresh probe is the only truth; Multica never
+// pretends a grant happened.
+//
+// Render rules: `capabilities` undefined means the server predates the
+// field — render nothing (API compat, CLAUDE.md). Empty array means the
+// bot has never been probed (installed before this feature) — show the
+// not-checked hint so the panel invites a first check. Revoked bots
+// don't reach this component (stale verdicts would mislead).
+function LarkCapabilityPanel({
+  installation,
+  canManage,
+}: {
+  installation: LarkInstallation;
+  canManage: boolean;
+}) {
+  const { t } = useT("settings");
+  const { capabilityLabel, statusLabel } = useLarkCapabilityCopy();
+  const wsId = useWorkspaceId();
+  const qc = useQueryClient();
+  const [checking, setChecking] = useState(false);
+
+  const caps = installation.capabilities;
+  const missing = (caps ?? []).filter((c) => c.status === "missing");
+  const allGranted =
+    !!caps && caps.length > 0 && missing.length === 0 &&
+    caps.every((c) => c.status === "granted");
+
+  async function handleRecheck() {
+    if (checking) return;
+    setChecking(true);
+    try {
+      await api.recheckLarkPermissions(wsId, installation.id);
+      // The server persists fresh verdicts; refetching the listings
+      // query re-renders this panel from the updated installation row.
+      await qc.invalidateQueries({ queryKey: larkKeys.installations(wsId) });
+    } catch (e) {
+      toast.error(
+        e instanceof Error
+          ? e.message
+          : t(($) => $.lark.permissions_recheck_failed),
+      );
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (!caps) return null;
+  const authHref = `${larkDevConsoleHost(installation.region)}/app/${encodeURIComponent(installation.app_id)}/auth`;
+
+  return (
+    <div
+      className="space-y-1.5 rounded-md border bg-muted/30 p-3"
+      data-testid="lark-capability-panel"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-caption font-medium">
+          {t(($) => $.lark.permissions_title)}
+        </p>
+        {canManage && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-micro"
+            onClick={handleRecheck}
+            disabled={checking}
+            data-testid="lark-permissions-recheck"
+          >
+            <RefreshCw className={cn("h-3 w-3", checking && "animate-spin")} />
+            {checking
+              ? t(($) => $.lark.permissions_checking)
+              : t(($) => $.lark.permissions_recheck)}
+          </Button>
+        )}
+      </div>
+
+      {caps.length === 0 ? (
+        <p className="text-caption text-muted-foreground">
+          {t(($) => $.lark.permissions_not_checked)}
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-1">
+            {caps.map((c) => (
+              <li
+                key={c.capability}
+                className="flex flex-wrap items-center gap-2 text-caption"
+              >
+                <span
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-micro",
+                    capabilityStatusClass(c.status),
+                  )}
+                  title={c.detail || undefined}
+                  data-testid={`lark-capability-${c.capability}`}
+                >
+                  {statusLabel(c.status)}
+                </span>
+                <span>{capabilityLabel(c.capability)}</span>
+                {c.capability === "receive_messages" && c.status === "unknown" && (
+                  <span className="text-micro text-muted-foreground">
+                    {t(($) => $.lark.permissions_receive_note)}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+
+          {missing.length > 0 && (
+            <div
+              className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5"
+              data-testid="lark-permissions-missing"
+            >
+              <p className="text-caption font-medium text-amber-600">
+                {t(($) => $.lark.permissions_missing_title)}
+              </p>
+              <p className="text-micro text-muted-foreground">
+                {t(($) => $.lark.permissions_missing_hint)}
+              </p>
+              <ul className="space-y-1">
+                {missing.map((c) => (
+                  <li key={c.capability} className="text-micro">
+                    <span className="font-medium">
+                      {capabilityLabel(c.capability)}
+                    </span>
+                    {(c.required_scopes?.length ?? 0) > 0 && (
+                      <span className="ml-2 break-all font-mono text-muted-foreground">
+                        {c.required_scopes!.join(" ")}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <a
+                href={authHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-caption text-amber-600 underline underline-offset-2 hover:text-amber-700"
+                data-testid="lark-permissions-console-link"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {t(($) => $.lark.permissions_console_link)}
+              </a>
+            </div>
+          )}
+
+          {allGranted && (
+            <p className="text-micro text-muted-foreground">
+              {t(($) => $.lark.permissions_all_granted)}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// LarkPermissionCatalogList is the upfront permission declaration in the
+// bind dialog (RUYI-400 范围3: 新建机器人权限前置申请). Each capability
+// prints one line per AND-group; the members of a line are OR
+// alternatives ("grant any one"), while every line of a capability must
+// be granted — rendered verbatim as scope identifiers because those are
+// exactly the strings the user checks off in the Feishu console.
+function LarkPermissionCatalogList({
+  entries,
+}: {
+  entries: LarkPermissionCatalogEntry[];
+}) {
+  const { t } = useT("settings");
+  const { capabilityLabel } = useLarkCapabilityCopy();
+  return (
+    <div
+      className="w-full space-y-2 rounded-md border bg-muted/30 p-3 text-left"
+      data-testid="lark-install-permissions"
+    >
+      <p className="text-caption font-medium">
+        {t(($) => $.lark.install_permissions_title)}
+      </p>
+      <p className="text-micro text-muted-foreground">
+        {t(($) => $.lark.install_permissions_hint)}
+      </p>
+      <ul className="space-y-1.5">
+        {entries.map((e) => (
+          <li key={e.id} className="text-micro">
+            <span className="font-medium">{capabilityLabel(e.id)}</span>
+            <div className="mt-0.5 space-y-0.5">
+              {e.scopes.map((group, gi) => (
+                <p
+                  key={gi}
+                  className="break-all font-mono text-muted-foreground"
+                >
+                  {group.join(" / ")}
+                </p>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function InstallationRow({
   installation,
   canManage,
@@ -225,42 +492,50 @@ function InstallationRow({
   const isActive = installation.status === "active";
   const agentName = getAgentName(installation.agent_id);
   return (
-    <div className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
-      <div className="flex items-start gap-3">
-        <ActorAvatar
-          actorType="agent"
-          actorId={installation.agent_id}
-          size="lg"
-          enableHoverCard
-          profileLink
-        />
-        <div className="space-y-1">
-          <p className="text-body font-medium">
-            {agentName}
-            <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">
-              {installation.region === "lark"
-                ? t(($) => $.lark.region_lark)
-                : t(($) => $.lark.region_feishu)}
-            </span>
-            {!isActive && (
+    <div className="space-y-2 py-3 first:pt-0 last:pb-0">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <ActorAvatar
+            actorType="agent"
+            actorId={installation.agent_id}
+            size="lg"
+            enableHoverCard
+            profileLink
+          />
+          <div className="space-y-1">
+            <p className="text-body font-medium">
+              {agentName}
               <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">
-                {t(($) => $.lark.revoked_badge)}
+                {installation.region === "lark"
+                  ? t(($) => $.lark.region_lark)
+                  : t(($) => $.lark.region_feishu)}
               </span>
-            )}
-          </p>
-          <p className="text-micro text-muted-foreground">
-            {t(($) => $.lark.installed_at_label, {
-              when: new Date(installation.installed_at).toLocaleString(locale),
-            })}
-          </p>
+              {!isActive && (
+                <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">
+                  {t(($) => $.lark.revoked_badge)}
+                </span>
+              )}
+            </p>
+            <p className="text-micro text-muted-foreground">
+              {t(($) => $.lark.installed_at_label, {
+                when: new Date(installation.installed_at).toLocaleString(locale),
+              })}
+            </p>
+          </div>
         </div>
+        {canManage && isActive && (
+          <Button variant="outline" size="sm" onClick={onDisconnect}>
+            <Trash2 className="h-3 w-3" />
+            {t(($) => $.lark.disconnect)}
+          </Button>
+        )}
       </div>
-      {canManage && isActive && (
-        <Button variant="outline" size="sm" onClick={onDisconnect}>
-          <Trash2 className="h-3 w-3" />
-          {t(($) => $.lark.disconnect)}
-        </Button>
-      )}
+      {/* Permission verdicts (RUYI-400) render only for active bots — a
+        revoked bot's stored probe states are stale credentials' output
+        and would mislead. The panel itself decides what to show for
+        servers without the field (nothing) vs never-probed bots
+        (not-checked hint + first check). */}
+      {isActive && <LarkCapabilityPanel installation={installation} canManage={canManage} />}
     </div>
   );
 }
@@ -668,6 +943,14 @@ function LarkInstallDialog({
 }) {
   const { t } = useT("settings");
   const qc = useQueryClient();
+  // RUYI-400 权限前置申请: the static capability→scope catalog travels
+  // with the QR so the user sees exactly what the bot will ask for
+  // BEFORE authorizing — and what to grant in the console if something
+  // comes back missing later. The catalog only changes on a server
+  // deploy, so its query caches for the session (staleTime Infinity).
+  const { data: catalog } = useQuery({
+    ...larkPermissionCatalogOptions(wsId),
+  });
 
   // We track session lifecycle as local state because TanStack Query is
   // optimized for cached server reads, and this dialog is a one-shot
@@ -844,6 +1127,10 @@ function LarkInstallDialog({
                 : t(($) => $.lark.install_dialog_description_feishu)}
           </DialogDescription>
         </DialogHeader>
+
+        {catalog?.capabilities && catalog.capabilities.length > 0 && (
+          <LarkPermissionCatalogList entries={catalog.capabilities} />
+        )}
 
         <div className="flex flex-col items-center gap-4 py-2">
           {beginning && !session && (

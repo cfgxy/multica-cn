@@ -360,6 +360,18 @@ type ChannelBindingToken struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type ChannelCapabilityState struct {
+	ID             pgtype.UUID        `json:"id"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	ChannelType    string             `json:"channel_type"`
+	Capability     string             `json:"capability"`
+	Status         string             `json:"status"`
+	Detail         string             `json:"detail"`
+	RequiredScopes []byte             `json:"required_scopes"`
+	CheckedAt      pgtype.Timestamptz `json:"checked_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelChatContextGeneration struct {
 	ChatSessionID          pgtype.UUID        `json:"chat_session_id"`
 	Revision               int64              `json:"revision"`

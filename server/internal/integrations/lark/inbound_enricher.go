@@ -199,7 +199,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 				item.ThreadID != msg.ThreadID {
 				continue
 			}
-			media := RecentMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
+			media := EnrichedMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
 			if len(mediaResourcesFromMessage(InboundMessage{MessageID: media.MessageID, MessageType: media.MessageType, Content: media.Content})) > 0 {
 				msg.RecentMedia = append(msg.RecentMedia, media)
 			}
@@ -209,6 +209,24 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	var quotedErr error
 	if msg.ParentID != "" {
 		quotedItems, quotedErr = e.client.GetMessage(ctx, creds, msg.ParentID)
+		if quotedErr == nil && len(quotedItems) > 0 {
+			// The quoted parent may itself carry downloadable media (a
+			// reply to a file/image message). Capture its descriptors so the
+			// downstream media resolver ingests the attachment through the
+			// same path as the trigger's own media. Only the direct parent
+			// is harvested — a merge_forward parent renders its children as
+			// a text transcript without attaching their files, keeping the
+			// download fan-out bounded on this ACK-latency-sensitive path.
+			parent := quotedItems[0]
+			if parent.MessageID != "" && !parent.Deleted && parent.MessageType != larkMsgTypeMergeForward &&
+				len(mediaResourcesFromMessage(InboundMessage{MessageID: parent.MessageID, MessageType: parent.MessageType, Content: parent.Content})) > 0 {
+				msg.QuotedMedia = append(msg.QuotedMedia, EnrichedMediaMessage{
+					MessageID:   parent.MessageID,
+					MessageType: parent.MessageType,
+					Content:     parent.Content,
+				})
+			}
+		}
 	}
 	var forwardItems []LarkMessage
 	var forwardErr error
