@@ -114,7 +114,10 @@ export default function RootLayout() {
                     <Stack.Screen name="(app)" />
                     {/* 登录前后都可达 —— 未登录用户连自建后端是核心场景。 */}
                     <Stack.Screen name="server-settings" />
-                    <Stack.Screen name="servers" />
+                    {/* app/servers/ 无 _layout.tsx，路由被扁平化为 "servers/select"；
+                        声明不存在的 "servers" 会让根 Stack 每次渲染都打出
+                        [Layout children] 告警（启动窗内 3 次）。 */}
+                    <Stack.Screen name="servers/select" />
                   </Stack>
                   {/* RUYI-37: 系统通知点击 → 对应 Issue（冷启动与运行时两条入口）。 */}
                   {phase === "ready" && !isAuthLoading && <NotificationResponseNavigator />}
