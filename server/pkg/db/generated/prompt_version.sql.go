@@ -314,6 +314,30 @@ func (q *Queries) LockAgentForPromptVersion(ctx context.Context, arg LockAgentFo
 	return i, err
 }
 
+const lockAutopilotForPromptVersion = `-- name: LockAutopilotForPromptVersion :one
+SELECT id, COALESCE(description, '')::text AS effective_content FROM autopilot WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+`
+
+type LockAutopilotForPromptVersionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type LockAutopilotForPromptVersionRow struct {
+	ID               pgtype.UUID `json:"id"`
+	EffectiveContent string      `json:"effective_content"`
+}
+
+// Same shape as the four tier locks above (RUYI-285 rework): lock the
+// owning autopilot row and read its run prompt — the nullable description
+// column, normalized to ” so the empty-content guard sees one shape.
+func (q *Queries) LockAutopilotForPromptVersion(ctx context.Context, arg LockAutopilotForPromptVersionParams) (LockAutopilotForPromptVersionRow, error) {
+	row := q.db.QueryRow(ctx, lockAutopilotForPromptVersion, arg.ID, arg.WorkspaceID)
+	var i LockAutopilotForPromptVersionRow
+	err := row.Scan(&i.ID, &i.EffectiveContent)
+	return i, err
+}
+
 const lockProjectForPromptVersion = `-- name: LockProjectForPromptVersion :one
 SELECT id, COALESCE(instructions, '')::text AS effective_content FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
@@ -331,6 +355,27 @@ type LockProjectForPromptVersionRow struct {
 func (q *Queries) LockProjectForPromptVersion(ctx context.Context, arg LockProjectForPromptVersionParams) (LockProjectForPromptVersionRow, error) {
 	row := q.db.QueryRow(ctx, lockProjectForPromptVersion, arg.ID, arg.WorkspaceID)
 	var i LockProjectForPromptVersionRow
+	err := row.Scan(&i.ID, &i.EffectiveContent)
+	return i, err
+}
+
+const lockSkillForPromptVersion = `-- name: LockSkillForPromptVersion :one
+SELECT id, COALESCE(content, '')::text AS effective_content FROM skill WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+`
+
+type LockSkillForPromptVersionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type LockSkillForPromptVersionRow struct {
+	ID               pgtype.UUID `json:"id"`
+	EffectiveContent string      `json:"effective_content"`
+}
+
+func (q *Queries) LockSkillForPromptVersion(ctx context.Context, arg LockSkillForPromptVersionParams) (LockSkillForPromptVersionRow, error) {
+	row := q.db.QueryRow(ctx, lockSkillForPromptVersion, arg.ID, arg.WorkspaceID)
+	var i LockSkillForPromptVersionRow
 	err := row.Scan(&i.ID, &i.EffectiveContent)
 	return i, err
 }
@@ -529,6 +574,42 @@ func (q *Queries) UpdateAgentInstructionsForPromptVersion(ctx context.Context, a
 	return i, err
 }
 
+const updateAutopilotDescriptionForPromptVersion = `-- name: UpdateAutopilotDescriptionForPromptVersion :one
+UPDATE autopilot SET description = $2, updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, pause_reason
+`
+
+type UpdateAutopilotDescriptionForPromptVersionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	Description pgtype.Text `json:"description"`
+}
+
+// Switch/rollback write-back only; the snapshot path never calls these.
+func (q *Queries) UpdateAutopilotDescriptionForPromptVersion(ctx context.Context, arg UpdateAutopilotDescriptionForPromptVersionParams) (Autopilot, error) {
+	row := q.db.QueryRow(ctx, updateAutopilotDescriptionForPromptVersion, arg.ID, arg.Description)
+	var i Autopilot
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.AssigneeID,
+		&i.Status,
+		&i.ExecutionMode,
+		&i.IssueTitleTemplate,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.LastRunAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.AssigneeType,
+		&i.ProjectID,
+		&i.PauseReason,
+	)
+	return i, err
+}
+
 const updateProjectInstructionsForPromptVersion = `-- name: UpdateProjectInstructionsForPromptVersion :one
 UPDATE project SET instructions = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
@@ -562,6 +643,35 @@ func (q *Queries) UpdateProjectInstructionsForPromptVersion(ctx context.Context,
 		&i.DueDate,
 		&i.Instructions,
 		&i.Revision,
+	)
+	return i, err
+}
+
+const updateSkillContentForPromptVersion = `-- name: UpdateSkillContentForPromptVersion :one
+UPDATE skill SET content = $2, updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id
+`
+
+type UpdateSkillContentForPromptVersionParams struct {
+	ID      pgtype.UUID `json:"id"`
+	Content string      `json:"content"`
+}
+
+func (q *Queries) UpdateSkillContentForPromptVersion(ctx context.Context, arg UpdateSkillContentForPromptVersionParams) (Skill, error) {
+	row := q.db.QueryRow(ctx, updateSkillContentForPromptVersion, arg.ID, arg.Content)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.Content,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PluginInstallationID,
 	)
 	return i, err
 }
