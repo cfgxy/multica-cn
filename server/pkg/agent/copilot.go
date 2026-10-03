@@ -357,7 +357,12 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("copilot stdout pipe: %w", err)
@@ -365,12 +370,12 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[copilot:stderr] "), agentStderrTailBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start copilot: %w", err)
 	}
 
-	b.cfg.Logger.Info("copilot started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("copilot started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -414,7 +419,7 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			slog.Warn("copilot stdout scanner error", "err", err)
 		}
 
-		exitErr := cmd.Wait()
+		exitErr := sess.Wait(runCtx)
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
@@ -432,7 +437,7 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			st.finalError = withAgentStderr(st.finalError, "copilot", stderrBuf.Tail())
 		}
 
-		b.cfg.Logger.Info("copilot finished", "pid", cmd.Process.Pid, "status", st.finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("copilot finished", "pid", sess.PID(), "status", st.finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		usage := st.resolveUsage()
 		// A run that produced output but no tokens is a silent billing hole:

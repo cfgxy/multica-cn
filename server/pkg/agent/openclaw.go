@@ -103,19 +103,24 @@ func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// overflow (security warnings, tool errors, etc.) — capture it via a
 	// log writer so it surfaces in daemon logs without being fed into the
 	// JSON parser.
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("openclaw stdout pipe: %w", err)
 	}
 	cmd.Stderr = newLogWriter(b.cfg.Logger, "[openclaw:stderr] ")
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start openclaw: %w", err)
 	}
 
-	b.cfg.Logger.Info("openclaw started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("openclaw started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -142,12 +147,12 @@ func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		if scanResult.cutShort {
 			b.cfg.Logger.Warn("openclaw delivered its result but did not exit; "+
 				"treating the complete result as the protocol boundary",
-				"pid", cmd.Process.Pid)
+				"pid", sess.PID())
 			cancel()
 		}
 
 		// Wait for process exit.
-		exitErr := cmd.Wait()
+		exitErr := sess.Wait(runCtx)
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
@@ -183,13 +188,13 @@ func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			// finds nothing — hence this note.
 			b.cfg.Logger.Warn("openclaw exited cleanly but a descendant held a "+
 				"pipe past WaitDelay; delivering the parsed result and dropping "+
-				"the stderr tail", "pid", cmd.Process.Pid)
+				"the stderr tail", "pid", sess.PID())
 		case exitErr != nil && scanResult.status == "completed":
 			scanResult.status = "failed"
 			scanResult.errMsg = fmt.Sprintf("openclaw exited with error: %v", exitErr)
 		}
 
-		b.cfg.Logger.Info("openclaw finished", "pid", cmd.Process.Pid, "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("openclaw finished", "pid", sess.PID(), "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
 
 		// Build usage map. Prefer the model openclaw reported in
 		// `meta.agentMeta.model` (the actual LLM, e.g. `deepseek-chat`).
