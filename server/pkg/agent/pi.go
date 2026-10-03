@@ -249,7 +249,12 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		releasePiSessionFileLock(sessionLock)
 		cancel()
@@ -260,7 +265,7 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 	// from re-tokenising embedded quotes into CLI flags on Windows (#6457).
 	// The explicit close remains part of the #2188 contract too: under systemd,
 	// Pi has been observed to wait indefinitely when stdin never reaches EOF.
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		releasePiSessionFileLock(sessionLock)
 		cancel()
@@ -270,14 +275,14 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 	closeStdin := func() { closeStdinOnce.Do(func() { _ = stdin.Close() }) }
 	cmd.Stderr = newLogWriter(b.cfg.Logger, "["+label+":stderr] ")
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		closeStdin()
 		releasePiSessionFileLock(sessionLock)
 		cancel()
 		return nil, fmt.Errorf("start %s: %w", label, err)
 	}
 
-	b.cfg.Logger.Info(label+" started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info(label+" started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -428,7 +433,7 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 			trySend(msgCh, Message{Type: MessageText, Content: d})
 		}
 
-		waitErr := cmd.Wait()
+		waitErr := sess.Wait(runCtx)
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
@@ -469,7 +474,7 @@ func (b *piBackend) Execute(ctx context.Context, prompt string, opts ExecOptions
 			finalError = lastTurnError
 		}
 
-		b.cfg.Logger.Info(label+" finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info(label+" finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		// Publish the terminal result only after the transcript is available to
 		// a follow-up run. The result channel is buffered, so relying on a defer

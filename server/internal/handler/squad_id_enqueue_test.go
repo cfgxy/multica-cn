@@ -43,8 +43,8 @@ func TestCreateComment_SquadMentionStampsSquadIDOnLeaderTask(t *testing.T) {
 	// produced purely by the @squad comment mention.
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, 'squad_id stamp test')
+		INSERT INTO issue (workspace_id, creator_type, creator_id, title, status)
+		VALUES ($1, 'member', $2, 'squad_id stamp test', 'todo')
 		RETURNING id
 	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
 		t.Fatalf("create issue: %v", err)

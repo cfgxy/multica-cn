@@ -1,3 +1,0 @@
--- Irreversible cleanup: the rows the up migration deleted were orphans whose
--- workspace no longer exists, so there is nowhere to restore them from.
--- Down is intentionally a no-op.

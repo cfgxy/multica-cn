@@ -122,12 +122,17 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("traecli stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("traecli stdin pipe: %w", err)
@@ -137,13 +142,13 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	// hermes.go for why the io.MultiWriter form races with stopReason=end_turn
 	// under load.
 	providerErr := newACPProviderErrorSniffer("traecli")
-	stderr, err := cmd.StderrPipe()
+	stderr, err := sess.StderrPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("traecli stderr pipe: %w", err)
 	}
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start traecli: %w", err)
 	}
@@ -155,7 +160,7 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		_, _ = io.Copy(stderrSink, stderr)
 	}()
 
-	b.cfg.Logger.Info("traecli acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.cfg.Logger.Info("traecli acp started", "pid", sess.PID(), "cwd", opts.Cwd)
 
 	msgStream := newTraecliMessageStream(256)
 	resCh := make(chan Result, 1)
@@ -224,7 +229,7 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		defer close(resCh)
 		defer func() {
 			stdin.Close()
-			_ = cmd.Wait()
+			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
 
@@ -388,7 +393,7 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("traecli finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("traecli finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		stdin.Close()
 		cancel()

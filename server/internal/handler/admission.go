@@ -50,18 +50,19 @@ const (
 type DispatchReasonCode = dispatch.ReasonCode
 
 const (
-	ReasonQueued                = dispatch.ReasonQueued
-	ReasonCoalesced             = dispatch.ReasonCoalesced
-	ReasonDeferred              = dispatch.ReasonDeferred
-	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
-	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
-	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
-	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
-	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
-	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
-	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
-	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
-	ReasonInternalError         = dispatch.ReasonInternalError
+	ReasonQueued                     = dispatch.ReasonQueued
+	ReasonCoalesced                  = dispatch.ReasonCoalesced
+	ReasonDeferred                   = dispatch.ReasonDeferred
+	ReasonInvocationNotAllowed       = dispatch.ReasonInvocationNotAllowed
+	ReasonTargetUnavailable          = dispatch.ReasonTargetUnavailable
+	ReasonRuntimeOffline             = dispatch.ReasonRuntimeOffline
+	ReasonRuntimeUnusable            = dispatch.ReasonRuntimeUnusable
+	ReasonAgentRuntimeRequired       = dispatch.ReasonAgentRuntimeRequired
+	ReasonAttributionBlocked         = dispatch.ReasonAttributionBlocked
+	ReasonAlreadyActive              = dispatch.ReasonAlreadyActive
+	ReasonSelfTriggerSuppressed      = dispatch.ReasonSelfTriggerSuppressed
+	ReasonIssueStatusNotDispatchable = dispatch.ReasonIssueStatusNotDispatchable
+	ReasonInternalError              = dispatch.ReasonInternalError
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name

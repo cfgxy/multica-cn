@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { MulticaApiError, MulticaClient } from "../src/rest.js";
+import { MulticaApiError, MulticaClient, MulticaRequestError } from "../src/rest.js";
 import { findTool, TOOL_DEFINITIONS } from "../src/tools.js";
 import { ToolInputError } from "../src/schemas.js";
-import type { IssueInfo } from "../src/types.js";
+import type { IssueInfo, ProjectInfo } from "../src/types.js";
 
 const WS = "voice-notes";
 
@@ -18,6 +18,18 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
       projects: [{ id: "p1", title: "Playground", status: "active", issue_count: 3 }],
       total: 1,
     }),
+    getProject: async (_ws: string, id: string) => {
+      calls.push({ method: "getProject", args: [id] });
+      return projectFixture();
+    },
+    createProject: async (_ws: string, body: Record<string, unknown>) => {
+      calls.push({ method: "createProject", args: [body] });
+      return { ...projectFixture(), ...body, revision: 1 };
+    },
+    updateProject: async (_ws: string, id: string, body: Record<string, unknown>) => {
+      calls.push({ method: "updateProject", args: [id, body] });
+      return { ...projectFixture(), title: "Playground v2", revision: 2 };
+    },
     listIssues: async () => ({ issues: [], total: 0 }),
     getIssue: async () => issueFixture(),
     listComments: async () => [],
@@ -30,6 +42,28 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
     updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
       calls.push({ method: "updateIssue", args: [id, body] });
       return issueFixture({ status: "in_progress", revision: 3 });
+    },
+    addIssueRelation: async (_ws: string, _id: string, body: Record<string, unknown>) => {
+      calls.push({ method: "addIssueRelation", args: [body] });
+      return {
+        added: true,
+        relation: { id: "e1", type: body.type, source_issue_id: "i1", target_issue_id: body.target_issue_id },
+        issue: { id: "i1", revision: 4 },
+      };
+    },
+    removeIssueRelation: async (
+      _ws: string,
+      _id: string,
+      relationType: string,
+      targetIssueId: string,
+      expectedRevision?: number,
+    ) => {
+      calls.push({ method: "removeIssueRelation", args: [relationType, targetIssueId, expectedRevision] });
+      return {
+        removed: true,
+        relation: { type: relationType, source_issue_id: "i1", target_issue_id: targetIssueId },
+        issue: { id: "i1", revision: 5 },
+      };
     },
     quickCreateIssue: async (ws: string, body: Record<string, unknown>) => {
       calls.push({ method: "quickCreateIssue", args: [ws, body] });
@@ -54,6 +88,25 @@ function issueFixture(over: Partial<IssueInfo> = {}): IssueInfo {
   };
 }
 
+function projectFixture(over: Partial<ProjectInfo> = {}): ProjectInfo {
+  return {
+    id: "p1",
+    workspace_id: "w1",
+    title: "Playground",
+    description: "sandbox",
+    instructions: "brief text",
+    status: "in_progress",
+    priority: "high",
+    created_at: "2026-10-03T00:00:00Z",
+    updated_at: "2026-10-03T00:00:00Z",
+    issue_count: 3,
+    done_count: 1,
+    resource_count: 2,
+    revision: 1,
+    ...over,
+  };
+}
+
 function callsOf(client: MulticaClient): Array<{ method: string; args: unknown[] }> {
   return (client as unknown as { __calls: Array<{ method: string; args: unknown[] }> }).__calls;
 }
@@ -64,26 +117,44 @@ describe("tool surface", () => {
       [
         "add_comment",
         "assign_issue",
+        "bulk_update_issues",
         "cancel_run",
         "create_issue",
+        "create_project",
+        "delete_comment",
         "dispatch_agent",
+        "edit_comment",
+        "get_comment",
         "get_issue",
+        "get_issue_relations",
+        "get_project",
         "get_run",
         "list_agents",
+        "list_comments",
         "list_issue_runs",
         "list_issues",
         "list_projects",
         "list_workspaces",
+        "manage_issue_relations",
         "progress_digest",
         "retry_run",
         "search_issues",
+        "update_issue",
         "update_issue_status",
+        "update_project",
       ].sort(),
     );
   });
 
   it("documents the quota cost on dispatch and comment tools", () => {
-    for (const name of ["dispatch_agent", "add_comment", "update_issue_status", "assign_issue"]) {
+    for (const name of [
+      "dispatch_agent",
+      "add_comment",
+      "edit_comment",
+      "update_issue_status",
+      "assign_issue",
+      "bulk_update_issues",
+    ]) {
       const tool = findTool(name);
       expect(tool?.description).toMatch(/quota|run/i);
     }
@@ -94,6 +165,15 @@ describe("tool surface", () => {
     for (const name of TOOL_DEFINITIONS.map((t) => t.name).filter((n) => n !== "list_workspaces")) {
       expect(findTool(name)?.inputSchema.required).toContain("workspace");
     }
+  });
+
+  it("registers comment reads as read-only and comment writes as mutating", () => {
+    for (const readTool of ["get_comment", "list_comments"]) {
+      expect(findTool(readTool)?.description).toMatch(/read-only/i);
+    }
+    // The mutating comment tools declare their destructive/run side effects.
+    expect(findTool("edit_comment")?.description).toMatch(/WARNING \(run side effects\)/);
+    expect(findTool("delete_comment")?.description).toMatch(/SIDE EFFECTS/i);
   });
 });
 
@@ -106,6 +186,175 @@ describe("list_projects handler", () => {
     >;
     expect(result.total).toBe(1);
     expect((result.projects as Array<{ title: string }>)[0]?.title).toBe("Playground");
+  });
+});
+
+describe("get_project handler", () => {
+  it("returns the full base-field projection including revision", async () => {
+    const client = fakeClient();
+    const tool = findTool("get_project");
+    const result = (await tool?.handler(
+      { workspace: WS, project_id: "p1" },
+      client,
+    )) as Record<string, unknown>;
+    const [id] = callsOf(client)[0]?.args as [string];
+    expect(id).toBe("p1");
+    expect(result.id).toBe("p1");
+    expect(result.title).toBe("Playground");
+    expect(result.instructions).toBe("brief text");
+    expect(result.done_count).toBe(1);
+    expect(result.resource_count).toBe(2);
+    expect(result.revision).toBe(1);
+  });
+
+  it("requires the project id", async () => {
+    const tool = findTool("get_project");
+    await expect(tool?.handler({ workspace: WS }, fakeClient())).rejects.toThrow(ToolInputError);
+  });
+});
+
+describe("create_project handler", () => {
+  it("maps creation fields to the REST body and echoes revision", async () => {
+    const client = fakeClient();
+    const tool = findTool("create_project");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        title: "  New Project  ",
+        description: "desc",
+        instructions: "brief",
+        status: "in_progress",
+        priority: "high",
+        lead_type: "member",
+        lead_id: "u1",
+        start_date: "2026-10-03",
+        due_date: "2026-10-31",
+      },
+      client,
+    )) as Record<string, unknown>;
+    const [body] = callsOf(client)[0]?.args as [Record<string, unknown>];
+    expect(body.title).toBe("New Project");
+    expect(body.status).toBe("in_progress");
+    expect(body.lead_type).toBe("member");
+    expect(body.start_date).toBe("2026-10-03");
+    expect(result.created).toBe(true);
+    expect(result.id).toBe("p1");
+    expect(result.revision).toBe(1);
+  });
+
+  it("rejects lead_type without lead_id", async () => {
+    const tool = findTool("create_project");
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", lead_type: "agent" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("rejects an unknown status and a malformed date before hitting the API", async () => {
+    const tool = findTool("create_project");
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", status: "active" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", due_date: "31/10/2026" }, fakeClient()),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+  });
+
+  it("rejects oversized instructions before hitting the API", async () => {
+    const tool = findTool("create_project");
+    await expect(
+      tool?.handler({ workspace: WS, title: "t", instructions: "x".repeat(32_001) }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+});
+
+describe("update_project handler", () => {
+  it("maps set fields, passes expected_revision through, and echoes the new revision", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_project");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        title: "Renamed",
+        status: "paused",
+        expected_revision: 1,
+      },
+      client,
+    )) as Record<string, unknown>;
+    const [id, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(id).toBe("p1");
+    expect(body).toEqual({ title: "Renamed", status: "paused", expected_revision: 1 });
+    expect(result.updated).toBe(true);
+    expect(result.id).toBe("p1");
+    expect(result.revision).toBe(2);
+  });
+
+  it("omits absent keys and sends explicit nulls for clears", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_project");
+    await tool?.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        description: null,
+        instructions: null,
+        lead_type: null,
+        lead_id: null,
+        start_date: null,
+        due_date: "",
+      },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    // JSON round-trip is what actually goes on the wire: undefined keys must
+    // vanish, null keys must survive.
+    const wire = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
+    expect(wire).toEqual({
+      description: null,
+      instructions: null,
+      lead_type: null,
+      lead_id: null,
+      start_date: null,
+      due_date: null,
+    });
+  });
+
+  it("keeps date values that are set and rejects malformed ones", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_project");
+    await tool?.handler(
+      { workspace: WS, project_id: "p1", due_date: "2026-11-30" },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body.due_date).toBe("2026-11-30");
+
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", due_date: "tomorrow" }, fakeClient()),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+  });
+
+  it("requires lead_type and lead_id together", async () => {
+    const tool = findTool("update_project");
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", lead_type: "agent" }, fakeClient()),
+    ).rejects.toThrow(/together/);
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", lead_id: "a1" }, fakeClient()),
+    ).rejects.toThrow(/together/);
+    await expect(
+      tool?.handler(
+        { workspace: WS, project_id: "p1", lead_type: null, lead_id: null },
+        fakeClient(),
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects an unknown status enum", async () => {
+    const tool = findTool("update_project");
+    await expect(
+      tool?.handler({ workspace: WS, project_id: "p1", status: "active" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
   });
 });
 
@@ -160,6 +409,194 @@ describe("update_issue_status handler", () => {
     expect(body).toEqual({ status: "in_progress", suppress_run: true });
     expect(result.updated).toBe(true);
     expect(result.status).toBe("in_progress");
+  });
+});
+
+describe("update_issue handler (RUYI-350)", () => {
+  it("title-only PATCH sends only the title", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", title: "Rewritten title" },
+      client,
+    )) as Record<string, unknown>;
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ title: "Rewritten title" });
+    expect(result.updated).toBe(true);
+    expect(result.revision).toBe(3);
+  });
+
+  it("description-only PATCH sends only the description, Markdown intact", async () => {
+    const client = fakeClient();
+    const markdown = "# Rewritten body\n\n- item **one**\n- item two\n\n```go\nfmt.Println(\"hi\")\n```";
+    const tool = findTool("update_issue");
+    await tool?.handler({ workspace: WS, issue: "VOI-1", description: markdown }, client);
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ description: markdown });
+  });
+
+  it("maps every editable field on a multi-field PATCH", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      {
+        workspace: WS,
+        issue: "VOI-1",
+        title: "Multi",
+        description: "body",
+        priority: "high",
+        project_id: "p2",
+        parent_issue_id: "11111111-2222-3333-4444-555555555555",
+        start_date: "2026-10-03",
+        due_date: "2026-10-09",
+        expected_revision: 4,
+      },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({
+      title: "Multi",
+      description: "body",
+      priority: "high",
+      project_id: "p2",
+      parent_issue_id: "11111111-2222-3333-4444-555555555555",
+      start_date: "2026-10-03",
+      due_date: "2026-10-09",
+      expected_revision: 4,
+    });
+  });
+
+  it("clears nullable fields with an explicit null and keeps omitted fields absent", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      { workspace: WS, issue: "VOI-1", due_date: null, parent_issue_id: null, title: "keep-others" },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ title: "keep-others", due_date: null, parent_issue_id: null });
+  });
+
+  it("treats an empty string as a clear for nullable fields", async () => {
+    const client = fakeClient();
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      { workspace: WS, issue: "VOI-1", start_date: "", project_id: "" },
+      client,
+    );
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toEqual({ start_date: null, project_id: null });
+  });
+
+  it("rejects an empty PATCH (nothing to update)", async () => {
+    const tool = findTool("update_issue");
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("rejects malformed dates and oversized text client-side", async () => {
+    const tool = findTool("update_issue");
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", start_date: "10/03/2026" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", title: "x".repeat(501) }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", description: "x".repeat(50_001) }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", priority: "asap" }, fakeClient()),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("answers a stale expected_revision with a structured revision_conflict, no write", async () => {
+    const client = fakeClient({
+      updateIssue: async () => {
+        throw new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+      },
+    });
+    const tool = findTool("update_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", title: "stale write", expected_revision: 2 },
+      client,
+    )) as Record<string, unknown>;
+    expect(result.updated).toBe(false);
+    expect(result.code).toBe("revision_conflict");
+    expect(result.hint).toMatch(/get_issue/);
+  });
+
+  it("propagates non-conflict server errors (403) intact", async () => {
+    const client = fakeClient({
+      updateIssue: async () => {
+        throw new MulticaApiError(403, "you do not have access to this workspace");
+      },
+    });
+    const tool = findTool("update_issue");
+    const err = await tool
+      ?.handler({ workspace: WS, issue: "VOI-1", title: "nope" }, client)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MulticaApiError);
+    expect((err as MulticaApiError).status).toBe(403);
+  });
+});
+
+describe("update_issue schema and serialization contract (RUYI-350)", () => {
+  it("documents the no-run guarantee, optimistic locking and clear semantics", () => {
+    const tool = findTool("update_issue");
+    expect(tool?.description).toMatch(/never triggers an agent run/i);
+    expect(tool?.description).toMatch(/no quota/i);
+    expect(tool?.description).toMatch(/revision_conflict/i);
+    expect(tool?.description).toMatch(/null/);
+    expect(tool?.description).toMatch(/assign_issue/);
+    expect(tool?.description).toMatch(/identifier|UUID/i);
+    const schema = tool?.inputSchema as Record<string, unknown>;
+    expect(schema.required).toEqual(["workspace", "issue"]);
+    const props = schema.properties as Record<
+      string,
+      { description: string; type: string | string[]; minimum?: number }
+    >;
+    for (const name of ["project_id", "parent_issue_id", "start_date", "due_date"]) {
+      expect(props[name]?.type).toContain("null");
+    }
+    expect(props.expected_revision?.description).toMatch(/revision_conflict/);
+    expect(props.expected_revision?.minimum).toBe(1);
+  });
+
+  it("serializes explicit nulls into the wire body and drops omitted fields (PATCH contract guard)", async () => {
+    // Runs the tool against the REAL MulticaClient over a mocked HTTP layer.
+    // PATCH semantics live in the JSON wire format: a clear must survive as an
+    // explicit null (the server decides by rawFields key presence) and an
+    // omitted field must stay absent. JSON.stringify drops undefined keys and
+    // keeps nulls — this pins that contract end-to-end.
+    let wireBody = "";
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      wireBody = String(init?.body ?? "");
+      return new Response(JSON.stringify(issueFixture({ revision: 9 })), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new MulticaClient({
+      serverUrl: "https://api.example.com",
+      token: "mul_test",
+      fetchImpl,
+    });
+    const tool = findTool("update_issue");
+    await tool?.handler(
+      {
+        workspace: WS,
+        issue: "VOI-1",
+        title: "wire",
+        due_date: null,
+        priority: "low",
+      },
+      client,
+    );
+    const parsed = JSON.parse(wireBody) as Record<string, unknown>;
+    expect(Object.keys(parsed).sort()).toEqual(["due_date", "priority", "title"]);
+    expect(parsed.due_date).toBeNull();
   });
 });
 
@@ -586,5 +1023,784 @@ describe("run lifecycle tools (RUYI-292)", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(MulticaApiError);
     expect((err as MulticaApiError).message).toContain("agent_already_queued");
+  });
+});
+
+describe("issue relation tools (RUYI-351)", () => {
+  it("get_issue_relations returns the structured five-view shape", async () => {
+    const client = fakeClient({
+      getIssueRelations: async () => ({
+        issue_id: "i1",
+        identifier: "VOI-1",
+        revision: 3,
+        parent: { id: "p1", identifier: "VOI-9" },
+        blocks: [{ id: "b1", identifier: "VOI-2" }],
+        blocked_by: [],
+        relates_to: [{ id: "r1", identifier: "VOI-3" }],
+        supersedes: [],
+        superseded_by: [{ id: "s1", identifier: "VOI-4" }],
+      }),
+    });
+    const tool = findTool("get_issue_relations");
+    const result = (await tool?.handler({ workspace: WS, issue: "VOI-1" }, client)) as Record<
+      string,
+      unknown
+    >;
+    expect(result.issue_id).toBe("i1");
+    expect(result.parent).toEqual({ id: "p1", identifier: "VOI-9" });
+    expect(result.blocks).toHaveLength(1);
+    expect(result.superseded_by).toHaveLength(1);
+  });
+
+  it("manage_issue_relations set_parent routes through updateIssue with the lock", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", action: "set_parent", target_issue: "VOI-9", expected_revision: 3 },
+      client,
+    )) as Record<string, unknown>;
+    const [id, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(id).toBe("VOI-1");
+    expect(body.parent_issue_id).toBe("VOI-9");
+    expect(body.expected_revision).toBe(3);
+    // The fixture issue has no parent_issue_id, so the echo falls back to null.
+    expect(result.parent_issue_id).toBe(null);
+    expect(String(result.note)).toMatch(/never/i);
+  });
+
+  it("manage_issue_relations clear_parent sends an explicit null (the server's clear marker)", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    await tool?.handler({ workspace: WS, issue: "VOI-1", action: "clear_parent" }, client);
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toHaveProperty("parent_issue_id", null);
+  });
+
+  it("manage_issue_relations add_relation forwards the semantic type and lock", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", action: "add_relation", relation_type: "blocked_by", target_issue: "VOI-2" },
+      client,
+    )) as Record<string, unknown>;
+    const [body] = callsOf(client)[0]?.args as [Record<string, unknown>];
+    // blocked_by passes through in the caller's frame; the server normalizes
+    // it to a forward blocks row.
+    expect(body.type).toBe("blocked_by");
+    expect(body.target_issue_id).toBe("VOI-2");
+    expect(result.revision).toBe(4);
+    expect(String(result.note)).toMatch(/never dispatch/i);
+  });
+
+  it("manage_issue_relations remove_relation carries the optional lock in the query", async () => {
+    const client = fakeClient();
+    const tool = findTool("manage_issue_relations");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", action: "remove_relation", relation_type: "relates_to", target_issue: "VOI-2", expected_revision: 4 },
+      client,
+    )) as Record<string, unknown>;
+    const [relationType, targetIssueId, expectedRevision] = callsOf(client)[0]?.args as [
+      string,
+      string,
+      number | undefined,
+    ];
+    expect(relationType).toBe("relates_to");
+    expect(targetIssueId).toBe("VOI-2");
+    expect(expectedRevision).toBe(4);
+    expect(result.updated).toBe(true);
+  });
+
+  it("manage_issue_relations validates the action/relation_type/target matrix", async () => {
+    const tool = findTool("manage_issue_relations");
+    const client = fakeClient();
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "set_parent" }, client),
+    ).rejects.toThrow(/target_issue.*required/i);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "clear_parent", target_issue: "VOI-2" }, client),
+    ).rejects.toThrow(/must be omitted/i);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "add_relation", target_issue: "VOI-2" }, client),
+    ).rejects.toThrow(/relation_type.*required/i);
+    await expect(
+      tool?.handler(
+        { workspace: WS, issue: "VOI-1", action: "add_relation", relation_type: "enemies_with", target_issue: "VOI-2" },
+        client,
+      ),
+    ).rejects.toThrow(/must be one of/i);
+    await expect(
+      tool?.handler({ workspace: WS, issue: "VOI-1", action: "remove_relation", relation_type: "blocks" }, client),
+    ).rejects.toThrow(/target_issue.*required/i);
+  });
+
+  it("relation tool schemas state the no-run side effect explicitly", () => {
+    const read = findTool("get_issue_relations");
+    expect(read?.description).toMatch(/read-only/i);
+    const manage = findTool("manage_issue_relations");
+    expect(manage?.description).toMatch(/NEVER dispatches, wakes, or queues an agent run/i);
+    expect(manage?.description).toMatch(/revision_conflict/i);
+    expect(manage?.inputSchema.properties.action?.enum).toEqual([
+      "set_parent",
+      "clear_parent",
+      "add_relation",
+      "remove_relation",
+    ]);
+    expect(manage?.inputSchema.properties.relation_type?.enum).toEqual([
+      "blocks",
+      "blocked_by",
+      "relates_to",
+      "supersedes",
+      "superseded_by",
+    ]);
+  });
+});
+
+describe("bulk_update_issues (RUYI-353)", () => {
+  function updateIssueCalls(
+    client: MulticaClient,
+  ): Array<{ id: string; body: Record<string, unknown> }> {
+    return callsOf(client)
+      .filter((call) => call.method === "updateIssue")
+      .map((call) => ({ id: call.args[0] as string, body: call.args[1] as Record<string, unknown> }));
+  }
+
+  it("applies each item through the single-issue write path and reports index-aligned per-item results", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        return issueFixture({ id, identifier: id, revision: 5 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-2", priority: "high", project_id: "p1" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    const calls = updateIssueCalls(client);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual({ id: "VOI-1", body: { status: "done" } });
+    expect(calls[1]).toEqual({ id: "VOI-2", body: { priority: "high", project_id: "p1" } });
+    expect(result.total).toBe(2);
+    expect(result.updated).toBe(2);
+    expect(result.failed).toBe(0);
+    expect(result.skipped).toBe(0);
+    const results = result.results as Array<Record<string, unknown>>;
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({
+      index: 0,
+      issue: "VOI-1",
+      outcome: "updated",
+      id: "VOI-1",
+      revision: 5,
+    });
+    expect(results[1]).toMatchObject({ index: 1, issue: "VOI-2", outcome: "updated" });
+  });
+
+  it("mixed batch: success, conflict and forbidden each get their own result — nothing silently skipped", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        if (id === "VOI-STALE") {
+          throw new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+        }
+        if (id === "VOI-DENIED") {
+          throw new MulticaApiError(403, "you do not have permission to assign work to this agent");
+        }
+        if (id === "VOI-GONE") {
+          throw new MulticaApiError(404, "issue not found in this workspace");
+        }
+        return issueFixture({ id, identifier: id, revision: 6 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          { issue: "VOI-OK", status: "done" },
+          { issue: "VOI-STALE", status: "done", expected_revision: 4 },
+          { issue: "VOI-DENIED", assignee_type: "agent", assignee_id: "a9" },
+          { issue: "VOI-GONE", status: "blocked" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(updateIssueCalls(client)).toHaveLength(4); // continue mode attempts every item
+    expect(result.updated).toBe(1);
+    expect(result.failed).toBe(3);
+    expect(result.skipped).toBe(0);
+    const results = result.results as Array<Record<string, unknown>>;
+    expect(results.map((item) => item.issue)).toEqual([
+      "VOI-OK",
+      "VOI-STALE",
+      "VOI-DENIED",
+      "VOI-GONE",
+    ]);
+    expect(results[1]?.outcome).toBe("failed");
+    expect(results[1]?.error).toMatchObject({ code: "conflict" });
+    expect((results[1]?.error as { message: string }).message).toContain("revision_conflict");
+    expect(results[2]?.error).toMatchObject({ code: "forbidden" });
+    expect((results[2]?.error as { message: string }).message).toContain(
+      "you do not have permission to assign work to this agent",
+    );
+    expect(results[3]?.error).toMatchObject({ code: "not_found" });
+    // A failed item carries only its own identifier and failure class — no
+    // other item's content leaks through it.
+    expect(JSON.stringify(results[2])).not.toContain("VOI-OK");
+  });
+
+  it("on_error='stop' stops at the first failure and marks the rest not_attempted", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        if (id === "VOI-2") {
+          throw new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+        }
+        return issueFixture({ id, identifier: id, revision: 9 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        on_error: "stop",
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-2", status: "done" },
+          { issue: "VOI-3", status: "done" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(updateIssueCalls(client)).toHaveLength(2); // VOI-3 was never attempted
+    expect(result.updated).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.skipped).toBe(1);
+    expect((result.results as Array<Record<string, unknown>>)[2]).toEqual({
+      index: 2,
+      issue: "VOI-3",
+      outcome: "skipped",
+      reason: "not_attempted",
+    });
+  });
+
+  it("rejects a batch over the 50-item limit wholesale before any write", async () => {
+    const client = fakeClient();
+    const tool = findTool("bulk_update_issues");
+    const updates = Array.from({ length: 51 }, (_, i) => ({ issue: `VOI-${i + 1}`, status: "done" }));
+    await expect(tool?.handler({ workspace: WS, updates }, client)).rejects.toThrow(/50/);
+    expect(updateIssueCalls(client)).toHaveLength(0);
+  });
+
+  it("rejects empty and non-array updates before any write", async () => {
+    const tool = findTool("bulk_update_issues");
+    for (const updates of [[], "VOI-1", undefined]) {
+      const client = fakeClient();
+      await expect(tool?.handler({ workspace: WS, updates }, client)).rejects.toThrow(ToolInputError);
+      expect(updateIssueCalls(client)).toHaveLength(0);
+    }
+  });
+
+  it("validates every item up front; any bad item means zero API calls", async () => {
+    const badUpdates: Array<Record<string, unknown>> = [
+      { status: "done" }, // missing issue
+      { issue: "VOI-1" }, // no writable field
+      { issue: "VOI-1", title: "rename", status: "done" }, // unsupported field would be a silent no-op
+      { issue: "VOI-1", assignee_type: "member" }, // assignee_id missing
+      { issue: "VOI-1", assignee_id: "u1" }, // assignee_type missing
+      { issue: "VOI-1", assignee_type: "unassigned", assignee_id: "u1" },
+      { issue: "VOI-1", due_date: "30/09/2026" },
+      { issue: "VOI-1", priority: "asap" },
+      { issue: "VOI-1", status: "done", expected_revision: 0 }, // server requires a positive revision
+    ];
+    const tool = findTool("bulk_update_issues");
+    for (const bad of badUpdates) {
+      const client = fakeClient();
+      await expect(
+        tool?.handler(
+          { workspace: WS, updates: [bad, { issue: "VOI-2", status: "done" }] },
+          client,
+        ),
+      ).rejects.toThrow(ToolInputError);
+      expect(updateIssueCalls(client)).toHaveLength(0);
+    }
+    const client = fakeClient();
+    await expect(
+      tool?.handler(
+        { workspace: WS, updates: [{ issue: "VOI-1", status: "done" }], on_error: "rewind" },
+        client,
+      ),
+    ).rejects.toThrow(/on_error/);
+    expect(updateIssueCalls(client)).toHaveLength(0);
+  });
+
+  it("suppress_run: batch-level default fills items, per-item value wins, unset omits the key", async () => {
+    const tool = findTool("bulk_update_issues");
+    const client = fakeClient();
+    await tool?.handler(
+      {
+        workspace: WS,
+        suppress_run: true,
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-2", status: "done", suppress_run: false },
+        ],
+      },
+      client,
+    );
+    const bodies = updateIssueCalls(client).map((call) => call.body);
+    expect(bodies[0]).toEqual({ status: "done", suppress_run: true });
+    expect(bodies[1]).toEqual({ status: "done", suppress_run: false });
+
+    const unset = fakeClient();
+    await tool?.handler({ workspace: WS, updates: [{ issue: "VOI-1", status: "done" }] }, unset);
+    const body = updateIssueCalls(unset)[0]?.body ?? {};
+    // Single-tool default: no suppress_run on the wire, runs trigger as usual.
+    expect(Object.hasOwn(body, "suppress_run")).toBe(false);
+  });
+
+  it("per-item unassign sends the explicit JSON nulls the server contract requires", async () => {
+    const client = fakeClient();
+    const tool = findTool("bulk_update_issues");
+    await tool?.handler(
+      { workspace: WS, updates: [{ issue: "VOI-1", assignee_type: "unassigned" }] },
+      client,
+    );
+    const body = updateIssueCalls(client)[0]?.body ?? {};
+    expect(body.assignee_type).toBeNull();
+    expect(body.assignee_id).toBeNull();
+    const wire = JSON.stringify(body);
+    expect(wire).toContain('"assignee_type":null');
+    expect(wire).toContain('"assignee_id":null');
+  });
+
+  it("passes expected_revision and handoff_note through per item", async () => {
+    const client = fakeClient();
+    const tool = findTool("bulk_update_issues");
+    await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          {
+            issue: "VOI-1",
+            status: "in_review",
+            expected_revision: 8,
+            handoff_note: "先跑回归再收",
+          },
+        ],
+      },
+      client,
+    );
+    expect(updateIssueCalls(client)[0]?.body).toEqual({
+      status: "in_review",
+      expected_revision: 8,
+      handoff_note: "先跑回归再收",
+    });
+  });
+
+  it("classifies transport failures as transport_error and keeps attempting in continue mode", async () => {
+    const client = fakeClient({
+      updateIssue: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateIssue", args: [id, body] });
+        if (id === "VOI-TIMEOUT") {
+          throw new MulticaRequestError("Multica API request PUT /api/issues/VOI-TIMEOUT timed out after 30000ms");
+        }
+        return issueFixture({ id, identifier: id, revision: 2 });
+      },
+    });
+    const tool = findTool("bulk_update_issues");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        updates: [
+          { issue: "VOI-1", status: "done" },
+          { issue: "VOI-TIMEOUT", status: "done" },
+          { issue: "VOI-2", status: "done" },
+        ],
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(updateIssueCalls(client)).toHaveLength(3);
+    const results = result.results as Array<Record<string, unknown>>;
+    expect(results[1]?.outcome).toBe("failed");
+    expect(results[1]?.error).toMatchObject({ code: "transport_error" });
+    expect(results[2]).toMatchObject({ outcome: "updated" });
+  });
+
+  it("idempotent replay: re-sent items already applied fail as conflicts instead of writing twice", async () => {
+    const revisions: Record<string, number> = { "VOI-1": 4, "VOI-2": 7 };
+    let applied = 0;
+    const apply = async (_ws: string, id: string, body: Record<string, unknown>) => {
+      const current = revisions[id];
+      if (current === undefined) {
+        throw new MulticaApiError(404, "issue not found in this workspace");
+      }
+      if (body.expected_revision !== undefined && body.expected_revision !== current) {
+        throw new MulticaApiError(
+          409,
+          `revision_conflict: expected ${body.expected_revision}, actual ${current}`,
+        );
+      }
+      applied += 1;
+      revisions[id] = current + 1;
+      return issueFixture({ id, identifier: id, revision: current + 1 });
+    };
+    const updates = [
+      { issue: "VOI-1", status: "done", expected_revision: 4 },
+      { issue: "VOI-2", status: "cancelled", expected_revision: 7 },
+    ];
+    const tool = findTool("bulk_update_issues");
+    const first = (await tool?.handler({ workspace: WS, updates }, fakeClient({ updateIssue: apply }))) as Record<string, unknown>;
+    expect(first.updated).toBe(2);
+    const second = (await tool?.handler({ workspace: WS, updates }, fakeClient({ updateIssue: apply }))) as Record<string, unknown>;
+    expect(second.updated).toBe(0);
+    expect(second.failed).toBe(2);
+    for (const item of second.results as Array<{ error: { code: string } }>) {
+      expect(item.error.code).toBe("conflict");
+    }
+    expect(applied).toBe(2); // the replay produced no additional write
+  });
+});
+
+describe("comment management tools (RUYI-352)", () => {
+  function commentFixture(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      id: "c1",
+      issue_id: "i1",
+      author_type: "agent",
+      author_id: "a1",
+      parent_id: null,
+      created_at: "2026-10-03T01:00:00Z",
+      updated_at: "2026-10-03T01:00:00Z",
+      revision: 1,
+      content: "first draft",
+      ...over,
+    };
+  }
+
+  describe("list_comments", () => {
+    it("passes bounded-read modes through and returns briefs with revision", async () => {
+      const client = fakeClient({
+        listComments: async (_ws: string, issue: string, params: Record<string, unknown>) => {
+          callsOf(client).push({ method: "listComments", args: [issue, params] });
+          expect(issue).toBe("VOI-1");
+          return [
+            commentFixture({ parent_id: undefined, revision: 3, updated_at: "2026-10-03T02:00:00Z", reply_count: 2, last_activity_at: "2026-10-03T02:30:00Z" }),
+            commentFixture({ id: "c2", parent_id: "c1" }),
+          ];
+        },
+      });
+      const tool = findTool("list_comments");
+      const result = (await tool?.handler(
+        { workspace: WS, issue: "VOI-1", thread: "c1", tail: 10, summary: true },
+        client,
+      )) as { total: number; comments: Array<Record<string, unknown>> };
+      expect(callsOf(client)[0]?.args).toEqual([
+        "VOI-1",
+        { thread: "c1", tail: 10, roots_only: undefined, summary: true, fold: undefined },
+      ]);
+      expect(result.total).toBe(2);
+      expect(result.comments[0]?.revision).toBe(3);
+      expect(result.comments[0]?.updated_at).toBe("2026-10-03T02:00:00Z");
+      expect(result.comments[0]?.reply_count).toBe(2);
+      expect(result.comments[0]?.last_activity_at).toBe("2026-10-03T02:30:00Z");
+    });
+
+    it("rejects exclusive mode combinations before hitting the API", async () => {
+      const tool = findTool("list_comments");
+      for (const args of [
+        { workspace: WS, issue: "VOI-1", roots_only: true, thread: "c1" },
+        { workspace: WS, issue: "VOI-1", roots_only: true, recent: 5 },
+        { workspace: WS, issue: "VOI-1", roots_only: true, tail: 2 },
+        { workspace: WS, issue: "VOI-1", tail: 2 },
+        { workspace: WS, issue: "VOI-1", fold: true, roots_only: true },
+        { workspace: WS, issue: "VOI-1", fold: true, since: "2026-10-01T00:00:00Z" },
+        { workspace: WS, issue: "VOI-1", fold: true, thread: "c1", tail: 3 },
+      ]) {
+        await expect(tool?.handler(args, fakeClient())).rejects.toThrow(ToolInputError);
+      }
+    });
+  });
+
+  describe("get_comment", () => {
+    it("locates one comment via the thread read and reports its audit fields", async () => {
+      const client = fakeClient({
+        listComments: async (_ws: string, _issue: string, params: Record<string, unknown>) => {
+          callsOf(client).push({ method: "listComments", args: [params] });
+          return [
+            commentFixture({ parent_id: undefined }),
+            commentFixture({ id: "c2", parent_id: "c1" }),
+          ];
+        },
+      });
+      const tool = findTool("get_comment");
+      const result = (await tool?.handler(
+        { workspace: WS, issue: "VOI-1", comment_id: "c2" },
+        client,
+      )) as { found: boolean; comment: Record<string, unknown> };
+      expect(callsOf(client)[0]?.args).toEqual([{ thread: "c2" }]);
+      expect(result.found).toBe(true);
+      expect(result.comment.id).toBe("c2");
+      expect(result.comment.thread_root_id).toBe("c1");
+      expect(result.comment.revision).toBe(1);
+      expect(result.comment.content).toBe("first draft");
+    });
+
+    it("maps an unknown/deleted anchor to the structured not_found outcome", async () => {
+      const client = fakeClient({
+        listComments: async () => {
+          throw new MulticaApiError(404, "thread anchor not found in this issue");
+        },
+      });
+      const result = (await findTool("get_comment")?.handler(
+        { workspace: WS, issue: "VOI-1", comment_id: "gone" },
+        client,
+      )) as { found: boolean; code: string; comment: unknown };
+      expect(result.found).toBe(false);
+      expect(result.code).toBe("not_found");
+      expect(result.comment).toBeNull();
+    });
+
+    it("answers not_found when the anchor id is absent from the resolved thread", async () => {
+      const client = fakeClient({
+        listComments: async () => [commentFixture({ id: "other", parent_id: undefined })],
+      });
+      const result = (await findTool("get_comment")?.handler(
+        { workspace: WS, issue: "VOI-1", comment_id: "c1" },
+        client,
+      )) as { found: boolean; code: string };
+      expect(result.found).toBe(false);
+      expect(result.code).toBe("not_found");
+    });
+  });
+
+  describe("edit_comment", () => {
+    it("maps the edit fields onto the PUT body and returns the audit snapshot", async () => {
+      const client = fakeClient({
+        updateComment: async (_ws: string, id: string, body: Record<string, unknown>) => {
+          callsOf(client).push({ method: "updateComment", args: [id, body] });
+          return commentFixture({
+            content: String(body.content),
+            revision: 2,
+            updated_at: "2026-10-03T03:00:00Z",
+            trigger_outcomes: [{ target_type: "agent", target_id: "a1", status: "queued" }],
+          });
+        },
+      });
+      const tool = findTool("edit_comment");
+      const result = (await tool?.handler(
+        {
+          workspace: WS,
+          comment_id: "c1",
+          content: "revised body",
+          expected_revision: 1,
+          suppress_agent_ids: ["a2"],
+        },
+        client,
+      )) as Record<string, unknown>;
+      expect(callsOf(client)[0]?.args).toEqual([
+        "c1",
+        { content: "revised body", expected_revision: 1, suppress_agent_ids: ["a2"] },
+      ]);
+      expect(result.edited).toBe(true);
+      expect(result.id).toBe("c1");
+      expect(result.revision).toBe(2);
+      expect(result.updated_at).toBe("2026-10-03T03:00:00Z");
+      expect(result.trigger_outcomes).toEqual([
+        { target_type: "agent", target_id: "a1", status: "queued" },
+      ]);
+    });
+
+    it("reports zero dispatches for an ordinary content edit (no implicit run surface)", async () => {
+      // Backend contract: a content-changing edit re-runs the trigger
+      // computation, and an edit that stores identical content triggers
+      // nothing — both arrive here as a response without trigger_outcomes.
+      // The tool normalizes that to a visible empty array so "no runs" is an
+      // asserted surface, never an absent field.
+      const client = fakeClient({
+        updateComment: async () => commentFixture({ revision: 2 }),
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "typo fix" },
+        client,
+      )) as { edited: boolean; trigger_outcomes: unknown[] };
+      expect(result.edited).toBe(true);
+      expect(result.trigger_outcomes).toEqual([]);
+    });
+
+    it("surfaces a revision conflict structurally with the current revision", async () => {
+      const conflict = new MulticaApiError(409, "revision_conflict: resource changed since it was loaded");
+      (conflict as { body?: Record<string, unknown> }).body = {
+        code: "revision_conflict",
+        expected_revision: 1,
+        actual_revision: 4,
+      };
+      const client = fakeClient({
+        updateComment: async () => {
+          throw conflict;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "x", expected_revision: 1 },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("revision_conflict");
+      expect(result.expected_revision).toBe(1);
+      expect(result.actual_revision).toBe(4);
+    });
+
+    it("surfaces a permission denial as a distinct structured outcome (removing the mapping fails this)", async () => {
+      // Valid-permission assertion: the denial is keyed on the 403 STATUS, not
+      // on message text, and is returned as code permission_denied — a
+      // different denial must not collapse into it, and without the mapping
+      // the handler would throw instead of answering structurally.
+      const client = fakeClient({
+        updateComment: async () => {
+          const denial = new MulticaApiError(403, "only comment author or admin can edit");
+          (denial as { body?: Record<string, unknown> }).body = {
+            error: "only comment author or admin can edit",
+          };
+          throw denial;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "x" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("permission_denied");
+
+      // A non-403 failure with the SAME message text must NOT be classified
+      // as a permission denial — the status is the discriminator.
+      const misclassified = new MulticaApiError(500, "only comment author or admin can edit");
+      const broken = fakeClient({
+        updateComment: async () => {
+          throw misclassified;
+        },
+      });
+      await expect(
+        findTool("edit_comment")?.handler(
+          { workspace: WS, comment_id: "c1", content: "x" },
+          broken,
+        ),
+      ).rejects.toThrow(MulticaApiError);
+    });
+
+    it("surfaces blocked mention admission with the invalid spans", async () => {
+      const denial = new MulticaApiError(422, "invalid_agent_mentions: one or more agent mentions cannot be invoked");
+      (denial as { body?: Record<string, unknown> }).body = {
+        error: "one or more agent mentions cannot be invoked",
+        code: "invalid_agent_mentions",
+        invalid_mentions: [{ start: 3, end: 40 }],
+      };
+      const client = fakeClient({
+        updateComment: async () => {
+          throw denial;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "@ghost" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("invalid_mentions");
+      expect(result.invalid_mentions).toEqual([{ start: 3, end: 40 }]);
+    });
+
+    it("distinguishes an already-deleted comment as not_found", async () => {
+      const client = fakeClient({
+        updateComment: async () => {
+          const gone = new MulticaApiError(404, "comment not found");
+          (gone as { body?: Record<string, unknown> }).body = { error: "comment not found" };
+          throw gone;
+        },
+      });
+      const result = (await findTool("edit_comment")?.handler(
+        { workspace: WS, comment_id: "c1", content: "x" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.edited).toBe(false);
+      expect(result.code).toBe("not_found");
+    });
+
+    it("rejects expected_revision below 1 before hitting the API", async () => {
+      const tool = findTool("edit_comment");
+      await expect(
+        tool?.handler(
+          { workspace: WS, comment_id: "c1", content: "x", expected_revision: 0 },
+          fakeClient(),
+        ),
+      ).rejects.toThrow(ToolInputError);
+    });
+  });
+
+  describe("delete_comment", () => {
+    it("deletes by id and returns the confirmation", async () => {
+      const client = fakeClient({
+        deleteComment: async (_ws: string, id: string) => {
+          callsOf(client).push({ method: "deleteComment", args: [id] });
+          return undefined;
+        },
+      });
+      const result = (await findTool("delete_comment")?.handler(
+        { workspace: WS, comment_id: "c1" },
+        client,
+      )) as Record<string, unknown>;
+      expect(callsOf(client)[0]?.args).toEqual(["c1"]);
+      expect(result.deleted).toBe(true);
+      expect(result.id).toBe("c1");
+    });
+
+    it("surfaces permission denial and already-deleted as distinct structured outcomes", async () => {
+      const forbidden = new MulticaApiError(403, "only comment author or admin can delete");
+      (forbidden as { body?: Record<string, unknown> }).body = {
+        error: "only comment author or admin can delete",
+      };
+      const deniedClient = fakeClient({
+        deleteComment: async () => {
+          throw forbidden;
+        },
+      });
+      const denied = (await findTool("delete_comment")?.handler(
+        { workspace: WS, comment_id: "c1" },
+        deniedClient,
+      )) as Record<string, unknown>;
+      expect(denied.deleted).toBe(false);
+      expect(denied.code).toBe("permission_denied");
+
+      const gone = new MulticaApiError(404, "comment not found");
+      (gone as { body?: Record<string, unknown> }).body = { error: "comment not found" };
+      const goneClient = fakeClient({
+        deleteComment: async () => {
+          throw gone;
+        },
+      });
+      const deleted = (await findTool("delete_comment")?.handler(
+        { workspace: WS, comment_id: "c1" },
+        goneClient,
+      )) as Record<string, unknown>;
+      expect(deleted.deleted).toBe(false);
+      expect(deleted.code).toBe("not_found");
+      // The two outcomes stay structurally distinguishable.
+      expect(deleted.code).not.toBe(denied.code);
+    });
+
+    it("rethrows failures outside the defined outcome matrix", async () => {
+      const client = fakeClient({
+        deleteComment: async () => {
+          throw new MulticaApiError(500, "failed to delete comment");
+        },
+      });
+      await expect(
+        findTool("delete_comment")?.handler({ workspace: WS, comment_id: "c1" }, client),
+      ).rejects.toThrow(MulticaApiError);
+    });
   });
 });

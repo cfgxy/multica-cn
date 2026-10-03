@@ -1,0 +1,241 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
+	"github.com/multica-ai/multica/server/pkg/agent"
+)
+
+// Worker supervision wiring (RUYI-349): the daemon optionally launches each
+// task worker inside a systemd transient user unit so a daemon restart or
+// SIGKILL can no longer take running workers down. Everything here degrades
+// to the legacy direct-child path by returning nil — a host without a usable
+// systemd user bus runs exactly the pre-RUYI-349 semantics.
+
+// supervisedRunsDirEnv redirects the supervisor run store (manifests, logs,
+// control sockets). Tests and E2E exercises set it; production uses the
+// default under ~/.multica, which survives daemon restarts by construction.
+const supervisedRunsDirEnv = "MULTICA_SUPERVISOR_RUNS_DIR"
+
+// supervisedProviders is the Phase 1 runtime whitelist: providers whose
+// worker protocol tolerates a mid-run daemon restart on reattach. The
+// bidirectional ACP family (hermes/kimi/kiro/mcode/zcode/qoder/dim/…, codex
+// app-server) owns an RPC session state machine that cannot re-enter a turn
+// without protocol-level state recovery — Phase 2. The code layer routes
+// every provider through agent's workerSession either way; this whitelist
+// only decides where the daemon injects Supervision.
+var supervisedProviders = map[string]bool{"claude": true}
+
+// setupSupervisor builds the daemon's WorkerSupervisor when this host can
+// run transient user units. Leaves d.supervisor nil (and logs why) when any
+// prerequisite is missing — that nil is the legacy switch.
+func (d *Daemon) setupSupervisor() {
+	root := os.Getenv(supervisedRunsDirEnv)
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			d.logger.Warn("worker supervision disabled: no home directory for run store", "error", err)
+			return
+		}
+		root = filepath.Join(home, ".multica", "supervisor-runs")
+	}
+	mgr, err := supervisor.NewManager(root)
+	if err != nil {
+		d.logger.Warn("worker supervision disabled: run store unavailable", "root", root, "error", err)
+		return
+	}
+	binPath, err := os.Executable()
+	if err != nil {
+		d.logger.Warn("worker supervision disabled: daemon binary path unknown", "error", err)
+		return
+	}
+	sys := supervisor.NewSystemdCtl(d.logger)
+	if err := sys.Available(); err != nil {
+		d.logger.Info("worker supervision disabled: systemd user manager unavailable; workers stay legacy children", "error", err)
+		return
+	}
+	sup, err := supervisor.New(mgr, sys, binPath, d.logger)
+	if err != nil {
+		d.logger.Warn("worker supervision disabled: supervisor init failed", "error", err)
+		return
+	}
+	d.supervisor = sup
+	d.logger.Info("worker supervision enabled: task workers launch in systemd transient units",
+		"providers", "claude", "run_root", root)
+}
+
+// reconcileSupervisedRuns runs the startup reconciliation matrix (manifest ∩
+// live units ∩ server in-flight) and executes the safe actions inline:
+// StopOrphan kills provably unclaimed units, Quarantine records unknown
+// evidence. Resume runs are left untouched — their workers keep running and
+// the next claim of their task reenters them via the reattach probe in
+// planSupervisedRun. ConvergeExit runs are marked consumed; their task-level
+// fate stays with the server's own recovery paths, which already own the
+// in-flight row.
+//
+// The server in-flight set is best effort: on a listing failure every active
+// unit is treated as in-flight (Resume), because the one irreversible action
+// in this matrix is the kill and it must never run on a guess.
+func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
+	if d.supervisor == nil {
+		return
+	}
+	inFlight := map[string]bool{}
+	// listFailed marks a pass whose in-flight evidence is incomplete. The
+	// matrix's kill branch keys off TaskInFlight=false, so a task missing
+	// after a failed listing would read as "provably orphaned" and its live
+	// unit would be killed on a guess — the exact daemon-redeploy scenario
+	// this package exists to survive. Any failure therefore disables the
+	// kill path for the whole pass; the next healthy pass reclassifies.
+	listFailed := false
+	for _, rid := range d.allRuntimeIDs() {
+		tasks, err := d.client.ListInFlightTasks(ctx, rid)
+		if err != nil {
+			listFailed = true
+			d.logger.Warn("supervisor reconcile: in-flight list failed; kill decisions disabled for this pass",
+				"runtime_id", rid, "error", err)
+			continue
+		}
+		for _, t := range tasks {
+			inFlight[t.ID] = true
+		}
+	}
+	rec := &supervisor.Reconciler{
+		Mgr:   d.supervisor.Manager(),
+		Units: d.supervisor.Systemd(),
+		Log:   d.logger,
+		// On a failed listing every task reads as in flight: active units
+		// resolve to Resume (non-destructive) and dead-unit classifications
+		// are untouched (they never consult TaskInFlight), so the one
+		// irreversible action in the matrix never runs on incomplete
+		// evidence.
+		TaskInFlight: func(taskID string) bool { return listFailed || inFlight[taskID] },
+	}
+	results, err := rec.Run(ctx)
+	if err != nil {
+		d.logger.Warn("supervisor reconcile failed", "error", err)
+		return
+	}
+	for _, res := range results {
+		switch res.Decision {
+		case supervisor.DecisionResume:
+			d.logger.Info("supervisor reconcile: run resumed for reattach on next claim",
+				"run_id", res.RunID, "task_id", res.TaskID)
+		case supervisor.DecisionConvergeExit:
+			// Mark consumed so later passes skip it; the run's exit evidence
+			// stays in the manifest for the audit trail.
+			if err := d.supervisor.Manager().MarkConverged(res.RunID); err != nil {
+				d.logger.Warn("supervisor reconcile: mark converged failed", "run_id", res.RunID, "error", err)
+			}
+			d.logger.Info("supervisor reconcile: finished run converged", "run_id", res.RunID, "task_id", res.TaskID)
+		default:
+			d.logger.Info("supervisor reconcile", "run_id", res.RunID, "task_id", res.TaskID,
+				"decision", res.Decision.String(), "reason", res.Reason)
+		}
+	}
+}
+
+// runIDSanitizer matches what ValidateRunID accepts: lowercase, digits and
+// dashes. Task ids are UUIDs, but the sanitizer keeps a malformed id from
+// wedging every launch of its task.
+var runIDSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// sanitizeRunID folds an arbitrary task id into ValidateRunID's alphabet.
+func sanitizeRunID(taskID string) string {
+	s := strings.ToLower(taskID)
+	s = runIDSanitizer.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if s == "" {
+		s = "task"
+	}
+	if len(s) > 48 {
+		s = s[len(s)-48:]
+	}
+	return s
+}
+
+// planSupervisedRun decides how (and whether) one backend Execute is
+// supervised. It is the claim-side reattach probe: a manifest that exists
+// without an exit record means a previous daemon launched this task's worker
+// and died before consuming it — the Execute must REENTER that worker (no
+// prompt rewrite, logs resume from the persisted offset) instead of launching
+// a second one on top of it.
+//
+// Runs are one Execute each: a task's segmented-continuation retry is a new
+// worker and takes the next attempt slot. Attempt generations (`-2`, `-3`)
+// step past manifests whose run already exited, so a server-side retry of a
+// finished task gets a fresh unit id deterministically — every daemon that
+// looks at the same task + attempt derives the same run id, which is what
+// makes reattach survive the restart. Generation suffixes stay numeric
+// because the run id must keep the UUID-ish grammar unit names are built
+// from (hex digits and dashes only); a task id outside that grammar after
+// sanitizing falls back to the legacy path rather than guessing.
+func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.Supervision {
+	if d.supervisor == nil || !supervisedProviders[provider] || attempt < 1 {
+		return nil
+	}
+	base := fmt.Sprintf("%s-%d", sanitizeRunID(taskID), attempt)
+	if supervisor.ValidateRunID(base) != nil {
+		return nil
+	}
+	runID := base
+	reattach := false
+	for gen := 2; ; gen++ {
+		man, err := d.supervisor.Manager().ReadManifest(runID)
+		if err != nil || man == nil {
+			break // no manifest: fresh launch under this id
+		}
+		if man.Exit == nil {
+			reattach = true // live worker from a previous daemon
+			break
+		}
+		if gen > 64 {
+			// Absurd attempt count: fall back to legacy rather than loop.
+			return nil
+		}
+		runID = fmt.Sprintf("%s-%d", base, gen)
+	}
+	sup := &agent.Supervision{
+		Supervisor: d.supervisor,
+		RunID:      runID,
+		TaskID:     taskID,
+		Runtime:    provider,
+		Reattach:   reattach,
+	}
+	if reattach {
+		d.logger.Info("supervised run reattach: continuing worker launched by a previous daemon",
+			"run_id", runID, "task_id", taskID, "provider", provider)
+	}
+	return sup
+}
+
+// supervisedWorkerAlive reports whether any supervised run manifest for
+// taskID records a worker that launched and never exited. This is the
+// daemon-side liveness signal that survives daemon death — unlike the
+// env-root lock, which the daemon process holds and therefore releases on
+// exactly the crash this package exists to survive.
+func (d *Daemon) supervisedWorkerAlive(taskID string) bool {
+	if d.supervisor == nil {
+		return false
+	}
+	runIDs, err := d.supervisor.Manager().ListRunIDs()
+	if err != nil {
+		return false
+	}
+	for _, runID := range runIDs {
+		man, err := d.supervisor.Manager().ReadManifest(runID)
+		if err != nil || man == nil || man.TaskID != taskID {
+			continue
+		}
+		if man.Exit == nil && man.State == supervisor.StateRunning {
+			return true
+		}
+	}
+	return false
+}

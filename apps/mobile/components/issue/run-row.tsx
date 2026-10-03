@@ -16,7 +16,8 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import type { AgentTask } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
-import { useCancelTask } from "@/data/mutations/issues";
+import { useCancelTask, useRetryIssueRun } from "@/data/mutations/issues";
+import { retryFailureMessage } from "@/lib/task-retry";
 import { useActorLookup } from "@/data/use-actor-name";
 import { runFailureBadgeLabel } from "@/lib/run-failure-badge";
 import { timeAgo } from "@/lib/time-ago";
@@ -48,6 +49,9 @@ export function RunRow({ task, issueId }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("issues");
   const isActive = ACTIVE_STATUSES.includes(task.status);
+  // Retry only makes sense for terminal-but-not-success rows — same gate as
+  // web's execution-log-section row (`canRetry = failed || cancelled`).
+  const canRetry = task.status === "failed" || task.status === "cancelled";
   const summary = task.trigger_summary?.trim() || fallbackSummary(task, t);
   // Past tasks use completed_at when present (server fills it for terminal
   // statuses); active tasks fall back to created_at so the user sees how
@@ -86,6 +90,9 @@ export function RunRow({ task, issueId }: Props) {
         </View>
       </View>
       {isActive ? <CancelButton taskId={task.id} issueId={issueId} /> : null}
+      {!isActive && canRetry ? (
+        <RetryButton task={task} issueId={issueId} />
+      ) : null}
     </Pressable>
   );
 }
@@ -161,6 +168,77 @@ function CancelButton({
     >
       <Text className="text-xs font-medium text-foreground">
         {t("common:cancel", "Cancel")}
+      </Text>
+    </Pressable>
+  );
+}
+
+// RUYI-343 — retry entry for terminal-but-not-success rows, mirroring web's
+// execution-log-section: a failed run retries with one tap; a cancelled run
+// was stopped on purpose, so re-running it goes through a confirm dialog
+// and reads as "Run again" (nothing failed). The mutation targets this
+// row's task id — without it the endpoint falls back to the issue's current
+// assignee and the wrong agent could fire.
+function RetryButton({
+  task,
+  issueId,
+}: {
+  task: AgentTask;
+  issueId: string;
+}) {
+  const { t } = useT("issues");
+  const mutation = useRetryIssueRun(issueId);
+  const isRerun = task.status === "cancelled";
+
+  const retry = () => {
+    mutation.mutate(task.id, {
+      onError: (err) =>
+        Alert.alert(
+          t("execution_log.retry_failed", "Failed to retry task"),
+          retryFailureMessage(err),
+        ),
+    });
+  };
+
+  const onPress = () => {
+    if (mutation.isPending) return;
+    if (isRerun) {
+      Alert.alert(
+        t("execution_log.rerun_task_tooltip", "Run again"),
+        undefined,
+        [
+          {
+            text: t("terminate_dialog.keep", "Keep running"),
+            style: "cancel",
+          },
+          {
+            text: t("execution_log.rerun_task_tooltip", "Run again"),
+            style: "destructive",
+            onPress: retry,
+          },
+        ],
+      );
+      return;
+    }
+    retry();
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={mutation.isPending}
+      className="px-3 py-1.5 rounded-md bg-secondary active:opacity-70"
+      accessibilityRole="button"
+      accessibilityLabel={
+        isRerun
+          ? t("execution_log.rerun_task_aria", "Run again")
+          : t("execution_log.retry_task_aria", "Retry task")
+      }
+    >
+      <Text className="text-xs font-medium text-foreground">
+        {isRerun
+          ? t("execution_log.rerun_task_tooltip", "Run again")
+          : t("execution_log.retry_task_tooltip", "Retry task")}
       </Text>
     </Pressable>
   );

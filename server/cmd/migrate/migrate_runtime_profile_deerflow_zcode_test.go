@@ -12,12 +12,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestRuntimeProfileDeerflowZcodeMigrationRoundTrip exercises migration 923 in
-// both directions inside a private schema: up must widen the protocol_family
-// whitelist to the two new independent families, down must restore the
-// pre-923 whitelist, and neither direction may invalidate a compatibility row
-// that still declares 'kimi' while launching one of the bridges — that is the
-// shape every existing profile has, and losing it would break them.
+// TestRuntimeProfileDeerflowZcodeMigrationRoundTrip exercises the consolidated
+// deerflow/zcode migration (former 923, now inside 904) in both directions
+// inside a private schema: up must widen the protocol_family whitelist to the
+// two new independent families, down must restore the pre-widening whitelist,
+// and neither direction may invalidate a compatibility row that still declares
+// 'kimi' while launching one of the bridges — that is the shape every existing
+// profile has, and losing it would break them.
 func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	adminPool := openTestPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -87,7 +88,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 		shimIDs[row.name] = id
 	}
 
-	const version = "923_runtime_profile_add_deerflow_zcode"
+	const version = "904_runtime_profile_add_deerflow_zcode"
 	lockKey := int64(rand.Uint64()&0x7fffffffffffffff) | 1
 	run := func(direction string) error {
 		return runMigrations(ctx, pool, runOptions{
