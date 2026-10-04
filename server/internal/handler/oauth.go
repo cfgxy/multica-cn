@@ -154,6 +154,48 @@ func (h *Handler) AuthorizeOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scope (RUYI-420): validate the requested tiers here, at the authorize
+	// step — an unknown value must fail before any consent screen shows it.
+	// An omitted scope still means the legacy full-access "mcp", so clients
+	// configured before the tiers existed keep working unchanged.
+	requestedScope, scopeErr := oauth.NormalizeRequestScope(q.Get("scope"))
+	if scopeErr != nil {
+		h.redirectOAuthError(w, r, redirectURI, q.Get("state"), "invalid_scope",
+			"scope contains a value this server does not grant.")
+		return
+	}
+
+	// Grant check (RUYI-420): a live grant for this (client, user) pair
+	// covering the requested scope skips consent — the user already made
+	// this exact decision. No grant, a revoked grant, or a different scope
+	// parks the request behind the consent screen. Only the first branch is
+	// the common one; the others cost one indexed lookup per authorize.
+	userUUID, parseErr := util.ParseUUID(userID)
+	if parseErr != nil {
+		slog.Error("oauth: session subject is not a UUID", "client_id", clientID)
+		h.redirectOAuthError(w, r, redirectURI, q.Get("state"), "server_error", "Could not resolve the signing-in user.")
+		return
+	}
+	grant, grantErr := h.Queries.GetActiveOAuthGrantByClientUser(r.Context(), db.GetActiveOAuthGrantByClientUserParams{
+		ClientID: clientID,
+		UserID:   userUUID,
+	})
+	consentNeeded := grantErr != nil || grant.Scope != requestedScope
+	if consentNeeded {
+		h.redirectToConsent(w, r, oauth.ConsentRequest{
+			ClientID:            clientID,
+			UserID:              userID,
+			RedirectURI:         redirectURI,
+			Scope:               requestedScope,
+			State:               q.Get("state"),
+			Resource:            resource,
+			CodeChallenge:       challenge,
+			CodeChallengeMethod: method,
+		})
+		return
+	}
+	grantID := util.UUIDToString(grant.ID)
+
 	if !h.OAuthCodes.Available() {
 		slog.Error("oauth: authorization code store unavailable", "client_id", clientID)
 		h.redirectOAuthError(w, r, redirectURI, q.Get("state"), "temporarily_unavailable", "The authorization code store is unavailable.")
@@ -172,7 +214,8 @@ func (h *Handler) AuthorizeOAuth(w http.ResponseWriter, r *http.Request) {
 		CodeChallenge:       challenge,
 		CodeChallengeMethod: method,
 		Resource:            resource,
-		Scope:               oauth.ScopeMCP,
+		Scope:               requestedScope,
+		GrantID:             grantID,
 	}); err != nil {
 		slog.Error("oauth: failed to store authorization code", "client_id", clientID, "error", err)
 		h.redirectOAuthError(w, r, redirectURI, q.Get("state"), "server_error", "Could not issue an authorization code.")
@@ -273,7 +316,7 @@ func (h *Handler) TokenOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	accessToken, expiresAt, err := h.OAuthSigner.MintAccessToken(stored.UserID, stored.Resource, stored.Scope, time.Now())
+	accessToken, expiresAt, err := h.OAuthSigner.MintAccessToken(stored.UserID, stored.Resource, stored.Scope, stored.ClientID, stored.GrantID, time.Now())
 	if err != nil {
 		slog.Error("oauth: failed to mint access token", "client_id", clientID, "error", err)
 		writeOAuthTokenError(w, http.StatusInternalServerError, "server_error", "Could not issue an access token.")
