@@ -422,6 +422,11 @@ ensure_dev_code() {
 # Moves an environment to another slot. Ports only: the database name and the
 # connection string stay exactly as the env file has them, so the registry,
 # the env file and the running backend cannot drift apart across a slot move.
+# NEXT_PUBLIC_API_URL / NEXT_PUBLIC_WS_URL are forced EMPTY, never rewritten:
+# absolute localhost URLs make the browser cross-origin, so the HttpOnly auth
+# cookie is never stored and a full reload logs the user out (RUYI-372). The
+# server-side REMOTE_API_URL drives same-origin proxying instead, and is
+# injected here because .env.example ships it commented out.
 rewrite_env_ports() {
   local file=$1 offset=$2 backend=$3 frontend=$4 tmp
   case "$file" in /*) ;; *) file="$REPO_ROOT/$file" ;; esac
@@ -433,9 +438,12 @@ rewrite_env_ports() {
     -e "s|^MULTICA_SERVER_URL=.*|MULTICA_SERVER_URL=ws://localhost:${backend}/ws|" \
     -e "s|^MULTICA_PUBLIC_URL=.*|MULTICA_PUBLIC_URL=http://localhost:${backend}|" \
     -e "s|^MULTICA_APP_URL=.*|MULTICA_APP_URL=http://localhost:${frontend}|" \
-    -e "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=http://localhost:${backend}|" \
-    -e "s|^NEXT_PUBLIC_WS_URL=.*|NEXT_PUBLIC_WS_URL=ws://localhost:${backend}/ws|" \
+    -e "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=|" \
+    -e "s|^NEXT_PUBLIC_WS_URL=.*|NEXT_PUBLIC_WS_URL=|" \
+    -e "s|^REMOTE_API_URL=.*|REMOTE_API_URL=http://localhost:${backend}|" \
     "$file" > "$tmp"
+  grep -q '^REMOTE_API_URL=' "$tmp" \
+    || printf 'REMOTE_API_URL=http://localhost:%s\n' "$backend" >> "$tmp"
   mv "$tmp" "$file"
 }
 
