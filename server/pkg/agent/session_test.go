@@ -515,6 +515,94 @@ func TestWorkerSessionCloseStdinDeliversEOFOnce(t *testing.T) {
 	t.Fatal("stdin EOF never reached the supervisor")
 }
 
+// TestWorkerSessionBackendStdinCloseDeliversWorkerEOF pins the RUYI-424
+// regression: the backend closing ITS end of the supervised stdin bridge
+// must deliver EOF to the worker through the supervisor. The claude CLI's
+// stream-json input mode idles after emitting its final result and only
+// exits on stdin EOF — a dropped EOF strands the run in "running" forever.
+func TestWorkerSessionBackendStdinCloseDeliversWorkerEOF(t *testing.T) {
+	sup, h := newFakeSupervisor(t)
+	cmd := exec.Command("fake-cli")
+	sess := newWorkerSession(cmd, &Supervision{Supervisor: sup, RunID: "run-1", TaskID: "t", Runtime: "claude"})
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Start(context.Background(), slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+
+	// claude stream-json protocol: the worker emits its final result while
+	// staying alive, waiting for the next input frame or stdin EOF.
+	if _, err := h.stdoutW.WriteString(`{"type":"result","result":"done"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	resultSeen := make(chan struct{})
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := stdout.Read(buf)
+			if n > 0 && strings.Contains(string(buf[:n]), `"type":"result"`) {
+				close(resultSeen)
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-resultSeen:
+	case <-time.After(10 * time.Second):
+		t.Fatal("result frame never reached the backend scanner")
+	}
+
+	// The backend closes its stdin pipe the moment it sees the result —
+	// exactly what claude.go's closeStdin does. The pump must forward this
+	// as stdin EOF; the worker never writes another byte to the bridge.
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The worker exits only after stdin EOF reaches it (claude protocol),
+	// so poll for delivery before releasing the scripted exit.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		closed := h.stdinCl
+		h.mu.Unlock()
+		if closed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.mu.Lock()
+	closed := h.stdinCl
+	h.mu.Unlock()
+	if !closed {
+		t.Fatal("backend stdin close never reached the worker — claude would idle after result forever (RUYI-424)")
+	}
+	h.mu.Lock()
+	h.exit = &WorkerExit{Code: 0}
+	close(h.waitCh)
+	h.mu.Unlock()
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- sess.Wait(context.Background()) }()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("wait after clean exit: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("sess.Wait never returned — the zombie-run shape this test exists to prevent")
+	}
+}
+
 func TestWorkerSessionReattachSkipsLaunch(t *testing.T) {
 	sup, _ := newFakeSupervisor(t)
 	cmd := exec.Command("fake-cli", "--resume", "abc")
