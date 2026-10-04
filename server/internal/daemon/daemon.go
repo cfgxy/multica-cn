@@ -612,6 +612,19 @@ type Daemon struct {
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
 
+	// Host memory backpressure gate (RUYI-393). Deliberately separate from
+	// pauseClaims: the auto-update barrier flips a shared bool that its own
+	// release path clears, so backpressure must not live in the same flag.
+	// bpState is nil until the watcher's first sample lands (gate fails
+	// open); bpWakeup points at the batch poller's wakeup channel so a
+	// recovery can nudge it instead of waiting out a backoff interval.
+	bpMachine   *backpressureMachine
+	bpSource    memSampleSource
+	bpState     atomic.Pointer[backpressureObservation]
+	bpDeferred  atomic.Int64
+	bpWakeup    atomic.Pointer[chan struct{}]
+	bpLastWarn  atomic.Int64
+
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
 	activeEnvRoots     map[string]int  // env root path -> reference count (handles reuse paths marked twice)
@@ -715,6 +728,12 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		reconcile:                 newReconcileBroadcaster(),
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
+	}
+	// Host memory backpressure (RUYI-393): nil machine = disabled, the claim
+	// gate fails open and the watcher goroutine is never started.
+	if cfg.BackpressureEnabled {
+		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
+		d.bpSource = newMemSampleSource()
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2114,6 +2133,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
+
+	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
+	// and advances the hysteresis gate fed into the claim path below. nil
+	// machine = disabled by config, no goroutine.
+	if d.bpMachine != nil {
+		go d.runBackpressureWatcher(ctx)
+	}
 
 	// Preflight succeeded and the background loops are up: the daemon has
 	// registered its runtimes and can now claim and run tasks. Flip /health
@@ -4276,7 +4302,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid)
+	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport())
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4421,7 +4447,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID)
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport())
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -4946,14 +4972,24 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 }
 
 // tryEnterClaim records the intent to call ClaimTask. Returns true if the
-// caller may proceed, false if the auto-update barrier is in effect. Every
-// successful call MUST be paired with an exitClaim() on every exit path —
-// either right after a failed/empty claim, or via the handleTask goroutine's
-// defer once the task is handed off.
+// caller may proceed, false if the auto-update barrier is in effect or host
+// memory backpressure (RUYI-393) is active. Every successful call MUST be
+// paired with an exitClaim() on every exit path — either right after a
+// failed/empty claim, or via the handleTask goroutine's defer once the task
+// is handed off.
+//
+// The two refusals are orthogonal: releaseClaimBarrier only ever clears
+// pauseClaims, and backpressure lives in its own state, so neither path can
+// accidentally release the other. Auto-update does not consult backpressure
+// — blocked claims drain claimsInFlight on their own, which is the only
+// state the update barrier waits on.
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
 	if d.pauseClaims {
+		return false
+	}
+	if d.backpressureBlocked() {
 		return false
 	}
 	d.claimsInFlight++
@@ -5107,6 +5143,11 @@ func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan taskWakeup) er
 		d.runBatchPoller(pollerCtx, ctx, sem, wakeup, &taskWG)
 	}()
 
+	// Register the poller's wakeup channel with the backpressure watcher so
+	// leaving backpressure resumes claiming on the next cycle instead of
+	// after one backoff interval. pollLoop runs once per daemon lifetime.
+	d.bpWakeup.Store(&wakeup)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -5156,6 +5197,19 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 	for {
 		if pollerCtx.Err() != nil {
 			return
+		}
+
+		// Host memory backpressure (RUYI-393): while the gate is active,
+		// skip the whole claim cycle — don't even wait for slots — and
+		// back off like the capacity path. Queued tasks stay queued
+		// server-side; already-running tasks are untouched. tryEnterClaim
+		// re-checks the same gate as the authoritative pre-claim barrier.
+		if d.backpressureBlocked() {
+			d.bpDeferred.Add(1)
+			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
+				return
+			}
+			continue
 		}
 
 		runtimeIDs := d.allRuntimeIDs()

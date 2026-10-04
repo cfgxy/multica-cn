@@ -424,7 +424,10 @@ export function patchIssuesList(
   if (partial.revision === undefined) {
     qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
   }
-  qc.setQueryData<Issue[]>(issueKeys.list(wsId), (old) =>
+  // setQueriesData prefix-matches, so this covers BOTH the legacy exact
+  // `list(wsId)` entry AND the parametrized Tasks-tab entries
+  // (`taskList(wsId, filter)`, RUYI-344) in one pass.
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.list(wsId) }, (old) =>
     old ? old.map((i) =>
       i.id === partial.id && acceptsRevision(i.revision, partial.revision)
         ? { ...i, ...partial }
@@ -444,6 +447,14 @@ export function prependToIssuesList(
     if (old.some((i) => i.id === issue.id)) return old;
     return [issue, ...old];
   });
+  // The parametrized Tasks-tab entries can't take a blind prepend — whether
+  // the new issue belongs in a filtered/sorted window is the server's call.
+  // Invalidate only the parametrized family (key length > the exact entry's),
+  // leaving the legacy exact list to the cheap prepend above.
+  qc.invalidateQueries({
+    queryKey: issueKeys.list(wsId),
+    predicate: (query) => query.queryKey.length > 3,
+  });
 }
 
 export function removeFromIssuesList(
@@ -451,7 +462,7 @@ export function removeFromIssuesList(
   wsId: string,
   issueId: string,
 ) {
-  qc.setQueryData<Issue[]>(issueKeys.list(wsId), (old) =>
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.list(wsId) }, (old) =>
     old ? old.filter((i) => i.id !== issueId) : old,
   );
 }

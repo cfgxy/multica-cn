@@ -169,7 +169,7 @@ export type {
   PromptGovernanceVersion,
   PromptGovernanceVersionList,
   PromptVersionSource,
-  SavePromptGovernanceVersionRequest,
+  SnapshotPromptGovernanceVersionRequest,
 } from "./prompt-version";
 export type {
   PluginInstallation,
