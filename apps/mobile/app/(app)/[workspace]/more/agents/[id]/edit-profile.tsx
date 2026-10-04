@@ -59,6 +59,7 @@ import { runtimeModelsOptions } from "@/data/queries/runtime-models";
 import { useUpdateAgent } from "@/data/mutations/agents";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAvatarUploader } from "@/lib/avatar";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import {
@@ -97,7 +98,7 @@ export default function EditAgentProfile() {
   const me = useAuthStore((s) => s.user);
   const { t } = useT("agents");
   const update = useUpdateAgent(agentId);
-  const { uploading, showAvatarSheet } = useAvatarUploader();
+  const { uploading, showAvatarSheet, modalProps } = useAvatarUploader();
 
   const { data: agent } = useQuery(agentDetailOptions(wsId, agentId));
   const { data: runtimes, isLoading: runtimesLoading } = useQuery(
@@ -626,6 +627,7 @@ export default function EditAgentProfile() {
             aria-label={t("inspector.prop_subagents_toggle_aria", "Allow subagent tools")}
           />
         </View>
+        <ActionSheetModal {...modalProps} />
       </ScrollView>
     </KeyboardAvoidingView>
   );

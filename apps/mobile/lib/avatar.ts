@@ -136,5 +136,7 @@ export function useAvatarUploader() {
       });
     });
 
-  return { uploading, showAvatarSheet };
+  // Android 的弹层是 RN Modal，消费方必须挂载 <ActionSheetModal {...modalProps} />
+  // 才可见（iOS 走 ActionSheetIOS 命令式路径，不依赖该渲染）。
+  return { uploading, showAvatarSheet, modalProps: sheet.modalProps };
 }
