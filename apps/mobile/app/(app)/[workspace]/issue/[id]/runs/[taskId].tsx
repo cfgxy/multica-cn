@@ -212,6 +212,7 @@ const STATUS_TONE: Record<AgentTask["status"], string> = {
   dispatched: "text-brand",
   waiting_local_directory: "text-muted-foreground",
   running: "text-brand",
+  cancel_requested: "text-warning",
   completed: "text-muted-foreground",
   failed: "text-destructive",
   cancelled: "text-muted-foreground",

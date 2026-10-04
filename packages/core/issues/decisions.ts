@@ -35,6 +35,34 @@ export function patchDecisionInCache(
   });
 }
 
+/**
+ * Patch an existing card OR insert a card the cache has never seen, keeping
+ * the list ordered by created_at. `patchDecisionInCache` skips unknown ids
+ * by design (mutations always act on a fetched card), but a `decision:updated`
+ * for a card created while this client had the issue open would silently no-op
+ * and the card would stay invisible until the next refetch. Clients that
+ * receive lifecycle events for cards they did not create themselves (mobile
+ * realtime today) use this upsert instead.
+ */
+export function upsertDecisionInCache(
+  qc: QueryClient,
+  issueId: string,
+  decision: IssueDecision,
+): void {
+  qc.setQueryData<IssueDecision[]>(issueKeys.decisions(issueId), (prev) => {
+    if (!prev) return prev;
+    const idx = prev.findIndex((d) => d.id === decision.id);
+    if (idx === -1) {
+      return [...prev, decision].sort(
+        (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at),
+      );
+    }
+    const next = [...prev];
+    next[idx] = decision;
+    return next;
+  });
+}
+
 export const answerIssueDecision: MutationFunction<
   IssueDecision,
   { issueId: string; decisionId: string; selectedIndices: number[] }

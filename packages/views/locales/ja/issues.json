@@ -1029,6 +1029,7 @@
       "dispatched": "開始中",
       "waiting_local_directory": "ディレクトリ待ち",
       "running": "実行中",
+      "cancel_requested": "停止中",
       "completed": "完了",
       "failed": "失敗",
       "cancelled": "キャンセル済み"
