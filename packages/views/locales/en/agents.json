@@ -463,7 +463,13 @@
       "remove_aria": "Remove avatar",
       "select_image_toast": "Please select an image file.",
       "upload_failed_toast": "Avatar upload failed"
-    }
+    },
+    "voice_label": "Voice",
+    "voice_none": "No voice",
+    "voice_empty": "No voice-capable instance",
+    "credential_configured": "Configured ✓",
+    "credential_invalid": "Key invalid",
+    "credential_not_configured": "Not configured"
   },
   "conversation_starters": {
     "label": "Conversation starters",
