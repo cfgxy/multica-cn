@@ -24,13 +24,28 @@
  *   - `sortBy` has no ascending counterpart in v1 by design (mobile
  *     simplification; both options are descending).
  *
- * No persist middleware — session-scoped, matching the other view stores.
- * Workspace switches clear the filters via `syncWorkspace`: the owning wsId
- * lives in the state because the Tasks screen remounts per workspace with
+ * Filters persist across cold starts (RUYI-344 增量): the eight filter
+ * dimensions plus their owning wsId ride in AsyncStorage via zustand persist
+ * (`partialize` whitelist below), so reopening the app restores the status
+ * multi-select — set AND check order, which the 全部 tab turns into section
+ * order. TAB and sort stay session-scoped: a restart opens 全部 with the
+ * default sort (the dispatch card explicitly excludes TAB from the memory).
+ *
+ * The persisted set belongs to its owning workspace: `merge` restores it
+ * only when the screen mounts into (or already shows) the same wsId the blob
+ * was written under — the same scoping `syncWorkspace` enforces mid-session,
+ * extended across the restart boundary. AsyncStorage, not SecureStore:
+ * nothing here is a credential.
+ *
+ * Workspace switches still clear the filters via `syncWorkspace`: the owning
+ * wsId lives in the state because the Tasks screen remounts per workspace with
  * the new id already in props, which a ref-guard hook cannot see (RUYI-344
- * item 12; TAB and sort survive the switch).
+ * item 12; TAB and sort survive the switch, and the cleared state itself is
+ * what gets persisted for the next start).
  */
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
 
 export type TaskTab = "all" | "open" | "active" | "blocked" | "completed";
@@ -66,67 +81,11 @@ interface TasksViewState {
   clearFilters: () => void;
 }
 
-export const useTasksViewStore = create<TasksViewState>((set) => ({
-  tab: "all",
-  wsId: null,
-  statusFilters: [],
-  priorityFilters: [],
-  mineRelations: { assigned: false, created: false, involved: false },
-  assigneeRefs: [],
-  includeNoAssignee: false,
-  creatorRefs: [],
-  agentRunning: false,
-  sortBy: "updated_at",
-  // Deliberately does not touch statusFilters: the selection belongs to the
-  // 全部 tab and must survive a round-trip through a quadrant tab.
-  setTab: (tab) => set({ tab }),
-  // Filters are workspace-scoped: the owning wsId rides in the state, so a
-  // real switch is detected even when this runs on a freshly remounted
-  // screen whose props already carry the new id. Same-workspace syncs are
-  // no-ops. A switch clears every filter; TAB and sort survive (保 TAB).
-  syncWorkspace: (wsId) =>
-    set((state) =>
-      state.wsId === wsId
-        ? {}
-        : {
-            wsId,
-            statusFilters: [],
-            priorityFilters: [],
-            mineRelations: { assigned: false, created: false, involved: false },
-            assigneeRefs: [],
-            includeNoAssignee: false,
-            creatorRefs: [],
-            agentRunning: false,
-          },
-    ),
-  toggleStatusFilter: (status) =>
-    set((state) => ({
-      statusFilters: state.statusFilters.includes(status)
-        ? state.statusFilters.filter((s) => s !== status)
-        : [...state.statusFilters, status],
-    })),
-  togglePriorityFilter: (priority) =>
-    set((state) => ({
-      priorityFilters: state.priorityFilters.includes(priority)
-        ? state.priorityFilters.filter((p) => p !== priority)
-        : [...state.priorityFilters, priority],
-    })),
-  toggleMineRelation: (relation) =>
-    set((state) => ({
-      mineRelations: {
-        ...state.mineRelations,
-        [relation]: !state.mineRelations[relation],
-      },
-    })),
-  setAssigneeRefs: (assigneeRefs) => set({ assigneeRefs }),
-  setIncludeNoAssignee: (includeNoAssignee) => set({ includeNoAssignee }),
-  setCreatorRefs: (creatorRefs) => set({ creatorRefs }),
-  toggleAgentRunning: () =>
-    set((state) => ({ agentRunning: !state.agentRunning })),
-  setSortBy: (sortBy) => set({ sortBy }),
-  // 重置 clears every filter but keeps the TAB and the sort choice.
-  clearFilters: () =>
-    set({
+export const useTasksViewStore = create<TasksViewState>()(
+  persist(
+    (set) => ({
+      tab: "all",
+      wsId: null,
       statusFilters: [],
       priorityFilters: [],
       mineRelations: { assigned: false, created: false, involved: false },
@@ -134,5 +93,97 @@ export const useTasksViewStore = create<TasksViewState>((set) => ({
       includeNoAssignee: false,
       creatorRefs: [],
       agentRunning: false,
+      sortBy: "updated_at",
+      // Deliberately does not touch statusFilters: the selection belongs to the
+      // 全部 tab and must survive a round-trip through a quadrant tab.
+      setTab: (tab) => set({ tab }),
+      // Filters are workspace-scoped: the owning wsId rides in the state, so a
+      // real switch is detected even when this runs on a freshly remounted
+      // screen whose props already carry the new id. Same-workspace syncs are
+      // no-ops. A switch clears every filter; TAB and sort survive (保 TAB).
+      // The cleared state is what persist writes, so the next start inherits
+      // the switch instead of the old selection.
+      syncWorkspace: (wsId) =>
+        set((state) =>
+          state.wsId === wsId
+            ? {}
+            : {
+                wsId,
+                statusFilters: [],
+                priorityFilters: [],
+                mineRelations: { assigned: false, created: false, involved: false },
+                assigneeRefs: [],
+                includeNoAssignee: false,
+                creatorRefs: [],
+                agentRunning: false,
+              },
+        ),
+      toggleStatusFilter: (status) =>
+        set((state) => ({
+          statusFilters: state.statusFilters.includes(status)
+            ? state.statusFilters.filter((s) => s !== status)
+            : [...state.statusFilters, status],
+        })),
+      togglePriorityFilter: (priority) =>
+        set((state) => ({
+          priorityFilters: state.priorityFilters.includes(priority)
+            ? state.priorityFilters.filter((p) => p !== priority)
+            : [...state.priorityFilters, priority],
+        })),
+      toggleMineRelation: (relation) =>
+        set((state) => ({
+          mineRelations: {
+            ...state.mineRelations,
+            [relation]: !state.mineRelations[relation],
+          },
+        })),
+      setAssigneeRefs: (assigneeRefs) => set({ assigneeRefs }),
+      setIncludeNoAssignee: (includeNoAssignee) => set({ includeNoAssignee }),
+      setCreatorRefs: (creatorRefs) => set({ creatorRefs }),
+      toggleAgentRunning: () =>
+        set((state) => ({ agentRunning: !state.agentRunning })),
+      setSortBy: (sortBy) => set({ sortBy }),
+      // 重置 clears every filter but keeps the TAB and the sort choice.
+      clearFilters: () =>
+        set({
+          statusFilters: [],
+          priorityFilters: [],
+          mineRelations: { assigned: false, created: false, involved: false },
+          assigneeRefs: [],
+          includeNoAssignee: false,
+          creatorRefs: [],
+          agentRunning: false,
+        }),
     }),
-}));
+    {
+      name: "multica_mobile_tasks_view",
+      storage: createJSONStorage(() => AsyncStorage),
+      // TAB and the sort choice stay session-scoped — only the filter
+      // memory (with its owning workspace) survives a restart.
+      partialize: (s) => ({
+        wsId: s.wsId,
+        statusFilters: s.statusFilters,
+        priorityFilters: s.priorityFilters,
+        mineRelations: s.mineRelations,
+        assigneeRefs: s.assigneeRefs,
+        includeNoAssignee: s.includeNoAssignee,
+        creatorRefs: s.creatorRefs,
+        agentRunning: s.agentRunning,
+      }),
+      // Restore-scoping guard: a blob may only come back under the workspace
+      // it was written for. Runs at hydration, which on a real device lands
+      // AFTER the screen's first syncWorkspace (AsyncStorage reads are bridge
+      // round-trips) but must also stay correct when it lands before:
+      //   - persisted wsId missing → nothing owns the blob, restore nothing;
+      //   - screen already in another workspace → keep its (cleared) state;
+      //   - screen not mounted yet (wsId null) → apply, and a later
+      //     syncWorkspace into a different workspace clears as usual.
+      merge: (persisted, current) => {
+        const p = persisted as Partial<TasksViewState> | null;
+        if (!p || typeof p.wsId !== "string") return current;
+        if (current.wsId !== null && current.wsId !== p.wsId) return current;
+        return { ...current, ...p };
+      },
+    },
+  ),
+);
