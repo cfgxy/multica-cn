@@ -49,7 +49,7 @@ func TestEnrichQuotedFileBecomesAttachment(t *testing.T) {
 	}
 	storage := &fakeMediaStorage{}
 	ledger := &fakeMediaLedger{}
-	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger())
+	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
 	if !media.HasMedia(channelMessageFromLark(enriched)) {
 		t.Fatal("引用文件未进入媒体解析器")
 	}
@@ -83,7 +83,7 @@ func TestEnrichQuotedImageBecomesAttachment(t *testing.T) {
 	if len(enriched.QuotedMedia) != 1 {
 		t.Fatalf("QuotedMedia = %+v, want 1 项", enriched.QuotedMedia)
 	}
-	resolver := NewFeishuMediaResolver(&fakeSender{}, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger())
+	resolver := NewFeishuMediaResolver(&fakeSender{}, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger(), nil)
 	if !resolver.HasMedia(channelMessageFromLark(enriched)) {
 		t.Fatal("引用图片未进入媒体解析器")
 	}
@@ -103,7 +103,7 @@ func TestEnrichQuotedTextHasNoMedia(t *testing.T) {
 	if len(enriched.QuotedMedia) != 0 {
 		t.Fatalf("QuotedMedia = %+v, want 空", enriched.QuotedMedia)
 	}
-	resolver := NewFeishuMediaResolver(&fakeSender{}, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger())
+	resolver := NewFeishuMediaResolver(&fakeSender{}, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger(), nil)
 	if resolver.HasMedia(channelMessageFromLark(enriched)) {
 		t.Fatal("纯文本引用不应进入媒体解析器")
 	}
@@ -154,7 +154,7 @@ func TestEnrichQuotedMediaDownloadFailure(t *testing.T) {
 	sender := &fakeSender{downloadErr: errors.New("lark: http 503")}
 	storage := &fakeMediaStorage{}
 	ledger := &fakeMediaLedger{}
-	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger())
+	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
 	got := media.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
 		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"),
 		channelMessageFromLark(enriched))
@@ -234,7 +234,7 @@ func TestEnrichQuotedMediaCoexistsWithOwnMedia(t *testing.T) {
 			"key_own": {Data: []byte("xlsx"), ContentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", Filename: "自己的.xlsx"},
 		},
 	}
-	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger())
+	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger(), nil)
 	got := media.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
 		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"),
 		channelMessageFromLark(enriched))

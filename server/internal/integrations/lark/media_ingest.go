@@ -41,13 +41,18 @@ type feishuMediaResolver struct {
 	storage mediaStorage
 	ledger  engine.MediaIntentLedger
 	logger  *slog.Logger
+	hints   *PermissionHintSender
 }
 
-func NewFeishuMediaResolver(api APIClient, creds CredentialsResolver, storage mediaStorage, ledger engine.MediaIntentLedger, logger *slog.Logger) engine.MediaResolver {
+// NewFeishuMediaResolver builds the resolver. hints, when set, receives the
+// download path's permission observations (a permission-class download
+// failure posts the media_resources hint card into the same chat, deduped;
+// a success re-arms it). Nil disables the hints.
+func NewFeishuMediaResolver(api APIClient, creds CredentialsResolver, storage mediaStorage, ledger engine.MediaIntentLedger, logger *slog.Logger, hints *PermissionHintSender) engine.MediaResolver {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &feishuMediaResolver{api: api, creds: creds, storage: storage, ledger: ledger, logger: logger}
+	return &feishuMediaResolver{api: api, creds: creds, storage: storage, ledger: ledger, logger: logger, hints: hints}
 }
 
 // HasMedia reports whether the message carries downloadable Feishu resources
@@ -131,8 +136,10 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		})
 		if err != nil {
 			r.logMediaWarn("lark media download failed", lm, err)
+			r.hints.ObserveDenied(ctx, creds, lm.ChatID, CapabilityMediaResources, err)
 			continue
 		}
+		r.hints.ObserveSuccess(creds.AppID, lm.ChatID, CapabilityMediaResources)
 		contentType := mediaContentType(res, got)
 		filename := mediaFilename(lm, res, got, contentType, resIndex)
 		uploadedBytes, err := r.uploadResource(ctx, key, got.Body, got.SizeBytes, contentType, filename)
