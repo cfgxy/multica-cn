@@ -21,6 +21,17 @@
  *       manage_issue_relations (RUYI-351 structured issue relations — pure
  *       relationship changes never trigger a run, and the descriptions must
  *       say so explicitly).
+ * Read (RUYI-419 workspace management): list_runs (workspace-wide run view),
+ *       get_agent, list_runtimes, list_squads, get_squad.
+ * Write (RUYI-419 workspace management): create_agent, update_agent,
+ *       archive_agent (SIDE EFFECT: cancels all of the agent's queued and
+ *       in-flight runs), restore_agent, create_squad, update_squad,
+ *       archive_squad (SIDE EFFECT: reassigns the squad's issues to its
+ *       leader; no squad restore exists). These act through the product's own
+ *       ownership gates, never start runs, and expose no secret-bearing
+ *       agent fields — projections only. Agents/squads carry no revision
+ *       field, so these writes have no optimistic locking; the descriptions
+ *       say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
@@ -51,11 +62,14 @@ import {
   ToolInputError,
 } from "./schemas.js";
 import type {
+  AgentDetailInfo,
+  AgentRuntimeInfo,
   CancelRunResult,
   CommentInfo,
   IssueInfo,
   ProjectInfo,
   SearchIssueInfo,
+  SquadInfo,
   UpdateIssueBody,
   UpdateProjectBody,
 } from "./types.js";
@@ -373,6 +387,68 @@ function projectFull(project: ProjectInfo): Record<string, unknown> {
   if (project.done_count !== undefined) out.done_count = project.done_count;
   if (project.resource_count !== undefined) out.resource_count = project.resource_count;
   return out;
+}
+
+// Safe projections for the agent/squad management surface (RUYI-419). The
+// Go AgentResponse carries secret-bearing fields (runtime_config, mcp_config,
+// custom_env values, composio allowlist); these helpers re-project onto the
+// metadata subset instead of forwarding the payload, so no secret-bearing
+// value can reach tool output even though the REST response contains it —
+// same envelope the product applies on its own responses (MUL-2600).
+function agentBrief(agent: AgentDetailInfo): Record<string, unknown> {
+  return {
+    id: agent.id,
+    name: agent.name,
+    description: agent.description ?? "",
+    instructions: agent.instructions ?? "",
+    runtime_id: agent.runtime_id || null,
+    runtime_bound: agent.runtime_bound ?? false,
+    model: agent.model ?? "",
+    thinking_level: agent.thinking_level ?? "",
+    service_tier: agent.service_tier ?? "",
+    max_concurrent_tasks: agent.max_concurrent_tasks,
+    permission_mode: agent.permission_mode,
+    visibility: agent.visibility,
+    owner_id: agent.owner_id ?? null,
+    system_key: agent.system_key ?? null,
+    status: agent.status,
+    archived_at: agent.archived_at ?? null,
+    has_custom_env: agent.has_custom_env ?? false,
+    custom_env_key_count: agent.custom_env_key_count ?? 0,
+    mcp_config_redacted: agent.mcp_config_redacted ?? false,
+    created_at: agent.created_at,
+    updated_at: agent.updated_at,
+  };
+}
+
+function runtimeBrief(runtime: AgentRuntimeInfo): Record<string, unknown> {
+  return {
+    id: runtime.id,
+    name: runtime.name,
+    custom_name: runtime.custom_name ?? null,
+    runtime_mode: runtime.runtime_mode,
+    provider: runtime.provider,
+    status: runtime.status,
+    visibility: runtime.visibility,
+    owner_id: runtime.owner_id ?? null,
+    last_seen_at: runtime.last_seen_at ?? null,
+  };
+}
+
+function squadBrief(squad: SquadInfo): Record<string, unknown> {
+  return {
+    id: squad.id,
+    name: squad.name,
+    description: squad.description ?? "",
+    instructions: squad.instructions ?? "",
+    leader_id: squad.leader_id ?? null,
+    creator_id: squad.creator_id ?? null,
+    member_count: squad.member_count,
+    member_preview: squad.member_preview ?? [],
+    archived_at: squad.archived_at ?? null,
+    created_at: squad.created_at,
+    updated_at: squad.updated_at,
+  };
 }
 
 function projectDateProperty(): JsonSchemaProperty {
@@ -2095,6 +2171,457 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         status: t.status,
         rerun_of_task_id: t.rerun_of_task_id ?? null,
         note: "New run enqueued on the source run's agent with its current configuration, fresh session. The source run is kept unchanged for history.",
+      };
+    },
+  },
+
+  // ---- workspace-wide run view + agent/squad management (RUYI-419) --------
+  // Reads never trigger runs or any other side effect. Writes act on agent /
+  // squad metadata through the product's own ownership gates (owner-or-admin
+  // for agents, creator-or-admin for squads) and never start an agent run;
+  // the two archive operations DO cancel/transfer live work — declared
+  // per-tool below. Agents and squads carry no revision field, so there is
+  // no optimistic locking here: concurrent edits are last-write-wins.
+
+  {
+    name: "list_runs",
+    description:
+      "List agent runs across a WHOLE workspace (RUYI-419) — 'what ran, what is running, what failed' without knowing an issue first. " +
+      "Read-only. Each row carries the run's issue (identifier + title), agent, status, trigger source, timing and failure summary. " +
+      "Filters combine with AND: status (comma-separated raw statuses or the 'pending' alias = queued+dispatched+deferred+waiting_local_directory), agent_id, project_id, issue (UUID or PREFIX-N), trigger (comment/autopilot/rerun/system_retry), created_after/created_before (RFC3339). " +
+      "Unknown filter values match nothing (empty result, not an error). Visibility: only runs of agents you may access; paging via limit+offset with exact has_more/next_offset. " +
+      "Use list_issue_runs/get_run for per-issue drill-down; get_run needs the issue — resolve it from a row's issue identifier first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        status: {
+          type: "string",
+          description:
+            "Comma-separated raw statuses or 'pending' (queued-family bucket). Omit for all runs.",
+        },
+        agent_id: { type: "string", description: "Agent UUID filter, from list_agents." },
+        project_id: { type: "string", description: "Project UUID filter, from list_projects." },
+        issue: {
+          type: "string",
+          description: "Single-issue filter: issue UUID or PREFIX-N identifier (e.g. MUL-42).",
+        },
+        trigger: {
+          type: "string",
+          enum: ["comment", "autopilot", "rerun", "system_retry"],
+          description: "Trigger-source filter (optional).",
+        },
+        created_after: {
+          type: "string",
+          description: "Only runs created at or after this RFC3339 timestamp (e.g. 2026-05-14T09:00:00Z).",
+        },
+        created_before: {
+          type: "string",
+          description: "Only runs created before this RFC3339 timestamp (exclusive).",
+        },
+        limit: {
+          type: "integer",
+          description: "Max runs to return, 1–200 (default 50, newest first).",
+          minimum: 1,
+          maximum: 200,
+        },
+        offset: { type: "integer", description: "Rows to skip for paging (default 0).", minimum: 0 },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const trigger = optionalEnum(args, "trigger", ["comment", "autopilot", "rerun", "system_retry"]);
+      if (args.trigger !== undefined && trigger === undefined) {
+        throw new ToolInputError("'trigger' must be one of: comment, autopilot, rerun, system_retry");
+      }
+      const createdAfter = optionalString(args, "created_after");
+      const createdBefore = optionalString(args, "created_before");
+      if (createdAfter !== undefined && Number.isNaN(Date.parse(createdAfter))) {
+        throw new ToolInputError("'created_after' must be an RFC3339 timestamp, e.g. 2026-05-14T09:00:00Z");
+      }
+      if (createdBefore !== undefined && Number.isNaN(Date.parse(createdBefore))) {
+        throw new ToolInputError("'created_before' must be an RFC3339 timestamp, e.g. 2026-05-14T11:00:00Z");
+      }
+      const result = await client.listWorkspaceRuns(workspace, {
+        status: optionalString(args, "status"),
+        agent_id: optionalString(args, "agent_id"),
+        project_id: optionalString(args, "project_id"),
+        issue: optionalString(args, "issue"),
+        trigger,
+        created_after: createdAfter,
+        created_before: createdBefore,
+        limit: optionalInt(args, "limit", { min: 1, max: 200 }),
+        offset: optionalInt(args, "offset", { min: 0 }),
+      });
+      return {
+        total: result.count,
+        has_more: result.has_more,
+        next_offset: result.next_offset ?? null,
+        runs: result.runs.map((t) => ({
+          id: t.id,
+          issue: t.issue_identifier ?? t.issue_id ?? null,
+          issue_title: t.issue_title ?? null,
+          agent_id: t.agent_id ?? null,
+          status: t.status,
+          trigger: t.trigger ?? "other",
+          created_at: t.created_at,
+          started_at: t.started_at ?? null,
+          completed_at: t.completed_at ?? null,
+          failure_reason: t.failure_reason ?? null,
+        })),
+        note: "cancel_requested = stop accepted, awaiting runtime confirmation. Page with offset=next_offset when has_more.",
+      };
+    },
+  },
+  {
+    name: "get_agent",
+    description:
+      "Get ONE agent's key runtime configuration (RUYI-419): instructions, model, thinking level, concurrency cap, runtime binding and invocation permission mode. " +
+      "Read-only; reading an agent never triggers anything. Secret-bearing values (runtime_config, mcp_config, custom_env) are NOT exposed — only coarse indicators (has_custom_env, custom_env_key_count, mcp_config_redacted); manage secrets in the Multica UI. " +
+      "Agents have no revision field (no optimistic locking). Use list_agents for discovery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Agent UUID, from list_agents." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      return agentBrief(await client.getAgent(workspace, agentId));
+    },
+  },
+  {
+    name: "create_agent",
+    description:
+      "Create an agent in a workspace (RUYI-419). Any workspace member can create one and becomes its owner. " +
+      "Metadata-only: creating an agent never triggers a run. runtime_id is required (pick one with list_runtimes); an agent without a usable runtime cannot be dispatched. " +
+      "Secrets (runtime_config, mcp_config, custom_env) are NOT settable here — configure them in the Multica UI after creation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: { type: "string", description: "Agent name (required)." },
+        runtime_id: { type: "string", description: "Runtime UUID to bind (required; from list_runtimes)." },
+        description: { type: "string", description: "Short description shown in agent lists." },
+        instructions: {
+          type: "string",
+          description: "System-level instructions prepended to every run of this agent.",
+        },
+        model: { type: "string", description: "Model identifier for the bound runtime (optional)." },
+        thinking_level: { type: "string", description: "Runtime-native reasoning/effort token (optional)." },
+        max_concurrent_tasks: {
+          type: "integer",
+          description: "How many runs this agent may execute in parallel (default 1).",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "name", "runtime_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agent = await client.createAgent(workspace, {
+        name: requireString(args, "name"),
+        runtime_id: requireString(args, "runtime_id"),
+        description: optionalString(args, "description") ?? "",
+        instructions: optionalString(args, "instructions") ?? "",
+        model: optionalString(args, "model") ?? "",
+        thinking_level: optionalString(args, "thinking_level") ?? "",
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 1 }),
+      });
+      return {
+        created: true,
+        agent: agentBrief(agent),
+        note: "The caller becomes the agent owner. Dispatch it with dispatch_agent; no run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "update_agent",
+    description:
+      "Update an existing agent's metadata (RUYI-419): name, description, instructions, model, thinking_level, service_tier, max_concurrent_tasks, or rebind runtime_id. " +
+      "PATCH semantics: an omitted key keeps the current value. Does NOT trigger runs. " +
+      "Gates: only the agent owner or a workspace admin may update; agents have no revision field — concurrent edits are last-write-wins (no expected_revision). " +
+      "Secrets are never editable here (the server rejects custom_env on this path by design, MUL-2600); use the Multica UI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Agent UUID, from list_agents." },
+        name: { type: "string", description: "New name." },
+        description: { type: "string", description: "New description." },
+        instructions: { type: "string", description: "New system-level instructions." },
+        model: { type: "string", description: "New model identifier." },
+        thinking_level: {
+          type: "string",
+          description: "New reasoning/effort token. Pass empty string to clear back to the runtime default.",
+        },
+        service_tier: { type: "string", description: "Runtime-native execution tier (Codex). Empty string clears." },
+        max_concurrent_tasks: { type: "integer", description: "New parallel-run cap.", minimum: 1 },
+        runtime_id: { type: "string", description: "Rebind to this runtime UUID (from list_runtimes)." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      const agent = await client.updateAgent(workspace, agentId, {
+        name: optionalString(args, "name"),
+        description: optionalString(args, "description"),
+        instructions: optionalString(args, "instructions"),
+        model: optionalString(args, "model"),
+        thinking_level: optionalString(args, "thinking_level"),
+        service_tier: optionalString(args, "service_tier"),
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 1 }),
+        runtime_id: optionalString(args, "runtime_id"),
+      });
+      return {
+        updated: true,
+        agent: agentBrief(agent),
+        note: "No run was started by this call. Already-queued runs keep the configuration they were dispatched with.",
+      };
+    },
+  },
+  {
+    name: "archive_agent",
+    description:
+      "Archive (soft-disable) an agent (RUYI-419). SIDE EFFECT — this is heavier than it looks: archiving CANCELS every queued or in-flight run of this agent immediately, and the agent disappears from list_agents/dispatch until restored. " +
+      "The agent row, history and configuration are kept. Gates: agent owner or workspace admin; built-in system agents cannot be archived. " +
+      "Repeat on an already-archived agent returns the structured outcome already_archived. Restore with restore_agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Agent UUID to archive, from list_agents." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      let agent: AgentDetailInfo;
+      try {
+        agent = await client.archiveAgent(workspace, agentId);
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return {
+            code: "already_archived",
+            archived: false,
+            message: "agent is already archived; nothing to do (restore_agent brings it back)",
+          };
+        }
+        throw error;
+      }
+      return {
+        archived: true,
+        agent: agentBrief(agent),
+        note: "All of the agent's queued/in-flight runs were cancelled. The agent is hidden from dispatch until restore_agent.",
+      };
+    },
+  },
+  {
+    name: "restore_agent",
+    description:
+      "Restore a previously archived agent (RUYI-419). The agent becomes dispatchable again; past runs stay cancelled — nothing is re-enqueued automatically. " +
+      "Gates: agent owner or workspace admin. Restoring a non-archived agent returns the structured outcome not_archived. Read-only for runs: restoring never triggers a run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Archived agent UUID, from list_agents (archived agents are excluded from that list; use list_runs to find their recent runs)." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      let agent: AgentDetailInfo;
+      try {
+        agent = await client.restoreAgent(workspace, agentId);
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return {
+            code: "not_archived",
+            restored: false,
+            message: "agent is not archived; nothing to restore",
+          };
+        }
+        throw error;
+      }
+      return {
+        restored: true,
+        agent: agentBrief(agent),
+        note: "The agent is dispatchable again. No run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "list_runtimes",
+    description:
+      "List the agent runtimes (execution hosts) visible to you in a workspace (RUYI-419). Read-only. " +
+      "Workspace admins see all runtimes; regular members see public runtimes plus their own. A runtime's data and machine access stay gated regardless of listing. " +
+      "Use a returned runtime id as create_agent's runtime_id.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const runtimes = await client.listRuntimes(workspace);
+      return {
+        total: runtimes.length,
+        runtimes: runtimes.map(runtimeBrief),
+      };
+    },
+  },
+  {
+    name: "list_squads",
+    description:
+      "List a workspace's squads (RUYI-419): named teams that can be assigned issues and dispatch their leader agent. Read-only. " +
+      "Archived squads are not listed (the server lists active squads only). Use get_squad for one squad's instructions and members.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squads = await client.listSquads(workspace);
+      return {
+        total: squads.length,
+        squads: squads.map((squad) => ({
+          id: squad.id,
+          name: squad.name,
+          description: squad.description ?? "",
+          leader_id: squad.leader_id ?? null,
+          member_count: squad.member_count,
+        })),
+      };
+    },
+  },
+  {
+    name: "get_squad",
+    description:
+      "Get ONE squad's configuration (RUYI-419): description, instructions, leader agent, member preview and archive state. Read-only. Use list_squads for discovery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        squad_id: { type: "string", description: "Squad UUID, from list_squads." },
+      },
+      required: ["workspace", "squad_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squadId = requireString(args, "squad_id");
+      return squadBrief(await client.getSquad(workspace, squadId));
+    },
+  },
+  {
+    name: "create_squad",
+    description:
+      "Create a squad (RUYI-419): a named team whose issues are worked by its leader agent with named members. Any workspace member can create one and becomes its creator; the leader_id must be an agent in the same workspace (pick one with list_agents). " +
+      "Metadata-only: creating a squad never triggers a run. Dispatch work to it with assign_issue (assignee_type squad).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: { type: "string", description: "Squad name (required)." },
+        leader_id: { type: "string", description: "Leader agent UUID (required; an agent in this workspace)." },
+        description: { type: "string", description: "What the squad is for." },
+      },
+      required: ["workspace", "name", "leader_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squad = await client.createSquad(workspace, {
+        name: requireString(args, "name"),
+        leader_id: requireString(args, "leader_id"),
+        description: optionalString(args, "description") ?? "",
+      });
+      return {
+        created: true,
+        squad: squadBrief(squad),
+        note: "The caller becomes the squad creator (and manager). No run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "update_squad",
+    description:
+      "Update a squad's metadata (RUYI-419): name, description, instructions, or rotate leader_id. " +
+      "PATCH semantics: an omitted key keeps the current value. Does NOT trigger runs. " +
+      "Gates: the squad creator or a workspace admin; squads have no revision field — concurrent edits are last-write-wins (no expected_revision). " +
+      "Note on leader rotation: if the new leader's runtime is unbound, the server pauses autopilots targeting this squad rather than let them dispatch into a dead end.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        squad_id: { type: "string", description: "Squad UUID, from list_squads." },
+        name: { type: "string", description: "New name." },
+        description: { type: "string", description: "New description." },
+        instructions: { type: "string", description: "New squad-level instructions." },
+        leader_id: { type: "string", description: "New leader agent UUID (an agent in this workspace)." },
+      },
+      required: ["workspace", "squad_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squadId = requireString(args, "squad_id");
+      const squad = await client.updateSquad(workspace, squadId, {
+        name: optionalString(args, "name"),
+        description: optionalString(args, "description"),
+        instructions: optionalString(args, "instructions"),
+        leader_id: optionalString(args, "leader_id"),
+      });
+      return {
+        updated: true,
+        squad: squadBrief(squad),
+        note: "No run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "archive_squad",
+    description:
+      "Archive a squad (RUYI-419). SIDE EFFECTS: the squad stops being assignable, and every issue still assigned to it is REASSIGNED to its leader agent; autopilots targeting the squad are retargeted to the leader. " +
+      "This is a soft archive — the squad row and history are kept, but there is NO restore: re-creating a squad or reassigning issues back is manual. Gates: squad creator or workspace admin. " +
+      "Repeat on an already-archived squad returns the structured outcome already_archived.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        squad_id: { type: "string", description: "Squad UUID to archive, from list_squads." },
+      },
+      required: ["workspace", "squad_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squadId = requireString(args, "squad_id");
+      try {
+        await client.archiveSquad(workspace, squadId);
+      } catch (error) {
+        if (
+          error instanceof MulticaApiError &&
+          error.status === 400 &&
+          /already archived/i.test(error.message)
+        ) {
+          return {
+            code: "already_archived",
+            archived: false,
+            message: "squad is already archived; nothing to do",
+          };
+        }
+        throw error;
+      }
+      return {
+        archived: true,
+        squad_id: squadId,
+        note: "Issues assigned to the squad were reassigned to its leader agent; autopilots targeting the squad now target the leader. There is no squad restore.",
       };
     },
   },
