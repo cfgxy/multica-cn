@@ -142,6 +142,11 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
+  /** Decision cards (RUYI-345) — same reconnect discipline as timeline:
+   *  missed WS events are covered by invalidating the `*All` prefix. */
+  decisionsAll: () => ["issues", "decisions"] as const,
+  decisions: (issueId: string) =>
+    [...issueKeys.decisionsAll(), issueId] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
    *  an open composer's trigger preview refreshes when an agent's queue
    *  state changes (the dedup guard makes the answer queue-dependent). */
