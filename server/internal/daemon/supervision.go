@@ -172,6 +172,23 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 				"decision", res.Decision.String(), "reason", res.Reason)
 		}
 	}
+
+	// After the pass settles the classifications, reclaim spent evidence:
+	// runs consumed past the retention window. Runs converged by THIS pass
+	// are inside the window and survive until a later pass.
+	gc := &supervisor.RetentionGC{
+		Mgr:   d.supervisor.Manager(),
+		Units: d.supervisor.Systemd(),
+		Log:   d.logger,
+	}
+	summary, err := gc.Run(ctx)
+	if err != nil {
+		d.logger.Warn("supervisor retention GC failed", "error", err)
+		return
+	}
+	if summary.Removed > 0 {
+		d.logger.Info("supervisor retention GC", "removed", summary.Removed, "run_ids", summary.RemovedRunIDs)
+	}
 }
 
 // runIDSanitizer matches what ValidateRunID accepts: lowercase, digits and
