@@ -738,7 +738,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Credentials: installSvc,
 					Logger:      slog.Default(),
 				})
-				mediaResolver := lark.NewFeishuMediaResolver(larkClient, installSvc, store, engine.NewDBMediaIntentLedger(queries), slog.Default())
+				mediaResolver := lark.NewFeishuMediaResolver(larkClient, installSvc, store, engine.NewDBMediaIntentLedger(queries), slog.Default(), lark.NewPermissionHintSender(larkClient, slog.Default()))
 				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
 					cs, feishuSession, auditLogger, resolverReplier, typingIndicator, mediaResolver,
 				))
@@ -1875,6 +1875,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/lark/installations", h.ListLarkInstallations)
 					r.Delete("/lark/installations/{installationId}", h.RevokeLarkInstallation)
+					// Capability probe (RUYI-400): the static scope catalog
+					// backs the bind dialog's upfront permission declaration;
+					// the recheck re-runs the probe on demand (authorization
+					// inside the handler, mirroring revoke).
+					r.Get("/lark/permission-catalog", h.GetLarkPermissionCatalog)
+					r.Post("/lark/installations/{installationId}/recheck-permissions", h.RecheckLarkPermissions)
 					// Device-flow scan-to-install. Begin opens a new
 					// registration session against Lark and returns
 					// the QR-code URL; the frontend dialog then polls
@@ -2783,6 +2789,7 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 	enricher := lark.NewInboundEnricher(apiClient, lark.InboundEnricherConfig{
 		RecentContextSize: lark.DefaultRecentContextSize,
 		Logger:            slog.Default(),
+		Hints:             lark.NewPermissionHintSender(apiClient, slog.Default()),
 	})
 	conn, err := lark.NewWSLongConnConnector(lark.WSConnectorConfig{
 		Dialer:              dialer,

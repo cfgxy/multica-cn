@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -80,7 +82,7 @@ func TestIssuePropertiesBigramIndexBuildsOnlyWherePGBigmExists(t *testing.T) {
 	// expression — a separate pg_statistic entry keyed by the index relation,
 	// and the only thing that lets the planner cost a contains prefilter.
 	if pgBigmUsable {
-		if got := statisticsRowCount(t, ctx, pool, schema, "idx_issue_properties_bigm"); got == 0 {
+		if got := indexStatisticsRowCount(t, ctx, pool, schema, "idx_issue_properties_bigm"); got == 0 {
 			t.Fatal("no statistics for the LOWER(properties::text) expression: the planner cannot cost the index")
 		}
 	}
@@ -206,21 +208,44 @@ func seedIssuePropertiesFixture(t *testing.T, ctx context.Context, pool *pgxpool
 	}
 }
 
-// statisticsRowCount reports how many pg_statistic rows exist for a relation.
-// Expression-index statistics are keyed by the index relation, not the table,
-// which is why the caller passes the relation it cares about.
-func statisticsRowCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, schema, relation string) int {
+// statisticsRowCount reports how many column statistics pg_stats records for
+// schema.table. pg_stats is the public view over pg_statistic: a
+// least-privilege test account (the slot model's <slot>_app roles) cannot
+// query the catalog directly.
+func statisticsRowCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, schema, table string) int {
 	t.Helper()
 	var count int
-	if err := pool.QueryRow(ctx, `
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM pg_stats WHERE schemaname = $1 AND tablename = $2`,
+		schema, table).Scan(&count); err != nil {
+		t.Fatalf("read statistics for %s.%s: %v", schema, table, err)
+	}
+	return count
+}
+
+// indexStatisticsRowCount reports how many expression statistics exist for
+// schema.index — keyed by the index relation, not the table, which is why no
+// public view exposes them and the direct pg_statistic read is the only
+// option. Where the account lacks pg_read_all_stats the fact is unverifiable
+// and the test skips rather than fails.
+func indexStatisticsRowCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, schema, index string) int {
+	t.Helper()
+	var count int
+	err := pool.QueryRow(ctx, `
 		SELECT count(*)
 		FROM pg_statistic s
 		JOIN pg_class c ON c.oid = s.starelid
 		JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE n.nspname = $1 AND c.relname = $2
-	`, schema, relation).Scan(&count); err != nil {
-		t.Fatalf("read statistics for %s.%s: %v", schema, relation, err)
+	`, schema, index).Scan(&count)
+	if err == nil {
+		return count
 	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "42501" {
+		t.Skipf("pg_statistic is not readable without pg_read_all_stats: %v", err)
+	}
+	t.Fatalf("read statistics for %s.%s: %v", schema, index, err)
 	return count
 }
 

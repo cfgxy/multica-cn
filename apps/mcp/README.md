@@ -21,6 +21,9 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `progress_digest` | 进度摘要（状态计数 + 逾期/临期 + 最近活跃） |
 | 读 | `list_comments` | 评论有界读：线程/最近活跃/仅根/since/summary/fold |
 | 读 | `get_comment` | 单条评论全文（含 revision，可辨认编辑痕迹） |
+| 读 | `get_issue_relations` | 单条 issue 结构化关系：parent 与 blocks/blocked_by/relates_to/supersedes/superseded_by 五向视图（RUYI-351） |
+| 读 | `list_issue_runs` | 单条 issue 全部执行 run：状态/agent/触发源/耗时/失败摘要，status 与 trigger 过滤（RUYI-292） |
+| 读 | `get_run` | 单个 run 详情：状态、耗时、失败原因、取消归因与完整重试链（RUYI-292） |
 | 写 | `create_issue` | 通用创建：任意空间、任意项目 |
 | 写 | `create_project` | 创建项目（纯元数据，不触发 run）（RUYI-354） |
 | 写 | `update_project` | PATCH 更新项目元数据，`expected_revision` 乐观锁（RUYI-354） |
@@ -28,9 +31,13 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 写 | `edit_comment` | 编辑评论（作者/admin 权限；`expected_revision` 乐观锁；内容变更按新内容重算触发面，mention 副作用经 `trigger_outcomes` 回报） |
 | 写 | `delete_comment` | 删除评论（作者/admin 权限；级联删除回复子树；连带取消该评论触发的排队 run） |
 | 写 | `update_issue_status` | 状态流转（`suppress_run` 可避免连带派发） |
+| 写 | `update_issue` | 就地编辑已有 issue 核心字段（标题/描述/优先级/项目/父单/起止日期），纯元数据不触发 run（RUYI-350） |
 | 写 | `assign_issue` | 已有 issue 的指派/改派/取消指派（agent/squad 指派触发真实 run） |
+| 写 | `manage_issue_relations` | 管理 issue 结构化关系：set_parent/clear_parent/add_relation/remove_relation，`expected_revision` 乐观锁，不触发 run（RUYI-351） |
 | 写 | `bulk_update_issues` | 批量按项更新已有 issue：逐项结果与失败分类、逐项 `expected_revision`、`suppress_run` 分层控制、上限 50 项 |
+| 写 | `cancel_run` | 按 run id 停止单个 run：执行中转 `cancel_requested` 待运行时确认，排队 run 立即取消（RUYI-292） |
 | 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
+| 派发 | `retry_run` | 重试已完成的 run：同一 agent 以当前配置新建 run 入队（消耗配额）（RUYI-292） |
 
 评论编辑/删除（RUYI-352）沿用产品自身的作者-or-管理员权限闸与服务端审计
 （revision + updated_at）；定义内的失败（权限拒绝、revision 冲突、已删除、
