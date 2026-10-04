@@ -25,25 +25,25 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// still shows which workspace an action affected; classified Settle
 	// (not Keep) because the row is left in place with workspace_id intact
 	// rather than being genuinely workspace-agnostic.
-	"admin_audit_log":                 workspaceDeleteSettle,
-	"agent":                           workspaceDelete,
-	"agent_builder_draft":             workspaceDelete,
-	"agent_invocation_target":         workspaceDelete,
-	"agent_runtime":                   workspaceDelete,
-	"agent_skill":                     workspaceDelete,
-	"agent_task_queue":                workspaceDelete,
-	"agent_to_label":                  workspaceDelete,
-	"agent_webhook":                   workspaceDelete,
-	"attachment":                      workspaceDelete,
-	"autopilot":                       workspaceDelete,
-	"autopilot_collaborator":          workspaceDelete,
-	"autopilot_quota_period":          workspaceDelete,
-	"autopilot_quota_reservation":     workspaceDelete,
-	"autopilot_rule_version":          workspaceDelete,
-	"autopilot_run":                   workspaceDelete,
-	"autopilot_subscriber":            workspaceDelete,
-	"autopilot_trigger":               workspaceDelete,
-	"channel_binding_token":           workspaceDelete,
+	"admin_audit_log":             workspaceDeleteSettle,
+	"agent":                       workspaceDelete,
+	"agent_builder_draft":         workspaceDelete,
+	"agent_invocation_target":     workspaceDelete,
+	"agent_runtime":               workspaceDelete,
+	"agent_skill":                 workspaceDelete,
+	"agent_task_queue":            workspaceDelete,
+	"agent_to_label":              workspaceDelete,
+	"agent_webhook":               workspaceDelete,
+	"attachment":                  workspaceDelete,
+	"autopilot":                   workspaceDelete,
+	"autopilot_collaborator":      workspaceDelete,
+	"autopilot_quota_period":      workspaceDelete,
+	"autopilot_quota_reservation": workspaceDelete,
+	"autopilot_rule_version":      workspaceDelete,
+	"autopilot_run":               workspaceDelete,
+	"autopilot_subscriber":        workspaceDelete,
+	"autopilot_trigger":           workspaceDelete,
+	"channel_binding_token":       workspaceDelete,
 	// Capability probe verdicts (RUYI-400) are installation-scoped
 	// diagnostics: DeleteWorkspace sweeps them through ws_installations.
 	"channel_capability_state":        workspaceDelete,
@@ -176,6 +176,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_quiz_sweep_state": workspaceDeleteKeep,
 	"quick_action":            workspaceDelete,
 	"runtime_profile":         workspaceDelete,
+	// Runtime instance credentials (RUYI-425 §4.5) carry only ciphertext and
+	// are keyed by (runtime_instance_id, credential_key) with no workspace
+	// column; DeleteWorkspaceRuntimesAndProjects sweeps them through the
+	// workspace's runtime set in the same statement that deletes the
+	// runtimes. Destroying the workspace destroys its secrets.
+	"runtime_credential": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery":        workspaceDelete,
