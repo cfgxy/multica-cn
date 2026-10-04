@@ -20,6 +20,10 @@ const (
 	EventIssueReactionAdded   = "issue_reaction:added"
 	EventIssueReactionRemoved = "issue_reaction:removed"
 
+	// Decision card events (RUYI-345). One event covers the card lifecycle —
+	// created, answered, cancelled — the payload's status field says which.
+	EventDecisionUpdated = "decision:updated"
+
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"

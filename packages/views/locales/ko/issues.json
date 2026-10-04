@@ -1099,5 +1099,17 @@
     "lineage": "실행 체인",
     "lineage_rerun": "수동 재실행",
     "lineage_system_retry": "시스템 재시도"
+  },
+  "decisions": {
+    "title": "의사결정 카드",
+    "status_answered": "답변됨",
+    "status_cancelled": "취소됨",
+    "recommended": "추천",
+    "submit_single": "답변 제출",
+    "submit_multi": "선택 제출",
+    "submitting": "제출 중…",
+    "cancel_card": "카드 취소",
+    "answer_failed": "답변 제출 실패",
+    "cancel_failed": "카드 취소 실패"
   }
 }

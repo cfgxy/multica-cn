@@ -2228,6 +2228,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/comments/trigger-preview", h.PreviewCommentTriggers)
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
+					// Decision cards (RUYI-345): agents raise structured
+					// questions from runs; members answer (echo comment wakes
+					// the creating agent) or cancel. Answer/cancel are
+					// member-enforced inside the handlers.
+					r.Post("/decisions", h.CreateIssueDecision)
+					r.Get("/decisions", h.ListIssueDecisions)
+					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
+					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)
