@@ -121,6 +121,7 @@ var postConsolidationStems = []string{
 	"919_issue_dependency_relationships", // RUYI-351 (consolidates 958+959)
 	"920_project_revision",               // RUYI-354
 	"921_prompt_version_snapshot_scope",  // RUYI-285
+	"922_channel_capability_state",       // RUYI-400
 	"923_prompt_proposal_jev_advisory",   // RUYI-347
 }
 
