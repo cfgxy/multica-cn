@@ -652,11 +652,29 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 	// workspace client without a page refresh — not only on the tab that
 	// happens to poll the status endpoint to success.
 	s.publishInstalled(sess.workspaceID, inst.ID)
+	// Best-effort capability probe (RUYI-400): the 缺权补授权 panel has
+	// data on first render instead of after the first chat failure. Must
+	// never fail the committed install.
+	s.probeCapabilities(ctx, inst.ID, creds)
 	s.cfg.Logger.Info("lark registration: install complete",
 		"session_id", sess.id,
 		"workspace_id", uuidString(sess.workspaceID),
 		"agent_id", uuidString(sess.agentID),
 		"installation_id", uuidString(inst.ID))
+}
+
+// probeCapabilities runs the capability sweep and persists the verdicts.
+// Strictly best-effort: the probes read no tenant content, and a probe or
+// persistence failure only shrinks the panel's coverage — an installation
+// that already committed never fails because of diagnostics.
+func (s *RegistrationService) probeCapabilities(ctx context.Context, installationID pgtype.UUID, creds InstallationCredentials) {
+	ctx, cancel := context.WithTimeout(ctx, ProbeCapabilityBudget)
+	defer cancel()
+	results := CheckInstallationCapabilities(ctx, s.api, creds)
+	if err := SaveCapabilityStates(ctx, s.queries.Queries, installationID, results); err != nil {
+		s.cfg.Logger.Warn("lark registration: capability probe persistence failed",
+			"installation_id", uuidString(installationID), "err", err)
+	}
 }
 
 // liveOwnerConflictMessage builds the user-facing copy for a rebind refused

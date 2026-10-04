@@ -227,6 +227,8 @@ import type {
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  LarkPermissionCatalogResponse,
+  RecheckLarkPermissionsResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -5838,6 +5840,27 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ token }),
     });
+  }
+
+  /** The static capability→scope catalog (RUYI-400). Member-visible,
+   * read-only: the bind dialog's upfront permission declaration reads
+   * this so what the user is told matches what the probe later tests. */
+  async getLarkPermissionCatalog(workspaceId: string): Promise<LarkPermissionCatalogResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/permission-catalog`);
+  }
+
+  /** Re-runs the capability probe for an installation NOW and returns
+   * the fresh verdicts (RUYI-400). Server persists them, so a refetch
+   * of the installations list carries the same states. 409 for revoked
+   * installations, 503 when the Lark integration is not configured. */
+  async recheckLarkPermissions(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<RecheckLarkPermissionsResponse> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/recheck-permissions`,
+      { method: "POST" },
+    );
   }
 
   // Composio integration (MUL-3720). All routes are user-scoped (a connection
