@@ -306,10 +306,14 @@ export type {
 } from "./vcs";
 export type {
   LarkInstallation,
+  LarkCapabilityState,
   ListLarkInstallationsResponse,
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  LarkPermissionCatalogEntry,
+  LarkPermissionCatalogResponse,
+  RecheckLarkPermissionsResponse,
 } from "./lark";
 export type {
   ComposioToolkit,

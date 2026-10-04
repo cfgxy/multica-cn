@@ -98,10 +98,15 @@ func (c *feishuChannel) Capabilities() channel.Capability {
 }
 
 func (c *feishuChannel) installationCredentials() (InstallationCredentials, error) {
-	return installationCredentialsFor(c.inst, c.creds)
+	return CredentialsFor(c.inst, c.creds)
 }
 
-func installationCredentialsFor(inst Installation, resolver CredentialsResolver) (InstallationCredentials, error) {
+// CredentialsFor decodes an installation row into ready-to-use API
+// credentials: the plaintext app secret via the CredentialsResolver
+// (at-rest box), the region normalized to a concrete cloud, and the
+// optional tenant key. Shared by the channel's own sends, the media
+// resolver, and the HTTP recheck-permissions handler.
+func CredentialsFor(inst Installation, resolver CredentialsResolver) (InstallationCredentials, error) {
 	if resolver == nil {
 		return InstallationCredentials{}, errors.New("lark: credentials resolver missing")
 	}

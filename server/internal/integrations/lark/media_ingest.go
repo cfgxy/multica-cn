@@ -41,13 +41,18 @@ type feishuMediaResolver struct {
 	storage mediaStorage
 	ledger  engine.MediaIntentLedger
 	logger  *slog.Logger
+	hints   *PermissionHintSender
 }
 
-func NewFeishuMediaResolver(api APIClient, creds CredentialsResolver, storage mediaStorage, ledger engine.MediaIntentLedger, logger *slog.Logger) engine.MediaResolver {
+// NewFeishuMediaResolver builds the resolver. hints, when set, receives the
+// download path's permission observations (a permission-class download
+// failure posts the media_resources hint card into the same chat, deduped;
+// a success re-arms it). Nil disables the hints.
+func NewFeishuMediaResolver(api APIClient, creds CredentialsResolver, storage mediaStorage, ledger engine.MediaIntentLedger, logger *slog.Logger, hints *PermissionHintSender) engine.MediaResolver {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &feishuMediaResolver{api: api, creds: creds, storage: storage, ledger: ledger, logger: logger}
+	return &feishuMediaResolver{api: api, creds: creds, storage: storage, ledger: ledger, logger: logger, hints: hints}
 }
 
 // HasMedia reports whether the message carries downloadable Feishu resources
@@ -59,7 +64,7 @@ func (r *feishuMediaResolver) HasMedia(msg channel.InboundMessage) bool {
 	if err != nil {
 		return false
 	}
-	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0
 }
 
 func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.ResolvedInstallation, _ engine.ResolvedIdentity, _ pgtype.UUID, chatMessageID pgtype.UUID, msg channel.InboundMessage) channel.InboundMessage {
@@ -74,6 +79,15 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
 		})...)
 	}
+	// Quoted-parent media rides the same download/upload path; the object
+	// key is derived from (chat message, resource message, key), so quoted
+	// and trigger resources never collide even when both reference the same
+	// file_key.
+	for _, quoted := range lm.QuotedMedia {
+		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
+		})...)
+	}
 	if len(resources) == 0 {
 		return msg
 	}
@@ -86,7 +100,7 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		r.logMediaWarn("lark media ingest skipped: installation payload unavailable", lm, nil)
 		return msg
 	}
-	creds, err := installationCredentialsFor(larkInst, r.creds)
+	creds, err := CredentialsFor(larkInst, r.creds)
 	if err != nil {
 		r.logMediaWarn("lark media ingest skipped: credentials unavailable", lm, err)
 		return msg
@@ -122,8 +136,10 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		})
 		if err != nil {
 			r.logMediaWarn("lark media download failed", lm, err)
+			r.hints.ObserveDenied(ctx, creds, lm.ChatID, CapabilityMediaResources, err)
 			continue
 		}
+		r.hints.ObserveSuccess(creds.AppID, lm.ChatID, CapabilityMediaResources)
 		contentType := mediaContentType(res, got)
 		filename := mediaFilename(lm, res, got, contentType, resIndex)
 		uploadedBytes, err := r.uploadResource(ctx, key, got.Body, got.SizeBytes, contentType, filename)
