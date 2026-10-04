@@ -120,16 +120,16 @@ export function useCommentLongPress(
       canEdit,
       isOwn,
       labels: {
-        reply: "Reply",
-        react: "React…",
-        edit: "Edit",
-        copy: "Copy",
-        select: "Select Text",
-        copyLink: "Copy Link",
-        resolve: "Resolve Thread",
-        unresolve: "Unresolve Thread",
-        delete: "Delete",
-        cancel: "Cancel",
+        reply: t("mobile.comment.menu_reply", "Reply"),
+        react: t("mobile.comment.menu_react", "React…"),
+        edit: t("mobile.comment.menu_edit", "Edit"),
+        copy: t("mobile.comment.menu_copy", "Copy"),
+        select: t("mobile.comment.menu_select_text", "Select Text"),
+        copyLink: t("mobile.comment.menu_copy_link", "Copy Link"),
+        resolve: t("mobile.comment.menu_resolve", "Resolve thread"),
+        unresolve: t("mobile.comment.menu_unresolve", "Unresolve thread"),
+        delete: t("common:delete", "Delete"),
+        cancel: t("common:cancel", "Cancel"),
       },
     });
 
@@ -174,6 +174,13 @@ export function useCommentLongPress(
               userId,
               wsSlug,
               issueId,
+              labels: {
+                moreReactions: t(
+                  "mobile.comment.menu_more_reactions",
+                  "More reactions…",
+                ),
+                cancel: t("common:cancel", "Cancel"),
+              },
               toggle: (emoji, existing) =>
                 toggleReaction.mutate({
                   commentId: entry.id,
@@ -270,12 +277,13 @@ function presentReactSheet(args: {
   userId: string | undefined;
   wsSlug: string | null;
   issueId: string;
+  labels: { moreReactions: string; cancel: string };
   toggle: (emoji: string, existing: Reaction | undefined) => void;
   reactSheet: { show: ReturnType<typeof useActionSheet>["show"] };
 }) {
-  const { entry, userId, wsSlug, issueId, toggle, reactSheet } = args;
+  const { entry, userId, wsSlug, issueId, labels, toggle, reactSheet } = args;
   const emojis = QUICK_EMOJIS.slice(0, QUICK_ROW_SIZE);
-  const options = [...emojis, "More reactions…", "Cancel"];
+  const options = [...emojis, labels.moreReactions, labels.cancel];
   const cancelButtonIndex = options.length - 1;
 
   reactSheet.show({

@@ -950,6 +950,15 @@
       "pill_label": "Add a comment, @ to mention…"
     },
     "comment": {
+      "menu_copy": "Copy",
+      "menu_copy_link": "Copy Link",
+      "menu_edit": "Edit",
+      "menu_more_reactions": "More reactions…",
+      "menu_react": "React…",
+      "menu_reply": "Reply",
+      "menu_resolve": "Resolve thread",
+      "menu_select_text": "Select Text",
+      "menu_unresolve": "Unresolve thread",
       "resolved_bar_one": "Resolved · {{count}} message by {{authors}}",
       "resolved_bar_other": "Resolved · {{count}} messages by {{authors}}",
       "resolved_bar_a11y_one": "Resolved thread by {{authors}}, {{count}} message. Tap to expand.",
