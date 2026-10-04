@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"syscall"
 	"time"
 )
@@ -65,8 +64,7 @@ func RunWorkerLauncher() int {
 		if pid := workerPIDOf(spec); pid > 0 {
 			// The worker leads its own group; TERM/KILL the whole tree like
 			// signalProcessGroup did for legacy children.
-			_ = syscall.Kill(-pid, sig)
-			_ = syscall.Kill(pid, sig)
+			signalWorkerProcessGroup(pid, sig)
 		}
 	}
 
@@ -172,13 +170,4 @@ func workerExitFromError(err error) WorkerExit {
 		return WorkerExit{Code: ee.ExitCode()}
 	}
 	return WorkerExit{Code: -1}
-}
-
-// workerSysProcAttr puts the worker at the head of its own process group so
-// group-signal delivery (kill(-pid)) reaches the provider CLI's whole tree.
-func workerSysProcAttr() *syscall.SysProcAttr {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	return &syscall.SysProcAttr{Setpgid: true}
 }
