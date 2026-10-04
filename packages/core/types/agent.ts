@@ -322,6 +322,12 @@ export interface AgentTask {
   // coarse values; `string & {}` admits the rest without collapsing the
   // hints.
   failure_reason?: TaskFailureReason | (string & {}) | "";
+  // RUYI-397: why a queued row is not moving yet, from the backend's
+  // dispatch.ReasonCode vocabulary ("runtime_backpressure" = the host
+  // reported memory backpressure and the server defers new claims until it
+  // recovers). `omitempty` on the wire: absent on old servers, on rows that
+  // are not queued, and once the hold clears — never a permanent verdict.
+  queued_reason?: string;
   created_at: string;
   /** Non-empty when the task was spawned from a chat session. */
   chat_session_id?: string;
@@ -666,6 +672,13 @@ export interface Agent {
   status: AgentStatus;
   max_concurrent_tasks: number;
   /**
+   * Claim-budget multiplier (RUYI-397): each running task occupies this many
+   * slots of `max_concurrent_tasks`, so a heavy agent reaches the cap sooner
+   * than a light one. Optional because servers predating RUYI-397 omit it;
+   * treat `undefined` as 1.
+   */
+  resource_weight?: number;
+  /**
    * Session context gate (RUYI-107). Ceiling, in tokens, for a resumable
    * session before the platform starts a fresh one; `0` disables the gate.
    *
@@ -768,6 +781,11 @@ export interface CreateAgentRequest {
   /** Invocation grants — see `AgentInvocationTargetInput`. */
   invocation_targets?: AgentInvocationTargetInput[];
   max_concurrent_tasks?: number;
+  /**
+   * Claim-budget multiplier (RUYI-397). Omitted (or null) takes the platform
+   * default of 1 — NOT zero, which would let the agent claim without bound.
+   */
+  resource_weight?: number;
   /**
    * Session context gate (RUYI-107). Omitted (or null) takes the platform
    * default — NOT zero, which would create the agent with the gate disabled.
@@ -902,6 +920,11 @@ export interface UpdateAgentRequest {
   invocation_targets?: AgentInvocationTargetInput[];
   status?: AgentStatus;
   max_concurrent_tasks?: number;
+  /**
+   * Claim-budget multiplier (RUYI-397). Omitting the field leaves the stored
+   * value untouched; the server rejects anything outside 1..10.
+   */
+  resource_weight?: number;
   /**
    * Session context gate (RUYI-107). Omitting the field leaves the stored
    * value untouched; sending `0` deliberately disables the gate.

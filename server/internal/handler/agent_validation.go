@@ -24,6 +24,25 @@ func defaultAndValidateAgentMaxConcurrentTasks(rawFields map[string]json.RawMess
 	return validateAgentMaxConcurrentTasks(*value)
 }
 
+func validateAgentResourceWeight(value int32) error {
+	if err := agentconfig.ValidateResourceWeight(value); err != nil {
+		return fmt.Errorf("resource_weight %w", err)
+	}
+	return nil
+}
+
+// defaultAndValidateAgentResourceWeight applies the same omitted-means-default
+// rule as max_concurrent_tasks: a client that never heard of weights must keep
+// the historical one-task-per-slot behaviour, not inherit a decoded zero.
+func defaultAndValidateAgentResourceWeight(rawFields map[string]json.RawMessage, value *int32) error {
+	raw, provided := rawFields["resource_weight"]
+	if !provided || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		*value = agentconfig.DefaultResourceWeight
+		return nil
+	}
+	return validateAgentResourceWeight(*value)
+}
+
 func validateAgentSessionMaxContextTokens(value int64) error {
 	if err := agentconfig.ValidateSessionMaxContextTokens(value); err != nil {
 		return fmt.Errorf("session_max_context_tokens %w", err)
