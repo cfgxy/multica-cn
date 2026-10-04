@@ -146,7 +146,8 @@
     "delete_action": "프로필 삭제",
     "delete_confirm_title": "‘{{name}}’을(를) 삭제할까요?",
     "delete_confirm_description": "프로필과 멤버 설정이 삭제되며, 이 작업은 되돌릴 수 없습니다.",
-    "delete_active_warning": "이 프로필은 현재 적용 중입니다. 삭제해도 적용 표시만 지워지며, 멤버에 기록된 설정은 되돌아가지 않습니다."
+    "delete_active_warning": "이 프로필은 현재 적용 중입니다. 삭제해도 적용 표시만 지워지며, 멤버에 기록된 설정은 되돌아가지 않습니다.",
+    "thinking_default": "런타임 기본값"
   },
   "detail_tabs": {
     "members": "멤버",
@@ -203,6 +204,24 @@
   "mobile": {
     "page": {
       "search_placeholder": "스쿼드 검색…"
+    },
+    "create": {
+      "avatar_add": "아바타 설정",
+      "avatar_hint": "선택 사항입니다. 스쿼드가 표시되는 모든 곳에 표시됩니다.",
+      "search_placeholder": "에이전트 검색…",
+      "search_empty": "일치하는 에이전트가 없습니다.",
+      "group_my": "내 에이전트",
+      "group_workspace": "워크스페이스 에이전트"
+    },
+    "detail": {
+      "unsaved_title": "저장되지 않은 변경 사항이 있음",
+      "unsaved_keep": "계속 편집",
+      "unsaved_discard": "버리기",
+      "unsaved_body": "지침에 대한 변경 사항이 아직 저장되지 않았습니다."
+    },
+    "execution": {
+      "add_member": "멤버 추가",
+      "no_candidates": "활성 에이전트가 모두 등록되어 있습니다."
     }
   }
 }
