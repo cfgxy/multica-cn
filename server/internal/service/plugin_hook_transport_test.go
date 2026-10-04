@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // These exercise the real outbound path — a live HTTPS server, a real request,
@@ -75,6 +77,25 @@ func hookTestHost(harness *hookTestServer) string {
 	return strings.Split(strings.TrimPrefix(harness.server.URL, "https://"), ":")[0]
 }
 
+// uniqueInstallationID mints a fresh UUIDv4 for one installation under test.
+//
+// The event breaker counts recent failures per installation id, and every test
+// here shares one database, so a fixed id would let one test's deliberately
+// failed calls open the circuit under a later test's deliveries (RUYI-377).
+// Each test therefore gets its own id, the same isolation production gets from
+// installations being distinct.
+func uniqueInstallationID(t *testing.T) pgtype.UUID {
+	t.Helper()
+	var id pgtype.UUID
+	if _, err := rand.Read(id.Bytes[:]); err != nil {
+		t.Fatalf("mint installation id: %v", err)
+	}
+	id.Bytes[6] = (id.Bytes[6] & 0x0f) | 0x40
+	id.Bytes[8] = (id.Bytes[8] & 0x3f) | 0x80
+	id.Valid = true
+	return id
+}
+
 func hookTestInstallation(t *testing.T, endpoint, netScope string, triggers []string) db.PluginInstallation {
 	t.Helper()
 	triggerJSON, err := json.Marshal(triggers)
@@ -104,8 +125,8 @@ func hookTestInstallation(t *testing.T, endpoint, netScope string, triggers []st
 		t.Fatalf("marshal scopes: %v", err)
 	}
 	return db.PluginInstallation{
-		ID:            testInstallationID(t),
-		WorkspaceID:   testInstallationID(t),
+		ID:            uniqueInstallationID(t),
+		WorkspaceID:   uniqueInstallationID(t),
 		Enabled:       true,
 		Manifest:      []byte(manifest),
 		GrantedScopes: scopes,
