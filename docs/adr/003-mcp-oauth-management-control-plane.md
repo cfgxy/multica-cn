@@ -39,7 +39,9 @@ grant 已撤销、client 已禁用或 client 不存在即 401，与 JWT 剩余�
 `mcp:read` / `mcp:write` / `mcp:run`。存量与兼容值 `mcp` = 全量。校验单点在 `middleware.Auth`：
 Go 后端看到的是 MCP 转发后的真实 method + path（Node 侧不验签，ADR 001 §3.4），按方法与路径映射
 所需档位判定；`tools/list` 全量展示，越权调用返回 403。authorize 的 `scope` 参数经
-`internal/oauth/scope_request.go` 校验（非法值剔除、缺省回落 `mcp:read`），写入 grant 行。
+`internal/oauth/scope.go` 的 `NormalizeRequestScope` 校验：未知 scope 值整请求拒绝
+（重定向 `invalid_scope`，不静默剔除——consent 展示的必须与实际授予一致），参数缺省
+回落 `mcp` 全量，写入 grant 行。
 
 ### 2.3 Secret 与 client 生命周期
 

@@ -55,14 +55,16 @@ func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 // prefix branch — we don't fall through to the mul_ / JWT paths, since
 // an mcn_ string is by construction not a valid mul_ PAT or JWT.
 //
-// oauthGate is optional; when non-nil, an OAuth access token whose claims
+// oauthGate is optional. When non-nil, an OAuth access token whose claims
 // bind it to a grant (cid/gid, RUYI-420) must resolve to a live grant and
-// an enabled client after signature verification, and the request's
-// method+path must fall inside the MCP scope surface the token's scope
-// covers. A token minted before the grant table carries neither claim and
-// skips the gate — it keeps working until natural expiry, which is the
-// documented upgrade path. Nil gate skips both checks entirely (JWT-only
-// unit tests).
+// an enabled client after signature verification. A token minted before the
+// grant table carries neither claim and skips the gate — it keeps working
+// until natural expiry, which is the documented upgrade path. The gate's nil
+// semantics are fail-closed, not a skip: a gid-carrying token under a nil
+// gate is rejected 401 (Check reports the gate unavailable), and the MCP
+// scope-surface check below runs for every OAuth token regardless of the
+// gate. Only gid-less legacy tokens see JWT-only behaviour — the shape the
+// JWT-only unit tests exercise.
 func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup, oauthSigner *oauth.Signer, oauthGate *auth.OAuthGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
