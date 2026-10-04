@@ -10,6 +10,7 @@ import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
+import { patchDecisionInCache } from "../issues/decisions";
 import { projectKeys } from "../projects/queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
@@ -87,6 +88,7 @@ import type {
   InboxItem,
   NotificationPreferenceResponse,
   CommentCreatedPayload,
+  DecisionUpdatedPayload,
   CommentUpdatedPayload,
   CommentDeletedPayload,
   CommentResolvedPayload,
@@ -675,6 +677,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   // get marked stale here and refetch on next mount; the one mounted issue
   // refetches immediately, same as its own useWSReconnect already does.
   qc.invalidateQueries({ queryKey: issueKeys.timelineAll() });
+  qc.invalidateQueries({ queryKey: issueKeys.decisionsAll() });
   qc.invalidateQueries({ queryKey: issueKeys.reactionsAll() });
   qc.invalidateQueries({ queryKey: issueKeys.subscribersAll() });
   qc.invalidateQueries({ queryKey: issueKeys.usageAll() });
@@ -1124,6 +1127,16 @@ export function useRealtimeSync(
           invalidateIssueOwnerProjections(qc, wsId, comment.issue_id);
         }
       }
+    });
+
+    // Decision cards (RUYI-345): one event per lifecycle transition; the
+    // payload carries the full card, so a cache patch beats a refetch. Cards
+    // are rare and the answer echo arrives as a normal comment:created, so
+    // nothing else needs invalidating here.
+    const unsubDecisionUpdated = ws.on("decision:updated", (p) => {
+      const { decision, issue_id: issueId } = p as DecisionUpdatedPayload;
+      if (!decision?.id || !issueId) return;
+      patchDecisionInCache(qc, issueId, decision);
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1701,6 +1714,7 @@ export function useRealtimeSync(
       unsubInboxNew();
       unsubCommentCreated();
       unsubCommentUpdated();
+      unsubDecisionUpdated();
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();

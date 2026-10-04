@@ -1138,5 +1138,17 @@
     "lineage": "Run chain",
     "lineage_rerun": "Manual rerun",
     "lineage_system_retry": "System retry"
+  },
+  "decisions": {
+    "title": "Decision card",
+    "status_answered": "Answered",
+    "status_cancelled": "Cancelled",
+    "recommended": "Recommended",
+    "submit_single": "Submit answer",
+    "submit_multi": "Submit selection",
+    "submitting": "Submitting…",
+    "cancel_card": "Cancel card",
+    "answer_failed": "Failed to submit answer",
+    "cancel_failed": "Failed to cancel card"
   }
 }

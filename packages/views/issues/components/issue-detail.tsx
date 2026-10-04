@@ -62,7 +62,7 @@ import { AvatarGroup, AvatarGroupCount } from "@multica/ui/components/ui/avatar"
 import { ActorAvatar } from "../../common/actor-avatar";
 import { PropRow } from "../../common/prop-row";
 import { PropertyIcon } from "../../common/property-icon";
-import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
+import type { Attachment, Issue, IssueDecision, IssueProperty, IssueStatus, IssueStatusCategory, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { STATUS_CONFIG } from "@multica/core/issues/config";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
@@ -134,6 +134,8 @@ import { useTimelineSortStore } from "@multica/core/issues/stores/timeline-sort-
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
+import { issueDecisionsQueryOptions } from "@multica/core/issues/decisions";
+import { DecisionCard } from "./decision-card";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
@@ -472,7 +474,20 @@ function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
 type TimelineItem =
   | { kind: "comment"; id: string; entry: TimelineEntry }
   | { kind: "resolved-bar"; id: string; entry: TimelineEntry }
-  | { kind: "activity-group"; id: string; entries: TimelineEntry[] };
+  | { kind: "activity-group"; id: string; entries: TimelineEntry[] }
+  | { kind: "decision"; id: string; decision: IssueDecision };
+
+/** Sort key for interleaving decision cards into the comment stream. */
+function itemTimestampMs(item: TimelineItem): number {
+  const ts =
+    item.kind === "activity-group"
+      ? item.entries[0]?.created_at
+      : item.kind === "decision"
+        ? item.decision.created_at
+        : item.entry.created_at;
+  const ms = ts ? Date.parse(ts) : Number.NaN;
+  return Number.isNaN(ms) ? 0 : ms;
+}
 
 type RawTimelineGroup = {
   type: "comment" | "activities";
@@ -1574,10 +1589,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // changes (timeline events) or expandedResolved flips (user toggles a
   // resolved thread). Kept in a useMemo so Virtuoso's data identity is stable
   // across unrelated re-renders.
-  const items = useMemo<TimelineItem[]>(
-    () => flattenGroups(timelineView.groups, expandedResolved),
-    [timelineView.groups, expandedResolved],
-  );
+  // Decision cards (RUYI-345) interleave by created_at between comment and
+  // activity rows. Timeline timestamps are second-precision while card ones
+  // carry sub-seconds, so compare parsed ms rather than strings.
+  const { data: issueDecisions = [] } = useQuery(issueDecisionsQueryOptions(id));
+  const items = useMemo<TimelineItem[]>(() => {
+    const base = flattenGroups(timelineView.groups, expandedResolved);
+    if (issueDecisions.length === 0) return base;
+    const keyed = base.map((item) => ({ item, key: itemTimestampMs(item) }));
+    for (const decision of issueDecisions) {
+      keyed.push({
+        item: { kind: "decision", id: decision.id, decision },
+        key: Date.parse(decision.created_at) || 0,
+      });
+    }
+    keyed.sort((a, b) => a.key - b.key);
+    return keyed.map((k) => k.item);
+  }, [timelineView.groups, expandedResolved, issueDecisions]);
 
   // In-page find (Cmd/Ctrl+F). `items.length` is the content signal that
   // triggers a match recompute when comments are added/removed; text edits
@@ -2115,7 +2143,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       { content: issue?.description, attachments: descEditorAttachments },
     ];
     for (const item of items) {
-      if (item.kind === "activity-group") continue;
+      if (item.kind !== "comment" && item.kind !== "resolved-bar") continue;
       blocks.push({
         content: item.entry.content,
         attachments: item.entry.attachments,
@@ -2764,6 +2792,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             replies={timelineView.threadReplies.get(item.id) ?? EMPTY_REPLIES}
             onExpand={() => toggleResolvedExpand(item.id, true)}
           />
+        </div>
+      );
+    }
+    if (item.kind === "decision") {
+      return (
+        <div className="pb-3" id={`decision-${item.id}`}>
+          <DecisionCard decision={item.decision} />
         </div>
       );
     }
