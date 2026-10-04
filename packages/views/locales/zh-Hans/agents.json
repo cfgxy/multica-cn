@@ -766,7 +766,8 @@
     "over_limit": " · 超出 {{count}} 字"
   },
   "presence": {
-    "queue_badge": "+{{count}} 排队"
+    "queue_badge": "+{{count}} 排队",
+    "running_ratio": "运行 {{running}}/{{capacity}}"
   },
   "visibility": {
     "private": {
@@ -807,7 +808,8 @@
     "public_group": "公开访问",
     "owner_only_readonly": "只有该智能体的所有者可以更改谁能调用它。",
     "members_empty": "没有可选择的工作区成员",
-    "composio_switch_hint": "提示——该智能体已启用 Composio 应用。共享后，所有获得访问权限的人都可以通过该智能体使用这些应用。"
+    "composio_switch_hint": "提示——该智能体已启用 Composio 应用。共享后，所有获得访问权限的人都可以通过该智能体使用这些应用。",
+    "save_failed": "更新访问权限失败"
   },
   "profile_card": {
     "unavailable": "智能体不可用",
@@ -1030,10 +1032,20 @@
       "edit_profile": "编辑资料",
       "tab_active": "进行中",
       "fact_status": "状态",
-      "fact_runtime_unbound": "未绑定运行时"
+      "fact_runtime_unbound": "未绑定运行时",
+      "bind_runtime": "绑定运行时",
+      "fact_concurrency": "并发上限",
+      "forbidden_title": "无权访问此智能体",
+      "runtime_unbound_banner": "该智能体尚未绑定运行时——绑定后才能运行。",
+      "forbidden_body": "你没有查看此智能体的权限，请其所有者与你共享后再试。"
     },
     "edit": {
-      "model_placeholder": "留空则使用运行时默认值"
+      "model_placeholder": "留空则使用运行时默认值",
+      "avatar_change": "更换头像",
+      "avatar_hint": "点按头像即可更换",
+      "concurrency_range": "允许范围：{{min}}–{{max}}",
+      "model_catalog": "已发现的模型",
+      "model_default": "默认"
     },
     "env": {
       "add_row": "添加变量"
@@ -1041,6 +1053,17 @@
     "webhooks": {
       "copy_aria": "复制 Webhook 链接",
       "rotated_title": "已生成新链接"
+    },
+    "integrations": {
+      "bound_here": "已绑定此智能体",
+      "connected": "工作区已连接",
+      "not_configured": "未配置",
+      "platform_lark": "飞书",
+      "platform_slack": "Slack",
+      "platform_dingtalk": "钉钉",
+      "platform_wecom": "企业微信",
+      "platform_telegram": "Telegram",
+      "manage_hint": "连接与绑定请在 Web 或桌面端设置中完成。"
     }
   }
 }

@@ -1,9 +1,16 @@
 /**
- * Create squad (`more/squads/new`, RUYI-346 S3) — modal form mirroring web's
- * create-squad dialog for the P0 field set: name (required), description,
- * leader agent (required — receives all issues assigned to the squad) and
- * optional instructions. Additional members are added later from the detail
- * screen (web parity: "Can be added later").
+ * Create squad (`more/squads/new`, RUYI-346 S3 / RUYI-418 B1) — modal form
+ * mirroring web's create-squad dialog: name (required), description, avatar
+ * (Q5), leader agent (required) and optional instructions. Additional members
+ * are added later from the detail screen (web parity: "Can be added later").
+ *
+ * RUYI-418 B1 alignment with web's picker:
+ *  - S1: leader candidates are unarchived agents bound to a runtime the
+ *    current user can actually use (`isRuntimeUsableForUser`), not just any
+ *    unarchived agent — a leader whose runtime the viewer can't reach would
+ *    queue work it can never run.
+ *  - Q6: candidates are grouped My agents / Workspace agents (owner match)
+ *    with a name search, same split as web's LeaderPicker.
  */
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
@@ -12,13 +19,19 @@ import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
+import { isRuntimeUsableForUser } from "@multica/core/runtimes";
 import type { CreateSquadRequest } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { agentListOptions } from "@/data/queries/agents";
+import { runtimeListOptions } from "@/data/queries/runtimes";
 import { useCreateSquad } from "@/data/mutations/squads";
+import { useAvatarUploader } from "@/lib/avatar";
+import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useAuthStore } from "@/data/auth-store";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useT } from "@/lib/use-t";
 
@@ -28,24 +41,59 @@ export default function NewSquadScreen() {
   const { t } = useT("squads");
   const { t: tModals } = useT("modals");
   const { getName } = useActorLookup();
+  const me = useAuthStore((s) => s.user);
   const create = useCreateSquad();
+  const { uploading, showAvatarSheet } = useAvatarUploader();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [leaderId, setLeaderId] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   const { data: agents, isLoading: agentsLoading } = useQuery(
     agentListOptions(wsId),
   );
+  const { data: runtimes } = useQuery(runtimeListOptions(wsId));
 
-  // Leader candidates: non-archived agents, same universe web's picker
-  // groups into My/Workspace agents (grouping collapsed for P0 mobile).
-  const leaderChoices = useMemo(
-    () => (agents ?? []).filter((a) => !a.archived_at),
-    [agents],
-  );
+  // Leader candidates (S1): unarchived + bound to a runtime the viewer can
+  // use. A deleted runtime is absent from the list, so its agents drop out.
+  const leaderChoices = useMemo(() => {
+    if (!agents) return [];
+    const usableRuntimeIds = new Set(
+      (runtimes ?? [])
+        .filter((r) => isRuntimeUsableForUser(r, me?.id ?? null))
+        .map((r) => r.id),
+    );
+    return agents.filter(
+      (a) => !a.archived_at && a.runtime_id && usableRuntimeIds.has(a.runtime_id),
+    );
+  }, [agents, runtimes, me]);
+
+  // Q6: My agents (owner match) vs the rest, both narrowed by the search
+  // text (lowercase substring, web LeaderPicker parity).
+  const { myAgents, workspaceAgents } = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const matches = (name: string) => name.toLowerCase().includes(q);
+    const withNames = leaderChoices.map((a) => ({
+      agent: a,
+      name: getName("agent", a.id) || a.name,
+    }));
+    const mine = withNames.filter(
+      (x) => x.agent.owner_id === me?.id && matches(x.name),
+    );
+    const rest = withNames.filter(
+      (x) => x.agent.owner_id !== me?.id && matches(x.name),
+    );
+    return { myAgents: mine, workspaceAgents: rest };
+  }, [leaderChoices, search, me, getName]);
 
   const canCreate = name.trim().length > 0 && leaderId !== "" && !create.isPending;
+
+  const onPickAvatar = async () => {
+    const url = await showAvatarSheet(avatarUrl);
+    if (url !== null) setAvatarUrl(url);
+  };
 
   const onCreate = () => {
     if (!canCreate) return;
@@ -53,6 +101,7 @@ export default function NewSquadScreen() {
       name: name.trim(),
       description,
       leader_id: leaderId,
+      ...(avatarUrl ? { avatar_url: avatarUrl } : {}),
     };
     create.mutate(body, {
       onSuccess: (squad) => {
@@ -66,6 +115,52 @@ export default function NewSquadScreen() {
       onError: () =>
         Alert.alert(tModals("create_squad.toast_failed", "Failed to create squad")),
     });
+  };
+
+  const renderLeaderRow = (item: { agent: (typeof leaderChoices)[number] }) => {
+    const a = item.agent;
+    const selected = a.id === leaderId;
+    return (
+      <Pressable
+        key={a.id}
+        onPress={() => setLeaderId(a.id)}
+        className="flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary"
+        accessibilityRole="radio"
+        accessibilityState={{ selected }}
+        accessibilityLabel={getName("agent", a.id)}
+      >
+        <View
+          className={`size-4 rounded-full border items-center justify-center ${
+            selected ? "border-brand" : "border-muted-foreground"
+          }`}
+        >
+          {selected ? <View className="size-2 rounded-full bg-brand" /> : null}
+        </View>
+        <ActorAvatar type="agent" id={a.id} size={28} />
+        <Text numberOfLines={1} className="flex-1 text-sm text-foreground">
+          {getName("agent", a.id)}
+        </Text>
+      </Pressable>
+    );
+  };
+
+  const renderGroup = (
+    label: string,
+    items: { agent: (typeof leaderChoices)[number] }[],
+  ) => {
+    if (items.length === 0) return null;
+    return (
+      <View className="gap-1.5">
+        <Text className="text-xs text-muted-foreground">{label}</Text>
+        <View className="rounded-md border border-border overflow-hidden">
+          {items.map((item, i) => (
+            <View key={item.agent.id} className={i > 0 ? "border-t border-border" : ""}>
+              {renderLeaderRow(item)}
+            </View>
+          ))}
+        </View>
+      </View>
+    );
   };
 
   return (
@@ -105,6 +200,29 @@ export default function NewSquadScreen() {
         contentContainerClassName="px-4 pt-4 pb-8 gap-4"
         keyboardShouldPersistTaps="handled"
       >
+        {/* ── Avatar (Q5) ── */}
+        <View className="flex-row items-center gap-3">
+          <Pressable
+            onPress={onPickAvatar}
+            disabled={uploading}
+            accessibilityRole="button"
+            accessibilityLabel={t("mobile.create.avatar_add", "Set avatar")}
+          >
+            <Avatar alt={t("mobile.create.avatar_add", "Set avatar")} className="size-16">
+              {avatarUrl ? (
+                <AvatarImage source={{ uri: resolveAttachmentUrl(avatarUrl) ?? avatarUrl }} />
+              ) : (
+                <AvatarFallback className="border border-dashed border-border">
+                  <Text className="text-xl text-muted-foreground">+</Text>
+                </AvatarFallback>
+              )}
+            </Avatar>
+          </Pressable>
+          <Text className="flex-1 text-xs text-muted-foreground">
+            {t("mobile.create.avatar_hint", "Optional. Shown wherever the squad appears.")}
+          </Text>
+        </View>
+
         <Field label={tModals("create_squad.name_label", "Name")}>
           <TextInput
             value={name}
@@ -140,6 +258,14 @@ export default function NewSquadScreen() {
             "The leader receives all issues assigned to this squad and coordinates the team.",
           )}
         >
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder={t("mobile.create.search_placeholder", "Search agents…")}
+            placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+            className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
+            autoCorrect={false}
+          />
           {agentsLoading ? (
             <Text className="text-sm text-muted-foreground py-1">
               {t("execution_profile.loading_label", "Loading")}
@@ -151,40 +277,17 @@ export default function NewSquadScreen() {
                 "No active agents available. Create an agent first.",
               )}
             </Text>
+          ) : myAgents.length === 0 && workspaceAgents.length === 0 ? (
+            <Text className="text-sm text-muted-foreground py-1">
+              {t("mobile.create.search_empty", "No agents match this search.")}
+            </Text>
           ) : (
-            <View className="rounded-md border border-border overflow-hidden">
-              {leaderChoices.map((a, i) => {
-                const selected = a.id === leaderId;
-                return (
-                  <Pressable
-                    key={a.id}
-                    onPress={() => setLeaderId(a.id)}
-                    className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
-                      i > 0 ? "border-t border-border" : ""
-                    }`}
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected }}
-                    accessibilityLabel={getName("agent", a.id)}
-                  >
-                    <View
-                      className={`size-4 rounded-full border items-center justify-center ${
-                        selected ? "border-brand" : "border-muted-foreground"
-                      }`}
-                    >
-                      {selected ? (
-                        <View className="size-2 rounded-full bg-brand" />
-                      ) : null}
-                    </View>
-                    <ActorAvatar type="agent" id={a.id} size={28} />
-                    <Text
-                      numberOfLines={1}
-                      className="flex-1 text-sm text-foreground"
-                    >
-                      {getName("agent", a.id)}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+            <View className="gap-3">
+              {renderGroup(t("mobile.create.group_my", "My agents"), myAgents)}
+              {renderGroup(
+                t("mobile.create.group_workspace", "Workspace agents"),
+                workspaceAgents,
+              )}
             </View>
           )}
         </Field>
