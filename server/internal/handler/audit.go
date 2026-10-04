@@ -25,12 +25,14 @@ const (
 
 // auditEventDTO is the wire shape of one audit_event row. Nullable dimensions
 // serialize as null so a timeline renders absence instead of zero UUIDs.
+// occurred_at is RFC3339Nano: clients page with it as the keyset cursor, so it
+// must keep the same sub-second precision as next_cursor.
 type auditEventDTO struct {
 	ID          string          `json:"id"`
 	WorkspaceID string          `json:"workspace_id"`
 	Domain      string          `json:"domain"`
 	EventType   string          `json:"event_type"`
-	OccurredAt  string          `json:"occurred_at"`
+	OccurredAt  *string         `json:"occurred_at"`
 	ActorType   string          `json:"actor_type"`
 	ActorID     *string         `json:"actor_id"`
 	TriggerKind *string         `json:"trigger_kind"`
@@ -63,7 +65,7 @@ func auditEventToDTO(e db.AuditEvent) auditEventDTO {
 		WorkspaceID: uuidToString(e.WorkspaceID),
 		Domain:      e.Domain,
 		EventType:   e.EventType,
-		OccurredAt:  timestampToString(e.OccurredAt),
+		OccurredAt:  timestampToNanoPtr(e.OccurredAt),
 		ActorType:   e.ActorType,
 		ActorID:     optionalUUIDStr(e.ActorID),
 		TriggerKind: textToPtr(e.TriggerKind),
@@ -85,6 +87,7 @@ type listAuditEventsParams struct {
 	eventType pgtype.Text
 	actorType pgtype.Text
 	actorID   pgtype.UUID
+	issueID   pgtype.UUID
 	taskID    pgtype.UUID
 	agentID   pgtype.UUID
 	runtimeID pgtype.UUID
@@ -126,6 +129,9 @@ func parseListAuditEventsParams(w http.ResponseWriter, r *http.Request) (listAud
 
 	var ok bool
 	if p.actorID, ok = uuidParam(w, "actor_id", q.Get("actor_id")); !ok {
+		return p, false
+	}
+	if p.issueID, ok = uuidParam(w, "issue_id", q.Get("issue_id")); !ok {
 		return p, false
 	}
 	if p.taskID, ok = uuidParam(w, "task_id", q.Get("task_id")); !ok {
@@ -216,9 +222,10 @@ func (h *Handler) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
 		FilterEventType: p.eventType,
 		FilterActorType: p.actorType,
 		FilterActorID:   p.actorID,
-		// Workspace-level search leaves issue_id open — callers filter it
-		// explicitly when they want one issue's trail.
-		FilterIssueID:   pgtype.UUID{},
+		// The MCP search_audit_events tool passes issue_id through this
+		// endpoint, so the filter must bite here — leaving it open silently
+		// widened the MCP result to the whole workspace trail.
+		FilterIssueID:   p.issueID,
 		FilterTaskID:    p.taskID,
 		FilterAgentID:   p.agentID,
 		FilterRuntimeID: p.runtimeID,
@@ -234,7 +241,9 @@ func (h *Handler) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListIssueAuditEvents is the issue-level thin wrapper over the same query —
-// issue_id pinned, everything else identical.
+// issue_id pinned, everything else identical. The route owns the issue
+// dimension: a stray issue_id query param is validated by the shared parser
+// but the pin wins.
 func (h *Handler) ListIssueAuditEvents(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
