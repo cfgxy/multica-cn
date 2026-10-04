@@ -192,6 +192,9 @@ type AgentTaskQueue struct {
 	PromptVersions          []byte             `json:"prompt_versions"`
 	CancelRequestedByUserID pgtype.UUID        `json:"cancel_requested_by_user_id"`
 	CancelRequestedAt       pgtype.Timestamptz `json:"cancel_requested_at"`
+	CancelReason            pgtype.Text        `json:"cancel_reason"`
+	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
+	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 }
 
 type AgentToLabel struct {
@@ -229,6 +232,24 @@ type Attachment struct {
 	ChatMessageID   pgtype.UUID        `json:"chat_message_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
+}
+
+type AuditEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Domain      string             `json:"domain"`
+	EventType   string             `json:"event_type"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+	ActorType   string             `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	TriggerKind pgtype.Text        `json:"trigger_kind"`
+	TriggerRef  pgtype.Text        `json:"trigger_ref"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	Reason      pgtype.Text        `json:"reason"`
+	Details     []byte             `json:"details"`
 }
 
 type Autopilot struct {

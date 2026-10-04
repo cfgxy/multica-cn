@@ -1867,6 +1867,113 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "search_audit_events",
+    description:
+      "Search the workspace audit trail (RUYI-355): the unified append-only record of run lifecycle, cancel attribution, runtime connect/sweep/GC verdicts, agent env/profile security events and deployment anchors — the same trail the web app reads. " +
+      "Newest first, keyset-paginated. domain is one of issue | run | agent | runtime | ops; event_type is '<domain>.<action>' (e.g. run.cancelled, runtime.gc). " +
+      "Use it to answer 'what happened to this run/issue/agent, who did it, and why' without touching activity_log. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        domain: {
+          type: "string",
+          enum: ["issue", "run", "agent", "runtime", "ops"],
+          description: "Domain filter (optional).",
+        },
+        event_type: {
+          type: "string",
+          description: "Exact event type filter, '<domain>.<action>' (optional).",
+        },
+        actor_type: {
+          type: "string",
+          enum: ["member", "agent", "system", "daemon"],
+          description: "Who acted (optional).",
+        },
+        issue_id: {
+          type: "string",
+          description: "Issue UUID to scope the trail to one issue (optional).",
+        },
+        task_id: {
+          type: "string",
+          description: "Run (task) UUID filter (optional).",
+        },
+        agent_id: {
+          type: "string",
+          description: "Agent UUID filter (optional).",
+        },
+        runtime_id: {
+          type: "string",
+          description: "Runtime UUID filter (optional).",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Structured reason filter, e.g. user_requested, issue_cancelled, runtime_teardown, reconnect_exhausted (optional).",
+        },
+        since: {
+          type: "string",
+          description: "RFC3339 lower bound on occurred_at (optional).",
+        },
+        until: {
+          type: "string",
+          description: "RFC3339 upper bound on occurred_at (optional).",
+        },
+        limit: {
+          type: "integer",
+          description: "Max events to return, 1–200 (default 50, newest first).",
+          minimum: 1,
+          maximum: 200,
+        },
+        cursor: {
+          type: "string",
+          description: "next_cursor from the previous page (optional, with cursor_id).",
+        },
+        cursor_id: {
+          type: "string",
+          description: "next_cursor_id from the previous page (optional, with cursor).",
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const domain = optionalEnum(args, "domain", ["issue", "run", "agent", "runtime", "ops"]);
+      if (args.domain !== undefined && domain === undefined) {
+        throw new ToolInputError("'domain' must be one of: issue, run, agent, runtime, ops");
+      }
+      const actorType = optionalEnum(args, "actor_type", ["member", "agent", "system", "daemon"]);
+      if (args.actor_type !== undefined && actorType === undefined) {
+        throw new ToolInputError("'actor_type' must be one of: member, agent, system, daemon");
+      }
+      const result = await client.listAuditEvents(workspace, {
+        domain,
+        event_type: optionalString(args, "event_type"),
+        actor_type: actorType,
+        actor_id: optionalString(args, "actor_id"),
+        issue_id: optionalString(args, "issue_id"),
+        task_id: optionalString(args, "task_id"),
+        agent_id: optionalString(args, "agent_id"),
+        runtime_id: optionalString(args, "runtime_id"),
+        reason: optionalString(args, "reason"),
+        since: optionalString(args, "since"),
+        until: optionalString(args, "until"),
+        limit: optionalInt(args, "limit", { min: 1, max: 200 }),
+        cursor: optionalString(args, "cursor"),
+        cursor_id: optionalString(args, "cursor_id"),
+      });
+      return {
+        total: result.events.length,
+        events: result.events,
+        next_cursor: result.next_cursor,
+        next_cursor_id: result.next_cursor_id,
+        note: result.next_cursor
+          ? "More events exist — pass cursor + cursor_id to fetch the next page."
+          : undefined,
+      };
+    },
+  },
+  {
     name: "get_run",
     description:
       "Get ONE run of an issue in detail (RUYI-292): status (including the two-phase 'cancel_requested' stop-in-progress state), timing, failure reason and raw error, cancel attribution (who asked to stop, when), and the full retry chain (ancestors + descendants across both manual-rerun and system-retry lineage). " +

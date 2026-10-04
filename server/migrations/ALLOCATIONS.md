@@ -20,7 +20,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 918 | 918_issue_decisions | RUYI-345 | agent/agent-f70e39b85abd/beec1e804b72 | reserved |
 | 920 | 920_project_revision | RUYI-354 | agent/agent-f70e39b85abd/ruyi-354 (Owner pinned 2026-10-03 08:59) | applied |
 | 921 | 921_prompt_version_snapshot_scope | RUYI-285 | merged to main via PR #202 (rebuilt from superseded PR #183) | applied |
-| 922 | 922_channel_capability_state | RUYI-400 | agent/agent-f70e39b85abd/ruyi-400 | reserved |
+| 922 | 922_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
 | 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
 
 Notes:
@@ -37,6 +37,11 @@ Notes:
   rows persist in several historical experiment/QA database ledgers; leftovers
   from the RUYI-359 shrink (that stem lives at 904 on the consolidated tree),
   NOT an occupation — same treatment as the 920-923 leftovers note above.
-- 922 note (RUYI-400): RUYI-346's head branch (PR #178) still carries
-  pre-shrink legacy stems in the 920-923 range; those are leftovers, NOT
-  active-branch claims, and resolve on that branch's required rebase.
+- 922 note (RUYI-355): 922 was reassigned to RUYI-355 by Owner pin
+  (2026-10-03, RUYI-355 task thread); RUYI-400's
+  `922_channel_capability_state` yields the number and renumbers on its own
+  branch before merge (single-stem rename + ledger rewrite per the
+  renumbering rule — no down/up replay). RUYI-346's head branch (PR #178)
+  still carries pre-shrink legacy stems in the 920-923 range; those are
+  leftovers, NOT active-branch claims, and resolve on that branch's
+  required rebase.

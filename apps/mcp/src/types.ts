@@ -361,3 +361,47 @@ export interface CancelRunResult {
   message?: string;
   task: RunInfo;
 }
+
+// One audit_event row (RUYI-355). Dimensions the event does not name come
+// back as null so a timeline renders absence, not zero UUIDs. details is the
+// raw JSONB payload — key names and metadata only, never secret values.
+export interface AuditEventInfo {
+  id: string;
+  workspace_id: string;
+  domain: string;
+  event_type: string;
+  occurred_at: string;
+  actor_type: string;
+  actor_id: string | null;
+  trigger_kind: string | null;
+  trigger_ref: string | null;
+  issue_id: string | null;
+  task_id: string | null;
+  agent_id: string | null;
+  runtime_id: string | null;
+  reason: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditEventListParams {
+  domain?: string;
+  event_type?: string;
+  actor_type?: string;
+  actor_id?: string;
+  issue_id?: string;
+  task_id?: string;
+  agent_id?: string;
+  runtime_id?: string;
+  reason?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  cursor_id?: string;
+}
+
+export interface AuditEventListResult {
+  events: AuditEventInfo[];
+  next_cursor: string | null;
+  next_cursor_id: string | null;
+}
