@@ -293,6 +293,92 @@ func TestUpdateAgentRuntime_VoiceSettings(t *testing.T) {
 	}
 }
 
+// TestUpdateAgentRuntime_VoiceSettingsPartialPatches pins the partial-PATCH
+// contract on manual instances: every §4.3 field is optional, so a
+// single-field body must succeed (no nil dereference on the absent ones) and
+// must leave the other fields' stored keys untouched — absence means "don't
+// change", never "clear".
+func TestUpdateAgentRuntime_VoiceSettingsPartialPatches(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	instanceID := insertManualVoiceInstanceFixture(t, ctx, "Stage2 Partial Patches",
+		`{"model":"gemini-3.8-live","advanced":{"region":"asia-east1"},"disabled":true,"unrelated":"keepme"}`)
+
+	patch := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest(http.MethodPatch, "/api/runtimes/"+instanceID, body)
+		req = withURLParam(req, "runtimeId", instanceID)
+		testHandler.UpdateAgentRuntime(w, req)
+		return w
+	}
+
+	assertBag := func(wantModel, wantRegion string, wantDisabled any) {
+		t.Helper()
+		rt := findRuntimeByID(t, listRuntimesForAssertions(t), instanceID)
+		metadataBytes, err := json.Marshal(rt.Metadata)
+		if err != nil {
+			t.Fatalf("re-encode metadata: %v", err)
+		}
+		var bag map[string]any
+		if err := json.Unmarshal(metadataBytes, &bag); err != nil {
+			t.Fatalf("decode metadata: %v", err)
+		}
+		if wantModel == "" {
+			if _, present := bag["model"]; present {
+				t.Errorf("metadata.model should be absent, got %v", bag["model"])
+			}
+		} else if bag["model"] != wantModel {
+			t.Errorf("metadata.model = %v, want %s (untouched by a partial PATCH)", bag["model"], wantModel)
+		}
+		advanced, present := bag["advanced"].(map[string]any)
+		if wantRegion == "" {
+			if present {
+				t.Errorf("metadata.advanced should be absent, got %v", bag["advanced"])
+			}
+		} else if !present || advanced["region"] != wantRegion {
+			t.Errorf("metadata.advanced = %v, want region %s (untouched by a partial PATCH)", bag["advanced"], wantRegion)
+		}
+		if wantDisabled == nil {
+			if _, present := bag["disabled"]; present {
+				t.Errorf("metadata.disabled should be absent, got %v", bag["disabled"])
+			}
+		} else if bag["disabled"] != wantDisabled {
+			t.Errorf("metadata.disabled = %v, want %v", bag["disabled"], wantDisabled)
+		}
+		if bag["unrelated"] != "keepme" {
+			t.Errorf("metadata.unrelated = %v, want keepme", bag["unrelated"])
+		}
+	}
+
+	// Model-only PATCH must not panic on the absent advanced/disabled fields.
+	if w := patch(map[string]any{"model": "gemini-4.0-flash"}); w.Code != http.StatusOK {
+		t.Fatalf("model-only PATCH: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertBag("gemini-4.0-flash", "asia-east1", true)
+
+	// Advanced-only PATCH likewise.
+	if w := patch(map[string]any{"advanced": map[string]any{"region": "us-central1"}}); w.Code != http.StatusOK {
+		t.Fatalf("advanced-only PATCH: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertBag("gemini-4.0-flash", "us-central1", true)
+
+	// Disabled-only PATCH: explicit false removes only the disabled key.
+	if w := patch(map[string]any{"disabled": false}); w.Code != http.StatusOK {
+		t.Fatalf("disabled-only PATCH: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertBag("gemini-4.0-flash", "us-central1", nil)
+
+	// Disabled-only explicit true re-arms the flag without touching the rest.
+	if w := patch(map[string]any{"disabled": true}); w.Code != http.StatusOK {
+		t.Fatalf("disabled-only true PATCH: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertBag("gemini-4.0-flash", "us-central1", true)
+}
+
 // TestUpdateAgentRuntime_VoiceSettingsRejectsDaemonInstances pins the
 // metadata-ownership guard: daemon-registered instances get their metadata
 // wholesale from registration, so §4.3 writes there are refused.
