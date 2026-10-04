@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -35,6 +36,12 @@ type LarkInstallationResponse struct {
 	InstalledAt string `json:"installed_at"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
+	// Capabilities carries the latest capability-probe verdicts
+	// (RUYI-400): granted / missing / unknown per catalog entry, with
+	// the scopes a missing capability needs. Nil until the first probe
+	// ran (install-time sweep or an explicit recheck) — the UI renders
+	// "not checked yet" rather than guessing.
+	Capabilities []lark.CapabilityStateView `json:"capabilities,omitempty"`
 }
 
 func larkInstallationToResponse(row lark.Installation) LarkInstallationResponse {
@@ -97,7 +104,14 @@ func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]LarkInstallationResponse, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, larkInstallationToResponse(row))
+		resp := larkInstallationToResponse(row)
+		// Attach the stored probe verdicts. Best-effort read: a storage
+		// failure leaves the field nil (UI shows "not checked yet")
+		// rather than failing the whole listing.
+		if states, err := lark.ListCapabilityStates(r.Context(), h.Queries, row.ID); err == nil {
+			resp.Capabilities = states
+		}
+		out = append(out, resp)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installations":     out,
@@ -174,6 +188,115 @@ func (h *Handler) RevokeLarkInstallation(w http.ResponseWriter, r *http.Request)
 		"id": uuidToString(instUUID),
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// LarkPermissionCatalogEntry is one catalog row for the bind dialog and
+// the 补授权 panel. `scopes` keeps the AND-of-OR shape: every inner group
+// needs at least one of its members granted in the Feishu console (e.g.
+// read_history needs any im:message* read scope AND im:message.group_msg).
+type LarkPermissionCatalogEntry struct {
+	ID        string     `json:"id"`
+	Probeable bool       `json:"probeable"`
+	Scopes    [][]string `json:"scopes"`
+}
+
+// GetLarkPermissionCatalog (GET /api/workspaces/{id}/lark/permission-catalog)
+// serves the verified capability→scope catalog (RUYI-400). Static data read
+// from lark.CapabilityCatalog — the single source of truth — so the bind
+// dialog's upfront permission declaration can never drift from what the
+// probe actually tests. Member-visible: reading it authorizes nothing.
+func (h *Handler) GetLarkPermissionCatalog(w http.ResponseWriter, r *http.Request) {
+	catalog := lark.CapabilityCatalog()
+	entries := make([]LarkPermissionCatalogEntry, 0, len(catalog))
+	for _, spec := range catalog {
+		entries = append(entries, LarkPermissionCatalogEntry{
+			ID:        string(spec.ID),
+			Probeable: spec.Probeable,
+			Scopes:    spec.Scopes,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"capabilities": entries})
+}
+
+// RecheckLarkPermissionsResponse carries the fresh verdicts for all
+// capabilities of the installation, display-ordered.
+type RecheckLarkPermissionsResponse struct {
+	Capabilities []lark.CapabilityStateView `json:"capabilities"`
+}
+
+// RecheckLarkPermissions (POST /api/workspaces/{id}/lark/installations/{installationId}/recheck-permissions)
+// re-runs the capability probe NOW and persists the verdicts — the 补授权
+// panel's refresh button. This is the honesty boundary of the whole
+// feature: Multica can neither see the Feishu console's granted-scope list
+// nor its admin-approval queue, so "what gets through right now" is the
+// only observable truth, read from fresh synthetic calls. A missing
+// verdict covers both "user can fix in console" and "still awaiting
+// enterprise-admin approval" — the UI copy explains the latter; unknown
+// (token/transport trouble) is never reported as granted.
+//
+// Authorization mirrors RevokeLarkInstallation exactly: the bound agent's
+// owner or a workspace owner/admin, falling back to owner/admin for
+// orphaned installations. Only ACTIVE installations re-check — a revoked
+// bot's credentials are stale and probing them would report meaningless
+// unknowns.
+func (h *Handler) RecheckLarkPermissions(w http.ResponseWriter, r *http.Request) {
+	if h.LarkInstallations == nil || h.LarkAPIClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	instUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "installationId"), "installation id")
+	if !ok {
+		return
+	}
+	inst, err := h.LarkInstallations.GetInWorkspace(r.Context(), instUUID, wsUUID)
+	if err != nil {
+		if errors.Is(err, lark.ErrInstallationNotFound) {
+			writeError(w, http.StatusNotFound, "lark installation not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load installation")
+		return
+	}
+	// Same orphan-aware authorization as revoke: normally the bound
+	// agent's owner or a workspace owner/admin; if the agent was
+	// hard-deleted, owner/admin only.
+	agent, agentErr := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID:          inst.AgentID,
+		WorkspaceID: wsUUID,
+	})
+	if agentErr != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "lark installation not found", "owner", "admin"); !ok {
+			return
+		}
+	} else if !h.canManageAgent(w, r, agent) {
+		return
+	}
+	if lark.InstallationStatus(inst.Status) != lark.InstallationActive {
+		writeError(w, http.StatusConflict, "only an active installation can be re-checked")
+		return
+	}
+	creds, err := lark.CredentialsFor(inst, h.LarkInstallations)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to decrypt installation credentials")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), lark.ProbeCapabilityBudget)
+	defer cancel()
+	results := lark.CheckInstallationCapabilities(ctx, h.LarkAPIClient, creds)
+	if err := lark.SaveCapabilityStates(ctx, h.Queries, instUUID, results); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to persist capability states")
+		return
+	}
+	views, err := lark.ListCapabilityStates(ctx, h.Queries, instUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read capability states")
+		return
+	}
+	writeJSON(w, http.StatusOK, RecheckLarkPermissionsResponse{Capabilities: views})
 }
 
 // RedeemLarkBindingTokenRequest carries the raw token the user
