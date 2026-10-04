@@ -1238,6 +1238,40 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListI
 	return items, nil
 }
 
+const listIssuesByIDs = `-- name: ListIssuesByIDs :many
+SELECT id, number, title FROM issue
+WHERE id = ANY($1::uuid[])
+`
+
+type ListIssuesByIDsRow struct {
+	ID     pgtype.UUID `json:"id"`
+	Number int32       `json:"number"`
+	Title  string      `json:"title"`
+}
+
+// RUYI-419: batch issue-brief hydration for the workspace-wide run view —
+// one bounded query resolves identifier numbers and titles for a whole page
+// of runs instead of one lookup per row.
+func (q *Queries) ListIssuesByIDs(ctx context.Context, ids []pgtype.UUID) ([]ListIssuesByIDsRow, error) {
+	rows, err := q.db.Query(ctx, listIssuesByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssuesByIDsRow{}
+	for rows.Next() {
+		var i ListIssuesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Number, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenIssues = `-- name: ListOpenIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
