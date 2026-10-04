@@ -919,6 +919,15 @@
       "pill_label": "コメントを追加、@ でメンション"
     },
     "comment": {
+      "menu_copy": "コピー",
+      "menu_copy_link": "リンクをコピー",
+      "menu_edit": "編集",
+      "menu_more_reactions": "その他のリアクション…",
+      "menu_react": "リアクション…",
+      "menu_reply": "返信",
+      "menu_resolve": "スレッドを解決",
+      "menu_select_text": "テキストを選択",
+      "menu_unresolve": "スレッドの解決を取り消す",
       "resolved_bar_other": "解決済み · メッセージ {{count}} 件（{{authors}}）",
       "resolved_bar_a11y_other": "解決済みスレッド、メッセージ {{count}} 件（{{authors}}）。タップして展開します。",
       "resolved_by": "解決者",

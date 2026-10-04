@@ -919,6 +919,15 @@
       "pill_label": "댓글 추가, @로 멘션"
     },
     "comment": {
+      "menu_copy": "복사",
+      "menu_copy_link": "링크 복사",
+      "menu_edit": "수정",
+      "menu_more_reactions": "더 많은 반응…",
+      "menu_react": "반응…",
+      "menu_reply": "답글",
+      "menu_resolve": "스레드 해결",
+      "menu_select_text": "텍스트 선택",
+      "menu_unresolve": "스레드 해결 취소",
       "resolved_bar_other": "해결됨 · 메시지 {{count}}개 ({{authors}}님)",
       "resolved_bar_a11y_other": "해결된 스레드, 메시지 {{count}}개 ({{authors}}님). 탭하여 펼치기.",
       "resolved_by": "해결한 사람",

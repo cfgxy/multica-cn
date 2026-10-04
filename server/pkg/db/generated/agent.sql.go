@@ -8003,6 +8003,156 @@ func (q *Queries) ListWorkspaceAgentTaskSnapshot(ctx context.Context, workspaceI
 	return items, nil
 }
 
+const listWorkspaceTaskRuns = `-- name: ListWorkspaceTaskRuns :many
+SELECT t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.prompt_versions, t.cancel_requested_by_user_id, t.cancel_requested_at FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+WHERE i.workspace_id = $1
+  AND (
+        $2::text IS NULL
+        OR ($2::text = 'pending' AND t.status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory'))
+        OR t.status = ANY(string_to_array($2::text, ','))
+      )
+  AND (
+        $3::uuid IS NULL
+        OR t.agent_id = $3
+      )
+  AND (
+        $4::uuid IS NULL
+        OR i.project_id = $4
+      )
+  AND (
+        $5::uuid IS NULL
+        OR t.issue_id = $5
+      )
+  AND (
+        $6::text IS NULL
+        OR ($6::text = 'comment' AND t.trigger_comment_id IS NOT NULL)
+        OR ($6::text = 'autopilot' AND t.autopilot_run_id IS NOT NULL)
+        OR ($6::text = 'rerun' AND t.rerun_of_task_id IS NOT NULL)
+        OR ($6::text = 'system_retry' AND t.retry_of_task_id IS NOT NULL)
+        OR t.trigger_evidence_kind = $6::text
+      )
+  AND (
+        $7::timestamptz IS NULL
+        OR t.created_at >= $7
+      )
+  AND (
+        $8::timestamptz IS NULL
+        OR t.created_at < $8
+      )
+ORDER BY t.created_at DESC
+LIMIT $10
+OFFSET $9
+`
+
+type ListWorkspaceTaskRunsParams struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	StatusFilter  pgtype.Text        `json:"status_filter"`
+	AgentFilter   pgtype.UUID        `json:"agent_filter"`
+	ProjectFilter pgtype.UUID        `json:"project_filter"`
+	IssueFilter   pgtype.UUID        `json:"issue_filter"`
+	TriggerFilter pgtype.Text        `json:"trigger_filter"`
+	CreatedAfter  pgtype.Timestamptz `json:"created_after"`
+	CreatedBefore pgtype.Timestamptz `json:"created_before"`
+	RowOffset     int32              `json:"row_offset"`
+	RowLimit      int32              `json:"row_limit"`
+}
+
+// RUYI-419: the workspace-wide run view behind the MCP list_runs tool, with
+// the same status/trigger filter semantics as ListTasksByIssueFiltered plus
+// agent/project/issue/time-range narrowing and offset pagination. Runs have
+// no workspace_id of their own — workspace scoping, project and issue
+// filters all ride the joined issue row, mirroring
+// ListWorkspaceAgentTaskSnapshot's JOIN agent shape.
+func (q *Queries) ListWorkspaceTaskRuns(ctx context.Context, arg ListWorkspaceTaskRunsParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceTaskRuns,
+		arg.WorkspaceID,
+		arg.StatusFilter,
+		arg.AgentFilter,
+		arg.ProjectFilter,
+		arg.IssueFilter,
+		arg.TriggerFilter,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.RowOffset,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.PromptVersions,
+			&i.CancelRequestedByUserID,
+			&i.CancelRequestedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceWorkingAgents = `-- name: ListWorkspaceWorkingAgents :many
 SELECT
   a.id,
