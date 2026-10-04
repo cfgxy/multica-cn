@@ -24,9 +24,21 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `get_issue_relations` | 单条 issue 结构化关系：parent 与 blocks/blocked_by/relates_to/supersedes/superseded_by 五向视图（RUYI-351） |
 | 读 | `list_issue_runs` | 单条 issue 全部执行 run：状态/agent/触发源/耗时/失败摘要，status 与 trigger 过滤（RUYI-292） |
 | 读 | `get_run` | 单个 run 详情：状态、耗时、失败原因、取消归因与完整重试链（RUYI-292） |
+| 读 | `list_runs` | workspace 级全部 run 视图：status/agent/project/issue/trigger/时间窗过滤，limit 1–200（默认 50）+ offset 分页，返回 issue 编号/标题与失败摘要等定位字段（RUYI-419） |
+| 读 | `get_agent` | 单个 agent 管理视图：元数据与运行配置指示器（`has_custom_env`/`custom_env_key_count`/`mcp_config_redacted`），秘密值永不过此层（RUYI-419） |
+| 读 | `list_runtimes` | 工作区运行时清单（admin 全量、普通成员可见子集）（RUYI-419） |
+| 读 | `list_squads` | 工作区 squad 清单（含成员数与前 3 名预览；已归档不返回）（RUYI-419） |
+| 读 | `get_squad` | 单个 squad 完整视图：说明/指令/leader/成员预览（RUYI-419） |
 | 写 | `create_issue` | 通用创建：任意空间、任意项目 |
 | 写 | `create_project` | 创建项目（纯元数据，不触发 run）（RUYI-354） |
 | 写 | `update_project` | PATCH 更新项目元数据，`expected_revision` 乐观锁（RUYI-354） |
+| 写 | `create_agent` | 创建 agent（name + runtime_id 必填；任意成员可建，不触发 run）（RUYI-419） |
+| 写 | `update_agent` | PATCH 更新 agent 元数据；agent/squad 无 revision 字段，last-write-wins；不接受任何秘密键（RUYI-419） |
+| 写 | `archive_agent` | 停用 agent（=归档）：WARNING 取消该 agent 全部活跃 run；恢复用 `restore_agent`（RUYI-419） |
+| 写 | `restore_agent` | 恢复已归档 agent（RUYI-419） |
+| 写 | `create_squad` | 创建 squad（name + leader_id；leader 须为工作区 agent）（RUYI-419） |
+| 写 | `update_squad` | PATCH 更新 squad：改名/说明/指令/leader 轮换（轮换会暂停成员 autopilot 并转给原 leader）（RUYI-419） |
+| 写 | `archive_squad` | 归档 squad：成员指派与 autopilot 转给 leader；无恢复路径（RUYI-419） |
 | 写 | `add_comment` | 追加评论（@agent 会触发真实派发） |
 | 写 | `edit_comment` | 编辑评论（作者/admin 权限；`expected_revision` 乐观锁；内容变更按新内容重算触发面，mention 副作用经 `trigger_outcomes` 回报） |
 | 写 | `delete_comment` | 删除评论（作者/admin 权限；级联删除回复子树；连带取消该评论触发的排队 run） |

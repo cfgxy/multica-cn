@@ -59,7 +59,7 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
-    session_max_context_tokens, session_compact_pct
+    session_max_context_tokens, session_compact_pct, resource_weight
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -71,7 +71,11 @@ INSERT INTO agent (
     -- column default rather than a zero. Zero is a meaningful value here (it
     -- disables the gate), so it must not be reachable by accident.
     COALESCE(sqlc.narg('session_max_context_tokens'), 400000),
-    COALESCE(sqlc.narg('session_compact_pct'), 80)
+    COALESCE(sqlc.narg('session_compact_pct'), 80),
+    -- RUYI-397: same omitted-means-default rule. Zero would let an agent
+    -- claim without bound in the weighted budget check, so it must not be
+    -- reachable by accident either.
+    COALESCE(sqlc.narg('resource_weight'), 1)
 )
 RETURNING *;
 
@@ -141,6 +145,7 @@ UPDATE agent SET
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
+    resource_weight = COALESCE(sqlc.narg('resource_weight'), resource_weight),
     session_max_context_tokens = COALESCE(sqlc.narg('session_max_context_tokens'), session_max_context_tokens),
     session_compact_pct = COALESCE(sqlc.narg('session_compact_pct'), session_compact_pct),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
@@ -272,6 +277,15 @@ UPDATE agent
 SET archived_at = now(), archived_by = @archived_by, updated_at = now()
 WHERE id = ANY(@agent_ids::uuid[]) AND archived_at IS NULL
 RETURNING *;
+
+-- name: GetAgentRuntimeBindings :many
+-- Narrow id -> current runtime binding read used by claim-side decorations
+-- (RUYI-397 queued-reason hydration): the caller resolves which runtime each
+-- queued task's agent is bound to NOW — the agent row, not the task's
+-- enqueued runtime_id, is the authority (RUYI-224) — and loads only those
+-- runtimes' state.
+SELECT id, runtime_id FROM agent
+WHERE id = ANY(@agent_ids::uuid[]);
 
 -- name: ListActiveAgentsByRuntime :many
 -- Returns every non-archived agent bound to a runtime. Backs the cascade
@@ -3127,6 +3141,53 @@ WHERE issue_id = $1
       )
 ORDER BY created_at DESC
 LIMIT @row_limit;
+
+-- name: ListWorkspaceTaskRuns :many
+-- RUYI-419: the workspace-wide run view behind the MCP list_runs tool, with
+-- the same status/trigger filter semantics as ListTasksByIssueFiltered plus
+-- agent/project/issue/time-range narrowing and offset pagination. Runs have
+-- no workspace_id of their own — workspace scoping, project and issue
+-- filters all ride the joined issue row, mirroring
+-- ListWorkspaceAgentTaskSnapshot's JOIN agent shape.
+SELECT t.* FROM agent_task_queue t
+JOIN issue i ON i.id = t.issue_id
+WHERE i.workspace_id = @workspace_id
+  AND (
+        sqlc.narg('status_filter')::text IS NULL
+        OR (@status_filter::text = 'pending' AND t.status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory'))
+        OR t.status = ANY(string_to_array(@status_filter::text, ','))
+      )
+  AND (
+        sqlc.narg('agent_filter')::uuid IS NULL
+        OR t.agent_id = @agent_filter
+      )
+  AND (
+        sqlc.narg('project_filter')::uuid IS NULL
+        OR i.project_id = @project_filter
+      )
+  AND (
+        sqlc.narg('issue_filter')::uuid IS NULL
+        OR t.issue_id = @issue_filter
+      )
+  AND (
+        sqlc.narg('trigger_filter')::text IS NULL
+        OR (@trigger_filter::text = 'comment' AND t.trigger_comment_id IS NOT NULL)
+        OR (@trigger_filter::text = 'autopilot' AND t.autopilot_run_id IS NOT NULL)
+        OR (@trigger_filter::text = 'rerun' AND t.rerun_of_task_id IS NOT NULL)
+        OR (@trigger_filter::text = 'system_retry' AND t.retry_of_task_id IS NOT NULL)
+        OR t.trigger_evidence_kind = @trigger_filter::text
+      )
+  AND (
+        sqlc.narg('created_after')::timestamptz IS NULL
+        OR t.created_at >= @created_after
+      )
+  AND (
+        sqlc.narg('created_before')::timestamptz IS NULL
+        OR t.created_at < @created_before
+      )
+ORDER BY t.created_at DESC
+LIMIT @row_limit
+OFFSET @row_offset;
 
 -- name: ConvergeCancelRequestedForOfflineRuntimes :many
 -- RUYI-292: a cancel_requested row whose runtime died mid-stop can never be
