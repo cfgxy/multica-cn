@@ -25,6 +25,8 @@
  *     to events for the currently-viewed issue.
  */
 import { useQueryClient } from "@tanstack/react-query";
+import { upsertDecisionInCache } from "@multica/core/issues/decisions";
+import { issueKeys as coreIssueKeys } from "@multica/core/issues/queries";
 import type {
   TaskCancelledPayload,
   TaskCompletedPayload,
@@ -171,6 +173,18 @@ export function useIssueRealtime(
           appendTimelineEntry(qc, wsId, issueId, payload.entry);
         }),
 
+        // ----- Decision cards (RUYI-345) -----
+        // One event covers created/answered/cancelled; the payload carries
+        // the full decision, so patch the shared core-keyed cache in place
+        // (same entry issueDecisionsOptions fills). Upsert (not plain patch)
+        // because this client never creates cards itself — a card created
+        // by an agent run while the issue is open must still appear. Key
+        // lives in core's issueKeys — NOT the wsId-scoped mobile keys.
+        ws.on("decision:updated", (payload) => {
+          if (payload.issue_id !== issueId || !payload.decision?.id) return;
+          upsertDecisionInCache(qc, issueId, payload.decision);
+        }),
+
         // ----- Comment reactions -----
         ws.on("reaction:added", (payload) => {
           if (payload.issue_id !== issueId) return;
@@ -224,6 +238,10 @@ export function useIssueRealtime(
         // ----- Reconnect -----
         ws.onReconnect(() => {
           invalidateIssueAfterReconnect(qc, wsId, issueId);
+          // Decisions live on core's per-issue keys (no wsId segment), so
+          // the invalidate above doesn't reach them — events missed while
+          // disconnected (e.g. a card created by a run) need their own pull.
+          qc.invalidateQueries({ queryKey: coreIssueKeys.decisions(issueId) });
         }),
       ];
     },

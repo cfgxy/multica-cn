@@ -10,7 +10,7 @@ import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
-import { patchDecisionInCache } from "../issues/decisions";
+import { upsertDecisionInCache } from "../issues/decisions";
 import { projectKeys } from "../projects/queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
@@ -1130,13 +1130,15 @@ export function useRealtimeSync(
     });
 
     // Decision cards (RUYI-345): one event per lifecycle transition; the
-    // payload carries the full card, so a cache patch beats a refetch. Cards
-    // are rare and the answer echo arrives as a normal comment:created, so
-    // nothing else needs invalidating here.
+    // payload carries the full card. Upsert rather than patch — the event
+    // also announces cards created while this client had the issue open, and
+    // a patch would silently no-op on the unknown id, hiding the card until
+    // the next refetch. The answer echo arrives as a normal comment:created,
+    // so nothing else needs invalidating here.
     const unsubDecisionUpdated = ws.on("decision:updated", (p) => {
       const { decision, issue_id: issueId } = p as DecisionUpdatedPayload;
       if (!decision?.id || !issueId) return;
-      patchDecisionInCache(qc, issueId, decision);
+      upsertDecisionInCache(qc, issueId, decision);
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
