@@ -1,0 +1,193 @@
+package agent
+
+import (
+	"context"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// acpReattachFrame writes one JSON-RPC line onto the supervised worker's
+// stdout, the wire a reattached daemon resumes reading.
+func acpReattachFrame(t *testing.T, h *fakeHandle, line string) {
+	t.Helper()
+	if _, err := h.stdoutW.WriteString(line + "\n"); err != nil {
+		t.Fatalf("write wire frame: %v", err)
+	}
+}
+
+// TestKimiReattachRidesInFlightTurn pins the RUYI-390 reattach contract on
+// the ACP family's representative backend: a reattached Execute sends no
+// protocol frames, rebuilds the session id off the session/update stream,
+// and converges on the turn_end notification the previous daemon never saw.
+func TestKimiReattachRidesInFlightTurn(t *testing.T) {
+	t.Parallel()
+
+	sup, h := newFakeSupervisor(t)
+	// Supervised mode never execs this path, but the backend still resolves
+	// the CLI before building the command.
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte("#!/bin/sh\nexit 0\n"))
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	session, err := backend.Execute(ctx, "prompt-never-sent", ExecOptions{
+		Timeout: 10 * time.Second,
+		Supervision: &Supervision{
+			Supervisor: sup, RunID: "task-1-1", TaskID: "task-1",
+			Runtime: "kimi", Reattach: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_wire","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late answer"}}}}`)
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_wire","update":{"sessionUpdate":"turn_end","stopReason":"end_turn"}}}`)
+
+	// One-shot CLI semantics: the reattached worker exits once it has
+	// delivered its turn. Prove the exit (waitCh) and EOF the streams the
+	// way a real supervisor's tailer does — the lifecycle goroutine cannot
+	// pass <-readerDone until the wire ends, and the Result is only sent
+	// after that point.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		h.CloseForExit()
+	}()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "completed" {
+			t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+		}
+		if result.SessionID != "ses_wire" {
+			t.Fatalf("expected session id rebuilt from the wire, got %q", result.SessionID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	if got := h.stdinBuf.String(); got != "" {
+		t.Fatalf("reattached Execute must not write protocol frames, recorded: %q", got)
+	}
+}
+
+// TestKimiReattachWorkerExitFailsTask pins the failure leg: the worker dies
+// before delivering a turn result, the reattached wait maps stdout EOF onto
+// the same "process exited" failure shape a sent prompt would have produced.
+func TestKimiReattachWorkerExitFailsTask(t *testing.T) {
+	t.Parallel()
+
+	sup, h := newFakeSupervisor(t)
+	// Supervised mode never execs this path, but the backend still resolves
+	// the CLI before building the command.
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte("#!/bin/sh\nexit 0\n"))
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	session, err := backend.Execute(ctx, "prompt-never-sent", ExecOptions{
+		Timeout: 10 * time.Second,
+		Supervision: &Supervision{
+			Supervisor: sup, RunID: "task-1-1", TaskID: "task-1",
+			Runtime: "kimi", Reattach: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	// The worker dies without a turn result: Wait proves the exit and the
+	// supervisor's tailer ends the streams with EOF, exactly as in
+	// production (fakeHandle.Wait calls closeStreams).
+	h.mu.Lock()
+	h.exit = &WorkerExit{Code: 1}
+	h.mu.Unlock()
+	h.CloseForExit()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "failed" {
+			t.Fatalf("expected status=failed, got %q (error=%q)", result.Status, result.Error)
+		}
+		if !strings.Contains(result.Error, "process exited") {
+			t.Fatalf("expected the exit to be named, got %q", result.Error)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
+// TestReattachWireSignals pins the latch ordering rules underneath the
+// wait: EOF after a delivered turn result is not a failure, EOF before one
+// is, and ctx cancellation surfaces the caller's classification unchanged.
+func TestReattachWireSignals(t *testing.T) {
+	t.Parallel()
+
+	t.Run("turn result first, EOF is not a failure", func(t *testing.T) {
+		t.Parallel()
+		c := &hermesClient{cfg: Config{Logger: slog.Default()}}
+		c.markTurnDone()
+		c.markStreamClosed()
+		if err := c.waitReattachedTurn(context.Background(), "kimi"); err != nil {
+			t.Fatalf("want nil after a delivered turn, got %v", err)
+		}
+	})
+	t.Run("EOF without a turn result fails", func(t *testing.T) {
+		t.Parallel()
+		c := &hermesClient{cfg: Config{Logger: slog.Default()}}
+		c.markStreamClosed()
+		err := c.waitReattachedTurn(context.Background(), "kimi")
+		if err == nil || !strings.Contains(err.Error(), "process exited") {
+			t.Fatalf("want process-exited failure, got %v", err)
+		}
+	})
+	t.Run("cancellation surfaces ctx error", func(t *testing.T) {
+		t.Parallel()
+		c := &hermesClient{cfg: Config{Logger: slog.Default()}}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := c.waitReattachedTurn(ctx, "kimi")
+		if err == nil {
+			t.Fatal("want an error after cancellation")
+		}
+	})
+	t.Run("late frames rebuild the session id", func(t *testing.T) {
+		t.Parallel()
+		c := &hermesClient{cfg: Config{Logger: slog.Default()}}
+		if got := c.observedSessionID(); got != "" {
+			t.Fatalf("want empty before any frame, got %q", got)
+		}
+		c.observeSessionID("ses_1")
+		c.observeSessionID("ses_2")
+		if got := c.observedSessionID(); got != "ses_2" {
+			t.Fatalf("want the latest id, got %q", got)
+		}
+	})
+}

@@ -374,6 +374,13 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// streams) is dropped instead of duplicating the previous answer
 	// into output. We flip it to true only after session/prompt is sent.
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 	// turnActivity counts the session updates accepted for the current turn.
 	// Zero means the agent produced nothing at all — no text, no thought, no
 	// tool call — which is what separates a dead-session refusal from a model
@@ -455,200 +462,216 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
-		// True only when session/resume actually landed on the session we
-		// asked for. Hermes answers a resume of a session its state.db no
-		// longer holds by silently creating a fresh one (acp_adapter/server.py
-		// resume_session: "not found, creating new"), so this is what decides
-		// whether the turn must carry a continuity notice — see the prompt
-		// assembly below.
-		var resumeLanded bool
-		// The stop reason session/prompt reported, when it answered at all.
-		// Read once the turn has fully settled — see the resumed-session check
-		// after the provider-error promotion below.
+
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
 		var promptStopReason string
-		effectiveModel := strings.TrimSpace(opts.Model)
-		// The model id the runtime reports as current right after
-		// session/new or session/resume. Used to skip a redundant
-		// session/set_model when we would otherwise re-select the model the
-		// session is already on (see the set_model gate below).
-		var sessionCurrentModel string
+		var effectiveModel string
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("hermes reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "hermes")
+			sessionID = c.observedSessionID()
+		} else {
+			// True only when session/resume actually landed on the session we
+			// asked for. Hermes answers a resume of a session its state.db no
+			// longer holds by silently creating a fresh one (acp_adapter/server.py
+			// resume_session: "not found, creating new"), so this is what decides
+			// whether the turn must carry a continuity notice — see the prompt
+			// assembly below.
+			var resumeLanded bool
+			// The stop reason session/prompt reported, when it answered at all.
+			// Read once the turn has fully settled — see the resumed-session check
+			// after the provider-error promotion below.
+			effectiveModel = strings.TrimSpace(opts.Model)
+			// The model id the runtime reports as current right after
+			// session/new or session/resume. Used to skip a redundant
+			// session/set_model when we would otherwise re-select the model the
+			// session is already on (see the set_model gate below).
+			var sessionCurrentModel string
 
-		// 1. Initialize handshake.
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("hermes initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Drop MCP entries whose remote transport the runtime didn't
-		// advertise. ACP requires the client to honour
-		// agentCapabilities.mcpCapabilities; sending an http/sse entry to
-		// a runtime that says it only supports stdio reliably rejects the
-		// whole session/new request.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "hermes", b.cfg)
-
-		// 2. Create or resume a session.
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		// sessionResult is whichever of session/new or session/resume produced
-		// this session. It carries the configOptions the effort step below
-		// reads, so both branches have to keep hold of it.
-		var sessionResult json.RawMessage
-
-		if opts.ResumeSessionID != "" {
-			// Per ACP Session Setup, session/resume accepts mcpServers and
-			// the runtime re-connects them as part of the resume. Without
-			// this, a resumed Hermes task lost access to MCP tools that a
-			// fresh task on the same agent would have.
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
+			// 1. Initialize handshake.
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("hermes session/resume failed: %v", err)
+				finalError = fmt.Sprintf("hermes initialize failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			sessionResult = result
-			sessionID, resumeLanded = resolveHermesResumedSessionID(opts.ResumeSessionID, result)
-			if !resumeLanded {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "hermes",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
-			sessionCurrentModel = extractACPCurrentModelID(result)
-			if effectiveModel == "" {
-				effectiveModel = sessionCurrentModel
-			}
-		} else {
-			result, err := c.request(runCtx, "session/new", buildHermesSessionParams(cwd, opts.Model, mcpServers))
-			if err != nil {
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("hermes session/new failed: %v", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			sessionResult = result
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "hermes session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			sessionCurrentModel = extractACPCurrentModelID(result)
-			if effectiveModel == "" {
-				effectiveModel = sessionCurrentModel
-			}
-		}
 
-		c.sessionID = sessionID
-		b.cfg.Logger.Info("hermes session created", "session_id", sessionID)
-		// Mid-flight pin: daemon PinTaskSession keys off MessageStatus+SessionID.
-		trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+			// Drop MCP entries whose remote transport the runtime didn't
+			// advertise. ACP requires the client to honour
+			// agentCapabilities.mcpCapabilities; sending an http/sse entry to
+			// a runtime that says it only supports stdio reliably rejects the
+			// whole session/new request.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "hermes", b.cfg)
 
-		// 3. If the caller picked a model (via agent.model from the
-		// UI dropdown), ask hermes to switch the session to it
-		// before we send any prompt. Hermes' _build_model_state
-		// exposes modelId as `provider:model` — we pass that
-		// through verbatim. This MUST fail the task on error:
-		// if we silently fell back to hermes' default model the
-		// user would think their pick was honoured while the
-		// task actually ran on something else.
-		//
-		// Skip the call when the session already reports this exact model as
-		// current. Hermes' set_model re-runs provider auto-detection on the
-		// model id, and for a `provider:model` id whose parsed provider equals
-		// the session's current provider it can mis-route to a different
-		// provider (e.g. custom:deepseek-v4-pro → OpenRouter) and fail with an
-		// auth error. Re-selecting the model the session is already on is pure
-		// downside. An empty sessionCurrentModel (older runtime or unparsable
-		// state) falls through and still sends set_model, preserving prior
-		// behaviour. See MUL-5029 / NousResearch/hermes-agent#59089.
-		if opts.Model != "" && effectiveModel == sessionCurrentModel {
-			b.cfg.Logger.Info("hermes session already on requested model; skipping redundant set_model",
-				"model", opts.Model,
-				"session_id", sessionID,
-			)
-		} else if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("hermes set_session_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("hermes could not switch to model %q: %v", opts.Model, err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
-					// On a resumed session with a model override, the dead
-					// session surfaces here instead of at session/prompt.
-					// Same fix as the prompt path below: clear the id so
-					// the daemon's resume-failure fallback retries fresh.
-					b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+			// 2. Create or resume a session.
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			// sessionResult is whichever of session/new or session/resume produced
+			// this session. It carries the configOptions the effort step below
+			// reads, so both branches have to keep hold of it.
+			var sessionResult json.RawMessage
+
+			if opts.ResumeSessionID != "" {
+				// Per ACP Session Setup, session/resume accepts mcpServers and
+				// the runtime re-connects them as part of the resume. Without
+				// this, a resumed Hermes task lost access to MCP tools that a
+				// fresh task on the same agent would have.
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("hermes session/resume failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionResult = result
+				sessionID, resumeLanded = resolveHermesResumedSessionID(opts.ResumeSessionID, result)
+				if !resumeLanded {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
 						"backend", "hermes",
-						"session_id", sessionID,
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
 					)
-					sessionID = ""
-					resumeRejected = true
 				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
+				sessionCurrentModel = extractACPCurrentModelID(result)
+				if effectiveModel == "" {
+					effectiveModel = sessionCurrentModel
 				}
-				return
+			} else {
+				result, err := c.request(runCtx, "session/new", buildHermesSessionParams(cwd, opts.Model, mcpServers))
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("hermes session/new failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionResult = result
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "hermes session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionCurrentModel = extractACPCurrentModelID(result)
+				if effectiveModel == "" {
+					effectiveModel = sessionCurrentModel
+				}
 			}
-			b.cfg.Logger.Info("hermes session model set", "model", opts.Model)
+
+			c.sessionID = sessionID
+			b.cfg.Logger.Info("hermes session created", "session_id", sessionID)
+			// Mid-flight pin: daemon PinTaskSession keys off MessageStatus+SessionID.
+			trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+
+			// 3. If the caller picked a model (via agent.model from the
+			// UI dropdown), ask hermes to switch the session to it
+			// before we send any prompt. Hermes' _build_model_state
+			// exposes modelId as `provider:model` — we pass that
+			// through verbatim. This MUST fail the task on error:
+			// if we silently fell back to hermes' default model the
+			// user would think their pick was honoured while the
+			// task actually ran on something else.
+			//
+			// Skip the call when the session already reports this exact model as
+			// current. Hermes' set_model re-runs provider auto-detection on the
+			// model id, and for a `provider:model` id whose parsed provider equals
+			// the session's current provider it can mis-route to a different
+			// provider (e.g. custom:deepseek-v4-pro → OpenRouter) and fail with an
+			// auth error. Re-selecting the model the session is already on is pure
+			// downside. An empty sessionCurrentModel (older runtime or unparsable
+			// state) falls through and still sends set_model, preserving prior
+			// behaviour. See MUL-5029 / NousResearch/hermes-agent#59089.
+			if opts.Model != "" && effectiveModel == sessionCurrentModel {
+				b.cfg.Logger.Info("hermes session already on requested model; skipping redundant set_model",
+					"model", opts.Model,
+					"session_id", sessionID,
+				)
+			} else if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("hermes set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("hermes could not switch to model %q: %v", opts.Model, err)
+					if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+						// On a resumed session with a model override, the dead
+						// session surfaces here instead of at session/prompt.
+						// Same fix as the prompt path below: clear the id so
+						// the daemon's resume-failure fallback retries fresh.
+						b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "hermes",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("hermes session model set", "model", opts.Model)
+			}
+
+			// 3b. Apply a persisted thinking override through whichever effort
+			// option this session advertises. Which binary answered decides
+			// whether anything happens: jcode advertises `reasoning_effort` and
+			// threads it into the provider request, while Hermes Agent advertises
+			// no configOptions at all and the helper no-ops. Unlike set_model
+			// above this must NOT fail the task — an effort we could not apply
+			// still runs the prompt at the runtime's own default.
+			//
+			// sessionResult stops describing the live session once set_model runs,
+			// because an ACP effort option may depend on the current model.
+			applyACPEffortOption(runCtx, c.request, "hermes", b.cfg.Logger,
+				sessionID, sessionResult, opts.ThinkingLevel, opts.Model == "")
+
+			// 4. Send the prompt and wait for PromptResponse.
+			//
+			// Do NOT prepend opts.SystemPrompt here. Hermes ACP loads project/context
+			// files from cwd (AGENTS.md, .agent_context, etc.) itself; duplicating the
+			// full runtime brief in the user prompt makes the request much larger and
+			// has triggered upstream safety filters on otherwise ordinary tasks.
+			// Flip the gate
+			// just before the request so any history replay flushed during
+			// initialize / session setup stays dropped, but every notification
+			// belonging to this turn is processed.
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": hermesTurnText(prompt, opts.ResumeExpected, resumeLanded, opts.ResumeContinuityNotice)},
+				},
+			})
 		}
-
-		// 3b. Apply a persisted thinking override through whichever effort
-		// option this session advertises. Which binary answered decides
-		// whether anything happens: jcode advertises `reasoning_effort` and
-		// threads it into the provider request, while Hermes Agent advertises
-		// no configOptions at all and the helper no-ops. Unlike set_model
-		// above this must NOT fail the task — an effort we could not apply
-		// still runs the prompt at the runtime's own default.
-		//
-		// sessionResult stops describing the live session once set_model runs,
-		// because an ACP effort option may depend on the current model.
-		applyACPEffortOption(runCtx, c.request, "hermes", b.cfg.Logger,
-			sessionID, sessionResult, opts.ThinkingLevel, opts.Model == "")
-
-		// 4. Send the prompt and wait for PromptResponse.
-		//
-		// Do NOT prepend opts.SystemPrompt here. Hermes ACP loads project/context
-		// files from cwd (AGENTS.md, .agent_context, etc.) itself; duplicating the
-		// full runtime brief in the user prompt makes the request much larger and
-		// has triggered upstream safety filters on otherwise ordinary tasks.
-		// Flip the gate
-		// just before the request so any history replay flushed during
-		// initialize / session setup stays dropped, but every notification
-		// belonging to this turn is processed.
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": hermesTurnText(prompt, opts.ResumeExpected, resumeLanded, opts.ResumeContinuityNotice)},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			// If the request itself failed (not just context cancelled),
 			// check if the context was cancelled/timed out.
 			if runCtx.Err() == context.DeadlineExceeded {
@@ -659,8 +682,8 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("hermes session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("hermes session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					// The agent no longer knows the session we resumed.
 					// Hermes echoes the requested id back from
 					// session/resume even when the session is gone, so
@@ -968,6 +991,11 @@ type hermesClient struct {
 	terminalMu      sync.Mutex
 	terminals       map[string]*acpTerminal
 	nextTerminalID  int
+
+	// RUYI-390: reattach wire signals and the session id observed off the
+	// wire. Lazily built so the struct literals at the backend call sites
+	// stay untouched; see acp_reattach.go.
+	wireSignals
 }
 
 // pendingToolCall buffers state for a tool call while its arguments
@@ -1032,11 +1060,15 @@ func (c *hermesClient) request(ctx context.Context, method string, params any) (
 
 func (c *hermesClient) closeAllPending(err error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for id, pr := range c.pending {
 		pr.ch <- rpcResult{err: err}
 		delete(c.pending, id)
 	}
+	c.mu.Unlock()
+	// stdout EOF: workers exit after a finished turn, so this is the
+	// reattach failure signal only when no turn result landed first
+	// (markStreamClosed checks that ordering itself).
+	c.markStreamClosed()
 }
 
 func (c *hermesClient) handleLine(line string) {
@@ -1527,6 +1559,10 @@ func (c *hermesClient) extractPromptResult(data json.RawMessage) {
 	// cache bucket or provider-reported cost.
 	pr.usage = usage.withFallback(parseACPTokenUsageSnapshotFromMeta(resp.Meta))
 
+	// The turn has a readable result. markTurnDone runs before the
+	// onPromptDone hook so a reattached waiter waking on turnDone finds the
+	// prompt result already queued (acp_reattach.go).
+	c.markTurnDone()
 	if c.onPromptDone != nil {
 		c.onPromptDone(pr)
 	}
@@ -1581,6 +1617,10 @@ func (c *hermesClient) handleNotification(raw map[string]json.RawMessage) {
 	if p, ok := raw["params"]; ok {
 		_ = json.Unmarshal(p, &params)
 	}
+	// Record the wire session id before any accept gate: a reattached
+	// client rebuilds its session identity from these frames regardless of
+	// which turn emitted them (acp_reattach.go).
+	c.observeSessionID(params.SessionID)
 	if len(params.Update) == 0 {
 		return
 	}
@@ -3205,3 +3245,4 @@ func promoteACPResultOnProviderError(finalStatus, finalError, finalOutput string
 	}
 	return finalStatus, finalError
 }
+
