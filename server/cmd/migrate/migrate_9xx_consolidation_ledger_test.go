@@ -107,6 +107,15 @@ func consolidationGroups() []consolidationGroup {
 // (identity files in the consolidation).
 var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions", "902_user_admin_state"}
 
+// postConsolidationStems are 9xx migrations added after the RUYI-359
+// consolidation; they extend the on-disk set without belonging to any
+// consolidation group, so the repair script must leave their ledger rows
+// untouched.
+var postConsolidationStems = []string{
+	"975_issue_decisions",
+	"976_issue_decisions_issue_idx",
+}
+
 // finalStems are the 17 canonical 9xx stems of the consolidated tree, in
 // migration order.
 func finalStems() []string {
@@ -177,7 +186,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 		}
 	}
 	wantDisk := map[string]bool{}
-	for _, f := range finalStems() {
+	for _, f := range append(finalStems(), postConsolidationStems...) {
 		wantDisk[f] = true
 	}
 	if !reflect.DeepEqual(onDisk, wantDisk) {
@@ -215,6 +224,12 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 		{
 			name: "new-tree-idempotent",
 			initial: append([]string{"untouched"}, finalStems()...),
+			want:    nil, // computed below: unchanged
+			objects: []string{"ALL"},
+		},
+		{
+			name: "post-consolidation-tree-idempotent",
+			initial: append(append([]string{"untouched"}, finalStems()...), postConsolidationStems...),
 			want:    nil, // computed below: unchanged
 			objects: []string{"ALL"},
 		},
@@ -350,7 +365,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			if tc.name == "full-rewrite" {
 				want = append(finalStems(), "untouched")
 			}
-			if tc.name == "new-tree-idempotent" {
+			if strings.HasSuffix(tc.name, "-idempotent") {
 				want = append([]string{}, tc.initial...)
 			}
 			// Sort a copy so the comparison is order-insensitive; append from a
