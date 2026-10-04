@@ -919,6 +919,15 @@
       "pill_label": "添加评论，输入 @ 可提及"
     },
     "comment": {
+      "menu_copy": "复制",
+      "menu_copy_link": "复制链接",
+      "menu_edit": "编辑",
+      "menu_more_reactions": "更多回应…",
+      "menu_react": "回应…",
+      "menu_reply": "回复",
+      "menu_resolve": "解决该讨论",
+      "menu_select_text": "选择文本",
+      "menu_unresolve": "重新打开讨论",
       "resolved_bar_other": "已解决 · {{count}} 条消息，来自 {{authors}}",
       "resolved_bar_a11y_other": "已解决话题，共 {{count}} 条消息，来自 {{authors}}。点按展开。",
       "resolved_by": "解决者",
