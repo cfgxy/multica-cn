@@ -1,8 +1,10 @@
 package supervisor
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -150,6 +152,19 @@ func TestControlStdinSignalExitRoundTrip(t *testing.T) {
 	}
 }
 
+// TestControlReconnectLearnsExit pins the reconnect contract around the
+// worker exit:
+//   - a reconnect that lands before the exit is recorded gets the ready
+//     snapshot and then the exit broadcast (a valid [ready, exit] order);
+//   - the exit broadcast reaches the live reconnect;
+//   - the exit ends the launcher lifecycle: the listener shuts down and a
+//     late dial fails fast instead of hanging — a daemon that misses that
+//     window learns the exit from the manifest (supervisedHandle.Wait).
+//
+// The previous shape dialed the reconnect after pushing the exit and
+// asserted the first frame must be exit. That raced the dial against the
+// listener close (backlog conns died unserved and the test hung) and
+// outlawed the [ready, exit] order for conns served just before the exit.
 func TestControlReconnectLearnsExit(t *testing.T) {
 	f := startFakeLauncher(t)
 	first, err := DialControl(context.Background(), f.path, 2*time.Second)
@@ -159,38 +174,91 @@ func TestControlReconnectLearnsExit(t *testing.T) {
 	go first.Pump()
 	first.Events() // consume
 
-	// Daemon "dies" (without exit observed), worker exits, daemon restarts.
+	// Daemon "dies" (without exit observed), then reconnects while the
+	// worker is still alive.
 	first.Close()
-	f.exitCh <- WorkerExit{Code: 0}
-
-	select {
-	case <-f.srvErr:
-		t.Fatal("server must keep serving late connections after exit")
-	default:
-	}
-
 	second, err := DialControl(context.Background(), f.path, 2*time.Second)
 	if err != nil {
-		t.Fatalf("reconnect after worker exit: %v", err)
+		t.Fatalf("reconnect before worker exit: %v", err)
 	}
 	defer second.Close()
 	events := second.Events()
 	go second.Pump()
 	select {
 	case ev := <-events:
-		if ev.Ev != "exit" || ev.Code != 0 {
-			t.Fatalf("replayed event = %+v, want exit/0", ev)
+		if ev.Ev != "ready" || ev.PID != 4242 {
+			t.Fatalf("reconnect first event = %+v, want ready/4242", ev)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(2 * time.Second):
+		t.Fatal("no ready event on reconnect")
+	}
+
+	// Observing ready proves the server registered this conn (registration
+	// precedes the ready send in serve), so the exit broadcast below is
+	// guaranteed to include it.
+	f.exitCh <- WorkerExit{Code: 0}
+	select {
+	case ev := <-events:
+		if ev.Ev != "exit" || ev.Code != 0 {
+			t.Fatalf("reconnect exit event = %+v, want exit/0", ev)
+		}
+	case <-time.After(2 * time.Second):
 		t.Fatal("reconnected client did not learn the exit")
 	}
 	if e := second.ObservedExit(); e == nil || e.Code != 0 {
 		t.Fatalf("reconnected ObservedExit = %+v", e)
 	}
+
 	select {
 	case <-f.srvErr:
-	case <-time.After(30 * time.Second):
-		t.Fatal("server did not finish after exit replay")
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not finish after exit broadcast")
+	}
+	// The listener is gone with the launcher: a late dial must fail now.
+	if c, err := net.Dial("unix", f.path); err == nil {
+		c.Close()
+		t.Fatal("control listener still answering after worker exit")
+	}
+}
+
+// TestControlExitReplayToServedConnection pins serve()'s replay path for a
+// connection served after the exit was recorded: it gets the exit frame and
+// never a ready snapshot. Live, that window is a race against the listener
+// close, so it is exercised deterministically over an in-memory pipe.
+func TestControlExitReplayToServedConnection(t *testing.T) {
+	srv := &controlServer{
+		pid:    4242,
+		conns:  map[net.Conn]*controlConn{},
+		exited: true,
+		exit:   WorkerExit{Code: 7, Signal: "SIGKILL"},
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	go srv.serve(server)
+
+	cc := &ControlClient{conn: client, rd: bufio.NewReader(client)}
+	events := cc.Events()
+	pumpDone := make(chan struct{})
+	go func() {
+		defer close(pumpDone)
+		cc.Pump()
+	}()
+	select {
+	case ev := <-events:
+		if ev.Ev != "exit" || ev.Code != 7 || ev.Names != "SIGKILL" {
+			t.Fatalf("replay event = %+v, want exit/7/SIGKILL", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("served-after-exit connection did not get the exit replay")
+	}
+	if e := cc.ObservedExit(); e == nil || e.Code != 7 || e.Signal != "SIGKILL" {
+		t.Fatalf("replay ObservedExit = %+v", e)
+	}
+	// serve() closes the conn after the replay; the pump must finish.
+	select {
+	case <-pumpDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pump did not finish after the exit replay")
 	}
 }
 
