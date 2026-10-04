@@ -16,6 +16,8 @@ describe("readRuntimeBackpressure", () => {
         reason: "mem+swap",
         mem_available_pct: 8.4,
         swap_used_pct: 82.1,
+        psi_some_avg10: 62.5,
+        psi_read_ok: true,
         deferred_claims: 12,
         recorded_at: "2026-10-03T06:00:00Z",
       },
@@ -25,6 +27,8 @@ describe("readRuntimeBackpressure", () => {
       reason: "mem+swap",
       memAvailablePct: 8.4,
       swapUsedPct: 82.1,
+      psiSomeAvg10: 62.5,
+      psiReadOK: true,
       deferredClaims: 12,
       recordedAt: "2026-10-03T06:00:00Z",
     });
@@ -46,6 +50,8 @@ describe("readRuntimeBackpressure", () => {
       reason: "",
       memAvailablePct: 0,
       swapUsedPct: 0,
+      psiSomeAvg10: 0,
+      psiReadOK: false,
       deferredClaims: 0,
       recordedAt: "",
     });
@@ -57,11 +63,15 @@ describe("readRuntimeBackpressure", () => {
         active: true,
         mem_available_pct: "8.4",
         swap_used_pct: null,
+        psi_some_avg10: "62.5",
+        psi_read_ok: "yes",
         deferred_claims: "many",
       },
     });
     expect(bp?.memAvailablePct).toBe(0);
     expect(bp?.swapUsedPct).toBe(0);
+    expect(bp?.psiSomeAvg10).toBe(0);
+    expect(bp?.psiReadOK).toBe(false);
     expect(bp?.deferredClaims).toBe(0);
   });
 });
