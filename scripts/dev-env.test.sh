@@ -244,6 +244,7 @@ MULTICA_PUBLIC_URL=http://localhost:18123
 MULTICA_APP_URL=http://localhost:13123
 NEXT_PUBLIC_API_URL=http://localhost:18123
 NEXT_PUBLIC_WS_URL=ws://localhost:18123/ws
+REMOTE_API_URL=
 EOF
 bash -c 'source "$1"; rewrite_env_ports "$2" 512 18512 13512' _ \
   "$root_dir/scripts/dev-env.sh" "$tmp_dir/realloc/.env.worktree"
@@ -253,6 +254,25 @@ grep -Fxq 'POSTGRES_DB=multica' "$tmp_dir/realloc/.env.worktree" \
   || fail "reallocation renamed POSTGRES_DB; the shared database name must stay stable"
 grep -Fxq 'DATABASE_URL=postgres://multica:pw@localhost:5432/multica?sslmode=disable' "$tmp_dir/realloc/.env.worktree" \
   || fail "reallocation rewrote DATABASE_URL; only ports may move"
+
+# Browser-facing URLs must end up EMPTY after a slot rewrite: an absolute
+# NEXT_PUBLIC_API_URL sends the browser cross-origin, so the HttpOnly auth
+# cookie is never stored and a full reload logs the user out (RUYI-372).
+# Same-origin proxying is driven by the server-side REMOTE_API_URL instead.
+grep -Fxq 'NEXT_PUBLIC_API_URL=' "$tmp_dir/realloc/.env.worktree" \
+  || fail "reallocation left a browser-facing NEXT_PUBLIC_API_URL; the auth cookie cannot survive a cross-origin reload"
+grep -Fxq 'NEXT_PUBLIC_WS_URL=' "$tmp_dir/realloc/.env.worktree" \
+  || fail "reallocation left a browser-facing NEXT_PUBLIC_WS_URL; it must be derived from window.location"
+grep -Fxq 'REMOTE_API_URL=http://localhost:18512' "$tmp_dir/realloc/.env.worktree" \
+  || fail "reallocation did not point REMOTE_API_URL at the new backend port"
+
+# .env.example ships REMOTE_API_URL commented out, so the rewrite has to
+# inject the key when the env file carries no such line at all.
+sed -i '/^REMOTE_API_URL=/d' "$tmp_dir/realloc/.env.worktree"
+bash -c 'source "$1"; rewrite_env_ports "$2" 512 18512 13512' _ \
+  "$root_dir/scripts/dev-env.sh" "$tmp_dir/realloc/.env.worktree"
+grep -Fxq 'REMOTE_API_URL=http://localhost:18512' "$tmp_dir/realloc/.env.worktree" \
+  || fail "reallocation did not inject REMOTE_API_URL when the env file lacked it"
 
 # ---------------------------------------------------------------------------
 # A registered environment is visible to both renderings, and the JSON one
