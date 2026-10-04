@@ -19,11 +19,13 @@ import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import type { ChatMessage } from "@multica/core/types";
 import { useChatSelectStore } from "@/data/chat-select-store";
+import { useT } from "@/lib/use-t";
 import { useActionSheet, ActionSheetModal } from "@/components/ui/action-sheet";
 
 export function useChatMessageLongPress(
   message: ChatMessage,
 ): { onLongPress: () => void; isPressed: boolean; modalProps: React.ComponentProps<typeof ActionSheetModal> } {
+  const { t } = useT("chat");
   const [isPressed, setIsPressed] = useState(false);
   const sheet = useActionSheet();
 
@@ -46,10 +48,12 @@ export function useChatMessageLongPress(
     };
 
     if (hasContent) {
-      push("Copy", { kind: "copy" });
-      push("Select Text", { kind: "select" });
+      push(t("mobile.message_list.menu_copy", "Copy"), { kind: "copy" });
+      push(t("mobile.message_list.menu_select_text", "Select Text"), {
+        kind: "select",
+      });
     }
-    push("Cancel", { kind: "cancel" });
+    push(t("common:cancel", "Cancel"), { kind: "cancel" });
 
     const cancelButtonIndex = options.length - 1;
 
@@ -76,7 +80,7 @@ export function useChatMessageLongPress(
         }
       },
     });
-  }, [message, sheet]);
+  }, [message, sheet, t]);
 
   return { onLongPress, isPressed, modalProps: sheet.modalProps };
 }
