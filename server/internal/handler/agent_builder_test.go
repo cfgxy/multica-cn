@@ -1447,23 +1447,68 @@ func TestWaitForWaiterBlockedByIgnoresConcurrentIndexBuilds(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// Scratch relation for the concurrent build. Per-iteration name so
-	// -count=N reruns never collide with a predecessor's leftovers; the
-	// leading DROP IF EXISTS self-heals residue from a run that died before
-	// its cleanup.
-	table := strings.ReplaceAll(handlerTestSlug("probe_cic"), "-", "_") + "_" + fmt.Sprint(time.Now().UnixNano())
-	if _, err := testPool.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
-		t.Fatalf("drop stale probe table: %v", err)
+	// Scratch relation for the concurrent build, isolated in a per-iteration
+	// sandbox schema (RUYI-378). The probe's failure paths (t.Fatal while the
+	// build is still parked) used to leak the scratch table into the public
+	// schema when the bounded DROP raced the in-progress CIC and only logged
+	// the "tuple concurrently updated" error, and that residue failed
+	// TestWorkspaceDeletionManifestCoversPublicSchema on every later batch in
+	// the same database. A throwaway schema makes that structurally
+	// impossible — the guard reads schemaname = 'public' — and the hardened
+	// cleanup chain below reclaims the sandbox itself.
+	slug := strings.ReplaceAll(handlerTestSlug("probe_cic"), "-", "_")
+	schema := slug + "_" + fmt.Sprint(time.Now().UnixNano())
+	table := schema + ".probe_cic_target"
+	if _, err := testPool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatalf("create sandbox schema: %v", err)
 	}
+
+	// cicDone closes when the build goroutine returns; cicErr is only read
+	// after that (the close/receive pair gives the race detector the
+	// happens-before edge), including from the cleanup defer below.
+	var cicErr error
+	cicDone := make(chan struct{})
+
+	// Registered before the holder rollback defer so LIFO runs the rollback
+	// first and the build's main blocker is already gone when cleanup starts.
+	// The chain: bounded settle wait, terminate the build's backend if it is
+	// still in flight (the leak happened exactly here — a DROP racing the
+	// running CIC), then drop the table and the sandbox schema. Every step is
+	// bounded so a stalled environment degrades to a log line, never a suite
+	// failure.
 	defer func() {
-		// The build cannot outlive holderTx's rollback (deferred above by
-		// LIFO once the tx exists), but under a fully loaded batch it may
-		// need extra phase transitions to finish. Bound the drop instead of
-		// failing the suite on environment stalls.
-		dropCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		if _, err := testPool.Exec(dropCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", table)); err != nil {
-			t.Logf("drop probe table %s: %v (row lingers until pool recycle)", table, err)
+		select {
+		case <-cicDone:
+		case <-time.After(10 * time.Second):
+			if _, err := testPool.Exec(cleanupCtx, `
+				SELECT pg_terminate_backend(pid)
+				FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND state = 'active'
+				  AND query ILIKE $1
+			`, "%"+schema+"%"); err != nil {
+				t.Logf("terminate lingering probe CIC backend: %v", err)
+			}
+			select {
+			case <-cicDone:
+			case <-time.After(10 * time.Second):
+				t.Logf("probe CIC goroutine did not report back after backend termination")
+			}
+		}
+		var dropErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if _, dropErr = testPool.Exec(cleanupCtx, "DROP TABLE IF EXISTS "+table); dropErr == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if dropErr != nil {
+			t.Logf("drop probe table %s: %v (confined to sandbox schema %s)", table, dropErr, schema)
+		}
+		if _, err := testPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+schema); err != nil {
+			t.Logf("drop sandbox schema %s: %v", schema, err)
 		}
 	}()
 	if _, err := testPool.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id int)", table)); err != nil {
@@ -1484,11 +1529,13 @@ func TestWaitForWaiterBlockedByIgnoresConcurrentIndexBuilds(t *testing.T) {
 		t.Fatalf("hold our own session lock: %v", err)
 	}
 
-	cicDone := make(chan error, 1)
 	go func() {
-		_, err := testPool.Exec(context.Background(), fmt.Sprintf(
-			"CREATE INDEX CONCURRENTLY %s_idx ON %s (id)", table, table))
-		cicDone <- err
+		defer close(cicDone)
+		// The index name cannot be schema-qualified (CREATE INDEX grammar);
+		// it lands in the table's schema, so per-iteration sandboxing still
+		// keeps iterations collision-free.
+		_, cicErr = testPool.Exec(context.Background(), fmt.Sprintf(
+			"CREATE INDEX CONCURRENTLY probe_cic_target_idx ON %s (id)", table))
 	}()
 
 	// With holderTx open, the build cannot pass its wait-for-old-transactions
@@ -1506,14 +1553,14 @@ func TestWaitForWaiterBlockedByIgnoresConcurrentIndexBuilds(t *testing.T) {
 		t.Fatalf("release our own session lock: %v", err)
 	}
 	select {
-	case err := <-cicDone:
-		if err != nil {
-			t.Fatalf("concurrent index build: %v", err)
+	case <-cicDone:
+		if cicErr != nil {
+			t.Fatalf("concurrent index build: %v", cicErr)
 		}
 	case <-time.After(30 * time.Second):
 		// The assertion is already made; the deferred rollback above (and
-		// the bounded drop) settle the rest instead of failing on
+		// the bounded cleanup chain) settle the rest instead of failing on
 		// batch-load phase latency.
-		t.Logf("concurrent index build still finishing after 30s; drop handles it")
+		t.Logf("concurrent index build still finishing after 30s; cleanup reclaims it")
 	}
 }
