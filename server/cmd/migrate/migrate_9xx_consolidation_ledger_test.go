@@ -112,8 +112,7 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 // consolidation group, so the repair script must leave their ledger rows
 // untouched.
 var postConsolidationStems = []string{
-	"975_issue_decisions",
-	"976_issue_decisions_issue_idx",
+	"918_issue_decisions",
 }
 
 // finalStems are the 17 canonical 9xx stems of the consolidated tree, in
@@ -222,13 +221,13 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			objects: []string{"ALL"},
 		},
 		{
-			name: "new-tree-idempotent",
+			name:    "new-tree-idempotent",
 			initial: append([]string{"untouched"}, finalStems()...),
 			want:    nil, // computed below: unchanged
 			objects: []string{"ALL"},
 		},
 		{
-			name: "post-consolidation-tree-idempotent",
+			name:    "post-consolidation-tree-idempotent",
 			initial: append(append([]string{"untouched"}, finalStems()...), postConsolidationStems...),
 			want:    nil, // computed below: unchanged
 			objects: []string{"ALL"},
@@ -335,7 +334,7 @@ func TestRepair9xxConsolidationLedger(t *testing.T) {
 			for _, version := range tc.initial {
 				if _, err := conn.Exec(ctx,
 					"INSERT INTO schema_migrations VALUES ($1, '2026-01-01T00:00:00Z')", version); err != nil {
-				t.Fatal(err)
+					t.Fatal(err)
 				}
 			}
 			if tc.breakObject != "" {
