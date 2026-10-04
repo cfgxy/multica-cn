@@ -25,7 +25,9 @@ daemon ── systemd-run ──> multica-run-<run_id>.service
   saving the cursor re-delivers nothing (dedup on recovery).
 - Stdin control frames travel over a per-run Unix socket
   (`control.sock`); the daemon reconnects after a restart and the launcher
-  replays the exit event if the worker finished while nobody watched.
+  replays the exit event to a connection served before the control socket
+  closes with the exit. A reconnect that misses that window learns the exit
+  from `manifest.json`.
 - A per-run `manifest.json` (atomic replace) is the sole source of run
   identity: run id, task id, unit, PIDs, exit evidence. Nothing lives only
   in daemon memory.
