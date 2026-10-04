@@ -703,10 +703,14 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				bag["advanced"] = encoded
 			}
 		}
-		if *req.Disabled {
-			bag["disabled"] = json.RawMessage("true")
-		} else {
-			delete(bag, "disabled")
+		// Disabled is optional: absent leaves any stored key alone (partial
+		// PATCH), explicit true writes the flag, explicit false removes it.
+		if req.Disabled != nil {
+			if *req.Disabled {
+				bag["disabled"] = json.RawMessage("true")
+			} else {
+				delete(bag, "disabled")
+			}
 		}
 		encoded, err := json.Marshal(bag)
 		if err != nil {
