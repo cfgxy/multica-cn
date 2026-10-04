@@ -49,6 +49,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"autopilot_subscriber":            workspaceDelete,
 	"autopilot_trigger":               workspaceDelete,
 	"channel_binding_token":           workspaceDelete,
+	// Capability probe verdicts (RUYI-400) are installation-scoped
+	// diagnostics: DeleteWorkspace sweeps them through ws_installations.
+	"channel_capability_state":        workspaceDelete,
 	"channel_chat_context_generation": workspaceDelete,
 	// Run-trigger intents (RUYI-304) own nothing outside the database: the
 	// cascade deletes them directly instead of settling through a reconciler.
@@ -118,13 +121,16 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
 	"issue_vcs_pull_request":             workspaceDelete,
-	"lark_binding_token":                 workspaceDelete,
-	"lark_chat_session_binding":          workspaceDelete,
-	"lark_inbound_audit":                 workspaceDelete,
-	"lark_inbound_message_dedup":         workspaceDelete,
-	"lark_installation":                  workspaceDelete,
-	"lark_outbound_card_message":         workspaceDelete,
-	"lark_user_binding":                  workspaceDelete,
+	// Decision cards (RUYI-345) own nothing outside the database; the answer
+	// echo is a plain comment row swept with the rest of comment.
+	"issue_decisions":            workspaceDelete,
+	"lark_binding_token":         workspaceDelete,
+	"lark_chat_session_binding":  workspaceDelete,
+	"lark_inbound_audit":         workspaceDelete,
+	"lark_inbound_message_dedup": workspaceDelete,
+	"lark_installation":          workspaceDelete,
+	"lark_outbound_card_message": workspaceDelete,
+	"lark_user_binding":          workspaceDelete,
 	// A published prompt version outlives the workspace it came from
 	// (RUYI-100): other workspaces hold installs against it, and the catalog
 	// only ever shows the publisher, never the source workspace. Keep, not

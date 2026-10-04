@@ -36,6 +36,7 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   Issue,
+  IssueDecision,
   IssueLabelsResponse,
   IssuePriority,
   Label,
@@ -114,6 +115,10 @@ import {
   WorkspaceSubscriptionSummarySchema,
 } from "@multica/core/api/schemas";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
+import {
+  IssueDecisionSchema,
+  IssueDecisionsListSchema,
+} from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
   AgentListSchema,
@@ -1282,6 +1287,53 @@ class ApiClient {
   // short-circuits 204 → undefined (api.ts:270), so no body parsing needed.
   async deleteIssue(id: string): Promise<void> {
     await this.fetch<void>(`/api/issues/${id}`, { method: "DELETE" });
+  }
+
+  // --- Decision cards (RUYI-345) ---
+  // Mirrors packages/core/api/client.ts listIssueDecisions /
+  // answerIssueDecision / cancelIssueDecision. Schemas are shared from
+  // @multica/core/api/schemas; answer/cancel carry a body so they go
+  // through this.fetch + parseWithFallback directly (fetchValidated is
+  // GET-only, see its docstring).
+  async listIssueDecisions(issueId: string): Promise<IssueDecision[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions`);
+    return parseWithFallback(raw, IssueDecisionsListSchema, [], {
+      endpoint: "GET /api/issues/:id/decisions",
+    });
+  }
+
+  async answerIssueDecision(
+    issueId: string,
+    decisionId: string,
+    selectedIndices: number[],
+  ): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/decisions/${decisionId}/answer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ selected_indices: selectedIndices }),
+      },
+    );
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/answer",
+    });
+    if (!decision) throw new Error("Invalid decision answer response");
+    return decision;
+  }
+
+  async cancelIssueDecision(
+    issueId: string,
+    decisionId: string,
+  ): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/decisions/${decisionId}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/cancel",
+    });
+    if (!decision) throw new Error("Invalid decision cancel response");
+    return decision;
   }
 
   // --- Labels ---

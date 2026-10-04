@@ -121,6 +121,7 @@ const RUNNING_STATUSES: readonly AgentTask["status"][] = [
   "dispatched",
   "waiting_local_directory",
   "running",
+  "cancel_requested",
 ];
 
 /**
@@ -360,10 +361,10 @@ const STATUS_LABEL_EN: Record<AgentTask["status"], string> = {
   dispatched: "Starting",
   waiting_local_directory: "Waiting for directory",
   running: "Running",
+  cancel_requested: "Stopping",
   completed: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
-  cancel_requested: "Stopping",
 };
 
 /** Localized status word, same key family the runs list badge uses. */

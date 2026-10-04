@@ -2,6 +2,7 @@ import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
+  IssueDecision,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -227,6 +228,8 @@ import type {
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  LarkPermissionCatalogResponse,
+  RecheckLarkPermissionsResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -316,6 +319,8 @@ import {
   ChildIssuesResponseSchema,
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
+  IssueDecisionsListSchema,
+  IssueDecisionSchema,
   CommentTriggerPreviewSchema,
   IssueTriggerPreviewSchema,
   CloudRuntimeNodeListSchema,
@@ -1507,6 +1512,39 @@ export class ApiClient {
     const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "POST /api/issues/:id/comments" });
     if (!comment.id) throw new Error("Invalid comment response");
     return comment;
+  }
+
+  // Decision cards (RUYI-345). Answering is a human act in the UI; the
+  // server refuses agent callers regardless of what the client sends.
+  async listIssueDecisions(issueId: string): Promise<IssueDecision[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions`);
+    return parseWithFallback(raw, IssueDecisionsListSchema, [], {
+      endpoint: "GET /api/issues/:id/decisions",
+    });
+  }
+
+  async answerIssueDecision(issueId: string, decisionId: string, selectedIndices: number[]): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ selected_indices: selectedIndices }),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/answer",
+    });
+    if (!decision) throw new Error("Invalid decision answer response");
+    return decision;
+  }
+
+  async cancelIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/cancel",
+    });
+    if (!decision) throw new Error("Invalid decision cancel response");
+    return decision;
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
@@ -5838,6 +5876,27 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ token }),
     });
+  }
+
+  /** The static capability→scope catalog (RUYI-400). Member-visible,
+   * read-only: the bind dialog's upfront permission declaration reads
+   * this so what the user is told matches what the probe later tests. */
+  async getLarkPermissionCatalog(workspaceId: string): Promise<LarkPermissionCatalogResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/permission-catalog`);
+  }
+
+  /** Re-runs the capability probe for an installation NOW and returns
+   * the fresh verdicts (RUYI-400). Server persists them, so a refetch
+   * of the installations list carries the same states. 409 for revoked
+   * installations, 503 when the Lark integration is not configured. */
+  async recheckLarkPermissions(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<RecheckLarkPermissionsResponse> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/recheck-permissions`,
+      { method: "POST" },
+    );
   }
 
   // Composio integration (MUL-3720). All routes are user-scoped (a connection

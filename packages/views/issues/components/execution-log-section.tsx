@@ -568,6 +568,15 @@ export function ActiveTaskRow({
     requestedAtMs !== null &&
     now - requestedAtMs >= CANCEL_UNCONFIRMED_AFTER_MS;
 
+  // RUYI-397 admission code: the server stamps queued_reason while the
+  // agent's host is under a memory-backpressure hold. Swapping the plain
+  // "Queued" label for a named reason turns a silent stall into something a
+  // user can act on (free memory on the host, or wait it out); the tooltip
+  // carries the full sentence. Rows the server sent without the field — old
+  // servers, recovered holds — render exactly as before.
+  const queuedBackpressured =
+    task.status === "queued" && task.queued_reason === "runtime_backpressure";
+
   // Transcript only meaningful once messages exist — pure-queued and
   // waiting_local_directory tasks haven't streamed any agent output yet.
   const showTranscript =
@@ -607,6 +616,13 @@ export function ActiveTaskRow({
               <span className="text-info tabular-nums">{elapsed}</span>
               <span className="sr-only">{label}</span>
             </>
+          ) : queuedBackpressured ? (
+            <span
+              className={`${tone} min-w-0 truncate`}
+              title={t(($) => $.execution_log.queued_backpressure_hint)}
+            >
+              {t(($) => $.execution_log.status_queued_backpressure)}
+            </span>
           ) : (
             <span className={`${tone} min-w-0 truncate`}>{label}</span>
           )}

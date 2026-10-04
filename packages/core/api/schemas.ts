@@ -983,6 +983,33 @@ const TimelineEntrySchema = z.object({
 // sizes (p99 ~30 entries per issue) paged delivery only created bugs.
 export const TimelineEntriesSchema = z.array(TimelineEntrySchema);
 
+// Decision cards (RUYI-345). Mirrors handler.IssueDecisionResponse.
+export const DecisionOptionSchema = z.object({
+  label: z.string(),
+}).loose();
+
+export const IssueDecisionSchema = z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  source_comment_id: z.string().nullable().optional(),
+  question: z.string(),
+  options: z.array(DecisionOptionSchema),
+  multi_select: z.boolean(),
+  recommended_indices: z.array(z.number().int()),
+  status: z.enum(["open", "answered", "cancelled"]),
+  selected_indices: z.array(z.number().int()),
+  answered_by_type: z.string().nullable().optional(),
+  answered_by_id: z.string().nullable().optional(),
+  answered_at: z.string().nullable().optional(),
+  answer_comment_id: z.string().nullable().optional(),
+  created_by_type: z.string(),
+  created_by_id: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const IssueDecisionsListSchema = z.array(IssueDecisionSchema);
+
 export const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
 
 const OptionalStringSchema = z.preprocess(
@@ -1834,6 +1861,8 @@ export const AgentTaskSchema = z.object({
   result: z.unknown().default(null),
   error: z.string().nullable().default(null),
   failure_reason: z.string().optional(),
+  // RUYI-397 admission code; degrades independently like the fields below.
+  queued_reason: z.string().optional().catch(undefined),
   created_at: z.string().default(""),
   chat_session_id: z.string().optional(),
   autopilot_run_id: z.string().optional(),

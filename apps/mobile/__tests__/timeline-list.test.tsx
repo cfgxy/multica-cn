@@ -95,12 +95,29 @@ jest.mock("@expo/vector-icons", () => ({
   Ionicons: () => null,
 }));
 
+// The decision-card + decisions-query import chain (RUYI-345) reaches
+// @/data/api, whose module scope reads EXPO_PUBLIC_API_URL — stand in the
+// decision methods only; everything else in this suite stays mocked above.
+jest.mock("@/data/api", () => ({
+  api: {
+    listIssueDecisions: () => Promise.resolve([]),
+    answerIssueDecision: () => Promise.resolve({}),
+    cancelIssueDecision: () => Promise.resolve({}),
+    listMembers: () => Promise.resolve([]),
+    listAgents: () => Promise.resolve([]),
+    listSquads: () => Promise.resolve([]),
+  },
+}));
+
 jest.mock("expo-haptics", () => ({
   impactAsync: jest.fn(),
 }));
 
 jest.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: [] }),
+  // passthrough: the decisions options builder (RUYI-345) just labels an
+  // options object; the stubbed useQuery above never runs its queryFn.
+  queryOptions: (opts: unknown) => opts,
 }));
 
 jest.mock("@/components/ui/text", () => {

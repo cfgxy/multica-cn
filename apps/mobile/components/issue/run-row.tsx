@@ -32,6 +32,7 @@ const ACTIVE_STATUSES: readonly AgentTask["status"][] = [
   "queued",
   "dispatched",
   "running",
+  "cancel_requested",
 ];
 
 /** queued has no messages yet, so it gets no detail entry (spec ②). */
@@ -269,10 +270,10 @@ const STATUS_LABEL: Record<AgentTask["status"], string> = {
   dispatched: "Starting",
   waiting_local_directory: "Waiting for directory",
   running: "Running",
+  cancel_requested: "Stopping",
   completed: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
-  cancel_requested: "Stopping",
 };
 
 const STATUS_CLASS: Record<AgentTask["status"], string> = {
@@ -280,8 +281,9 @@ const STATUS_CLASS: Record<AgentTask["status"], string> = {
   dispatched: "text-brand",
   waiting_local_directory: "text-muted-foreground",
   running: "text-brand",
+  // RUYI-292: stop accepted, confirmation pending — warning tone, still active.
+  cancel_requested: "text-warning",
   completed: "text-muted-foreground",
   failed: "text-destructive",
   cancelled: "text-muted-foreground",
-  cancel_requested: "text-muted-foreground",
 };

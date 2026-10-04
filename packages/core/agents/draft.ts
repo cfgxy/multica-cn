@@ -11,6 +11,8 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_RESOURCE_WEIGHT_MAX,
+  AGENT_RESOURCE_WEIGHT_MIN,
 } from "./constants";
 
 // Declared with the other agent wire types so `StoredAgentDraft` can name it
@@ -250,6 +252,15 @@ export function buildCreateAgentRequest(options: {
       sourceConcurrency <= AGENT_MAX_CONCURRENT_TASKS_MAX
     ) {
       request.max_concurrent_tasks = sourceConcurrency;
+    }
+    const sourceWeight = duplicateSource.resource_weight;
+    if (
+      typeof sourceWeight === "number" &&
+      Number.isInteger(sourceWeight) &&
+      sourceWeight >= AGENT_RESOURCE_WEIGHT_MIN &&
+      sourceWeight <= AGENT_RESOURCE_WEIGHT_MAX
+    ) {
+      request.resource_weight = sourceWeight;
     }
   }
   return request;

@@ -70,26 +70,48 @@ Different worktrees intentionally share the PostgreSQL container and `multica`. 
 ### Full workflow
 
 ```bash
-make up               # Start this checkout's environment (C=api,web,daemon,desktop)
-make status           # Show what is running and prove it is this environment
-make list             # List every environment on this machine
-make down             # Stop the processes, keep the database
-make destroy          # Stop, then drop the database and free the slot
-make gc               # Collect expired or directory-less environments
-make dev              # Prepare and start the current checkout in the foreground
-make check            # Run the complete local verification workflow
-make build            # Build the server, CLI, and migrate binaries
+make up SLOT=dev1      # Start slot dev1's environment (C=api,web,daemon,desktop)
+make status SLOT=dev1  # Show what is running and prove it is this environment
+make list              # List every fixed slot on this machine (dev1, dev2)
+make down SLOT=dev1    # Stop the processes, keep the database
+make destroy SLOT=dev1 # Stop, then drop the slot database and free the slot
+make orphans SLOT=dev1 # Acceptance: nothing of this slot survives down/destroy
+make gc                # Collect expired qa-phase slots
+make dev               # Prepare and start the current checkout in the foreground
+make check             # Run the complete local verification workflow
+make build             # Build the server, CLI, and migrate binaries
 ```
 
-`make up` treats an environment as a named object: it allocates the API, Web and Desktop renderer ports,
-database name and CLI profile under a lock and records them in `~/.multica/dev/`,
-so two checkouts cannot land on the same slot without one of them being told.
-It verifies the database through `DATABASE_URL` and the backend through
-`GET /health`, which reports `pid`, `commit` and `started_at` — a 200 alone
-would also come from a leftover process on the same port. `make destroy`
-removes the database, CLI profile, daemon workspaces, Desktop userData and
-registry entry; a failed deletion keeps the registry entry for retry. Temporary
-environments are collected best-effort on the next `make up` after their TTL.
+There are exactly two fixed slots (dev1, dev2); QA verification reuses the
+issue's own slot rather than a dedicated QA slot. `make up SLOT=<slot>` treats
+an environment as a fixed slot: the slot's ports, database (`multica_<slot>`),
+account (`<slot>_app`) and directories are fixed facts in `scripts/slots.json`,
+so two environments can never drift into sharing a database. The slot's env
+file is generated under `~/.multica/slots/<slot>/` and re-verified before every
+start; write commands require the owning issue via `MULTICA_CALLER_OWNER`, and
+a slot held by an in-progress issue refuses takeover (`lock-status` /
+`lock-recover` manage the handover). It verifies the database through
+`DATABASE_URL` and the backend through `GET /health`, which reports `pid`,
+`commit` and `started_at` — a 200 alone would also come from a leftover
+process on the same port. The slot lease carries a role phase:
+`scripts/dev-env.sh <slot> handoff --to qa` moves it atomically from
+development to QA verification (and back with `--to dev`) within the same
+issue; only the qa phase has a TTL (24h idle, collected by `make gc`) — dev
+phase is handed back at issue closure via `lock-release`. `make destroy
+SLOT=<slot>` removes the database, CLI profile, daemon workspaces, Desktop
+userData and slot directory; a failed deletion keeps the manifest for retry,
+and `make orphans SLOT=<slot>` afterwards proves nothing of the slot survives
+(processes, ports, worktrees, containers — exit 1 lists what is left). Each
+slot runs inside the resource budget from `scripts/slots.json`
+(`resource_budget`): 4 pinned CPU cores per slot, api ≤ 768MB, web ≤ 8192MB,
+daemon/desktop ≤ 256MB, enforced at launch (`GOMEMLIMIT` / `NODE_OPTIONS`) and
+by a per-slot watchdog (`scripts/slot-watchdog.sh`) that resamples each
+component's real process tree plus its proven port listener every tick and
+kills it after two consecutive RSS breaches. web's 8192MB covers the measured
+post-compile idle steady state (peaks 6356/6434MB across two independent
+soaks) with ≥25% headroom; a fully-loaded dual-slot projection stays under
+~21GB on a 30GB host. The shared PostgreSQL
+container is capped in `docker-compose.yml` (2g memory / 4 cpus).
 
 ### Frontend
 

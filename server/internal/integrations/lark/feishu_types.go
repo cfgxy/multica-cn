@@ -27,7 +27,16 @@ type InboundMessage struct {
 	// ingestion keeps it so the adapter can extract image_key/file_key before
 	// translating to channel.InboundMessage.
 	Content     string
-	RecentMedia []RecentMediaMessage
+	RecentMedia []EnrichedMediaMessage
+	// QuotedMedia carries the media descriptors (message_id + msg_type +
+	// content JSON) of the message this one quote-replies to, captured by
+	// the enricher when the quoted parent fetch succeeded. The media
+	// resolver downloads them through the same ingest path as the
+	// trigger's own media, so a reply to a file message hands the agent
+	// the referenced attachment. Unlike RecentMedia (a prefetch that a
+	// /new must NOT inherit), quoted media is explicitly attached by the
+	// user and survives a fresh-session start.
+	QuotedMedia []EnrichedMediaMessage
 	// ForceFreshSession marks this dispatch as a one-off fresh start: the
 	// daemon should skip prior session resume when it claims the resulting
 	// chat task.
@@ -62,7 +71,11 @@ type InboundMessage struct {
 	CommandBody string
 }
 
-type RecentMediaMessage struct {
+// EnrichedMediaMessage is one media-bearing message the enricher surfaced
+// alongside the trigger — either a recent group message (RecentMedia) or
+// the quoted reply parent (QuotedMedia). Content is the raw msg_type-
+// specific JSON the media resolver parses for image_key/file_key.
+type EnrichedMediaMessage struct {
 	MessageID   string
 	MessageType string
 	Content     string
