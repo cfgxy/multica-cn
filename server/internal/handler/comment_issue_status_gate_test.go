@@ -9,8 +9,10 @@ import (
 	"testing"
 )
 
-// RUYI-391: a comment triggers an agent run only from an execution status.
-// The gate is server-side and sits before every dispatch decision, so these
+// RUYI-391: a comment triggers an agent run unless the issue's status category
+// refuses it. todo, in_progress, in_review, done and blocked admit runs —
+// blocked stays wakeable through comments; backlog and cancelled do not. The
+// gate is server-side and sits before every dispatch decision, so these
 // tests drive the HTTP handlers (create, reply, preview) against a real
 // database and assert on the task queue, not just the response payload.
 
@@ -50,14 +52,17 @@ func gateTestMentionContent(t *testing.T, agentID string) string {
 }
 
 // TestCommentStatusGate_ForbiddenStatusesDoNotDispatch covers the core
-// acceptance rule: on backlog, cancelled, and blocked issues a mention comment
+// acceptance rule: on backlog and cancelled issues a mention comment
 // still saves (201) but creates no run, and the author gets an honest
-// per-target blocked outcome instead of a silent no-op (MUL-4525 §2).
+// per-target blocked outcome instead of a silent no-op (MUL-4525 §2). blocked
+// is deliberately absent here — it is on the admitted side (Owner-corrected
+// semantics); the contrast with these two is pinned in
+// TestCommentStatusGate_AdmittedStatusesDispatch and the transition test.
 func TestCommentStatusGate_ForbiddenStatusesDoNotDispatch(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	for _, status := range []string{"backlog", "cancelled", "blocked"} {
+	for _, status := range []string{"backlog", "cancelled"} {
 		t.Run(status, func(t *testing.T) {
 			agentID := createHandlerTestAgent(t, "Gate Forbidden "+status, nil)
 			issueID := createCommentTriggerPreviewIssue(t, "gate forbidden "+status, "", "")
@@ -133,12 +138,14 @@ func TestCommentStatusGate_ThreadReplyDoesNotDispatch(t *testing.T) {
 }
 
 // TestCommentStatusGate_AdmittedStatusesDispatch pins the whitelist: every
-// execution status keeps the pre-existing dispatch behavior unchanged.
+// admitted status — the execution statuses plus blocked, which must stay
+// wakeable through comments (Owner-corrected semantics) — keeps dispatch
+// working through an ordinary mention comment.
 func TestCommentStatusGate_AdmittedStatusesDispatch(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	for _, status := range []string{"todo", "in_progress", "in_review", "done"} {
+	for _, status := range []string{"todo", "in_progress", "in_review", "done", "blocked"} {
 		t.Run(status, func(t *testing.T) {
 			agentID := createHandlerTestAgent(t, "Gate Admitted "+status, nil)
 			issueID := createCommentTriggerPreviewIssue(t, "gate admitted "+status, "", "")
@@ -164,7 +171,9 @@ func TestCommentStatusGate_AdmittedStatusesDispatch(t *testing.T) {
 // TestCommentStatusGate_TransitionTakesEffectImmediately is the regression
 // pair from the acceptance criteria: the gate reads the status at dispatch
 // time, so backlog -> todo starts dispatching and todo -> cancelled stops,
-// each on the very next comment.
+// each on the very next comment. The tail legs pin the Owner-corrected
+// contrast on the SAME issue: -> blocked dispatches again (the unblock-by-
+// comment channel), and -> backlog shuts it once more.
 func TestCommentStatusGate_TransitionTakesEffectImmediately(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -215,6 +224,48 @@ func TestCommentStatusGate_TransitionTakesEffectImmediately(t *testing.T) {
 	if n := countIssueTasksForGateTest(t, issueID); n != 1 {
 		t.Fatalf("cancelled comment changed task count to %d, want 1 (no new run)", n)
 	}
+
+	// Same issue flips to blocked: the next mention comment dispatches again —
+	// this is the unblock-by-comment channel the blocked status exists for.
+	// The todo-era row is terminalized first (fixture write standing in for
+	// the RUYI-384 cascade that a real -> cancelled flip runs), so the blocked
+	// comment exercises a FRESH enqueue instead of coalescing into the
+	// still-pending trigger from the todo leg.
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status = 'queued'`, issueID); err != nil {
+		t.Fatalf("terminalize todo-era task: %v", err)
+	}
+	setIssueStatusForGateTest(t, issueID, "blocked")
+	code, resp = postCommentForGateTest(t, issueID, map[string]any{
+		"content": gateTestMentionContent(t, agentID),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("blocked comment: expected 201, got %d", code)
+	}
+	outcome = findCommentOutcome(t, resp.TriggerOutcomes, agentID)
+	if outcome.Status != DispatchQueued {
+		t.Fatalf("blocked-status outcome = %+v, want queued", outcome)
+	}
+	if n := countIssueTasksForGateTest(t, issueID); n != 2 {
+		t.Fatalf("blocked comment changed task count to %d, want 2 (cancelled-era row + new run)", n)
+	}
+
+	// And back to backlog: the very next comment is refused again, so the
+	// blocked admission above is the whitelist's work, not drift.
+	setIssueStatusForGateTest(t, issueID, "backlog")
+	code, resp = postCommentForGateTest(t, issueID, map[string]any{
+		"content": gateTestMentionContent(t, agentID),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("backlog-again comment: expected 201, got %d", code)
+	}
+	outcome = findCommentOutcome(t, resp.TriggerOutcomes, agentID)
+	if outcome.Status != DispatchBlocked || outcome.ReasonCode != ReasonIssueStatusNotDispatchable {
+		t.Fatalf("backlog-again outcome = %+v, want blocked/%s", outcome, ReasonIssueStatusNotDispatchable)
+	}
+	if n := countIssueTasksForGateTest(t, issueID); n != 2 {
+		t.Fatalf("backlog-again comment changed task count to %d, want 2 (no new run)", n)
+	}
 }
 
 // TestCommentStatusGate_CustomStatusFollowsCategory pins the category-based
@@ -231,6 +282,9 @@ func TestCommentStatusGate_CustomStatusFollowsCategory(t *testing.T) {
 	}{
 		{key: "gatepark", category: "backlog", wantDispatch: false},
 		{key: "gatego", category: "todo", wantDispatch: true},
+		// A custom status in the blocked category must dispatch like blocked
+		// itself: the category, not the key, carries the wakeable semantics.
+		{key: "gatewait", category: "blocked", wantDispatch: true},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			if _, err := testPool.Exec(ctx, `
@@ -302,5 +356,61 @@ func TestPreviewCommentTriggers_StatusGate(t *testing.T) {
 	})
 	if len(preview.Agents) != 1 {
 		t.Fatalf("todo preview agents = %+v, want the agent", preview.Agents)
+	}
+
+	// blocked must read the same on both sides of the submit boundary: the
+	// preview lists the agent (the issue is wakeable, nothing to warn about)
+	// and the submit really queues — preview and submit cannot disagree.
+	setIssueStatusForGateTest(t, issueID, "blocked")
+	preview = previewCommentTriggersForTest(t, issueID, map[string]any{
+		"content": gateTestMentionContent(t, agentID),
+	})
+	if len(preview.Agents) != 1 {
+		t.Fatalf("blocked preview agents = %+v, want the agent (blocked is wakeable)", preview.Agents)
+	}
+	if len(preview.Blocked) != 0 {
+		t.Fatalf("blocked preview blocked = %+v, want none", preview.Blocked)
+	}
+	code, resp := postCommentForGateTest(t, issueID, map[string]any{
+		"content": gateTestMentionContent(t, agentID),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("blocked submit: expected 201, got %d", code)
+	}
+	if outcome := findCommentOutcome(t, resp.TriggerOutcomes, agentID); outcome.Status != DispatchQueued {
+		t.Fatalf("blocked submit outcome = %+v, want queued (preview/submit consistency)", outcome)
+	}
+	if n := countIssueTasksForGateTest(t, issueID); n != 1 {
+		t.Fatalf("blocked submit produced %d tasks, want 1", n)
+	}
+}
+
+// TestCommentStatusGate_BlockedThreadReplyDispatches pins the wakeable path
+// end to end: a mention inside a thread REPLY on a blocked issue dispatches
+// exactly like on todo — unblocking through a corrective reply is part of
+// what the blocked status is for, so the gate must not swallow it.
+func TestCommentStatusGate_BlockedThreadReplyDispatches(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "Gate Blocked Reply Agent", nil)
+
+	issueID := createCommentTriggerPreviewIssue(t, "gate reply blocked", "", "")
+	setIssueStatusForGateTest(t, issueID, "blocked")
+	rootID := insertMemberRootCommentForTriggerPreviewTest(t, issueID, "root of the blocked thread")
+
+	code, resp := postCommentForGateTest(t, issueID, map[string]any{
+		"content":   gateTestMentionContent(t, agentID),
+		"parent_id": rootID,
+	})
+	if code != http.StatusCreated || resp.ID == "" {
+		t.Fatalf("blocked reply comment must save (201), got %d id=%q", code, resp.ID)
+	}
+	outcome := findCommentOutcome(t, resp.TriggerOutcomes, agentID)
+	if outcome.Status != DispatchQueued {
+		t.Fatalf("blocked reply outcome = %+v, want queued", outcome)
+	}
+	if n := countIssueTasksForGateTest(t, issueID); n != 1 {
+		t.Fatalf("blocked reply produced %d tasks, want 1", n)
 	}
 }
