@@ -85,12 +85,47 @@ export interface RuntimeDevice {
    * a missing value as `null` (built-in).
    */
   profile_id?: string | null;
+  /**
+   * RUYI-425 §4.1: how this instance was born — "daemon_discovered" (a
+   * daemon resolved a profile's command and registered it) or "manual" (an
+   * API-backed voice instance registered without a daemon). Older backends
+   * omit it; treat missing as "daemon_discovered".
+   */
+  registration_source?: string;
+  /**
+   * RUYI-425 §4.5 credential badge tri-state: "not_configured" (no
+   * credential), "configured" (present, last connectivity probe OK or not
+   * run yet) or "invalid" (last probe failed). Never carries the value.
+   * Older backends omit it; treat missing as "not_configured".
+   */
+  credential_status?: "not_configured" | "configured" | "invalid";
+  /**
+   * RUYI-425 §4.2: the Type-layer protocol family this instance inherits
+   * through its profile (built-in instances: their provider). The slot
+   * pickers group and filter on it. Older backends omit it.
+   */
+  protocol_family?: string;
+  /**
+   * RUYI-425 §4.4: the family's capability declaration. Older backends omit
+   * it; consumers must treat missing as "unfilterable" and show all.
+   */
+  capabilities?: RuntimeCapabilities;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export type AgentRuntime = RuntimeDevice;
+
+// RUYI-425 §4.4: a protocol family's capability declaration, mirrored from
+// server/pkg/agent/capabilities.go. Capabilities belong to the Type layer
+// (the runtime profile), not the instance — two Gemini Live instances share
+// one declaration and differ only in credentials.
+export interface RuntimeCapabilities {
+  text: boolean;
+  realtime_voice: boolean;
+  tools: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Custom runtime profiles (MUL-3284)
@@ -154,6 +189,11 @@ export interface RuntimeProfile {
   visibility: RuntimeProfileVisibility;
   created_by: string | null;
   enabled: boolean;
+  /**
+   * RUYI-425 §4.4: the family's capability declaration (Type layer). Older
+   * backends omit it; consumers must treat missing as "unfilterable".
+   */
+  capabilities?: RuntimeCapabilities;
   created_at: string;
   updated_at: string;
 }
@@ -581,6 +621,14 @@ export interface Agent {
   runtime_id: string;
   /** False exactly when the agent has no runtime. Older backends omit it. */
   runtime_bound?: boolean;
+  /**
+   * RUYI-425 §7.1 voice slot: the runtime bound for realtime voice. Empty
+   * string when none — mirrors `runtime_id`'s unbound contract. Older
+   * backends omit it; treat missing as unbound.
+   */
+  voice_runtime_id?: string;
+  /** False exactly when the agent has no voice runtime. Older backends omit it. */
+  voice_runtime_bound?: boolean;
   name: string;
   description: string;
   /** What this agent's owner wrote. For a system agent this holds only the
@@ -766,6 +814,12 @@ export interface CreateAgentRequest {
   conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id: string;
+  /**
+   * RUYI-425 §7.1 voice slot. Omit for "不配置语音"; when present the server
+   * validates the instance's realtime_voice capability and rejects the text
+   * slot's instance (one instance cannot hold both slots).
+   */
+  voice_runtime_id?: string;
   runtime_config?: Record<string, unknown>;
   custom_env?: Record<string, string>;
   custom_args?: string[];
@@ -874,6 +928,14 @@ export interface UpdateAgentRequest {
   conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id?: string;
+  /**
+   * RUYI-425 §7.1 voice slot, tri-state:
+   *   - field omitted → keep the current binding
+   *   - "" (empty string) → clear the binding
+   *   - runtime id → bind/replace (the server validates realtime_voice
+   *     capability and refuses the text slot's instance)
+   */
+  voice_runtime_id?: string;
   runtime_config?: Record<string, unknown>;
   /**
    * NOTE: `custom_env` is intentionally NOT updatable through this
