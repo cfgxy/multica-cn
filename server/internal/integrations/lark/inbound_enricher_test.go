@@ -31,6 +31,11 @@ type enricherFakeClient struct {
 	userNames map[string]string
 	usersErr  error
 	userCalls [][]string
+
+	// SendInteractiveCard recorder (permission-hint tests) + optional
+	// per-attempt failure sequence.
+	cardSends  []SendCardParams
+	cardErrSeq []error
 }
 
 func newEnricherFake() *enricherFakeClient {
@@ -85,8 +90,16 @@ func (f *enricherFakeClient) DownloadMessageResource(context.Context, Installati
 }
 
 // Unused-by-enricher methods — present only to satisfy APIClient.
-func (f *enricherFakeClient) SendInteractiveCard(context.Context, SendCardParams) (string, error) {
-	return "", nil
+func (f *enricherFakeClient) SendInteractiveCard(_ context.Context, p SendCardParams) (string, error) {
+	f.cardSends = append(f.cardSends, p)
+	if len(f.cardErrSeq) > 0 {
+		err := f.cardErrSeq[0]
+		f.cardErrSeq = f.cardErrSeq[1:]
+		if err != nil {
+			return "", err
+		}
+	}
+	return "om_hint_card", nil
 }
 func (f *enricherFakeClient) PatchInteractiveCard(context.Context, PatchCardParams) error { return nil }
 func (f *enricherFakeClient) SendTextMessage(context.Context, SendTextParams) (string, error) {

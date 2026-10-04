@@ -738,7 +738,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Credentials: installSvc,
 					Logger:      slog.Default(),
 				})
-				mediaResolver := lark.NewFeishuMediaResolver(larkClient, installSvc, store, engine.NewDBMediaIntentLedger(queries), slog.Default())
+				mediaResolver := lark.NewFeishuMediaResolver(larkClient, installSvc, store, engine.NewDBMediaIntentLedger(queries), slog.Default(), lark.NewPermissionHintSender(larkClient, slog.Default()))
 				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
 					cs, feishuSession, auditLogger, resolverReplier, typingIndicator, mediaResolver,
 				))
@@ -2788,6 +2788,7 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 	enricher := lark.NewInboundEnricher(apiClient, lark.InboundEnricherConfig{
 		RecentContextSize: lark.DefaultRecentContextSize,
 		Logger:            slog.Default(),
+		Hints:             lark.NewPermissionHintSender(apiClient, slog.Default()),
 	})
 	conn, err := lark.NewWSLongConnConnector(lark.WSConnectorConfig{
 		Dialer:              dialer,
