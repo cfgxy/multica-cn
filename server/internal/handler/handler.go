@@ -33,6 +33,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/legislation"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
@@ -236,6 +237,12 @@ type Handler struct {
 	PATCache         *auth.PATCache
 	DaemonTokenCache *auth.DaemonTokenCache
 	MembershipCache  *auth.MembershipCache
+	// JevAdvisory is the warn-only jev soft-judgment client (RUYI-347).
+	// Nil falls back to the process default built from the
+	// MULTICA_JEV_ADVISORY_* environment; an empty BaseURL disables the
+	// layer. Every fault degrades to a stored skip report — the fail-closed
+	// gate semantics never depend on this client.
+	JevAdvisory *legislation.AdvisoryClient
 	// UserStateCache fronts the persisted disabled flag for the auth
 	// paths (RUYI-47). Admin handlers invalidate the entry for a user
 	// right after flipping disabled/super-admin state so the change is

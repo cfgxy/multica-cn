@@ -85,7 +85,7 @@ import type {
   UpdatePromptQuizItemRequest,
   PromptGovernanceVersion,
   PromptGovernanceVersionList,
-  SavePromptGovernanceVersionRequest,
+  SnapshotPromptGovernanceVersionRequest,
   CreatePromptQuizBatchRequest,
   MarketplaceListing,
   MarketplacePlaceholder,
@@ -228,6 +228,8 @@ import type {
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  LarkPermissionCatalogResponse,
+  RecheckLarkPermissionsResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -3345,26 +3347,27 @@ export class ApiClient {
   }
 
   /**
-   * Saves an edit as a new version: the server appends the row, copies the
-   * content into the tier's business column, and returns the created version.
+   * Snapshots the carrier's currently effective content as a new version row
+   * (RUYI-285 rework): the server reads the live text, appends the row with
+   * source "snapshot", and never touches the business column. The caller does
+   * not supply content — only an optional change note.
    *
-   * A secret-scan hit throws ApiError with status 422 and a
-   * PromptSecretScanBlockedSchema body (`code: "prompt_secret_detected"`); a
-   * blank content over live non-empty text is a 409. There is no override for
-   * either — the caller shows the findings (or the guard message) and the
-   * editor edits the text.
+   * A secret-scan hit on the live text throws ApiError with status 422 and a
+   * PromptSecretScanBlockedSchema body (`code: "prompt_secret_detected"`);
+   * a carrier with no effective content is a 400. There is no override for
+   * either — the caller shows the findings (or the guard message).
    */
-  async savePromptGovernanceVersion(
+  async snapshotPromptGovernanceVersion(
     scope: string,
     scopeId: string,
-    input: SavePromptGovernanceVersionRequest,
+    input: SnapshotPromptGovernanceVersionRequest = {},
   ): Promise<PromptGovernanceVersion> {
     const raw = await this.fetch<unknown>(
-      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions`,
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions/snapshot`,
       { method: "POST", body: JSON.stringify(input) },
     );
     return parseWithFallback(raw, PromptGovernanceVersionSchema, EMPTY_PROMPT_GOVERNANCE_VERSION, {
-      endpoint: "POST /api/prompt-governance/{scope}/{id}/versions",
+      endpoint: "POST /api/prompt-governance/{scope}/{id}/versions/snapshot",
     });
   }
 
@@ -5873,6 +5876,27 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ token }),
     });
+  }
+
+  /** The static capability→scope catalog (RUYI-400). Member-visible,
+   * read-only: the bind dialog's upfront permission declaration reads
+   * this so what the user is told matches what the probe later tests. */
+  async getLarkPermissionCatalog(workspaceId: string): Promise<LarkPermissionCatalogResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/permission-catalog`);
+  }
+
+  /** Re-runs the capability probe for an installation NOW and returns
+   * the fresh verdicts (RUYI-400). Server persists them, so a refetch
+   * of the installations list carries the same states. 409 for revoked
+   * installations, 503 when the Lark integration is not configured. */
+  async recheckLarkPermissions(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<RecheckLarkPermissionsResponse> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/recheck-permissions`,
+      { method: "POST" },
+    );
   }
 
   // Composio integration (MUL-3720). All routes are user-scoped (a connection

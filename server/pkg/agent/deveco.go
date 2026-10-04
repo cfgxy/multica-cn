@@ -143,19 +143,24 @@ func (b *devecoBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	}
 	cmd.Env = env
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("deveco stdout pipe: %w", err)
 	}
 	cmd.Stderr = newLogWriter(b.cfg.Logger, "[deveco:stderr] ")
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start deveco: %w", err)
 	}
 
-	b.cfg.Logger.Info("deveco started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("deveco started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -196,7 +201,7 @@ func (b *devecoBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		startTime := time.Now()
 		scanResult := b.processEvents(stdout, msgCh)
 
-		exitErr := cmd.Wait()
+		exitErr := sess.Wait(runCtx)
 		close(procDone)
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
@@ -212,7 +217,7 @@ func (b *devecoBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			scanResult.errMsg = fmt.Sprintf("deveco exited with error: %v", exitErr)
 		}
 
-		b.cfg.Logger.Info("deveco finished", "pid", cmd.Process.Pid, "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("deveco finished", "pid", sess.PID(), "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
 
 		// Build usage map. DevEco doesn't report model per-step, so attribute
 		// all usage to the configured model (or "unknown").

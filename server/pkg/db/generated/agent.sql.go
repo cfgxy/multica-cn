@@ -819,7 +819,10 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // caller can reconcile each agent's status and broadcast task:cancelled events
 // (#1587). Prior :exec form silently dropped that info, leaving agents stuck at
 // status="working" with no self-correction. Only issue-deletion cleanup calls
-// this now; a status flip to cancelled/done no longer does (MUL-4465).
+// this now (MUL-4465): it terminalizes in-flight rows outright, which is right
+// for "the issue is GONE" and wrong for "the issue was cancelled" — that flow
+// is CancelOpenAgentTasksByIssueCancellation (RUYI-384), which keeps in-flight
+// rows two-phase.
 func (q *Queries) CancelAgentTasksByIssue(ctx context.Context, issueID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByIssue, issueID)
 	if err != nil {
@@ -1155,6 +1158,126 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 
 func (q *Queries) CancelDeferredEscalationsForTask(ctx context.Context, escalationForTaskID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelDeferredEscalationsForTask, escalationForTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.PromptVersions,
+			&i.CancelRequestedByUserID,
+			&i.CancelRequestedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const cancelOpenAgentTasksByIssueCancellation = `-- name: CancelOpenAgentTasksByIssueCancellation :many
+UPDATE agent_task_queue
+SET status = CASE WHEN status IN ('queued', 'deferred')
+                  THEN 'cancelled' ELSE 'cancel_requested' END,
+    completed_at = CASE WHEN status IN ('queued', 'deferred') THEN now() END,
+    cancel_requested_at = CASE WHEN status IN ('dispatched', 'running', 'waiting_local_directory')
+                               THEN now() END,
+    cancel_requested_by_user_id = CASE WHEN status IN ('dispatched', 'running', 'waiting_local_directory')
+                                       THEN $2::uuid END,
+    prepare_lease_expires_at = NULL,
+    failure_reason = CASE WHEN status IN ('queued', 'deferred') THEN 'issue_cancelled' END
+WHERE issue_id = $1
+  AND status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory')
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at
+`
+
+type CancelOpenAgentTasksByIssueCancellationParams struct {
+	IssueID                 pgtype.UUID `json:"issue_id"`
+	CancelRequestedByUserID pgtype.UUID `json:"cancel_requested_by_user_id"`
+}
+
+// RUYI-384: the cascade an issue→cancelled flip runs against its open runs.
+// One statement applies the RUYI-292 cancel matrix per row:
+//   - queued/deferred rows never started — no process anywhere — so they flip
+//     straight to 'cancelled' with failure_reason='issue_cancelled' recording
+//     who ended them. ('deferred' goes here rather than to cancel_requested
+//     unlike the single-run matrix: a cancel_requested deferred row on a
+//     HEALTHY runtime has no convergence path — no daemon ever saw it, the
+//     promote sweep matches only status='deferred', the offline sweep matches
+//     only dead runtimes — so routing it through cancel_requested would strand
+//     it non-terminal forever. The server is authoritative for never-started
+//     rows either way.)
+//   - dispatched/running/waiting_local_directory rows flip to
+//     'cancel_requested' (stamping cancel_requested_by/at for the audit) and
+//     settle through the normal two-phase machinery: daemon poll → interrupt →
+//     cancel-ack, with /complete and /fail as terminal guards and
+//     ConvergeCancelRequestedForOfflineRuntimes as the dead-runtime backstop.
+//
+// Terminal rows never match, and a row already in cancel_requested (an earlier
+// single-run cancel) keeps its original requester and timestamp — the service
+// layer re-nudges those via ListCancellingAgentTasksByIssue instead of
+// rewriting them. Idempotent: a second cascade pass matches nothing.
+func (q *Queries) CancelOpenAgentTasksByIssueCancellation(ctx context.Context, arg CancelOpenAgentTasksByIssueCancellationParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, cancelOpenAgentTasksByIssueCancellation, arg.IssueID, arg.CancelRequestedByUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -1702,6 +1825,20 @@ WHERE id = (
                 AND active.autopilot_run_id IS NULL
               )
             )
+      )
+      -- RUYI-384: a queued row whose issue is cancelled is never claimed. The
+      -- enqueue fence (issue_accepts_runs) stops NEW rows on a cancelled issue
+      -- and the issue-cancel cascade flips existing ones, but a claim racing
+      -- that cascade can read the row before the cascade's UPDATE lands — this
+      -- fenceless read is the belt to the fence's braces, and it makes the
+      -- last-ditch window close: claim and cancel cannot both win.
+      AND (
+          atq.issue_id IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM issue ci
+              WHERE ci.id = atq.issue_id
+                AND issue_effective_status(ci.workspace_id, ci.status) = 'cancelled'
+          )
       )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
@@ -2758,7 +2895,7 @@ SELECT
     $21,
     $22,
     COALESCE($23::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+WHERE lock_task_owner_rows($1, $3, $2) AND issue_accepts_runs($3) AND issue_accepts_runs($3)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at
 `
 
@@ -2806,6 +2943,11 @@ type CreateAgentTaskParams struct {
 // COALESCE keeps the column's gen_random_uuid() default reachable, so a caller
 // that passes no id still inserts — it just gets a random v4, exactly as before.
 // The same pattern is used by every INSERT listed in pkg/dbid's write table.
+// RUYI-384: the run fence also refuses a cancelled issue. issue_accepts_runs
+// FOR SHARE-locks the issue row, so an enqueue either commits before the
+// issue's cancellation (whose cascade then cancels the new row) or blocks and
+// re-reads the committed cancelled status — the enqueue writes no row. Both
+// orderings leave no run behind on a cancelled issue.
 func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, createAgentTask,
 		arg.AgentID,
@@ -2918,7 +3060,7 @@ SELECT
     $18,
     $19,
     COALESCE($20::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+WHERE lock_task_owner_rows($1, $3, $2) AND issue_accepts_runs($3)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at
 `
 
@@ -3075,7 +3217,7 @@ SELECT
     $22,
     $23,
     COALESCE($24::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+WHERE lock_task_owner_rows($1, $3, $2) AND issue_accepts_runs($3)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at
 `
 
@@ -3475,6 +3617,7 @@ SELECT
 FROM agent_task_queue p
 WHERE p.id = $1
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
+  AND issue_accepts_runs(p.issue_id)
 ON CONFLICT (issue_id, agent_id) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
@@ -6448,6 +6591,94 @@ func (q *Queries) ListAllAgentsAnyKind(ctx context.Context, workspaceID pgtype.U
 			&i.SessionMaxContextTokens,
 			&i.SessionCompactPct,
 			&i.MarketplacePromptState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCancellingAgentTasksByIssue = `-- name: ListCancellingAgentTasksByIssue :many
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at FROM agent_task_queue
+WHERE issue_id = $1 AND status = 'cancel_requested'
+`
+
+// RUYI-384: rows the issue-cancellation cascade found ALREADY in
+// cancel_requested (from an earlier single-run cancel). They must not be
+// rewritten — their original cancel_requested_by/at is the audit trail — but
+// they still need the interrupt nudge re-broadcast so any daemon that
+// resubscribed late sees the stop. Read-only on purpose.
+func (q *Queries) ListCancellingAgentTasksByIssue(ctx context.Context, issueID pgtype.UUID) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listCancellingAgentTasksByIssue, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.PromptVersions,
+			&i.CancelRequestedByUserID,
+			&i.CancelRequestedAt,
 		); err != nil {
 			return nil, err
 		}

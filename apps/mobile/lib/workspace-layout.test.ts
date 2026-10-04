@@ -38,6 +38,7 @@ vi.mock("@/data/realtime/use-my-issues-realtime", () => ({ useMyIssuesRealtime: 
 vi.mock("@/data/realtime/use-chat-sessions-realtime", () => ({ useChatSessionsRealtime: vi.fn() }));
 vi.mock("@/data/realtime/use-projects-realtime", () => ({ useProjectsRealtime: vi.fn() }));
 vi.mock("@/data/realtime/use-pins-realtime", () => ({ usePinsRealtime: vi.fn() }));
+vi.mock("@/data/realtime/use-squads-realtime", () => ({ useSquadsRealtime: vi.fn() }));
 vi.mock("@/data/realtime/use-presence-realtime", () => ({ usePresenceRealtime: vi.fn() }));
 vi.mock("@/lib/use-workspace-presence-prefetch", () => ({ useWorkspacePresencePrefetch: vi.fn() }));
 vi.mock("@/components/ui/modal-close-button", () => ({ ModalCloseButton: () => null }));

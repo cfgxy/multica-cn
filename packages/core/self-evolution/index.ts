@@ -61,7 +61,7 @@ export {
 export {
   promptVersionKeys,
   promptGovernanceVersionsOptions,
-  useSavePromptVersion,
+  useSnapshotPromptVersion,
   useSwitchPromptVersion,
 } from "./version-queries";
 export { selfEvolutionOverviewKeys, selfEvolutionOverviewOptions } from "./overview-queries";

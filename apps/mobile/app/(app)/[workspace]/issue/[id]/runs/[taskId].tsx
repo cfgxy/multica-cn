@@ -216,6 +216,7 @@ const STATUS_TONE: Record<AgentTask["status"], string> = {
   completed: "text-muted-foreground",
   failed: "text-destructive",
   cancelled: "text-muted-foreground",
+  cancel_requested: "text-muted-foreground",
 };
 
 function FailurePanel({ task }: { task: AgentTask }) {

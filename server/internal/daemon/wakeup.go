@@ -117,7 +117,7 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	}
 	// Advertise the same capabilities as the HTTP path so a claim built over
 	// this WS connection gets identical capability gating (MUL-4257).
-	headers.Set("X-Client-Capabilities", daemonClientCapabilities())
+	headers.Set("X-Client-Capabilities", daemonClientCapabilities(d.client.workerSupervision.Load()))
 
 	// A hand-built websocket.Dialer has Proxy == nil, which gorilla reads as
 	// "dial direct" — unlike websocket.DefaultDialer, it does not fall back to
@@ -306,8 +306,12 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 			return
 		}
 		frame, err := json.Marshal(protocol.Message{
-			Type:    protocol.EventDaemonHeartbeat,
-			Payload: marshalRaw(protocol.DaemonHeartbeatRequestPayload{RuntimeID: rid, SupportsBatchImport: true}),
+			Type: protocol.EventDaemonHeartbeat,
+			Payload: marshalRaw(protocol.DaemonHeartbeatRequestPayload{
+				RuntimeID:           rid,
+				SupportsBatchImport: true,
+				Backpressure:        d.backpressureReport(),
+			}),
 		})
 		if err != nil {
 			d.logger.Debug("ws heartbeat marshal failed", "error", err, "runtime_id", rid)

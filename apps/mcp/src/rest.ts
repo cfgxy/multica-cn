@@ -16,21 +16,29 @@
 import { stderrLogger, type Logger } from "./log.js";
 import type {
   ActiveTaskInfo,
+  AddIssueRelationBody,
+  AddIssueRelationResult,
   AgentInfo,
   CancelRunResult,
   CommentInfo,
   CommentListParams,
   CreateCommentBody,
   CreateIssueBody,
+  CreateProjectBody,
   IssueInfo,
   IssueListParams,
   IssueListResult,
+  IssueRelationType,
+  IssueRelationsInfo,
   ProjectInfo,
   QuickCreateBody,
+  RemoveIssueRelationResult,
   RunDetail,
   RunInfo,
   SearchIssueInfo,
+  UpdateCommentBody,
   UpdateIssueBody,
+  UpdateProjectBody,
   WorkspaceInfo,
 } from "./types.js";
 
@@ -43,11 +51,19 @@ export function isUuid(value: string): boolean {
 
 export class MulticaApiError extends Error {
   readonly status: number;
+  /**
+   * Parsed JSON object body when the server answered with one (undefined
+   * otherwise). Structured error codes — e.g. the 409 `revision_conflict`
+   * payload's `actual_revision` — are read from here, never from the
+   * flattened message string.
+   */
+  readonly body: Record<string, unknown> | undefined;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: Record<string, unknown>) {
     super(`Multica API ${status}: ${message}`);
     this.name = "MulticaApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -105,6 +121,30 @@ export class MulticaClient {
       workspace,
       query: { limit: params.limit, offset: params.offset },
     });
+  }
+
+  async getProject(workspace: string, projectId: string): Promise<ProjectInfo> {
+    return this.request<ProjectInfo>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}`,
+      { workspace },
+    );
+  }
+
+  async createProject(workspace: string, body: CreateProjectBody): Promise<ProjectInfo> {
+    return this.request<ProjectInfo>("POST", "/api/projects", { workspace, body });
+  }
+
+  async updateProject(
+    workspace: string,
+    projectId: string,
+    body: UpdateProjectBody,
+  ): Promise<ProjectInfo> {
+    return this.request<ProjectInfo>(
+      "PUT",
+      `/api/projects/${encodeURIComponent(projectId)}`,
+      { workspace, body },
+    );
   }
 
   async listIssues(
@@ -165,6 +205,7 @@ export class MulticaClient {
         tail: params.tail,
         roots_only: params.roots_only === undefined ? undefined : String(params.roots_only),
         summary: params.summary === undefined ? undefined : String(params.summary),
+        fold: params.fold === undefined ? undefined : String(params.fold),
       },
     });
   }
@@ -192,6 +233,23 @@ export class MulticaClient {
     );
   }
 
+  async updateComment(
+    workspace: string,
+    commentId: string,
+    body: UpdateCommentBody,
+  ): Promise<CommentInfo> {
+    return this.request<CommentInfo>(
+      "PUT",
+      `/api/comments/${encodeURIComponent(commentId)}`,
+      { workspace, body },
+    );
+  }
+
+  async deleteComment(workspace: string, commentId: string): Promise<void> {
+    // The handler answers 204 with an empty body; request() resolves undefined.
+    await this.request("DELETE", `/api/comments/${encodeURIComponent(commentId)}`, { workspace });
+  }
+
   async updateIssue(
     workspace: string,
     issueId: string,
@@ -201,6 +259,44 @@ export class MulticaClient {
       "PUT",
       `/api/issues/${encodeURIComponent(issueId)}`,
       { workspace, body },
+    );
+  }
+
+  // ---- structured issue relations (RUYI-351) -----------------------------
+  // Pure relationship changes: the server guarantees these never start,
+  // wake, or queue an agent run.
+
+  async getIssueRelations(workspace: string, issueId: string): Promise<IssueRelationsInfo> {
+    return this.request(
+      "GET",
+      `/api/issues/${encodeURIComponent(issueId)}/relations`,
+      { workspace },
+    );
+  }
+
+  async addIssueRelation(
+    workspace: string,
+    issueId: string,
+    body: AddIssueRelationBody,
+  ): Promise<AddIssueRelationResult> {
+    return this.request(
+      "POST",
+      `/api/issues/${encodeURIComponent(issueId)}/relations`,
+      { workspace, body },
+    );
+  }
+
+  async removeIssueRelation(
+    workspace: string,
+    issueId: string,
+    relationType: IssueRelationType,
+    targetIssueId: string,
+    expectedRevision?: number,
+  ): Promise<RemoveIssueRelationResult> {
+    return this.request(
+      "DELETE",
+      `/api/issues/${encodeURIComponent(issueId)}/relations/${encodeURIComponent(relationType)}/${encodeURIComponent(targetIssueId)}`,
+      { workspace, query: { expected_revision: expectedRevision } },
     );
   }
 
@@ -324,7 +420,11 @@ export class MulticaClient {
 
     const rawBody = await response.text();
     if (!response.ok) {
-      throw new MulticaApiError(response.status, describeErrorBody(rawBody, response.status));
+      throw new MulticaApiError(
+        response.status,
+        describeErrorBody(rawBody, response.status),
+        parseErrorObject(rawBody),
+      );
     }
     if (rawBody.length === 0) {
       return undefined as T;
@@ -356,4 +456,17 @@ function describeErrorBody(rawBody: string, status: number): string {
     // Fall through to the generic description.
   }
   return `HTTP ${status}`;
+}
+
+/** Keeps the parsed JSON object body on MulticaApiError.body for structured outcomes. */
+function parseErrorObject(rawBody: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(rawBody);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Non-JSON error bodies carry no structured payload.
+  }
+  return undefined;
 }

@@ -370,9 +370,19 @@ WHERE lock_task_owner_rows(sqlc.arg('agent_id'), NULL::uuid, sqlc.arg('runtime_i
 RETURNING *;
 
 -- name: ListFinishedPromptQuizTasks :many
--- Quiz runs that reached a terminal state and have no measurement row yet.
+-- Quiz runs that reached a terminal state and still await a grade decision.
 -- Driven off originator_source so the collector can never pick up a production
 -- run, even one that also has no issue.
+--
+-- RUYI-325: keying this guard on row existence alone retired a task the moment
+-- any measurement row landed. On a shared database running mixed API versions
+-- a pre-grading build can win the sweep lease and store its row with score,
+-- score_detail and graded_at all NULL, and every newer build would then be
+-- blocked from filling the grade in — a permanent placeholder. A row retires
+-- here only once it carries a verdict: a score, or the graded_at stamp the
+-- collector writes when it judges the run not gradeable. Rows from
+-- score-incapable writers (all three NULL) keep coming back and are graded —
+-- or explicitly judged — on a later tick.
 SELECT
     atq.id AS task_id,
     atq.agent_id,
@@ -415,7 +425,9 @@ WHERE atq.originator_source = 'quiz'
   AND atq.status IN ('completed', 'failed', 'cancelled')
   AND atq.completed_at IS NOT NULL
   AND NOT EXISTS (
-    SELECT 1 FROM prompt_quiz_result r WHERE r.task_id = atq.id
+    SELECT 1 FROM prompt_quiz_result r
+    WHERE r.task_id = atq.id
+      AND (r.score IS NOT NULL OR r.graded_at IS NOT NULL)
   )
 ORDER BY atq.completed_at
 LIMIT sqlc.arg('row_limit')::int;

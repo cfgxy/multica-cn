@@ -33,7 +33,10 @@ WHERE id = $1
 RETURNING *;
 
 -- name: UpdateProjectInstructionsForPromptVersion :one
-UPDATE project SET instructions = $2, updated_at = now()
+-- Bumps revision (RUYI-354): this is a real project-metadata write, so a
+-- client holding an expected_revision from before the activation/rollback
+-- must lose the race instead of overwriting the restored instructions.
+UPDATE project SET instructions = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
 RETURNING *;
 
@@ -134,3 +137,23 @@ FROM prompt_version v
 LEFT JOIN "user" u ON u.id = v.author_user_id
 WHERE v.workspace_id = $1
 ORDER BY v.scope, v.created_at DESC;
+
+-- name: LockAutopilotForPromptVersion :one
+-- Same shape as the four tier locks above (RUYI-285 rework): lock the
+-- owning autopilot row and read its run prompt — the nullable description
+-- column, normalized to '' so the empty-content guard sees one shape.
+SELECT id, COALESCE(description, '')::text AS effective_content FROM autopilot WHERE id = $1 AND workspace_id = $2 FOR UPDATE;
+
+-- name: LockSkillForPromptVersion :one
+SELECT id, COALESCE(content, '')::text AS effective_content FROM skill WHERE id = $1 AND workspace_id = $2 FOR UPDATE;
+
+-- name: UpdateAutopilotDescriptionForPromptVersion :one
+-- Switch/rollback write-back only; the snapshot path never calls these.
+UPDATE autopilot SET description = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateSkillContentForPromptVersion :one
+UPDATE skill SET content = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;

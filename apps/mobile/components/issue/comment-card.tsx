@@ -9,11 +9,12 @@
  * different layout — web shows recursive tree, mobile shows one bubble per
  * thread. Counts agree (no comment is dropped or duplicated).
  *
- * Interaction: long-press inside a bubble fires a native iOS
- * `ActionSheetIOS` with the comment's actions (Reply, React…, Copy,
- * Select Text, Copy Link, Resolve, Delete). While the sheet is on screen
- * the targeted bubble's border highlights. See `useCommentLongPress` in
- * `./comment-context-menu.tsx`.
+ * Interaction: long-press inside a bubble fires a cross-platform action
+ * sheet (`useActionSheet`: native `ActionSheetIOS` on iOS, Modal bottom
+ * sheet on Android) with the comment's actions (Reply, React…, Copy,
+ * Select Text, Copy Link, Resolve, Edit, Delete). While the sheet is on
+ * screen the targeted bubble's border highlights. See `useCommentLongPress`
+ * in `./comment-context-menu.tsx`; Edit opens `CommentEditModal`.
  *
  * Resolved threads render in a collapsed `<ResolvedThreadBar>` by default —
  * mirrors the same state language web uses (`packages/views/issues/
@@ -31,7 +32,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, View, ActivityIndicator, Alert } from "react-native";
 import Animated, {
   cancelAnimation,
   useAnimatedStyle,
@@ -57,8 +58,13 @@ import { CommentAttachmentList } from "@/components/issue/comment-attachment-lis
 import {
   discardFailedComment,
   useCreateComment,
+  useRerunIssue,
   useToggleCommentReaction,
 } from "@/data/mutations/issues";
+import {
+  retryableAgentFailureComment,
+  retryFailureMessage,
+} from "@/lib/task-retry";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
@@ -69,6 +75,7 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/use-t";
 import { ReactionBar } from "./reaction-bar";
 import { useCommentLongPress } from "./comment-context-menu";
+import { CommentEditModal } from "./comment-edit-modal";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useCommentFocusStore } from "@/data/stores/comment-focus-store";
@@ -830,8 +837,9 @@ function CommentBody({
   //     inline-insert).
   // Mirrors web's split: comment-card.tsx:124 `AttachmentList`.
   //
-  // When NOT selecting: long-press fires the native ActionSheetIOS via
-  // useCommentLongPress. Markdown is non-selectable so the long-press
+  // When NOT selecting: long-press fires the cross-platform action sheet
+  // via useCommentLongPress (native ActionSheetIOS on iOS, Modal bottom
+  // sheet on Android). Markdown is non-selectable so the long-press
   // gesture doesn't race UIKit's text selection.
   //
   // When selecting: long-press wrapper is gone, markdown is selectable.
@@ -882,6 +890,9 @@ function CommentBody({
         attachments={entry.attachments}
         content={entry.content}
       />
+      {!failed && retryableAgentFailureComment(entry) && (
+        <TaskRetryStrip issueId={issueId} taskId={entry.source_task_id} />
+      )}
       {failed ? (
         <FailedActions
           error={failed.error}
@@ -905,8 +916,68 @@ function CommentBody({
       <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
         {body}
       </Pressable>
-      <ActionSheetModal {...longPress.modalProps} />
+      {/* One <ActionSheetModal> per sheet — the main menu and the nested
+       *  React… sheet each own their modal props; spreading them into a
+       *  single modal bound it to the react sheet only, so the main menu
+       *  never rendered on Android. */}
+      <ActionSheetModal {...longPress.mainModalProps} />
+      <ActionSheetModal {...longPress.reactModalProps} />
+      {longPress.isEditing ? (
+        <CommentEditModal
+          issueId={issueId}
+          commentId={entry.id}
+          initialContent={entry.content ?? ""}
+          onClose={longPress.closeEdit}
+        />
+      ) : null}
     </Fragment>
+  );
+}
+
+/**
+ * RUYI-343 — retry strip beneath an agent failure comment, mobile mirror of
+ * web's `TaskCommentRetryButton` (comment-card.tsx): fires the issue-level
+ * rerun with the comment's source task id so the right agent re-runs, not
+ * the issue's current assignee. Only rendered for entries passing
+ * `retryableAgentFailureComment`; the admission gate lives in
+ * lib/task-retry.ts (unit-tested there). Errors surface as a native alert
+ * with the same permission-vs-transient distinction as web's toast.
+ */
+function TaskRetryStrip({ issueId, taskId }: { issueId: string; taskId: string }) {
+  const { t } = useT("issues");
+  const mutation = useRerunIssue(issueId);
+
+  const onPress = () => {
+    if (mutation.isPending) return;
+    mutation.mutate(taskId, {
+      onError: (err) =>
+        Alert.alert(
+          t("execution_log.retry_failed", "Failed to retry task"),
+          retryFailureMessage(err),
+        ),
+    });
+  };
+
+  return (
+    <View className="flex-row items-center gap-2">
+      {mutation.isPending ? (
+        <ActivityIndicator size="small" />
+      ) : null}
+      <Pressable
+        onPress={onPress}
+        disabled={mutation.isPending}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={t(
+          "execution_log.retry_task_aria",
+          "Retry task",
+        )}
+      >
+        <Text className="text-xs text-primary font-medium">
+          {t("execution_log.retry_task_tooltip", "Retry task")}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 

@@ -1049,12 +1049,17 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("codex stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("codex stdin pipe: %w", err)
@@ -1071,7 +1076,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	// the process group configured above already covers that and this is a plain
 	// Start. Ownership that cannot be taken is logged, not fatal; a child that
 	// cannot be resumed is killed and reported here.
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start codex: %w", err)
 	}
@@ -1088,7 +1093,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		codexVersion = "unknown"
 	}
 
-	b.cfg.Logger.Info("codex lifecycle", "phase", "spawn", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "process_group", cmd.Process.Pid, "cwd", opts.Cwd, "attempt", attempt, "active_launches", activeLaunches, "codex_version", codexVersion, "daemon_version", b.cfg.DaemonVersion)
+	b.cfg.Logger.Info("codex lifecycle", "phase", "spawn", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", sess.PID(), "process_group", sess.PID(), "cwd", opts.Cwd, "attempt", attempt, "active_launches", activeLaunches, "codex_version", codexVersion, "daemon_version", b.cfg.DaemonVersion)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -1117,7 +1122,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		processDone:            make(chan struct{}),
 		handshakeTimeout:       handshakeTimeout,
 		threadHandshakeTimeout: threadHandshakeTimeout,
-		pid:                    cmd.Process.Pid,
+		pid:                    sess.PID(),
 		attempt:                attempt,
 		activeLaunches:         activeLaunches,
 		notificationProtocol:   "unknown",
@@ -1243,7 +1248,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			startProcessWait := func() {
 				startWait.Do(func() {
 					go func() {
-						cleanupWaitErr = cmd.Wait()
+						cleanupWaitErr = sess.Wait(runCtx)
 						close(waitCh)
 					}()
 				})
@@ -1261,7 +1266,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				// group-kills the tree, the reader unblocks when stdout
 				// EOFs, and we proceed to phase 2.
 				b.cfg.Logger.Warn("codex did not close stdout after stdin EOF; forcing shutdown",
-					"pid", cmd.Process.Pid,
+					"pid", sess.PID(),
 					"grace", grace.String(),
 				)
 				cancel()
@@ -1275,7 +1280,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				case <-readerDone:
 				case <-time.After(grace):
 					b.cfg.Logger.Warn("codex stdout reader remained open after bounded process wait",
-						"pid", cmd.Process.Pid,
+						"pid", sess.PID(),
 						"grace", grace.String(),
 					)
 				}
@@ -1291,7 +1296,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				// reaped cleanly.
 			case <-time.After(grace):
 				b.cfg.Logger.Warn("codex process still alive after reader exited; forcing shutdown",
-					"pid", cmd.Process.Pid,
+					"pid", sess.PID(),
 					"grace", grace.String(),
 				)
 				cancel()
@@ -1313,8 +1318,8 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				"phase", "cleanup",
 				"task_id", b.cfg.TaskID,
 				"runtime_id", b.cfg.RuntimeID,
-				"pid", cmd.Process.Pid,
-				"process_group", cmd.Process.Pid,
+				"pid", sess.PID(),
+				"process_group", sess.PID(),
 				"attempt", attempt,
 				"latency", time.Since(launchStarted).Round(time.Millisecond).String(),
 				"reaped", cleanupConfirmed,
@@ -1349,7 +1354,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 
 		// 1. Initialize handshake
 		initializeStarted := time.Now()
-		b.cfg.Logger.Info("codex lifecycle", "phase", "initialize_sent", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "active_launches", activeLaunches)
+		b.cfg.Logger.Info("codex lifecycle", "phase", "initialize_sent", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", sess.PID(), "attempt", attempt, "active_launches", activeLaunches)
 		_, err := c.request(runCtx, "initialize", map[string]any{
 			"clientInfo": map[string]any{
 				"name":    "multica-agent-sdk",
@@ -1389,11 +1394,11 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			} else if timedOut && cleanupConfirmed && !codexInitializeRetrySupported() {
 				finalError += "; retry suppressed: process-tree cleanup cannot be confirmed on this platform"
 			}
-			b.cfg.Logger.Warn("codex lifecycle", "phase", "initialize_failure", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "latency", initializeLatency.Round(time.Millisecond).String(), "semantic_activity", semanticObserved.Load(), "cleanup_confirmed", cleanupConfirmed, "retry_safe", retrySafe)
+			b.cfg.Logger.Warn("codex lifecycle", "phase", "initialize_failure", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", sess.PID(), "attempt", attempt, "latency", initializeLatency.Round(time.Millisecond).String(), "semantic_activity", semanticObserved.Load(), "cleanup_confirmed", cleanupConfirmed, "retry_safe", retrySafe)
 			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), codexInitializeRetrySafe: retrySafe}
 			return
 		}
-		b.cfg.Logger.Info("codex lifecycle", "phase", "initialize_response", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", cmd.Process.Pid, "attempt", attempt, "latency", time.Since(initializeStarted).Round(time.Millisecond).String())
+		b.cfg.Logger.Info("codex lifecycle", "phase", "initialize_response", "task_id", b.cfg.TaskID, "runtime_id", b.cfg.RuntimeID, "pid", sess.PID(), "attempt", attempt, "latency", time.Since(initializeStarted).Round(time.Millisecond).String())
 		c.notify("initialized")
 
 		// 2. Start a new thread, or resume the prior one for this issue. When
@@ -1419,7 +1424,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 					"phase", strings.ReplaceAll(c.threadSetupMethod, "/", "_")+"_failure",
 					"task_id", b.cfg.TaskID,
 					"runtime_id", b.cfg.RuntimeID,
-					"pid", cmd.Process.Pid,
+					"pid", sess.PID(),
 					"attempt", attempt,
 					"active_launches", activeLaunches,
 					"method", c.threadSetupMethod,
@@ -1648,7 +1653,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 					Model:        opts.Model,
 				}
 				b.cfg.Logger.Warn(CodexFirstTurnNoProgressMarker,
-					"pid", cmd.Process.Pid,
+					"pid", sess.PID(),
 					"thread_id", threadID,
 					"turn_id", c.turnID,
 					"timeout", firstTurnNoProgressTimeout.String(),
@@ -1667,7 +1672,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 					Model:        opts.Model,
 				}
 				b.cfg.Logger.Warn(CodexSemanticInactivityMarker,
-					"pid", cmd.Process.Pid,
+					"pid", sess.PID(),
 					"thread_id", threadID,
 					"turn_id", c.turnID,
 					"timeout", semanticInactivityTimeout.String(),
@@ -1698,7 +1703,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("codex finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("codex finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		// Run cleanup. drainAndWait handles the graceful-then-cancel pattern
 		// in two bounded phases (see its declaration): wait for the reader,
@@ -1729,7 +1734,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 			cleanupConfirmed && codexInitializeRetrySupported()
 		if startupRefreshRetrySafe {
 			b.cfg.Logger.Warn("codex startup model catalog refresh failure is retry safe",
-				"pid", cmd.Process.Pid,
+				"pid", sess.PID(),
 				"thread_id", threadID,
 				"attempt", attempt,
 			)
@@ -1751,7 +1756,7 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				"phase", "first_item_wait",
 				"task_id", b.cfg.TaskID,
 				"runtime_id", b.cfg.RuntimeID,
-				"pid", cmd.Process.Pid,
+				"pid", sess.PID(),
 				"attempt", attempt,
 				"active_launches", activeLaunches,
 				"method", "turn/start",

@@ -412,8 +412,9 @@
       "agent": "Agent"
     },
     "source": {
-      "system": "System",
-      "member": "Member"
+      "manual": "Manual",
+      "retrospective": "Daily retrospective",
+      "merged": "Merged"
     },
     "create": "New proposal",
     "createTitle": "New prompt legislation proposal",
@@ -473,15 +474,19 @@
     "rejectPlaceholder": "Why this proposal is rejected — the reason stays on the record.",
     "rejectConfirm": "Reject proposal",
     "ownerOnly": "Owner only",
-    "source": {
-      "manual": "Manual",
-      "retrospective": "Daily retrospective",
-      "merged": "Merged"
-    },
     "empty": "No proposals here yet.",
     "emptyHint": "Draft one from real execution evidence, or let the daily retrospective propose.",
     "error": "The write failed. Check your inputs and retry.",
-    "batchPartial": "Some proposals in the batch did not enact — check the per-item results."
+    "batchPartial": "Some proposals in the batch did not enact — check the per-item results.",
+    "jevAdvisoryLabel": "Local model advisory",
+    "jevStage": {
+      "submit": "submit precheck",
+      "gate": "gate advisory"
+    },
+    "jevThreshold": "threshold",
+    "jevWarnFlag": "warn",
+    "jevDisclaimer": "Low-cost advisory only — read it together with its probability basis; never a disposition basis on its own (warn-only sidecar, gate verdicts unaffected).",
+    "jevUnavailable": "unavailable, skipped (main flow unaffected)"
   },
   "retrospective": {
     "title": "Daily retrospective",
@@ -577,16 +582,31 @@
     "manage": "Manage versions",
     "description": "Every effective change appends a version; history is never rewritten.",
     "bindingNote": "Quality evaluation binds each run to the version it claimed. The badge shows how many runs each version served.",
-    "newVersion": "New version",
+    "subjectTypeLabel": "Carrier type",
+    "subjectEntityLabel": "Carrier",
+    "subjectEntityPlaceholder": "Pick a carrier",
+    "workspaceEntity": "This workspace",
+    "typeWorkspace": "Workspace",
+    "typeProject": "Project",
+    "typeSquad": "Squad",
+    "typeAgent": "Agent",
+    "typeAutopilot": "Autopilot",
+    "typeSkill": "Skill",
+    "snapshot": "Snapshot",
+    "snapshotTitle": "Snapshot the current effective content?",
+    "snapshotBody": "A snapshot records the carrier's currently effective configuration as a new version. The carrier's own content is not changed.",
+    "snapshotConfirm": "Take snapshot",
+    "snapshotFailed": "Snapshot failed",
     "clearSelection": "Clear selection",
     "emptyTitle": "No versions yet",
-    "emptyDescription": "Create the first version from this agent's current prompt.",
+    "emptyDescription": "Snapshot the first version from this carrier's currently effective content.",
     "error": "Failed to load versions",
     "retry": "Retry",
     "sourceImport": "Baseline",
     "sourceEdit": "Edit",
     "sourceRevert": "Rollback",
     "sourceAuto": "Auto snapshot",
+    "sourceSnapshot": "Snapshot",
     "fromVersion": "from v{{version}}",
     "latest": "Latest",
     "runs": "{{n}} runs",
@@ -597,16 +617,7 @@
     "cancel": "Cancel",
     "confirmActivate": "Confirm",
     "compareTitle": "Compare v{{from}} → v{{to}}",
-    "editorTitle": "New version",
-    "editorDescription": "Saves the text below as the next version and makes it effective immediately.",
-    "contentLabel": "Prompt content",
-    "contentHint": "Preloaded with the current effective content; edit before saving.",
-    "noteLabel": "Change note",
-    "notePlaceholder": "What changed and why",
-    "save": "Save version",
-    "saving": "Saving…",
     "secretBlocked": "Not saved: the prompt appears to contain credentials.",
-    "findingLine": "line {{line}}",
-    "saveFailed": "Save failed"
+    "findingLine": "line {{line}}"
   }
 }

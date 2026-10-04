@@ -956,6 +956,9 @@
       "collapse": "Collapse",
       "collapse_a11y": "Collapse resolved thread",
       "edited_suffix": " · (edited)",
+      "edit_title": "Edit comment",
+      "edit_saving": "Saving…",
+      "edit_failed": "Couldn't save edit",
       "send_failed": "Couldn't send",
       "retry": "Retry",
       "retry_a11y": "Retry sending comment",
@@ -989,6 +992,8 @@
       "comments_locate_failed": "Couldn't jump to that comment.",
       "comments_locate_retry_a11y": "Retry jumping to comment",
       "comments_title": "Comments",
+      "copy_title": "Copy title",
+      "copy_description": "Copy description",
       "comments_search_placeholder": "Filter by author or text…",
       "comments_empty": "No comments yet.",
       "comments_no_match": "No matching comments.",
@@ -1069,7 +1074,8 @@
       "cancel_requested": "Stopping",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "cancel_requested": "Stopping"
     },
     "runs": {
       "title": "Agent Runs",
@@ -1119,7 +1125,46 @@
       "submit_a11y": "Create issue"
     },
     "tasks": {
-      "issue_unavailable": "Issue unavailable"
+      "issue_unavailable": "Issue unavailable",
+      "page": {
+        "title": "Tasks"
+      },
+      "tabs": {
+        "all": "All",
+        "open": "Open",
+        "active": "Active",
+        "blocked": "Blocked",
+        "completed": "Completed"
+      },
+      "sort": {
+        "title": "Sort",
+        "updated_at": "Updated at",
+        "created_at": "Created at",
+        "a11y": "Sort"
+      },
+      "empty": {
+        "all": "No tasks in this workspace yet.",
+        "open": "No pending tasks yet.",
+        "active": "No active tasks.",
+        "blocked": "No blocked tasks.",
+        "completed": "No completed tasks yet."
+      },
+      "filtered_empty": {
+        "title": "No issues match these filters",
+        "clear_button": "Clear filters"
+      },
+      "filters": {
+        "status_locked": "Status: {{tab}} (set by tab)",
+        "section_mine": "My relation",
+        "mine_assigned": "Assigned to me",
+        "mine_created": "Created by me",
+        "mine_involved": "I'm involved in",
+        "agent_running": "Agent running",
+        "selected_count": "{{count}} selected",
+        "group_members": "Members",
+        "group_agents": "Agents",
+        "group_squads": "Squads"
+      }
     }
   },
   "suppressed": {
