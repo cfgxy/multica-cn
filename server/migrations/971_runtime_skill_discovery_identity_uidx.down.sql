@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_runtime_skill_discovery_identity;
