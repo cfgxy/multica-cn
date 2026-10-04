@@ -83,4 +83,9 @@ describe("notification identity bridge wiring", () => {
       "if (!shouldResolveMembership || isLoading) return null;",
     );
   });
+
+  it("drives the cold-start launch probe through the bounded policy module", () => {
+    expect(navigator).toContain("probeLaunchResponse(");
+    expect(navigator).not.toContain("POST_READY_PROBE_ATTEMPTS");
+  });
 });
