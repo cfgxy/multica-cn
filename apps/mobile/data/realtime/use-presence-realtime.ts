@@ -2,11 +2,17 @@
  * Presence realtime — Layer 3 of the realtime stack. Listing-level (always
  * on while the user is inside a workspace).
  *
- * Invalidates the queries that back the presence dot:
+ * Invalidates the queries that back the presence dot (keys via the
+ * data/queries/* factories — RUYI-346 migrated the inline 2-segment keys
+ * here to the 3-segment factories):
  *   - runtimeListOptions      ← daemon:register, runtime sweeper transitions
  *   - agentListOptions        ← agent:status / created / archived / restored
  *   - agentTaskSnapshotOptions← task:queued / dispatch / completed / failed /
  *                               cancelled
+ *
+ * Agents invalidates `agentKeys.all` (not just the list): since RUYI-346 the
+ * detail caches exist, and a full Agent payload rides these events — the
+ * detail screen's presence/status stays honest the same way the list does.
  *
  * Deliberately NOT subscribed (cellular-data rule, apps/mobile/CLAUDE.md):
  *   - daemon:heartbeat — every 15s × in-online runtime; web also skips it
@@ -21,15 +27,18 @@
  */
 import { useQueryClient } from "@tanstack/react-query";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
+import { agentKeys } from "@/data/queries/agents";
+import { runtimeKeys } from "@/data/queries/runtimes";
+import { agentTaskSnapshotKeys } from "@/data/queries/agent-task-snapshot";
 
 export function usePresenceRealtime() {
   const queryClient = useQueryClient();
 
   useWSSubscriptions(
     (ws, wsId) => {
-      const runtimesKey = ["runtimes", wsId];
-      const agentsKey = ["agents", wsId];
-      const snapshotKey = ["agent-task-snapshot", wsId];
+      const runtimesKey = runtimeKeys.all(wsId);
+      const agentsKey = agentKeys.all(wsId);
+      const snapshotKey = agentTaskSnapshotKeys.all(wsId);
 
       const invalidateRuntimes = () =>
         queryClient.invalidateQueries({ queryKey: runtimesKey });
@@ -47,7 +56,7 @@ export function usePresenceRealtime() {
         ws.on("daemon:register", invalidateRuntimes),
 
         // Agent identity churn — visible in pickers / chat header straight
-        // away, so invalidate the cached list.
+        // away, so invalidate the cached list (and any open detail).
         ws.on("agent:status", invalidateAgents),
         ws.on("agent:created", invalidateAgents),
         ws.on("agent:archived", invalidateAgents),

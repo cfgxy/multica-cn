@@ -982,8 +982,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 }
 
 type DaemonHeartbeatRequest struct {
-	RuntimeID           string `json:"runtime_id"`
-	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
+	RuntimeID           string                                `json:"runtime_id"`
+	SupportsBatchImport bool                                  `json:"supports_batch_import,omitempty"`
+	Backpressure        *protocol.DaemonBackpressureReport    `json:"backpressure,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -1114,7 +1115,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	authMs = time.Since(start).Milliseconds()
 
-	ack, m, err := h.processHeartbeat(r.Context(), rt, req.SupportsBatchImport)
+	ack, m, err := h.processHeartbeat(r.Context(), rt, req.SupportsBatchImport, req.Backpressure)
 	updateMs = m.UpdateMs
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
@@ -1168,7 +1169,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // and tells the daemon to drop the stale runtime and re-register. Other DB
 // errors still propagate as errors so they keep their existing Warn logging
 // and the daemon does not mistake a hiccup for a deletion.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport) (*protocol.DaemonHeartbeatAckPayload, error) {
 	runtimeUUID, err := util.ParseUUID(runtimeID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid runtime_id: %w", err)
@@ -1187,8 +1188,59 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	if !identity.AllowsWorkspace(uuidToString(rt.WorkspaceID)) {
 		return nil, fmt.Errorf("runtime not in connection workspace")
 	}
-	ack, _, err := h.processHeartbeat(ctx, rt, supportsBatchImport)
+	ack, _, err := h.processHeartbeat(ctx, rt, supportsBatchImport, backpressure)
 	return ack, err
+}
+
+// recordBackpressure persists a daemon's host-memory backpressure report
+// (RUYI-393) into the runtime row's metadata and logs the entered/exited
+// transitions as the audit trail. The query's IS DISTINCT guard makes an
+// unchanged report a no-op (sql.ErrNoRows), so per-beat calls only touch the
+// row when the report actually changed. Best-effort by design: heartbeat and
+// claim must not fail because observability storage did.
+func (h *Handler) recordBackpressure(ctx context.Context, runtimeID pgtype.UUID, report *protocol.DaemonBackpressureReport) {
+	if report == nil || !runtimeID.Valid {
+		return
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		slog.Warn("marshal backpressure report", "runtime_id", uuidToString(runtimeID), "error", err)
+		return
+	}
+	prevRaw, err := h.Queries.SetAgentRuntimeBackpressure(ctx, db.SetAgentRuntimeBackpressureParams{
+		ID:           runtimeID,
+		Backpressure: raw,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return // unchanged report — the guard held the row write
+		}
+		slog.Warn("record backpressure failed", "runtime_id", uuidToString(runtimeID), "error", err)
+		return
+	}
+
+	var prev protocol.DaemonBackpressureReport
+	wasActive := false
+	if json.Unmarshal([]byte(prevRaw), &prev) == nil {
+		wasActive = prev.Active
+	}
+	if report.Active == wasActive {
+		// Watermarks drifted but no state flip — not an audit event.
+		return
+	}
+	if report.Active {
+		slog.Warn("daemon backpressure ENTERED — new task claims paused",
+			"runtime_id", uuidToString(runtimeID),
+			"reason", report.Reason,
+			"mem_available_pct", report.MemAvailablePct,
+			"swap_used_pct", report.SwapUsedPct)
+		return
+	}
+	slog.Info("daemon backpressure CLEARED — claims resumed",
+		"runtime_id", uuidToString(runtimeID),
+		"mem_available_pct", report.MemAvailablePct,
+		"swap_used_pct", report.SwapUsedPct,
+		"deferred_claims", report.DeferredClaims)
 }
 
 // recordHeartbeat marks the runtime as alive. When LivenessStore is available
@@ -1248,9 +1300,15 @@ type heartbeatMetrics struct {
 // the WebSocket daemon:heartbeat path: records liveness and pulls any pending
 // actions queued for the runtime. Auth and request decoding live in the
 // caller because they differ between transports.
-func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supportsBatchImport bool) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
+func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
 	var m heartbeatMetrics
 	runtimeID := uuidToString(rt.ID)
+
+	// Host memory backpressure (RUYI-393): persist the daemon's report
+	// before anything else — it is the only per-beat channel while claims
+	// are paused, so a lost beat would leave the UI showing stale state.
+	// Best-effort: a storage failure must never fail the heartbeat.
+	h.recordBackpressure(ctx, rt.ID, backpressure)
 
 	updateStart := time.Now()
 	if err := h.recordHeartbeat(ctx, rt); err != nil {
@@ -1585,9 +1643,10 @@ const claimBatchMaxTasksCap = 32
 func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		DaemonID   string   `json:"daemon_id"`
-		RuntimeIDs []string `json:"runtime_ids"`
-		MaxTasks   int      `json:"max_tasks"`
+		DaemonID      string                              `json:"daemon_id"`
+		RuntimeIDs    []string                            `json:"runtime_ids"`
+		MaxTasks      int                                 `json:"max_tasks"`
+		Backpressure  *protocol.DaemonBackpressureReport  `json:"backpressure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1617,10 +1676,6 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	// unbounded payload.
 	if req.MaxTasks < 0 {
 		writeError(w, http.StatusBadRequest, "max_tasks must not be negative")
-		return
-	}
-	if req.MaxTasks == 0 {
-		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
 		return
 	}
 	maxTasks := req.MaxTasks
@@ -1675,6 +1730,24 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		authorized = append(authorized, rt.ID)
 	}
 	if len(authorized) == 0 {
+		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
+		return
+	}
+
+	// Host memory backpressure (RUYI-393): the report is machine-level and
+	// every runtime on this daemon shares the same host, so persist it to
+	// each authorized runtime row. Best-effort; see recordBackpressure. Runs
+	// BEFORE the max_tasks=0 early return — a backpressured daemon polls with
+	// zero free slots, so that poll is exactly when the report matters most.
+	for _, rtID := range authorized {
+		h.recordBackpressure(r.Context(), rtID, req.Backpressure)
+	}
+
+	// max_tasks semantics (MUL-4257 review): zero is a valid "no free slots"
+	// poll that must claim nothing — never coerce to 1, which would dispatch a
+	// task the daemon cannot run and strand it until stale reclaim. It still
+	// carries the backpressure report above; it just claims nothing.
+	if req.MaxTasks == 0 {
 		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
 		return
 	}
@@ -4160,6 +4233,13 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		return
 	}
 	agentID := uuidToString(task.AgentID)
+	// RUYI-391: replaying an uncovered comment into a fresh run is a
+	// comment-triggered dispatch like any other, so it respects the same
+	// status gate — an issue that moved to a non-admitted status while its run
+	// was in flight stops waking agents the moment the run completes. The
+	// delegated-failure branch below is untouched: it keeps its own
+	// source-issue policy (loadDelegatedFailureRecoveryTarget).
+	commentsAdmitted := commentTriggersAdmitted(ctx, h.Queries, issue)
 	scheduled := 0
 	for i := range comments {
 		c := comments[i]
@@ -4186,6 +4266,9 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 			} else {
 				scheduled++
 			}
+			continue
+		}
+		if !commentsAdmitted {
 			continue
 		}
 		var parentComment *db.Comment
