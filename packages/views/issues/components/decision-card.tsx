@@ -176,7 +176,7 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
         <div className="mt-3 flex items-center gap-2 text-caption text-muted-foreground">
           <ListChecks className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span>
-            {answeredName ?? ""}
+            <span className="font-medium text-foreground">{answeredName ?? ""}</span>
             {decision.answered_at ? ` · ${timeAgo(decision.answered_at)}` : ""}
           </span>
         </div>
