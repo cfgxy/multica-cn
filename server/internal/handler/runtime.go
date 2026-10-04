@@ -47,6 +47,27 @@ type AgentRuntimeResponse struct {
 	LastSeenAt *string `json:"last_seen_at"`
 	CreatedAt  string  `json:"created_at"`
 	UpdatedAt  string  `json:"updated_at"`
+	// RegistrationSource says how this instance was born (RUYI-425 §4.1):
+	// "daemon_discovered" (a daemon resolved a profile's command and
+	// registered it) or "manual" (an API-backed voice instance registered
+	// without a daemon).
+	RegistrationSource string `json:"registration_source"`
+	// CredentialStatus is the §4.5 badge: "not_configured" (no credential
+	// pointer on the row) or "configured" (a credential_ref exists). The
+	// credential VALUE itself never crosses this API — reading and writing
+	// values happens only on the audited /credentials endpoints.
+	CredentialStatus string `json:"credential_status"`
+}
+
+// runtimeCredentialStatus derives the §4.5 badge from the credential_ref
+// pointer alone. It intentionally does NOT consult the secret store: the
+// response stays cheap and pointer presence is the contract — a ref whose
+// secret row was removed out-of-band is repaired by a plain re-PUT.
+func runtimeCredentialStatus(ref pgtype.Text) string {
+	if !ref.Valid || ref.String == "" {
+		return "not_configured"
+	}
+	return "configured"
 }
 
 func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
@@ -59,23 +80,25 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 	}
 
 	return AgentRuntimeResponse{
-		ID:           uuidToString(rt.ID),
-		WorkspaceID:  uuidToString(rt.WorkspaceID),
-		DaemonID:     textToPtr(rt.DaemonID),
-		Name:         rt.Name,
-		CustomName:   textToPtr(rt.CustomName),
-		RuntimeMode:  rt.RuntimeMode,
-		Provider:     rt.Provider,
-		LaunchHeader: agent.LaunchHeader(rt.Provider),
-		Status:       rt.Status,
-		DeviceInfo:   rt.DeviceInfo,
-		Metadata:     metadata,
-		OwnerID:      uuidToPtr(rt.OwnerID),
-		Visibility:   rt.Visibility,
-		ProfileID:    uuidToPtr(rt.ProfileID),
-		LastSeenAt:   timestampToPtr(rt.LastSeenAt),
-		CreatedAt:    timestampToString(rt.CreatedAt),
-		UpdatedAt:    timestampToString(rt.UpdatedAt),
+		ID:                 uuidToString(rt.ID),
+		WorkspaceID:        uuidToString(rt.WorkspaceID),
+		DaemonID:           textToPtr(rt.DaemonID),
+		Name:               rt.Name,
+		CustomName:         textToPtr(rt.CustomName),
+		RuntimeMode:        rt.RuntimeMode,
+		Provider:           rt.Provider,
+		LaunchHeader:       agent.LaunchHeader(rt.Provider),
+		Status:             rt.Status,
+		DeviceInfo:         rt.DeviceInfo,
+		Metadata:           metadata,
+		OwnerID:            uuidToPtr(rt.OwnerID),
+		Visibility:         rt.Visibility,
+		ProfileID:          uuidToPtr(rt.ProfileID),
+		LastSeenAt:         timestampToPtr(rt.LastSeenAt),
+		CreatedAt:          timestampToString(rt.CreatedAt),
+		UpdatedAt:          timestampToString(rt.UpdatedAt),
+		RegistrationSource: rt.RegistrationSource,
+		CredentialStatus:   runtimeCredentialStatus(rt.CredentialRef),
 	}
 }
 

@@ -59,7 +59,8 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
-    session_max_context_tokens, session_compact_pct, resource_weight
+    session_max_context_tokens, session_compact_pct, resource_weight,
+    voice_runtime_id
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -75,7 +76,11 @@ INSERT INTO agent (
     -- RUYI-397: same omitted-means-default rule. Zero would let an agent
     -- claim without bound in the weighted budget check, so it must not be
     -- reachable by accident either.
-    COALESCE(sqlc.narg('resource_weight'), 1)
+    COALESCE(sqlc.narg('resource_weight'), 1),
+    -- RUYI-425: the optional voice slot. NULL unless the request binds a
+    -- voice runtime; the handler validates capability and workspace scope
+    -- before the request reaches here.
+    sqlc.narg('voice_runtime_id')
 )
 RETURNING *;
 
@@ -141,6 +146,10 @@ UPDATE agent SET
     runtime_config = COALESCE(sqlc.narg('runtime_config'), runtime_config),
     runtime_mode = COALESCE(sqlc.narg('runtime_mode'), runtime_mode),
     runtime_id = COALESCE(sqlc.narg('runtime_id'), runtime_id),
+    -- RUYI-425: the voice slot preserves like the text slot. Omitted in the
+    -- request = keep the current binding; an explicit unbind routes through
+    -- ClearAgentVoiceRuntime below (COALESCE can't restore NULL).
+    voice_runtime_id = COALESCE(sqlc.narg('voice_runtime_id'), voice_runtime_id),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
@@ -221,6 +230,15 @@ RETURNING *;
 
 -- name: ClearAgentMcpConfig :one
 UPDATE agent SET mcp_config = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentVoiceRuntime :one
+-- Explicit NULL-clear for the voice slot (RUYI-425). The COALESCE-based
+-- UpdateAgent cannot set the column back to NULL, so the API routes "unbind
+-- the voice runtime" here — same two-query pattern as thinking_level and
+-- composio_toolkit_allowlist.
+UPDATE agent SET voice_runtime_id = NULL, updated_at = now()
 WHERE id = $1
 RETURNING *;
 
