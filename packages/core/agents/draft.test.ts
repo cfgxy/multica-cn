@@ -60,6 +60,7 @@ const sourceAgent = (overrides: Partial<Agent> = {}): Agent =>
     invocation_targets: [],
     status: "idle",
     max_concurrent_tasks: 9,
+    resource_weight: 4,
     model: "gpt-5.6-sol",
     thinking_level: "high",
     service_tier: "priority",
@@ -198,6 +199,7 @@ describe("agent draft execution overrides", () => {
 
     expect(request.custom_args).toEqual(["--verbose"]);
     expect(request.max_concurrent_tasks).toBe(9);
+    expect(request.resource_weight).toBe(4);
     expect(request.thinking_level).toBe("high");
   });
 
@@ -214,6 +216,20 @@ describe("agent draft execution overrides", () => {
 
       expect(request.max_concurrent_tasks).toBeUndefined();
       expect(request).not.toHaveProperty("max_concurrent_tasks");
+    },
+  );
+
+  it.each([0, -1, 11])(
+    "omits an invalid historical duplicate resource weight of %i",
+    (resourceWeight) => {
+      const request = buildCreateAgentRequest({
+        draft: draft(),
+        runtimeId: "runtime-1",
+        duplicateSource: sourceAgent({ resource_weight: resourceWeight }),
+      });
+
+      expect(request.resource_weight).toBeUndefined();
+      expect(request).not.toHaveProperty("resource_weight");
     },
   );
 
