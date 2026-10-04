@@ -110,6 +110,49 @@ describe("ActiveTaskRow", () => {
     expect(mockState.taskMessagesOptions).not.toHaveBeenCalled();
   });
 
+  it("names the backpressure admission code on a held queued row (RUYI-397)", () => {
+    renderWithI18n(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "queued",
+          queued_reason: "runtime_backpressure",
+        })}
+        issueId="issue-1"
+      />,
+    );
+
+    expect(screen.getByText("Queued · host memory busy")).toBeInTheDocument();
+    expect(screen.queryByText("Working")).not.toBeInTheDocument();
+  });
+
+  it("keeps the plain queued label when no admission code rides the row", () => {
+    renderWithI18n(
+      <ActiveTaskRow task={makeTask({ status: "queued" })} issueId="issue-1" />,
+    );
+
+    expect(screen.getByText("Queued")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Queued · host memory busy"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("never shows the queued reason on an already-dispatched row", () => {
+    renderWithI18n(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "dispatched",
+          queued_reason: "runtime_backpressure",
+        })}
+        issueId="issue-1"
+      />,
+    );
+
+    expect(screen.getByText("Starting")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Queued · host memory busy"),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not make transcript actions depend on hover-only rendering", () => {
     renderWithI18n(<ActiveTaskRow task={makeTask()} issueId="issue-1" />);
 
