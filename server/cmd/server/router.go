@@ -1753,6 +1753,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
 					r.Get("/plugins", h.ListPlugins)
+					// RUYI-355: the workspace audit trail — member-visible;
+					// every row is already workspace-scoped and the payload
+					// carries key names and metadata, never secrets.
+					r.Get("/audit-events", h.ListAuditEvents)
 					// One short-lived hosted surface launch. Member-visible
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
@@ -2244,6 +2248,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/quick-actions/{quickActionId}/run", h.RunQuickAction)
 					r.Post("/quick-actions/{quickActionId}/render", h.RenderQuickAction)
 					r.Get("/task-runs", h.ListTasksByIssue)
+					// RUYI-355: the issue's audit trail — same query as the
+					// workspace-level search with issue_id pinned.
+					r.Get("/audit-events", h.ListIssueAuditEvents)
 					r.Get("/tasks/{taskId}", h.GetIssueTask)
 					r.Get("/usage", h.GetIssueUsage)
 					r.Post("/reactions", h.AddIssueReaction)

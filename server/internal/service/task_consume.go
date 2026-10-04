@@ -89,6 +89,11 @@ func (s *TaskService) ConsumeQueuedTasksForRunningTask(ctx context.Context, cons
 		if len(cancelled) == 0 {
 			return nil
 		}
+		// Same-tx audit (RUYI-355): the consuming run is the actor — it
+		// declared it has read and is handling the queued messages.
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonConsumedByRunningTask, AuditActorAgent, consuming.ID, nil); err != nil {
+			return err
+		}
 
 		seen := make(map[string]struct{})
 		ids := make([]pgtype.UUID, 0, 2*len(cancelled))

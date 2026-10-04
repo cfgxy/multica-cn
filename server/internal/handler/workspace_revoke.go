@@ -110,6 +110,13 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		if err != nil {
 			return empty, err
 		}
+		// Same-tx audit (RUYI-355): workspace teardown ended these runs.
+		if len(result.CancelledTasks) > 0 {
+			if err = service.AppendAuditEvents(ctx, qtx, service.BulkTaskCancelledEvents(ctx, qtx, result.CancelledTasks,
+				service.AuditReasonWorkspaceTeardown, service.AuditActorSystem, pgtype.UUID{}, nil)...); err != nil {
+				return empty, err
+			}
+		}
 		if err = service.SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, result.CancelledTasks...); err != nil {
 			return empty, err
 		}
