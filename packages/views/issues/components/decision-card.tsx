@@ -93,7 +93,7 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
               <Badge variant="outline">{t(($) => $.decisions.status_cancelled)}</Badge>
             )}
           </div>
-          <p className="mt-1 whitespace-pre-wrap break-words text-sm font-medium">{decision.question}</p>
+          <p className="mt-1 whitespace-pre-wrap break-words text-body font-medium">{decision.question}</p>
           <p className="mt-0.5 text-caption text-muted-foreground">
             {creatorName} · {timeAgo(decision.created_at)}
           </p>
@@ -120,7 +120,7 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
               onClick={() => toggle(idx)}
               data-testid={`decision-option-${idx}`}
               className={cn(
-                "flex items-start gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                "flex items-start gap-2 rounded-md border px-3 py-2 text-left text-body transition-colors",
                 interactive && "hover:bg-accent/60 cursor-pointer",
                 isSelected && "border-brand bg-accent/40",
                 !isOpen && "opacity-70",
