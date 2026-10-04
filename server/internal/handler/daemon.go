@@ -5572,6 +5572,226 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// RUYI-419 workspace-level run view bounds. The workspace view spans every
+// agent and every issue, so the default page is tighter than the issue-scoped
+// one; callers paginate with offset rather than raising the cap.
+const (
+	workspaceRunListDefaultLimit = 50
+	workspaceRunListMaxLimit     = 200
+)
+
+// WorkspaceTaskRunResponse is one row of the workspace-wide run view. It
+// embeds the execution-log row (AgentTaskResponse — the same shape the
+// issue-scoped read returns) plus the two fields a workspace scope needs that
+// an issue scope implies: the owning issue's title and the derived trigger
+// source, so a caller can scan a mixed workspace page without hydrating every
+// issue separately.
+type WorkspaceTaskRunResponse struct {
+	AgentTaskResponse
+	IssueTitle string `json:"issue_title,omitempty"`
+	Trigger    string `json:"trigger"`
+}
+
+type workspaceTaskRunsResponse struct {
+	Runs       []WorkspaceTaskRunResponse `json:"runs"`
+	Count      int                        `json:"count"`
+	HasMore    bool                       `json:"has_more"`
+	NextOffset *int                       `json:"next_offset,omitempty"`
+}
+
+// deriveRunTrigger names the source that started a run, with the same
+// precedence the MCP list_issue_runs tool documents for its client-side
+// derivation (RUYI-292): autopilot > system retry > user rerun > comment,
+// and "other" when no evidence column is set.
+func deriveRunTrigger(t db.AgentTaskQueue) string {
+	switch {
+	case t.AutopilotRunID.Valid:
+		return "autopilot"
+	case t.RetryOfTaskID.Valid:
+		return "system_retry"
+	case t.RerunOfTaskID.Valid:
+		return "rerun"
+	case t.TriggerCommentID.Valid:
+		return "comment"
+	default:
+		return "other"
+	}
+}
+
+// ListWorkspaceTaskRuns is the workspace-wide run view behind the MCP
+// `list_runs` tool (RUYI-419): what ran, what is running, what failed —
+// across every issue and agent, without knowing an issue first.
+//
+// Rows are the same execution-log rows as the issue-scoped read. The status
+// and trigger filters reuse the exact semantics RUYI-292 established for the
+// filtered issue path (status CSV with the 'pending' alias, unknown values
+// match nothing; trigger buckets by evidence column with the raw
+// trigger_evidence_kind fallback), extended with agent/project/issue/time
+// filters and limit/offset paging. A reference the server cannot resolve
+// (unknown issue identifier, non-existent UUID) yields an empty page under
+// 200 rather than 404 — filters, not resource paths. The page fetches one
+// probe row past the limit so has_more is exact without a COUNT scan.
+//
+// Visibility matches the UI snapshot: the caller must be a workspace member,
+// and rows for agents outside the caller's access set are dropped, so a
+// member never learns a private agent's runs from this endpoint. Because the
+// visibility trim runs after the row window is cut, a page can return fewer
+// rows than the limit while more visible rows exist beyond it — callers
+// continue via next_offset.
+func (h *Handler) ListWorkspaceTaskRuns(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	member, ok := h.workspaceMember(w, r, workspaceID)
+	if !ok {
+		return
+	}
+
+	q := r.URL.Query()
+	limit := workspaceRunListDefaultLimit
+	if limitStr := q.Get("limit"); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil || n < 1 || n > workspaceRunListMaxLimit {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be an integer between 1 and %d", workspaceRunListMaxLimit))
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if offsetStr := q.Get("offset"); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			return
+		}
+		offset = n
+	}
+
+	params := db.ListWorkspaceTaskRunsParams{
+		WorkspaceID: parseUUID(workspaceID),
+		RowLimit:    int32(limit + 1),
+		RowOffset:   int32(offset),
+	}
+	if status := strings.TrimSpace(q.Get("status")); status != "" {
+		params.StatusFilter = pgtype.Text{String: status, Valid: true}
+	}
+	if trigger := strings.TrimSpace(q.Get("trigger")); trigger != "" {
+		params.TriggerFilter = pgtype.Text{String: trigger, Valid: true}
+	}
+	if agentID := strings.TrimSpace(q.Get("agent_id")); agentID != "" {
+		id, ok := parseUUIDOrBadRequest(w, agentID, "agent_id")
+		if !ok {
+			return
+		}
+		params.AgentFilter = id
+	}
+	if projectID := strings.TrimSpace(q.Get("project_id")); projectID != "" {
+		id, ok := parseUUIDOrBadRequest(w, projectID, "project_id")
+		if !ok {
+			return
+		}
+		params.ProjectFilter = id
+	}
+
+	// The issue filter accepts a UUID or "PREFIX-N". An unresolvable
+	// reference means "no runs can match", not "bad request": same
+	// match-nothing convention as an unknown status value.
+	if issueParam := strings.TrimSpace(q.Get("issue")); issueParam != "" {
+		resolved := false
+		if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueParam, workspaceID); ok {
+			params.IssueFilter = issue.ID
+			resolved = true
+		} else if id, err := util.ParseUUID(issueParam); err == nil {
+			if loaded, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+				ID:          id,
+				WorkspaceID: parseUUID(workspaceID),
+			}); err == nil {
+				params.IssueFilter = loaded.ID
+				resolved = true
+			}
+		}
+		if !resolved {
+			writeJSON(w, http.StatusOK, workspaceTaskRunsResponse{Runs: []WorkspaceTaskRunResponse{}})
+			return
+		}
+	}
+
+	if after := strings.TrimSpace(q.Get("created_after")); after != "" {
+		ts, err := time.Parse(time.RFC3339, after)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "created_after must be an RFC3339 timestamp")
+			return
+		}
+		params.CreatedAfter = pgtype.Timestamptz{Time: ts, Valid: true}
+	}
+	if before := strings.TrimSpace(q.Get("created_before")); before != "" {
+		ts, err := time.Parse(time.RFC3339, before)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "created_before must be an RFC3339 timestamp")
+			return
+		}
+		params.CreatedBefore = pgtype.Timestamptz{Time: ts, Valid: true}
+	}
+
+	rows, err := h.Queries.ListWorkspaceTaskRuns(r.Context(), params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workspace runs")
+		return
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+	allowed, ok := h.accessibleAgentIDs(r.Context(), workspaceID, actorType, actorID, member.Role)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "failed to resolve agent access")
+		return
+	}
+
+	// Batch-hydrate the page's issue briefs (identifier + title). They are
+	// display metadata: a lookup failure degrades to empty fields instead of
+	// failing the read. The issue-scoped read gets these for free from its
+	// path parameter; a workspace view spans issues and must hydrate them.
+	prefix := h.getIssuePrefix(r.Context(), parseUUID(workspaceID))
+	issueIDs := make([]pgtype.UUID, 0, len(rows))
+	for _, t := range rows {
+		if t.IssueID.Valid {
+			issueIDs = append(issueIDs, t.IssueID)
+		}
+	}
+	briefs := make(map[pgtype.UUID]db.ListIssuesByIDsRow, len(issueIDs))
+	if len(issueIDs) > 0 {
+		if loaded, err := h.Queries.ListIssuesByIDs(r.Context(), issueIDs); err == nil {
+			for _, b := range loaded {
+				briefs[b.ID] = b
+			}
+		}
+	}
+
+	runs := make([]WorkspaceTaskRunResponse, 0, len(rows))
+	for _, t := range rows {
+		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
+			continue
+		}
+		row := WorkspaceTaskRunResponse{
+			AgentTaskResponse: taskToResponse(t, workspaceID),
+			Trigger:           deriveRunTrigger(t),
+		}
+		if brief, ok := briefs[t.IssueID]; ok {
+			row.IssueIdentifier = service.IssueIdentifier(prefix, brief.Number)
+			row.IssueTitle = brief.Title
+		}
+		runs = append(runs, row)
+	}
+
+	resp := workspaceTaskRunsResponse{Runs: runs, Count: len(runs), HasMore: hasMore}
+	if hasMore {
+		next := offset + len(rows)
+		resp.NextOffset = &next
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // hydrateTaskUsage attaches each run's own token usage to the execution-log
 // rows. One query for the whole issue, then a map join — not one query per
 // task, which would be an N+1 over a list the UI always renders in full.
