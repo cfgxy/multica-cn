@@ -2097,10 +2097,11 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 }
 
 // commentTriggersAdmitted reports whether the issue's CURRENT status category
-// admits comment-triggered runs (RUYI-391). The allowed set is exactly the
-// execution statuses — todo, in_progress, in_review, done — so the gate is a
-// whitelist, not a blacklist: backlog keeps parking (matching assignment
-// semantics), blocked halts, cancelled stays closed (RUYI-384's statement-level
+// admits comment-triggered runs (RUYI-391). The allowed set is todo,
+// in_progress, in_review, done, blocked — a whitelist, not a blacklist. blocked
+// must admit comments because waking the assigned agent through a corrective
+// comment is part of what the status is for; backlog keeps parking (matching
+// assignment semantics), cancelled stays closed (RUYI-384's statement-level
 // fence remains the race backstop), and a status the catalog cannot resolve
 // fails safe to non-dispatchable, the same direction Effective uses everywhere
 // else ("left alone rather than auto-triggered"). Custom statuses are judged by
@@ -2112,7 +2113,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 // a run, and never pays the enqueue path's reads to find out.
 func commentTriggersAdmitted(ctx context.Context, q issuestatus.Querier, issue db.Issue) bool {
 	switch issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) {
-	case issuestatus.Todo, issuestatus.InProgress, issuestatus.InReview, issuestatus.Done:
+	case issuestatus.Todo, issuestatus.InProgress, issuestatus.InReview, issuestatus.Done, issuestatus.Blocked:
 		return true
 	default:
 		return false
