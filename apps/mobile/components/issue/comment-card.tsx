@@ -53,7 +53,7 @@ import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Markdown } from "@/lib/markdown";
+import { SelectableMarkdown } from "@/components/ui/selectable-markdown";
 import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
 import {
   discardFailedComment,
@@ -847,6 +847,10 @@ function CommentBody({
   // + handles + Copy/Look Up callout. The outer bubble shell carries a
   // translucent primary-tint background as the mode cue (no Done pill).
   // Exit: scroll the timeline, leave the issue, or long-press another body.
+  // The SelectableMarkdown key swap remounts the pipeline so the native
+  // views are BORN selectable — flipping the live Android TextView through
+  // setTextIsSelectable can land its selection pipeline in the select-all
+  // state instead (RUYI-416).
   const longPress = useCommentLongPress(entry, issueId, issueIdentifier);
 
   useEffect(() => {
@@ -880,7 +884,7 @@ function CommentBody({
         </Text>
       ) : null}
       {entry.content ? (
-        <Markdown
+        <SelectableMarkdown
           content={entry.content}
           attachments={attachments}
           selectable={isSelecting}

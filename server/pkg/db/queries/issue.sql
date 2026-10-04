@@ -156,6 +156,13 @@ INSERT INTO issue (
 SELECT * FROM issue
 WHERE workspace_id = $1 AND number = $2;
 
+-- name: ListIssuesByIDs :many
+-- RUYI-419: batch issue-brief hydration for the workspace-wide run view —
+-- one bounded query resolves identifier numbers and titles for a whole page
+-- of runs instead of one lookup per row.
+SELECT id, number, title FROM issue
+WHERE id = ANY(@ids::uuid[]);
+
 -- name: SetIssueRunSuppressed :one
 -- Read-side snapshot maintenance for an honored `suppress_run` (RUYI-275).
 -- Set by the write that suppressed the run, cleared by the next write that
