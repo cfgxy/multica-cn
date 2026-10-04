@@ -69,6 +69,7 @@ import {
   useChatDraftsStore,
 } from "@/data/stores/chat-drafts-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
+import { useChatAgentRequestStore } from "@/data/stores/chat-agent-request-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
@@ -461,6 +462,19 @@ export default function ChatTab() {
     setActiveSessionId(selectRequest.id);
     consumeSelect();
   }, [selectRequest, consumeSelect]);
+
+  // Same channel, agent detail screen side (RUYI-418 A7): "DM this agent"
+  // opens a fresh session with the requested agent. The sender gates the
+  // invocation permission, so the request is applied as-is; if the agent
+  // isn't invocable the composer falls back to the no-agent banner.
+  const agentRequest = useChatAgentRequestStore((s) => s.agentRequest);
+  const consumeAgent = useChatAgentRequestStore((s) => s.consumeAgent);
+  useEffect(() => {
+    if (!agentRequest) return;
+    setSelectedAgentId(agentRequest.id);
+    setActiveSessionId(null);
+    consumeAgent();
+  }, [agentRequest, consumeAgent]);
 
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;
