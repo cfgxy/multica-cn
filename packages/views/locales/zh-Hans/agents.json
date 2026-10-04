@@ -1022,6 +1022,25 @@
     "tasks": {
       "empty": "当前没有运行中的任务。",
       "agent_missing": "智能体不存在或已被删除。"
+    },
+    "row": {
+      "edit": "编辑"
+    },
+    "detail": {
+      "edit_profile": "编辑资料",
+      "tab_active": "进行中",
+      "fact_status": "状态",
+      "fact_runtime_unbound": "未绑定运行时"
+    },
+    "edit": {
+      "model_placeholder": "留空则使用运行时默认值"
+    },
+    "env": {
+      "add_row": "添加变量"
+    },
+    "webhooks": {
+      "copy_aria": "复制 Webhook 链接",
+      "rotated_title": "已生成新链接"
     }
   }
 }

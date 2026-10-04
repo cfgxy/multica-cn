@@ -11,11 +11,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func decodePromptGovVersion(t *testing.T, raw string) PromptGovernanceVersionResponse {
@@ -458,5 +460,337 @@ func TestPromptGovernanceBlankWriteAllowedWhenCurrentContentIsEmpty(t *testing.T
 		map[string]string{"scope": "agent", "scopeId": agentID})
 	if code != http.StatusOK {
 		t.Fatalf("blank write over empty content: expected 200, got %d: %s", code, raw)
+	}
+}
+
+// ── snapshot (RUYI-285 rework): records the carrier's currently effective
+// content as a new version row without touching the business column. ───────
+
+func TestPromptGovernanceSnapshotRecordsEffectiveContent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	// The same assertions run for agent, autopilot and skill: the snapshot
+	// must carry the business column's exact live text, tag source=snapshot,
+	// and leave the business column untouched — the write that made the
+	// content effective stays the only writer of that column.
+	t.Run("agent", func(t *testing.T) {
+		agentID := dbfx.Agent(t, "prompt-gov-snap-agent", handlerTestRuntimeID(t), map[string]any{"instructions": "live agent instructions"})
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+		})
+
+		code, raw := callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/agent/"+agentID+"/versions/snapshot", nil,
+			map[string]string{"scope": "agent", "scopeId": agentID})
+		if code != http.StatusOK {
+			t.Fatalf("snapshot: expected 200, got %d: %s", code, raw)
+		}
+		snap := decodePromptGovVersion(t, raw)
+		if snap.Source != "snapshot" {
+			t.Fatalf("source = %q, want snapshot", snap.Source)
+		}
+		if snap.Version != 1 {
+			t.Fatalf("version = %d, want 1 (fresh agent, no prior versions)", snap.Version)
+		}
+		if snap.Content != "live agent instructions" {
+			t.Fatalf("snapshot content = %q, want the exact live instructions", snap.Content)
+		}
+		if snap.ChangeNote != snapshotDefaultChangeNote {
+			t.Fatalf("change_note = %q, want the default %q", snap.ChangeNote, snapshotDefaultChangeNote)
+		}
+
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, agentID).Scan(&instructions)
+		if instructions != "live agent instructions" {
+			t.Fatalf("agent.instructions = %q after snapshot — a snapshot must never write the business column", instructions)
+		}
+
+		// A second snapshot of unchanged content is allowed (the line is
+		// evidence, not a cache) and continues the version number.
+		code, raw = callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/agent/"+agentID+"/versions/snapshot",
+			map[string]any{"change_note": "re-snapshot after review"},
+			map[string]string{"scope": "agent", "scopeId": agentID})
+		if code != http.StatusOK {
+			t.Fatalf("second snapshot: expected 200, got %d: %s", code, raw)
+		}
+		again := decodePromptGovVersion(t, raw)
+		if again.Version != 2 || again.Content != snap.Content {
+			t.Fatalf("second snapshot = v%d %q, want v2 with identical content", again.Version, again.Content)
+		}
+		if again.ChangeNote != "re-snapshot after review" {
+			t.Fatalf("caller change_note must win over the default: %q", again.ChangeNote)
+		}
+	})
+
+	t.Run("autopilot", func(t *testing.T) {
+		agentID := dbfx.Agent(t, "prompt-gov-snap-ap-agent", handlerTestRuntimeID(t), nil)
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+		})
+		autopilotID := dbfx.Insert(t, "autopilot", testutil.Cols{
+			"workspace_id":    testWorkspaceID,
+			"title":           "prompt-gov-snap-ap",
+			"assignee_id":     agentID,
+			"execution_mode":  "run_only",
+			"description":     "run prompt text",
+			"created_by_type": "member",
+			"created_by_id":   testUserID,
+		})
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'autopilot' AND scope_id = $1`, autopilotID)
+			testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
+		})
+
+		code, raw := callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/autopilot/"+autopilotID+"/versions/snapshot", nil,
+			map[string]string{"scope": "autopilot", "scopeId": autopilotID})
+		if code != http.StatusOK {
+			t.Fatalf("snapshot: expected 200, got %d: %s", code, raw)
+		}
+		snap := decodePromptGovVersion(t, raw)
+		if snap.Source != "snapshot" || snap.Content != "run prompt text" {
+			t.Fatalf("snapshot = %+v, want source=snapshot with the exact run prompt", snap)
+		}
+		var description string
+		dbfx.QueryRow(t, `SELECT COALESCE(description,'') FROM autopilot WHERE id = $1`, autopilotID).Scan(&description)
+		if description != "run prompt text" {
+			t.Fatalf("autopilot.description = %q after snapshot — must stay untouched", description)
+		}
+	})
+
+	t.Run("skill", func(t *testing.T) {
+		skillID := dbfx.Insert(t, "skill", testutil.Cols{
+			"workspace_id": testWorkspaceID,
+			"name":         "prompt-gov-snap-skill",
+			"content":      "skill body text",
+			"config":       testutil.Raw("'{}'::jsonb"),
+		})
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'skill' AND scope_id = $1`, skillID)
+			testPool.Exec(context.Background(), `DELETE FROM skill WHERE id = $1`, skillID)
+		})
+
+		code, raw := callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/skill/"+skillID+"/versions/snapshot", nil,
+			map[string]string{"scope": "skill", "scopeId": skillID})
+		if code != http.StatusOK {
+			t.Fatalf("snapshot: expected 200, got %d: %s", code, raw)
+		}
+		snap := decodePromptGovVersion(t, raw)
+		if snap.Source != "snapshot" || snap.Content != "skill body text" {
+			t.Fatalf("snapshot = %+v, want source=snapshot with the exact skill body", snap)
+		}
+		var content string
+		dbfx.QueryRow(t, `SELECT content FROM skill WHERE id = $1`, skillID).Scan(&content)
+		if content != "skill body text" {
+			t.Fatalf("skill.content = %q after snapshot — must stay untouched", content)
+		}
+	})
+
+	t.Run("workspace", func(t *testing.T) {
+		var originalContext string
+		dbfx.QueryRow(t, `SELECT COALESCE(context,'') FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&originalContext)
+		dbfx.Exec(t, `UPDATE workspace SET context = 'live workspace context' WHERE id = $1`, testWorkspaceID)
+		t.Cleanup(func() {
+			dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, testWorkspaceID, originalContext)
+			testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'workspace' AND scope_id = $1`, testWorkspaceID)
+		})
+
+		code, raw := callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/workspace/"+testWorkspaceID+"/versions/snapshot", nil,
+			map[string]string{"scope": "workspace", "scopeId": testWorkspaceID})
+		if code != http.StatusOK {
+			t.Fatalf("snapshot: expected 200, got %d: %s", code, raw)
+		}
+		snap := decodePromptGovVersion(t, raw)
+		if snap.Source != "snapshot" || snap.Content != "live workspace context" {
+			t.Fatalf("snapshot = %+v, want source=snapshot with the exact workspace context", snap)
+		}
+	})
+}
+
+// A snapshot of live text that trips the secret scanner must be blocked like
+// any other write into the version line — and must leave no row behind.
+func TestPromptGovernanceSnapshotBlockedBySecretGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "prompt-gov-snap-secret", handlerTestRuntimeID(t), map[string]any{
+		"instructions": "leaked token: " + promptSecretText,
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+
+	code, raw := callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions/snapshot", nil,
+		map[string]string{"scope": "agent", "scopeId": agentID})
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 prompt_secret_detected, got %d: %s", code, raw)
+	}
+	if strings.Contains(raw, promptSecretText) {
+		t.Fatalf("blocked response must never echo the secret text: %s", raw)
+	}
+	var count int
+	dbfx.QueryRow(t, `SELECT count(*) FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID).Scan(&count)
+	if count != 0 {
+		t.Fatalf("prompt_version rows = %d, want 0 (blocked snapshot must not append a row)", count)
+	}
+}
+
+// A carrier with no effective content has nothing to version.
+func TestPromptGovernanceSnapshotEmptyContentGives400(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	// An autopilot created without a description: COALESCE normalizes the
+	// NULL run prompt to '', and the gate must reject the snapshot.
+	agentID := dbfx.Agent(t, "prompt-gov-snap-empty-agent", handlerTestRuntimeID(t), nil)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+	autopilotID := dbfx.Insert(t, "autopilot", testutil.Cols{
+		"workspace_id":    testWorkspaceID,
+		"title":           "prompt-gov-snap-empty",
+		"assignee_id":     agentID,
+		"execution_mode":  "run_only",
+		"created_by_type": "member",
+		"created_by_id":   testUserID,
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'autopilot' AND scope_id = $1`, autopilotID)
+		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
+	})
+
+	code, raw := callPromptGov(t, testHandler.SnapshotPromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/autopilot/"+autopilotID+"/versions/snapshot", nil,
+		map[string]string{"scope": "autopilot", "scopeId": autopilotID})
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty effective content, got %d: %s", code, raw)
+	}
+}
+
+// Snapshots sit behind the same owner-only middleware as every other write.
+func TestPromptGovernanceSnapshotRequiresOwnerRole(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "prompt-gov-snap-perm", handlerTestRuntimeID(t), map[string]any{"instructions": "untouched"})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+	memberUserID := dbfx.User(t, "Snapshot Member", "prompt-gov-snap-member@multica.ai")
+	dbfx.Member(t, testWorkspaceID, memberUserID, "member")
+
+	chain := middleware.RequireWorkspaceRole(testHandler.Queries, "owner")(
+		http.HandlerFunc(testHandler.SnapshotPromptGovernanceVersion))
+
+	req := newRequestAs(memberUserID, http.MethodPost, "/api/prompt-governance/agent/"+agentID+"/versions/snapshot", nil)
+	req = withURLParams(req, "scope", "agent", "scopeId", agentID)
+	w := httptest.NewRecorder()
+	chain.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("member snapshot: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	var count int
+	dbfx.QueryRow(t, `SELECT count(*) FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID).Scan(&count)
+	if count != 0 {
+		t.Fatalf("member snapshot appended %d rows, want 0", count)
+	}
+
+	req = newRequest(http.MethodPost, "/api/prompt-governance/agent/"+agentID+"/versions/snapshot", nil)
+	req = withURLParams(req, "scope", "agent", "scopeId", agentID)
+	w = httptest.NewRecorder()
+	chain.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner snapshot: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// The new scopes must also work through the existing switch/rollback path:
+// switching an autopilot or skill to a historical version writes the target
+// content back into its business column (copy-forward, source=revert).
+func TestPromptGovernanceSwitchWritesBackAutopilotAndSkill(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	agentID := dbfx.Agent(t, "prompt-gov-switch-ap-agent", handlerTestRuntimeID(t), nil)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+	autopilotID := dbfx.Insert(t, "autopilot", testutil.Cols{
+		"workspace_id":    testWorkspaceID,
+		"title":           "prompt-gov-switch-ap",
+		"assignee_id":     agentID,
+		"execution_mode":  "run_only",
+		"description":     "ap v2 prompt",
+		"created_by_type": "member",
+		"created_by_id":   testUserID,
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'autopilot' AND scope_id = $1`, autopilotID)
+		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
+	})
+
+	// Seed v1 and v2 through edits (each edit rewrites description), then
+	// switch back to v1 and require the description to follow.
+	for i, text := range []string{"ap v1 prompt", "ap v2 prompt"} {
+		code, raw := callPromptGov(t, testHandler.SavePromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/autopilot/"+autopilotID+"/versions",
+			map[string]any{"content": text, "change_note": fmt.Sprintf("v%d", i+1)},
+			map[string]string{"scope": "autopilot", "scopeId": autopilotID})
+		if code != http.StatusOK {
+			t.Fatalf("seed autopilot v%d: expected 200, got %d: %s", i+1, code, raw)
+		}
+	}
+	code, raw := callPromptGov(t, testHandler.SwitchPromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/autopilot/"+autopilotID+"/versions/1/switch", nil,
+		map[string]string{"scope": "autopilot", "scopeId": autopilotID, "version": "1"})
+	if code != http.StatusOK {
+		t.Fatalf("switch: expected 200, got %d: %s", code, raw)
+	}
+	reverted := decodePromptGovVersion(t, raw)
+	if reverted.Source != "revert" || reverted.Content != "ap v1 prompt" {
+		t.Fatalf("reverted = %+v, want revert with v1 content", reverted)
+	}
+	var description string
+	dbfx.QueryRow(t, `SELECT COALESCE(description,'') FROM autopilot WHERE id = $1`, autopilotID).Scan(&description)
+	if description != "ap v1 prompt" {
+		t.Fatalf("autopilot.description = %q after switch, want v1 content written back", description)
+	}
+
+	skillID := dbfx.Insert(t, "skill", testutil.Cols{
+		"workspace_id": testWorkspaceID,
+		"name":         "prompt-gov-switch-skill",
+		"content":      "skill v2 body",
+		"config":       testutil.Raw("'{}'::jsonb"),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'skill' AND scope_id = $1`, skillID)
+		testPool.Exec(context.Background(), `DELETE FROM skill WHERE id = $1`, skillID)
+	})
+	for i, text := range []string{"skill v1 body", "skill v2 body"} {
+		code, raw := callPromptGov(t, testHandler.SavePromptGovernanceVersion, http.MethodPost,
+			"/api/prompt-governance/skill/"+skillID+"/versions",
+			map[string]any{"content": text, "change_note": fmt.Sprintf("v%d", i+1)},
+			map[string]string{"scope": "skill", "scopeId": skillID})
+		if code != http.StatusOK {
+			t.Fatalf("seed skill v%d: expected 200, got %d: %s", i+1, code, raw)
+		}
+	}
+	code, raw = callPromptGov(t, testHandler.SwitchPromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/skill/"+skillID+"/versions/1/switch", nil,
+		map[string]string{"scope": "skill", "scopeId": skillID, "version": "1"})
+	if code != http.StatusOK {
+		t.Fatalf("switch: expected 200, got %d: %s", code, raw)
+	}
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM skill WHERE id = $1`, skillID).Scan(&content)
+	if content != "skill v1 body" {
+		t.Fatalf("skill.content = %q after switch, want v1 content written back", content)
 	}
 }

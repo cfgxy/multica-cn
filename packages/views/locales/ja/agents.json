@@ -1022,6 +1022,25 @@
     "tasks": {
       "empty": "現在実行中のタスクはありません。",
       "agent_missing": "エージェントが見つかりません。"
+    },
+    "row": {
+      "edit": "編集"
+    },
+    "detail": {
+      "edit_profile": "プロフィールを編集",
+      "tab_active": "進行中",
+      "fact_status": "ステータス",
+      "fact_runtime_unbound": "ランタイム未設定"
+    },
+    "edit": {
+      "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します"
+    },
+    "env": {
+      "add_row": "変数を追加"
+    },
+    "webhooks": {
+      "copy_aria": "Webhookリンクをコピー",
+      "rotated_title": "新しいリンクを生成しました"
     }
   }
 }

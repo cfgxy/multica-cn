@@ -882,6 +882,77 @@ describe("comment mutations — owner revision and last activity", () => {
   });
 });
 
+describe("useUpdateComment — CAS content_base anchoring (RUYI-381 guard)", () => {
+  const issueId = "issue-1";
+
+  function seedTimeline(qc: QueryClient) {
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(issueId), {
+      entries: [
+        {
+          type: "comment",
+          id: "comment-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "original text",
+          parent_id: null,
+          comment_type: "comment",
+          reactions: [],
+          attachments: [],
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      truncatedKinds: [],
+    });
+  }
+
+  it("sends the caller-anchored pre-edit content as content_base even though onMutate already rewrote the cached content", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seedTimeline(qc);
+    const updateComment = vi.fn().mockResolvedValue({
+      id: "comment-1",
+      issue_id: issueId,
+      content: "edited text",
+      issue_revision: 2,
+    });
+    setApiInstance({ updateComment } as unknown as ApiClient);
+    const { result } = renderHook(() => useUpdateComment(issueId), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        commentId: "comment-1",
+        content: "edited text",
+        attachmentIds: [],
+        contentBase: "original text",
+      });
+    });
+
+    // The CAS baseline must be the pre-edit content anchored by the caller,
+    // never the cached content onMutate has already replaced — the server
+    // rejects a request whose baseline equals its own new content with 409
+    // revision_conflict (the RUYI-381 mobile failure mode).
+    expect(updateComment).toHaveBeenCalledWith(
+      "comment-1",
+      "edited text",
+      [],
+      undefined,
+      "original text",
+      undefined,
+    );
+    // The optimistic patch did run before mutationFn — the cache really was
+    // rewritten to the new text before the request fired, so the polluted
+    // baseline would be the only outcome of reading the cache here.
+    expect(
+      qc.getQueryData<TimelineQueryData>(issueKeys.timeline(issueId)),
+    ).toMatchObject({
+      entries: [expect.objectContaining({ content: "edited text" })],
+    });
+    qc.clear();
+  });
+});
+
 describe("useResolveComment", () => {
   const ISSUE_ID = "issue-1";
 

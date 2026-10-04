@@ -1036,7 +1036,8 @@
       "running": "运行中",
       "completed": "已完成",
       "failed": "失败",
-      "cancelled": "已取消"
+      "cancelled": "已取消",
+      "cancel_requested": "正在停止"
     },
     "runs": {
       "title": "Agent 运行记录",
@@ -1084,7 +1085,46 @@
       "submit_a11y": "创建任务"
     },
     "tasks": {
-      "issue_unavailable": "任务不可见"
+      "issue_unavailable": "任务不可见",
+      "page": {
+        "title": "任务"
+      },
+      "tabs": {
+        "all": "全部",
+        "open": "待处理",
+        "active": "进行中",
+        "blocked": "已阻塞",
+        "completed": "已完成"
+      },
+      "sort": {
+        "title": "排序",
+        "updated_at": "更新时间",
+        "created_at": "创建时间",
+        "a11y": "排序"
+      },
+      "empty": {
+        "all": "工作区还没有任务",
+        "open": "暂无待处理的任务",
+        "active": "暂无进行中的任务",
+        "blocked": "没有被阻塞的任务",
+        "completed": "还没有已完成的任务"
+      },
+      "filtered_empty": {
+        "title": "没有符合当前筛选的任务",
+        "clear_button": "清除筛选"
+      },
+      "filters": {
+        "status_locked": "状态：{{tab}}（由页签决定）",
+        "section_mine": "我的关系",
+        "mine_assigned": "分配给我的",
+        "mine_created": "我创建的",
+        "mine_involved": "我参与的",
+        "agent_running": "智能体执行中",
+        "selected_count": "已选 {{count}}",
+        "group_members": "成员",
+        "group_agents": "智能体",
+        "group_squads": "小队"
+      }
     }
   },
   "suppressed": {

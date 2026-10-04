@@ -411,8 +411,9 @@
       "agent": "에이전트"
     },
     "source": {
-      "system": "시스템",
-      "member": "멤버"
+      "manual": "수동",
+      "retrospective": "일일 회고",
+      "merged": "병합"
     },
     "create": "새 제안",
     "createTitle": "새 프롬프트 입법 제안",
@@ -472,15 +473,19 @@
     "rejectPlaceholder": "반려 사유는 기록에 남습니다.",
     "rejectConfirm": "반려하기",
     "ownerOnly": "오너 전용",
-    "source": {
-      "manual": "수동",
-      "retrospective": "일일 회고",
-      "merged": "병합"
-    },
     "empty": "아직 제안이 없습니다.",
     "emptyHint": "실제 실행 근거로 초안을 만들거나 일일 회고에 맡기세요.",
     "error": "쓰기에 실패했습니다. 입력을 확인하고 다시 시도하세요.",
-    "batchPartial": "일괄 처리에서 발효되지 않은 제안이 있습니다——항목별 결과를 확인하세요."
+    "batchPartial": "일괄 처리에서 발효되지 않은 제안이 있습니다——항목별 결과를 확인하세요.",
+    "jevAdvisoryLabel": "로컬 모델 경고",
+    "jevStage": {
+      "submit": "제출 사전검사",
+      "gate": "게이트 소프트 판정"
+    },
+    "jevThreshold": "임계값",
+    "jevWarnFlag": "경고",
+    "jevDisclaimer": "저비용 경고 참고용입니다. 확률 근거와 함께 판단하고 단독으로 처분 근거로 삼지 마세요(warn-only 우회, 게이트 판정에는 영향 없음).",
+    "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)"
   },
   "retrospective": {
     "title": "일일 회고",
@@ -576,16 +581,31 @@
     "manage": "버전 관리",
     "description": "유효한 변경은 모두 새 버전으로 추가되며 기록은 절대 다시 쓰이지 않습니다.",
     "bindingNote": "품질 평가는 각 실행이 가져간 버전에 묶입니다. 배지는 각 버전이 처리한 실행 수를 보여줍니다.",
-    "newVersion": "새 버전",
+    "subjectTypeLabel": "대상 유형",
+    "subjectEntityLabel": "대상",
+    "subjectEntityPlaceholder": "대상을 선택하세요",
+    "workspaceEntity": "이 워크스페이스",
+    "typeWorkspace": "워크스페이스",
+    "typeProject": "프로젝트",
+    "typeSquad": "스쿼드",
+    "typeAgent": "에이전트",
+    "typeAutopilot": "오토파일럿",
+    "typeSkill": "스킬",
+    "snapshot": "스냅샷",
+    "snapshotTitle": "현재 유효한 내용을 스냅샷으로 기록할까요?",
+    "snapshotBody": "스냅샷은 대상의 현재 유효한 설정을 새 버전으로 기록합니다. 대상 자체의 내용은 변경되지 않습니다.",
+    "snapshotConfirm": "스냅샷 만들기",
+    "snapshotFailed": "스냅샷 실패",
     "clearSelection": "선택 해제",
     "emptyTitle": "아직 버전이 없습니다",
-    "emptyDescription": "이 에이전트의 현재 프롬프트로 첫 버전을 만드세요.",
+    "emptyDescription": "이 대상의 현재 유효한 내용으로 첫 버전을 스냅샷하세요.",
     "error": "버전을 불러오지 못했습니다",
     "retry": "재시도",
     "sourceImport": "베이스라인",
     "sourceEdit": "편집",
     "sourceRevert": "롤백",
     "sourceAuto": "자동 스냅샷",
+    "sourceSnapshot": "스냅샷",
     "fromVersion": "v{{version}}에서",
     "latest": "최신",
     "runs": "{{n}}회 실행",
@@ -596,16 +616,7 @@
     "cancel": "취소",
     "confirmActivate": "확인",
     "compareTitle": "v{{from}} → v{{to}} 비교",
-    "editorTitle": "새 버전",
-    "editorDescription": "아래 텍스트를 다음 버전으로 저장하고 즉시 적용합니다.",
-    "contentLabel": "프롬프트 본문",
-    "contentHint": "현재 유효한 내용이 미리 채워져 있습니다. 저장 전에 편집하세요.",
-    "noteLabel": "변경 메모",
-    "notePlaceholder": "무엇을 왜 바꿨는지",
-    "save": "버전 저장",
-    "saving": "저장 중…",
     "secretBlocked": "저장되지 않음: 프롬프트에 자격 증명이 포함된 것으로 보입니다.",
-    "findingLine": "{{line}}행",
-    "saveFailed": "저장 실패"
+    "findingLine": "{{line}}행"
   }
 }

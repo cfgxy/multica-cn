@@ -2079,6 +2079,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Post("/versions", h.SavePromptGovernanceVersion)
+				r.Post("/versions/snapshot", h.SnapshotPromptGovernanceVersion)
 				r.Post("/versions/{version}/switch", h.SwitchPromptGovernanceVersion)
 			})
 		})

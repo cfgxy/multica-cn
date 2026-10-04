@@ -65,7 +65,9 @@ export interface JsonSchemaProperty {
   // ["string", "null"] so callers can pass an explicit clearing null.
   type: string | string[];
   description: string;
-  enum?: string[];
+  // string | null members: a nullable enum (update_project.lead_type) must
+  // admit the clearing null the type already allows.
+  enum?: Array<string | null>;
   items?: {
     type: string;
     properties?: Record<string, JsonSchemaProperty>;
@@ -588,15 +590,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         project_id: { type: "string", description: "Project UUID, from list_projects or a previous result." },
         title: { type: "string", description: "New title. Omit to keep the current one." },
         description: {
-          type: "string",
+          type: ["string", "null"],
           description: "New description. Pass null to clear; omit to keep.",
         },
         instructions: {
-          type: "string",
+          type: ["string", "null"],
           description:
             "Project-level prompt text injected into every task brief in the project (max 32,000 characters). Pass null to clear; omit to keep.",
         },
-        icon: { type: "string", description: "New icon. Pass null to clear; omit to keep." },
+        icon: { type: ["string", "null"], description: "New icon. Pass null to clear; omit to keep." },
         status: {
           type: "string",
           enum: [...PROJECT_STATUS_ENUM],
@@ -604,21 +606,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         priority: { type: "string", enum: [...PRIORITY_ENUM], description: "One of: urgent | high | medium | low | none." },
         lead_type: {
-          type: "string",
-          enum: [...PROJECT_LEAD_TYPES],
+          type: ["string", "null"],
+          enum: [...PROJECT_LEAD_TYPES, null],
           description: "Lead kind: member or agent. Pass null (with lead_id null) to clear; omit to keep.",
         },
         lead_id: {
-          type: "string",
+          type: ["string", "null"],
           description: "Lead UUID. Pass null (with lead_type null) to clear; omit to keep.",
         },
         start_date: {
-          type: "string",
+          type: ["string", "null"],
           description: "Start date, YYYY-MM-DD. Pass null to clear; omit to keep.",
           pattern: DATE_PATTERN,
         },
         due_date: {
-          type: "string",
+          type: ["string", "null"],
           description: "Due date, YYYY-MM-DD. Pass null to clear; omit to keep.",
           pattern: DATE_PATTERN,
         },
@@ -654,7 +656,33 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         start_date: nullableDate(args, "start_date"),
         due_date: nullableDate(args, "due_date"),
       };
-      const project = await client.updateProject(workspace, projectId, body);
+      let project: ProjectInfo;
+      try {
+        project = await client.updateProject(workspace, projectId, body);
+      } catch (error) {
+        // A stale expected_revision is a defined outcome, not a transport
+        // failure — answer it with the same structured dialect as the issue
+        // and comment faces (edit_comment's shape) so callers branch on the
+        // code instead of exception strings. This tool sends no field
+        // baselines, so any 409 here is a lost optimistic-lock race.
+        if (
+          error instanceof MulticaApiError &&
+          error.status === 409 &&
+          error.message.includes("revision_conflict")
+        ) {
+          const conflictBody = error.body ?? {};
+          return {
+            updated: false,
+            id: projectId,
+            code: "revision_conflict",
+            expected_revision: intField(conflictBody, "expected_revision") ?? null,
+            actual_revision: intField(conflictBody, "actual_revision") ?? null,
+            message: "the project changed since it was read; nothing was written",
+            hint: "Re-read the project with get_project, then retry with the fresh expected_revision or re-apply your change on top of the current content.",
+          };
+        }
+        throw error;
+      }
       return {
         updated: true,
         ...projectFull(project),
@@ -1162,7 +1190,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         expected_revision: {
           type: "integer",
           description: "Optimistic-lock revision from a previous read; the write fails if the issue changed since.",
-          minimum: 0,
+          minimum: 1,
         },
       },
       required: ["workspace", "issue", "status"],
@@ -1174,7 +1202,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       const issue = await client.updateIssue(workspace, issueId, {
         status,
         suppress_run: optionalBoolean(args, "suppress_run"),
-        expected_revision: optionalInt(args, "expected_revision", { min: 0 }),
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
       });
       return {
         updated: true,
@@ -1183,6 +1211,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         title: issue.title,
         status: issue.status,
         revision: issue.revision,
+        run_suppressed: issue.run_suppressed ?? false,
       };
     },
   },
@@ -1365,7 +1394,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         expected_revision: {
           type: "integer",
           description: "Optimistic-lock revision from a previous read; the write fails if the issue changed since.",
-          minimum: 0,
+          minimum: 1,
         },
       },
       required: ["workspace", "issue", "assignee_type"],
@@ -1383,7 +1412,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       const body: UpdateIssueBody = {
         suppress_run: optionalBoolean(args, "suppress_run"),
         handoff_note: optionalString(args, "handoff_note", { maxLength: 5_000 }),
-        expected_revision: optionalInt(args, "expected_revision", { min: 0 }),
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
       };
       if (assigneeType === "unassigned") {
         if (assigneeId !== undefined) {
@@ -1486,7 +1515,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "integer",
           description:
             "Optimistic-lock revision of THIS issue from a previous read; the write fails with revision_conflict if it changed since.",
-          minimum: 0,
+          minimum: 1,
         },
       },
       required: ["workspace", "issue", "action"],
@@ -1502,7 +1531,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       }
       const target = optionalString(args, "target_issue");
       const relationType = optionalEnum(args, "relation_type", RELATION_TYPES);
-      const expectedRevision = optionalInt(args, "expected_revision", { min: 0 });
+      const expectedRevision = optionalInt(args, "expected_revision", { min: 1 });
       const noRunNote =
         "No agent run: pure relationship changes never dispatch, wake, or queue one.";
 
