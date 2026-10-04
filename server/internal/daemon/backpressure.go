@@ -29,8 +29,8 @@ import (
 
 // backpressureThresholds carries the hysteresis pair for each condition.
 // Trigger is OR across conditions; recovery is AND. Percentages are ratios
-// of the corresponding total: MemAvailablePct low is bad, SwapUsedPct high
-// is bad.
+// of the corresponding total: MemAvailablePct low is bad, SwapUsedPct and
+// PSI some-avg10 high are bad.
 //
 // The defaults are initial safety parameters chosen from the RUYI-392
 // incident profile, not calibrated final values — tune via env as GTI
@@ -40,6 +40,8 @@ type backpressureThresholds struct {
 	MemRecoveryPct  float64
 	SwapHighPct     float64
 	SwapRecoveryPct float64
+	PSIHighPct      float64
+	PSIRecoveryPct  float64
 }
 
 // triggered reports whether the (smoothed) sample crosses any high
@@ -53,37 +55,53 @@ func (th backpressureThresholds) swapHigh(p float64) bool {
 	return th.SwapHighPct > 0 && p > th.SwapHighPct
 }
 
-// recovered reports whether both conditions are back inside their recovery
-// band. A disabled swap condition counts as recovered.
-func (th backpressureThresholds) recovered(memAvailPct, swapUsedPct float64) bool {
+// psiHigh reports whether the smoothed memory PSI crosses its high
+// watermark. Unlike the watermarks, PSI is a stall *rate* — higher is bad.
+// A disabled condition (PSIHighPct <= 0) or an unreadable PSI source
+// (psiOK false: kernel without PSI, broken procfs mount) never trips it —
+// the condition degrades to "skip" and the remaining mem/swap conditions
+// keep gating alone, so a missing PSI can neither block nor trip the gate.
+func (th backpressureThresholds) psiHigh(psiAvg float64, psiOK bool) bool {
+	return th.PSIHighPct > 0 && psiOK && psiAvg > th.PSIHighPct
+}
+
+// recovered reports whether every enabled condition is back inside its
+// recovery band. A disabled condition counts as recovered; so does a
+// condition whose source went unreadable (psiOK false) — failing PSI
+// must not wedge the gate active forever.
+func (th backpressureThresholds) recovered(memAvailPct, swapUsedPct, psiAvg float64, psiOK bool) bool {
 	if th.MemRecoveryPct > 0 && memAvailPct < th.MemRecoveryPct {
 		return false
 	}
 	if th.SwapHighPct > 0 && th.SwapRecoveryPct > 0 && swapUsedPct > th.SwapRecoveryPct {
 		return false
 	}
+	if th.PSIHighPct > 0 && th.PSIRecoveryPct > 0 && psiOK && psiAvg > th.PSIRecoveryPct {
+		return false
+	}
 	return true
 }
 
 // backpressureReasons names the condition(s) currently past their high
-// watermark: "mem", "swap", or "mem+swap".
-func (th backpressureThresholds) backpressureReasons(memAvailPct, swapUsedPct float64) string {
-	mem := th.memLow(memAvailPct)
-	swap := th.swapHigh(swapUsedPct)
-	switch {
-	case mem && swap:
-		return "mem+swap"
-	case mem:
-		return "mem"
-	case swap:
-		return "swap"
-	default:
-		return ""
+// watermark: "mem", "swap", "psi", or a "+"-joined combination such as
+// "mem+swap+psi".
+func (th backpressureThresholds) backpressureReasons(memAvailPct, swapUsedPct, psiAvg float64, psiOK bool) string {
+	var parts []string
+	if th.memLow(memAvailPct) {
+		parts = append(parts, "mem")
 	}
+	if th.swapHigh(swapUsedPct) {
+		parts = append(parts, "swap")
+	}
+	if th.psiHigh(psiAvg, psiOK) {
+		parts = append(parts, "psi")
+	}
+	return strings.Join(parts, "+")
 }
 
-// memSample is one raw host-memory reading. Percentages are 0-100;
-// PSI is observation-only telemetry and never feeds the gate.
+// memSample is one raw host-memory reading. Percentages are 0-100. PSI
+// feeds the gate as a third condition (RUYI-397); a sample with PSIReadOK
+// false simply carries no PSI vote.
 type memSample struct {
 	MemAvailablePct    float64
 	SwapUsedPct        float64
@@ -327,14 +345,14 @@ func (m *backpressureMachine) observe(s memSample) backpressureObservation {
 	psiAvg = mathRound1(psiAvg / n)
 
 	th := m.thresholds
-	reason := th.backpressureReasons(memAvailPct, swapUsedPct)
+	reason := th.backpressureReasons(memAvailPct, swapUsedPct, psiAvg, psiOK)
 	transitioned := false
 
 	switch {
 	case !m.active && reason != "":
 		m.active = true
 		transitioned = true
-	case m.active && reason == "" && th.recovered(memAvailPct, swapUsedPct):
+	case m.active && reason == "" && th.recovered(memAvailPct, swapUsedPct, psiAvg, psiOK):
 		m.active = false
 		transitioned = true
 	}
@@ -372,14 +390,16 @@ func (c Config) backpressureThresholds() backpressureThresholds {
 		MemRecoveryPct:  c.BackpressureMemRecoveryPct,
 		SwapHighPct:     c.BackpressureSwapHighPct,
 		SwapRecoveryPct: c.BackpressureSwapRecoveryPct,
+		PSIHighPct:      c.BackpressurePSIHighPct,
+		PSIRecoveryPct:  c.BackpressurePSIRecoveryPct,
 	}
 }
 
 // validateBackpressureThresholds rejects configs whose hysteresis bands are
 // inverted or degenerate: recovery thresholds must sit on the safe side of
-// their high counterparts (above for MemAvailable, below for SwapUsed), or
-// the gate would flap at the boundary it exists to damp. Sample interval and
-// window must be positive so the watcher actually moves.
+// their high counterparts (above for MemAvailable, below for SwapUsed and
+// PSI), or the gate would flap at the boundary it exists to damp. Sample
+// interval and window must be positive so the watcher actually moves.
 func validateBackpressureThresholds(th backpressureThresholds, sampleInterval time.Duration, windowSize int) error {
 	if th.MemHighPct <= 0 || th.MemHighPct > 100 {
 		return fmt.Errorf("backpressure: mem high watermark %g%% out of range (0,100]", th.MemHighPct)
@@ -393,6 +413,14 @@ func validateBackpressureThresholds(th backpressureThresholds, sampleInterval ti
 		}
 		if th.SwapRecoveryPct < 0 || th.SwapRecoveryPct >= th.SwapHighPct {
 			return fmt.Errorf("backpressure: swap recovery watermark %g%% must be below the high watermark %g%% (hysteresis)", th.SwapRecoveryPct, th.SwapHighPct)
+		}
+	}
+	if th.PSIHighPct > 0 {
+		if th.PSIHighPct > 100 {
+			return fmt.Errorf("backpressure: psi high watermark %g%% out of range (0,100]", th.PSIHighPct)
+		}
+		if th.PSIRecoveryPct < 0 || th.PSIRecoveryPct >= th.PSIHighPct {
+			return fmt.Errorf("backpressure: psi recovery watermark %g%% must be below the high watermark %g%% (hysteresis)", th.PSIRecoveryPct, th.PSIHighPct)
 		}
 	}
 	if sampleInterval <= 0 {
@@ -474,7 +502,9 @@ func (d *Daemon) backpressureTick() {
 		d.logger.Warn("memory backpressure ENTERED — pausing new task claims",
 			"reason", obs.Reason,
 			"mem_available_pct", obs.MemAvailablePct,
-			"swap_used_pct", obs.SwapUsedPct)
+			"swap_used_pct", obs.SwapUsedPct,
+			"psi_some_avg10", obs.PSIMemorySomeAvg10,
+			"psi_read_ok", obs.PSIReadOK)
 		return
 	}
 	// The episode's start lives in the previous state's Since — obs.Since was
@@ -486,6 +516,8 @@ func (d *Daemon) backpressureTick() {
 	d.logger.Info("memory backpressure CLEARED — resuming task claims",
 		"mem_available_pct", obs.MemAvailablePct,
 		"swap_used_pct", obs.SwapUsedPct,
+		"psi_some_avg10", obs.PSIMemorySomeAvg10,
+		"psi_read_ok", obs.PSIReadOK,
 		"deferred_claims", d.bpDeferred.Swap(0),
 		"held_for", heldFor.Round(time.Second).String())
 	// Nudge the batch poller so recovery takes effect on the next cycle
