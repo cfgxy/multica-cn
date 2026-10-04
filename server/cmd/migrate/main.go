@@ -319,6 +319,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"913_skill":                                                 {"idx_skill_version_identity", "idx_runtime_skill_discovery_identity"},
 	"914_retrospective":                                         {"idx_retrospective_run_workspace", "uidx_retrospective_watermark_issue"},
 	"915_channel_chat_run_intent":                               {"channel_chat_run_intent_id_uidx", "channel_chat_run_intent_pending_uidx", "idx_channel_chat_run_intent_claim"},
+	"976_issue_decisions_issue_idx":                             {"idx_issue_decisions_issue"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
