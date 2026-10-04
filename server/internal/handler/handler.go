@@ -266,7 +266,7 @@ type Handler struct {
 	// revocation gate (RUYI-420). Admin and user handlers also call
 	// Invalidate on the write paths so a revoke is effective immediately
 	// rather than at the gate TTL. Nil disables gate checks entirely.
-	OAuthGate *auth.OAuthGate
+	OAuthGate                    *auth.OAuthGate
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
