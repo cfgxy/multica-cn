@@ -33,6 +33,7 @@ import {
   useUpdateSquad,
   useUpdateSquadMemberRole,
 } from "@/data/mutations/squads";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAvatarUploader } from "@/lib/avatar";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -62,7 +63,7 @@ export default function SquadDetailScreen() {
   const updateSquad = useUpdateSquad(squadId);
   const removeMember = useRemoveSquadMember(squadId);
   const updateRole = useUpdateSquadMemberRole(squadId);
-  const { uploading, showAvatarSheet } = useAvatarUploader();
+  const { uploading, showAvatarSheet, modalProps } = useAvatarUploader();
   const navigation = useNavigation();
 
   const [editingName, setEditingName] = useState(false);
@@ -577,6 +578,7 @@ export default function SquadDetailScreen() {
             </Text>
           ) : null}
         </View>
+        <ActionSheetModal {...modalProps} />
       </ScrollView>
     </View>
   );

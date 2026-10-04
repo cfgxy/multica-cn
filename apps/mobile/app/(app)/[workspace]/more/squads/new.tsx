@@ -28,6 +28,7 @@ import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { agentListOptions } from "@/data/queries/agents";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { useCreateSquad } from "@/data/mutations/squads";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAvatarUploader } from "@/lib/avatar";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -43,7 +44,7 @@ export default function NewSquadScreen() {
   const { getName } = useActorLookup();
   const me = useAuthStore((s) => s.user);
   const create = useCreateSquad();
-  const { uploading, showAvatarSheet } = useAvatarUploader();
+  const { uploading, showAvatarSheet, modalProps } = useAvatarUploader();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -291,6 +292,7 @@ export default function NewSquadScreen() {
             </View>
           )}
         </Field>
+        <ActionSheetModal {...modalProps} />
       </ScrollView>
     </KeyboardAvoidingView>
   );
