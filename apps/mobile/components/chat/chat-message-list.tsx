@@ -41,7 +41,12 @@
  * hacks). Cell recycling also keeps scroll-up smooth.
  */
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, View } from "react-native";
+import {
+  ActivityIndicator,
+  Platform,
+  Pressable,
+  View,
+} from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -178,12 +183,15 @@ export function ChatMessageList({
     // Outer Pressable owns the "tap anywhere outside the selected bubble
     // to exit text-selection mode" gesture. Disabled when no message is
     // selected, so it's a layout-only wrapper and every tap passes straight
-    // through to the FlashList cells. Active state captures any tap that
-    // didn't fire an inner Pressable — bubble cells in selecting mode
-    // render their body without a Pressable wrapper (see `MessageRow`'s
-    // `if (isSelecting) return body;`), so taps on the selected bubble
-    // also dismiss, matching iOS Notes / iMessage behaviour. Scroll
-    // gestures are unaffected (Pressable only intercepts non-drag taps).
+    // through to the FlashList cells.
+    //
+    // On Android it's ALSO disabled while a bubble is selected, for the
+    // same reason as the timeline's dismiss layer (timeline-list.tsx):
+    // a JS responder claim from an enabled Pressable starves the native
+    // TextView selection pipeline, so the long-press on the selectable
+    // bubble never produced a selection and the release wiped the mode.
+    // iOS keeps the enabled tap-anywhere-to-dismiss layer (first-round
+    // behavior, unchanged).
     <ImageSequenceProvider blocks={imageBlocks}>
     <Pressable
       onPress={
@@ -191,7 +199,7 @@ export function ChatMessageList({
           ? () => useChatSelectStore.getState().clear()
           : undefined
       }
-      disabled={!selectingId}
+      disabled={!selectingId || Platform.OS === "android"}
       style={{ flex: 1 }}
     >
     {/* `key` on first message id forces remount on session switch so
@@ -324,12 +332,19 @@ function MessageRow({
     );
     if (isSelecting) return body;
     return (
-      <Pressable
-        onLongPress={longPress.onLongPress}
-        delayLongPress={500}
-      >
-        {body}
-      </Pressable>
+      <>
+        <Pressable
+          onLongPress={longPress.onLongPress}
+          delayLongPress={500}
+        >
+          {body}
+        </Pressable>
+        {/* Android's sheet is a mounted <Modal> — without this the user
+            bubble's long-press fired (highlight ring) but the menu never
+            appeared; iOS's imperative ActionSheetIOS masked it. Same pair
+            as AssistantRow above. (RUYI-416 rework, defect 2.) */}
+        <ActionSheetModal {...longPress.modalProps} />
+      </>
     );
   }
 
