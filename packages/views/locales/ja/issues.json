@@ -578,6 +578,7 @@
   "agent_live": {
     "is_working": "{{name}} が作業中",
     "is_queued": "{{name}} が待機中",
+    "past_runs": "実行履歴 · {{count}}件",
     "is_waiting_local_directory": "{{name}} がローカルディレクトリを待機中",
     "queued_elapsed_prefix": "{{elapsed}} 待機中",
     "fallback_name": "エージェント",
@@ -1078,6 +1079,7 @@
     "agent_activity": {
       "runs_count": "実行 · {{count}}件",
       "badge_a11y": "エージェントが実行中 — 実行履歴を開く",
+      "badge_idle_a11y": "実行履歴を見る",
       "row_running_a11y": "エージェントがこのタスクを処理中",
       "row_queued_a11y": "エージェントのタスクが待機中"
     },
