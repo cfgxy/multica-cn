@@ -109,12 +109,17 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("qoder stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("qoder stdin pipe: %w", err)
@@ -125,13 +130,13 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	// stopReason=end_turn under load (a terminal provider error can land
 	// after we've already read finalOutput and reported "completed").
 	providerErr := newACPProviderErrorSniffer("qoder")
-	stderr, err := cmd.StderrPipe()
+	stderr, err := sess.StderrPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("qoder stderr pipe: %w", err)
 	}
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start qoder: %w", err)
 	}
@@ -143,7 +148,7 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		_, _ = io.Copy(stderrSink, stderr)
 	}()
 
-	b.cfg.Logger.Info("qoder acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.cfg.Logger.Info("qoder acp started", "pid", sess.PID(), "cwd", opts.Cwd)
 
 	msgStream := newQoderMessageStream(256)
 	resCh := make(chan Result, 1)
@@ -212,7 +217,7 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		defer close(resCh)
 		defer func() {
 			stdin.Close()
-			_ = cmd.Wait()
+			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
 
@@ -385,7 +390,7 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("qoder finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("qoder finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		stdin.Close()
 		cancel()

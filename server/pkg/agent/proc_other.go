@@ -5,7 +5,9 @@ package agent
 import (
 	"errors"
 	"log/slog"
+	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -38,7 +40,63 @@ func configureProcessGroup(cmd *exec.Cmd) {
 //
 // It is still the only way this package starts a long-lived runtime process,
 // so the two platforms share one call site per backend.
-func startOwnedProcessTree(cmd *exec.Cmd, _ *slog.Logger) error { return cmd.Start() }
+//
+// RUYI-349 note: os/exec's startCalled guard makes retrying cmd.Start after a
+// failed attempt impossible ("exec: already started"), so an ETXTBSY here — a
+// concurrent O_WRONLY hold on the binary at exec time, seen from test-suite
+// helper races — surfaces as the Start error it is; the holder dump below
+// names any live foreign fd for diagnosis.
+func startOwnedProcessTree(cmd *exec.Cmd, logger *slog.Logger) error {
+	err := cmd.Start()
+	if errors.Is(err, syscall.ETXTBSY) {
+		dumpTxtbsyHolders(cmd.Path, logger)
+	}
+	return err
+}
+
+// dumpTxtbsyHolders is RUYI-349 diagnostics: on ETXTBSY, name every process
+// holding an fd (any mode) whose inode equals the exec target's — the writer
+// may have closed already, but an inode-number match against a long-lived
+// foreign fd proves inode recycling and identifies the holder.
+func dumpTxtbsyHolders(path string, logger *slog.Logger) {
+	self, err := os.Stat(path)
+	if err != nil {
+		logger.Error("etxtbsy forensics: stat target failed", "path", path, "error", err)
+		return
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pid := e.Name()
+		fds, err := os.ReadDir("/proc/" + pid + "/fd")
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			link := "/proc/" + pid + "/fd/" + fd.Name()
+			target, err := os.Readlink(link)
+			if err != nil || !strings.HasPrefix(target, "/tmp/") {
+				continue
+			}
+			st, err := os.Stat(link)
+			if err != nil || !st.Mode().IsRegular() {
+				continue
+			}
+			if !os.SameFile(st, self) {
+				continue
+			}
+			cmdline, _ := os.ReadFile("/proc/" + pid + "/cmdline")
+			logger.Error("etxtbsy inode match", "pid", pid, "fd", fd.Name(),
+				"target", target,
+				"cmd", strings.ReplaceAll(string(cmdline), "\x00", " "))
+		}
+	}
+}
 
 // releaseProcessGroup is a no-op on non-Windows platforms: a process group needs
 // no handle and is gone once its members are.

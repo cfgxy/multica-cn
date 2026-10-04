@@ -247,9 +247,10 @@ close intent writes the literal `done` key.
   carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
   itself on merge — you do not also need to flip it manually.
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
-  `done` it enqueues no new agent work, but it does **not** stop tasks already in
-  flight — a run in progress keeps going (MUL-4465). To stop a running task,
-  cancel the task itself.
+  `done` it enqueues no new agent work, and its open runs end with it
+  (RUYI-384): queued runs are cancelled outright and in-flight runs receive a
+  stop request the runtime confirms. Do not enqueue work against a cancelled
+  issue, and do not start a run you can see is cancelled.
 - **Failed issue-triggered tasks** may roll an issue from `in_progress` back to
   `todo` when no active task / retry remains — that is the main server-owned
   status write on the agent-run path.

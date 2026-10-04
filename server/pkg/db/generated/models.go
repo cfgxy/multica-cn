@@ -360,6 +360,18 @@ type ChannelBindingToken struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type ChannelCapabilityState struct {
+	ID             pgtype.UUID        `json:"id"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	ChannelType    string             `json:"channel_type"`
+	Capability     string             `json:"capability"`
+	Status         string             `json:"status"`
+	Detail         string             `json:"detail"`
+	RequiredScopes []byte             `json:"required_scopes"`
+	CheckedAt      pgtype.Timestamptz `json:"checked_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelChatContextGeneration struct {
 	ChatSessionID          pgtype.UUID        `json:"chat_session_id"`
 	Revision               int64              `json:"revision"`
@@ -885,10 +897,11 @@ type IssueDecision struct {
 }
 
 type IssueDependency struct {
-	ID               pgtype.UUID `json:"id"`
-	IssueID          pgtype.UUID `json:"issue_id"`
-	DependsOnIssueID pgtype.UUID `json:"depends_on_issue_id"`
-	Type             string      `json:"type"`
+	ID               pgtype.UUID        `json:"id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	DependsOnIssueID pgtype.UUID        `json:"depends_on_issue_id"`
+	Type             string             `json:"type"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueLabel struct {
@@ -1397,6 +1410,7 @@ type Project struct {
 	StartDate    pgtype.Date        `json:"start_date"`
 	DueDate      pgtype.Date        `json:"due_date"`
 	Instructions pgtype.Text        `json:"instructions"`
+	Revision     int64              `json:"revision"`
 }
 
 type ProjectResource struct {
@@ -1455,6 +1469,7 @@ type PromptProposal struct {
 	AuditLog            []byte             `json:"audit_log"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	JevAdvisory         []byte             `json:"jev_advisory"`
 }
 
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.

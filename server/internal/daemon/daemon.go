@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -558,6 +559,12 @@ type Daemon struct {
 
 	cancelFunc context.CancelFunc // set by Run(); called by triggerRestart
 	rootCtx    context.Context    // set by Run(); used by long-running recoveries that must survive per-runtime ctx cancellation
+
+	// supervisor is the RUYI-349 worker supervisor (systemd transient units).
+	// nil — on hosts without a usable systemd user bus, or before
+	// setupSupervisor runs — keeps every worker on the legacy direct-child
+	// path; that nil IS the fallback switch.
+	supervisor *supervisor.Supervisor
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -604,6 +611,19 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+
+	// Host memory backpressure gate (RUYI-393). Deliberately separate from
+	// pauseClaims: the auto-update barrier flips a shared bool that its own
+	// release path clears, so backpressure must not live in the same flag.
+	// bpState is nil until the watcher's first sample lands (gate fails
+	// open); bpWakeup points at the batch poller's wakeup channel so a
+	// recovery can nudge it instead of waiting out a backoff interval.
+	bpMachine   *backpressureMachine
+	bpSource    memSampleSource
+	bpState     atomic.Pointer[backpressureObservation]
+	bpDeferred  atomic.Int64
+	bpWakeup    atomic.Pointer[chan struct{}]
+	bpLastWarn  atomic.Int64
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -708,6 +728,12 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		reconcile:                 newReconcileBroadcaster(),
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
+	}
+	// Host memory backpressure (RUYI-393): nil machine = disabled, the claim
+	// gate fails open and the watcher goroutine is never started.
+	if cfg.BackpressureEnabled {
+		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
+		d.bpSource = newMemSampleSource()
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2070,9 +2096,20 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// invariant (renew first) is enforced at one site instead of
 	// scattered into Run, and tests can exercise the failure paths
 	// without the full Run setup.
+	//
+	// Worker supervision (RUYI-349) is built FIRST: preflightAuth performs
+	// the initial register, and that register must already carry the
+	// worker-supervisor capability the supervisor probe just decided.
+	d.setupSupervisor()
+	d.client.SetWorkerSupervision(d.supervisor != nil)
 	if err := d.preflightAuth(ctx); err != nil {
 		return err
 	}
+
+	// Converge any runs the previous daemon left behind BEFORE the claim
+	// loop starts, so a live unit is never racing this process's first
+	// launch of the same task.
+	d.reconcileSupervisedRuns(ctx)
 
 	// Deregister runtimes on shutdown (uses a fresh context since ctx will be cancelled).
 	defer d.deregisterRuntimes()
@@ -2097,6 +2134,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
 
+	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
+	// and advances the hysteresis gate fed into the claim path below. nil
+	// machine = disabled by config, no goroutine.
+	if d.bpMachine != nil {
+		go d.runBackpressureWatcher(ctx)
+	}
+
 	// Preflight succeeded and the background loops are up: the daemon has
 	// registered its runtimes and can now claim and run tasks. Flip /health
 	// from "starting" to "running" — this is the signal `daemon start`'s
@@ -2106,6 +2150,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.logger.Debug("background loops launched (workspace-sync, task-wakeup, heartbeat, gc, auto-update, token-renewal); health now reporting ready")
 	err = d.pollLoop(ctx, taskWakeups)
 	d.logger.Debug("daemon main loop returning", "error", err)
+	// Detach-before-teardown (RUYI-349): the root context is about to unwind
+	// and every running Execute will see cancellation. Flip the supervisor to
+	// detaching FIRST so supervised sessions respond to that cancellation by
+	// detaching (worker keeps running for the next daemon) instead of killing
+	// the unit — killing here would reintroduce the exact loss this exists to
+	// prevent. Legacy children are unaffected by this flag.
+	if d.supervisor != nil {
+		d.supervisor.SetDetaching()
+	}
 	return err
 }
 
@@ -4249,7 +4302,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid)
+	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport())
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4394,7 +4447,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID)
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport())
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -4919,14 +4972,24 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 }
 
 // tryEnterClaim records the intent to call ClaimTask. Returns true if the
-// caller may proceed, false if the auto-update barrier is in effect. Every
-// successful call MUST be paired with an exitClaim() on every exit path —
-// either right after a failed/empty claim, or via the handleTask goroutine's
-// defer once the task is handed off.
+// caller may proceed, false if the auto-update barrier is in effect or host
+// memory backpressure (RUYI-393) is active. Every successful call MUST be
+// paired with an exitClaim() on every exit path — either right after a
+// failed/empty claim, or via the handleTask goroutine's defer once the task
+// is handed off.
+//
+// The two refusals are orthogonal: releaseClaimBarrier only ever clears
+// pauseClaims, and backpressure lives in its own state, so neither path can
+// accidentally release the other. Auto-update does not consult backpressure
+// — blocked claims drain claimsInFlight on their own, which is the only
+// state the update barrier waits on.
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
 	if d.pauseClaims {
+		return false
+	}
+	if d.backpressureBlocked() {
 		return false
 	}
 	d.claimsInFlight++
@@ -5080,6 +5143,11 @@ func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan taskWakeup) er
 		d.runBatchPoller(pollerCtx, ctx, sem, wakeup, &taskWG)
 	}()
 
+	// Register the poller's wakeup channel with the backpressure watcher so
+	// leaving backpressure resumes claiming on the next cycle instead of
+	// after one backoff interval. pollLoop runs once per daemon lifetime.
+	d.bpWakeup.Store(&wakeup)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -5129,6 +5197,19 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 	for {
 		if pollerCtx.Err() != nil {
 			return
+		}
+
+		// Host memory backpressure (RUYI-393): while the gate is active,
+		// skip the whole claim cycle — don't even wait for slots — and
+		// back off like the capacity path. Queued tasks stay queued
+		// server-side; already-running tasks are untouched. tryEnterClaim
+		// re-checks the same gate as the authoritative pre-claim barrier.
+		if d.backpressureBlocked() {
+			d.bpDeferred.Add(1)
+			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
+				return
+			}
+			continue
 		}
 
 		runtimeIDs := d.allRuntimeIDs()
@@ -5323,6 +5404,7 @@ func newTaskSlotSemaphore(maxConcurrentTasks int) chan int {
 //     CompleteTask/FailTask callback is guaranteed to fail and just adds log
 //     noise. Reusing isAgentTaskTerminal keeps this set in lockstep with the
 //     GC's notion of a terminal task.
+//
 //  2. err is a 404 with "task not found" — the task row was deleted while
 //     the agent was running. Without this we'd let the local agent keep
 //     emitting tool calls against a dead task for its full timeout window.
@@ -8233,6 +8315,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
+	// Worker supervision (RUYI-349): nil unless this provider is on the
+	// supervised whitelist and the host runs a usable systemd user manager.
+	// Attempt 1: the segmented-continuation retry below takes attempt 2 with
+	// its own run id — one worker per Execute.
+	execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 1)
+
 	taskLog.Debug("invoking backend",
 		"provider", provider,
 		"model", model,
@@ -8304,6 +8392,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		// The previous supervised worker exited with its budget stop recorded
+		// in its manifest; planSupervisedRun steps to the next generation so
+		// this retry launches a fresh unit instead of reentering the old one.
+		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {

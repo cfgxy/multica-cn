@@ -155,6 +155,7 @@ const TASK_STATUSES: AgentTask["status"][] = [
   "completed",
   "failed",
   "cancelled",
+  "cancel_requested",
 ];
 
 const TASK_KINDS = ["comment", "autopilot", "chat", "quick_create", "direct"];
@@ -430,6 +431,13 @@ const PREFIX_VALUES: Record<string, string[]> = {
   "projects:priority": PROJECT_PRIORITIES,
   "agents:availability": ["online", "unstable", "offline", "archived"],
   "agents:workload": ["working", "queued", "idle"],
+  // access-scope-badge：wire 值连字符映射到资源下划线 key（组件内 replace）。
+  "agents:access.scope_labels": ["workspace", "specific_people", "owner_only"],
+  // RUYI-344: the Tasks tab interpolates the five quadrant TAB keys into
+  // both the pill labels and the per-tab empty-state copy.
+  "issues:mobile.tasks.tabs": ["all", "open", "active", "blocked", "completed"],
+  "issues:mobile.tasks.empty": ["all", "open", "active", "blocked", "completed"],
+  "issues:mobile.tasks.filtered_empty": ["title", "clear_button"],
 };
 
 const MOBILE_ROOT = join(__dirname, "..");

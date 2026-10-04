@@ -15,3 +15,15 @@ export const larkInstallationsOptions = (wsId: string) =>
     queryFn: () => api.listLarkInstallations(wsId),
     enabled: !!wsId,
   });
+
+/** The static capability→scope catalog (RUYI-400). It only changes with
+ * a server deploy, so cache it for the session instead of refetching on
+ * every dialog open. */
+export const larkPermissionCatalogOptions = (wsId: string) =>
+  queryOptions({
+    queryKey: [...larkKeys.all(wsId), "permission-catalog"] as const,
+    queryFn: () => api.getLarkPermissionCatalog(wsId),
+    enabled: !!wsId,
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000,
+  });

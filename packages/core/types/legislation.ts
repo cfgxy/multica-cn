@@ -30,6 +30,26 @@ export interface PromptProposalMergeRef {
   run_id: string;
 }
 
+/**
+ * The warn-only jev advisory sidecar report (RUYI-347): the local binary
+ * engine's risk read over the clause text (submit stage) or the synthesized
+ * full carrier (gate stage). Advisory only — it never blocks the state
+ * machine. `available: false` carries the skip reason instead of a verdict;
+ * `jev_advisory: null` means the layer is off or the row was never checked.
+ */
+export interface PromptJevAdvisory {
+  stage: "submit" | "gate";
+  available: boolean;
+  engine?: string;
+  p_failure?: number;
+  threshold?: number;
+  warn: boolean;
+  decision?: string;
+  input_sha256: string;
+  skipped_reason?: string;
+  checked_at: string;
+}
+
 export interface PromptProposal {
   id: string;
   workspace_id: string;
@@ -49,6 +69,8 @@ export interface PromptProposal {
   status: string;
   gate_errors: LegislationGateFinding[];
   gate_warnings: LegislationGateFinding[];
+  /** Warn-only local-engine advisory; null = layer off / unchecked. */
+  jev_advisory?: PromptJevAdvisory | null;
   enacted_version?: number;
   rollback_reason: string;
   merged_from: PromptProposalMergeRef[];

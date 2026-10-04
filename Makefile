@@ -1,5 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall
-
+.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
@@ -355,37 +354,55 @@ mcp-http-uninstall: ## Remove the MCP HTTP systemd --user service only; never to
 # ---------- Environments ----------
 ##@ Environments
 
-# One verb per lifecycle step, shared by humans and agents. C= picks the
-# components; ARGS= forwards anything else to the script.
+# Fixed slots (RUYI-333): every command names the slot it acts on. There are
+# exactly two general slots (dev1, dev2); QA verification reuses the issue's
+# own slot by handing its lease to the qa role (`make use SLOT=dev1 ...
+# handoff`). A slot's ports, database and account are fixed facts in
+# scripts/slots.json; write commands additionally require the owning issue
+# via MULTICA_CALLER_OWNER.
 #
-#   make up                     api + web
-#   make up C=api,web,daemon    add the agent daemon
-#   make up C=desktop           Electron against this environment's backend
-#   make up ARGS=--ephemeral    agent-owned, expires, collected by `make gc`
+#   make up SLOT=dev1                    api + web for slot dev1
+#   make up SLOT=dev1 C=api,web,daemon   add the agent daemon
+#   scripts/dev-env.sh dev1 handoff --to qa     release dev1 to QA verification
+#
+# SLOT is required: the old dynamic name+offset allocator is gone, so two
+# environments can no longer drift into sharing a database.
 
-up: ## Start this checkout's environment (C=api,web,daemon,desktop; default api,web)
-	@bash scripts/dev-env.sh up $(if $(C),--components $(C)) $(ARGS)
+check-slot:
+	@if [ -z "$(SLOT)" ]; then \
+		echo "SLOT is required: make up SLOT=dev1 (slots: dev1, dev2 — scripts/slots.json)"; \
+		exit 2; \
+	fi
 
-down: ## Stop this environment's processes, keeping its database and profile
-	@bash scripts/dev-env.sh down $(ARGS)
+up: check-slot ## Start a slot's environment (C=api,web,daemon,desktop; default api,web)
+	@bash scripts/dev-env.sh $(SLOT) up $(if $(C),--components $(C)) $(ARGS)
 
-status: ## Show what is running for this environment, with proof of identity
-	@bash scripts/dev-env.sh status $(ARGS)
+down: check-slot ## Stop a slot's processes, keeping its database and profile
+	@bash scripts/dev-env.sh $(SLOT) down $(ARGS)
 
-list: ## List every registered development environment on this machine
+status: check-slot ## Show what is running for a slot, with proof of identity
+	@bash scripts/dev-env.sh $(SLOT) status $(ARGS)
+
+list: ## List every fixed slot on this machine (registered/free)
 	@bash scripts/dev-env.sh list $(ARGS)
 
-destroy: ## Stop this environment, drop its database and profile, free its slot
-	@bash scripts/dev-env.sh destroy $(ARGS)
+use: check-slot ## Bind this checkout, or load a revision into a slot (ARGS="<sha>")
+	@bash scripts/dev-env.sh $(SLOT) use $(ARGS)
 
-gc: ## Collect environments whose directory is gone or whose TTL expired
+destroy: check-slot ## Stop a slot, drop its database and account, free it
+	@bash scripts/dev-env.sh $(SLOT) destroy $(ARGS)
+
+orphans: check-slot ## Acceptance check: nothing of this slot survives down/destroy
+	@bash scripts/dev-env.sh $(SLOT) orphans $(ARGS)
+
+gc: ## Collect expired qa-phase slots (and slots whose code directory is gone)
 	@bash scripts/dev-env.sh gc $(ARGS)
 
-qa-clean: ## Reclaim QA leftovers in ~/.multica/qa (ARGS="--issue ruyi-283 --yes [--docker]"; default is a dry run)
+qa-clean: ## Reclaim QA leftovers (ARGS="--issue ruyi-283 --yes [--docker]"; default is a dry run)
 	@bash scripts/qa-clean.sh $(ARGS)
 
-env-exec: ## Run a command with this environment's variables (ARGS="-- pnpm dev:desktop")
-	@bash scripts/dev-env.sh exec $(ARGS)
+env-exec: check-slot ## Run a command with a slot's variables (ARGS="-- pnpm dev:desktop")
+	@bash scripts/dev-env.sh $(SLOT) exec $(ARGS)
 
 # Single-component entry points. No database preflight: `up` has already proven
 # the database is reachable before it launches anything, and repeating the

@@ -60,6 +60,12 @@ const (
 	// success: nothing new runs. (Named to avoid implying the NEW comment was
 	// already processed.)
 	ReasonSelfTriggerSuppressed ReasonCode = "self_trigger_suppressed"
+	// ReasonIssueStatusNotDispatchable: the issue's current status category
+	// does not admit comment-triggered runs (RUYI-391). The comment itself is
+	// saved; the trigger is refused before any run is created or queued. The
+	// fix is a status move, not a retry: the author moves the issue out of the
+	// non-dispatchable status (e.g. backlog -> todo) and comments again.
+	ReasonIssueStatusNotDispatchable ReasonCode = "issue_status_not_dispatchable"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"

@@ -23,9 +23,55 @@ export interface AgentInfo {
 
 export interface ProjectInfo {
   id: string;
+  workspace_id?: string;
   title: string;
+  description?: string;
+  /** Project-level prompt text injected into every task brief in the project. */
+  instructions?: string;
+  icon?: string;
   status?: string;
+  priority?: string;
+  lead_type?: string;
+  lead_id?: string;
+  start_date?: string;
+  due_date?: string;
+  created_at?: string;
+  updated_at?: string;
   issue_count?: number;
+  done_count?: number;
+  resource_count?: number;
+  /** Optimistic-lock token: send back as expected_revision on update. */
+  revision?: number;
+}
+
+export interface CreateProjectBody {
+  title: string;
+  description?: string;
+  instructions?: string;
+  icon?: string;
+  status?: string;
+  priority?: string;
+  lead_type?: string;
+  lead_id?: string;
+  start_date?: string;
+  due_date?: string;
+}
+
+// PATCH semantics mirror the Go handler's rawFields contract: an omitted key
+// keeps the current value, an explicit JSON null clears a nullable field.
+// The nulls must survive serialization (same rule as UpdateIssueBody).
+export interface UpdateProjectBody {
+  expected_revision?: number;
+  title?: string;
+  description?: string | null;
+  instructions?: string | null;
+  icon?: string | null;
+  status?: string;
+  priority?: string;
+  lead_type?: string | null;
+  lead_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
 }
 
 export interface IssueInfo {
@@ -72,7 +118,16 @@ export interface CommentInfo {
   parent_id?: string;
   created_at?: string;
   updated_at?: string;
-  /** Present on create: per-explicit-@ dispatch outcome for mentioned agents. */
+  /**
+   * Optimistic-lock counter, bumped on every content edit. revision > 1 (or
+   * updated_at > created_at) marks an edited comment — the recognizable
+   * audit trail; there is no per-edit content history beyond this.
+   */
+  revision?: number;
+  /** roots_only listings only: orientation stats for the thread under this root. */
+  reply_count?: number;
+  last_activity_at?: string;
+  /** Present on create/edit: per-explicit-@ dispatch outcome for mentioned agents. */
   trigger_outcomes?: Array<{
     target_type?: string;
     target_id?: string;
@@ -106,6 +161,7 @@ export interface CommentListParams {
   tail?: number;
   roots_only?: boolean;
   summary?: boolean;
+  fold?: boolean;
 }
 
 export interface CreateIssueBody {
@@ -136,8 +192,40 @@ export interface CreateCommentBody {
   parent_id?: string;
 }
 
+export interface UpdateCommentBody {
+  content: string;
+  /**
+   * Optimistic lock: the edit lands only when the stored revision still
+   * equals this value; otherwise the server answers 409 revision_conflict
+   * carrying the current revision.
+   */
+  expected_revision?: number;
+  /**
+   * Agent/squad ids whose dispatch is suppressed when the edit re-runs the
+   * comment's trigger computation (content-changing edits recompute the
+   * trigger surface of the new body).
+   */
+  suppress_agent_ids?: string[];
+}
+
 export interface UpdateIssueBody {
   status?: string;
+  // Core field edit (RUYI-350 update_issue). PATCH semantics: an omitted key
+  // keeps the current value. For the four nullable fields an EXPLICIT null
+  // clears the value — the null must survive serialization, because the
+  // server decides "clear" by rawFields key presence (server/internal/handler/
+  // issue.go), exactly like the assignee nulls below. title/description/
+  // priority are plain writes: the server models them as *string, so a JSON
+  // null decodes to nil and means "keep" — the tool layer never sends null
+  // for them. bulk_update_issues (RUYI-353) shares this body type but its
+  // items only ever assign plain strings, so omitted keys keep the current
+  // value there.
+  title?: string;
+  description?: string;
+  priority?: string;
+  project_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
   expected_revision?: number;
   suppress_run?: boolean;
   // Assignee change. A string pair assigns/reassigns; explicit nulls clear
@@ -150,6 +238,66 @@ export interface UpdateIssueBody {
   // Injected into the triggered run's opening context; dropped when the
   // write starts no run (suppress_run, backlog parking, member/unassign).
   handoff_note?: string;
+  // Parent change (RUYI-351). A string re-parents the issue (server walks
+  // the ancestor chain for cycles); explicit null clears the parent. The
+  // null must survive serialization — same rawFields rule as the assignee.
+  parent_issue_id?: string | null;
+}
+
+// RUYI-351 structured issue relations. The five caller-facing types; the
+// server stores one canonical row per edge, so blocked_by / superseded_by
+// writes land as their forward counterpart and relates_to is symmetric.
+export type IssueRelationType =
+  | "blocks"
+  | "blocked_by"
+  | "relates_to"
+  | "supersedes"
+  | "superseded_by";
+
+export interface IssueRelationRef {
+  id: string;
+  identifier?: string;
+  title?: string;
+  status?: string;
+}
+
+export interface IssueRelationsInfo {
+  issue_id: string;
+  identifier?: string;
+  revision?: number;
+  parent?: IssueRelationRef | null;
+  blocks: IssueRelationRef[];
+  blocked_by: IssueRelationRef[];
+  relates_to: IssueRelationRef[];
+  supersedes: IssueRelationRef[];
+  superseded_by: IssueRelationRef[];
+}
+
+export interface AddIssueRelationBody {
+  type: IssueRelationType;
+  target_issue_id: string;
+  expected_revision?: number;
+}
+
+export interface AddIssueRelationResult {
+  added: true;
+  relation: {
+    id?: string;
+    type: IssueRelationType;
+    source_issue_id: string;
+    target_issue_id: string;
+  };
+  issue: { id: string; revision: number };
+}
+
+export interface RemoveIssueRelationResult {
+  removed: true;
+  relation: {
+    type: IssueRelationType;
+    source_issue_id: string;
+    target_issue_id: string;
+  };
+  issue: { id: string; revision: number };
 }
 
 export interface ActiveTaskInfo {

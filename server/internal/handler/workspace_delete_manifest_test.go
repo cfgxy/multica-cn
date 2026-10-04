@@ -44,6 +44,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"autopilot_subscriber":            workspaceDelete,
 	"autopilot_trigger":               workspaceDelete,
 	"channel_binding_token":           workspaceDelete,
+	// Capability probe verdicts (RUYI-400) are installation-scoped
+	// diagnostics: DeleteWorkspace sweeps them through ws_installations.
+	"channel_capability_state":        workspaceDelete,
 	"channel_chat_context_generation": workspaceDelete,
 	// Run-trigger intents (RUYI-304) own nothing outside the database: the
 	// cascade deletes them directly instead of settling through a reconciler.
