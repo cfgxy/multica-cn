@@ -2712,6 +2712,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// every active task + each agent's most recent terminal task.
 			r.Get("/api/agent-task-snapshot", h.ListWorkspaceAgentTaskSnapshot)
 
+			// Workspace-wide, filterable run view behind the MCP list_runs
+			// tool (RUYI-419). Read-only; member visibility applies.
+			r.Get("/api/task-runs", h.ListWorkspaceTaskRuns)
+
 			// Independent workspace-level list backing the issues-header
 			// "agents working" chip and its assignee-id Table filter.
 			r.Get("/api/working-agents", h.ListWorkspaceWorkingAgents)
