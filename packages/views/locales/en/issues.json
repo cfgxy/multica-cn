@@ -633,6 +633,8 @@
     "included_comments_one": "Includes {{count}} comment",
     "included_comments_other": "Includes {{count}} comments",
     "status_queued": "Queued",
+    "status_queued_backpressure": "Queued · host memory busy",
+    "queued_backpressure_hint": "The host reported memory backpressure; new runs wait until it recovers.",
     "status_dispatched": "Starting",
     "status_waiting_local_directory": "Waiting for local directory",
     "status_running": "Working",

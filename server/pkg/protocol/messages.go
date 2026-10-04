@@ -363,7 +363,8 @@ type DaemonBackpressureReport struct {
 	// memory is above the high watermark.
 	Active bool `json:"active"`
 	// Reason names the condition(s) that triggered the pause: "mem",
-	// "swap", or "mem+swap". Empty when inactive.
+	// "swap", "psi", or a "+"-joined combination such as "mem+swap+psi".
+	// Empty when inactive.
 	Reason string `json:"reason,omitempty"`
 	// MemAvailablePct is the window-smoothed MemAvailable/MemTotal ratio.
 	MemAvailablePct float64 `json:"mem_available_pct"`
@@ -371,12 +372,14 @@ type DaemonBackpressureReport struct {
 	// swap-less hosts.
 	SwapUsedPct float64 `json:"swap_used_pct"`
 	// PSIMemorySomeAvg10 is the smoothed /proc/pressure/memory "some" avg10.
-	// Observation only (Owner decision 2026-10-03): never consulted by the
-	// admission gate. 0 when unreadable (PSIReadOK false).
+	// Since RUYI-397 it feeds the admission gate as a third condition
+	// (trigger OR / recovery AND); hosts where PSI is unreadable skip the
+	// condition and gate on mem/swap alone. 0 when unreadable (PSIReadOK
+	// false).
 	PSIMemorySomeAvg10 float64 `json:"psi_memory_some_avg10,omitempty"`
 	// PSIReadOK reports whether PSI sampling succeeded at all; false means
-	// the kernel or filesystem does not expose PSI and the value above is
-	// meaningless.
+	// the kernel or filesystem does not expose PSI, the value above is
+	// meaningless, and the PSI condition is skipped rather than enforced.
 	PSIReadOK bool `json:"psi_read_ok"`
 	// DeferredClaims counts poll cycles skipped while backpressure was
 	// active in the current episode — a diagnostic for how long new work
@@ -389,9 +392,9 @@ type DaemonBackpressureReport struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID           string                     `json:"runtime_id"`
-	SupportsBatchImport bool                       `json:"supports_batch_import,omitempty"`
-	Backpressure        *DaemonBackpressureReport  `json:"backpressure,omitempty"`
+	RuntimeID           string                    `json:"runtime_id"`
+	SupportsBatchImport bool                      `json:"supports_batch_import,omitempty"`
+	Backpressure        *DaemonBackpressureReport `json:"backpressure,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
