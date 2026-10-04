@@ -8,7 +8,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { useTranslation } from "react-i18next";
+import { useT } from "@multica/views/i18n";
 import { api } from "@multica/core/api";
 import type { OAuthConsentInfo } from "@multica/core/oauth-admin/types";
 import { ApiError } from "@multica/core/api/client";
@@ -25,7 +25,7 @@ import { Loader2, ShieldCheck } from "lucide-react";
 
 function ConsentContent() {
   const searchParams = useSearchParams();
-  const { t } = useTranslation("settings");
+  const { t } = useT("settings");
   const requestId = searchParams.get("request") || "";
   const [info, setInfo] = useState<OAuthConsentInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
