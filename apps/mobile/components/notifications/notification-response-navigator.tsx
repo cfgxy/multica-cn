@@ -52,6 +52,7 @@ import * as Notifications from "expo-notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/data/auth-store";
 import { freshWorkspaceListOptions } from "@/data/queries/workspaces";
+import { probeServer } from "@/data/probe-server";
 import { useServerStore } from "@/data/server-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { switchServer } from "@/data/switch-server";
@@ -150,6 +151,13 @@ export function NotificationResponseNavigator() {
       navigate,
       activateWorkspace,
       switchServer: (serverId) => switchServer(serverId, qc),
+      probeTargetServer: async (serverId) => {
+        const entry = useServerStore
+          .getState()
+          .servers.find((item) => item.id === serverId);
+        if (!entry) return false;
+        return probeServer(entry.apiUrl, new AbortController().signal);
+      },
       requestWorkspaceConfirmation: (workspaceAction, onConfirm) =>
         Alert.alert(
           t("mobile.bridge.cross_workspace_title", "Switch workspace?"),
@@ -176,6 +184,20 @@ export function NotificationResponseNavigator() {
             {
               text: t("mobile.bridge.confirm_switch", "Switch"),
               onPress: () => void onConfirm(),
+            },
+          ],
+        ),
+      showServerUnreachable: (serverAction, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.server_unreachable_title", "Can't reach the server"),
+          t("mobile.bridge.server_unreachable_message", {
+            server: serverAction.serverLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
             },
           ],
         ),

@@ -46,6 +46,13 @@ describe("notification identity bridge wiring", () => {
     expect(navigator).not.toContain("error instanceof Error");
   });
 
+  it("gates the server switch confirmation behind a target probe", () => {
+    expect(action).toContain("probeTargetServer(action.serverId)");
+    expect(navigator).toContain("probeTargetServer: async (serverId)");
+    expect(navigator).toContain("showServerUnreachable: (serverAction, onRetry)");
+    expect(navigator).toContain("probeServer(entry.apiUrl");
+  });
+
   it("activates every target workspace before navigating to its issue", () => {
     const activate = action.indexOf(
       "const activation = await handlers.activateWorkspace(action.workspaceSlug)",
