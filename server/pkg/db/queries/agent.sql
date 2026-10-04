@@ -59,7 +59,7 @@ INSERT INTO agent (
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
-    session_max_context_tokens, session_compact_pct
+    session_max_context_tokens, session_compact_pct, resource_weight
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -71,7 +71,11 @@ INSERT INTO agent (
     -- column default rather than a zero. Zero is a meaningful value here (it
     -- disables the gate), so it must not be reachable by accident.
     COALESCE(sqlc.narg('session_max_context_tokens'), 400000),
-    COALESCE(sqlc.narg('session_compact_pct'), 80)
+    COALESCE(sqlc.narg('session_compact_pct'), 80),
+    -- RUYI-397: same omitted-means-default rule. Zero would let an agent
+    -- claim without bound in the weighted budget check, so it must not be
+    -- reachable by accident either.
+    COALESCE(sqlc.narg('resource_weight'), 1)
 )
 RETURNING *;
 
@@ -141,6 +145,7 @@ UPDATE agent SET
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
+    resource_weight = COALESCE(sqlc.narg('resource_weight'), resource_weight),
     session_max_context_tokens = COALESCE(sqlc.narg('session_max_context_tokens'), session_max_context_tokens),
     session_compact_pct = COALESCE(sqlc.narg('session_compact_pct'), session_compact_pct),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
@@ -272,6 +277,15 @@ UPDATE agent
 SET archived_at = now(), archived_by = @archived_by, updated_at = now()
 WHERE id = ANY(@agent_ids::uuid[]) AND archived_at IS NULL
 RETURNING *;
+
+-- name: GetAgentRuntimeBindings :many
+-- Narrow id -> current runtime binding read used by claim-side decorations
+-- (RUYI-397 queued-reason hydration): the caller resolves which runtime each
+-- queued task's agent is bound to NOW — the agent row, not the task's
+-- enqueued runtime_id, is the authority (RUYI-224) — and loads only those
+-- runtimes' state.
+SELECT id, runtime_id FROM agent
+WHERE id = ANY(@agent_ids::uuid[]);
 
 -- name: ListActiveAgentsByRuntime :many
 -- Returns every non-archived agent bound to a runtime. Backs the cascade

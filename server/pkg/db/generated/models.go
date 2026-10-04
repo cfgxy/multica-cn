@@ -69,6 +69,7 @@ type Agent struct {
 	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	ResourceWeight         int32  `json:"resource_weight"`
 }
 
 type AgentBuilderDraft struct {
@@ -378,6 +379,18 @@ type ChannelBindingToken struct {
 	ChannelUserID  string             `json:"channel_user_id"`
 	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
 	ConsumedAt     pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type ChannelCapabilityState struct {
+	ID             pgtype.UUID        `json:"id"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	ChannelType    string             `json:"channel_type"`
+	Capability     string             `json:"capability"`
+	Status         string             `json:"status"`
+	Detail         string             `json:"detail"`
+	RequiredScopes []byte             `json:"required_scopes"`
+	CheckedAt      pgtype.Timestamptz `json:"checked_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
@@ -882,6 +895,27 @@ type Issue struct {
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
 	RunSuppressed      bool               `json:"run_suppressed"`
 	RunSuppressedAt    pgtype.Timestamptz `json:"run_suppressed_at"`
+}
+
+type IssueDecision struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
+	Question           string             `json:"question"`
+	Options            []byte             `json:"options"`
+	MultiSelect        bool               `json:"multi_select"`
+	RecommendedIndices []byte             `json:"recommended_indices"`
+	Status             string             `json:"status"`
+	SelectedIndices    []byte             `json:"selected_indices"`
+	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
+	AnswerCommentID    pgtype.UUID        `json:"answer_comment_id"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
 type IssueDependency struct {

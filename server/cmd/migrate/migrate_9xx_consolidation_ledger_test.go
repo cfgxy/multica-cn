@@ -117,10 +117,13 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 // normal migrator.
 var postConsolidationStems = []string{
 	"917_issue_run_cancellation_fence",   // RUYI-384
+	"918_issue_decisions",                // RUYI-345
 	"919_issue_dependency_relationships", // RUYI-351 (consolidates 958+959)
 	"920_project_revision",               // RUYI-354
 	"921_prompt_version_snapshot_scope",  // RUYI-285
+	"922_channel_capability_state",       // RUYI-400
 	"923_prompt_proposal_jev_advisory",   // RUYI-347
+	"924_agent_resource_weight",          // RUYI-397
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

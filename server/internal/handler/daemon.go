@@ -996,9 +996,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 }
 
 type DaemonHeartbeatRequest struct {
-	RuntimeID           string                                `json:"runtime_id"`
-	SupportsBatchImport bool                                  `json:"supports_batch_import,omitempty"`
-	Backpressure        *protocol.DaemonBackpressureReport    `json:"backpressure,omitempty"`
+	RuntimeID           string                             `json:"runtime_id"`
+	SupportsBatchImport bool                               `json:"supports_batch_import,omitempty"`
+	Backpressure        *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -1657,10 +1657,10 @@ const claimBatchMaxTasksCap = 32
 func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		DaemonID      string                              `json:"daemon_id"`
-		RuntimeIDs    []string                            `json:"runtime_ids"`
-		MaxTasks      int                                 `json:"max_tasks"`
-		Backpressure  *protocol.DaemonBackpressureReport  `json:"backpressure,omitempty"`
+		DaemonID     string                             `json:"daemon_id"`
+		RuntimeIDs   []string                           `json:"runtime_ids"`
+		MaxTasks     int                                `json:"max_tasks"`
+		Backpressure *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1766,7 +1766,38 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), authorized, maxTasks)
+	// Multi-runtime preference routing (RUYI-397): claim only from runtimes
+	// not held by host backpressure. The report on THIS request is the
+	// freshest signal (recordBackpressure just persisted it) and is
+	// machine-level — every runtime on the daemon shares the host — so an
+	// active request report holds the whole batch. Without one, fall back to
+	// the stored per-runtime reports with a freshness TTL: a held runtime
+	// keeps re-reporting on every heartbeat so a live hold refreshes itself,
+	// and a stale or malformed report releases the runtime (fail-open; the
+	// daemon's own client-side gate stays the authoritative pre-claim
+	// barrier). Held runtimes' tasks stay queued — nothing fails.
+	claimable := authorized
+	if req.Backpressure != nil {
+		if req.Backpressure.Active {
+			claimable = nil
+		}
+	} else {
+		now := time.Now()
+		claimable = make([]pgtype.UUID, 0, len(authorized))
+		for _, rtID := range authorized {
+			if !runtimeHeldByBackpressure(runtimeByID[uuidToString(rtID)], now) {
+				claimable = append(claimable, rtID)
+			}
+		}
+	}
+	if len(claimable) == 0 {
+		slog.Debug("batch claim: all runtimes held by backpressure",
+			"daemon_id", req.DaemonID, "runtimes", len(authorized))
+		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
+		return
+	}
+
+	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), claimable, maxTasks)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to claim tasks: "+err.Error())
 		return
@@ -3512,6 +3543,17 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)
 	authMs = time.Since(start).Milliseconds()
+
+	// Server-side hold (RUYI-397): the per-runtime endpoint carries no
+	// backpressure body, so the decision rides on the stored report with the
+	// same freshness TTL as the batch path. Held renders exactly like "no
+	// task": the queued row stays queued, the poller just gets nothing.
+	if runtimeHeldByBackpressure(runtime, time.Now()) {
+		outcome = "bp_held"
+		slog.Debug("claim held: runtime backpressure active", "runtime_id", runtimeID)
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
+		return
+	}
 
 	claimStart := time.Now()
 	task, err := h.TaskService.ClaimTaskForRuntime(r.Context(), parseUUID(runtimeID))
@@ -5532,6 +5574,10 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	// RUYI-397: a queued row whose target runtime is under a backpressure
+	// hold says so, so the trigger/query side reads "waiting for host
+	// resources" instead of a silent stall.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	// Execution-log rows render the "on behalf of <member>" badge, so this
 	// issue-facing surface must resolve initiator/originator names (departed-safe,
 	// one batch) — otherwise the badge falls back to "someone" on issue detail.

@@ -484,6 +484,9 @@ deleted_prompt_quiz_items AS (
 ),
 deleted_channel_chat_run_intents AS (
     DELETE FROM channel_chat_run_intent WHERE workspace_id = $1
+),
+deleted_issue_decisions AS (
+    DELETE FROM issue_decisions WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -525,6 +528,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // external side effects — unlike the media ledger below, a dead intent row
 // owns nothing outside this database, so it can be cascade-deleted directly
 // instead of being handed to a reconciler.
+// Decision cards (RUYI-345) are issue-scoped with no FK; the answer echo
+// comment is a plain comment row and is swept with the rest of comment.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
