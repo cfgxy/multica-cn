@@ -26,6 +26,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import type { Issue } from "@multica/core/types";
 import { effectiveTruncatedKinds } from "@multica/core/issues/timeline-query";
+import { issueKeys as coreIssueKeys } from "@multica/core/issues/queries";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -118,6 +119,12 @@ export default function IssueDetail() {
     await Promise.all([
       detail.refetch(),
       qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, id) }),
+      // Decision cards live on core's per-issue keys — see
+      // data/queries/decisions.ts; refresh catches events missed while WS
+      // was down (same role as the decisionsAll invalidate on web reconnect).
+      qc.invalidateQueries({
+        queryKey: coreIssueKeys.decisions(id),
+      }),
     ]);
   }, [detail, qc, wsId, id]);
 

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
+  IssueDecision,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -318,6 +319,8 @@ import {
   ChildIssuesResponseSchema,
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
+  IssueDecisionsListSchema,
+  IssueDecisionSchema,
   CommentTriggerPreviewSchema,
   IssueTriggerPreviewSchema,
   CloudRuntimeNodeListSchema,
@@ -1509,6 +1512,39 @@ export class ApiClient {
     const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "POST /api/issues/:id/comments" });
     if (!comment.id) throw new Error("Invalid comment response");
     return comment;
+  }
+
+  // Decision cards (RUYI-345). Answering is a human act in the UI; the
+  // server refuses agent callers regardless of what the client sends.
+  async listIssueDecisions(issueId: string): Promise<IssueDecision[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions`);
+    return parseWithFallback(raw, IssueDecisionsListSchema, [], {
+      endpoint: "GET /api/issues/:id/decisions",
+    });
+  }
+
+  async answerIssueDecision(issueId: string, decisionId: string, selectedIndices: number[]): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ selected_indices: selectedIndices }),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/answer",
+    });
+    if (!decision) throw new Error("Invalid decision answer response");
+    return decision;
+  }
+
+  async cancelIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/cancel",
+    });
+    if (!decision) throw new Error("Invalid decision cancel response");
+    return decision;
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {

@@ -114,6 +114,12 @@ import {
   buildTimelineRowsModel,
   type TimelineRow,
 } from "@/lib/timeline-thread";
+import {
+  interleaveDecisions,
+  type TimelineListItem,
+} from "@/lib/timeline-decisions";
+import { issueDecisionsOptions } from "@/data/queries/decisions";
+import { DecisionCard } from "./decision-card";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -252,6 +258,17 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     [entries, mode],
   );
   const data = timelineRowsModel?.rows ?? EMPTY_ROWS;
+
+  // Decision cards (RUYI-345): fetched per issue, interleaved among the
+  // rows by created_at. Comment-specific consumers (threading, locate,
+  // geometry) keep operating on `data`; only the rendered list is merged.
+  const { data: decisionsData } = useQuery(
+    issueDecisionsOptions(issue.id),
+  );
+  const merged = useMemo<TimelineListItem[]>(
+    () => interleaveDecisions(data, decisionsData ?? []),
+    [data, decisionsData],
+  );
   const canChangeTimelineSort =
     (timelineRowsModel?.stats.threadBlockCount ?? 0) >= 1 &&
     (timelineRowsModel?.stats.sortableBlockCount ?? 0) >= 2;
@@ -283,7 +300,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     return blocks;
   }, [issue.description, issueAttachments, data]);
 
-  const listRef = useRef<FlashListRef<TimelineRow>>(null);
+  const listRef = useRef<FlashListRef<TimelineListItem>>(null);
   // Gates single-shot per (commentId, nonce) tuple. Re-tap from inbox
   // bumps the nonce → ref no longer matches → effect re-fires.
   const lastStampRef = useRef<string | null>(null);
@@ -304,9 +321,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     if (!snapshot) return null;
     // First entry strictly newer than the snapshot anchors the divider;
     // divider draws ABOVE this row. If everything is older, no divider.
-    const found = data.find((r) => r.entry.created_at > snapshot);
+    // Scans the merged list so a decision card can anchor it too.
+    const found = merged.find((r) => r.entry.created_at > snapshot);
     return found ? found.entry.id : null;
-  }, [data]);
+  }, [merged]);
   const dividerScrolledPastRef = useRef(false);
 
   useEffect(() => {
@@ -566,11 +584,11 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // FlatList wants a flat data[] and a stable key per row. Rather than
   // teach the renderer about "items + dividers" via a union type, fake a
   // TimelineRow with a sentinel id; renderItem checks the id first.
-  const dataWithDivider = useMemo<TimelineRow[]>(() => {
-    if (!dividerAnchorId) return data;
-    const anchorIdx = data.findIndex((r) => r.entry.id === dividerAnchorId);
-    if (anchorIdx <= 0) return data;
-    const divider: TimelineRow = {
+  const dataWithDivider = useMemo<TimelineListItem[]>(() => {
+    if (!dividerAnchorId) return merged;
+    const anchorIdx = merged.findIndex((r) => r.entry.id === dividerAnchorId);
+    if (anchorIdx <= 0) return merged;
+    const divider: TimelineListItem = {
       // Cast: this entry is a synthetic marker, not a real TimelineEntry —
       // renderItem keys off `id === DIVIDER_ID` and never reads other fields.
       entry: {
@@ -582,8 +600,8 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       } as unknown as TimelineEntry,
       replies: [],
     };
-    return [...data.slice(0, anchorIdx), divider, ...data.slice(anchorIdx)];
-  }, [data, dividerAnchorId]);
+    return [...merged.slice(0, anchorIdx), divider, ...merged.slice(anchorIdx)];
+  }, [merged, dividerAnchorId]);
 
   // ── Bounded-locate controller wiring (RUYI-28) ────────────────────────
   // Sequencing lives in lib/comment-locate.ts; this block only injects
@@ -606,8 +624,14 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     controllerRef.current = new CommentLocateController(
       {
         findIndex: (rootId) => {
+          // Indexes must match the RENDERED list — `dataRef.current` holds
+          // the merged rows+decisions array, so decision items are skipped
+          // here rather than filtered out upstream.
           const idx = dataRef.current.findIndex(
-            (r) => r.entry.type === "comment" && r.entry.id === rootId,
+            (r) =>
+              !("decision" in r) &&
+              r.entry.type === "comment" &&
+              r.entry.id === rootId,
           );
           return idx;
         },
@@ -644,7 +668,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             targetId,
             (rootId) => {
               const idx = dataRef.current.findIndex(
-                (r) => r.entry.type === "comment" && r.entry.id === rootId,
+                (r) =>
+                  !("decision" in r) &&
+                  r.entry.type === "comment" &&
+                  r.entry.id === rootId,
               );
               if (idx < 0) return null;
               const layout = listRef.current?.getLayout(idx);
@@ -744,9 +771,14 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // one haptic and nothing else: no request, no author, no excerpt. Any
   // fetch-to-check would turn a render-only anchor into an
   // existence-probing endpoint for comments the reader cannot see.
-  const focusCommentAnchor = useCallback(
-    (commentId: string) => {
-      const outcome = resolveCommentAnchor(dataRef.current, commentId);
+    const focusCommentAnchor = useCallback(
+      (commentId: string) => {
+        // Cast: resolveCommentAnchor only reads comment rows (filters on
+        // entry.type); decision items are skipped — see lib/timeline-decisions.
+        const outcome = resolveCommentAnchor(
+          dataRef.current as TimelineRow[],
+          commentId,
+        );
       if (outcome.kind === "unavailable") {
         void Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Warning,
@@ -821,8 +853,13 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   useEffect(() => {
     const queue = publishedQueueRef.current;
     if (queue.length === 0) return;
-    // Batched resolve keeps this O(rows + queue) even for a burst.
-    const byPublishedId = resolvePublishedRootIds(dataWithDivider, queue);
+    // Batched resolve keeps this O(rows + queue) even for a burst. Cast:
+    // the lib only reads comment rows (filters on entry.type) and decision
+    // items never satisfy that check — see lib/timeline-decisions.
+    const byPublishedId = resolvePublishedRootIds(
+      dataWithDivider as TimelineRow[],
+      queue,
+    );
     if (byPublishedId.size === 0) return; // optimistic rows not in the
     // cache yet — retry on the next data change; giving up is fine (the
     // rows still render, just collapsed — the user can tap them).
@@ -1057,6 +1094,9 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           if (item.entry.id === DIVIDER_ID) {
             return <UnreadDivider />;
           }
+          if ("decision" in item) {
+            return <DecisionCard decision={item.decision} />;
+          }
           return item.entry.type === "comment" ? (
             <CommentCard
               entry={item.entry}
@@ -1072,6 +1112,13 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           ) : (
             <ActivityRow entry={item.entry} />
           );
+        }}
+        // Recycle cells within one row kind — a recycled comment cell must
+        // never re-mount as a decision card (or vice versa).
+        getItemType={(item): string => {
+          if (item.entry.id === DIVIDER_ID) return "divider";
+          if ("decision" in item) return "decision";
+          return item.entry.type;
         }}
         onScroll={handleScroll}
         // Any user-initiated scroll exits comment text-selection mode —
