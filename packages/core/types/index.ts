@@ -219,6 +219,11 @@ export type {
   TimelineEntry,
   AssigneeFrequencyEntry,
 } from "./activity";
+export type {
+  DecisionOption,
+  IssueDecision,
+  IssueDecisionStatus,
+} from "./decision";
 export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
 export type * from "./api";
@@ -306,10 +311,14 @@ export type {
 } from "./vcs";
 export type {
   LarkInstallation,
+  LarkCapabilityState,
   ListLarkInstallationsResponse,
   BeginLarkInstallResponse,
   LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
+  LarkPermissionCatalogEntry,
+  LarkPermissionCatalogResponse,
+  RecheckLarkPermissionsResponse,
 } from "./lark";
 export type {
   ComposioToolkit,

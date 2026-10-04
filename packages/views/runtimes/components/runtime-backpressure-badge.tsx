@@ -16,12 +16,18 @@ export function BackpressureBadge({ runtime }: { runtime: AgentRuntime }) {
   const { t } = useT("runtimes");
   const bp = readRuntimeBackpressure(runtime.metadata);
   if (!bp?.active) return null;
-  const reasonText =
-    bp.reason === "mem"
-      ? t(($) => $.detail.bp_reason_mem)
-      : bp.reason === "swap"
-        ? t(($) => $.detail.bp_reason_swap)
-        : t(($) => $.detail.bp_reason_mem_swap);
+  // The reason is a "+"-joined token list ("mem", "swap", "psi"); compose the
+  // localized text per token so every combination reads naturally without one
+  // locale entry per permutation.
+  const tokenText: Record<string, string> = {
+    mem: t(($) => $.detail.bp_reason_mem),
+    swap: t(($) => $.detail.bp_reason_swap),
+    psi: t(($) => $.detail.bp_reason_psi),
+  };
+  const reasonText = bp.reason
+    .split("+")
+    .map((tok) => tokenText[tok.trim()] ?? tok.trim())
+    .join(" + ");
   return (
     <Tooltip>
       <TooltipTrigger
@@ -35,12 +41,19 @@ export function BackpressureBadge({ runtime }: { runtime: AgentRuntime }) {
         }
       />
       <TooltipContent>
-        {t(($) => $.detail.backpressure_hint, {
-          reason: reasonText,
-          mem: bp.memAvailablePct,
-          swap: bp.swapUsedPct,
-          count: bp.deferredClaims,
-        })}
+        <span className="block">
+          {t(($) => $.detail.backpressure_hint, {
+            reason: reasonText,
+            mem: bp.memAvailablePct,
+            swap: bp.swapUsedPct,
+            count: bp.deferredClaims,
+          })}
+        </span>
+        {bp.psiReadOK && (
+          <span className="block">
+            {t(($) => $.detail.backpressure_psi_hint, { psi: bp.psiSomeAvg10 })}
+          </span>
+        )}
       </TooltipContent>
     </Tooltip>
   );

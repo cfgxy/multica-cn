@@ -609,6 +609,8 @@
     "trigger_handoff_prefix": "인계: ",
     "included_comments_other": "댓글 {{count}}개 포함",
     "status_queued": "대기 중",
+    "status_queued_backpressure": "대기 중 · 호스트 메모리 부족",
+    "queued_backpressure_hint": "호스트가 메모리 백프레셔를 보고하여, 회복될 때까지 새 실행은 대기합니다.",
     "status_dispatched": "시작 중",
     "status_waiting_local_directory": "로컬 디렉터리 대기 중",
     "status_running": "작업 중",
@@ -1034,6 +1036,7 @@
       "dispatched": "시작 중",
       "waiting_local_directory": "디렉터리 대기",
       "running": "실행 중",
+      "cancel_requested": "정지 중",
       "completed": "완료",
       "failed": "실패",
       "cancelled": "취소됨",
@@ -1144,5 +1147,17 @@
     "lineage": "실행 체인",
     "lineage_rerun": "수동 재실행",
     "lineage_system_retry": "시스템 재시도"
+  },
+  "decisions": {
+    "title": "의사결정 카드",
+    "status_answered": "답변됨",
+    "status_cancelled": "취소됨",
+    "recommended": "추천",
+    "submit_single": "답변 제출",
+    "submit_multi": "선택 제출",
+    "submitting": "제출 중…",
+    "cancel_card": "카드 취소",
+    "answer_failed": "답변 제출 실패",
+    "cancel_failed": "카드 취소 실패"
   }
 }

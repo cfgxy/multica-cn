@@ -30,7 +30,7 @@ func TestEnrichRecentMediaUsesOriginalMessageID(t *testing.T) {
 	}
 	storage := &fakeMediaStorage{}
 	ledger := &fakeMediaLedger{}
-	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger())
+	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
 	if !media.HasMedia(channelMessageFromLark(enriched)) {
 		t.Fatal("历史文件未进入媒体解析器")
 	}
@@ -91,7 +91,7 @@ func TestEnrichRecentMediaIsolation(t *testing.T) {
 				fake.errByChat["oc_group"] = tc.err
 			}
 			enriched := enrich(t, fake, trigger, groupCfg())
-			resolver := NewFeishuMediaResolver(&fakeSender{}, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger())
+			resolver := NewFeishuMediaResolver(&fakeSender{}, fakeCreds{secret: "plain"}, &fakeMediaStorage{}, &fakeMediaLedger{}, newDiscardLogger(), nil)
 			if got := resolver.HasMedia(channelMessageFromLark(enriched)); got != tc.want {
 				t.Errorf("HasMedia = %t, want %t; recent=%+v; list=%v; body=%q", got, tc.want, enriched.RecentMedia, fake.listParams, enriched.Body)
 			}

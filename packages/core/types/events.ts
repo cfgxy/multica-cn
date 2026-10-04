@@ -4,6 +4,7 @@ import type { Agent } from "./agent";
 import type { InboxItem } from "./inbox";
 import type { Comment, Reaction } from "./comment";
 import type { TimelineEntry } from "./activity";
+import type { IssueDecision } from "./decision";
 import type { Workspace, MemberWithUser, Invitation } from "./workspace";
 import type { Project } from "./project";
 import type { Label } from "./label";
@@ -57,6 +58,7 @@ export type WSEventType =
   | "reaction:removed"
   | "issue_reaction:added"
   | "issue_reaction:removed"
+  | "decision:updated"
   | "chat:message"
   | "chat:done"
   | "chat:quick_actions"
@@ -217,6 +219,14 @@ export interface InboxBatchReadPayload {
 export interface InboxBatchArchivedPayload {
   recipient_id: string;
   count: number;
+}
+
+// Decision card lifecycle event — one event covers created/answered/cancelled;
+// the payload's decision.status says which (RUYI-345).
+export interface DecisionUpdatedPayload {
+  decision: IssueDecision;
+  issue_id: string;
+  issue_title?: string;
 }
 
 export interface CommentCreatedPayload {
@@ -576,6 +586,7 @@ export interface WSEventPayloadMap {
   "issue_status:changed": IssueStatusChangedPayload;
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
+  "decision:updated": DecisionUpdatedPayload;
   "comment:created": CommentCreatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;

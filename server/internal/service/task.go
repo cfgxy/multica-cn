@@ -3786,8 +3786,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_count_running"
 			return fmt.Errorf("count running tasks: %w", err)
 		}
-		if running >= int64(agent.MaxConcurrentTasks) {
-			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "max", agent.MaxConcurrentTasks)
+		// RUYI-397 workload weight: a running task occupies ResourceWeight
+		// slots of the budget, so a heavy agent reaches the shared
+		// max_concurrent_tasks ceiling sooner than a light one. Clamped
+		// defensively — column default and API validation both enforce
+		// 1..10, but a hand-edited row must not zero or negate the budget.
+		weight := int64(agent.ResourceWeight)
+		if weight < 1 {
+			weight = 1
+		}
+		if running*weight >= int64(agent.MaxConcurrentTasks) {
+			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "weight", weight, "max", agent.MaxConcurrentTasks)
 			outcome = "no_capacity"
 			return nil
 		}
