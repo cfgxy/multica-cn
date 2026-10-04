@@ -413,6 +413,16 @@ type Handler struct {
 	// misconfigured self-host deployment fails closed rather than storing
 	// plaintext. Wired in cmd/server/router.go after New.
 	RuntimeCredentialBox *secretbox.Box
+	// VoiceProbeBaseURL is the connectivity-probe target for voice instance
+	// credentials (RUYI-425 §4.3/§4.5 stage 2): a lightweight models.list
+	// against the provider right after a credential save. Wired from
+	// MULTICA_GEMINI_PROBE_BASE_URL with the public Gemini endpoint as the
+	// default; empty disables probing (badges stay "configured"). Tests
+	// inject a stub server URL here.
+	VoiceProbeBaseURL string
+	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
+	// tight transports). Nil means a 5s-timeout default client.
+	VoiceProbeHTTPClient *http.Client
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box

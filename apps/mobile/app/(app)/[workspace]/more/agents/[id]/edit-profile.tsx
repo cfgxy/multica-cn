@@ -10,6 +10,10 @@
  * web create-form parity); the agent's current runtime stays selectable
  * even if it went offline so the field never shows a lie.
  *
+ * RUYI-425 §4.2: adds the optional voice slot (voice_runtime_id). The patch
+ * is tri-state — omitted when untouched, "" to unbind, an id to bind — and
+ * the pickers exclude each other's selection (`agentSlotChoices`).
+ *
  * Model is a free-text field in P0: web's model catalog discovery endpoint
  * is not surfaced on mobile yet (adaptation noted in the delivery report).
  */
@@ -20,7 +24,10 @@ import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { isRuntimeUsableForUser } from "@multica/core/runtimes";
+import {
+  agentSlotChoices,
+  runtimeCredentialStatus,
+} from "@multica/core/runtimes";
 import type { UpdateAgentRequest } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
@@ -49,6 +56,7 @@ export default function EditAgentProfile() {
   const [instructions, setInstructions] = useState("");
   const [model, setModel] = useState("");
   const [runtimeId, setRuntimeId] = useState("");
+  const [voiceRuntimeId, setVoiceRuntimeId] = useState("");
   const [concurrency, setConcurrency] = useState("1");
   const [seeded, setSeeded] = useState(false);
 
@@ -59,23 +67,41 @@ export default function EditAgentProfile() {
     setInstructions(agent.instructions);
     setModel(agent.model);
     setRuntimeId(agent.runtime_id);
+    setVoiceRuntimeId(agent.voice_runtime_id ?? "");
     setConcurrency(String(agent.max_concurrent_tasks || 1));
     setSeeded(true);
   }, [agent, seeded]);
 
-  // Runtime choices: online + usable by me, plus the agent's current runtime
-  // even when offline (so the current binding is always visible/pickable).
+  // Text slot choices: online + usable by me + text-capable, minus the voice
+  // slot's pick — plus the agent's current runtime even when offline (so the
+  // current binding is always visible/pickable, never a lie).
   const runtimeChoices = useMemo(() => {
-    if (!runtimes) return [];
-    const usable = runtimes.filter(
-      (r) => r.status === "online" && isRuntimeUsableForUser(r, me?.id ?? null),
-    );
+    const usable = agentSlotChoices(runtimes, "text", {
+      currentUserId: me?.id ?? null,
+      excludeRuntimeId: voiceRuntimeId,
+      keepRuntimeId: runtimeId,
+    });
     if (runtimeId && !usable.some((r) => r.id === runtimeId)) {
-      const current = runtimes.find((r) => r.id === runtimeId);
+      const current = (runtimes ?? []).find((r) => r.id === runtimeId);
       if (current) return [current, ...usable];
     }
     return usable;
-  }, [runtimes, runtimeId, me]);
+  }, [runtimes, runtimeId, voiceRuntimeId, me]);
+
+  // Voice slot choices: realtime-voice-capable, minus the text slot's pick,
+  // plus the agent's current voice binding even when offline.
+  const voiceChoices = useMemo(() => {
+    const usable = agentSlotChoices(runtimes, "realtime_voice", {
+      currentUserId: me?.id ?? null,
+      excludeRuntimeId: runtimeId,
+      keepRuntimeId: voiceRuntimeId,
+    });
+    if (voiceRuntimeId && !usable.some((r) => r.id === voiceRuntimeId)) {
+      const current = (runtimes ?? []).find((r) => r.id === voiceRuntimeId);
+      if (current) return [current, ...usable];
+    }
+    return usable;
+  }, [runtimes, runtimeId, voiceRuntimeId, me]);
 
   const dirty = useMemo(() => {
     if (!agent || !seeded) return false;
@@ -86,11 +112,12 @@ export default function EditAgentProfile() {
       instructions !== agent.instructions ||
       model !== agent.model ||
       runtimeId !== agent.runtime_id ||
+      voiceRuntimeId !== (agent.voice_runtime_id ?? "") ||
       (Number.isFinite(nextConcurrency) && nextConcurrency > 0
         ? nextConcurrency !== agent.max_concurrent_tasks
         : false)
     );
-  }, [agent, seeded, name, description, instructions, model, runtimeId, concurrency]);
+  }, [agent, seeded, name, description, instructions, model, runtimeId, voiceRuntimeId, concurrency]);
 
   const runtimeReady =
     !runtimesLoading && (runtimeChoices.length > 0 || runtimeId !== "");
@@ -106,6 +133,10 @@ export default function EditAgentProfile() {
       instructions,
       model,
       runtime_id: runtimeId,
+      // Tri-state voice slot: omitted = untouched, "" = unbind, id = bind.
+      ...(voiceRuntimeId !== (agent.voice_runtime_id ?? "")
+        ? { voice_runtime_id: voiceRuntimeId }
+        : {}),
       ...(Number.isFinite(parsed) && parsed > 0
         ? { max_concurrent_tasks: parsed }
         : {}),
@@ -248,6 +279,80 @@ export default function EditAgentProfile() {
           )}
         </Field>
 
+        <Field label={t("create_dialog.voice_label", "Voice")}>
+          {runtimesLoading ? (
+            <Text className="text-sm text-muted-foreground py-1">
+              {t("create_dialog.runtime_loading", "Loading runtimes...")}
+            </Text>
+          ) : (
+            <View className="rounded-md border border-border overflow-hidden">
+              {/* 首项固定：不配置语音（提交空串解绑，§4.2） */}
+              <Pressable
+                onPress={() => setVoiceRuntimeId("")}
+                className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
+                  voiceChoices.length > 0 ? "border-b border-border" : ""
+                }`}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: voiceRuntimeId === "" }}
+              >
+                <View
+                  className={`size-4 rounded-full border items-center justify-center ${
+                    voiceRuntimeId === "" ? "border-brand" : "border-muted-foreground"
+                  }`}
+                >
+                  {voiceRuntimeId === "" ? (
+                    <View className="size-2 rounded-full bg-brand" />
+                  ) : null}
+                </View>
+                <Text className="flex-1 text-sm text-foreground">
+                  {t("create_dialog.voice_none", "No voice")}
+                </Text>
+              </Pressable>
+              {voiceChoices.length === 0 ? (
+                <Text className="text-sm text-muted-foreground px-3 py-2.5">
+                  {t("create_dialog.voice_empty", "No voice-capable instance")}
+                </Text>
+              ) : (
+                voiceChoices.map((r, i) => {
+                  const selected = r.id === voiceRuntimeId;
+                  const badge = runtimeCredentialStatus(r);
+                  return (
+                    <Pressable
+                      key={r.id}
+                      onPress={() => setVoiceRuntimeId(r.id)}
+                      className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
+                        i > 0 ? "border-t border-border" : ""
+                      }`}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                    >
+                      <View
+                        className={`size-4 rounded-full border items-center justify-center ${
+                          selected ? "border-brand" : "border-muted-foreground"
+                        }`}
+                      >
+                        {selected ? (
+                          <View className="size-2 rounded-full bg-brand" />
+                        ) : null}
+                      </View>
+                      <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                        {r.custom_name || r.name}
+                      </Text>
+                      {r.status !== "online" ? (
+                        <Text className="text-xs text-muted-foreground">
+                          {t("availability.offline", "Offline")}
+                        </Text>
+                      ) : (
+                        <CredentialBadge status={badge} />
+                      )}
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+          )}
+        </Field>
+
         <Field label={t("inspector.prop_concurrency", "Concurrency")}>
           <TextInput
             value={concurrency}
@@ -259,6 +364,35 @@ export default function EditAgentProfile() {
         </Field>
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+// RUYI-425 §4.2 voice credential tri-state badge. The agent form never edits
+// credentials — it only reflects the instance's stored key state.
+function CredentialBadge({
+  status,
+}: {
+  status: "not_configured" | "configured" | "invalid";
+}) {
+  const { t } = useT("agents");
+  if (status === "configured") {
+    return (
+      <Text className="text-xs text-success">
+        {t("create_dialog.credential_configured", "Configured ✓")}
+      </Text>
+    );
+  }
+  if (status === "invalid") {
+    return (
+      <Text className="text-xs text-destructive">
+        {t("create_dialog.credential_invalid", "Key invalid")}
+      </Text>
+    );
+  }
+  return (
+    <Text className="text-xs text-muted-foreground">
+      {t("create_dialog.credential_not_configured", "Not configured")}
+    </Text>
   );
 }
 

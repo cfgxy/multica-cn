@@ -42,6 +42,47 @@ export function useUnbindAgentsAndDeleteRuntime(wsId: string) {
   });
 }
 
+// RUYI-425 §4.5 (stage 2): stores or rotates a runtime instance credential.
+// The plaintext value lives only in the mutation call — react-query never
+// caches the request input into the query cache, and the server response is
+// the value-free badge plus the connectivity-probe outcome. Invalidates the
+// runtime list so credential_status badges recompute everywhere.
+export function usePutRuntimeCredential(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runtimeId,
+      credentialKey,
+      value,
+    }: {
+      runtimeId: string;
+      credentialKey: string;
+      value: string;
+    }) => api.putRuntimeCredential(runtimeId, credentialKey, value),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+// RUYI-425 §4.5 (stage 2): removes the stored credential (badge falls back to
+// not_configured). Server-side idempotent.
+export function useDeleteRuntimeCredential(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runtimeId,
+      credentialKey,
+    }: {
+      runtimeId: string;
+      credentialKey: string;
+    }) => api.deleteRuntimeCredential(runtimeId, credentialKey),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
 // useUpdateRuntime patches editable fields on a runtime (visibility, custom
 // name). Invalidates the runtime list so the picker disabled-state and
 // display names recompute.
@@ -58,6 +99,10 @@ export function useUpdateRuntime(wsId: string) {
         // Empty string clears the custom name; omit to leave unchanged.
         custom_name?: string;
         apply_to_machine?: boolean;
+        // RUYI-425 §4.3 voice instance settings (manual instances only).
+        model?: string;
+        advanced?: Record<string, unknown>;
+        disabled?: boolean;
       };
     }) => api.updateRuntime(runtimeId, patch),
     onSettled: () => {
