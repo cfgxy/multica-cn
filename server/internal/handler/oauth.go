@@ -121,6 +121,16 @@ func (h *Handler) AuthorizeOAuth(w http.ResponseWriter, r *http.Request) {
 
 	// From here the redirect target is trusted, so protocol errors travel back
 	// to the client where it can act on them.
+
+	// An `error` parameter on this request is the consent screen's deny
+	// handshake resuming (RUYI-420): the deny POST answers with this same
+	// authorize URL carrying error=access_denied, and the verdict belongs to
+	// the client, not to a fresh consent ticket (RFC 6749 §4.1.2.1). The
+	// client and redirect_uri checks above are what make forwarding safe.
+	if oauthErr := q.Get("error"); oauthErr != "" {
+		h.redirectOAuthError(w, r, redirectURI, q.Get("state"), oauthErr, q.Get("error_description"))
+		return
+	}
 	if q.Get("response_type") != "code" {
 		h.redirectOAuthError(w, r, redirectURI, q.Get("state"), "unsupported_response_type", "Only response_type=code is supported.")
 		return
