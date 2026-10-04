@@ -1034,6 +1034,7 @@
       "dispatched": "启动中",
       "waiting_local_directory": "等待目录",
       "running": "运行中",
+      "cancel_requested": "正在停止",
       "completed": "已完成",
       "failed": "失败",
       "cancelled": "已取消",
@@ -1144,5 +1145,17 @@
     "lineage": "运行链",
     "lineage_rerun": "手动重跑",
     "lineage_system_retry": "系统重试"
+  },
+  "decisions": {
+    "title": "决策卡片",
+    "status_answered": "已作答",
+    "status_cancelled": "已取消",
+    "recommended": "推荐",
+    "submit_single": "提交答案",
+    "submit_multi": "提交所选",
+    "submitting": "提交中…",
+    "cancel_card": "取消卡片",
+    "answer_failed": "提交答案失败",
+    "cancel_failed": "取消卡片失败"
   }
 }

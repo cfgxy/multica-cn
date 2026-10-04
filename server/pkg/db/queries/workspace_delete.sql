@@ -520,6 +520,11 @@ deleted_prompt_quiz_items AS (
 -- instead of being handed to a reconciler.
 deleted_channel_chat_run_intents AS (
     DELETE FROM channel_chat_run_intent WHERE workspace_id = $1
+),
+-- Decision cards (RUYI-345) are issue-scoped with no FK; the answer echo
+-- comment is a plain comment row and is swept with the rest of comment.
+deleted_issue_decisions AS (
+    DELETE FROM issue_decisions WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from
