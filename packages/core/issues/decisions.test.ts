@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { IssueDecision } from "../types";
-import { patchDecisionInCache } from "./decisions";
+import { patchDecisionInCache, upsertDecisionInCache } from "./decisions";
 
 function card(id: string, status: IssueDecision["status"] = "open"): IssueDecision {
   return {
@@ -45,5 +45,40 @@ describe("patchDecisionInCache", () => {
     patchDecisionInCache(qc, "i-1", card("d-x", "answered"));
 
     expect(qc.getQueryData(["issues", "decisions", "i-1"])).toBe(prev);
+  });
+});
+
+describe("upsertDecisionInCache", () => {
+  it("inserts an unseen card at its created_at position", () => {
+    const qc = new QueryClient();
+    const early = card("d-1");
+    early.created_at = "2026-10-02T03:00:00Z";
+    const late = card("d-3");
+    late.created_at = "2026-10-02T05:00:00Z";
+    qc.setQueryData(["issues", "decisions", "i-1"], [early, late]);
+
+    const mid = card("d-2", "answered");
+    mid.created_at = "2026-10-02T04:00:00Z";
+    upsertDecisionInCache(qc, "i-1", mid);
+
+    const list = qc.getQueryData<IssueDecision[]>(["issues", "decisions", "i-1"]);
+    expect(list?.map((d) => d.id)).toEqual(["d-1", "d-2", "d-3"]);
+    expect(list?.[1]?.status).toBe("answered");
+  });
+
+  it("patches in place when the card already exists", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(["issues", "decisions", "i-1"], [card("d-1"), card("d-2")]);
+
+    upsertDecisionInCache(qc, "i-1", card("d-1", "cancelled"));
+
+    const list = qc.getQueryData<IssueDecision[]>(["issues", "decisions", "i-1"]);
+    expect(list?.map((d) => `${d.id}:${d.status}`)).toEqual(["d-1:cancelled", "d-2:open"]);
+  });
+
+  it("leaves an unfetched cache untouched", () => {
+    const qc = new QueryClient();
+    upsertDecisionInCache(qc, "i-1", card("d-1"));
+    expect(qc.getQueryData(["issues", "decisions", "i-1"])).toBeUndefined();
   });
 });
