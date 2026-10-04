@@ -50,6 +50,15 @@ const (
 	// ReasonAttributionBlocked: a fail-closed workspace could not resolve a
 	// responsible human for the run, so it was refused.
 	ReasonAttributionBlocked ReasonCode = "attribution_blocked"
+	// ReasonRuntimeBackpressure (RUYI-397): the target runtime's host reported
+	// memory backpressure, so the server defers handing out new claims until
+	// it recovers. The task is not lost — it stays queued and this code
+	// surfaces on the queued row (task query semantics) so the trigger/query
+	// side can show "waiting for host resources" instead of a silent stall.
+	// Companion to ReasonRuntimeOffline: offline means nothing will claim
+	// until the machine returns; backpressure means the machine is up and the
+	// hold decays on its own.
+	ReasonRuntimeBackpressure ReasonCode = "runtime_backpressure"
 	// ReasonAlreadyActive: a run is already active/pending for this target and
 	// this trigger did not coalesce.
 	ReasonAlreadyActive ReasonCode = "already_active"
