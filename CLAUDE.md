@@ -76,11 +76,12 @@ Mobile is independent. It may import types and pure functions from `@multica/cor
 Use the repo scripts as the source of truth. Common commands:
 
 ```bash
-make up               # start this checkout's environment (C=api,web,daemon,desktop)
-make status           # what is running, with pid/commit proof it is yours
-make list             # every development environment on this machine
-make down             # stop the processes, keep the database
-make destroy          # stop, preserve multica, then free the slot
+make up SLOT=dev1     # start slot dev1's environment (C=api,web,daemon,desktop)
+make status SLOT=dev1 # what is running, with pid/commit proof it is yours
+make list             # every fixed slot on this machine (dev1, dev2)
+make down SLOT=dev1   # stop the processes, keep the database
+make destroy SLOT=dev1 # stop, drop the slot's database and account, free the slot
+make orphans SLOT=dev1 # acceptance: nothing of this slot survives down/destroy
 make dev              # auto-setup and start the app in the foreground
 make start            # start backend + frontend
 make stop             # stop app processes for this checkout
@@ -101,9 +102,9 @@ pnpm exec playwright test
 pnpm ui:add badge     # shadcn/Base UI component into packages/ui
 ```
 
-`make up` records each environment in `~/.multica/dev/`, allocates its API, Web and Desktop renderer ports under a lock instead of recomputing them from the path, and verifies the database through `DATABASE_URL` rather than `docker exec` — a `docker exec` create lands in the wrong server whenever a native PostgreSQL owns 5432. It reuses an API only when `/health` proves its listener pid, process group and commit belong to this checkout. `make down` keeps the data; `make destroy` consumes the profile, daemon workspaces, Desktop userData and registry entry, while always preserving the shared main database `multica`. Agent-owned TTL environments are collected best-effort on the next `make up`, or explicitly with `make gc`.
+There are exactly two fixed slots (dev1, dev2); QA verification reuses the issue's own slot rather than a dedicated QA slot. `make up SLOT=<slot>` treats an environment as a fixed slot: the slot's ports, database (`multica_<slot>`) and account (`<slot>_app`) on the shared PostgreSQL instance are fixed facts in `scripts/slots.json`, and the slot's env file is generated under `~/.multica/slots/<slot>/` and re-verified against those facts before anything starts — a tampered file is refused, not fixed. Write commands must name the owning issue via `MULTICA_CALLER_OWNER`; a slot held by an in-progress issue refuses takeover until `lock-recover` sees that issue leave `in_progress` (`lock-status` / `lock-release` manage the handover, dev-phase slots are handed back at issue closure). The lease carries a role phase: `scripts/dev-env.sh <slot> handoff --to qa` moves it atomically from development to QA verification (and back with `--to dev`) within the same issue; only the qa phase has a TTL (24h idle, collected by `make gc`) — dev phase has no timer. It reuses a running API only when `/health` proves its listener pid, process group and commit belong to this slot. `make down` keeps the data; `make destroy` stops the slot, drops its database and account (the shared main database `multica` is outside every slot verb's reach) and removes the profile, daemon workspaces and Desktop userData; `make orphans SLOT=<slot>` then proves nothing of the slot survives (processes, ports, worktrees, containers — exit 1 lists what is left). Each slot runs inside a resource budget from `scripts/slots.json` (`resource_budget`): 4 pinned CPU cores per slot (`taskset`, dev1=0-3 / dev2=4-7), api ≤ 768MB, web ≤ 8192MB, daemon/desktop ≤ 256MB — enforced at launch via `GOMEMLIMIT`/`NODE_OPTIONS` and by a per-slot watchdog (`scripts/slot-watchdog.sh`) that resamples each component's real process tree plus its proven port listener every tick and kills it after two consecutive RSS breaches (web's 8192MB covers the measured post-compile idle steady state — peaks 6356/6434MB across two independent soaks — with ≥25% headroom; a fully-loaded dual-slot projection stays under ~21GB on a 30GB host); the shared PostgreSQL container is capped by `docker-compose.yml` (2g memory / 4 cpus).
 
-Worktrees share the PostgreSQL container and the main database `multica`; `.env.worktree` isolates ports, profiles, process state and Desktop data, not application rows. `make dev` auto-detects this. For manual setup use `make worktree-env`, `make setup-worktree`, and `make start-worktree`. Direct `pnpm dev:desktop` self-isolates from the path; `make up C=desktop` overrides that fallback with the registry-allocated renderer port and app name so Desktop shares the environment ledger.
+Run a specific revision with `make use SLOT=dev1 ARGS=<sha>`: the revision is loaded into a detached worktree under the slot's own worktree root and the slot rebinds to it. The legacy main-checkout entries (`make dev`, `make start`, `make worktree-env`, `db-drop`) still target the shared main database and are pending retirement with the shared-face stage; slot environments are the standard way to run local stacks.
 
 CI runs Node 22, the latest Go 1.26 patch, and `pgvector/pgvector:pg17` PostgreSQL and `redis:7-alpine` services; the latter provides `REDIS_TEST_URL` for the Redis-gated Go suites.
 
