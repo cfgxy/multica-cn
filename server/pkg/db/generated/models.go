@@ -69,6 +69,7 @@ type Agent struct {
 	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	ResourceWeight         int32  `json:"resource_weight"`
 }
 
 type AgentBuilderDraft struct {
