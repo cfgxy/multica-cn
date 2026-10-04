@@ -6,10 +6,21 @@
 
 export interface RuntimeBackpressure {
   active: boolean;
-  /** Why backpressure is active: "mem", "swap", or "mem+swap". Empty when inactive. */
+  /**
+   * Why backpressure is active: "mem", "swap", "psi", or a "+"-joined
+   * combination such as "mem+swap+psi". Empty when inactive.
+   */
   reason: string;
   memAvailablePct: number;
   swapUsedPct: number;
+  /** PSI memory some avg10 (stall %, higher is worse). 0 when unread. */
+  psiSomeAvg10: number;
+  /**
+   * Whether the daemon could read /proc/pressure/memory. False on pre-PSI
+   * reports and unreadable PSI, in which case the UI stays silent about PSI
+   * instead of showing a misleading zero.
+   */
+  psiReadOK: boolean;
   /** Task-claim polls the daemon skipped while backpressured. */
   deferredClaims: number;
   recordedAt: string;
@@ -38,6 +49,8 @@ export function readRuntimeBackpressure(
     reason: str(bp.reason),
     memAvailablePct: num(bp.mem_available_pct),
     swapUsedPct: num(bp.swap_used_pct),
+    psiSomeAvg10: num(bp.psi_some_avg10),
+    psiReadOK: bp.psi_read_ok === true,
     deferredClaims: num(bp.deferred_claims),
     recordedAt: str(bp.recorded_at),
   };

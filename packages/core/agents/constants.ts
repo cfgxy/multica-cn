@@ -12,6 +12,12 @@ export const AGENT_CONVERSATION_STARTER_MAX_LENGTH = 4000;
 export const AGENT_MAX_CONCURRENT_TASKS_MIN = 1;
 export const AGENT_MAX_CONCURRENT_TASKS_MAX = 50;
 
+// Valid range for the claim-budget multiplier (RUYI-397): a running task
+// occupies resource_weight slots of max_concurrent_tasks, so heavy agents
+// hit the same cap sooner than light ones. Same drift-proofing as above.
+export const AGENT_RESOURCE_WEIGHT_MIN = 1;
+export const AGENT_RESOURCE_WEIGHT_MAX = 10;
+
 // Session context gate (RUYI-107). When a resumable session has grown past
 // `session_compact_pct` of `session_max_context_tokens`, the platform starts a
 // fresh session and re-injects a bounded prior-context brief instead.
