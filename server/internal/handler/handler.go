@@ -406,6 +406,13 @@ type Handler struct {
 	// error rather than silently storing plaintext. Wired in
 	// cmd/server/router.go after New.
 	VCSSecretBox *secretbox.Box
+	// RuntimeCredentialBox encrypts runtime instance credentials at rest
+	// (RUYI-425 §4.5: the runtime_credential store behind agent_runtime
+	// .credential_ref). Nil when MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY is
+	// unset; the credential PUT/DELETE handlers return 503 in that case so a
+	// misconfigured self-host deployment fails closed rather than storing
+	// plaintext. Wired in cmd/server/router.go after New.
+	RuntimeCredentialBox *secretbox.Box
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box

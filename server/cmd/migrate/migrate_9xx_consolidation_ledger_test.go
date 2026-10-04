@@ -124,6 +124,7 @@ var postConsolidationStems = []string{
 	"922_channel_capability_state",       // RUYI-400
 	"923_prompt_proposal_jev_advisory",   // RUYI-347
 	"924_agent_resource_weight",          // RUYI-397
+	"925_agent_context_dual_slot",        // RUYI-425
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

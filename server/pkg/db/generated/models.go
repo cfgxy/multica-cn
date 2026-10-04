@@ -68,8 +68,9 @@ type Agent struct {
 	SessionMaxContextTokens int64       `json:"session_max_context_tokens"`
 	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
-	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
-	ResourceWeight         int32  `json:"resource_weight"`
+	MarketplacePromptState []byte      `json:"marketplace_prompt_state"`
+	ResourceWeight         int32       `json:"resource_weight"`
+	VoiceRuntimeID         pgtype.UUID `json:"voice_runtime_id"`
 }
 
 type AgentBuilderDraft struct {
@@ -97,23 +98,25 @@ type AgentMcpServer struct {
 }
 
 type AgentRuntime struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	DaemonID       pgtype.Text        `json:"daemon_id"`
-	Name           string             `json:"name"`
-	RuntimeMode    string             `json:"runtime_mode"`
-	Provider       string             `json:"provider"`
-	Status         string             `json:"status"`
-	DeviceInfo     string             `json:"device_info"`
-	Metadata       []byte             `json:"metadata"`
-	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	OwnerID        pgtype.UUID        `json:"owner_id"`
-	LegacyDaemonID pgtype.Text        `json:"legacy_daemon_id"`
-	Visibility     string             `json:"visibility"`
-	ProfileID      pgtype.UUID        `json:"profile_id"`
-	CustomName     pgtype.Text        `json:"custom_name"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	DaemonID           pgtype.Text        `json:"daemon_id"`
+	Name               string             `json:"name"`
+	RuntimeMode        string             `json:"runtime_mode"`
+	Provider           string             `json:"provider"`
+	Status             string             `json:"status"`
+	DeviceInfo         string             `json:"device_info"`
+	Metadata           []byte             `json:"metadata"`
+	LastSeenAt         pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	OwnerID            pgtype.UUID        `json:"owner_id"`
+	LegacyDaemonID     pgtype.Text        `json:"legacy_daemon_id"`
+	Visibility         string             `json:"visibility"`
+	ProfileID          pgtype.UUID        `json:"profile_id"`
+	CustomName         pgtype.Text        `json:"custom_name"`
+	RegistrationSource string             `json:"registration_source"`
+	CredentialRef      pgtype.Text        `json:"credential_ref"`
 }
 
 type AgentSkill struct {
@@ -1656,6 +1659,14 @@ type RetrospectiveRun struct {
 	FinishedAt        pgtype.Timestamptz `json:"finished_at"`
 }
 
+type RuntimeCredential struct {
+	RuntimeInstanceID pgtype.UUID        `json:"runtime_instance_id"`
+	CredentialKey     string             `json:"credential_key"`
+	SecretEncrypted   []byte             `json:"secret_encrypted"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1669,6 +1680,7 @@ type RuntimeProfile struct {
 	Enabled        bool               `json:"enabled"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Capabilities   []byte             `json:"capabilities"`
 }
 
 type RuntimeSkillDiscovery struct {
