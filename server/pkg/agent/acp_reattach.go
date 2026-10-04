@@ -26,6 +26,11 @@ import (
 //   - requests the worker blocked on mid-restart (session/request_permission,
 //     terminal calls) are answered by the reader goroutine exactly as they
 //     would be in a fresh session.
+//
+// Provisional (RUYI-349, Owner directive 2026-10-04): this reattach judgment
+// extends the Phase 1 pattern to the ACP family while the stuck-running root
+// cause is open. Do not replicate it to further runtimes; it converges into
+// the corrected unified lifecycle plan RUYI-349 will deliver.
 
 const (
 	// reattachIDBase re-seeds the JSON-RPC id counter after a reattach so

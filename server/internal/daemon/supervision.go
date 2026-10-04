@@ -36,6 +36,12 @@ const supervisedRunsDirEnv = "MULTICA_SUPERVISOR_RUNS_DIR"
 //
 // The code layer routes every provider through agent's workerSession either
 // way; this whitelist only decides where the daemon injects Supervision.
+//
+// Provisional (RUYI-349, Owner directive 2026-10-04): the phase 2 entries
+// inherit Phase 1's terminal-collection and reattach judgment as-is. While
+// RUYI-349's stuck-running root cause is open, this inherited path must not
+// be extended further and is expected to be reshaped by that plan's
+// corrected unified lifecycle.
 var supervisedProviders = map[string]bool{
 	"claude": true,
 	// ACP family + zcode + deerflow (RUYI-390 phase 2).
