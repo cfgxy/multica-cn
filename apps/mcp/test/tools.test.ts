@@ -1996,8 +1996,8 @@ describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
     expect(result.has_more).toBe(true);
     expect(result.next_offset).toBe(1);
     const row = (result.runs as Array<Record<string, unknown>>)[0];
-    expect(row.issue).toBe("VOI-1");
-    expect(row.trigger).toBe("comment");
+    expect(row?.issue).toBe("VOI-1");
+    expect(row?.trigger).toBe("comment");
   });
 
   it("list_runs consumes the server's wrapper payload over the real client (contract drift guard)", async () => {
@@ -2169,7 +2169,7 @@ describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
       runtimes: Array<Record<string, unknown>>;
     };
     expect(rt.total).toBe(1);
-    expect(rt.runtimes[0].id).toBe("rt1");
+    expect(rt.runtimes[0]?.id).toBe("rt1");
 
     const squads = fakeClient({
       listSquads: async () => [
@@ -2187,7 +2187,7 @@ describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
       total: number;
       squads: Array<Record<string, unknown>>;
     };
-    expect(sq.squads[0].leader_id).toBe("a1");
+    expect(sq.squads[0]?.leader_id).toBe("a1");
   });
 
   it("get_squad returns the full projection", async () => {
