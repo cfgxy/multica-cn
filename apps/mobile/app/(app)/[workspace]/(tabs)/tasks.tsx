@@ -50,7 +50,7 @@ import { Button } from "@/components/ui/button";
 import { Header } from "@/components/ui/header";
 import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
-import { IssueRow } from "@/components/issue/issue-row";
+import { IssueRowInbox } from "@/components/issue/issue-row-inbox";
 import { IssuesLoading } from "@/components/issue/issues-loading";
 import {
   buildTaskListFilter,
@@ -75,6 +75,7 @@ import {
 } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { groupIssuesByCategory } from "@/lib/group-issues-by-category";
+import { deriveIssueActivityMap } from "@/lib/issue-agent-activity";
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -133,14 +134,23 @@ export default function Tasks() {
     });
   };
 
-  // ── 智能体执行中 window ────────────────────────────────────────────
-  // The running-issue set derives from the agent task snapshot (the mobile
-  // counterpart of web's working-agents projection). Toggle on + empty set
-  // = nothing is running → skip the list queries and render the empty state.
+  // ── Agent-task snapshot ───────────────────────────────────────────
+  // Always on (RUYI-413): the per-row running/queued badge derives from the
+  // same workspace snapshot the inbox tab uses (warmed at workspace entry,
+  // kept fresh by use-presence-realtime — no new fetch on the hot path),
+  // and the 智能体执行中 filter still reads its running-issue set from it.
+  // Toggle on + empty set = nothing is running → skip the list queries and
+  // render the empty state.
   const snapshotQuery = useQuery({
     ...agentTaskSnapshotOptions(wsId),
-    enabled: !!wsId && agentRunning,
+    enabled: !!wsId,
   });
+  // One derivation pass per render for the whole list — the inbox screen's
+  // pattern, not one per row.
+  const activityByIssue = useMemo(
+    () => deriveIssueActivityMap(snapshotQuery.data ?? []),
+    [snapshotQuery.data],
+  );
   const runningIssueIds = useMemo(
     () =>
       agentRunning
@@ -258,7 +268,7 @@ export default function Tasks() {
     ? (assignedQuery.error ?? createdQuery.error ?? involvedQuery.error)
     : (snapshotQuery.error ?? singleQuery.error);
   const refetch = () => {
-    if (agentRunning) snapshotQuery.refetch();
+    snapshotQuery.refetch();
     if (unionMode) {
       assignedQuery.refetch();
       createdQuery.refetch();
@@ -478,8 +488,9 @@ export default function Tasks() {
           }
           contentContainerClassName="pb-6"
           renderItem={({ item }) => (
-            <IssueRow
+            <IssueRowInbox
               issue={item}
+              activity={activityByIssue.get(item.id)}
               onPress={() => {
                 if (wsSlug) router.push(`/${wsSlug}/issue/${item.id}`);
               }}
