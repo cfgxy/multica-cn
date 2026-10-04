@@ -418,6 +418,18 @@ func (s *workerSession) pumpStdin() {
 				}
 			}
 			if rerr != nil {
+				// EOF here is the BACKEND closing its end of the bridge
+				// pipe (claude.go closes its StdinPipe the moment it sees
+				// the final result). Legacy mode delivers EOF to the worker
+				// for free from the closed anonymous pipe; supervised mode
+				// must forward it through the supervisor, or stream-JSON
+				// CLIs that idle after their result never exit and the run
+				// strands in running (RUYI-424). Idempotent: an explicit
+				// session CloseStdin has already fired closeOnce, making
+				// this a no-op.
+				if errors.Is(rerr, io.EOF) {
+					_ = s.CloseStdin()
+				}
 				return
 			}
 		}
