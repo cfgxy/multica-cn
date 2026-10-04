@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"context"
 	"testing"
 
@@ -116,4 +117,8 @@ func TestBroadcastIssueUpdated_NoStatusChange(t *testing.T) {
 	if payload["status_changed"] != false {
 		t.Errorf("expected status_changed=false, got %v", payload["status_changed"])
 	}
+}
+
+func (noRowsDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by noRowsDBTX")
 }

@@ -19,6 +19,8 @@ import type {
   AddIssueRelationBody,
   AddIssueRelationResult,
   AgentInfo,
+  AuditEventListParams,
+  AuditEventListResult,
   CancelRunResult,
   CommentInfo,
   CommentListParams,
@@ -358,6 +360,34 @@ export class MulticaClient {
       `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}/retry`,
       { workspace, body: {} },
     );
+  }
+
+  // The workspace audit search (RUYI-355): the same endpoint the web app
+  // reads, so the MCP tool and the UI always see the same trail. Issue-level
+  // filtering is just issue_id here — the server pins it on the issue route.
+  async listAuditEvents(
+    workspace: string,
+    params: AuditEventListParams = {},
+  ): Promise<AuditEventListResult> {
+    return this.request("GET", `/api/workspaces/${encodeURIComponent(workspace)}/audit-events`, {
+      workspace,
+      query: {
+        domain: params.domain,
+        event_type: params.event_type,
+        actor_type: params.actor_type,
+        actor_id: params.actor_id,
+        issue_id: params.issue_id,
+        task_id: params.task_id,
+        agent_id: params.agent_id,
+        runtime_id: params.runtime_id,
+        reason: params.reason,
+        since: params.since,
+        until: params.until,
+        limit: params.limit,
+        cursor: params.cursor,
+        cursor_id: params.cursor_id,
+      },
+    });
   }
 
   // ---- transport --------------------------------------------------------

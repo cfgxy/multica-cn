@@ -138,6 +138,7 @@ describe("tool surface", () => {
         "manage_issue_relations",
         "progress_digest",
         "retry_run",
+        "search_audit_events",
         "search_issues",
         "update_issue",
         "update_issue_status",
@@ -942,6 +943,95 @@ describe("run lifecycle tools (RUYI-292)", () => {
       client,
     )) as { total: number };
     expect(result.total).toBe(2);
+  });
+
+  it("search_audit_events passes filters through and surfaces the keyset cursor", async () => {
+    const client = fakeClient({
+      listAuditEvents: async (_ws: string, params: Record<string, unknown>) => {
+        callsOf(client).push({ method: "listAuditEvents", args: [params] });
+        return {
+          events: [
+            {
+              id: "ev1",
+              workspace_id: WS,
+              domain: "run",
+              event_type: "run.cancelled",
+              occurred_at: "2026-10-04T00:00:00Z",
+              actor_type: "member",
+              actor_id: "u1",
+              trigger_kind: null,
+              trigger_ref: null,
+              issue_id: "i1",
+              task_id: "t1",
+              agent_id: null,
+              runtime_id: null,
+              reason: "user_requested",
+              details: {},
+            },
+          ],
+          next_cursor: "2026-10-04T00:00:00Z",
+          next_cursor_id: "ev1",
+        };
+      },
+    });
+    const tool = findTool("search_audit_events");
+    const result = (await tool?.handler(
+      { workspace: WS, domain: "run", reason: "user_requested", limit: 10 },
+      client,
+    )) as { total: number; events: unknown[]; next_cursor: string | null };
+    expect(callsOf(client)[0]).toEqual({
+      method: "listAuditEvents",
+      args: [{ domain: "run", reason: "user_requested", limit: 10 }],
+    });
+    expect(result.total).toBe(1);
+    expect(result.next_cursor).toBe("2026-10-04T00:00:00Z");
+  });
+
+  it("search_audit_events consumes the server's page wrapper over the real client (contract drift guard)", async () => {
+    // Same guard rationale as list_issue_runs above: run the tool against the
+    // REAL MulticaClient over a mocked HTTP layer so a client-declared shape
+    // drifting from the server's { events, next_cursor, next_cursor_id }
+    // wrapper cannot pass unit mocks while integration dies.
+    const payload = {
+      events: [
+        {
+          id: "ev1",
+          workspace_id: WS,
+          domain: "ops",
+          event_type: "ops.server_started",
+          occurred_at: "2026-10-04T00:00:00Z",
+          actor_type: "system",
+          actor_id: null,
+          trigger_kind: null,
+          trigger_ref: null,
+          issue_id: null,
+          task_id: null,
+          agent_id: null,
+          runtime_id: null,
+          reason: null,
+          details: { version: "dev", commit: "unknown" },
+        },
+      ],
+      next_cursor: null,
+      next_cursor_id: null,
+    };
+    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as typeof fetch;
+    const client = new MulticaClient({
+      serverUrl: "https://api.example.com",
+      token: "mul_test",
+      fetchImpl,
+    });
+    const tool = findTool("search_audit_events");
+    const result = (await tool?.handler({ workspace: WS }, client)) as {
+      total: number;
+      next_cursor: string | null;
+    };
+    expect(result.total).toBe(1);
+    expect(result.next_cursor).toBeNull();
   });
 
   it("get_run returns chain detail", async () => {

@@ -596,6 +596,17 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		// and go (MUL-4217). Shared with the failed-profile path below.
 		registered = h.inheritMachineCustomName(r.Context(), registered, inserted)
 
+		// Audit (RUYI-355): runtime connected. Reconnects log too — the
+		// connect/disconnect alternation IS the availability trail.
+		if registered.Status == "online" {
+			service.TryAppendAuditEvents(r.Context(), h.Queries,
+				service.RuntimeEventFromRow(service.AuditRuntimeConnected, service.AuditActorDaemon, registered).
+					WithDetails(service.JSONDetails(map[string]string{
+						"provider":  provider,
+						"daemon_id": req.DaemonID,
+					})))
+		}
+
 		// Inserted is false for normal daemon reconnects/upserts, so
 		// runtime_ready is a first-ready-per-runtime-row signal.
 		if inserted {
@@ -959,6 +970,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("deregister: failed to set offline", "runtime_id", rid, "error", err)
 			continue
 		}
+		// Audit (RUYI-355): the daemon itself reported the disconnect.
+		service.TryAppendAuditEvents(r.Context(), h.Queries,
+			service.RuntimeEventFromRow(service.AuditRuntimeDisconnected, service.AuditActorDaemon, rt))
 		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.RuntimeOffline(
 			uuidToString(rt.OwnerID),
 			wsID,
@@ -5091,6 +5105,14 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		slog.Info("cancel ack: cancel_requested confirmed cancelled",
 			"task_id", taskID, "daemon_confirmed", req.Confirmed,
 			"confirmed_at", confirmed.CompletedAt.Time.UTC().Format(time.RFC3339Nano))
+		// RUYI-355: the confirmed stop lands as run.cancelled. Best-effort —
+		// the row itself already carries the cancel_reason/actor attribution.
+		ackActor := service.AuditActorSystem
+		if confirmed.CancelRequestedByUserID.Valid {
+			ackActor = service.AuditActorMember
+		}
+		service.TryAppendAuditEvents(r.Context(), h.Queries, service.TaskCancelledEvent(r.Context(), h.Queries, confirmed,
+			service.AuditReasonUserRequested, ackActor, confirmed.CancelRequestedByUserID, nil))
 	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{

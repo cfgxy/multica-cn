@@ -95,6 +95,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "manage_issue_relations",
       "progress_digest",
       "retry_run",
+      "search_audit_events",
       "search_issues",
       "update_issue",
       "update_issue_status",

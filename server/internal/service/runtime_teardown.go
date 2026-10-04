@@ -84,6 +84,10 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 		if err != nil {
 			return out, fmt.Errorf("cancel tasks: %w", err)
 		}
+		// Same-tx audit (RUYI-355): the runtime teardown ended these runs.
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonRuntimeTeardown, AuditActorSystem, pgtype.UUID{}, nil); err != nil {
+			return out, err
+		}
 		if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled...); err != nil {
 			return out, err
 		}
