@@ -2787,34 +2787,44 @@ describe("ApiClient prompt governance versions (RUYI-285)", () => {
     ).resolves.toEqual({ versions: [], total: 0 });
   });
 
-  it("saves a new version with content and change note", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(versionRow), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+  it("snapshots the effective content with an optional change note", async () => {
+    // A fresh Response per call: the client reads each body exactly once.
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(versionRow), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new ApiClient("https://api.example.test");
+    // No body at all: the server defaults the change note to the snapshot
+    // wording, so an absent note is the common shape.
     await expect(
-      client.savePromptGovernanceVersion("agent", "agent-1", {
-        content: "second draft",
-        change_note: "收紧工具使用纪律",
-      }),
+      client.snapshotPromptGovernanceVersion("agent", "agent-1"),
     ).resolves.toEqual(versionRow);
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://api.example.test/api/prompt-governance/agent/agent-1/versions",
+      "https://api.example.test/api/prompt-governance/agent/agent-1/versions/snapshot",
     );
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({
-          content: "second draft",
-          change_note: "收紧工具使用纪律",
-        }),
+        body: JSON.stringify({}),
       }),
+    );
+
+    // An explicit note rides through unchanged.
+    await client.snapshotPromptGovernanceVersion("agent", "agent-1", {
+      change_note: "发布前存证",
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://api.example.test/api/prompt-governance/agent/agent-1/versions/snapshot",
+    );
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).body).toBe(
+      JSON.stringify({ change_note: "发布前存证" }),
     );
   });
 

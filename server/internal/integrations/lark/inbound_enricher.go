@@ -82,6 +82,12 @@ type InboundEnricherConfig struct {
 	// Logger receives best-effort warnings about fetch failures. Nil
 	// uses slog.Default().
 	Logger *slog.Logger
+	// Hints, when set, receives this enricher's runtime permission
+	// observations: a permission-class fetch failure posts the matching
+	// capability's in-chat authorization hint card (deduped, async,
+	// silent-degrade); a successful call re-arms it. Nil disables the
+	// feature entirely.
+	Hints *PermissionHintSender
 }
 
 type inboundEnricher struct {
@@ -89,6 +95,7 @@ type inboundEnricher struct {
 	maxForwardChildren int
 	recentContextSize  int
 	logger             *slog.Logger
+	hints              *PermissionHintSender
 }
 
 // NewInboundEnricher builds an Enricher backed by the given Lark API
@@ -106,6 +113,7 @@ func NewInboundEnricher(client APIClient, cfg InboundEnricherConfig) Enricher {
 		maxForwardChildren: cfg.MaxForwardChildren,
 		recentContextSize:  cfg.RecentContextSize,
 		logger:             cfg.Logger,
+		hints:              cfg.Hints,
 	}
 }
 
@@ -189,6 +197,11 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	var recentErr error
 	if wantRecent {
 		recentItems, recentErr = e.fetchRecentItems(ctx, creds, msg)
+		if recentErr != nil {
+			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, recentErr)
+		} else {
+			e.hints.ObserveSuccess(creds.AppID, msg.ChatID, CapabilityReadHistory)
+		}
 	}
 	if recentErr == nil && wantRecent && msg.SenderOpenID != "" {
 		triggerTime := parseLarkMillis(msg.CreateTime)
@@ -199,7 +212,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 				item.ThreadID != msg.ThreadID {
 				continue
 			}
-			media := RecentMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
+			media := EnrichedMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
 			if len(mediaResourcesFromMessage(InboundMessage{MessageID: media.MessageID, MessageType: media.MessageType, Content: media.Content})) > 0 {
 				msg.RecentMedia = append(msg.RecentMedia, media)
 			}
@@ -209,11 +222,39 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	var quotedErr error
 	if msg.ParentID != "" {
 		quotedItems, quotedErr = e.client.GetMessage(ctx, creds, msg.ParentID)
+		if quotedErr != nil {
+			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, quotedErr)
+		} else {
+			e.hints.ObserveSuccess(creds.AppID, msg.ChatID, CapabilityReadHistory)
+		}
+		if quotedErr == nil && len(quotedItems) > 0 {
+			// The quoted parent may itself carry downloadable media (a
+			// reply to a file/image message). Capture its descriptors so the
+			// downstream media resolver ingests the attachment through the
+			// same path as the trigger's own media. Only the direct parent
+			// is harvested — a merge_forward parent renders its children as
+			// a text transcript without attaching their files, keeping the
+			// download fan-out bounded on this ACK-latency-sensitive path.
+			parent := quotedItems[0]
+			if parent.MessageID != "" && !parent.Deleted && parent.MessageType != larkMsgTypeMergeForward &&
+				len(mediaResourcesFromMessage(InboundMessage{MessageID: parent.MessageID, MessageType: parent.MessageType, Content: parent.Content})) > 0 {
+				msg.QuotedMedia = append(msg.QuotedMedia, EnrichedMediaMessage{
+					MessageID:   parent.MessageID,
+					MessageType: parent.MessageType,
+					Content:     parent.Content,
+				})
+			}
+		}
 	}
 	var forwardItems []LarkMessage
 	var forwardErr error
 	if isForward {
 		forwardItems, forwardErr = e.client.GetMessage(ctx, creds, msg.MessageID)
+		if forwardErr != nil {
+			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, forwardErr)
+		} else {
+			e.hints.ObserveSuccess(creds.AppID, msg.ChatID, CapabilityReadHistory)
+		}
 	}
 
 	// Phase 2 — resolve display names for every speaker we're about to
@@ -229,7 +270,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 		if msg.SenderOpenID != "" {
 			ids = append(ids, string(msg.SenderOpenID))
 		}
-		names = e.resolveNames(ctx, creds, ids)
+		names = e.resolveNames(ctx, creds, msg.ChatID, ids)
 	}
 
 	// Phase 3 — render broadest-to-narrowest with the complete name map.
@@ -293,8 +334,10 @@ func senderOpenIDs(msgs []LarkMessage) []string {
 // resolveNames batch-resolves open_ids to display names, best-effort: a
 // failure (restricted contact scope, transport error) logs and returns
 // nil so every speaker labeler degrades to positional "User N" rather
-// than blocking ingestion. Duplicate / empty ids are dropped first.
-func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCredentials, ids []string) map[string]string {
+// than blocking ingestion. Duplicate / empty ids are dropped first. A
+// permission-class failure also feeds the contact_lookup hint; a success
+// re-arms it.
+func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCredentials, chatID ChatID, ids []string) map[string]string {
 	uniq := make([]string, 0, len(ids))
 	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -310,8 +353,10 @@ func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCr
 	names, err := e.client.BatchGetUsers(ctx, creds, uniq)
 	if err != nil {
 		e.logger.Warn("lark enricher: speaker name resolution failed", "ids", len(uniq), "err", err)
+		e.hints.ObserveDenied(ctx, creds, chatID, CapabilityContactLookup, err)
 		return nil
 	}
+	e.hints.ObserveSuccess(creds.AppID, chatID, CapabilityContactLookup)
 	return names
 }
 

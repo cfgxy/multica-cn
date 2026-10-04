@@ -70,6 +70,7 @@ type PromptProposalResponse struct {
 	Status              string          `json:"status"`
 	GateErrors          json.RawMessage `json:"gate_errors"`
 	GateWarnings        json.RawMessage `json:"gate_warnings"`
+	JevAdvisory         json.RawMessage `json:"jev_advisory,omitempty"`
 	EnactedVersion      *int32          `json:"enacted_version,omitempty"`
 	RollbackReason      string          `json:"rollback_reason"`
 	MergedFrom          json.RawMessage `json:"merged_from"`
@@ -100,6 +101,7 @@ func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
 		Status:              p.Status,
 		GateErrors:          json.RawMessage(p.GateErrors),
 		GateWarnings:        json.RawMessage(p.GateWarnings),
+		JevAdvisory:         json.RawMessage(p.JevAdvisory),
 		RollbackReason:      p.RollbackReason,
 		MergedFrom:          json.RawMessage(p.MergedFrom),
 		Source:              p.Source,
@@ -281,12 +283,23 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		res = safeRunGate(current, synth, baseline, input)
 	}
 
+	// Gate-stage soft judgment (RUYI-347): once the carrier synthesized, the
+	// full text is judged and the gate-stage report overwrites the
+	// submit-stage one (stage disambiguates). A synthesis failure or a
+	// disabled layer keeps the previous verdict in place. Either way the
+	// E1–E4 verdict above is untouched — this layer reports, never blocks.
+	advisory := p.JevAdvisory
+	if client := h.jevAdvisory(); client.Enabled() && synthErr == nil {
+		advisory = client.Assess(ctx, "gate", synth).JSON()
+	}
+
 	if !res.OK() {
 		if _, err := qtx.MarkPromptProposalGateFailed(ctx, db.MarkPromptProposalGateFailedParams{
 			ID: p.ID, WorkspaceID: workspaceID,
-			Audit:    auditBase,
-			Errors:   mustJSON(res.Errors),
-			Warnings: mustJSON(res.Warnings),
+			Audit:       auditBase,
+			Errors:      mustJSON(res.Errors),
+			Warnings:    mustJSON(res.Warnings),
+			JevAdvisory: advisory,
 		}); err != nil {
 			slog.Error("gate_failed persist failed", append(logger.RequestAttrs(r), "error", err)...)
 		}
@@ -307,6 +320,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	}
 	if _, err := qtx.EnactPromptProposal(ctx, db.EnactPromptProposalParams{
 		ID: p.ID, WorkspaceID: workspaceID, Audit: auditBase, Warnings: mustJSON(res.Warnings),
+		JevAdvisory: advisory,
 	}); err != nil {
 		slog.Error("enact persist failed", append(logger.RequestAttrs(r), "error", err)...)
 		return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
@@ -462,6 +476,16 @@ func (h *Handler) UpdatePromptProposal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proposalToResponse(updated))
 }
 
+// jevAdvisory returns the advisory client for this handler: an injected
+// client (tests, staging) wins, otherwise the process default built from the
+// MULTICA_JEV_ADVISORY_* environment.
+func (h *Handler) jevAdvisory() *legislation.AdvisoryClient {
+	if h.JevAdvisory != nil {
+		return h.JevAdvisory
+	}
+	return legislation.AdvisoryFromEnv()
+}
+
 // SubmitPromptProposal — POST /api/prompt-legislation/proposals/{id}/submit
 func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.loadPromptProposalForWrite(w, r)
@@ -469,10 +493,15 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID, actorType, _ := h.legislationActor(w, r)
+	// Warn-only precheck (RUYI-347): the clause text is judged before the
+	// row leaves draft. A disabled layer persists NULL (未检/关态); any fault
+	// degrades into the stored skip report and never fails the submit.
+	advisory := h.jevAdvisory().Assess(r.Context(), "submit", p.ClauseText).JSON()
 	submitted, err := h.Queries.SubmitPromptProposal(r.Context(), db.SubmitPromptProposalParams{
 		ID:          p.ID,
 		WorkspaceID: parseUUID(h.resolveWorkspaceID(r)),
 		Audit:       legislationAudit("submitted", actorType, userID, nil),
+		JevAdvisory: advisory,
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

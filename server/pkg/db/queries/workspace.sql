@@ -153,6 +153,11 @@ cleared_draft_restores AS (
 cleared_inbound_dedup AS (
     DELETE FROM channel_inbound_message_dedup WHERE installation_id IN (SELECT id FROM ws_installations)
 ),
+cleared_capability_states AS (
+    -- RUYI-400: capability probe states key on installation_id with no FK;
+    -- same explicit sweep as the other channel_* diagnostics above.
+    DELETE FROM channel_capability_state WHERE installation_id IN (SELECT id FROM ws_installations)
+),
 cleared_dingtalk_group_presence AS (
     DELETE FROM dingtalk_group_presence WHERE installation_id IN (SELECT id FROM ws_installations)
 ),

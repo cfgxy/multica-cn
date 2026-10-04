@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   hydrate: vi.fn<() => Promise<string | null>>(),
   setActiveServer: vi.fn<() => Promise<void>>(),
+  probeServer: vi.fn<(apiUrl: string, signal: AbortSignal) => Promise<boolean>>(),
 }));
 
 const servers = [
@@ -12,6 +13,7 @@ const servers = [
 ];
 const serverState = { servers, hydrate: mocks.hydrate, setActiveServer: mocks.setActiveServer };
 vi.mock("./server-store", () => ({ useServerStore: { getState: () => serverState } }));
+vi.mock("./probe-server", () => ({ probeServer: mocks.probeServer }));
 
 import { useStartupServerStore } from "./startup-server-store";
 
@@ -19,6 +21,7 @@ describe("mobile startup gate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.setActiveServer.mockResolvedValue();
+    mocks.probeServer.mockResolvedValue(true);
     serverState.servers = [...servers];
     useStartupServerStore.setState({ phase: "checking", previousId: null });
   });
@@ -30,14 +33,45 @@ describe("mobile startup gate", () => {
     expect(useStartupServerStore.getState().phase).toBe("ready");
   });
 
-  it("uses a valid persisted target and waits for selection", async () => {
+  it("auto-connects a valid persisted target without parking at the picker", async () => {
+    // RUYI-346 round 3: the picker mounts only through navigation, and any
+    // navigation before the gate settles discards a cold-start deep link.
+    // A resolvable startup target must converge by itself — the gate holds
+    // at "checking" (no navigation) until connect completes.
     mocks.hydrate.mockResolvedValue("srv_b");
     await useStartupServerStore.getState().begin();
-    expect(useStartupServerStore.getState()).toMatchObject({ phase: "select", previousId: "srv_b" });
+    expect(mocks.setActiveServer).toHaveBeenCalledWith("srv_b");
+    expect(useStartupServerStore.getState()).toMatchObject({ phase: "ready", previousId: null });
+  });
+
+  it("degrades to explicit selection when the persisted target is unreachable", async () => {
+    // RUYI-404: connect() only persists the choice locally and always
+    // resolves, so an unreachable target never rejects on its own. The gate
+    // must observe reachability itself (probe, bounded by
+    // STARTUP_PROBE_TIMEOUT_MS) and converge to the picker within finite
+    // time instead of releasing startup into a silent hang. Persistence
+    // resolves normally and no network request runs in this test — the mock
+    // probe result is the only reachability signal.
+    mocks.hydrate.mockResolvedValue("srv_b");
+    mocks.probeServer.mockResolvedValue(false);
+    await useStartupServerStore.getState().begin();
+    expect(mocks.probeServer).toHaveBeenCalledWith(
+      "https://other.example.test",
+      expect.anything(),
+    );
     expect(mocks.setActiveServer).not.toHaveBeenCalled();
-    await useStartupServerStore.getState().connect("default");
-    expect(mocks.setActiveServer).toHaveBeenCalledWith("default");
-    expect(useStartupServerStore.getState().phase).toBe("ready");
+    expect(useStartupServerStore.getState()).toMatchObject({
+      phase: "select",
+      previousId: "srv_b",
+    });
+  });
+
+  it("falls back to explicit selection when the startup auto-connect fails", async () => {
+    mocks.hydrate.mockResolvedValue("srv_b");
+    mocks.setActiveServer.mockRejectedValue(new Error("unreachable"));
+    await useStartupServerStore.getState().begin();
+    expect(mocks.setActiveServer).toHaveBeenCalledWith("srv_b");
+    expect(useStartupServerStore.getState()).toMatchObject({ phase: "select", previousId: "srv_b" });
   });
 
   it("keeps selection explicit for a removed previous target", async () => {

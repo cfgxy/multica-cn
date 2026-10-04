@@ -9,7 +9,7 @@
  */
 
 /** How a version came into being. Matches the server CHECK constraint. */
-export type PromptVersionSource = "import" | "edit" | "revert" | "auto_snapshot";
+export type PromptVersionSource = "import" | "edit" | "revert" | "auto_snapshot" | "snapshot";
 
 export interface PromptGovernanceVersion {
   id: string;
@@ -37,4 +37,13 @@ export interface PromptGovernanceVersionList {
 export interface SavePromptGovernanceVersionRequest {
   content: string;
   change_note: string;
+}
+
+/**
+ * Body of a manual snapshot (RUYI-285 rework). There is no content field by
+ * design: the server versions the entity's currently effective content — the
+ * caller only optionally labels the row.
+ */
+export interface SnapshotPromptGovernanceVersionRequest {
+  change_note?: string;
 }

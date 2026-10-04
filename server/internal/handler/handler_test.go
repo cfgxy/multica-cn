@@ -3561,6 +3561,7 @@ func TestNestedMemberReplyUsesDirectParentForMentionInheritance(t *testing.T) {
 		"assignee_type": "agent",
 		"assignee_id":   assigneeAgent,
 		"number":        number,
+		"status":        "todo",
 	})
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)

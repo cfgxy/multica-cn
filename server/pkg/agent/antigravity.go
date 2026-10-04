@@ -88,7 +88,12 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		_ = os.Remove(logPath)
@@ -97,13 +102,13 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 	stderrBuf := newStderrTail(newLogWriter(b.cfg.Logger, "[agy:stderr] "), agentStderrTailBytes)
 	cmd.Stderr = stderrBuf
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		cancel()
 		_ = os.Remove(logPath)
 		return nil, fmt.Errorf("start agy: %w", err)
 	}
 
-	b.cfg.Logger.Info("agy started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("agy started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -152,7 +157,7 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 			b.cfg.Logger.Warn("agy stdout scanner error", "err", err)
 		}
 
-		waitErr := cmd.Wait()
+		waitErr := sess.Wait(runCtx)
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
 
@@ -206,7 +211,7 @@ func (b *antigravityBackend) Execute(ctx context.Context, prompt string, opts Ex
 			}
 		}
 
-		b.cfg.Logger.Info("agy finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("agy finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		resCh <- Result{
 			Status:     finalStatus,

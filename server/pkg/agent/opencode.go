@@ -166,12 +166,17 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	}
 	cmd.Env = env
 
-	stdout, err := cmd.StdoutPipe()
+	// RUYI-349: session decides at Start between the legacy direct child
+	// and the supervised transient unit (daemon injects Supervision for
+	// whitelisted providers only).
+	sess := newWorkerSession(cmd, opts.Supervision)
+
+	stdout, err := sess.StdoutPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("opencode stdout pipe: %w", err)
 	}
-	stdin, err := cmd.StdinPipe()
+	stdin, err := sess.StdinPipe()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("opencode stdin pipe: %w", err)
@@ -180,13 +185,13 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	closeStdin := func() { closeStdinOnce.Do(func() { _ = stdin.Close() }) }
 	cmd.Stderr = newLogWriter(b.cfg.Logger, "[opencode:stderr] ")
 
-	if err := startOwnedProcessTree(cmd, b.cfg.Logger); err != nil {
+	if err := sess.Start(runCtx, b.cfg.Logger); err != nil {
 		closeStdin()
 		cancel()
 		return nil, fmt.Errorf("start opencode: %w", err)
 	}
 
-	b.cfg.Logger.Info("opencode started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.cfg.Logger.Info("opencode started", "pid", sess.PID(), "cwd", opts.Cwd, "model", opts.Model)
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
@@ -248,7 +253,7 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		scanResult := b.processEvents(stdout, msgCh)
 
 		// Wait for process exit, then release the cancellation handler.
-		exitErr := cmd.Wait()
+		exitErr := sess.Wait(runCtx)
 		close(procDone)
 		releaseProcessGroup(cmd)
 		duration := time.Since(startTime)
@@ -292,7 +297,7 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			scanResult.status = "failed"
 		}
 
-		b.cfg.Logger.Info("opencode finished", "pid", cmd.Process.Pid, "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
+		b.cfg.Logger.Info("opencode finished", "pid", sess.PID(), "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
 
 		// Build usage map. OpenCode doesn't report model per-step, so we
 		// attribute all usage to the configured model (or "unknown").

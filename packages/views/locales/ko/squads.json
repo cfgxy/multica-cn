@@ -199,5 +199,10 @@
     "filter_label": "필터",
     "filter_active_count_other": "필터 {{count}}개",
     "clear_filters": "필터 지우기"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "스쿼드 검색…"
+    }
   }
 }

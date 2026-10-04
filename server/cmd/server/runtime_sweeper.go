@@ -101,6 +101,16 @@ const (
 	// delegatedFailureRecoveryBatchSize bounds the durable recovery-outbox
 	// replay so a historical backlog cannot monopolise the runtime sweep tick.
 	delegatedFailureRecoveryBatchSize = 100
+	// cancelRequestedOfflineSLA bounds how long a cancel_requested row waits
+	// on an offline runtime before the sweeper converges it to cancelled
+	// (RUYI-349, differentiated from the 3h reconnect grace). The user asked
+	// for the stop and the stop was ACCEPTED; the only thing the daemon could
+	// still add is the ack, so waiting out a full reconnect grace keeps a
+	// dead run sitting in the UI as "cancelling…" for hours. Five minutes
+	// covers a daemon restart plus the supervised-stop ack window; a live
+	// runtime is untouched (the query keys on runtime.status='offline') and
+	// its cancel-ack still converges the row immediately.
+	cancelRequestedOfflineSLA = 5 * time.Minute
 )
 
 type runtimeGCTxStarter interface {
@@ -321,10 +331,12 @@ func sweepOfflineRuntimeTasks(ctx context.Context, queries *db.Queries, taskSvc 
 	// RUYI-292: a cancel_requested row on a runtime that died mid-stop can
 	// never receive the daemon cancel-ack that would confirm the stop. The
 	// user asked for the stop, so the honest terminal is cancelled — not the
-	// failed verdict every other in-flight row on a dead runtime gets. Same
-	// grace and batch bounds as the failure sweep above.
+	// failed verdict every other in-flight row on a dead runtime gets. The
+	// wait is the SHORT cancel SLA, not the reconnect grace (RUYI-349): the
+	// stop was accepted, so only the ack is missing and a 3h grace would
+	// leave the row visually "cancelling…" for hours. Batch bounds unchanged.
 	converged, err := taskSvc.ConvergeCancelRequestedForOfflineRuntimes(ctx, db.ConvergeCancelRequestedForOfflineRuntimesParams{
-		ReconnectGraceSecs: reconnectGrace.Seconds(),
+		ReconnectGraceSecs: cancelRequestedOfflineSLA.Seconds(),
 		MaxPerTick:         offlineTaskFailBatchSize,
 	})
 	if err != nil {

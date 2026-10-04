@@ -411,8 +411,9 @@
       "agent": "Agent"
     },
     "source": {
-      "system": "系统",
-      "member": "成员"
+      "manual": "人工",
+      "retrospective": "每日总复盘",
+      "merged": "合并"
     },
     "create": "新建提案",
     "createTitle": "新建 Prompt 立法提案",
@@ -472,15 +473,19 @@
     "rejectPlaceholder": "驳回理由将留档可查。",
     "rejectConfirm": "确认驳回",
     "ownerOnly": "仅 Owner",
-    "source": {
-      "manual": "人工",
-      "retrospective": "每日总复盘",
-      "merged": "合并"
-    },
     "empty": "这里还没有提案。",
     "emptyHint": "从真实执行证据起草一条，或让每日总复盘来提案。",
     "error": "写入失败。请检查输入后重试。",
-    "batchPartial": "批量中有提案未生效——请查看逐条结果。"
+    "batchPartial": "批量中有提案未生效——请查看逐条结果。",
+    "jevAdvisoryLabel": "本地模型预警",
+    "jevStage": {
+      "submit": "提交预检",
+      "gate": "门闸软判据"
+    },
+    "jevThreshold": "阈值",
+    "jevWarnFlag": "预警",
+    "jevDisclaimer": "仅低成本预警参考，须结合概率依据判断，不单独作为处置依据（warn-only 旁路，不影响门闸判定）。",
+    "jevUnavailable": "不可用，已跳过（不影响主流程）"
   },
   "retrospective": {
     "title": "每日总复盘",
@@ -576,16 +581,31 @@
     "manage": "管理版本",
     "description": "每次生效变更都会追加一个版本，历史永不改写。",
     "bindingNote": "质量评测把每次运行绑定到其领取时的版本。角标显示每个版本承载的运行次数。",
-    "newVersion": "新建版本",
+    "subjectTypeLabel": "对象类型",
+    "subjectEntityLabel": "统计对象",
+    "subjectEntityPlaceholder": "选择统计对象",
+    "workspaceEntity": "本工作空间",
+    "typeWorkspace": "工作空间",
+    "typeProject": "项目",
+    "typeSquad": "小队",
+    "typeAgent": "智能体",
+    "typeAutopilot": "自动化",
+    "typeSkill": "技能",
+    "snapshot": "建立快照",
+    "snapshotTitle": "快照当前生效内容？",
+    "snapshotBody": "快照会把该统计对象当前生效的配置记录为一个新版本，不改变对象本身的内容。",
+    "snapshotConfirm": "建立快照",
+    "snapshotFailed": "快照失败",
     "clearSelection": "清除选择",
     "emptyTitle": "暂无版本",
-    "emptyDescription": "从该 Agent 当前提示词创建第一个版本。",
+    "emptyDescription": "从该统计对象当前生效的内容快照第一个版本。",
     "error": "版本加载失败",
     "retry": "重试",
     "sourceImport": "基线",
     "sourceEdit": "编辑",
     "sourceRevert": "回滚",
     "sourceAuto": "自动快照",
+    "sourceSnapshot": "快照",
     "fromVersion": "来自 v{{version}}",
     "latest": "最新",
     "runs": "{{n}} 次运行",
@@ -596,16 +616,7 @@
     "cancel": "取消",
     "confirmActivate": "确认激活",
     "compareTitle": "比较 v{{from}} → v{{to}}",
-    "editorTitle": "新建版本",
-    "editorDescription": "把下方文本保存为下一个版本并立即生效。",
-    "contentLabel": "提示词内容",
-    "contentHint": "已预载当前生效内容，保存前请先编辑。",
-    "noteLabel": "变更说明",
-    "notePlaceholder": "改了什么、为什么改",
-    "save": "保存版本",
-    "saving": "保存中…",
     "secretBlocked": "未保存：提示词疑似包含凭据。",
-    "findingLine": "第 {{line}} 行",
-    "saveFailed": "保存失败"
+    "findingLine": "第 {{line}} 行"
   }
 }

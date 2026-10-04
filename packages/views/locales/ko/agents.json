@@ -1022,6 +1022,25 @@
     "tasks": {
       "empty": "현재 실행 중인 작업이 없습니다.",
       "agent_missing": "에이전트를 찾을 수 없습니다."
+    },
+    "row": {
+      "edit": "편집"
+    },
+    "detail": {
+      "edit_profile": "프로필 편집",
+      "tab_active": "진행 중",
+      "fact_status": "상태",
+      "fact_runtime_unbound": "런타임 미설정"
+    },
+    "edit": {
+      "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다"
+    },
+    "env": {
+      "add_row": "변수 추가"
+    },
+    "webhooks": {
+      "copy_aria": "Webhook 링크 복사",
+      "rotated_title": "새 링크가 생성되었습니다"
     }
   }
 }
