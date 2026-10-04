@@ -563,6 +563,16 @@ multica: ## Run the multica CLI entrypoint directly from the Go source tree
 VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    ?= $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
+# The auto-computed COMMIT must not reach sub-makes: `make up` recurses into
+# the slot worktree via `make -C` (scripts/dev-env.sh), and the top-level
+# `export` above would hand it this checkout's HEAD, outranking the sub-make's
+# own `COMMIT ?=` — the api binary then gets stamped with the wrong commit and
+# the identity gate kills it (RUYI-420). An explicitly provided COMMIT (command
+# line or environment) keeps origin `command line`/`environment` and still
+# exports, so `make up COMMIT=xyz` keeps working.
+ifeq ($(origin COMMIT),file)
+unexport COMMIT
+endif
 # Windows will not execute an extensionless binary, so a source build there has
 # to name its outputs the way the target platform expects — otherwise the CLI
 # builds fine and then fails to re-exec itself as a daemon (#7255). GOOS reaches
