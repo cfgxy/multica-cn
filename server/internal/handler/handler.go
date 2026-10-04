@@ -257,7 +257,16 @@ type Handler struct {
 	// OAuthCodes holds authorization codes in Redis for 60s, single-use. Nil
 	// Redis fails the grant closed rather than issuing codes that can never be
 	// redeemed.
-	OAuthCodes                   *oauth.CodeStore
+	OAuthCodes *oauth.CodeStore
+	// OAuthConsents holds pending consent-screen requests (RUYI-420), the
+	// parked and validated tail of an authorize call. Nil Redis fails the
+	// consent step closed with a temporarily_unavailable redirect.
+	OAuthConsents *oauth.ConsentStore
+	// OAuthGate resolves grant/client liveness for the auth middleware's
+	// revocation gate (RUYI-420). Admin and user handlers also call
+	// Invalidate on the write paths so a revoke is effective immediately
+	// rather than at the gate TTL. Nil disables gate checks entirely.
+	OAuthGate *auth.OAuthGate
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter

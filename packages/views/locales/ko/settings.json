@@ -438,7 +438,8 @@
       "plugins": "Plugins",
       "marketplace": "마켓플레이스",
       "mcp": "MCP",
-      "billing": "결제 및 요금제"
+      "billing": "결제 및 요금제",
+      "authorizations": "내 인가"
     }
   },
   "plugins": {
@@ -798,6 +799,39 @@
       "copy_command_tooltip": "명령 복사",
       "done": "완료"
     }
+  },
+  "authorizations": {
+    "title": "내 인가",
+    "description": "외부 MCP 클라이언트에 부여한 인가 기록입니다. 언제든 철회할 수 있습니다.",
+    "list_title": "인가 기록",
+    "empty": "인가 기록이 없습니다.",
+    "col_client": "클라이언트",
+    "col_scope": "범위",
+    "col_authorized_at": "인가 시각",
+    "col_last_used": "마지막 사용",
+    "col_status": "상태",
+    "status_active": "활성",
+    "status_revoked": "철회됨",
+    "revoke": "철회",
+    "revoke_confirm_title": "이 인가를 철회하시겠습니까?",
+    "revoke_confirm_body": "「{{client}}」의 인가를 철회하면 기존 액세스 토큰은 캐시 창(최대 약 10분) 내에 실패합니다.",
+    "cancel": "취소"
+  },
+  "oauth_consent": {
+    "brand": "Multica MCP",
+    "title": "{{client}}이(가) 내 계정 접근을 요청합니다",
+    "subtitle": "허용하면 이 클라이언트가 아래 권한으로 Multica MCP 서비스에 접근합니다.",
+    "scopes_title": "요청된 권한",
+    "scope_read": "태스크·워크스페이스 등 데이터 읽기",
+    "scope_write": "태스크·댓글 등 데이터 생성 및 수정",
+    "scope_run": "태스크 실행 및 자동화 작업 트리거",
+    "scope_legacy": "읽기·쓰기·실행 전체 권한(구버전 인가)",
+    "approve": "허용",
+    "deny": "거부",
+    "error_title": "인가를 계속할 수 없습니다",
+    "expired": "인가 요청이 만료되었거나 존재하지 않습니다. 클라이언트에서 다시 시작하세요.",
+    "not_signed_in": "먼저 Multica에 로그인한 뒤 클라이언트에서 인가를 다시 시작하세요.",
+    "invalid_request": "잘못된 인가 요청입니다."
   },
   "workspace": {
     "section_general": "워크스페이스 정보",
