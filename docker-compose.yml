@@ -11,6 +11,11 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # RUYI-333 slot budget: the shared instance is capped so two full slots
+    # (each <= 2GB of components) plus postgres stay inside the host budget.
+    # Resource facts mirror scripts/slots.json resource_budget.shared_postgres.
+    mem_limit: 2g
+    cpus: 4
 
 volumes:
   pgdata:

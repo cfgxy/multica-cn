@@ -22,6 +22,52 @@ export interface LarkInstallation {
   installed_at: string;
   created_at: string;
   updated_at: string;
+  /** Per-capability permission verdicts from the latest probe (RUYI-400).
+   * Empty array = the bot has never been probed (installed before this
+   * feature). Undefined = the server predates the field — the UI renders
+   * nothing rather than a fake "all good". Optional per the compat rule
+   * above. */
+  capabilities?: LarkCapabilityState[];
+}
+
+/** One capability's probe verdict for a Lark bot installation (RUYI-400).
+ * `granted` means the synthetic API call succeeded RIGHT NOW; `missing`
+ * means Feishu rejected it with a permission error (covers both "fix in
+ * console" and "awaiting enterprise-admin approval"); `unknown` means the
+ * probe itself could not run (token/transport) and must never be shown
+ * as granted. Wire shape mirrors `lark.CapabilityStateView`. */
+export interface LarkCapabilityState {
+  capability: string;
+  status: "granted" | "missing" | "unknown" | string;
+  detail?: string;
+  /** The scopes this capability needs (AND-of-OR groups, flattened by
+   * the server into the sorted union when missing). Optional for older
+   * servers. */
+  required_scopes?: string[];
+  checked_at?: string;
+}
+
+/** One row of the static capability→scope catalog served by
+ * GET /lark/permission-catalog (RUYI-400). `scopes` keeps the AND-of-OR
+ * shape: every inner group needs at least one of its members granted in
+ * the Feishu console. */
+export interface LarkPermissionCatalogEntry {
+  id: string;
+  /** Whether the backend can probe this capability over REST. Event-
+   * subscription capabilities (receive_messages) are judged by live
+   * message arrival instead, so their UI copy differs. */
+  probeable: boolean;
+  scopes: string[][];
+}
+
+export interface LarkPermissionCatalogResponse {
+  capabilities: LarkPermissionCatalogEntry[];
+}
+
+/** Response of POST /lark/installations/{id}/recheck-permissions:
+ * fresh verdicts for every capability, display-ordered. */
+export interface RecheckLarkPermissionsResponse {
+  capabilities: LarkCapabilityState[];
 }
 
 export interface ListLarkInstallationsResponse {
