@@ -55,7 +55,7 @@ import type {
 import type { AgentAvailability } from "@multica/core/agents";
 import { taskMessagesOptions } from "@/data/queries/chat";
 import { Text } from "@/components/ui/text";
-import { Markdown } from "@/lib/markdown";
+import { SelectableMarkdown } from "@/components/ui/selectable-markdown";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { failureReasonLabel } from "@/lib/failure-reason-label";
 import { formatElapsedMs } from "@/lib/format-elapsed";
@@ -310,7 +310,7 @@ function MessageRow({
               : "bg-muted border-transparent",
         )}
       >
-        <Markdown
+        <SelectableMarkdown
           content={message.content}
           attachments={message.attachments}
           selectable={isSelecting}
@@ -400,7 +400,7 @@ function AssistantRow({
           )}
         </Text>
       ) : (
-        <Markdown
+        <SelectableMarkdown
           content={message.content}
           attachments={message.attachments}
           selectable={isSelecting}
@@ -594,7 +594,12 @@ function FailureBubble({
             </CollapsibleTrigger>
             <CollapsibleContent>
               <View className="mt-1 rounded bg-muted/40 px-2 py-1.5">
+                {/* Key swap mirrors SelectableMarkdown: the raw error Text
+                    must be BORN selectable too — flipping the live view lands
+                    Android's selection pipeline in the select-all state
+                    (RUYI-416). */}
                 <Text
+                  key={isSelecting ? "selectable" : "static"}
                   className="text-xs text-muted-foreground"
                   selectable={isSelecting}
                 >
