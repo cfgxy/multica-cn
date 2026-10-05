@@ -852,14 +852,39 @@ MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release > "$out" 2>&1 || fail "q
 MULTICA_CALLER_OWNER=$issue_a dev_env dev2 lock-release > "$out" 2>&1 || fail "qa-window: lock-release of dev2 must succeed"
 [ ! -f "$MULTICA_SLOTS_HOME/dev2/.slot-lock" ] || fail "qa-window: dev2's lease must be gone"
 
+# Releasing hands the slots back to the pool — dropping the lock file alone is
+# not enough: the manifest tenancy must clear too, or every gate and display
+# still reports the slot as held by the old issue while it is actually free
+# (RUYI-431 P1). While issue_a is still in_progress the next claimant must be
+# able to acquire both released slots, one via use and one via lock-recover.
+if grep -q "^ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/manifest.env"; then
+  fail "qa-window: released dev1's manifest must not keep the old holder"
+fi
+dev_env dev1 lock-status > "$out" 2>&1 || fail "qa-window: lock-status after release must work"
+require_contains "$out" "free"
+dev_env list --json > "$out" 2>&1 || fail "qa-window: list --json after release must work"
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  const d1 = a.find(s => s.slot === "dev1");
+  if (!d1 || d1.lease_issue !== "" || d1.phase !== "dev" || d1.expires_at !== "") process.exit(1);
+' < "$out" || fail "qa-window: released dev1 must list free — no lease residue, phase back to dev, TTL cleared"
+
+MULTICA_CALLER_OWNER=$issue_b dev_env dev1 use > "$out" 2>&1 || fail "qa-window: a foreign issue must be able to use the released dev1"
+grep -q "OWNER_ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "qa-window: dev1's new lease must name the foreign issue"
+
+MULTICA_CALLER_OWNER=$issue_b dev_env dev2 lock-recover > "$out" 2>&1 || fail "qa-window: lock-recover on released dev2 must succeed while the old issue is still in_progress"
+grep -q "OWNER_ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev2/.slot-lock" || fail "qa-window: dev2's recovered lease must name the foreign issue"
+grep -q "^ISSUE=$issue_b" "$MULTICA_SLOTS_HOME/dev2/manifest.env" || fail "qa-window: recovery must adopt the manifest issue"
+
 # The dev phase keeps the closure-only rule: an in_progress issue cannot
-# release its development slot, owner or not.
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "qa-window: rebinding dev1 in dev phase must succeed"
+# release its development slot, owner or not. dev1 now belongs to issue_b.
+printf 'in_progress' > "$state/issue-$issue_b"
+MULTICA_CALLER_OWNER=$issue_b dev_env dev1 use > "$out" 2>&1 || fail "qa-window: rebinding dev1 in dev phase must succeed"
 status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release > "$out" 2>&1 || status=$?
+MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-release > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "qa-window: dev-phase lock-release while in_progress must stay refused"
 require_contains "$out" "still in_progress"
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "qa-window: cleanup release must succeed"
+MULTICA_CALLER_OWNER=$issue_b dev_env dev1 lock-release --force > "$out" 2>&1 || fail "qa-window: cleanup release must succeed"
 
 # ---------------------------------------------------------------------------
 # audit (RUYI-431): report-only bypass detection. Unregistered multica_%
