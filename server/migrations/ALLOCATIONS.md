@@ -23,7 +23,8 @@ Rules (see workspace/project instructions, RUYI-359):
 | 922 | 922_channel_capability_state | RUYI-400 | agent/agent-f70e39b85abd/ruyi-400 | reserved |
 | 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
-| 925 | 925_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
+| 925 | 925_oauth_management | RUYI-420 | agent/agent-f70e39b85abd/ruyi-420 | reserved |
+| 926 | 926_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
 
 Notes:
 
@@ -50,3 +51,10 @@ Notes:
   still carries pre-shrink legacy stems in the 920-923 range; those are
   leftovers, NOT active-branch claims, and resolve on that branch's
   required rebase.
+- 926 renumber note (RUYI-355): the audit stem registered at 925 collided
+  with RUYI-420's `925_oauth_management` on main disk (2026-10-05 merge
+  preflight); RUYI-355 yielded and renumbered to `926_activity_audit` in
+  its conflict-resolution merge — same yield pattern as the 922→925
+  renumber above. Environments whose `schema_migrations` ledger carries
+  `925_activity_audit` must have that row rewritten to `926_activity_audit`
+  per the renumber rule (version rewritten, `applied_at` preserved).

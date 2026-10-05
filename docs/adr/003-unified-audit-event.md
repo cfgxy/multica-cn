@@ -10,7 +10,7 @@
 
 ## 决策
 
-新增 append-only 表 `audit_event`（迁移 `925_activity_audit`，单 stem：表 + 四对象维度部分索引 + `agent_task_queue` 归因三列）。所有跨域运营事件经 `server/internal/service/audit.go` 的唯一契约写入：`Event` + `Validate()` 是必填字段的唯一执法点（workspace/domain/event_type/occurred_at/actor_type 必填，actor_id 除 system 外必填，event_type 必须 `<domain>.<action>` 前缀，run 事件必带 task_id、runtime 事件必带 runtime_id、issue 事件必带 issue_id、agent 事件必带 agent_id，cancel/fail 类必带结构化 reason）。
+新增 append-only 表 `audit_event`（迁移 `926_activity_audit`，单 stem：表 + 四对象维度部分索引 + `agent_task_queue` 归因三列）。所有跨域运营事件经 `server/internal/service/audit.go` 的唯一契约写入：`Event` + `Validate()` 是必填字段的唯一执法点（workspace/domain/event_type/occurred_at/actor_type 必填，actor_id 除 system 外必填，event_type 必须 `<domain>.<action>` 前缀，run 事件必带 task_id、runtime 事件必带 runtime_id、issue 事件必带 issue_id、agent 事件必带 agent_id，cancel/fail 类必带结构化 reason）。
 
 写入双通道按语义划分：`AppendAuditEvents` 在调用方事务内批量插入，失败即回滚——用于取消归因、fail-closed 的 env 审计等「审计行是业务保证一部分」的路径；`TryAppendAuditEvents` 事务外 best-effort，失败只打 WARN——用于生命周期、清扫器裁决、daemon 注册等「事件是旁路记录」的路径。因果链不建父指针，由共享对象维度（issue_id/task_id/agent_id/runtime_id）+ trigger_kind/trigger_ref + occurred_at 排序重建。actor 归因约定：member 必带 id；system 无 id；daemon 用 runtime id；agent 用消费方任务 id。
 
@@ -26,6 +26,6 @@ Phase 1 覆盖矩阵：run 全生命周期（queued/dispatched/started/waiting_l
 
 ## 权衡与回退
 
-append-only 无外键是有意的：审计行必须比被描述的业务行活得久，workspace 删除清理由应用层显式处理（沿仓内「禁数据库外键」红线）。双写期 `activity_log` 仍是时间线事实源，audit 镜像行丢失只留 WARN 不阻塞业务（env 两处除外，其 fail-closed 语义与既有行为一致）。事件词表开放不锁枚举：新事件类型无需迁移，但必须走 audit.go 契约。回退路径：停用写入点即停止增长；表与索引可整体 drop，不影响任何业务读路径；925 迁移可 down 干净回滚。
+append-only 无外键是有意的：审计行必须比被描述的业务行活得久，workspace 删除清理由应用层显式处理（沿仓内「禁数据库外键」红线）。双写期 `activity_log` 仍是时间线事实源，audit 镜像行丢失只留 WARN 不阻塞业务（env 两处除外，其 fail-closed 语义与既有行为一致）。事件词表开放不锁枚举：新事件类型无需迁移，但必须走 audit.go 契约。回退路径：停用写入点即停止增长；表与索引可整体 drop，不影响任何业务读路径；926 迁移可 down 干净回滚。
 
 验证以 `server/internal/service/audit_test.go` 契约单测、`go build ./...` + `go vet` 全绿、sqlc 生成物零 diff、迁移 up/down/up 冒烟为准；实机多端渲染与查询联调由 QA 阶段完成。

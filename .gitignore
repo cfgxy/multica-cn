@@ -95,3 +95,6 @@ shots-*/
 evidence/
 comments_all.json
 pat.txt
+
+# APK deliverables are handed off out-of-repo (qa-build/), never committed (RUYI-415)
+/*.apk
