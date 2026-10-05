@@ -384,6 +384,7 @@ export interface RuntimeInfo {
   last_seen_at?: string | null;
   created_at?: string;
   updated_at?: string;
+  [key: string]: unknown;
 }
 
 export interface ModelThinkingInfo {
@@ -507,15 +508,6 @@ export interface ExecutionProfileActivationInfo {
   results: ExecutionProfileActivationResultInfo[];
 }
 
-export interface SquadInfo {
-  id: string;
-  name: string;
-  description?: string;
-  leader_id?: string;
-  member_count?: number;
-  archived_at?: string | null;
-}
-
 export interface SquadMemberInfo {
   id: string;
   squad_id?: string;
@@ -523,4 +515,203 @@ export interface SquadMemberInfo {
   member_id: string;
   role?: string;
   created_at?: string;
+}
+
+// One audit_event row (RUYI-355). Dimensions the event does not name come
+// back as null so a timeline renders absence, not zero UUIDs. details is the
+// raw JSONB payload — key names and metadata only, never secret values.
+export interface AuditEventInfo {
+  id: string;
+  workspace_id: string;
+  domain: string;
+  event_type: string;
+  occurred_at: string;
+  actor_type: string;
+  actor_id: string | null;
+  trigger_kind: string | null;
+  trigger_ref: string | null;
+  issue_id: string | null;
+  task_id: string | null;
+  agent_id: string | null;
+  runtime_id: string | null;
+  reason: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditEventListParams {
+  domain?: string;
+  event_type?: string;
+  actor_type?: string;
+  actor_id?: string;
+  issue_id?: string;
+  task_id?: string;
+  agent_id?: string;
+  runtime_id?: string;
+  reason?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  cursor_id?: string;
+}
+
+export interface AuditEventListResult {
+  events: AuditEventInfo[];
+  next_cursor: string | null;
+  next_cursor_id: string | null;
+}
+
+// ---- workspace management surface (RUYI-419) -----------------------------
+
+// One row of the workspace-wide run view (GET /api/task-runs). Same execution
+// row as RunInfo plus the cross-issue fields the issue-scoped read gets from
+// its path parameter: which issue the run belongs to (identifier + title) and
+// the derived trigger source (autopilot > system_retry > rerun > comment >
+// other — the same precedence list_issue_runs documents).
+export interface WorkspaceRunInfo {
+  id: string;
+  status: string;
+  agent_id?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  issue_title?: string;
+  trigger?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  failure_reason?: string;
+  attempt?: number;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_at?: string;
+  cancel_requested_by_user_id?: string;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceRunListResult {
+  runs: WorkspaceRunInfo[];
+  count: number;
+  has_more: boolean;
+  next_offset?: number;
+}
+
+export interface WorkspaceRunListParams {
+  status?: string;
+  agent_id?: string;
+  project_id?: string;
+  issue?: string;
+  trigger?: string;
+  created_after?: string;
+  created_before?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// Agent detail as this server surfaces it. Deliberately narrower than the Go
+// AgentResponse: runtime_config, mcp_config and custom_env VALUES never cross
+// this layer (secrets/credentials) — only the coarse redaction indicators the
+// Go response already carries (has_custom_env, custom_env_key_count,
+// mcp_config_redacted). archived_at non-null = archived (list_agents and
+// dispatch exclude it until restored).
+export interface AgentDetailInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  runtime_id?: string;
+  runtime_bound?: boolean;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  max_concurrent_tasks?: number;
+  visibility?: string;
+  permission_mode?: string;
+  status?: string;
+  owner_id?: string;
+  system_key?: string;
+  has_custom_env?: boolean;
+  custom_env_key_count?: number;
+  mcp_config_redacted?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  archived_at?: string | null;
+  [key: string]: unknown;
+}
+
+// Create/update bodies expose the safe metadata subset only. The server
+// rejects a PUT body carrying custom_env (MUL-2600) and agent creation
+// requires runtime_id; secrets (runtime_config, mcp_config, custom_env,
+// composio allowlist) are configured in the product UI, not through MCP.
+export interface CreateAgentBody {
+  name: string;
+  runtime_id: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  thinking_level?: string;
+  max_concurrent_tasks?: number;
+}
+
+export interface UpdateAgentBody {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  max_concurrent_tasks?: number;
+  runtime_id?: string;
+}
+
+export interface AgentRuntimeInfo {
+  id: string;
+  name: string;
+  custom_name?: string | null;
+  runtime_mode?: string;
+  provider?: string;
+  status?: string;
+  visibility?: string;
+  owner_id?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface SquadMemberPreview {
+  member_type?: string;
+  member_id?: string;
+  role?: string;
+}
+
+export interface SquadInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  leader_id?: string;
+  creator_id?: string;
+  member_count?: number;
+  member_preview?: SquadMemberPreview[];
+  created_at?: string;
+  updated_at?: string;
+  /** Non-null = archived (soft-deleted; there is no squad restore). */
+  archived_at?: string | null;
+  archived_by?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CreateSquadBody {
+  name: string;
+  leader_id: string;
+  description?: string;
+}
+
+export interface UpdateSquadBody {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  leader_id?: string;
 }

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,8 +106,26 @@ func bpTestThresholds() backpressureThresholds {
 	}
 }
 
+// bpPSITestThresholds extends the watermark pair with the default PSI band.
+func bpPSITestThresholds() backpressureThresholds {
+	th := bpTestThresholds()
+	th.PSIHighPct = 50
+	th.PSIRecoveryPct = 20
+	return th
+}
+
 func sample(memAvail, swapUsed float64) memSample {
 	return memSample{MemAvailablePct: memAvail, SwapUsedPct: swapUsed, At: time.Now()}
+}
+
+// psiSample builds a sample with an explicit PSI reading, mirroring what the
+// sampler produces on hosts with (psiOK true) and without (psiOK false) a
+// readable /proc/pressure/memory.
+func psiSample(memAvail, swapUsed, psi float64, psiOK bool) memSample {
+	s := sample(memAvail, swapUsed)
+	s.PSIMemorySomeAvg10 = psi
+	s.PSIReadOK = psiOK
+	return s
 }
 
 func TestBackpressureMachine_TriggersOnEitherCondition(t *testing.T) {
@@ -237,6 +256,121 @@ func TestBackpressureMachine_SwapConditionDisable(t *testing.T) {
 	}
 }
 
+func TestBackpressureMachine_TriggersOnPSIAlone(t *testing.T) {
+	// OR: mem/swap healthy, PSI alone past the high watermark. The trigger
+	// boundary is strict, same as the watermarks: exactly AT the high
+	// watermark is not yet past it.
+	m := newBackpressureMachine(bpPSITestThresholds(), 1)
+	if obs := m.observe(psiSample(40, 10, 50.0, true)); obs.Active {
+		t.Fatal("PSI exactly at the high watermark is not yet past it")
+	}
+	obs := m.observe(psiSample(40, 10, 50.1, true))
+	if !obs.Active || obs.Reason != "psi" {
+		t.Fatalf("psi-high sample: active=%v reason=%q, want active psi", obs.Active, obs.Reason)
+	}
+	if !obs.Transitioned {
+		t.Fatal("first activation must be a transition")
+	}
+
+	// OR: combinations name every past condition.
+	m2 := newBackpressureMachine(bpPSITestThresholds(), 1)
+	if obs := m2.observe(psiSample(10, 10, 60, true)); !obs.Active || obs.Reason != "mem+psi" {
+		t.Fatalf("mem+psi sample: active=%v reason=%q, want active mem+psi", obs.Active, obs.Reason)
+	}
+	m3 := newBackpressureMachine(bpPSITestThresholds(), 1)
+	if obs := m3.observe(psiSample(40, 90, 60, true)); !obs.Active || obs.Reason != "swap+psi" {
+		t.Fatalf("swap+psi sample: active=%v reason=%q, want active swap+psi", obs.Active, obs.Reason)
+	}
+	m4 := newBackpressureMachine(bpPSITestThresholds(), 1)
+	if obs := m4.observe(psiSample(10, 90, 60, true)); !obs.Active || obs.Reason != "mem+swap+psi" {
+		t.Fatalf("all-high sample: active=%v reason=%q, want active mem+swap+psi", obs.Active, obs.Reason)
+	}
+}
+
+func TestBackpressureMachine_PSIHysteresis(t *testing.T) {
+	// PSI oscillating right below the high watermark must not trip: trigger
+	// is strict-greater, so the gate stays off across the whole run.
+	m := newBackpressureMachine(bpPSITestThresholds(), 1)
+	transitions := 0
+	for i := 0; i < 50; i++ {
+		psi := 49.0 + float64(i%2) // alternate 49.0 / 50.0, hugging the high mark
+		if obs := m.observe(psiSample(40, 10, psi, true)); obs.Transitioned {
+			transitions++
+		}
+	}
+	if transitions != 0 {
+		t.Fatalf("oscillation below the high watermark tripped %d times, want 0", transitions)
+	}
+
+	// Once active, PSI must fall to the recovery watermark to clear; the
+	// exact recovery value satisfies it, anything above keeps the gate on
+	// (hysteresis band between 20 and 50 absorbs sustained oscillation).
+	m2 := newBackpressureMachine(bpPSITestThresholds(), 1)
+	m2.observe(psiSample(40, 10, 80, true))
+	if obs := m2.observe(psiSample(40, 10, 20.1, true)); !obs.Active {
+		t.Fatal("20.1% PSI is above the 20% recovery watermark; must stay active")
+	}
+	if obs := m2.observe(psiSample(40, 10, 20.0, true)); obs.Active {
+		t.Fatal("PSI exactly at the recovery watermark must deactivate")
+	}
+}
+
+func TestBackpressureMachine_NoFlapOnPSIOscillation(t *testing.T) {
+	// With a smoothing window, PSI spiking past the high watermark every
+	// other sample averages out and must produce at most the one real
+	// transition a sustained stall causes.
+	m := newBackpressureMachine(bpPSITestThresholds(), 6)
+	for i := 0; i < 6; i++ {
+		m.observe(psiSample(40, 10, 0, true))
+	}
+	transitions := 0
+	for i := 0; i < 100; i++ {
+		psi := 98.0 * float64(i%2) // alternate 0 / 98
+		if obs := m.observe(psiSample(40, 10, psi, true)); obs.Transitioned {
+			transitions++
+		}
+	}
+	if transitions != 0 {
+		t.Fatalf("alternating PSI spikes inside a smoothing window caused %d transitions, want 0", transitions)
+	}
+}
+
+func TestBackpressureMachine_PSIReadFailureDegrades(t *testing.T) {
+	// An unreadable PSI source carries no vote: it neither trips the gate
+	// (a meaningless value must not look like pressure) nor blocks recovery
+	// of a gate PSI itself tripped.
+	m := newBackpressureMachine(bpPSITestThresholds(), 1)
+	if obs := m.observe(psiSample(40, 10, 99, false)); obs.Active {
+		t.Fatal("psi-high value with PSIReadOK=false must not trip")
+	}
+
+	m2 := newBackpressureMachine(bpPSITestThresholds(), 1)
+	m2.observe(psiSample(40, 10, 80, true))
+	if obs := m2.observe(psiSample(40, 10, 0, false)); obs.Active {
+		t.Fatal("recovery must not be blocked by PSI once readings fail")
+	}
+
+	// mem keeps gating independently while PSI is degraded.
+	m3 := newBackpressureMachine(bpPSITestThresholds(), 1)
+	if obs := m3.observe(psiSample(10, 10, 99, false)); !obs.Active || obs.Reason != "mem" {
+		t.Fatalf("mem must still trip while PSI is degraded: active=%v reason=%q", obs.Active, obs.Reason)
+	}
+}
+
+func TestBackpressureMachine_PSIDisable(t *testing.T) {
+	// PSIHighPct <= 0 disables the condition entirely — a full-stall PSI
+	// reading must not trip and must not block mem-only recovery.
+	th := backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 0, PSIRecoveryPct: 0}
+	m := newBackpressureMachine(th, 1)
+	if obs := m.observe(psiSample(40, 10, 100, true)); obs.Active {
+		t.Fatal("full PSI stall must not trip when the condition is disabled")
+	}
+	m.observe(psiSample(10, 10, 100, true))
+	if obs := m.observe(psiSample(30, 10, 100, true)); obs.Active {
+		t.Fatal("recovery must not be blocked by PSI when the condition is disabled")
+	}
+}
+
 // ===== daemon gate integration =====
 
 // writeWatermarkFixtures materializes a host state into the sampler's procfs
@@ -255,13 +389,20 @@ func writeWatermarkFixtures(t *testing.T, dir string, memAvailPct, swapUsedPct f
 	if err := os.WriteFile(filepath.Join(dir, "swaps"), []byte(swaps), 0o600); err != nil {
 		t.Fatalf("write swaps fixture: %v", err)
 	}
-	pressure := "some avg10=1.50 avg60=1.00 avg300=0.50 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+	writePressureFixture(t, dir, 1.50)
+}
+
+// writePressureFixture rewrites just the /proc/pressure/memory fixture so
+// gate tests can move the PSI reading between ticks.
+func writePressureFixture(t *testing.T, dir string, avg10 float64) {
+	t.Helper()
+	pressure := fmt.Sprintf("some avg10=%.2f avg60=1.00 avg300=0.50 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n", avg10)
 	if err := os.WriteFile(filepath.Join(dir, "pressure"), []byte(pressure), 0o600); err != nil {
 		t.Fatalf("write pressure fixture: %v", err)
 	}
 }
 
-func newBackpressureTestDaemon(t *testing.T) *Daemon {
+func newBackpressureTestDaemon(t *testing.T) (*Daemon, string) {
 	t.Helper()
 	dir := t.TempDir()
 	writeWatermarkFixtures(t, dir, 40, 10)
@@ -272,11 +413,11 @@ func newBackpressureTestDaemon(t *testing.T) *Daemon {
 		PressurePath: filepath.Join(dir, "pressure"),
 	}
 	d.bpMachine = newBackpressureMachine(bpTestThresholds(), 1)
-	return d
+	return d, dir
 }
 
 func TestBackpressureGate_BlocksAndRecovers(t *testing.T) {
-	d := newBackpressureTestDaemon(t)
+	d, _ := newBackpressureTestDaemon(t)
 
 	// No state yet (watcher hasn't run): fail open.
 	if d.backpressureBlocked() {
@@ -326,7 +467,7 @@ func TestBackpressureGate_BlocksAndRecovers(t *testing.T) {
 }
 
 func TestBackpressureGate_SamplerFailureHoldsState(t *testing.T) {
-	d := newBackpressureTestDaemon(t)
+	d, _ := newBackpressureTestDaemon(t)
 	d.backpressureTick() // healthy
 
 	// Break the primary signal; the gate must hold its previous (open) state.
@@ -351,7 +492,7 @@ func TestBackpressureGate_SamplerFailureHoldsState(t *testing.T) {
 }
 
 func TestBackpressureGate_WakeupNudgeOnRecovery(t *testing.T) {
-	d := newBackpressureTestDaemon(t)
+	d, _ := newBackpressureTestDaemon(t)
 	wakeup := make(chan struct{}, 1)
 	d.bpWakeup.Store(&wakeup)
 
@@ -373,7 +514,7 @@ func TestBackpressureGate_WakeupNudgeOnRecovery(t *testing.T) {
 }
 
 func TestBackpressureGate_CoexistsWithAutoUpdateBarrier(t *testing.T) {
-	d := newBackpressureTestDaemon(t)
+	d, _ := newBackpressureTestDaemon(t)
 
 	// Both mechanisms closed → refuse; clearing one must not open the gate
 	// for the other.
@@ -417,6 +558,40 @@ func fixtureDir(d *Daemon) string {
 
 // ===== config =====
 
+func TestBackpressureGate_PSITripAndRecover(t *testing.T) {
+	d, dir := newBackpressureTestDaemon(t)
+	d.bpMachine = newBackpressureMachine(bpPSITestThresholds(), 1)
+
+	d.backpressureTick()
+	if d.backpressureBlocked() {
+		t.Fatal("healthy watermarks and PSI must not block claims")
+	}
+
+	// A PSI stall past the high watermark trips the gate even with both
+	// watermarks healthy — PSI is a full member of the trigger OR.
+	writePressureFixture(t, dir, 80)
+	d.backpressureTick()
+	if !d.backpressureBlocked() {
+		t.Fatal("PSI stall must block claims")
+	}
+
+	// Falling back under the recovery watermark clears it.
+	writePressureFixture(t, dir, 5)
+	d.backpressureTick()
+	if d.backpressureBlocked() {
+		t.Fatal("PSI recovery must unblock claims")
+	}
+
+	// A failed PSI read degrades: the last gate state holds and mem/swap
+	// keep gating — pressure value is meaningless, so no new trip.
+	writePressureFixture(t, dir, 99)
+	os.Remove(filepath.Join(dir, "pressure"))
+	d.backpressureTick()
+	if d.backpressureBlocked() {
+		t.Fatal("failed PSI read must not trip the gate")
+	}
+}
+
 func TestValidateBackpressureThresholds(t *testing.T) {
 	valid := backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, SwapHighPct: 80, SwapRecoveryPct: 60}
 	if err := validateBackpressureThresholds(valid, 5*time.Second, 6); err != nil {
@@ -436,6 +611,10 @@ func TestValidateBackpressureThresholds(t *testing.T) {
 		{"mem high disabled", backpressureThresholds{MemHighPct: 0, MemRecoveryPct: 25}},
 		{"swap high out of range", backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, SwapHighPct: 120, SwapRecoveryPct: 60}},
 		{"swap recovery not below high", backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, SwapHighPct: 60, SwapRecoveryPct: 60}},
+		{"psi recovery not below high", backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 50, PSIRecoveryPct: 50}},
+		{"psi recovery above high", backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 50, PSIRecoveryPct: 60}},
+		{"psi high out of range", backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 101, PSIRecoveryPct: 20}},
+		{"psi recovery negative", backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 50, PSIRecoveryPct: -1}},
 	}
 	for _, tc := range cases {
 		if err := validateBackpressureThresholds(tc.th, 5*time.Second, 6); err == nil {
@@ -443,9 +622,27 @@ func TestValidateBackpressureThresholds(t *testing.T) {
 		}
 	}
 
+	// Rejection errors name the offending field so a misconfigured env var
+	// is diagnosable from the startup failure alone.
+	err := validateBackpressureThresholds(backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 50, PSIRecoveryPct: 60}, 5*time.Second, 6)
+	if err == nil || !strings.Contains(err.Error(), "psi recovery watermark") {
+		t.Fatalf("psi recovery error must name the field, got %v", err)
+	}
+	err = validateBackpressureThresholds(backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 101, PSIRecoveryPct: 20}, 5*time.Second, 6)
+	if err == nil || !strings.Contains(err.Error(), "psi high watermark") {
+		t.Fatalf("psi high error must name the field, got %v", err)
+	}
+
 	// Swap condition disabled (high <= 0) skips the swap band checks.
 	if err := validateBackpressureThresholds(backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25}, 5*time.Second, 6); err != nil {
 		t.Fatalf("disabled swap condition must validate: %v", err)
+	}
+	// Same for PSI, and a well-formed PSI band validates alongside them.
+	if err := validateBackpressureThresholds(backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, PSIHighPct: 0, PSIRecoveryPct: 0}, 5*time.Second, 6); err != nil {
+		t.Fatalf("disabled psi condition must validate: %v", err)
+	}
+	if err := validateBackpressureThresholds(backpressureThresholds{MemHighPct: 15, MemRecoveryPct: 25, SwapHighPct: 80, SwapRecoveryPct: 60, PSIHighPct: 50, PSIRecoveryPct: 20}, 5*time.Second, 6); err != nil {
+		t.Fatalf("valid psi band rejected: %v", err)
 	}
 	if err := validateBackpressureThresholds(valid, 0, 6); err == nil {
 		t.Fatal("zero sample interval must reject")
@@ -464,6 +661,8 @@ func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", "")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT", "")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", "")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", "")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", "")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", "")
 
@@ -482,6 +681,9 @@ func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
 		cfg.BackpressureSwapHighPct != 80 || cfg.BackpressureSwapRecoveryPct != 60 {
 		t.Fatalf("default thresholds mismatch: %+v", cfg)
 	}
+	if cfg.BackpressurePSIHighPct != 50 || cfg.BackpressurePSIRecoveryPct != 20 {
+		t.Fatalf("default PSI thresholds mismatch: %+v", cfg)
+	}
 	if cfg.BackpressureSampleInterval != 5*time.Second || cfg.BackpressureWindowSize != 6 {
 		t.Fatalf("default sampler mismatch: interval=%s window=%d", cfg.BackpressureSampleInterval, cfg.BackpressureWindowSize)
 	}
@@ -490,6 +692,8 @@ func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", "20")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "30")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", "0") // disables the swap condition
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", "60")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", "30")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", "10s")
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", "3")
 	cfg, err = LoadConfig(overrides)
@@ -501,6 +705,9 @@ func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
 	}
 	if cfg.BackpressureSwapHighPct != 0 {
 		t.Fatalf("swap condition disable override not applied: %v", cfg.BackpressureSwapHighPct)
+	}
+	if cfg.BackpressurePSIHighPct != 60 || cfg.BackpressurePSIRecoveryPct != 30 {
+		t.Fatalf("env PSI overrides not applied: %+v", cfg)
 	}
 	if cfg.BackpressureSampleInterval != 10*time.Second || cfg.BackpressureWindowSize != 3 {
 		t.Fatalf("env sampler overrides not applied: interval=%s window=%d", cfg.BackpressureSampleInterval, cfg.BackpressureWindowSize)
@@ -521,5 +728,15 @@ func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "10")
 	if _, err = LoadConfig(overrides); err == nil {
 		t.Fatal("recovery below high must fail config load")
+	}
+
+	// Same discipline for PSI: an inverted band fails at load with the field
+	// named, so a misconfigured env var is diagnosable without a debugger.
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", "50")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", "70")
+	_, err = LoadConfig(overrides)
+	if err == nil || !strings.Contains(err.Error(), "psi recovery watermark") {
+		t.Fatalf("inverted PSI band must fail config load naming the field, got %v", err)
 	}
 }

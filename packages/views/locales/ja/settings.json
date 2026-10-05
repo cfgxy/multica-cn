@@ -438,7 +438,8 @@
       "plugins": "Plugins",
       "marketplace": "マーケットプレイス",
       "mcp": "MCP",
-      "billing": "請求とプラン"
+      "billing": "請求とプラン",
+      "authorizations": "自分の認可"
     }
   },
   "plugins": {
@@ -798,6 +799,39 @@
       "copy_command_tooltip": "コマンドをコピー",
       "done": "完了"
     }
+  },
+  "authorizations": {
+    "title": "自分の認可",
+    "description": "外部 MCP クライアントに与えた認可の記録。いつでも取り消せます。",
+    "list_title": "認可記録",
+    "empty": "認可記録はありません。",
+    "col_client": "クライアント",
+    "col_scope": "スコープ",
+    "col_authorized_at": "認可日時",
+    "col_last_used": "最終使用",
+    "col_status": "状態",
+    "status_active": "有効",
+    "status_revoked": "取り消し済み",
+    "revoke": "取り消す",
+    "revoke_confirm_title": "この認可を取り消しますか？",
+    "revoke_confirm_body": "「{{client}}」の認可を取り消すと、既存のアクセストークンはキャッシュ期間内（最大約 10 分）で失効します。",
+    "cancel": "キャンセル"
+  },
+  "oauth_consent": {
+    "brand": "Multica MCP",
+    "title": "{{client}} があなたのアカウントへのアクセスを求めています",
+    "subtitle": "許可すると、このクライアントは以下の権限で Multica MCP サービスにアクセスできます。",
+    "scopes_title": "要求された権限",
+    "scope_read": "タスク・ワークスペースなどのデータを読み取る",
+    "scope_write": "タスク・コメントなどのデータを作成・変更する",
+    "scope_run": "タスク実行や自動操作を起動する",
+    "scope_legacy": "読み書きと実行の全権限（旧形式の認可）",
+    "approve": "許可",
+    "deny": "拒否",
+    "error_title": "認可を続行できません",
+    "expired": "認可リクエストの有効期限が切れているか、存在しません。クライアントからやり直してください。",
+    "not_signed_in": "まず Multica にサインインし、クライアントから再度認可を開始してください。",
+    "invalid_request": "認可リクエストが無効です。"
   },
   "workspace": {
     "section_general": "ワークスペース情報",
@@ -1550,7 +1584,8 @@
       "too_large_body": "5 MB 未満の画像を選択してください。",
       "upload_failed_body": "アバターをアップロードできませんでした。",
       "remove_failed_title": "削除に失敗しました",
-      "remove_failed_body": "アバターを削除できませんでした。"
+      "remove_failed_body": "アバターを削除できませんでした。",
+      "permission_library": "画像を選択するにはフォトライブラリへのアクセス許可が必要です。"
     },
     "account": {
       "save_failed_title": "保存に失敗しました",

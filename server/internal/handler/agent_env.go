@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -167,6 +168,16 @@ func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "audit log write failed; refusing to serve env without a recorded reveal")
 		return
 	}
+	// RUYI-355: the audit_event twin shares the reveal's fail-closed gate —
+	// plaintext leaves only when BOTH records exist.
+	if err := service.AppendAuditEvents(r.Context(), h.Queries,
+		service.AgentEvent(service.AuditAgentEnvRevealed, service.AuditActorMember,
+			parseUUID(uuidToString(member.UserID)), agent.WorkspaceID, agent.ID, details)); err != nil {
+		slog.Error("agent_env_revealed audit_event write failed; refusing to serve plaintext",
+			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "audit log write failed; refusing to serve env without a recorded reveal")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, AgentEnvResponse{
 		AgentID:   uuidToString(agent.ID),
@@ -251,6 +262,16 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		Details:     details,
 	}); err != nil {
 		slog.Error("agent_env_updated audit write failed; rolling back update",
+			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "audit log write failed; env update rolled back")
+		return
+	}
+	// RUYI-355: the audit twin rides the same transaction — it commits with
+	// the update or rolls back with it, same key-name-only payload.
+	if err := service.AppendAuditEvents(r.Context(), qtx,
+		service.AgentEvent(service.AuditAgentEnvUpdated, service.AuditActorMember,
+			parseUUID(uuidToString(member.UserID)), agent.WorkspaceID, agent.ID, details)); err != nil {
+		slog.Error("agent_env_updated audit_event write failed; rolling back update",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 		writeError(w, http.StatusInternalServerError, "audit log write failed; env update rolled back")
 		return

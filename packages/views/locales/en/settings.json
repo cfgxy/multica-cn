@@ -438,7 +438,8 @@
       "plugins": "Plugins",
       "marketplace": "Marketplace",
       "mcp": "MCP",
-      "billing": "Billing"
+      "billing": "Billing",
+      "authorizations": "My Authorizations"
     }
   },
   "plugins": {
@@ -800,6 +801,39 @@
       "copy_command_tooltip": "Copy command",
       "done": "Done"
     }
+  },
+  "authorizations": {
+    "title": "My Authorizations",
+    "description": "Grants you have given to external MCP clients. Revoke any of them at any time.",
+    "list_title": "Authorization records",
+    "empty": "No authorizations yet.",
+    "col_client": "Client",
+    "col_scope": "Scope",
+    "col_authorized_at": "Authorized",
+    "col_last_used": "Last used",
+    "col_status": "Status",
+    "status_active": "Active",
+    "status_revoked": "Revoked",
+    "revoke": "Revoke",
+    "revoke_confirm_title": "Revoke this grant?",
+    "revoke_confirm_body": "After revoking \"{{client}}\", its existing access tokens fail within the cache window (up to ~10 minutes).",
+    "cancel": "Cancel"
+  },
+  "oauth_consent": {
+    "brand": "Multica MCP",
+    "title": "{{client}} wants to access your account",
+    "subtitle": "Approving lets the client access the Multica MCP service with the permissions below.",
+    "scopes_title": "Requested permissions",
+    "scope_read": "Read issues, workspaces and other data",
+    "scope_write": "Create and modify issues, comments and other data",
+    "scope_run": "Trigger issue runs and automated actions",
+    "scope_legacy": "Full read, write and run access (legacy grant)",
+    "approve": "Allow",
+    "deny": "Deny",
+    "error_title": "Authorization cannot continue",
+    "expired": "The authorization request has expired or does not exist. Start again from the client.",
+    "not_signed_in": "Sign in to Multica first, then start the authorization again from the client.",
+    "invalid_request": "Invalid authorization request."
   },
   "workspace": {
     "section_general": "Workspace details",
@@ -1557,7 +1591,8 @@
       "too_large_body": "Pick an image under 5 MB.",
       "upload_failed_body": "Could not upload avatar.",
       "remove_failed_title": "Remove failed",
-      "remove_failed_body": "Could not remove avatar."
+      "remove_failed_body": "Could not remove avatar.",
+      "permission_library": "Photo library access is required to choose an image."
     },
     "account": {
       "save_failed_title": "Save failed",

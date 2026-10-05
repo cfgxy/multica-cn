@@ -195,3 +195,7 @@ func TestClaimTaskChatInputLoadFailureSkipsResumeQueries(t *testing.T) {
 		}
 	}
 }
+
+func (f *failChatInputQueryDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by failChatInputQueryDB")
+}
