@@ -7,6 +7,7 @@
 #   scripts/dev-env.sh dev1 handoff --to qa    # dev -> QA verification handover
 #   scripts/dev-env.sh dev1 status             # what is running, and whose
 #   scripts/dev-env.sh list                    # every slot on this machine
+#   scripts/dev-env.sh audit                   # bypass sweep: stray multica_% dbs + servers
 #   scripts/dev-env.sh dev1 down               # stop the processes, keep the data
 #   scripts/dev-env.sh dev1 orphans            # leftover procs/ports/worktrees
 #   scripts/dev-env.sh dev1 destroy            # stop, then drop slot db + account
@@ -555,7 +556,14 @@ cmd_lock_release() {
   if [ "$force" != 1 ]; then
     local status
     if status="$(issue_status "$issue")"; then
-      [ "$status" != "in_progress" ] || die "Issue $issue is still in_progress; its slot cannot be released. Re-run with --force only after the issue is closed."
+      # A qa-phase holder closes its verification window the moment the check
+      # ends — that is the whole point of the phase (dual-server test windows
+      # hold BOTH slots for one issue, RUYI-431); waiting for issue closure
+      # would pin the second slot for the issue's whole remaining lifetime.
+      # The dev phase keeps the closure-only rule.
+      if [ "$status" = "in_progress" ] && [ "$(lease_phase)" != "qa" ]; then
+        die "Issue $issue is still in_progress; its slot cannot be released. Re-run with --force only after the issue is closed."
+      fi
     else
       die "Cannot verify the status of issue $issue (multica CLI unavailable or issue unknown); refusing to release. Re-run with --force to override."
     fi
@@ -2307,6 +2315,140 @@ cmd_main_db() {
   info "this entry is read-only; backups and ACL work belong to the shared-face tooling"
 }
 
+# --- audit (RUYI-431): read-only bypass detection ----------------------------
+# The RUYI-415 lesson: QA built a second server against a scratch multica_*
+# database on the shared instance and nothing reported it. `audit` sweeps for
+# exactly that shape and never modifies anything: (1) every multica_% database
+# on the shared instance that is neither the protected main db nor a slot's
+# fixed database; (2) TCP listeners outside the registered ports that look
+# like Multica servers — their DATABASE_URL names an unregistered multica_%
+# database, their cwd sits under the legacy QA root or the slot home, or they
+# are a cmd/api build. Slot-tagged processes and `multica daemon` are the
+# slot model's own and never reported. Exit 1 means findings exist.
+audit_findings=()
+
+audit_finding() { audit_findings+=("$1"$'\t'"$2"); }
+
+audit_registry() { # registered ports + databases, one line each: port|db TAB value
+  node -e '
+    const fs = require("fs");
+    const facts = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const sp = facts.shared_postgres || {};
+    for (const db of sp.protected_databases || []) process.stdout.write("db\t" + db + "\n");
+    const endpoint = String(sp.endpoint || "").replace(/.*:/, "");
+    if (endpoint) process.stdout.write("port\t" + endpoint + "\n");
+    for (const s of facts.slots || []) {
+      for (const key of ["backend_port", "frontend_port", "desktop_renderer_port"]) {
+        if (s[key] !== undefined) process.stdout.write("port\t" + s[key] + "\n");
+      }
+      if (s.database) process.stdout.write("db\t" + s.database + "\n");
+    }
+  ' "$SLOTS_FILE"
+}
+
+audit_qa_root() { printf '%s' "${MULTICA_QA_ROOT:-$HOME/.multica/qa}"; }
+
+audit_db_finding() {
+  local reg_dbs="$1" name size
+  while IFS='|' read -r name size; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$reg_dbs" | grep -Fxq "$name" && continue
+    audit_finding "unregistered-database" "$name ($size)"
+  done
+}
+
+audit_bypass_finding() { # line from ss -ltnpH, reg_ports reg_dbs
+  local line="$1" reg_ports="$2" reg_dbs="$3"
+  local addr port pid cmd cwd db_url db_in_url detail reason
+  addr="$(printf '%s\n' "$line" | awk '{print $4}')"
+  port="${addr##*:}"
+  case "$port" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$reg_ports" | grep -Fxq "$port" && return 0
+  pid="$(printf '%s\n' "$line" | sed -n 's/.*pid=\([0-9]\{1,\}\).*/\1/p' | head -1)"
+  [ -n "$pid" ] || return 0 # no owner visible: report-only verb, cannot judge
+  [ -r "/proc/$pid/environ" ] || return 0 # exited between the scan and now
+  cmd="$(ps -o cmd= -p "$pid" 2>/dev/null || true)"
+  case "$cmd" in *"multica daemon"*) return 0 ;; esac
+  if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^MULTICA_SLOT='; then
+    return 0 # the slot model's own process, on whatever port it holds
+  fi
+  reason=""
+  db_url="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DATABASE_URL=//p' | head -1)"
+  if [ -n "$db_url" ]; then
+    db_in_url="${db_url%%\?*}"
+    db_in_url="${db_in_url##*/}"
+    if printf '%s' "$db_in_url" | grep -q '^multica' \
+       && ! printf '%s\n' "$reg_dbs" | grep -Fxq "$db_in_url"; then
+      reason="DATABASE_URL names $db_in_url, which is not a registered slot database"
+    fi
+  fi
+  if [ -z "$reason" ]; then
+    local qa_root
+    qa_root="$(audit_qa_root)"
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    case "$cwd" in
+      "") ;;
+      "$qa_root"|"$qa_root"/*|"$SLOT_HOME"|"$SLOT_HOME"/*)
+        reason="listener cwd sits under the QA/slot home" ;;
+    esac
+  fi
+  if [ -z "$reason" ]; then
+    case "$cmd" in *cmd/api*) reason="process is a Multica api server (cmd/api)" ;; esac
+  fi
+  [ -n "$reason" ] || return 0
+  detail="pid $pid port $port cmd ${cmd:0:120} ($reason)"
+  audit_finding "bypass-listener" "$detail"
+}
+
+cmd_audit() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "Unknown flag for audit: $1" ;;
+    esac
+  done
+
+  local registry reg_ports reg_dbs line
+  registry="$(audit_registry)"
+  reg_ports="$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "port" { print $2 }')"
+  reg_dbs="$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "db" { print $2 }')"
+
+  if container_running; then
+    # Process substitution, not a pipe: audit_finding appends to audit_findings
+    # and a pipeline would run the collector in a subshell, losing every row.
+    audit_db_finding "$reg_dbs" < <(db_admin_psql postgres -tAc "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database WHERE datname LIKE 'multica%' ORDER BY 1")
+  else
+    info "shared container $SLOT_PG_CONTAINER is not running; the database sweep is skipped"
+  fi
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    audit_bypass_finding "$line" "$reg_ports" "$reg_dbs"
+  done < <(ss -ltnpH 2>/dev/null || ss -ltnp 2>/dev/null || true)
+
+  if [ "$json" = 1 ]; then
+    printf '['
+    local first=1 f class detail
+    for f in ${audit_findings[@]+"${audit_findings[@]}"}; do
+      class="${f%%$'\t'*}"
+      detail="${f#*$'\t'}"
+      [ "$first" = 1 ] || printf ','
+      first=0
+      printf '{"class":"%s","detail":"%s"}' "$(json_escape "$class")" "$(json_escape "$detail")"
+    done
+    printf ']\n'
+  elif [ "${#audit_findings[@]}" -eq 0 ]; then
+    ok "audit clean: no unregistered multica_% databases, no bypass listeners"
+  else
+    for f in "${audit_findings[@]}"; do
+      printf '%s\n' "$f"
+    done
+    warn "audit found ${#audit_findings[@]} item(s); this verb is report-only — reclaim with qa-clean/dev-env destroy, never by hand here"
+  fi
+  [ "${#audit_findings[@]}" -eq 0 ]
+}
+
 usage() {
   cat <<'EOF'
 Fixed-slot local development environments (fact source: scripts/slots.json).
@@ -2325,6 +2467,7 @@ Fixed-slot local development environments (fact source: scripts/slots.json).
   dev-env.sh <slot> logs    [component] [lines]
   dev-env.sh list           [--json]
   dev-env.sh gc             [--dry-run]
+  dev-env.sh audit          [--json]  # read-only bypass sweep; exit 1 = findings
   dev-env.sh main-db status --allow     # read-only inventory; refuses without --allow
 
 Slots: dev1, dev2. Each slot owns database multica_<slot> and account
@@ -2333,7 +2476,16 @@ at ~/.multica/slots/<slot>/env and verified before every start. The slot lease
 carries a role phase — dev (development) or qa (verification) — with exactly
 one holder at a time; `handoff --to` moves it atomically within the same
 issue (dev -> qa -> release at closure). qa phase is the only TTL'd phase
-(gc collects after 24h idle); dev phase has no timer.
+(gc collects after 24h idle); dev phase has no timer. A dual-server test
+window is the one shape where ONE issue holds BOTH slots: arm each slot's
+lease with `use --phase qa`, run the two servers, then close the window by
+releasing both leases with `lock-release` right away — a qa-phase holder may
+release while its issue is still in_progress (the dev phase releases only at
+issue closure). `audit` reports Multica-shaped activity outside this model:
+unregistered multica_% databases on the shared instance, and listeners off
+the registered ports whose DATABASE_URL names an unregistered multica_%
+database, whose cwd sits under the QA/slot home, or that are a cmd/api
+build. It never modifies anything.
 
 Resource budget per slot (scripts/slots.json resource_budget): 4 CPU cores
 pinned via taskset (dev1=0-3, dev2=4-7), api <= 768MB (GOMEMLIMIT),
@@ -2374,6 +2526,12 @@ main() {
       load_shared_facts
       cmd_main_db "$@"
       exit 0
+      ;;
+    audit)
+      shift
+      load_shared_facts
+      cmd_audit "$@"
+      exit "$?"
       ;;
   esac
 
