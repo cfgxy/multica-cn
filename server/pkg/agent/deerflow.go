@@ -353,6 +353,13 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// the resume path the bridge may flush frames before answering the
 	// request that triggered them.
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -426,187 +433,202 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		// that is curable by starting over, so backend outages and concurrent
 		// turns below must leave it false.
 		var resumeRejected bool
-		// Set when the session stays healthy but cannot take a turn now.
+
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
 		var resumeRejectedTransient bool
-
-		// No terminal and no elicitation capability: the bridge reports no
-		// permission requests (DeerFlow has no approval loop) and this
-		// headless client cannot answer a form.
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("deerflow initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		if opts.ResumeSessionID != "" && !deerflowLoadSessionSupported(initResult) {
-			// The resume RPC is registered as unstable in the bridge's ACP
-			// router, so a bridge started without use_unstable_protocol
-			// answers -32601 on a perfectly healthy session. Detect that from
-			// the advertised capability instead of failing the turn on an
-			// opaque method-not-found.
-			b.cfg.Logger.Warn("deerflow did not advertise loadSession; the bridge is running without unstable protocol support and cannot resume",
-				"backend", "deerflow",
-				"requested_session", opts.ResumeSessionID,
-			)
-			resumeRejected = true
-			resCh <- Result{
-				Status:         "failed",
-				Error:          "deerflow session/resume unavailable: initialize did not advertise agentCapabilities.loadSession (start the bridge with unstable protocol support)",
-				DurationMs:     time.Since(startTime).Milliseconds(),
-				ResumeRejected: resumeRejected,
-			}
-			return
-		}
-
-		// sessionResult is whichever of session/new or session/resume
-		// produced this turn's session — the response the thinking switch is
-		// read from.
-		var sessionResult json.RawMessage
-		if opts.ResumeSessionID != "" {
-			// session/resume, not session/load. Both restore the DeerFlow
-			// thread, but load also replays the retained transcript back as
-			// session/update notifications, so a resumed turn would re-emit
-			// the previous answer as its own output.
-			//
-			// The param set mirrors session/new: the bridge binds `cwd` to the
-			// restored session (resume_session(cwd, session_id, mcp_servers)),
-			// so omitting it fails parameter binding before the session is
-			// even looked up. mcpServers stays an empty array for the same
-			// reason it does on session/new — a non-empty list is rejected
-			// with -32602 rather than ignored.
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"sessionId":  opts.ResumeSessionID,
-				"cwd":        taskCwd,
-				"mcpServers": []any{},
-			})
-			if err != nil {
-				resumeRejected = deerflowSessionPermanentlyLost(err)
-				resumeRejectedTransient = deerflowSessionTemporarilyBusy(err)
-				if resumeRejected || resumeRejectedTransient {
-					b.cfg.Logger.Warn("deerflow refused the resumed session; the daemon will retry on a fresh session",
-						"backend", "deerflow",
-						"requested_session", opts.ResumeSessionID,
-						"permanent", resumeRejected,
-					)
-				}
-				resCh <- Result{
-					Status:                  "failed",
-					Error:                   deerflowRequestErrorMessage("session/resume", err),
-					DurationMs:              time.Since(startTime).Milliseconds(),
-					ResumeRejected:          resumeRejected,
-					ResumeRejectedTransient: resumeRejectedTransient,
-				}
-				return
-			}
-			sessionResult = result
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("deerflow returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "deerflow",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("deerflow reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "deerflow")
+			sessionID = c.observedSessionID()
 		} else {
-			// mcpServers stays empty on purpose: a non-empty list is rejected
-			// with -32602 rather than ignored.
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        taskCwd,
-				"mcpServers": []any{},
+			// Set when the session stays healthy but cannot take a turn now.
+
+			// No terminal and no elicitation capability: the bridge reports no
+			// permission requests (DeerFlow has no approval loop) and this
+			// headless client cannot answer a form.
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
-				switch {
-				case runCtx.Err() == context.DeadlineExceeded:
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("deerflow timed out during session/new: %v", timeout)
-				case runCtx.Err() == context.Canceled:
-					finalStatus = "aborted"
-					finalError = fmt.Sprintf("deerflow aborted: %v", err)
-				default:
-					finalStatus = "failed"
-					finalError = deerflowRequestErrorMessage("session/new", err)
-				}
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			sessionResult = result
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
 				finalStatus = "failed"
-				finalError = "deerflow session/new returned no session ID"
+				finalError = fmt.Sprintf("deerflow initialize failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-		}
 
-		c.sessionID = sessionID
-		// Early session pin so a cancelled run still preserves the resume
-		// pointer.
-		msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
-		b.cfg.Logger.Info("deerflow session ready", "session_id", sessionID)
-
-		// Apply the model pick on BOTH fresh and resumed sessions: this
-		// backend spawns a fresh bridge process per turn and a session
-		// resumed into it carries no override, so re-sending before every
-		// prompt is what makes the pick stick. The bridge validates the id
-		// and refuses unknown ones; the turn then fails visibly while the
-		// session stays healthy, so the resume pointer is preserved.
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("deerflow set_model failed; failing the turn instead of running on the default model",
+			if opts.ResumeSessionID != "" && !deerflowLoadSessionSupported(initResult) {
+				// The resume RPC is registered as unstable in the bridge's ACP
+				// router, so a bridge started without use_unstable_protocol
+				// answers -32601 on a perfectly healthy session. Detect that from
+				// the advertised capability instead of failing the turn on an
+				// opaque method-not-found.
+				b.cfg.Logger.Warn("deerflow did not advertise loadSession; the bridge is running without unstable protocol support and cannot resume",
 					"backend", "deerflow",
-					"session_id", sessionID,
-					"requested_model", opts.Model,
+					"requested_session", opts.ResumeSessionID,
 				)
+				resumeRejected = true
 				resCh <- Result{
 					Status:         "failed",
-					Error:          deerflowRequestErrorMessage("session/set_model", err),
+					Error:          "deerflow session/resume unavailable: initialize did not advertise agentCapabilities.loadSession (start the bridge with unstable protocol support)",
 					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
 					ResumeRejected: resumeRejected,
 				}
 				return
 			}
-			b.cfg.Logger.Info("deerflow session model set", "session_id", sessionID, "model", opts.Model)
+
+			// sessionResult is whichever of session/new or session/resume
+			// produced this turn's session — the response the thinking switch is
+			// read from.
+			var sessionResult json.RawMessage
+			if opts.ResumeSessionID != "" {
+				// session/resume, not session/load. Both restore the DeerFlow
+				// thread, but load also replays the retained transcript back as
+				// session/update notifications, so a resumed turn would re-emit
+				// the previous answer as its own output.
+				//
+				// The param set mirrors session/new: the bridge binds `cwd` to the
+				// restored session (resume_session(cwd, session_id, mcp_servers)),
+				// so omitting it fails parameter binding before the session is
+				// even looked up. mcpServers stays an empty array for the same
+				// reason it does on session/new — a non-empty list is rejected
+				// with -32602 rather than ignored.
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"sessionId":  opts.ResumeSessionID,
+					"cwd":        taskCwd,
+					"mcpServers": []any{},
+				})
+				if err != nil {
+					resumeRejected = deerflowSessionPermanentlyLost(err)
+					resumeRejectedTransient = deerflowSessionTemporarilyBusy(err)
+					if resumeRejected || resumeRejectedTransient {
+						b.cfg.Logger.Warn("deerflow refused the resumed session; the daemon will retry on a fresh session",
+							"backend", "deerflow",
+							"requested_session", opts.ResumeSessionID,
+							"permanent", resumeRejected,
+						)
+					}
+					resCh <- Result{
+						Status:                  "failed",
+						Error:                   deerflowRequestErrorMessage("session/resume", err),
+						DurationMs:              time.Since(startTime).Milliseconds(),
+						ResumeRejected:          resumeRejected,
+						ResumeRejectedTransient: resumeRejectedTransient,
+					}
+					return
+				}
+				sessionResult = result
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("deerflow returned a different session id on resume — original was likely lost; continuing with the new id",
+						"backend", "deerflow",
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
+					)
+				}
+			} else {
+				// mcpServers stays empty on purpose: a non-empty list is rejected
+				// with -32602 rather than ignored.
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        taskCwd,
+					"mcpServers": []any{},
+				})
+				if err != nil {
+					switch {
+					case runCtx.Err() == context.DeadlineExceeded:
+						finalStatus = "timeout"
+						finalError = fmt.Sprintf("deerflow timed out during session/new: %v", timeout)
+					case runCtx.Err() == context.Canceled:
+						finalStatus = "aborted"
+						finalError = fmt.Sprintf("deerflow aborted: %v", err)
+					default:
+						finalStatus = "failed"
+						finalError = deerflowRequestErrorMessage("session/new", err)
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionResult = result
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "deerflow session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+			}
+
+			c.sessionID = sessionID
+			// Early session pin so a cancelled run still preserves the resume
+			// pointer.
+			msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+			b.cfg.Logger.Info("deerflow session ready", "session_id", sessionID)
+
+			// Apply the model pick on BOTH fresh and resumed sessions: this
+			// backend spawns a fresh bridge process per turn and a session
+			// resumed into it carries no override, so re-sending before every
+			// prompt is what makes the pick stick. The bridge validates the id
+			// and refuses unknown ones; the turn then fails visibly while the
+			// session stays healthy, so the resume pointer is preserved.
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("deerflow set_model failed; failing the turn instead of running on the default model",
+						"backend", "deerflow",
+						"session_id", sessionID,
+						"requested_model", opts.Model,
+					)
+					resCh <- Result{
+						Status:         "failed",
+						Error:          deerflowRequestErrorMessage("session/set_model", err),
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("deerflow session model set", "session_id", sessionID, "model", opts.Model)
+			}
+
+			// Apply the persisted thinking switch on BOTH fresh and resumed
+			// sessions — the same per-turn replay the model pick above follows,
+			// for the same reason: this backend spawns a fresh bridge process per
+			// turn, so a resumed session carries no override. The option id and
+			// on/off vocabulary are read off sessionResult, and stateIsCurrent
+			// stays true because the bridge's thinking option does not depend on
+			// the session's model (the engine switch is global), so the set_model
+			// above cannot stale it. A configuration failure never blocks the
+			// task; see the helper for what the warnings mean.
+			applyACPEffortOption(runCtx, c.request, "deerflow", b.cfg.Logger, sessionID, sessionResult, opts.ThinkingLevel, true)
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
 		}
-
-		// Apply the persisted thinking switch on BOTH fresh and resumed
-		// sessions — the same per-turn replay the model pick above follows,
-		// for the same reason: this backend spawns a fresh bridge process per
-		// turn, so a resumed session carries no override. The option id and
-		// on/off vocabulary are read off sessionResult, and stateIsCurrent
-		// stays true because the bridge's thinking option does not depend on
-		// the session's model (the engine switch is global), so the set_model
-		// above cannot stale it. A configuration failure never blocks the
-		// task; see the helper for what the warnings mean.
-		applyACPEffortOption(runCtx, c.request, "deerflow", b.cfg.Logger, sessionID, sessionResult, opts.ThinkingLevel, true)
-
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
-
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			switch {
 			case runCtx.Err() == context.DeadlineExceeded:
 				finalStatus = "timeout"
@@ -616,19 +638,19 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 				finalError = "execution cancelled"
 			default:
 				finalStatus = "failed"
-				finalError = deerflowRequestErrorMessage("session/prompt", err)
+				finalError = deerflowRequestErrorMessage("session/prompt", promptErr)
 				if opts.ResumeSessionID != "" {
 					// A resumed session can die between resume and prompt: the
 					// bridge echoes the id back on resume, so a quarantine or
 					// an eviction only surfaces here.
-					if deerflowSessionPermanentlyLost(err) {
+					if deerflowSessionPermanentlyLost(promptErr) {
 						b.cfg.Logger.Warn("deerflow refused the resumed session at prompt time; clearing session id so the daemon retries fresh",
 							"backend", "deerflow",
 							"session_id", sessionID,
 						)
 						sessionID = ""
 						resumeRejected = true
-					} else if deerflowSessionTemporarilyBusy(err) {
+					} else if deerflowSessionTemporarilyBusy(promptErr) {
 						// Keep sessionID: the session is healthy and must stay
 						// reachable for the next turn.
 						resumeRejectedTransient = true
@@ -663,8 +685,7 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("deerflow finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "deerflow")
 
 		// The bridge reaps its worker process group before exiting, so the
 		// pipes can stay open briefly after session/prompt returns. Bound the

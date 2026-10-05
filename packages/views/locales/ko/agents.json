@@ -667,7 +667,8 @@
     "over_limit": " · 제한 초과 {{count}}자"
   },
   "presence": {
-    "queue_badge": "+{{count}} 대기 중"
+    "queue_badge": "+{{count}} 대기 중",
+    "running_ratio": "실행 중 {{running}}/{{capacity}}"
   },
   "visibility": {
     "private": {
@@ -708,7 +709,8 @@
     "public_group": "공개 액세스",
     "owner_only_readonly": "이 에이전트를 실행할 수 있는 대상은 소유자만 변경할 수 있습니다.",
     "members_empty": "선택할 워크스페이스 구성원이 없습니다",
-    "composio_switch_hint": "참고 — 이 에이전트에는 Composio 앱이 활성화되어 있습니다. 공유하면 접근 권한이 있는 모든 사람이 이 에이전트를 통해 해당 앱을 사용할 수 있습니다."
+    "composio_switch_hint": "참고 — 이 에이전트에는 Composio 앱이 활성화되어 있습니다. 공유하면 접근 권한이 있는 모든 사람이 이 에이전트를 통해 해당 앱을 사용할 수 있습니다.",
+    "save_failed": "접근 권한 업데이트 실패"
   },
   "profile_card": {
     "unavailable": "에이전트를 사용할 수 없습니다",
@@ -1030,10 +1032,20 @@
       "edit_profile": "프로필 편집",
       "tab_active": "진행 중",
       "fact_status": "상태",
-      "fact_runtime_unbound": "런타임 미설정"
+      "fact_runtime_unbound": "런타임 미설정",
+      "bind_runtime": "런타임 연결",
+      "fact_concurrency": "동시 실행 한도",
+      "forbidden_title": "이 에이전트에 대한 접근 권한이 없습니다",
+      "runtime_unbound_banner": "이 에이전트에 런타임이 연결되지 않았습니다 — 실행하려면 런타임을 연결하세요.",
+      "forbidden_body": "이 에이전트를 볼 권한이 없습니다. 소유자에게 공유를 요청하세요."
     },
     "edit": {
-      "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다"
+      "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다",
+      "avatar_change": "아바타 변경",
+      "avatar_hint": "아바타를 탭하여 변경하세요",
+      "concurrency_range": "허용 범위: {{min}}–{{max}}",
+      "model_catalog": "발견된 모델",
+      "model_default": "기본값"
     },
     "env": {
       "add_row": "변수 추가"
@@ -1041,6 +1053,17 @@
     "webhooks": {
       "copy_aria": "Webhook 링크 복사",
       "rotated_title": "새 링크가 생성되었습니다"
+    },
+    "integrations": {
+      "bound_here": "이 에이전트에 연결됨",
+      "connected": "워크스페이스 연결됨",
+      "not_configured": "구성되지 않음",
+      "platform_lark": "Lark",
+      "platform_slack": "Slack",
+      "platform_dingtalk": "DingTalk",
+      "platform_wecom": "WeCom",
+      "platform_telegram": "Telegram",
+      "manage_hint": "연결 및 바인딩은 웹 또는 데스크톱 설정에서 진행하세요."
     }
   }
 }

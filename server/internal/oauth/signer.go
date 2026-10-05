@@ -111,7 +111,14 @@ func (s *Signer) KeyID() string { return s.keyID }
 // resource A must not verify at resource B. An empty audience falls back to the
 // issuer, which keeps a client that omitted the optional parameter working
 // while still producing an audience-bound token.
-func (s *Signer) MintAccessToken(userID, audience, scope string, now time.Time) (string, time.Time, error) {
+//
+// clientID and grantID are stamped as the `cid` / `gid` claims (RUYI-420).
+// They are the hook the auth middleware's grant gate resolves after
+// signature verification, which is what makes revocation effective within
+// the cache window instead of at token expiry. Tokens minted before this
+// change carry neither claim; the gate treats them as legacy and skips the
+// lookup, honouring them until natural expiry.
+func (s *Signer) MintAccessToken(userID, audience, scope, clientID, grantID string, now time.Time) (string, time.Time, error) {
 	if s == nil || s.key == nil {
 		return "", time.Time{}, ErrNoSigningKey
 	}
@@ -122,14 +129,21 @@ func (s *Signer) MintAccessToken(userID, audience, scope string, now time.Time) 
 		scope = ScopeMCP
 	}
 	expiresAt := now.Add(s.tokenTTL)
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+	claims := jwt.MapClaims{
 		"iss":   s.issuer,
 		"sub":   userID,
 		"aud":   audience,
 		"scope": scope,
 		"iat":   now.Unix(),
 		"exp":   expiresAt.Unix(),
-	})
+	}
+	if clientID != "" {
+		claims["cid"] = clientID
+	}
+	if grantID != "" {
+		claims["gid"] = grantID
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = s.keyID
 	signed, err := token.SignedString(s.key)
 	if err != nil {
@@ -143,6 +157,11 @@ type AccessTokenClaims struct {
 	Subject  string
 	Audience []string
 	Scope    string
+	// ClientID (`cid`) and GrantID (`gid`) bind the token to its consent
+	// record (RUYI-420). Empty on tokens minted before the grant table
+	// existed; the gate skips those.
+	ClientID string
+	GrantID  string
 }
 
 // ErrInvalidAccessToken reports that a presented token is not a valid access
@@ -191,6 +210,8 @@ func (s *Signer) VerifyAccessToken(tokenString string) (*AccessTokenClaims, erro
 		return nil, ErrInvalidAccessToken
 	}
 	scope, _ := claims["scope"].(string)
+	clientID, _ := claims["cid"].(string)
+	grantID, _ := claims["gid"].(string)
 	audience := audienceValues(claims["aud"])
 	if !audienceMatches(audience, s.acceptedAudiences()) {
 		return nil, ErrAudienceMismatch
@@ -199,6 +220,8 @@ func (s *Signer) VerifyAccessToken(tokenString string) (*AccessTokenClaims, erro
 		Subject:  subject,
 		Audience: audience,
 		Scope:    scope,
+		ClientID: clientID,
+		GrantID:  grantID,
 	}, nil
 }
 
