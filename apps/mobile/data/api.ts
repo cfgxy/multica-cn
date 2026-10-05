@@ -32,6 +32,20 @@ import type {
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
+  ExecutionProfile,
+  ExecutionProfileActivationResponse,
+  ExecutionProfileEntry,
+  ExecutionProfileListResponse,
+  CreateExecutionProfileRequest,
+  UpdateExecutionProfileRequest,
+  UpsertExecutionProfileEntryRequest,
+  RuntimeModelListRequest,
+  RuntimeLocalSkillListRequest,
+  RuntimeLocalSkillImportRequest,
+  CreateRuntimeLocalSkillImportRequest,
+  SetAgentRuntimeSkillEnabledRequest,
+  SkillCatalogEntry,
+  WorkspaceMcpServer,
   GitHubPullRequest,
   InboxItem,
   InboxWorkspaceUnread,
@@ -58,6 +72,7 @@ import type {
   SearchIssuesResponse,
   SearchProjectsResponse,
   ListIssueStatusesResponse,
+  ListQuickRepliesResponse,
   SendChatMessageResponse,
   Squad,
   SquadMember,
@@ -94,6 +109,7 @@ import {
   EMPTY_AGENT_WEBHOOK_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
+  EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
@@ -106,6 +122,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  ListQuickRepliesResponseSchema,
   SquadMemberListSchema,
   SquadMemberSchema,
   SquadMemberStatusListResponseSchema,
@@ -113,6 +130,16 @@ import {
   TimelineEntriesSchema,
   SkillSummaryListSchema,
   WorkspaceSubscriptionSummarySchema,
+  ExecutionProfileEntrySchema,
+  ExecutionProfileListResponseSchema,
+  ExecutionProfileActivationResponseSchema,
+  ExecutionProfileSchema,
+  EMPTY_EXECUTION_PROFILE,
+  EMPTY_EXECUTION_PROFILE_ACTIVATION,
+  EMPTY_EXECUTION_PROFILE_LIST,
+  MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  RuntimeModelListRequestSchema,
+  WorkspaceMcpServerListSchema,
 } from "@multica/core/api/schemas";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
@@ -139,9 +166,11 @@ import {
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
+  EMPTY_COMPOSIO_CONNECTIONS,
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
+  EMPTY_INTEGRATION_INSTALLATIONS,
   EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
@@ -160,6 +189,8 @@ import {
   EMPTY_AGENT_CANCEL_TASKS_RESPONSE,
   InboxListSchema,
   InboxUnreadSummarySchema,
+  ComposioConnectionsSchema,
+  IntegrationInstallationsSchema,
   NotificationPreferenceResponseSchema,
   ListLabelsResponseSchema,
   ListProjectResourcesResponseSchema,
@@ -178,6 +209,7 @@ import {
   UserSchema,
   WorkspaceListSchema,
 } from "./schemas";
+import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
 import { getApiUrl } from "./server-store";
@@ -868,6 +900,369 @@ class ApiClient {
     });
   }
 
+  // Runtime-inherited skill toggle (RUYI-418 阶段B / A13): the web skills-tab
+  // twin of the workspace toggle above. Writes into the agent's
+  // `disabled_runtime_skills` overrides.
+  async setAgentRuntimeSkillEnabled(
+    agentId: string,
+    data: SetAgentRuntimeSkillEnabledRequest,
+  ): Promise<void> {
+    await this.fetch<void>(`/api/agents/${agentId}/runtime-skills/enabled`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  // --- Execution profiles (RUYI-57 / RUYI-418 Q10) -------------------------
+  // Endpoint paths mirror packages/core/api/client.ts one-for-one. All
+  // responses are schema-parsed like the web client: the activation response
+  // in particular must never be read optimistically.
+
+  async listExecutionProfiles(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ExecutionProfileListResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(
+      raw,
+      ExecutionProfileListResponseSchema,
+      EMPTY_EXECUTION_PROFILE_LIST,
+      { endpoint: "listExecutionProfiles" },
+    );
+  }
+
+  async getExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(raw, ExecutionProfileSchema, EMPTY_EXECUTION_PROFILE, {
+      endpoint: "getExecutionProfile",
+    });
+  }
+
+  async createExecutionProfile(
+    workspaceId: string,
+    body: CreateExecutionProfileRequest,
+  ): Promise<ExecutionProfile> {
+    return this.fetchValidatedWith(
+      `/api/workspaces/${workspaceId}/execution-profiles`,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { method: "POST", body: JSON.stringify(body) },
+      { endpoint: "createExecutionProfile" },
+    );
+  }
+
+  async updateExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+    patch: UpdateExecutionProfileRequest,
+  ): Promise<ExecutionProfile> {
+    return this.fetchValidatedWith(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { method: "PATCH", body: JSON.stringify(patch) },
+      { endpoint: "updateExecutionProfile" },
+    );
+  }
+
+  async deleteExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async upsertExecutionProfileEntry(
+    workspaceId: string,
+    profileId: string,
+    body: UpsertExecutionProfileEntryRequest,
+  ): Promise<ExecutionProfileEntry> {
+    return this.fetchValidatedWith(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/entries`,
+      ExecutionProfileEntrySchema,
+      {
+        agent_id: body.agent_id,
+        runtime_id: "",
+        model: "",
+        thinking_level: null,
+        updated_at: "",
+      },
+      { method: "PUT", body: JSON.stringify(body) },
+      { endpoint: "upsertExecutionProfileEntry" },
+    );
+  }
+
+  async deleteExecutionProfileEntry(
+    workspaceId: string,
+    profileId: string,
+    agentId: string,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/entries/${agentId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async activateExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<ExecutionProfileActivationResponse> {
+    return this.fetchValidatedWith(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/activate`,
+      ExecutionProfileActivationResponseSchema,
+      EMPTY_EXECUTION_PROFILE_ACTIVATION,
+      { method: "POST" },
+      { endpoint: "activateExecutionProfile" },
+    );
+  }
+
+  // --- Runtime model discovery (S4) ----------------------------------------
+  // Poll-while-pending/running state machine lives in
+  // apps/mobile/lib/runtime-discovery.ts; these are the two wire calls.
+
+  async initiateListModels(runtimeId: string): Promise<RuntimeModelListRequest> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/models`, {
+      method: "POST",
+    });
+    return parseWithFallback(
+      raw,
+      RuntimeModelListRequestSchema,
+      { ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST, runtime_id: runtimeId },
+      { endpoint: "initiateListModels" },
+    );
+  }
+
+  async getListModelsResult(
+    runtimeId: string,
+    requestId: string,
+  ): Promise<RuntimeModelListRequest> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/models/${requestId}`,
+    );
+    return parseWithFallback(
+      raw,
+      RuntimeModelListRequestSchema,
+      {
+        ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+        id: requestId,
+        runtime_id: runtimeId,
+      },
+      { endpoint: "getListModelsResult" },
+    );
+  }
+
+  // --- Runtime local skills / capabilities (B3) -----------------------------
+  // One daemon round trip returns both the skill inventory and a redacted MCP
+  // listing; the agent surfaces treat it as the runtime capability snapshot.
+  // Plain typed fetch like the web client — no schema exists for these.
+
+  async initiateListLocalSkills(
+    runtimeId: string,
+  ): Promise<RuntimeLocalSkillListRequest> {
+    return this.fetch<RuntimeLocalSkillListRequest>(
+      `/api/runtimes/${runtimeId}/local-skills`,
+      { method: "POST" },
+    );
+  }
+
+  async getListLocalSkillsResult(
+    runtimeId: string,
+    requestId: string,
+  ): Promise<RuntimeLocalSkillListRequest> {
+    return this.fetch<RuntimeLocalSkillListRequest>(
+      `/api/runtimes/${runtimeId}/local-skills/${requestId}`,
+    );
+  }
+
+  async initiateImportLocalSkill(
+    runtimeId: string,
+    data: CreateRuntimeLocalSkillImportRequest,
+  ): Promise<RuntimeLocalSkillImportRequest> {
+    return this.fetch<RuntimeLocalSkillImportRequest>(
+      `/api/runtimes/${runtimeId}/local-skills/import`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+  }
+
+  async getImportLocalSkillResult(
+    runtimeId: string,
+    requestId: string,
+  ): Promise<RuntimeLocalSkillImportRequest> {
+    return this.fetch<RuntimeLocalSkillImportRequest>(
+      `/api/runtimes/${runtimeId}/local-skills/import/${requestId}`,
+    );
+  }
+
+  // Workspace skill catalog (RUYI-288): authored skills unioned with runtime
+  // discovery sightings. Workspace resolved server-side from the slug header.
+  async listSkillCatalog(opts?: { signal?: AbortSignal }): Promise<SkillCatalogEntry[]> {
+    return this.fetch<SkillCatalogEntry[]>("/api/skills/catalog", {
+      signal: opts?.signal,
+    });
+  }
+
+  // --- Agent MCP servers (B3) ------------------------------------------------
+  // Three sources, three groups: the agent's own mcp_config JSON (edited via
+  // updateAgent), workspace library servers assigned to this agent, and the
+  // runtime's read-only inventory. Assignment writes return the resulting
+  // list so the cache never guesses.
+
+  async listAgentMcpServers(
+    agentId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<WorkspaceMcpServer[]> {
+    return this.fetchValidated(
+      `/api/agents/${agentId}/mcp-servers`,
+      WorkspaceMcpServerListSchema,
+      [],
+      { ...opts, endpoint: "listAgentMcpServers" },
+    );
+  }
+
+  async addAgentMcpServer(
+    agentId: string,
+    serverId: string,
+  ): Promise<WorkspaceMcpServer[]> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/mcp-servers`,
+      WorkspaceMcpServerListSchema,
+      [],
+      { method: "POST", body: JSON.stringify({ server_id: serverId }) },
+      { endpoint: "addAgentMcpServer" },
+    );
+  }
+
+  async setAgentMcpServerEnabled(
+    agentId: string,
+    serverId: string,
+    enabled: boolean,
+  ): Promise<WorkspaceMcpServer[]> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/mcp-servers/${encodeURIComponent(serverId)}/enabled`,
+      WorkspaceMcpServerListSchema,
+      [],
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+      { endpoint: "setAgentMcpServerEnabled" },
+    );
+  }
+
+  async removeAgentMcpServer(
+    agentId: string,
+    serverId: string,
+  ): Promise<WorkspaceMcpServer[]> {
+    return this.fetchValidatedWith(
+      `/api/agents/${agentId}/mcp-servers/${encodeURIComponent(serverId)}`,
+      WorkspaceMcpServerListSchema,
+      [],
+      { method: "DELETE" },
+      { endpoint: "removeAgentMcpServer" },
+    );
+  }
+
+  async listWorkspaceMcpServers(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<WorkspaceMcpServer[]> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/mcp-servers`,
+      WorkspaceMcpServerListSchema,
+      [],
+      { ...opts, endpoint: "listWorkspaceMcpServers" },
+    );
+  }
+
+  // --- IM integration installations (RUYI-418 B3 entry condition) ---
+  // Only `configured` is consumed on mobile (integrations row visibility on
+  // the agent detail screen, mirroring web agent-overview-pane), so all five
+  // listings share the minimal schema.
+
+  async listLarkInstallations(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IntegrationInstallations> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/lark/installations`,
+      IntegrationInstallationsSchema,
+      EMPTY_INTEGRATION_INSTALLATIONS,
+      { ...opts, endpoint: "listLarkInstallations" },
+    );
+  }
+
+  async listSlackInstallations(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IntegrationInstallations> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/slack/installations`,
+      IntegrationInstallationsSchema,
+      EMPTY_INTEGRATION_INSTALLATIONS,
+      { ...opts, endpoint: "listSlackInstallations" },
+    );
+  }
+
+  async listDingTalkInstallations(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IntegrationInstallations> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/dingtalk/installations`,
+      IntegrationInstallationsSchema,
+      EMPTY_INTEGRATION_INSTALLATIONS,
+      { ...opts, endpoint: "listDingTalkInstallations" },
+    );
+  }
+
+  async listWecomInstallations(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IntegrationInstallations> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/wecom/installations`,
+      IntegrationInstallationsSchema,
+      EMPTY_INTEGRATION_INSTALLATIONS,
+      { ...opts, endpoint: "listWecomInstallations" },
+    );
+  }
+
+  async listTelegramInstallations(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IntegrationInstallations> {
+    return this.fetchValidated(
+      `/api/workspaces/${workspaceId}/telegram/installations`,
+      IntegrationInstallationsSchema,
+      EMPTY_INTEGRATION_INSTALLATIONS,
+      { ...opts, endpoint: "listTelegramInstallations" },
+    );
+  }
+
+  // RUYI-418 B3: the viewer's own Composio connections, consumed by the
+  // owner-gated MCP-apps screen (same endpoint web's composioConnectionsOptions
+  // reads; mobile keeps a reduced schema).
+  async listComposioConnections(
+    opts?: { signal?: AbortSignal },
+  ): Promise<ComposioConnections> {
+    return this.fetchValidated(
+      "/api/integrations/composio/connections",
+      ComposioConnectionsSchema,
+      EMPTY_COMPOSIO_CONNECTIONS,
+      { ...opts, endpoint: "listComposioConnections" },
+    );
+  }
+
   // --- Squads management ---
 
   async getSquad(id: string, opts?: { signal?: AbortSignal }): Promise<Squad> {
@@ -1408,6 +1803,23 @@ class ApiClient {
       ListIssueStatusesResponseSchema,
       EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
       { ...opts, endpoint: "GET /api/issue-statuses" },
+    );
+  }
+
+  // --- Workspace quick replies (RUYI-435) ---
+  /**
+   * The workspace's quick-reply catalog — the templates the comment composer
+   * offers behind its quick-reply button. Read-open to every member; the
+   * mutations are owner/admin only and live on web's settings screen (plus
+   * MCP), which is why mobile ships the read alone. An empty fallback renders
+   * an empty menu, never a broken composer.
+   */
+  async listQuickReplies(opts?: { signal?: AbortSignal }): Promise<ListQuickRepliesResponse> {
+    return this.fetchValidated(
+      "/api/quick-replies",
+      ListQuickRepliesResponseSchema,
+      EMPTY_LIST_QUICK_REPLIES_RESPONSE,
+      { ...opts, endpoint: "GET /api/quick-replies" },
     );
   }
 

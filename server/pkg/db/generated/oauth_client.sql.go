@@ -11,11 +11,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countOAuthClients = `-- name: CountOAuthClients :one
+SELECT count(*) AS total,
+       count(*) FILTER (WHERE disabled_at IS NULL) AS active
+FROM oauth_client
+`
+
+type CountOAuthClientsRow struct {
+	Total  int64 `json:"total"`
+	Active int64 `json:"active"`
+}
+
+// Instance totals for the MCP Server status page.
+func (q *Queries) CountOAuthClients(ctx context.Context) (CountOAuthClientsRow, error) {
+	row := q.db.QueryRow(ctx, countOAuthClients)
+	var i CountOAuthClientsRow
+	err := row.Scan(&i.Total, &i.Active)
+	return i, err
+}
+
 const createOAuthClient = `-- name: CreateOAuthClient :one
 
 INSERT INTO oauth_client (client_id, client_secret_hash, name, redirect_uris, created_by)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at
+RETURNING id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at
 `
 
 type CreateOAuthClientParams struct {
@@ -27,9 +46,14 @@ type CreateOAuthClientParams struct {
 }
 
 // Pre-registered OAuth clients for the MCP authorization server (RUYI-209).
-// See migration 924 for the table and
+// See migration 909 for the table and
 // docs/adr/001-mcp-oauth-behind-nextjs-proxy.md for the flow. No DCR: rows are
 // created by an operator, and created_by carries no DB foreign key.
+//
+// RUYI-420 adds the lifecycle verbs the System Settings management UI and the
+// oauth_client CLI share: update, soft-disable, and in-place secret rotation.
+// The UI and the CLI call exactly these statements so the two surfaces cannot
+// drift.
 func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) (OauthClient, error) {
 	row := q.db.QueryRow(ctx, createOAuthClient,
 		arg.ClientID,
@@ -48,6 +72,9 @@ func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientPa
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBy,
+		&i.SecretUpdatedAt,
 	)
 	return i, err
 }
@@ -62,8 +89,20 @@ func (q *Queries) DeleteOAuthClient(ctx context.Context, clientID string) error 
 	return err
 }
 
+const deleteOAuthClientByID = `-- name: DeleteOAuthClientByID :exec
+DELETE FROM oauth_client
+WHERE id = $1
+`
+
+// The management surface addresses rows by UUID; the CLI keeps operating on
+// the public client_id.
+func (q *Queries) DeleteOAuthClientByID(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteOAuthClientByID, id)
+	return err
+}
+
 const getOAuthClientByClientID = `-- name: GetOAuthClientByClientID :one
-SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at FROM oauth_client
+SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at FROM oauth_client
 WHERE client_id = $1
 `
 
@@ -79,12 +118,39 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBy,
+		&i.SecretUpdatedAt,
+	)
+	return i, err
+}
+
+const getOAuthClientByID = `-- name: GetOAuthClientByID :one
+SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at FROM oauth_client
+WHERE id = $1
+`
+
+func (q *Queries) GetOAuthClientByID(ctx context.Context, id pgtype.UUID) (OauthClient, error) {
+	row := q.db.QueryRow(ctx, getOAuthClientByID, id)
+	var i OauthClient
+	err := row.Scan(
+		&i.ID,
+		&i.ClientID,
+		&i.ClientSecretHash,
+		&i.Name,
+		&i.RedirectUris,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBy,
+		&i.SecretUpdatedAt,
 	)
 	return i, err
 }
 
 const listOAuthClients = `-- name: ListOAuthClients :many
-SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at FROM oauth_client
+SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at FROM oauth_client
 ORDER BY created_at ASC
 `
 
@@ -106,6 +172,9 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DisabledAt,
+			&i.DisabledBy,
+			&i.SecretUpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -115,4 +184,115 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const rotateOAuthClientSecret = `-- name: RotateOAuthClientSecret :one
+UPDATE oauth_client SET
+    client_secret_hash = $2,
+    secret_updated_at = now(),
+    updated_at = now()
+WHERE id = $1
+RETURNING id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at
+`
+
+type RotateOAuthClientSecretParams struct {
+	ID               pgtype.UUID `json:"id"`
+	ClientSecretHash string      `json:"client_secret_hash"`
+}
+
+// In-place rotation: the new hash replaces the old one immediately, so the
+// old secret stops authenticating at the token endpoint on the next call
+// (RUYI-420 design: no dual-hash grace period).
+func (q *Queries) RotateOAuthClientSecret(ctx context.Context, arg RotateOAuthClientSecretParams) (OauthClient, error) {
+	row := q.db.QueryRow(ctx, rotateOAuthClientSecret, arg.ID, arg.ClientSecretHash)
+	var i OauthClient
+	err := row.Scan(
+		&i.ID,
+		&i.ClientID,
+		&i.ClientSecretHash,
+		&i.Name,
+		&i.RedirectUris,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBy,
+		&i.SecretUpdatedAt,
+	)
+	return i, err
+}
+
+const setOAuthClientDisabled = `-- name: SetOAuthClientDisabled :one
+UPDATE oauth_client SET
+    disabled_at = $2,
+    disabled_by = $3,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at
+`
+
+type SetOAuthClientDisabledParams struct {
+	ID         pgtype.UUID        `json:"id"`
+	DisabledAt pgtype.Timestamptz `json:"disabled_at"`
+	DisabledBy pgtype.UUID        `json:"disabled_by"`
+}
+
+// Soft-disable (pass timestamps) or re-enable (pass NULLs). Both columns are
+// written together so a row always carries its current state plus the actor
+// who produced it, mirroring SetUserDisabled.
+func (q *Queries) SetOAuthClientDisabled(ctx context.Context, arg SetOAuthClientDisabledParams) (OauthClient, error) {
+	row := q.db.QueryRow(ctx, setOAuthClientDisabled, arg.ID, arg.DisabledAt, arg.DisabledBy)
+	var i OauthClient
+	err := row.Scan(
+		&i.ID,
+		&i.ClientID,
+		&i.ClientSecretHash,
+		&i.Name,
+		&i.RedirectUris,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBy,
+		&i.SecretUpdatedAt,
+	)
+	return i, err
+}
+
+const updateOAuthClient = `-- name: UpdateOAuthClient :one
+UPDATE oauth_client SET
+    name = $2,
+    redirect_uris = $3,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at, disabled_at, disabled_by, secret_updated_at
+`
+
+type UpdateOAuthClientParams struct {
+	ID           pgtype.UUID `json:"id"`
+	Name         string      `json:"name"`
+	RedirectUris []string    `json:"redirect_uris"`
+}
+
+// Name and redirect-URI edit from the management UI / CLI update verb.
+// client_id and the secret hash are deliberately not writable here: identity
+// rotation is the rotate verb's job, and renaming a client_id would strand
+// every configured consumer.
+func (q *Queries) UpdateOAuthClient(ctx context.Context, arg UpdateOAuthClientParams) (OauthClient, error) {
+	row := q.db.QueryRow(ctx, updateOAuthClient, arg.ID, arg.Name, arg.RedirectUris)
+	var i OauthClient
+	err := row.Scan(
+		&i.ID,
+		&i.ClientID,
+		&i.ClientSecretHash,
+		&i.Name,
+		&i.RedirectUris,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DisabledAt,
+		&i.DisabledBy,
+		&i.SecretUpdatedAt,
+	)
+	return i, err
 }

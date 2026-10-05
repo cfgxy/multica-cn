@@ -49,6 +49,42 @@
       "cancelled": "Decided not to do."
     }
   },
+    "quick_replies": {
+      "title": "Quick Replies",
+      "description": "Shared templates for the issue comment composer's quick-reply menu. Readable by every member; editable by workspace admins only. Selecting one fills the composer — it never sends on its own.",
+      "loading": "Loading quick replies…",
+      "add": "New quick reply",
+      "empty_title": "No quick replies yet",
+      "empty_hint": "Save recurring comment patterns as templates — conflict resolution, test follow-ups, sign-offs.",
+      "reorder_failed": "Failed to save the new order",
+      "actions": {
+        "open": "Open actions menu for \"{{name}}\"",
+        "edit": "Edit",
+        "delete": "Delete",
+        "reorder": "Drag to reorder \"{{name}}\""
+      },
+      "editor": {
+        "create_title": "New quick reply",
+        "edit_title": "Edit quick reply",
+        "hint": "Selecting this reply in the composer fills the input box; members can edit before sending.",
+        "name": "Name",
+        "name_placeholder": "e.g. Resolve PR conflicts",
+        "content": "Content",
+        "content_placeholder": "Template body filled into the composer…",
+        "cancel": "Cancel",
+        "save": "Save",
+        "saving": "Saving…",
+        "save_failed": "Failed to save"
+      },
+      "delete_dialog": {
+        "title": "Delete quick reply",
+        "description": "Delete \"{{name}}\"? It disappears from every member's composer menu immediately.",
+        "cancel": "Cancel",
+        "confirm": "Delete",
+        "failed": "Failed to delete"
+      }
+    }
+,
   "quick_actions": {
     "title": "Quick Actions",
     "description": "Preset an agent and a prompt once, then trigger it from any issue's sidebar with a single click.",
@@ -433,12 +469,14 @@
       "members": "Members",
       "labels": "Labels",
       "issue_statuses": "Issue Statuses",
+      "quick_replies": "Quick Replies",
       "properties": "Properties",
       "quick_actions": "Quick Actions",
       "plugins": "Plugins",
       "marketplace": "Marketplace",
       "mcp": "MCP",
-      "billing": "Billing"
+      "billing": "Billing",
+      "authorizations": "My Authorizations"
     }
   },
   "plugins": {
@@ -800,6 +838,39 @@
       "copy_command_tooltip": "Copy command",
       "done": "Done"
     }
+  },
+  "authorizations": {
+    "title": "My Authorizations",
+    "description": "Grants you have given to external MCP clients. Revoke any of them at any time.",
+    "list_title": "Authorization records",
+    "empty": "No authorizations yet.",
+    "col_client": "Client",
+    "col_scope": "Scope",
+    "col_authorized_at": "Authorized",
+    "col_last_used": "Last used",
+    "col_status": "Status",
+    "status_active": "Active",
+    "status_revoked": "Revoked",
+    "revoke": "Revoke",
+    "revoke_confirm_title": "Revoke this grant?",
+    "revoke_confirm_body": "After revoking \"{{client}}\", its existing access tokens fail within the cache window (up to ~10 minutes).",
+    "cancel": "Cancel"
+  },
+  "oauth_consent": {
+    "brand": "Multica MCP",
+    "title": "{{client}} wants to access your account",
+    "subtitle": "Approving lets the client access the Multica MCP service with the permissions below.",
+    "scopes_title": "Requested permissions",
+    "scope_read": "Read issues, workspaces and other data",
+    "scope_write": "Create and modify issues, comments and other data",
+    "scope_run": "Trigger issue runs and automated actions",
+    "scope_legacy": "Full read, write and run access (legacy grant)",
+    "approve": "Allow",
+    "deny": "Deny",
+    "error_title": "Authorization cannot continue",
+    "expired": "The authorization request has expired or does not exist. Start again from the client.",
+    "not_signed_in": "Sign in to Multica first, then start the authorization again from the client.",
+    "invalid_request": "Invalid authorization request."
   },
   "workspace": {
     "section_general": "Workspace details",
@@ -1557,7 +1628,8 @@
       "too_large_body": "Pick an image under 5 MB.",
       "upload_failed_body": "Could not upload avatar.",
       "remove_failed_title": "Remove failed",
-      "remove_failed_body": "Could not remove avatar."
+      "remove_failed_body": "Could not remove avatar.",
+      "permission_library": "Photo library access is required to choose an image."
     },
     "account": {
       "save_failed_title": "Save failed",
