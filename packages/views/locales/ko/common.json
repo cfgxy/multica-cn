@@ -151,7 +151,9 @@
     "upload_file": "파일 업로드",
     "file_too_large_title": "파일이 너무 큼",
     "file_too_large_message": "파일은 {{size}} MB 미만이어야 합니다.",
-    "upload_failed_title": "업로드 실패"
+    "upload_failed_title": "업로드 실패",
+    "quick_replies_title": "빠른 답장",
+    "quick_reply_hint": "빠른 답장 삽입"
   },
   "mobile": {
     "actor": {

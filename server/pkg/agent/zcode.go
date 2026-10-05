@@ -292,6 +292,13 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	// resume, and may flush queued frames before our session/prompt response
 	// streams.
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -409,185 +416,200 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		// false.
 		var resumeRejected bool
 
-		// No terminal capability: the bridge never issues terminal/* requests
-		// (see the type comment).
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("zcode initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Drop MCP entries whose remote transport the bridge didn't advertise.
-		// zcode-acp reports mcpCapabilities {http:false, sse:false} — it
-		// forwards stdio entries to the ZCode backend and proxies no remote
-		// transport — so an http/sse entry has to be dropped here rather than
-		// tanking session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "zcode", b.cfg)
-
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		// sessionResult is the response the effort selector is read from
-		// below; both branches produce one.
-		var sessionResult json.RawMessage
-
-		if opts.ResumeSessionID != "" {
-			// session/resume, not session/load. Both restore the thread, but
-			// load also replays the stored transcript back as session/update
-			// notifications, so a resumed turn would re-emit the previous
-			// answer as its own output.
-			//
-			// mcpServers rides along: the bridge forwards them on resume too,
-			// and without it a resumed task loses the MCP tools a fresh task
-			// on the same agent would have.
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if err != nil {
-				resumeRejected = zcodeSessionLost(err)
-				if resumeRejected {
-					b.cfg.Logger.Warn("zcode no longer has the resumed session; the daemon will retry on a fresh session",
-						"backend", "zcode",
-						"requested_session", opts.ResumeSessionID,
-					)
-				}
-				resCh <- Result{
-					Status:         "failed",
-					Error:          zcodeRequestErrorMessage("session/resume", err),
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					ResumeRejected: resumeRejected,
-				}
-				return
-			}
-			sessionResult = result
-			// The bridge's resume response carries modes and configOptions but
-			// no sessionId — the client keeps addressing the session with the
-			// id it sent. resolveResumedSessionID handles both shapes, so a
-			// future response that does echo an id is still honoured.
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("zcode returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "zcode",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("zcode reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "zcode")
+			sessionID = c.observedSessionID()
 		} else {
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+
+			// No terminal capability: the bridge never issues terminal/* requests
+			// (see the type comment).
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
-				switch {
-				case runCtx.Err() == context.DeadlineExceeded:
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("zcode timed out during session/new: %v", timeout)
-				case runCtx.Err() == context.Canceled:
-					finalStatus = "aborted"
-					finalError = fmt.Sprintf("zcode aborted: %v", err)
-				default:
-					finalStatus = "failed"
-					finalError = zcodeRequestErrorMessage("session/new", err)
+				finalStatus = "failed"
+				finalError = fmt.Sprintf("zcode initialize failed: %v", err)
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+				return
+			}
+
+			// Drop MCP entries whose remote transport the bridge didn't advertise.
+			// zcode-acp reports mcpCapabilities {http:false, sse:false} — it
+			// forwards stdio entries to the ZCode backend and proxies no remote
+			// transport — so an http/sse entry has to be dropped here rather than
+			// tanking session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "zcode", b.cfg)
+
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			// sessionResult is the response the effort selector is read from
+			// below; both branches produce one.
+			var sessionResult json.RawMessage
+
+			if opts.ResumeSessionID != "" {
+				// session/resume, not session/load. Both restore the thread, but
+				// load also replays the stored transcript back as session/update
+				// notifications, so a resumed turn would re-emit the previous
+				// answer as its own output.
+				//
+				// mcpServers rides along: the bridge forwards them on resume too,
+				// and without it a resumed task loses the MCP tools a fresh task
+				// on the same agent would have.
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					resumeRejected = zcodeSessionLost(err)
+					if resumeRejected {
+						b.cfg.Logger.Warn("zcode no longer has the resumed session; the daemon will retry on a fresh session",
+							"backend", "zcode",
+							"requested_session", opts.ResumeSessionID,
+						)
+					}
+					resCh <- Result{
+						Status:         "failed",
+						Error:          zcodeRequestErrorMessage("session/resume", err),
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						ResumeRejected: resumeRejected,
+					}
+					return
 				}
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			sessionResult = result
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "zcode session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-		}
-
-		c.sessionID = sessionID
-		// Early session pin so a cancelled run still preserves the resume
-		// pointer.
-		msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
-		b.cfg.Logger.Info("zcode session ready", "session_id", sessionID)
-
-		// Apply a model pick before prompting. The bridge routes
-		// session/set_model to its own model switch, which fails when the
-		// provider is not configured or the id is unknown. This MUST fail the
-		// task: silently running on zcode's default model would let the user
-		// believe their pick was honoured.
-		modelSwitched := false
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("zcode set_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("zcode could not switch to model %q: %v", opts.Model, err)
-				if opts.ResumeSessionID != "" && zcodeSessionLost(err) {
-					// A lazy placeholder materialises its zcode session on
-					// first use, so a session the bridge lost surfaces at the
-					// first call that needs the backend — here, when a model
-					// is pinned. Clear the id so the daemon retries fresh.
-					b.cfg.Logger.Warn("resumed session lost at set_model time; clearing session id so the daemon retries fresh",
+				sessionResult = result
+				// The bridge's resume response carries modes and configOptions but
+				// no sessionId — the client keeps addressing the session with the
+				// id it sent. resolveResumedSessionID handles both shapes, so a
+				// future response that does echo an id is still honoured.
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("zcode returned a different session id on resume — original was likely lost; continuing with the new id",
 						"backend", "zcode",
-						"session_id", sessionID,
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
 					)
-					sessionID = ""
-					resumeRejected = true
 				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
+			} else {
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					switch {
+					case runCtx.Err() == context.DeadlineExceeded:
+						finalStatus = "timeout"
+						finalError = fmt.Sprintf("zcode timed out during session/new: %v", timeout)
+					case runCtx.Err() == context.Canceled:
+						finalStatus = "aborted"
+						finalError = fmt.Sprintf("zcode aborted: %v", err)
+					default:
+						finalStatus = "failed"
+						finalError = zcodeRequestErrorMessage("session/new", err)
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
 				}
-				return
+				sessionResult = result
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "zcode session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
 			}
-			modelSwitched = true
-			b.cfg.Logger.Info("zcode session model set", "model", opts.Model)
+
+			c.sessionID = sessionID
+			// Early session pin so a cancelled run still preserves the resume
+			// pointer.
+			msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+			b.cfg.Logger.Info("zcode session ready", "session_id", sessionID)
+
+			// Apply a model pick before prompting. The bridge routes
+			// session/set_model to its own model switch, which fails when the
+			// provider is not configured or the id is unknown. This MUST fail the
+			// task: silently running on zcode's default model would let the user
+			// believe their pick was honoured.
+			modelSwitched := false
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("zcode set_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("zcode could not switch to model %q: %v", opts.Model, err)
+					if opts.ResumeSessionID != "" && zcodeSessionLost(err) {
+						// A lazy placeholder materialises its zcode session on
+						// first use, so a session the bridge lost surfaces at the
+						// first call that needs the backend — here, when a model
+						// is pinned. Clear the id so the daemon retries fresh.
+						b.cfg.Logger.Warn("resumed session lost at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "zcode",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				modelSwitched = true
+				b.cfg.Logger.Info("zcode session model set", "model", opts.Model)
+			}
+
+			// Apply a persisted reasoning-effort level through whichever selector
+			// this session advertised. zcode-acp addresses it as config id
+			// `thought` under category `thought_level`, and its vocabulary is
+			// per-model (read from the enabled provider's own reasoning variants),
+			// so the id and the level list are read off the session rather than
+			// hard-coded. A configuration failure never blocks the task; see the
+			// helper for what the warnings mean.
+			//
+			// stateIsCurrent is false after a model switch: the advertised effort
+			// vocabulary belongs to the model the session opened on, and the
+			// refreshed list arrives only as a config_option_update notification
+			// the shared client drops.
+			applyACPEffortOption(runCtx, c.request, "zcode", b.cfg.Logger, sessionID, sessionResult, opts.ThinkingLevel, !modelSwitched)
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
 		}
-
-		// Apply a persisted reasoning-effort level through whichever selector
-		// this session advertised. zcode-acp addresses it as config id
-		// `thought` under category `thought_level`, and its vocabulary is
-		// per-model (read from the enabled provider's own reasoning variants),
-		// so the id and the level list are read off the session rather than
-		// hard-coded. A configuration failure never blocks the task; see the
-		// helper for what the warnings mean.
-		//
-		// stateIsCurrent is false after a model switch: the advertised effort
-		// vocabulary belongs to the model the session opened on, and the
-		// refreshed list arrives only as a config_option_update notification
-		// the shared client drops.
-		applyACPEffortOption(runCtx, c.request, "zcode", b.cfg.Logger, sessionID, sessionResult, opts.ThinkingLevel, !modelSwitched)
-
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
-
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			switch {
 			case runCtx.Err() == context.DeadlineExceeded:
 				finalStatus = "timeout"
@@ -604,8 +626,8 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 				finalError = "execution cancelled"
 			default:
 				finalStatus = "failed"
-				finalError = zcodeRequestErrorMessage("session/prompt", err)
-				if opts.ResumeSessionID != "" && zcodeSessionLost(err) {
+				finalError = zcodeRequestErrorMessage("session/prompt", promptErr)
+				if opts.ResumeSessionID != "" && zcodeSessionLost(promptErr) {
 					// The bridge echoes the requested id back from resume
 					// without touching the backend, so a session it cannot
 					// materialise only fails here, at prompt time. An empty
@@ -643,8 +665,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("zcode finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "zcode")
 
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), zcodeReaderDrainGrace)
 		select {

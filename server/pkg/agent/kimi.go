@@ -134,6 +134,13 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	// dropped instead of duplicating the previous answer into output. We
 	// flip it to true only after session/prompt is sent.
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -262,179 +269,215 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
 
-		// 1. Initialize handshake.
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{
-				"terminal": true,
-			},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("kimi initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Drop MCP entries whose remote transport the runtime didn't
-		// advertise. See the matching comment in hermes.go for the why —
-		// shipping an http/sse entry to a stdio-only runtime tanks the
-		// whole session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "kimi", b.cfg)
-
-		// 2. Create or resume a session.
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" {
-			// Per ACP Session Setup, session/resume accepts mcpServers and
-			// the runtime re-connects them as part of the resume. Without
-			// this, a resumed Kimi task lost access to MCP tools that a
-			// fresh task on the same agent would have.
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if err != nil {
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("kimi session/resume failed: %v", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "kimi",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("kimi reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "kimi")
+			sessionID = c.observedSessionID()
+			if promptErr == nil {
+				// waitReattachedTurn resolves the moment markTurnDone
+				// latches, which is ordered *before* onPromptDone queues
+				// the result — the non-blocking probe in the shared tail
+				// below can race it empty and strand the turn behind a
+				// quiescence wait that never ends (the worker is still
+				// alive, so stdout never EOFs). Consume the queued result
+				// here, blocking, before the shared tail runs.
+				select {
+				case pr := <-promptDone:
+					if pr.stopReason == "cancelled" {
+						finalStatus = "aborted"
+						finalError = "kimi cancelled the prompt"
+					}
+					c.mergeUsage(pr.usage)
+				case <-runCtx.Done():
+					promptErr = runCtx.Err()
+				}
 			}
 		} else {
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+
+			// 1. Initialize handshake.
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{
+					"terminal": true,
+				},
 			})
 			if err != nil {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("kimi session/new failed: %v", err)
+				finalError = fmt.Sprintf("kimi initialize failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "kimi session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
+
+			// Drop MCP entries whose remote transport the runtime didn't
+			// advertise. See the matching comment in hermes.go for the why —
+			// shipping an http/sse entry to a stdio-only runtime tanks the
+			// whole session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "kimi", b.cfg)
+
+			// 2. Create or resume a session.
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
 			}
-		}
 
-		c.sessionID = sessionID
-		b.cfg.Logger.Info("kimi session created", "session_id", sessionID)
-
-		// 3. If the caller picked a model (via agent.model from the
-		// UI dropdown), ask kimi to switch the session to it before
-		// we send any prompt. Kimi's ACP server exposes
-		// `session/set_model` and advertises available models via
-		// the `models.availableModels` block returned by
-		// `session/new` — we pass the chosen modelId through
-		// verbatim. This MUST fail the task on error: silently
-		// falling back to kimi's default model would let the user
-		// believe their pick was honoured while the task actually
-		// ran on something else.
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("kimi set_session_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("kimi could not switch to model %q: %v", opts.Model, err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
-					// On a resumed session with a model override, the dead
-					// session surfaces here instead of at session/prompt.
-					// Same fix as the prompt path below: clear the id so
-					// the daemon's resume-failure fallback retries fresh.
-					b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+			if opts.ResumeSessionID != "" {
+				// Per ACP Session Setup, session/resume accepts mcpServers and
+				// the runtime re-connects them as part of the resume. Without
+				// this, a resumed Kimi task lost access to MCP tools that a
+				// fresh task on the same agent would have.
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("kimi session/resume failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
 						"backend", "kimi",
-						"session_id", sessionID,
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
 					)
-					sessionID = ""
-					resumeRejected = true
 				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
-				}
-				return
-			}
-			b.cfg.Logger.Info("kimi session model set", "model", opts.Model)
-		}
-
-		// 3b. Apply a persisted thinking override through Kimi's native ACP
-		// config option before prompting. As with other providers, a configuration
-		// failure does not block the task: the prompt goes out either way, and the
-		// warnings below are the only record that the level shown in the UI may not
-		// be the level in effect. Which level that is depends on how the call
-		// failed. If the request itself fails, the session keeps whatever it had
-		// beforehand — the CLI's own setting on a fresh session, the previous
-		// turn's level on a resumed one. If Kimi answers but confirms a different
-		// value, the session sits at that value. If it answers without a `thinking`
-		// currentValue at all, we cannot tell which level is in effect.
-		if opts.ThinkingLevel != "" {
-			configResult, err := c.request(runCtx, "session/set_config_option", map[string]any{
-				"sessionId": sessionID,
-				"configId":  "thinking",
-				"value":     opts.ThinkingLevel,
-			})
-			if err != nil {
-				b.cfg.Logger.Warn("kimi rejected the thinking level request; sending the prompt anyway",
-					"requested_level", opts.ThinkingLevel,
-					"effective_level", "unchanged",
-					"error", err,
-				)
 			} else {
-				effectiveLevel, confirmed := acpConfigOptionCurrentValue(configResult, "thinking")
-				if !confirmed || effectiveLevel != opts.ThinkingLevel {
-					if !confirmed {
-						effectiveLevel = "unknown"
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("kimi session/new failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "kimi session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+			}
+
+			c.sessionID = sessionID
+			b.cfg.Logger.Info("kimi session created", "session_id", sessionID)
+
+			// 3. If the caller picked a model (via agent.model from the
+			// UI dropdown), ask kimi to switch the session to it before
+			// we send any prompt. Kimi's ACP server exposes
+			// `session/set_model` and advertises available models via
+			// the `models.availableModels` block returned by
+			// `session/new` — we pass the chosen modelId through
+			// verbatim. This MUST fail the task on error: silently
+			// falling back to kimi's default model would let the user
+			// believe their pick was honoured while the task actually
+			// ran on something else.
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("kimi set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("kimi could not switch to model %q: %v", opts.Model, err)
+					if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+						// On a resumed session with a model override, the dead
+						// session surfaces here instead of at session/prompt.
+						// Same fix as the prompt path below: clear the id so
+						// the daemon's resume-failure fallback retries fresh.
+						b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "kimi",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
 					}
-					b.cfg.Logger.Warn("kimi did not confirm the requested thinking level; sending the prompt anyway",
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("kimi session model set", "model", opts.Model)
+			}
+
+			// 3b. Apply a persisted thinking override through Kimi's native ACP
+			// config option before prompting. As with other providers, a configuration
+			// failure does not block the task: the prompt goes out either way, and the
+			// warnings below are the only record that the level shown in the UI may not
+			// be the level in effect. Which level that is depends on how the call
+			// failed. If the request itself fails, the session keeps whatever it had
+			// beforehand — the CLI's own setting on a fresh session, the previous
+			// turn's level on a resumed one. If Kimi answers but confirms a different
+			// value, the session sits at that value. If it answers without a `thinking`
+			// currentValue at all, we cannot tell which level is in effect.
+			if opts.ThinkingLevel != "" {
+				configResult, err := c.request(runCtx, "session/set_config_option", map[string]any{
+					"sessionId": sessionID,
+					"configId":  "thinking",
+					"value":     opts.ThinkingLevel,
+				})
+				if err != nil {
+					b.cfg.Logger.Warn("kimi rejected the thinking level request; sending the prompt anyway",
 						"requested_level", opts.ThinkingLevel,
-						"effective_level", effectiveLevel,
+						"effective_level", "unchanged",
+						"error", err,
 					)
 				} else {
-					b.cfg.Logger.Info("kimi session thinking level confirmed", "level", effectiveLevel)
+					effectiveLevel, confirmed := acpConfigOptionCurrentValue(configResult, "thinking")
+					if !confirmed || effectiveLevel != opts.ThinkingLevel {
+						if !confirmed {
+							effectiveLevel = "unknown"
+						}
+						b.cfg.Logger.Warn("kimi did not confirm the requested thinking level; sending the prompt anyway",
+							"requested_level", opts.ThinkingLevel,
+							"effective_level", effectiveLevel,
+						)
+					} else {
+						b.cfg.Logger.Info("kimi session thinking level confirmed", "level", effectiveLevel)
+					}
 				}
 			}
+
+			// 4. Build the prompt content. If we have a system prompt, prepend it.
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			// 5. Send the prompt and wait for PromptResponse.
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
+
 		}
 
-		// 4. Build the prompt content. If we have a system prompt, prepend it.
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
-
-		// 5. Send the prompt and wait for PromptResponse.
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			if budgetStop.Load() {
 				finalStatus = "context_budget"
 				finalError = fmt.Sprintf("kimi context budget reached (%d tokens of live context); run force-stopped for segmented continuation", contextAtStop.Load())
@@ -446,8 +489,8 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("kimi session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("kimi session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					// See the hermes backend: the runtime echoes the
 					// requested id back from session/resume even when
 					// the session is gone, so the stale id only fails
@@ -483,8 +526,7 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("kimi finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "kimi")
 
 		<-readerDone
 		// Ensure the stderr copier has drained before consulting the

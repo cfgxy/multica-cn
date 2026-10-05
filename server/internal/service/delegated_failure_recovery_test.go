@@ -388,7 +388,11 @@ func TestUserCancelledDelegatedFailureRecoveryStaysCancelled(t *testing.T) {
 		  AND task.trigger_evidence_ref_id = $1`, failedID).Scan(&recoveryTaskID, &recoveryCommentID); err != nil {
 		t.Fatalf("load recovery task/comment: %v", err)
 	}
-	cancelled, err := svc.CancelTaskByUser(ctx, recoveryTaskID)
+	cancellerID, err := util.ParseUUID(f.userID)
+	if err != nil {
+		t.Fatalf("parse canceller: %v", err)
+	}
+	cancelled, err := svc.CancelTaskByUser(ctx, recoveryTaskID, cancellerID)
 	if err != nil {
 		t.Fatalf("CancelTaskByUser: %v", err)
 	}
