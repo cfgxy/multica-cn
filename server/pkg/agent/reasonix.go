@@ -151,6 +151,13 @@ func (b *reasonixBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// dropped instead of duplicating the previous answer into output. We
 	// flip it to true only after session/prompt is sent.
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 	var blockedQuestion atomic.Value // string; set by the stdout reader
 	var statusUsage reasonixStatusUsageTracker
 
@@ -252,166 +259,181 @@ func (b *reasonixBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
 
-		// 1. Initialize handshake.
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix initialize failed: %v", err))
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-		warnReasonixCapabilityGaps(b.cfg.Logger, initResult)
-
-		// Drop MCP entries whose remote transport the runtime didn't
-		// advertise. See the matching comment in hermes.go for the why —
-		// shipping an http/sse entry to a stdio-only runtime tanks the
-		// whole session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "reasonix", b.cfg)
-
-		// 2. Create or resume a session.
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		// sessionResult is whichever of session/new or session/resume produced
-		// this session. It carries the configOptions that the effort step
-		// below reads, so both branches have to keep hold of it.
-		var sessionResult json.RawMessage
-
-		if opts.ResumeSessionID != "" {
-			// Per ACP Session Setup, session/resume accepts mcpServers and
-			// the runtime re-connects them as part of the resume. Without
-			// this, a resumed Reasonix task lost access to MCP tools that a
-			// fresh task on the same agent would have.
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if err != nil {
-				finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix session/resume failed: %v", err))
-				if finalStatus == "failed" && isACPSessionNotFound(err) {
-					resumeRejected = true
-					finalError = fmt.Sprintf("reasonix session/resume rejected the saved session: %v", err)
-				} else if finalStatus == "failed" && isReasonixSessionLeaseConflict(err) {
-					finalError = fmt.Sprintf("reasonix session is already in use; close the other Reasonix window or process first: %v", err)
-				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					ResumeRejected: resumeRejected,
-				}
-				return
-			}
-			sessionResult = result
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "reasonix",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("reasonix reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "reasonix")
+			sessionID = c.observedSessionID()
 		} else {
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+
+			// 1. Initialize handshake.
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
-				finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, reasonixSessionNewError(err))
+				finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix initialize failed: %v", err))
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			sessionResult = result
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "reasonix session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
+			warnReasonixCapabilityGaps(b.cfg.Logger, initResult)
+
+			// Drop MCP entries whose remote transport the runtime didn't
+			// advertise. See the matching comment in hermes.go for the why —
+			// shipping an http/sse entry to a stdio-only runtime tanks the
+			// whole session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "reasonix", b.cfg)
+
+			// 2. Create or resume a session.
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
 			}
-		}
 
-		c.sessionID = sessionID
-		b.cfg.Logger.Info("reasonix session created", "session_id", sessionID)
+			// sessionResult is whichever of session/new or session/resume produced
+			// this session. It carries the configOptions that the effort step
+			// below reads, so both branches have to keep hold of it.
+			var sessionResult json.RawMessage
 
-		// 3. If the caller picked a model (via agent.model from the
-		// UI dropdown), ask reasonix to switch the session to it before
-		// we send any prompt. Reasonix's ACP server exposes
-		// `session/set_model` and advertises available models via
-		// the `models.availableModels` block returned by
-		// `session/new` — we pass the chosen modelId through
-		// verbatim. This MUST fail the task on error: silently
-		// falling back to reasonix's default model would let the user
-		// believe their pick was honoured while the task actually
-		// ran on something else.
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("reasonix set_session_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix could not switch to model %q: %v", opts.Model, err))
-				if finalStatus == "failed" && opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
-					// On a resumed session with a model override, the dead
-					// session surfaces here instead of at session/prompt.
-					// Same fix as the prompt path below: clear the id so
-					// the daemon's resume-failure fallback retries fresh.
-					b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+			if opts.ResumeSessionID != "" {
+				// Per ACP Session Setup, session/resume accepts mcpServers and
+				// the runtime re-connects them as part of the resume. Without
+				// this, a resumed Reasonix task lost access to MCP tools that a
+				// fresh task on the same agent would have.
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix session/resume failed: %v", err))
+					if finalStatus == "failed" && isACPSessionNotFound(err) {
+						resumeRejected = true
+						finalError = fmt.Sprintf("reasonix session/resume rejected the saved session: %v", err)
+					} else if finalStatus == "failed" && isReasonixSessionLeaseConflict(err) {
+						finalError = fmt.Sprintf("reasonix session is already in use; close the other Reasonix window or process first: %v", err)
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				sessionResult = result
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
 						"backend", "reasonix",
-						"session_id", sessionID,
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
 					)
-					sessionID = ""
-					resumeRejected = true
 				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
+			} else {
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, reasonixSessionNewError(err))
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
 				}
-				return
+				sessionResult = result
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "reasonix session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
 			}
-			b.cfg.Logger.Info("reasonix session model set", "model", opts.Model)
+
+			c.sessionID = sessionID
+			b.cfg.Logger.Info("reasonix session created", "session_id", sessionID)
+
+			// 3. If the caller picked a model (via agent.model from the
+			// UI dropdown), ask reasonix to switch the session to it before
+			// we send any prompt. Reasonix's ACP server exposes
+			// `session/set_model` and advertises available models via
+			// the `models.availableModels` block returned by
+			// `session/new` — we pass the chosen modelId through
+			// verbatim. This MUST fail the task on error: silently
+			// falling back to reasonix's default model would let the user
+			// believe their pick was honoured while the task actually
+			// ran on something else.
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("reasonix set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix could not switch to model %q: %v", opts.Model, err))
+					if finalStatus == "failed" && opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+						// On a resumed session with a model override, the dead
+						// session surfaces here instead of at session/prompt.
+						// Same fix as the prompt path below: clear the id so
+						// the daemon's resume-failure fallback retries fresh.
+						b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "reasonix",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("reasonix session model set", "model", opts.Model)
+			}
+
+			// 3b. Apply a persisted thinking override through whichever effort
+			// option this session advertises. Unlike set_model above this must NOT
+			// fail the task: an effort we could not apply still runs the prompt at
+			// the runtime's own default, which is a degraded result rather than a
+			// wrong one. The helper logs what actually took effect.
+			//
+			// sessionResult stops describing the live session once set_model runs
+			// above, because reasonix derives the effort catalog from the current
+			// model and returns nothing from set_model. Say so, so the helper
+			// trusts the runtime's answer over a stale advertised list.
+			applyACPEffortOption(runCtx, c.request, "reasonix", b.cfg.Logger,
+				sessionID, sessionResult, opts.ThinkingLevel, opts.Model == "")
+
+			// 4. Send the prompt and wait for PromptResponse. Reasonix loads
+			// AGENTS.md from cwd, so the daemon deliberately does not duplicate the
+			// runtime brief in this user message.
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": prompt},
+				},
+			})
 		}
-
-		// 3b. Apply a persisted thinking override through whichever effort
-		// option this session advertises. Unlike set_model above this must NOT
-		// fail the task: an effort we could not apply still runs the prompt at
-		// the runtime's own default, which is a degraded result rather than a
-		// wrong one. The helper logs what actually took effect.
-		//
-		// sessionResult stops describing the live session once set_model runs
-		// above, because reasonix derives the effort catalog from the current
-		// model and returns nothing from set_model. Say so, so the helper
-		// trusts the runtime's answer over a stale advertised list.
-		applyACPEffortOption(runCtx, c.request, "reasonix", b.cfg.Logger,
-			sessionID, sessionResult, opts.ThinkingLevel, opts.Model == "")
-
-		// 4. Send the prompt and wait for PromptResponse. Reasonix loads
-		// AGENTS.md from cwd, so the daemon deliberately does not duplicate the
-		// runtime brief in this user message.
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": prompt},
-			},
-		})
-		if err != nil {
-			finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix session/prompt failed: %v", err))
+		if promptErr != nil {
+			finalStatus, finalError = reasonixRequestFailure(runCtx, timeout, fmt.Sprintf("reasonix session/prompt failed: %v", promptErr))
 			if finalStatus == "failed" {
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					// See the hermes backend: the runtime echoes the
 					// requested id back from session/resume even when
 					// the session is gone, so the stale id only fails
@@ -452,8 +474,7 @@ func (b *reasonixBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("reasonix finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "reasonix")
 
 		<-readerDone
 		// Ensure the stderr copier has drained before consulting the

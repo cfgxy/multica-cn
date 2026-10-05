@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -82,6 +84,11 @@ type ExecutionProfileResponse struct {
 	CreatedAt       string                          `json:"created_at"`
 	UpdatedAt       string                          `json:"updated_at"`
 	Entries         []ExecutionProfileEntryResponse `json:"entries"`
+	// Revision is the optimistic-lock token (RUYI-433): read it, send it
+	// back as expected_revision on update (including entry upserts/deletes),
+	// and a concurrent profile write fails with a structured
+	// revision_conflict instead of silently overwriting.
+	Revision int64 `json:"revision"`
 }
 
 // ExecutionProfileActivationResult is one member's outcome, always present for
@@ -128,6 +135,7 @@ func executionProfileToResponse(
 		EntryCount:  entryCount,
 		CreatedAt:   timestampToString(p.CreatedAt),
 		UpdatedAt:   timestampToString(p.UpdatedAt),
+		Revision:    p.Revision,
 		Entries:     make([]ExecutionProfileEntryResponse, 0, len(entries)),
 	}
 	if p.LastActivatedAt.Valid {
@@ -321,6 +329,30 @@ func (h *Handler) CreateExecutionProfile(w http.ResponseWriter, r *http.Request)
 type updateExecutionProfileRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	// ExpectedRevision is the optimistic lock (RUYI-433): when set, the
+	// write only lands if the profile still carries this revision, and a
+	// stale value answers 409 revision_conflict with the actual revision.
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
+}
+
+// resolveProfileRevisionConflict answers a 0-row guarded write (RUYI-433):
+// the profile still existing means a concurrent writer moved the revision —
+// structured 409 with the actual value; it being gone is the plain 404.
+func (h *Handler) resolveProfileRevisionConflict(
+	w http.ResponseWriter,
+	r *http.Request,
+	workspaceID, profileID pgtype.UUID,
+	expected int64,
+) {
+	current, getErr := h.Queries.GetExecutionProfileForWorkspace(r.Context(), db.GetExecutionProfileForWorkspaceParams{
+		ID:          profileID,
+		WorkspaceID: workspaceID,
+	})
+	if getErr == nil {
+		writeRevisionConflict(w, "execution_profile", current.ID, expected, current.Revision)
+		return
+	}
+	writeError(w, http.StatusNotFound, "execution profile not found")
 }
 
 // UpdateExecutionProfile renames a profile or edits its description. Entries
@@ -342,6 +374,13 @@ func (h *Handler) UpdateExecutionProfile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	params := db.UpdateExecutionProfileParams{ID: profileUUID, WorkspaceID: ws.ID}
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
 	if req.Name != nil {
 		name, err := validateExecutionProfileName(*req.Name)
 		if err != nil {
@@ -360,7 +399,13 @@ func (h *Handler) UpdateExecutionProfile(w http.ResponseWriter, r *http.Request)
 
 	profile, err := h.Queries.UpdateExecutionProfile(r.Context(), params)
 	if err != nil {
+		// 0 rows is ambiguous between "stale expected_revision" and "profile
+		// gone"; re-read to answer the right structured outcome (RUYI-433).
 		if errors.Is(err, pgx.ErrNoRows) {
+			if req.ExpectedRevision != nil {
+				h.resolveProfileRevisionConflict(w, r, ws.ID, profileUUID, *req.ExpectedRevision)
+				return
+			}
 			writeError(w, http.StatusNotFound, "execution profile not found")
 			return
 		}
@@ -450,6 +495,11 @@ type upsertExecutionProfileEntryRequest struct {
 	// Tri-state, same shape as UpdateAgent: omitted / null = no opinion,
 	// "" = clear to the runtime default on activation, value = write it.
 	ThinkingLevel *string `json:"thinking_level"`
+	// ExpectedRevision is the optimistic lock on the owning PROFILE
+	// (RUYI-433): entry writes move the profile's content, so a client can
+	// guard them with the revision it read; a stale value refuses the whole
+	// write with 409 revision_conflict.
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
 }
 
 // UpsertExecutionProfileEntry stores one member's configuration in a profile.
@@ -559,7 +609,47 @@ func (h *Handler) UpsertExecutionProfileEntry(w http.ResponseWriter, r *http.Req
 		thinkingLevel = pgtype.Text{String: value, Valid: true}
 	}
 
-	entry, err := h.Queries.UpsertExecutionProfileEntry(r.Context(), db.UpsertExecutionProfileEntryParams{
+	// Guarded revision bump + entry write commit together (RUYI-433): a
+	// stale expected_revision refuses before the entry set is touched, and
+	// a failed entry write rolls the bump back.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	expected := pgtype.Int8{}
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		expected = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
+	touched, err := qtx.TouchExecutionProfileRevision(r.Context(), db.TouchExecutionProfileRevisionParams{
+		ID:               profileUUID,
+		WorkspaceID:      ws.ID,
+		ExpectedRevision: expected,
+	})
+	if err != nil {
+		slog.Warn("touch execution profile revision failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to save execution profile entry")
+		return
+	}
+	if touched == 0 {
+		if req.ExpectedRevision != nil {
+			h.resolveProfileRevisionConflict(w, r, ws.ID, profileUUID, *req.ExpectedRevision)
+			return
+		}
+		// Unreachable in practice — existence was checked above — but a
+		// concurrent delete between that check and the touch lands here.
+		writeError(w, http.StatusNotFound, "execution profile not found")
+		return
+	}
+
+	entry, err := qtx.UpsertExecutionProfileEntry(r.Context(), db.UpsertExecutionProfileEntryParams{
 		ProfileID:     profileUUID,
 		AgentID:       agentUUID,
 		RuntimeID:     runtimeUUID,
@@ -571,11 +661,17 @@ func (h *Handler) UpsertExecutionProfileEntry(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "failed to save execution profile entry")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save execution profile entry")
+		return
+	}
 	writeJSON(w, http.StatusOK, executionProfileEntryToResponse(entry))
 }
 
 // DeleteExecutionProfileEntry removes one member from a profile. The member
-// keeps whatever configuration it currently has.
+// keeps whatever configuration it currently has. expected_revision arrives
+// as a query parameter (DELETE has no body contract here) and guards the
+// owning profile's revision like every other profile write (RUYI-433).
 func (h *Handler) DeleteExecutionProfileEntry(w http.ResponseWriter, r *http.Request) {
 	ws, ok := h.executionProfileWorkspace(w, r)
 	if !ok {
@@ -589,6 +685,15 @@ func (h *Handler) DeleteExecutionProfileEntry(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+	var expected pgtype.Int8
+	if raw := strings.TrimSpace(r.URL.Query().Get("expected_revision")); raw != "" {
+		value, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || value < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		expected = pgtype.Int8{Int64: value, Valid: true}
+	}
 	if _, err := h.Queries.GetExecutionProfileForWorkspace(r.Context(), db.GetExecutionProfileForWorkspaceParams{
 		ID:          profileUUID,
 		WorkspaceID: ws.ID,
@@ -601,10 +706,41 @@ func (h *Handler) DeleteExecutionProfileEntry(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := h.Queries.DeleteExecutionProfileEntry(r.Context(), db.DeleteExecutionProfileEntryParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	touched, err := qtx.TouchExecutionProfileRevision(r.Context(), db.TouchExecutionProfileRevisionParams{
+		ID:               profileUUID,
+		WorkspaceID:      ws.ID,
+		ExpectedRevision: expected,
+	})
+	if err != nil {
+		slog.Warn("touch execution profile revision failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to delete execution profile entry")
+		return
+	}
+	if touched == 0 {
+		if expected.Valid {
+			h.resolveProfileRevisionConflict(w, r, ws.ID, profileUUID, expected.Int64)
+			return
+		}
+		writeError(w, http.StatusNotFound, "execution profile not found")
+		return
+	}
+
+	if err := qtx.DeleteExecutionProfileEntry(r.Context(), db.DeleteExecutionProfileEntryParams{
 		ProfileID: profileUUID,
 		AgentID:   agentUUID,
 	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete execution profile entry")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete execution profile entry")
 		return
 	}
@@ -847,6 +983,12 @@ func (h *Handler) applyExecutionProfileEntry(
 		slog.Error("execution profile audit write failed",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(entry.AgentID))...)
 	}
+	// RUYI-355: audit twin on the pool (not qtx — same best-effort
+	// disposition as the activity row, and a failed statement must not
+	// poison the transaction the agent write rides on).
+	service.TryAppendAuditEvents(r.Context(), h.Queries,
+		service.AgentEvent(service.AuditAgentExecutionProfileActived, service.AuditActorMember,
+			parseUUID(requestUserID(r)), workspaceID, entry.AgentID, details))
 
 	result.Status = executionProfileEntryApplied
 	return result

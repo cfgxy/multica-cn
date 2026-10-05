@@ -779,10 +779,12 @@ func writeWSAuthErrorAndClose(conn *websocket.Conn, payload []byte, attrs ...any
 }
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or
-// first-message auth.
-// HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or
-// first-message token auth. disabled is the persisted account-state gate
-// shared with the HTTP middlewares (RUYI-47); nil skips the check.
+// first-message token auth. A cookie that fails to authenticate degrades to
+// the first-frame path rather than rejecting the upgrade (RUYI-429): the
+// cookie jar is host-scoped and beyond the client's control, so the token,
+// not the cookie, must decide the identity. disabled is the persisted
+// account-state gate shared with the HTTP middlewares (RUYI-47); nil skips
+// the check.
 func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug SlugResolver, disabled auth.DisabledLookup, w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	if workspaceID == "" {
@@ -802,20 +804,19 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 
 	var userID string
 	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
-		uid, errMsg := authenticateToken(cookie.Value, pr, disabled, r.Context())
-		if errMsg != "" {
-			status := http.StatusUnauthorized
-			if errMsg == `{"error":"account disabled"}` {
-				status = http.StatusForbidden
-			}
-			http.Error(w, errMsg, status)
-			return
+		if uid, errMsg := authenticateToken(cookie.Value, pr, disabled, r.Context()); errMsg == "" && mc.IsMember(r.Context(), uid, workspaceID) {
+			userID = uid
+		} else {
+			// Cookies are host-scoped (RFC 6265): with two servers on the
+			// same host at different ports, a later login overwrites the
+			// earlier server's cookie, and native clients cannot opt out
+			// of the auto-attached cookie jar. Rejecting the upgrade here
+			// wedged such clients into an endless reconnect loop
+			// (RUYI-429), so degrade to first-frame token auth instead —
+			// the token decides the identity, and every gate (signature,
+			// disabled state, membership) still applies on that path.
+			slog.Warn("ws: cookie auth failed; falling back to first-frame token auth", "workspace_id", workspaceID)
 		}
-		if !mc.IsMember(r.Context(), uid, workspaceID) {
-			http.Error(w, `{"error":"not a member of this workspace"}`, http.StatusForbidden)
-			return
-		}
-		userID = uid
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)

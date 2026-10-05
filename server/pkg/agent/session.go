@@ -50,6 +50,7 @@ type workerSession struct {
 	closeOnce   sync.Once
 	waitOnce    sync.Once
 	waitResult  error
+	reapDone    chan struct{} // closed once the worker's exit is proven; past it the cancel driver has no kill target
 }
 
 type sessionMode int
@@ -68,6 +69,7 @@ func newWorkerSession(cmd *exec.Cmd, sup *Supervision) *workerSession {
 		s.sup = sup
 		s.mode = sessionSupervised
 		s.reattaching = sup.Reattach
+		s.reapDone = make(chan struct{})
 	}
 	return s
 }
@@ -224,19 +226,26 @@ func (s *workerSession) CloseStdin() error {
 // "signal: killed") so failure classification keeps working; nil on exit 0.
 func (s *workerSession) Wait(ctx context.Context) error {
 	if s.mode == sessionLegacy {
-		err := s.cmd.Wait()
-		// The session owns the whole start→reap→release lifecycle now: the
-		// release is what drops the Windows Job Object handle and kills
-		// anything that outlived the reap. Idempotent, so a backend that
-		// kept its own defer is a harmless second call.
-		releaseProcessGroup(s.cmd)
-		return err
+		// cmd.Wait only. The Windows Job Object release stays with the
+		// backend: codex confirms whole-tree termination by reading the
+		// job's accounting BETWEEN the reap and its own releaseProcessGroup
+		// (cleanup_confirmed gates initialize retries), so a release here
+		// would drop the job handle and delete the map entry before that
+		// confirmation can observe anything, permanently reporting
+		// cleanup as unconfirmed on Windows (RUYI-436). Every legacy
+		// starter releases on its terminal path; this is the exact
+		// ownership split that predated RUYI-349.
+		return s.cmd.Wait()
 	}
 	if s.handle == nil {
 		return errors.New("supervised wait before start")
 	}
 	s.waitOnce.Do(func() {
 		exit, err := s.handle.Wait(ctx)
+		// The exit is proven: the cancel driver's job — unblocking a live
+		// worker — is over, so context cleanup that races past the happy
+		// path must not end in a signal against a reaped worker.
+		close(s.reapDone)
 		if s.startCancel != nil {
 			s.startCancel()
 		}
@@ -316,6 +325,15 @@ func (s *workerSession) armCancelDriver() {
 			return
 		}
 		s.driverOnce.Do(func() {
+			// A reaped worker is never a kill target: the natural-exit
+			// path proves the exit before any cancellation fan-out. Past
+			// this point the check is best-effort — a worker exiting in
+			// the race window just receives a no-op signal, as before.
+			select {
+			case <-s.reapDone:
+				return
+			default:
+			}
 			if grace <= 0 {
 				_ = s.Signal(syscall.SIGKILL)
 				return
@@ -418,6 +436,18 @@ func (s *workerSession) pumpStdin() {
 				}
 			}
 			if rerr != nil {
+				// EOF here is the BACKEND closing its end of the bridge
+				// pipe (claude.go closes its StdinPipe the moment it sees
+				// the final result). Legacy mode delivers EOF to the worker
+				// for free from the closed anonymous pipe; supervised mode
+				// must forward it through the supervisor, or stream-JSON
+				// CLIs that idle after their result never exit and the run
+				// strands in running (RUYI-424). Idempotent: an explicit
+				// session CloseStdin has already fired closeOnce, making
+				// this a no-op.
+				if errors.Is(rerr, io.EOF) {
+					_ = s.CloseStdin()
+				}
 				return
 			}
 		}

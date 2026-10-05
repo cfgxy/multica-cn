@@ -146,7 +146,8 @@
     "delete_action": "プロファイルを削除",
     "delete_confirm_title": "「{{name}}」を削除しますか？",
     "delete_confirm_description": "プロファイルとそのメンバー設定が削除されます。この操作は取り消せません。",
-    "delete_active_warning": "このプロファイルは現在適用中です。削除しても適用マークが消えるだけで、メンバーに書き込まれた設定は元に戻りません。"
+    "delete_active_warning": "このプロファイルは現在適用中です。削除しても適用マークが消えるだけで、メンバーに書き込まれた設定は元に戻りません。",
+    "thinking_default": "ランタイムのデフォルト"
   },
   "detail_tabs": {
     "members": "メンバー",
@@ -203,6 +204,24 @@
   "mobile": {
     "page": {
       "search_placeholder": "スクワッドを検索…"
+    },
+    "create": {
+      "avatar_add": "アイコンを設定",
+      "avatar_hint": "任意。スクワッドが表示されるすべての場所に表示されます。",
+      "search_placeholder": "エージェントを検索…",
+      "search_empty": "検索に一致するエージェントがありません。",
+      "group_my": "マイエージェント",
+      "group_workspace": "ワークスペースのエージェント"
+    },
+    "detail": {
+      "unsaved_title": "未保存の変更があります",
+      "unsaved_keep": "編集を続ける",
+      "unsaved_discard": "破棄",
+      "unsaved_body": "指示への変更はまだ保存されていません。"
+    },
+    "execution": {
+      "add_member": "メンバーを追加",
+      "no_candidates": "アクティブなエージェントはすべて追加済みです。"
     }
   }
 }
