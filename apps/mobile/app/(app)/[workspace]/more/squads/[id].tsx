@@ -15,6 +15,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { router, useLocalSearchParams, Stack } from "expo-router";
+import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import type { SquadMemberStatus } from "@multica/core/types";
@@ -32,6 +33,8 @@ import {
   useUpdateSquad,
   useUpdateSquadMemberRole,
 } from "@/data/mutations/squads";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
+import { useAvatarUploader } from "@/lib/avatar";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useActorLookup } from "@/data/use-actor-name";
@@ -60,6 +63,8 @@ export default function SquadDetailScreen() {
   const updateSquad = useUpdateSquad(squadId);
   const removeMember = useRemoveSquadMember(squadId);
   const updateRole = useUpdateSquadMemberRole(squadId);
+  const { uploading, showAvatarSheet, modalProps } = useAvatarUploader();
+  const navigation = useNavigation();
 
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
@@ -84,6 +89,31 @@ export default function SquadDetailScreen() {
   const canManage =
     !!squad && (isWorkspaceAdmin || (!!me && squad.creator_id === me.id));
   const isArchived = !!squad?.archived_at;
+
+  // S2 (RUYI-418): leaving with unsaved instructions silently discards them.
+  // Prevent the removal (back gesture, header back, router.back alike) and
+  // re-dispatch the original action only after an explicit discard.
+  const instructionsDirty = !!squad && instructions !== squad.instructions;
+  usePreventRemove(!!instructionsDirty, ({ data }) => {
+    Alert.alert(
+      t("mobile.detail.unsaved_title", "Unsaved changes"),
+      t(
+        "mobile.detail.unsaved_body",
+        "Your edits to the instructions haven't been saved yet.",
+      ),
+      [
+        {
+          text: t("mobile.detail.unsaved_keep", "Keep editing"),
+          style: "cancel",
+        },
+        {
+          text: t("mobile.detail.unsaved_discard", "Discard"),
+          style: "destructive",
+          onPress: () => navigation.dispatch(data.action),
+        },
+      ],
+    );
+  });
 
   const statusByMember = useMemo(() => {
     const map = new Map<string, SquadMemberStatus>();
@@ -110,7 +140,21 @@ export default function SquadDetailScreen() {
   const createdLabel = Number.isNaN(created.getTime())
     ? null
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(created);
-  const instructionsDirty = instructions !== squad.instructions;
+
+  // Q5 (RUYI-418): managers can replace or remove the squad avatar in place;
+  // the ActionSheet resolves to "" (remove) or an uploaded attachment URL.
+  const onPickAvatar = async () => {
+    if (!canManage) return;
+    const url = await showAvatarSheet(squad.avatar_url);
+    if (url === null) return;
+    updateSquad.mutate(
+      { avatar_url: url },
+      {
+        onError: () =>
+          Alert.alert(t("name_editor.save_failed", "Failed to save")),
+      },
+    );
+  };
 
   const commitName = () => {
     const next = nameDraft.trim();
@@ -203,7 +247,14 @@ export default function SquadDetailScreen() {
         {/* ── Profile card ── */}
         <View className="rounded-lg border border-border px-3 py-3 gap-2">
           <View className="flex-row items-center gap-3">
-            <ActorAvatar type="squad" id={squad.id} size={44} />
+            <Pressable
+              onPress={onPickAvatar}
+              disabled={!canManage || uploading}
+              accessibilityRole={canManage ? "button" : undefined}
+              accessibilityLabel={t("mobile.create.avatar_add", "Set avatar")}
+            >
+              <ActorAvatar type="squad" id={squad.id} size={44} />
+            </Pressable>
             {editingName ? (
               <TextInput
                 value={nameDraft}
@@ -379,6 +430,42 @@ export default function SquadDetailScreen() {
           ) : null}
         </View>
 
+        {/* ── Execution profiles (Q10, managers only) ── */}
+        {canManage ? (
+          <Pressable
+            onPress={() => {
+              if (!wsSlug) return;
+              router.push({
+                pathname: "/[workspace]/more/squads/[id]/execution-profiles",
+                params: { workspace: wsSlug, id: squad.id },
+              });
+            }}
+            className="flex-row items-center gap-3 rounded-lg border border-border px-3 py-3 active:bg-secondary"
+            accessibilityRole="button"
+            accessibilityLabel={t(
+              "execution_profile.manage_action",
+              "Manage profiles",
+            )}
+          >
+            <View className="flex-1 gap-0.5">
+              <Text className="text-sm font-medium text-foreground">
+                {t("execution_profile.manage_action", "Manage profiles")}
+              </Text>
+              <Text className="text-xs text-muted-foreground">
+                {t(
+                  "execution_profile.empty_description",
+                  "Create a profile to store a runtime and model for each member, then switch them all in one click.",
+                )}
+              </Text>
+            </View>
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={THEME[colorScheme].mutedForeground}
+            />
+          </Pressable>
+        ) : null}
+
         {/* ── Members ── */}
         <View className="gap-2">
           <View className="flex-row items-center justify-between">
@@ -491,6 +578,7 @@ export default function SquadDetailScreen() {
             </Text>
           ) : null}
         </View>
+        <ActionSheetModal {...modalProps} />
       </ScrollView>
     </View>
   );

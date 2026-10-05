@@ -551,7 +551,12 @@
       "unresolve_failed": "重新打开失败"
     },
     "anchor_unavailable": "引用的评论不可用或已删除",
-    "anchor_aria": "跳转到 {{author}} 于{{when}}的评论：{{excerpt}}"
+    "anchor_aria": "跳转到 {{author}} 于{{when}}的评论：{{excerpt}}",
+    "quick_replies": {
+      "menu_label": "快速回复",
+      "menu_empty": "空间管理员还没有配置快速回复",
+      "insert_aria": "插入快速回复“{{name}}”"
+    }
   },
   "reply": {
     "placeholder": "回复..."
@@ -578,6 +583,7 @@
   "agent_live": {
     "is_working": "{{name}} 在工作",
     "is_queued": "{{name}} 排队中",
+    "past_runs": "历史运行 · {{count}}",
     "is_waiting_local_directory": "{{name}} 正在等待本地目录",
     "queued_elapsed_prefix": "已排队 {{elapsed}}",
     "fallback_name": "智能体",
@@ -919,6 +925,15 @@
       "pill_label": "添加评论，输入 @ 可提及"
     },
     "comment": {
+      "menu_copy": "复制",
+      "menu_copy_link": "复制链接",
+      "menu_edit": "编辑",
+      "menu_more_reactions": "更多回应…",
+      "menu_react": "回应…",
+      "menu_reply": "回复",
+      "menu_resolve": "解决该讨论",
+      "menu_select_text": "选择文本",
+      "menu_unresolve": "重新打开讨论",
       "resolved_bar_other": "已解决 · {{count}} 条消息，来自 {{authors}}",
       "resolved_bar_a11y_other": "已解决话题，共 {{count}} 条消息，来自 {{authors}}。点按展开。",
       "resolved_by": "解决者",
@@ -1078,6 +1093,7 @@
     "agent_activity": {
       "runs_count": "运行 · {{count}} 次",
       "badge_a11y": "Agent 运行中 —— 查看运行记录",
+      "badge_idle_a11y": "查看运行记录",
       "row_running_a11y": "智能体正在处理此任务",
       "row_queued_a11y": "智能体任务已排队"
     },

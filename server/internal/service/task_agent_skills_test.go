@@ -240,3 +240,7 @@ func TestLoadAgentSkillBundles_FailsClosedOnReadFailure(t *testing.T) {
 		t.Fatalf("returned %d bundles / %d refs alongside an error, want none", len(bundles), len(refs))
 	}
 }
+
+func (f *skillReadDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by skillReadDBTX")
+}

@@ -313,4 +313,55 @@ describe("MulticaClient", () => {
     expect(logger.lines[0]).not.toContain("secret voice note content");
     expect(JSON.stringify(logger.lines)).not.toContain(TOKEN);
   });
+
+  // The audit search route keys the workspace by UUID in its path — the one
+  // path-keyed workspace route the client calls. A slug input must resolve
+  // to its UUID first, never reach the wire raw.
+  it("resolves a slug workspace to its UUID before the audit search", async () => {
+    const calls: CapturedCall[] = [];
+    const wsId = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      calls.push({ url, init: init ?? {} });
+      if (url.pathname === "/api/workspaces") {
+        return new Response(
+          JSON.stringify([{ id: wsId, name: "My Workspace", slug: "my-workspace" }]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ events: [], next_cursor: null, next_cursor_id: null }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    const client = makeClient(fetchImpl);
+    const result = await client.listAuditEvents("my-workspace", { domain: "run" });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.url.pathname).toBe(`/api/workspaces/${wsId}/audit-events`);
+    expect(calls[1]?.url.searchParams.get("domain")).toBe("run");
+    const headers = calls[1]?.init.headers as Record<string, string>;
+    expect(headers["X-Workspace-Slug"]).toBe("my-workspace");
+    expect(result.events).toEqual([]);
+  });
+
+  it("keeps a UUID workspace on the audit path with no lookup round trip", async () => {
+    const calls: CapturedCall[] = [];
+    const wsId = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    const client = makeClient(
+      makeFetch(200, { events: [], next_cursor: null, next_cursor_id: null }, calls),
+    );
+    await client.listAuditEvents(wsId, {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.pathname).toBe(`/api/workspaces/${wsId}/audit-events`);
+  });
+
+  it("rejects an unresolvable audit-search slug without calling the audit path", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, [], calls));
+    await expect(client.listAuditEvents("no-such-ws", {})).rejects.toThrow(
+      /workspace not found/i,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.pathname).toBe("/api/workspaces");
+  });
 });

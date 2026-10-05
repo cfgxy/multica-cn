@@ -41,6 +41,11 @@ type AuthorizationCode struct {
 	// the minted token's `aud`.
 	Resource string `json:"resource"`
 	Scope    string `json:"scope"`
+	// GrantID is the consent record the code was issued under (RUYI-420).
+	// It is stamped into the minted token's `gid` claim, which the auth
+	// middleware's grant gate resolves. Empty on codes issued before the
+	// grant table existed — their tokens stay legacy.
+	GrantID string `json:"grant_id,omitempty"`
 }
 
 // CodeStore holds authorization codes in Redis.

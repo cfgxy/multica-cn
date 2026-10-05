@@ -13,9 +13,11 @@
  * with chat-mode props.
  */
 import { useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useCreateComment } from "@/data/mutations/issues";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { quickReplyListOptions } from "@/data/queries/quick-replies";
 import { MessageComposer } from "@/components/composer/message-composer";
 import { useT } from "@/lib/use-t";
 
@@ -32,8 +34,12 @@ export function InlineCommentComposer({
   const { t } = useT("issues");
   const createComment = useCreateComment(issueId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const replyTarget = useReplyTargetStore((s) => s.target);
   const clearReplyTarget = useReplyTargetStore((s) => s.clear);
+  // Workspace quick-reply catalog (RUYI-435). Read-open to every member;
+  // rows render dynamically — the defaults live only in the server seed.
+  const { data: quickReplies } = useQuery(quickReplyListOptions(wsId ?? null));
 
   const onSubmit = useCallback(
     async ({
@@ -68,6 +74,11 @@ export function InlineCommentComposer({
         params: { workspace: wsSlug ?? "", mode: "comment" },
       }}
       skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
+      quickReplies={(quickReplies ?? []).map((reply) => ({
+        id: reply.id,
+        name: reply.name,
+        content: reply.content,
+      }))}
       uploadContext={{ issueId }}
       requireVisibleText
       placeholder={t("mobile.composer.placeholder", "Add a comment…")}

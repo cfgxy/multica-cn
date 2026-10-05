@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
@@ -149,6 +150,14 @@ type AgentResponse struct {
 	UpdatedAt                        string                 `json:"updated_at"`
 	ArchivedAt                       *string                `json:"archived_at"`
 	ArchivedBy                       *string                `json:"archived_by"`
+	// Revision is the optimistic-lock token for execution-config writes
+	// (RUYI-433): read it, send it back as expected_revision on update, and a
+	// concurrent config write fails with a structured revision_conflict
+	// instead of silently overwriting. Only the paths that move
+	// runtime_id / model / thinking_level (this endpoint and profile
+	// activation) bump it — status transitions don't, so they never
+	// invalidate a config-write token.
+	Revision int64 `json:"revision"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -255,6 +264,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		UpdatedAt:                timestampToString(a.UpdatedAt),
 		ArchivedAt:               timestampToPtr(a.ArchivedAt),
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
+		Revision:                 a.Revision,
 	}
 }
 
@@ -1744,6 +1754,11 @@ type UpdateAgentRequest struct {
 	// null" (a *[]string can't, because a nil pointer is the same wire
 	// representation as both). MUL-3869.
 	ComposioToolkitAllowlist *[]string `json:"composio_toolkit_allowlist"`
+	// ExpectedRevision is the optimistic lock on execution-config writes
+	// (RUYI-433): when set, the write only lands if the agent still carries
+	// this revision, and a stale value answers 409 revision_conflict with the
+	// actual revision. Same contract as UpdateIssueRequest / UpdateProject.
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
 }
 
 // workspaceAlwaysRedactSecrets reports whether the workspace has opted
@@ -1951,6 +1966,21 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
 	}
+	// Optimistic lock (RUYI-433): the pre-check answers the common stale
+	// token with the revision the caller raced against; the SQL guard still
+	// decides the write, and a race between this read and the UPDATE is
+	// answered by the ErrNoRows recovery after updateAgentPersisted.
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		if existing.Revision != *req.ExpectedRevision {
+			writeRevisionConflict(w, "agent", existing.ID, *req.ExpectedRevision, existing.Revision)
+			return
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: *req.Name, Valid: true}
 	}
@@ -2148,6 +2178,18 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.SessionCompactPct = pgtype.Int4{Int32: *req.SessionCompactPct, Valid: true}
 	}
 	if req.Model != nil {
+		// Catalog gate (RUYI-433, decision 2): when the target runtime's
+		// server-side catalog cache has a usable snapshot, a model the
+		// catalog does not list AND the provider's static catalogs classify
+		// as incompatible is rejected with a structured unsupported_model
+		// BEFORE anything is written — the old behavior stored it and let the
+		// next rebind silently clear it. A catalog miss (offline runtime,
+		// never probed) keeps the custom-model passthrough, and a model the
+		// catalog lists always passes.
+		if msg, ok := h.validateAgentModelAgainstCatalog(r.Context(), existing.WorkspaceID, targetRuntimeID, targetProvider, *req.Model); !ok {
+			writeErrorCode(w, http.StatusBadRequest, "unsupported_model", msg)
+			return
+		}
 		params.Model = pgtype.Text{String: *req.Model, Valid: true}
 	} else if req.RuntimeID != nil && existing.Model.Valid && agent.ModelKnownIncompatibleWithProvider(targetProvider, existing.Model.String) {
 		// Model is runtime-native. When moving an agent across known provider
@@ -2314,6 +2356,16 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	rebinding := params.RuntimeID.Valid && params.RuntimeID != existing.RuntimeID
 	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, rebinding)
 	if err != nil {
+		// 0 rows with an expected_revision means a concurrent config write
+		// won the race between the handler's read and the UPDATE — same
+		// recovery as UpdateProject: reload and answer with the actual
+		// revision.
+		if errors.Is(err, pgx.ErrNoRows) && req.ExpectedRevision != nil {
+			if current, reloadErr := h.Queries.GetAgent(r.Context(), existing.ID); reloadErr == nil {
+				writeRevisionConflict(w, "agent", current.ID, *req.ExpectedRevision, current.Revision)
+				return
+			}
+		}
 		// Unique constraint on (workspace_id, name) — mirror CreateAgent and
 		// return a clear conflict instead of a 500 that leaks the raw
 		// constraint name. The name can still be held by an *archived* agent
@@ -2433,6 +2485,79 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		redactComposioToolkitAllowlist(&resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// validateAgentModelAgainstCatalog is the RUYI-433 catalog gate on explicit
+// model writes. Decision 2 (Owner-ruled): when the target runtime's
+// server-side catalog cache holds a usable snapshot, the write is refused
+// with a structured reason when BOTH catalog sources say no — the runtime's
+// own catalog doesn't list the model (matched through
+// agent.ModelCatalogLookupID so Claude context-window variants find their
+// base entry) AND the provider's static catalogs classify it as incompatible
+// (unknown/custom strings stay allowed, manual input keeps working). No
+// usable snapshot → the write passes: an offline or never-probed runtime has
+// no authoritative list to enforce, which is the "目录未命中放行" half of
+// the ruling. Returns the refusal message; ok=false means reject.
+func (h *Handler) validateAgentModelAgainstCatalog(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	runtimeID pgtype.UUID,
+	targetProvider string,
+	model string,
+) (string, bool) {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" || !runtimeID.Valid {
+		// Clearing to the runtime default, or an unbound agent with no
+		// runtime to consult — nothing to enforce.
+		return "", true
+	}
+	snapshot := h.cachedModelCatalog(ctx, uuidToString(runtimeID))
+	if snapshot == nil {
+		return "", true
+	}
+	// The static classifier needs the target runtime's provider; resolve it
+	// now when this request didn't change runtime_id (the thinking_level
+	// path resolves the same way). A runtime that vanished mid-request has
+	// no catalog worth enforcing — pass, same as a cold cache.
+	provider := targetProvider
+	if provider == "" {
+		resolved, ok := h.resolveAgentProviderForContext(ctx, workspaceID, runtimeID)
+		if !ok {
+			return "", true
+		}
+		provider = resolved
+	}
+	lookupID := agent.ModelCatalogLookupID(provider, trimmed)
+	for _, entry := range snapshot.Models {
+		if entry.ID == trimmed || entry.ID == lookupID {
+			return "", true
+		}
+	}
+	// The runtime catalog misses it. Only refuse when the static provider
+	// catalogs positively classify the string as a known-family mismatch —
+	// that is the "known incompatible" case Issue range 3 names. Anything
+	// else is a custom model and keeps the manual-input passthrough.
+	if !agent.ModelKnownIncompatibleWithProvider(provider, trimmed) {
+		return "", true
+	}
+	return fmt.Sprintf(
+		"model %q is not in runtime %s's model catalog; pick a model the runtime advertises (get_runtime_models) or clear model to use the runtime default",
+		trimmed, uuidToString(runtimeID),
+	), false
+}
+
+// resolveAgentProviderForContext is resolveAgentProvider without the request:
+// the catalog gate can run before any request-scoped resolution happened and
+// only needs the runtime row.
+func (h *Handler) resolveAgentProviderForContext(ctx context.Context, workspaceID, runtimeID pgtype.UUID) (string, bool) {
+	rt, err := h.Queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{
+		ID:          runtimeID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return "", false
+	}
+	return rt.Provider, true
 }
 
 // updateAgentPersisted writes the agent row via UpdateAgent. When the update
