@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -85,7 +86,8 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 			return out, fmt.Errorf("cancel tasks: %w", err)
 		}
 		// Same-tx audit (RUYI-355): the runtime teardown ended these runs.
-		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonRuntimeTeardown, AuditActorSystem, pgtype.UUID{}, nil); err != nil {
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonRuntimeTeardown, AuditActorSystem, pgtype.UUID{}, nil,
+			AuditTrigger{Kind: "runtime", Ref: util.UUIDToString(runtimeID)}); err != nil {
 			return out, err
 		}
 		if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled...); err != nil {
