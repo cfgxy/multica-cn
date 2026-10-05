@@ -27,6 +27,9 @@ export interface NotificationActionHandlers {
     workspaceSlug: string,
   ) => Promise<WorkspaceActivationResult>;
   switchServer: (serverId: string) => Promise<ServerSwitchOutcome>;
+  /** Reachability probe for the notification's source server, resolved from
+   *  the live server list. False when the entry is gone or the probe fails. */
+  probeTargetServer: (serverId: string) => Promise<boolean>;
   requestWorkspaceConfirmation: (
     action: WorkspaceConfirmation,
     onConfirm: () => Promise<void>,
@@ -36,6 +39,12 @@ export interface NotificationActionHandlers {
     onConfirm: () => Promise<void>,
   ) => void;
   showUnavailable: (action: UnavailableAction) => void;
+  /** Shown when the probe gate rejects the target before any switch: the
+   *  user gets the real reason instead of a switch that rolls back. */
+  showServerUnreachable: (
+    action: ServerConfirmation,
+    onRetry: () => Promise<void>,
+  ) => void;
   showWorkspaceFailed: (error: unknown, onRetry: () => Promise<void>) => void;
   showServerFailed: (error: unknown, onRetry: () => Promise<void>) => void;
   onRetryAvailable: () => void;
@@ -146,11 +155,27 @@ export async function executeNotificationAction(
         openInWorkspace(action, handlers),
       );
       return;
-    case "confirm-server":
+    case "confirm-server": {
+      // Probe the target BEFORE asking to switch: switchServer() rolls back
+      // to the previous server when the target session can't be restored, so
+      // an unreachable target turned every tap into "confirm a switch, watch
+      // it bounce back, tap again" (RUYI-415). Same degrade semantics as the
+      // cold-start picker (RUYI-404): an unreachable target never enters the
+      // switch flow — it gets a retryable, named reason instead.
+      const reachable = await handlers
+        .probeTargetServer(action.serverId)
+        .catch(() => false);
+      if (!reachable) {
+        const retry = () => executeNotificationAction(action, handlers);
+        handlers.showServerUnreachable(action, retry);
+        handlers.onRetryAvailable();
+        return;
+      }
       handlers.requestServerConfirmation(action, () =>
         openOnOtherServer(action, handlers),
       );
       return;
+    }
     case "unavailable":
       handlers.showUnavailable(action);
       return;

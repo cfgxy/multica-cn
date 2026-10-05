@@ -89,7 +89,8 @@ MCP 侧仍须承担一件事：backend 返回 401 时，映射为带指针的 40
 
 ### 3.5 令牌与密钥
 
-- access token = RS256 JWT。`iss` = 站点根 origin，`aud` = `resource` 参数回显值，`scope` = `mcp`，`sub` = Multica user id。
+- access token = RS256 JWT。`iss` = 站点根 origin，`aud` = `resource` 参数回显值，`scope` = 授权的 scope 集合
+  （RUYI-420 起为三档，并新增 `cid`/`gid` claims 支撑撤销闸门，见 ADR 003 §2.1/§2.2），`sub` = Multica user id。
 - 签名私钥从环境变量 `OAUTH_SIGNING_KEY`（PEM）读取，与现有 `JWT_SECRET` 同款纪律：**未配置时 OAuth 面不启用**
   （启动 `slog.Warn`，两份发现文档不发布，`/auth/oauth/*` 返回 501），PAT 路径不受影响。零新表、零启动期密钥生成。
 - 公钥经 `/.well-known/jwks.json` 发布（由私钥导出，无需持久化）。选 RS256 而非复用 HS256 `JWT_SECRET`：
@@ -100,15 +101,19 @@ MCP 侧仍须承担一件事：backend 返回 401 时，映射为带指针的 40
 
 ### 3.6 客户端与 scope
 
-- 预置客户端：新增一张 `oauth_client` 表（client_id、client_secret_hash、name、redirect_uris、created_by、时间戳），
-  由管理入口手动创建；Owner 把 client_id/secret 填进 ChatGPT 的高级 OAuth 设置。不做 DCR。
+- 预置客户端：`oauth_client` 表（client_id、client_secret_hash、name、redirect_uris、created_by、时间戳；
+  RUYI-420 起另有软禁用与 secret 轮换时间列，见 ADR 003 §2.1），由管理入口手动创建；Owner 把 client_id/secret
+  填进 ChatGPT 的高级 OAuth 设置。不做 DCR。丢失 secret 的处置是**原位轮换**（旧 secret 立即失效），
+  不再是「建新 client 删旧 client」。
 - 授权码存 Redis（已有 `rdb`），TTL 60s，一次性消费。不建表。
-- scope 首版只有 `mcp` 一个值；per-tool `securitySchemes` 全部标同一 scope。
+- scope：本 ADR 交付时只有 `mcp` 一个值；RUYI-420 起为 `mcp:read`/`mcp:write`/`mcp:run` 三档
+  （存量 `mcp` = 全量），校验单点在 `middleware.Auth`，细节见 ADR 003 §2.2。
 
 ### 3.7 过度设计预警的处置
 
 初稿命中"新增超过 2 个新实体"（oauth_client / authorization_codes / refresh_tokens / signing_keys）。
-已简化为**新增 1 个实体**：授权码入 Redis、首版无 refresh token、签名密钥走环境变量。
+本 ADR 交付时**新增 1 个实体**：授权码入 Redis、首版无 refresh token、签名密钥走环境变量。
+RUYI-420 起为 2 张表（`oauth_grant` 加入），取舍见 ADR 003 §2.1。
 
 ## 4 备选方案
 
@@ -126,9 +131,9 @@ MCP 侧仍须承担一件事：backend 返回 401 时，映射为带指针的 40
 
 **负面 / 需承担**：
 
-1. **90 天长寿命 bearer token 存在 ChatGPT 侧，且首版无 refresh、无撤销 UI。** 泄露窗口与现有 PAT 同量级，
-   但持有方是外部服务。缓解：token 记录在 `oauth_client` 关联的审计路径上，撤销首版靠"删除 client"这一粗粒度动作。
-   **这是本 ADR 最需要 Owner 知晓的一条**；Owner 可在任一轮要求改为短寿命 + refresh 轮换。
+1. **90 天长寿命 bearer token 存在 ChatGPT 侧，且首版无 refresh。** 泄露窗口与现有 PAT 同量级，
+   但持有方是外部服务。RUYI-420 起撤销由查表闸门补足：撤销/禁用在缓存窗口 ≤10 分钟内生效
+   （ADR 003 §2.1），「删除 client」仍是紧急兜底；无 refresh 的取舍维持。
 2. `.well-known` 的 matcher 放宽会让所有含点的 `.well-known` 路径进入 `proxy()` 一次函数调用，
    规则未命中即落回原行为；开销可忽略，但这是 proxy 覆盖面的一次实质扩大，需在实现单的 Review 中核对未命中路径行为不变。
 3. `OAUTH_SIGNING_KEY` 未配置时 OAuth 面静默不启用。必须有启动日志与文档，否则表现为"发现文档 404"，
