@@ -86,6 +86,7 @@ import {
 } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   RefreshControl,
   View,
@@ -1042,20 +1043,36 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       {/* Outer Pressable owns the "tap anywhere outside the selected
           comment to exit text-selection mode" gesture. Disabled when
           no comment is selected → layout-only wrapper, every tap passes
-          through to cells / chips / reactions. Active state captures any
-          tap that didn't fire an inner Pressable — selecting CommentBody
-          renders without its own Pressable wrapper (see comment-card.tsx
-          `if (isSelecting) return body;`), so taps on the selected
-          comment dismiss too, matching iOS Notes / iMessage. Scroll
-          gestures are unaffected. */}
+          through to cells / chips / reactions.
+
+          On Android the layer is ALSO disabled while a comment is in
+          selection mode: an enabled Pressable claims the JS responder
+          for every touch (Pressability's onStartShouldSetResponder),
+          and that claim starves the native TextView selection pipeline —
+          the long-press on the now-bare selectable body (see
+          comment-card.tsx `if (isSelecting) return body;`) never reaches
+          Android's text-selection machinery, so no selection ever
+          appears, and on release Pressability's compensating onPress
+          fired clear(), wiping the fresh mode (RUYI-416 rework,
+          defect 1; QA's control experiment saw selection work only with
+          this layer disabled). Disabled here, no JS view is in the
+          negotiation: the native long-press starts the selection with
+          handles, nothing JS-side fires on release, and the mode
+          survives. Android exit paths: scroll (onScrollBeginDrag →
+          clear) or long-press another comment body.
+
+          iOS keeps the enabled tap-anywhere-to-dismiss layer, taps on
+          the selected comment included (UIKit's selection isn't blocked
+          by the JS claim) — unchanged from the first round. */}
       <Pressable
         onPress={
           selectingId
             ? () => useCommentSelectStore.getState().clear()
             : undefined
         }
-        disabled={!selectingId}
+        disabled={!selectingId || Platform.OS === "android"}
         style={{ flex: 1 }}
+        testID="timeline-select-dismiss-layer"
       >
       <FlashList
         key={flashListKey}

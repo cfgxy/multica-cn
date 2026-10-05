@@ -2,6 +2,7 @@
 
 import { memo, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { History } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -14,7 +15,13 @@ import { issueKeys } from "@multica/core/issues/queries";
 import type { AgentTask } from "@multica/core/types";
 import { TranscriptButton } from "../../common/task-transcript";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
-import { ActiveTaskRow } from "./execution-log-section";
+import {
+  ActiveTaskRow,
+  PastRow,
+  isTerminalTask,
+  sortPastRuns,
+} from "./execution-log-section";
+import { RunDetailDrawer } from "./run-detail-drawer";
 import { useT } from "../../i18n";
 
 // Per-issue "is an agent working on this right now?" chip for the issue
@@ -29,16 +36,24 @@ import { useT } from "../../i18n";
 // slower than this per-issue list and left the chip lagging behind the log's
 // "agent is working".
 //
+// Double state (RUYI-417): the chip used to vanish once nothing was active,
+// which erased the only header entry to the issue's run history. It now
+// degrades to an inactive history chip instead of disappearing:
+//   - active work      → avatar chip + "{name} is working" (+ popover rows)
+//   - no active, past  → history icon + "Past runs · N" (+ popover rows,
+//                        click-through to the run detail drawer)
+//   - never run        → nothing
+//
 // Collapsed display stays intentionally shallow:
 //   - one running agent  → avatar + "{name} is working"
 //   - multiple running   → avatar stack + "N agents working"
 //   - queued only        → "{name} is queued" / "N agents queued",
 //                          half-opacity avatars / muted text (no beam)
 //
-// Hovering the chip opens a compact Popover card with the same active rows as
-// the right panel (click / keyboard still toggle it for touch and a11y). Those
-// rows show necessary status/time and task entry actions, but do not render
-// event counts or prefetch task messages for a count.
+// Hovering either chip opens a compact Popover card with the same rows as
+// the right panel (click / keyboard still toggle it for touch and a11y).
+// Those rows show necessary status/time and task entry actions, but do not
+// render event counts or prefetch task messages for a count.
 
 interface IssueAgentHeaderChipProps {
   issueId: string;
@@ -83,12 +98,22 @@ export const IssueAgentHeaderChip = memo(function IssueAgentHeaderChip({
       openedTranscriptTaskSnapshot
     : null;
 
-  // No active work → render nothing.
-  if (running.length === 0 && queued.length === 0 && !openedTranscriptTask) return null;
+  // Terminal runs on record, newest first. Same derivation as the Execution
+  // log's past list, so the header's history count and the sidebar's "Show
+  // past runs (N)" can never disagree.
+  const pastTasks = useMemo(
+    () => sortPastRuns(tasks.filter(isTerminalTask)),
+    [tasks],
+  );
+
+  const isActive = running.length > 0 || queued.length > 0;
+
+  // No active work, no history, no pinned transcript → render nothing.
+  if (!isActive && pastTasks.length === 0 && !openedTranscriptTask) return null;
 
   return (
     <>
-      {running.length > 0 || queued.length > 0 ? (
+      {isActive ? (
         <ActiveChip
           issueId={issueId}
           running={running}
@@ -97,6 +122,9 @@ export const IssueAgentHeaderChip = memo(function IssueAgentHeaderChip({
             setOpenedTranscriptTaskSnapshot(open ? task : null);
           }}
         />
+      ) : null}
+      {!isActive && pastTasks.length > 0 ? (
+        <PastRunsChip issueId={issueId} pastTasks={pastTasks} />
       ) : null}
       {openedTranscriptTask ? (
         <TranscriptButton
@@ -226,6 +254,91 @@ function ActiveChip({
       {/* Separator from the action buttons — the chip is a status segment,
           not another button, so a hairline keeps the two groups legible. */}
       <span className="h-4 w-px bg-border" aria-hidden="true" />
+    </div>
+  );
+}
+
+// Inactive history chip (RUYI-417): what the header shows once nothing is
+// running but the issue has run history. Deliberately calm — the base
+// (non-beam) ActiveChip chrome with a history glyph and the past-run count —
+// so "something ran here" reads at a glance without pretending anything is
+// live. The popover lists the same past rows as the Execution log's past
+// list (identical ordering and interactions, including the run-detail
+// drawer), paginated like the sidebar so a long-lived issue doesn't mount
+// hundreds of rows at once.
+const PAST_CHIP_PAGE_SIZE = 20;
+
+function PastRunsChip({
+  issueId,
+  pastTasks,
+}: {
+  issueId: string;
+  pastTasks: AgentTask[];
+}) {
+  const { t } = useT("issues");
+  const [detailTask, setDetailTask] = useState<AgentTask | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAST_CHIP_PAGE_SIZE);
+  const label = t(($) => $.agent_live.past_runs, { count: pastTasks.length });
+
+  return (
+    <div className="flex items-center gap-1">
+      <Popover>
+        <PopoverTrigger
+          openOnHover
+          delay={150}
+          closeDelay={200}
+          render={
+            <button
+              type="button"
+              aria-label={label}
+              // Same chrome as the queued-only ActiveChip state: quiet, no
+              // beam — history is inert by definition.
+              className="flex h-9 min-w-9 max-w-[11rem] items-center justify-center gap-1.5 rounded-md px-2 text-muted-foreground outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring md:h-7 md:min-w-0 md:justify-start md:px-1.5"
+            />
+          }
+        >
+          <History className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="hidden min-w-0 truncate text-caption text-muted-foreground md:inline">
+            {label}
+          </span>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-80">
+          <div className="text-caption font-medium text-muted-foreground">
+            {label}
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {pastTasks.slice(0, visibleCount).map((task) => (
+              <PastRow
+                key={task.id}
+                task={task}
+                issueId={issueId}
+                onOpenDetail={() => setDetailTask(task)}
+              />
+            ))}
+            {pastTasks.length > visibleCount && (
+              <button
+                type="button"
+                onClick={() => setVisibleCount((n) => n + PAST_CHIP_PAGE_SIZE)}
+                className="w-full rounded px-1 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+              >
+                {t(($) => $.execution_log.show_more, {
+                  count: pastTasks.length - visibleCount,
+                })}
+              </button>
+            )}
+          </div>
+        </PopoverContent>
+      </Popover>
+      {/* Same trailing hairline as the active chip — one status segment,
+          whether live or historical. */}
+      <span className="h-4 w-px bg-border" aria-hidden="true" />
+      <RunDetailDrawer
+        issueId={issueId}
+        task={detailTask}
+        onOpenChange={(open) => {
+          if (!open) setDetailTask(null);
+        }}
+      />
     </div>
   );
 }

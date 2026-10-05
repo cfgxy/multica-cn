@@ -2,7 +2,7 @@
 
 import React, { useSyncExternalStore } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import type { Issue, TimelineEntry } from "@multica/core/types";
 import type { TimelineSortMode } from "@multica/core/issues/timeline-sort";
 
@@ -170,10 +170,16 @@ jest.mock("@/data/workspace-store", () => ({
 jest.mock("@/data/queries/issues", () => ({
   issueAttachmentsOptions: () => ({ queryKey: ["attachments"] }),
 }));
+const mockCommentSelectState = {
+  selectingId: null as string | null,
+  clear: jest.fn(),
+};
+
 jest.mock("@/data/comment-select-store", () => ({
   useCommentSelectStore: Object.assign(
-    (selector: (state: { selectingId: null }) => unknown) => selector({ selectingId: null }),
-    { getState: () => ({ clear: jest.fn() }) },
+    (selector: (state: typeof mockCommentSelectState) => unknown) =>
+      selector(mockCommentSelectState),
+    { getState: () => mockCommentSelectState },
   ),
 }));
 jest.mock("@/data/stores/timeline-sort-store", () => ({
@@ -325,5 +331,79 @@ describe("TimelineList sorting and truncation", () => {
     expect(
       screen.queryByText("Earlier timeline content has not been loaded."),
     ).toBeNull();
+  });
+});
+
+describe("selection-mode dismiss layer (RUYI-416)", () => {
+  const originalOS = Platform.OS;
+
+  beforeEach(() => {
+    mockCommentSelectState.clear.mockClear();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(Platform, "OS", {
+      value: originalOS,
+      configurable: true,
+    });
+  });
+
+  it("iOS: a short tap outside the selected comment still clears selection mode", async () => {
+    Object.defineProperty(Platform, "OS", {
+      value: "ios",
+      configurable: true,
+    });
+    mockCommentSelectState.selectingId = "root-a";
+    try {
+      await renderTimeline([comment("root-a", "2026-09-05T09:00:00Z")]);
+
+      expect(mockCommentSelectState.clear).not.toHaveBeenCalled();
+      fireEvent.press(screen.getByTestId("timeline-select-dismiss-layer"));
+      expect(mockCommentSelectState.clear).toHaveBeenCalledTimes(1);
+    } finally {
+      mockCommentSelectState.selectingId = null;
+    }
+  });
+
+  it("Android: while selecting, the dismiss layer declines the responder claim so nothing JS-side can wipe the mode", async () => {
+    // The rework defect: with the layer enabled during selection mode, its
+    // Pressability claim (onStartShouldSetResponder → true) starved the
+    // native TextView selection pipeline — no selection ever appeared —
+    // and the release fired the compensating onPress → clear(), wiping
+    // the fresh mode. With the layer disabled on Android, Pressability
+    // still attaches its handlers but the claim handler returns false:
+    // no JS view enters the negotiation, the native long-press owns the
+    // touch, and the mode survives. Exit paths are scroll and long-press
+    // another body.
+    Object.defineProperty(Platform, "OS", {
+      value: "android",
+      configurable: true,
+    });
+    mockCommentSelectState.selectingId = "root-a";
+    try {
+      await renderTimeline([comment("root-a", "2026-09-05T09:00:00Z")]);
+
+      const layer = screen.getByTestId("timeline-select-dismiss-layer");
+      expect(layer.props.onStartShouldSetResponder()).toBe(false);
+      expect(mockCommentSelectState.clear).not.toHaveBeenCalled();
+    } finally {
+      mockCommentSelectState.selectingId = null;
+    }
+  });
+
+  it("Android: outside selection mode the layer still declines (layout-only wrapper)", async () => {
+    Object.defineProperty(Platform, "OS", {
+      value: "android",
+      configurable: true,
+    });
+    try {
+      await renderTimeline([comment("root-a", "2026-09-05T09:00:00Z")]);
+
+      const layer = screen.getByTestId("timeline-select-dismiss-layer");
+      expect(layer.props.onStartShouldSetResponder()).toBe(false);
+      expect(mockCommentSelectState.clear).not.toHaveBeenCalled();
+    } finally {
+      mockCommentSelectState.selectingId = null;
+    }
   });
 });
