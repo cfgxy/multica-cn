@@ -22,7 +22,11 @@ function makeFetch(
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof URL ? input : new URL(String(input));
     calls?.push({ url, init: init ?? {} });
-    return new Response(typeof body === "string" ? body : JSON.stringify(body), {
+    // A 204 response must be constructed bodyless (undici rejects a
+    // zero-length body on 204/205).
+    const responseBody =
+      typeof body === "string" ? (body.length > 0 ? body : undefined) : JSON.stringify(body);
+    return new Response(responseBody, {
       status,
       headers: { "Content-Type": "application/json" },
     });
@@ -363,5 +367,84 @@ describe("MulticaClient", () => {
     );
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url.pathname).toBe("/api/workspaces");
+  });
+});
+
+describe("project resource client methods (RUYI-458)", () => {
+  const RESOURCE = {
+    id: "pr-1",
+    project_id: "p1",
+    workspace_id: "w1",
+    resource_type: "github_repo",
+    resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+    label: null,
+    position: 0,
+    created_at: "2026-10-05T00:00:00Z",
+    created_by: null,
+  };
+
+  it("GETs the project's resource collection", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { resources: [RESOURCE], total: 1 }, calls));
+    const result = await client.listProjectResources("ws", "p1");
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources");
+    expect(result).toEqual({ resources: [RESOURCE], total: 1 });
+  });
+
+  it("POSTs the create body under /resources", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(201, RESOURCE, calls));
+    const body = {
+      resource_type: "local_directory" as const,
+      resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+      label: "工作副本",
+    };
+    await client.createProjectResource("ws", "p1", body);
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual(body);
+  });
+
+  it("PUTs the partial update body to the resource path", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, RESOURCE, calls));
+    await client.updateProjectResource("ws", "p1", "pr-1", { label: null });
+    expect(calls[0]?.init.method).toBe("PUT");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources/pr-1");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ label: null });
+  });
+
+  it("DELETEs the binding and tolerates the empty 204 body", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(204, "", calls));
+    await expect(client.deleteProjectResource("ws", "p1", "pr-1")).resolves.toBeUndefined();
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources/pr-1");
+  });
+
+  it("keeps the 409 duplicate-binding body on MulticaApiError.body for structured outcomes", async () => {
+    const client = makeClient(
+      makeFetch(409, { error: "this resource is already attached to the project" }),
+    );
+    try {
+      await client.createProjectResource("ws", "p1", {
+        resource_type: "github_repo",
+        resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      });
+      throw new Error("expected the create to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MulticaApiError);
+      const apiErr = error as MulticaApiError;
+      expect(apiErr.status).toBe(409);
+      expect(apiErr.body?.error).toBe("this resource is already attached to the project");
+    }
+  });
+
+  it("percent-encodes path segments", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { resources: [], total: 0 }, calls));
+    await client.listProjectResources("ws", "p/1");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p%2F1/resources");
   });
 });

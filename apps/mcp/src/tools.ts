@@ -35,6 +35,15 @@
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
+ * Write (RUYI-458 project resource bindings): list_project_resources,
+ *       create_project_resource, update_project_resource,
+ *       delete_project_resource — the same REST surface the web project page
+ *       drives. Binding/unbinding is metadata-only (a pointer row), never
+ *       touches the real repository or directory, and never starts a run;
+ *       resource_type is immutable server-side, so update_project_resource's
+ *       schema never declares it. Defined failures (duplicate binding,
+ *       unknown ids, the worktree daemon gate) come back as structured
+ *       results keyed by `code`.
  *
  * Every tool takes an explicit `workspace` (slug, or UUID). There is no
  * ambient workspace: the Owner decision makes create_issue universal, so
@@ -56,8 +65,10 @@ import {
   optionalClearableString,
   optionalEnum,
   optionalInt,
+  optionalProjectResourceRef,
   optionalString,
   optionalStringArray,
+  requireProjectResourceRef,
   requireString,
   ToolInputError,
 } from "./schemas.js";
@@ -66,16 +77,19 @@ import type {
   AgentDetailInfo,
   CancelRunResult,
   CommentInfo,
+  CreateProjectResourceBody,
   ExecutionProfileInfo,
   IssueInfo,
   ModelEntryInfo,
   ProjectInfo,
+  ProjectResourceInfo,
   RuntimeInfo,
   SearchIssueInfo,
   SquadInfo,
   UnavailableModelEntryInfo,
   UpdateIssueBody,
   UpdateProjectBody,
+  UpdateProjectResourceBody,
 } from "./types.js";
 
 export interface JsonSchemaProperty {
@@ -143,6 +157,10 @@ const PROJECT_STATUS_ENUM = ["planned", "in_progress", "paused", "completed", "c
 const PROJECT_LEAD_TYPES = ["member", "agent"] as const;
 // The backend caps project instructions at 32,000 runes (maxProjectInstructionsLen).
 const PROJECT_INSTRUCTIONS_MAX = 32_000;
+
+// Mirrors packages/core/types/project.ts's ProjectResourceType: the types
+// validateAndNormalizeResourceRef knows today.
+const PROJECT_RESOURCE_TYPES = ["github_repo", "local_directory"] as const;
 
 const DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
@@ -365,6 +383,64 @@ function structuredCommentFailure(error: unknown): Record<string, unknown> | und
     default:
       return undefined;
   }
+}
+
+// ---- structured project-resource failures (RUYI-458) ----------------------
+//
+// The project_resource endpoints define a small outcome matrix — bad ref
+// shape (400), permission denial (403), unknown project/resource (404),
+// duplicate binding or a per-daemon local_directory conflict (409), and the
+// worktree-mode daemon gate (422 daemon_version_unsupported). Tools surface
+// these as structured results keyed by `code` so callers branch on the code,
+// never on exception strings. Anything outside the matrix (auth, transport,
+// 5xx, other 422s) is rethrown to the MCP error surface unchanged.
+
+function stringField(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function structuredResourceFailure(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof MulticaApiError)) return undefined;
+  const body = error.body ?? {};
+  const message = apiErrorMessage(error);
+  switch (error.status) {
+    case 400:
+      return { code: "invalid_input", message };
+    case 403:
+      return { code: "permission_denied", message };
+    case 404:
+      return { code: "not_found", message };
+    case 409:
+      return { code: "already_attached", message };
+    case 422:
+      if (body.code === "daemon_version_unsupported") {
+        return {
+          code: "daemon_version_unsupported",
+          message,
+          current_version: stringField(body, "current_version") ?? null,
+          min_version: stringField(body, "min_version") ?? null,
+          daemon_id: stringField(body, "daemon_id") ?? null,
+        };
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+// The binding projection the resource tools return (RUYI-458): identity,
+// typed pointer, display metadata and order — the fields a caller needs to
+// re-address the binding (id) or judge what it points at (type + ref).
+function resourceBrief(resource: ProjectResourceInfo): Record<string, unknown> {
+  return {
+    id: resource.id,
+    resource_type: resource.resource_type,
+    resource_ref: resource.resource_ref,
+    label: resource.label,
+    position: resource.position,
+    created_at: resource.created_at,
+  };
 }
 
 // The full base-field projection the project tools return (RUYI-354). Flat on
@@ -3842,6 +3918,220 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       const id = requireString(args, "id");
       await client.deleteQuickReply(workspace, id);
       return { deleted: true, id };
+    },
+  },
+  // ---- project resource bindings (RUYI-458) ---------------------------------
+  // The exact REST surface the web project page drives, so MCP callers
+  // manage the same rows. Binding and unbinding are metadata-only: they
+  // record or remove a pointer, never clone/delete/modify the underlying
+  // GitHub repository or local directory, and never trigger agent runs.
+  {
+    name: "list_project_resources",
+    description:
+      "List the resources bound to a project — github_repo checkouts and " +
+      "local_directory bindings with their refs, labels and order. Read-only. " +
+      "get_project's resource_count is this list's length; resource ids come " +
+      "from here.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+      },
+      required: ["workspace", "project_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const result = await client.listProjectResources(workspace, projectId);
+      return {
+        total: result.total,
+        resources: result.resources.map(resourceBrief),
+      };
+    },
+  },
+  {
+    name: "create_project_resource",
+    description:
+      "Bind a resource to a project. resource_type=github_repo takes " +
+      "resource_ref.url (http(s)/ssh/scp git URL) plus optional " +
+      "resource_ref.ref and resource_ref.default_branch_hint; " +
+      "resource_type=local_directory takes resource_ref.local_path (absolute " +
+      "path) and resource_ref.daemon_id (the owning runtime), plus optional " +
+      "resource_ref.label and resource_ref.execution_mode (in_place | " +
+      "worktree). Duplicate bindings fail with a structured already_attached " +
+      "result — never dirty duplicates. Binding only records the pointer: " +
+      "nothing is cloned or created, and no agent runs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+        resource_type: {
+          type: "string",
+          enum: [...PROJECT_RESOURCE_TYPES],
+          description: "github_repo | local_directory.",
+        },
+        resource_ref: {
+          type: "object",
+          description:
+            "Type-specific pointer, validated against resource_type. " +
+            "github_repo: { url, ref?, default_branch_hint? }. " +
+            "local_directory: { local_path, daemon_id, label?, execution_mode? }.",
+        },
+        label: { type: "string", description: "Optional display label." },
+        position: {
+          type: "integer",
+          description: "Optional order (default: appended after existing resources).",
+          minimum: 0,
+        },
+      },
+      required: ["workspace", "project_id", "resource_type", "resource_ref"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const resourceType = optionalEnum(args, "resource_type", PROJECT_RESOURCE_TYPES);
+      if (resourceType === undefined) {
+        throw new ToolInputError(
+          "'resource_type' is required and must be one of: github_repo, local_directory",
+        );
+      }
+      const body: CreateProjectResourceBody = {
+        resource_type: resourceType,
+        resource_ref: requireProjectResourceRef(args, "resource_ref", resourceType),
+        label: optionalString(args, "label"),
+        position: optionalInt(args, "position", { min: 0 }),
+      };
+      try {
+        const resource = await client.createProjectResource(workspace, projectId, body);
+        return { created: true, ...resourceBrief(resource) };
+      } catch (error) {
+        const failure = structuredResourceFailure(error);
+        if (failure === undefined) throw error;
+        return {
+          created: false,
+          ...failure,
+          ...(failure.code === "already_attached"
+            ? {
+                hint: "The project already carries this binding — list_project_resources shows the existing row.",
+              }
+            : {}),
+        };
+      }
+    },
+  },
+  {
+    name: "update_project_resource",
+    description:
+      "Update a bound project resource (PATCH): omitted fields keep their " +
+      "current value; label null or \"\" clears the label; position reorders; " +
+      "resource_ref re-points the binding (validated against the stored " +
+      "resource_type). resource_type itself is immutable — re-pointing at a " +
+      "different type is a different resource, so delete and re-add instead. " +
+      "resource_id comes from list_project_resources.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+        resource_id: {
+          type: "string",
+          description: "Resource UUID, from list_project_resources.",
+        },
+        label: {
+          type: ["string", "null"],
+          description: "New label. Pass null or \"\" to clear; omit to keep.",
+        },
+        position: { type: "integer", description: "New order. Omit to keep.", minimum: 0 },
+        resource_ref: {
+          type: "object",
+          description:
+            "Re-pointed binding; the shape must match the resource's stored type. Omit to keep.",
+        },
+      },
+      required: ["workspace", "project_id", "resource_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const resourceId = requireString(args, "resource_id");
+      // resource_type is immutable server-side; refusing it here teaches the
+      // rule at the schema boundary instead of a 400 round trip.
+      if (args.resource_type !== undefined) {
+        throw new ToolInputError(
+          "'resource_type' is immutable — delete and re-add the resource to change its type",
+        );
+      }
+      const label = optionalClearableString(args, "label");
+      const position = optionalInt(args, "position", { min: 0 });
+      const resourceRef = optionalProjectResourceRef(args, "resource_ref");
+      const body: UpdateProjectResourceBody = {};
+      if (label !== undefined) body.label = label;
+      if (position !== undefined) body.position = position;
+      if (resourceRef !== undefined) body.resource_ref = resourceRef;
+      if (Object.keys(body).length === 0) {
+        throw new ToolInputError(
+          "update_project_resource requires at least one of `label`, `position` or `resource_ref`",
+        );
+      }
+      try {
+        const resource = await client.updateProjectResource(
+          workspace,
+          projectId,
+          resourceId,
+          body,
+        );
+        return { updated: true, ...resourceBrief(resource) };
+      } catch (error) {
+        const failure = structuredResourceFailure(error);
+        if (failure === undefined) throw error;
+        return { updated: false, ...failure };
+      }
+    },
+  },
+  {
+    name: "delete_project_resource",
+    description:
+      "Unbind a resource from a project by resource_id. WARNING (binding " +
+      "only): this removes the project's pointer row and nothing else — the " +
+      "real GitHub repository and the real local directory are never deleted " +
+      "or modified. Re-binding the same ref afterwards is allowed; deleting " +
+      "an already-unbound id answers a structured not_found instead of " +
+      "failing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+        resource_id: {
+          type: "string",
+          description: "Resource UUID, from list_project_resources.",
+        },
+      },
+      required: ["workspace", "project_id", "resource_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const resourceId = requireString(args, "resource_id");
+      try {
+        await client.deleteProjectResource(workspace, projectId, resourceId);
+        return { deleted: true, id: resourceId };
+      } catch (error) {
+        // Re-running an unbind is a defined outcome (the binding is already
+        // gone), not a transport failure — surface it as a structured result
+        // so idempotent retries read as successes-with-status.
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return {
+            deleted: false,
+            code: "not_found",
+            message: apiErrorMessage(error),
+            hint: "Nothing to unbind — the binding is already gone.",
+          };
+        }
+        throw error;
+      }
     },
   },
 ];
