@@ -138,6 +138,8 @@
       "cancel": "Cancel",
       "switch_failed_title": "Switch failed",
       "switch_failed_message": "Could not switch servers.",
+      "server_unreachable_title": "Can't reach the server",
+      "server_unreachable_message": "Couldn't reach “{{server}}”. Check your network and try again.",
       "workspace_failed_title": "Can't open notification",
       "workspace_failed_message": "Could not switch workspaces.",
       "retry": "Retry",

@@ -374,3 +374,7 @@ func TestResolveTaskSkillBundles_ScopedReadFailureReturns500(t *testing.T) {
 	resolveBundles(t, newSpyHandler(t, spy), runtimeID, taskID, workspaceRef(skillIDs[0])).
 		Want(http.StatusInternalServerError)
 }
+
+func (s *skillQuerySpy) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by skillQuerySpy")
+}

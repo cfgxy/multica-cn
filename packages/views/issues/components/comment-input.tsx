@@ -4,7 +4,14 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { skillListOptions } from "@multica/core/workspace/queries";
 import { getCurrentWsId } from "@multica/core/platform";
-import { Slash } from "lucide-react";
+import { quickReplyListOptions } from "@multica/core/quick-replies/queries";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
+import { MessageSquareText, Slash } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useUploadGate, useComposerSubmit } from "../../editor";
@@ -48,7 +55,16 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   const quickActionMenu = useQuickActionMenu(issueId);
   const wsId = getCurrentWsId();
   useQuery({ ...skillListOptions(wsId ?? ""), enabled: !!wsId });
+  // The workspace quick-reply catalog (RUYI-435). Read-open to every member;
+  // the menu appends the picked template's body into the draft — never sends.
+  const { data: quickReplies } = useQuery({
+    ...quickReplyListOptions(wsId ?? ""),
+    enabled: !!wsId,
+  });
   const [slashPending, setSlashPending] = useState(false);
+  // A pick made before the lazy editor mounted: replayed once it's ready,
+  // same posture as the slash button's pending trigger.
+  const [pendingQuickReply, setPendingQuickReply] = useState<string | null>(null);
   const draftKey = `new:${issueId}` as const;
   const [initialDraft] = useState(() =>
     useCommentDraftStore.getState().getDraft(draftKey),
@@ -81,6 +97,22 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   useEffect(() => {
     if (slashPending && lazy.ready && editorRef.current?.insertSlashTrigger()) setSlashPending(false);
   }, [slashPending, lazy.ready]);
+  // Replay a quick-reply pick that landed while the editor was still mounting.
+  // insertMarkdownAtEnd is a no-op before Tiptap exists, so the pick waits here
+  // and fires on the first ready frame; on failure it stays queued.
+  useEffect(() => {
+    if (!pendingQuickReply || !lazy.ready) return;
+    if (editorRef.current?.insertMarkdownAtEnd(pendingQuickReply)) setPendingQuickReply(null);
+  }, [pendingQuickReply, lazy.ready]);
+
+  const insertQuickReply = useCallback(
+    (content: string) => {
+      if (lazy.ready && editorRef.current?.insertMarkdownAtEnd(content)) return;
+      lazy.activate();
+      setPendingQuickReply(content);
+    },
+    [lazy],
+  );
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: lazy.uploadOrQueue,
   });
@@ -291,6 +323,44 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
         />
       </div>
       <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                title={t(($) => $.comment.quick_replies.menu_label)}
+                aria-label={t(($) => $.comment.quick_replies.menu_label)}
+                disabled={submitting}
+              >
+                <MessageSquareText className="size-4" />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="end" className="max-h-72 w-72 overflow-y-auto">
+            {(quickReplies ?? []).length === 0 ? (
+              <div className="px-2 py-1.5 text-caption text-muted-foreground">
+                {t(($) => $.comment.quick_replies.menu_empty)}
+              </div>
+            ) : (
+              (quickReplies ?? []).map((reply) => (
+                <DropdownMenuItem
+                  key={reply.id}
+                  onClick={() => insertQuickReply(reply.content)}
+                  className="flex-col items-start gap-0.5"
+                >
+                  <span className="w-full truncate text-body font-medium">
+                    {reply.name}
+                  </span>
+                  <span className="w-full truncate text-caption text-muted-foreground">
+                    {reply.content.split("\n")[0]}
+                  </span>
+                </DropdownMenuItem>
+              ))
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           type="button"
           variant="ghost"

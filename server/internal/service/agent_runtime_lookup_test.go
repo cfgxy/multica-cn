@@ -109,3 +109,7 @@ func (d scanErrDBTX) QueryRow(context.Context, string, ...interface{}) pgx.Row {
 type errRow struct{ err error }
 
 func (r errRow) Scan(...any) error { return r.err }
+
+func (scanErrDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by scanErrDBTX")
+}

@@ -339,254 +339,269 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
-		effectiveModel := strings.TrimSpace(opts.Model)
 
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("dim initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Require dim >= 0.3.10 (fail-closed): earlier builds bind sessions to
-		// the creating process permanently, so cross-run session/load fails with
-		// "held by another process" and follow-up runs lose context. 0.3.10
-		// releases the lock on graceful exit (session/close) or after ~5s. A
-		// version that is empty or cannot be parsed is rejected rather than
-		// assumed supported, so a runtime that cannot prove it is >= 0.3.10 is
-		// blocked from session resume (review #3).
-		dimVersion := extractACPAgentVersion(initResult)
-		if !dimVersionSupported(dimVersion) {
-			finalStatus = "failed"
-			if dimVersion == "" {
-				finalError = "dim did not report an agent version: cross-run session resume requires dim >= 0.3.10 (0.3.10+ releases the per-process session lock on exit); please upgrade dimcode"
-			} else {
-				finalError = fmt.Sprintf("dim %s is too old: cross-run session resume requires dim >= 0.3.10 (0.3.10+ releases the per-process session lock on exit); please upgrade dimcode", dimVersion)
-			}
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Drop MCP entries whose remote transport the runtime didn't advertise.
-		// See hermes.go for why sending an unsupported transport tanks session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "dim", b.cfg)
-
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		// Dim (dimcode 0.3.10+) releases its per-process session lock within
-		// ~5s of the owning process exiting (graceful close or SIGTERM), so a
-		// follow-up run in a fresh `dim acp` process can resume the prior
-		// session via the standard ACP `session/load`. Earlier 0.3.x builds
-		// bound sessions to the creating process permanently; on those the
-		// load fails with "held by another process" and ResumeRejected lets
-		// the daemon retry on a fresh session.
-		//
-		// A loaded session retains its permission/mode config (verified: a
-		// full-access session stays full-access after load), but
-		// set_config_option is re-applied on both fresh and resumed sessions
-		// to guard against a partially configured session being resumed
-		// (review #4).
-		var freshSession bool
-		var sessionResult json.RawMessage
-		if opts.ResumeSessionID != "" {
-			// Retry session/load when the prior process's lock has not been
-			// released yet ("held by another process"). With graceful
-			// session/close the lock releases immediately, but a force-killed
-			// process can take up to ~5s. Retry instead of silently starting
-			// a fresh session and losing the conversation (review #1).
-			var result json.RawMessage
-			var loadErr error
-		loadRetry:
-			for attempt := 0; attempt <= dimSessionLoadRetryAttempts; attempt++ {
-				result, loadErr = c.request(runCtx, "session/load", map[string]any{
-					"cwd":        cwd,
-					"sessionId":  opts.ResumeSessionID,
-					"mcpServers": mcpServers,
-				})
-				if loadErr == nil {
-					break
-				}
-				if isACPSessionNotFound(loadErr) {
-					break // session is gone — no point retrying
-				}
-				if !isACPHeldByProcess(loadErr) {
-					break // different error — let the normal failure path handle it
-				}
-				if attempt < dimSessionLoadRetryAttempts {
-					b.cfg.Logger.Warn("dim session/load: lock not yet released, retrying",
-						"backend", "dim",
-						"attempt", attempt+1,
-						"delay", dimSessionLoadRetryDelay.String(),
-					)
-					select {
-					case <-time.After(dimSessionLoadRetryDelay):
-					case <-runCtx.Done():
-						loadErr = fmt.Errorf("dim session/load cancelled: %w", runCtx.Err())
-						break loadRetry
-					}
-				}
-			}
-			err := loadErr
-			if err != nil {
-				if isACPSessionNotFound(err) {
-					b.cfg.Logger.Warn("dim resumed session not found; the daemon will retry fresh",
-						"backend", "dim",
-						"requested_session", opts.ResumeSessionID,
-					)
-					resumeRejected = true
-					resCh <- Result{Status: "failed", Error: fmt.Sprintf("dim session/load: %v", err), DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
-					return
-				}
-				if runCtx.Err() == context.DeadlineExceeded {
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("dim timed out during session/load: %v", timeout)
-				} else if runCtx.Err() == context.Canceled {
-					finalStatus = "aborted"
-					finalError = fmt.Sprintf("dim aborted: %v", err)
-				} else {
-					finalStatus = "failed"
-					finalError = fmt.Sprintf("dim session/load failed: %v", err)
-				}
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
-				return
-			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			sessionResult = result
-			if changed {
-				b.cfg.Logger.Warn("dim returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "dim",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var effectiveModel string
+		var promptErr error
+		if sess.Reattaching() {
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("dim reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "dim")
+			sessionID = c.observedSessionID()
 		} else {
-			freshSession = true
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+			effectiveModel = strings.TrimSpace(opts.Model)
+
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
-				if runCtx.Err() == context.DeadlineExceeded {
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("dim timed out during session/new: %v", timeout)
-				} else if runCtx.Err() == context.Canceled {
-					finalStatus = "aborted"
-					finalError = fmt.Sprintf("dim aborted: %v", err)
+				finalStatus = "failed"
+				finalError = fmt.Sprintf("dim initialize failed: %v", err)
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+				return
+			}
+
+			// Require dim >= 0.3.10 (fail-closed): earlier builds bind sessions to
+			// the creating process permanently, so cross-run session/load fails with
+			// "held by another process" and follow-up runs lose context. 0.3.10
+			// releases the lock on graceful exit (session/close) or after ~5s. A
+			// version that is empty or cannot be parsed is rejected rather than
+			// assumed supported, so a runtime that cannot prove it is >= 0.3.10 is
+			// blocked from session resume (review #3).
+			dimVersion := extractACPAgentVersion(initResult)
+			if !dimVersionSupported(dimVersion) {
+				finalStatus = "failed"
+				if dimVersion == "" {
+					finalError = "dim did not report an agent version: cross-run session resume requires dim >= 0.3.10 (0.3.10+ releases the per-process session lock on exit); please upgrade dimcode"
 				} else {
+					finalError = fmt.Sprintf("dim %s is too old: cross-run session resume requires dim >= 0.3.10 (0.3.10+ releases the per-process session lock on exit); please upgrade dimcode", dimVersion)
+				}
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+				return
+			}
+
+			// Drop MCP entries whose remote transport the runtime didn't advertise.
+			// See hermes.go for why sending an unsupported transport tanks session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "dim", b.cfg)
+
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			// Dim (dimcode 0.3.10+) releases its per-process session lock within
+			// ~5s of the owning process exiting (graceful close or SIGTERM), so a
+			// follow-up run in a fresh `dim acp` process can resume the prior
+			// session via the standard ACP `session/load`. Earlier 0.3.x builds
+			// bound sessions to the creating process permanently; on those the
+			// load fails with "held by another process" and ResumeRejected lets
+			// the daemon retry on a fresh session.
+			//
+			// A loaded session retains its permission/mode config (verified: a
+			// full-access session stays full-access after load), but
+			// set_config_option is re-applied on both fresh and resumed sessions
+			// to guard against a partially configured session being resumed
+			// (review #4).
+			var freshSession bool
+			var sessionResult json.RawMessage
+			if opts.ResumeSessionID != "" {
+				// Retry session/load when the prior process's lock has not been
+				// released yet ("held by another process"). With graceful
+				// session/close the lock releases immediately, but a force-killed
+				// process can take up to ~5s. Retry instead of silently starting
+				// a fresh session and losing the conversation (review #1).
+				var result json.RawMessage
+				var loadErr error
+			loadRetry:
+				for attempt := 0; attempt <= dimSessionLoadRetryAttempts; attempt++ {
+					result, loadErr = c.request(runCtx, "session/load", map[string]any{
+						"cwd":        cwd,
+						"sessionId":  opts.ResumeSessionID,
+						"mcpServers": mcpServers,
+					})
+					if loadErr == nil {
+						break
+					}
+					if isACPSessionNotFound(loadErr) {
+						break // session is gone — no point retrying
+					}
+					if !isACPHeldByProcess(loadErr) {
+						break // different error — let the normal failure path handle it
+					}
+					if attempt < dimSessionLoadRetryAttempts {
+						b.cfg.Logger.Warn("dim session/load: lock not yet released, retrying",
+							"backend", "dim",
+							"attempt", attempt+1,
+							"delay", dimSessionLoadRetryDelay.String(),
+						)
+						select {
+						case <-time.After(dimSessionLoadRetryDelay):
+						case <-runCtx.Done():
+							loadErr = fmt.Errorf("dim session/load cancelled: %w", runCtx.Err())
+							break loadRetry
+						}
+					}
+				}
+				err := loadErr
+				if err != nil {
+					if isACPSessionNotFound(err) {
+						b.cfg.Logger.Warn("dim resumed session not found; the daemon will retry fresh",
+							"backend", "dim",
+							"requested_session", opts.ResumeSessionID,
+						)
+						resumeRejected = true
+						resCh <- Result{Status: "failed", Error: fmt.Sprintf("dim session/load: %v", err), DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+						return
+					}
+					if runCtx.Err() == context.DeadlineExceeded {
+						finalStatus = "timeout"
+						finalError = fmt.Sprintf("dim timed out during session/load: %v", timeout)
+					} else if runCtx.Err() == context.Canceled {
+						finalStatus = "aborted"
+						finalError = fmt.Sprintf("dim aborted: %v", err)
+					} else {
+						finalStatus = "failed"
+						finalError = fmt.Sprintf("dim session/load failed: %v", err)
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+					return
+				}
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				sessionResult = result
+				if changed {
+					b.cfg.Logger.Warn("dim returned a different session id on resume — original was likely lost; continuing with the new id",
+						"backend", "dim",
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
+					)
+				}
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
+				}
+			} else {
+				freshSession = true
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					if runCtx.Err() == context.DeadlineExceeded {
+						finalStatus = "timeout"
+						finalError = fmt.Sprintf("dim timed out during session/new: %v", timeout)
+					} else if runCtx.Err() == context.Canceled {
+						finalStatus = "aborted"
+						finalError = fmt.Sprintf("dim aborted: %v", err)
+					} else {
+						finalStatus = "failed"
+						finalError = fmt.Sprintf("dim session/new failed: %v", err)
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				sessionResult = result
+				if sessionID == "" {
 					finalStatus = "failed"
-					finalError = fmt.Sprintf("dim session/new failed: %v", err)
+					finalError = "dim session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+					return
 				}
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
-				return
-			}
-			sessionID = extractACPSessionID(result)
-			sessionResult = result
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "dim session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
-				return
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
-		}
-
-		c.sessionID = sessionID
-		// Early session pin so a cancelled run still preserves resume pointer.
-		msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
-		b.cfg.Logger.Info("dim session ready", "session_id", sessionID, "resumed", !freshSession)
-
-		// Dim's ACP server hardcodes a read-only permission preset at session
-		// creation. Raise it to full-access and pin agent mode. This runs on
-		// BOTH fresh and resumed sessions (review #4): a resumed session whose
-		// first run failed partway through config would carry a half-configured
-		// state into the resume. set_config_option is idempotent. On failure we
-		// close the session and abort.
-		for _, cfgOpt := range []struct {
-			id    string
-			value string
-		}{
-			{"permission", "full-access"},
-			{"mode", "agent"},
-		} {
-			if _, err := c.request(runCtx, "session/set_config_option", map[string]any{
-				"sessionId": sessionID,
-				"configId":  cfgOpt.id,
-				"value":     cfgOpt.value,
-			}); err != nil {
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("dim could not set session config %s=%s: %v", cfgOpt.id, cfgOpt.value, err)
-				// Best-effort close so a partially configured session is not
-				// left behind for the next resume to inherit.
-				closeCtx, closeCancel := context.WithTimeout(context.Background(), dimSessionCloseTimeout)
-				_, _ = c.request(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
-				closeCancel()
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), SessionID: sessionID, ResumeRejected: resumeRejected}
-				return
-			}
-			b.cfg.Logger.Info("dim session config set", "config", cfgOpt.id, "value", cfgOpt.value, "session_id", sessionID)
-		}
-
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("dim set_session_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("dim could not switch to model %q: %v", opts.Model, err)
-				// Close the session so a partially configured one (permission/mode
-				// set, model not) is not left for the next resume to inherit.
-				closeCtx, closeCancel := context.WithTimeout(context.Background(), dimSessionCloseTimeout)
-				_, _ = c.request(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
-				closeCancel()
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
 				}
-				return
 			}
-			b.cfg.Logger.Info("dim session model set", "model", opts.Model)
+
+			c.sessionID = sessionID
+			// Early session pin so a cancelled run still preserves resume pointer.
+			msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+			b.cfg.Logger.Info("dim session ready", "session_id", sessionID, "resumed", !freshSession)
+
+			// Dim's ACP server hardcodes a read-only permission preset at session
+			// creation. Raise it to full-access and pin agent mode. This runs on
+			// BOTH fresh and resumed sessions (review #4): a resumed session whose
+			// first run failed partway through config would carry a half-configured
+			// state into the resume. set_config_option is idempotent. On failure we
+			// close the session and abort.
+			for _, cfgOpt := range []struct {
+				id    string
+				value string
+			}{
+				{"permission", "full-access"},
+				{"mode", "agent"},
+			} {
+				if _, err := c.request(runCtx, "session/set_config_option", map[string]any{
+					"sessionId": sessionID,
+					"configId":  cfgOpt.id,
+					"value":     cfgOpt.value,
+				}); err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("dim could not set session config %s=%s: %v", cfgOpt.id, cfgOpt.value, err)
+					// Best-effort close so a partially configured session is not
+					// left behind for the next resume to inherit.
+					closeCtx, closeCancel := context.WithTimeout(context.Background(), dimSessionCloseTimeout)
+					_, _ = c.request(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+					closeCancel()
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), SessionID: sessionID, ResumeRejected: resumeRejected}
+					return
+				}
+				b.cfg.Logger.Info("dim session config set", "config", cfgOpt.id, "value", cfgOpt.value, "session_id", sessionID)
+			}
+
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("dim set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("dim could not switch to model %q: %v", opts.Model, err)
+					// Close the session so a partially configured one (permission/mode
+					// set, model not) is not left for the next resume to inherit.
+					closeCtx, closeCancel := context.WithTimeout(context.Background(), dimSessionCloseTimeout)
+					_, _ = c.request(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+					closeCancel()
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("dim session model set", "model", opts.Model)
+			}
+
+			// Apply the thinking level (if any) via the ACP session config. Dim
+			// advertises a `thought_level` configOption in session/new (auto/high/
+			// max), so it joins the acpCatalogThinkingProviders list. The effort
+			// option may depend on the current model, so apply it after set_model.
+			applyACPEffortOption(runCtx, c.request, "dim", b.cfg.Logger,
+				sessionID, sessionResult, opts.ThinkingLevel, opts.Model == "")
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
 		}
-
-		// Apply the thinking level (if any) via the ACP session config. Dim
-		// advertises a `thought_level` configOption in session/new (auto/high/
-		// max), so it joins the acpCatalogThinkingProviders list. The effort
-		// option may depend on the current model, so apply it after set_model.
-		applyACPEffortOption(runCtx, c.request, "dim", b.cfg.Logger,
-			sessionID, sessionResult, opts.ThinkingLevel, opts.Model == "")
-
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
-
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("dim timed out after %s", timeout)
@@ -595,7 +610,7 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("dim session/prompt failed: %v", err)
+				finalError = fmt.Sprintf("dim session/prompt failed: %v", promptErr)
 			}
 		} else {
 			// Check if we got a promptDone result from the response parsing
@@ -635,8 +650,7 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			closeCancel()
 		}
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "dim")
 
 		// Dim's ACP server may keep the process — and the stdout/stderr
 		// pipes — open briefly after session/prompt returns. Bound the drain.
