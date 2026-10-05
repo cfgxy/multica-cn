@@ -10,17 +10,25 @@
 // RUYI-349/390 files: real systemd user manager, real transient units, the
 // daemon modelled by independent supervisor instances over one runs dir.
 //
-// Scope note (RUYI-349 constraint): these tests pin the supervisor-layer
-// contract only. The daemon task layer's final→completed state machine is
-// owned by the RUYI-349 unified plan and is deliberately not pinned here.
+// Scope note (erratum, after the RUYI-424 unblock): the original note
+// claimed the daemon task layer's final→completed state machine was owned
+// by the RUYI-349 unified plan and deliberately not pinned here — that held
+// only while the regression was blocked on RUYI-424's stdin-EOF bridge.
+// With that merged, scenario 390-7 pins the supervised ACP-shape
+// convergence end to end (stdin EOF → the worker's own exit → auto-collect
+// as completed). RUYI-349 remains the owner of any further unified
+// lifecycle reshape.
 package supervisor
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -150,10 +158,15 @@ func TestE2e390NormalCompletionAutoConverges(t *testing.T) {
 	// The final has landed. From here the worker must reach a proven exit on
 	// its own, and the exit must be the worker's own — a supervisor- or
 	// cancel-written record here would mean a watchdog killed a finishing
-	// run.
+	// run. A kill is distinguishable from a natural exit by the record
+	// itself: a natural one-shot CLI exit is code 0 with no signal, while
+	// any SIGKILL/SIGTERM path leaves a signal (or a nonzero code) behind.
 	exit := e2eWaitExitRecord(t, sup, runID, 30*time.Second)
 	if exit.Source != ExitSourceLauncher {
 		t.Fatalf("exit source = %q, want %q (watchdog/cancel killed a finishing run)", exit.Source, ExitSourceLauncher)
+	}
+	if exit.Code != 0 || exit.Signal != "" {
+		t.Fatalf("exit = code %d signal %q, want the worker's own clean exit 0", exit.Code, exit.Signal)
 	}
 	e2eAssertUnitGone(t, sup, runID)
 
@@ -352,4 +365,143 @@ func TestE2e390WatchdogCancelCompletedRace(t *testing.T) {
 	}
 	_ = sup.Manager().RemoveRun(runA)
 	_ = sup.Manager().RemoveRun(runB)
+}
+
+// Scenario 390-7 — the daemon task layer's final→completed convergence,
+// pinned end to end on the supervised ACP shape: a worker whose turn has
+// fully delivered (turn_end notification plus the prompt result on the
+// wire) must stay alive after the result while stdin is open — nothing
+// kills it and nothing converges the run before EOF — and then exit BY
+// ITSELF with a launcher-recorded clean exit 0 once stdin EOF arrives,
+// which one recovery pass files as ConvergeExit and later passes leave
+// alone. This is the regression the original phase-2 plan had deferred
+// behind RUYI-424. Raw handle driving, same idiom as the RUYI-424
+// systemd scenario: no Stop, no signal — stdin EOF is the only shutdown
+// primitive this scenario allows.
+func TestE2e390FinalCompletesThroughStdinEOFConvergence(t *testing.T) {
+	launcher := buildE2eLauncher(t)
+	runsDir := e2eRunsDir(t)
+	worker := writeFakeACPWorker(t)
+	runID := "390ddd1-7"
+	taskID := "01a390a0-0000-4000-8000-000000000007"
+
+	sup := newE2eSupervisor(t, runsDir, launcher)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	h, err := sup.Launch(ctx, agent.LaunchSpec{
+		RunID:   runID,
+		TaskID:  taskID,
+		Runtime: "kimi",
+		Path:    worker,
+		Dir:     filepath.Dir(worker),
+	})
+	if err != nil {
+		t.Fatalf("launch %s: %v", runID, err)
+	}
+	pid := e2eWaitWorkerPID(t, sup, runID)
+
+	// Drive the ACP wire directly: handshake, then one prompt turn. The
+	// turn's full delivery is the moment the daemon task layer marks the
+	// run final→completed; the raw handle models the daemon holding the
+	// run with the worker's stdin still open.
+	frames := []string{
+		`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"sessionId":"ses-e2e-0001","content":[{"type":"text","text":"count to ten"}]}}`,
+	}
+	for _, frame := range frames {
+		if _, err := io.WriteString(h.Stdin(), frame+"\n"); err != nil {
+			t.Fatalf("stdin write: %v", err)
+		}
+	}
+	// Both terminal markers flow back-to-back; consume them through ONE
+	// stream pass. The resumable tail's read cursor persists what a returned
+	// reader left buffered, so a second open would wait forever for lines
+	// already consumed.
+	wantTurnEnd := `"sessionUpdate": "turn_end"`
+	wantResult := `"result": {"stopReason": "end_turn"`
+	seenTurnEnd, seenResult := false, false
+	stream, err := h.StdoutStream(ctx)
+	if err != nil {
+		t.Fatalf("stdout stream: %v", err)
+	}
+	reader := bufio.NewReader(stream)
+	turnDeadline := time.Now().Add(60 * time.Second)
+	for !seenTurnEnd || !seenResult {
+		if time.Now().After(turnDeadline) {
+			t.Fatalf("turn never fully delivered (turn_end=%v result=%v)\n%s", seenTurnEnd, seenResult, e2eDumpRunFiles(t, sup, runID))
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("stdout read: %v", err)
+		}
+		switch {
+		case strings.Contains(line, wantTurnEnd):
+			seenTurnEnd = true
+		case strings.Contains(line, wantResult):
+			seenResult = true
+		}
+	}
+	_ = stream.Close()
+
+	// Negative adjacency: the completed turn alone must not end the worker
+	// and must not converge the run. The ACP shape idles after its final
+	// result waiting for stdin EOF — the exact window a prompt cancel()
+	// used to SIGKILL (the RUYI-390 incident).
+	aliveEnd := time.Now().Add(2 * time.Second)
+	for time.Now().Before(aliveEnd) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Fatalf("worker exited before stdin EOF — ACP shape contract broken: %v", err)
+		}
+		if man := e2eManifest(t, sup, runID); man.Exit != nil {
+			t.Fatalf("exit evidence appeared before stdin EOF: %+v", man.Exit)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Deliver stdin EOF — the only shutdown primitive — and the worker must
+	// exit on its own: a launcher-recorded clean exit 0, distinguishable
+	// from any kill by code and signal alone.
+	if err := h.CloseStdin(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+	exit := e2eWaitExit(t, h, 30*time.Second)
+	man := e2eManifest(t, sup, runID)
+	if man.State != StateExited || man.Exit == nil {
+		t.Fatalf("manifest after stdin EOF: state=%s exit=%+v", man.State, man.Exit)
+	}
+	if exit.Code != 0 || exit.Signal != "" {
+		t.Fatalf("worker did not exit cleanly on stdin EOF: %+v", exit)
+	}
+	if man.Exit.Source != ExitSourceLauncher {
+		t.Fatalf("exit source = %s, want %s (the launcher must have observed the natural exit)", man.Exit.Source, ExitSourceLauncher)
+	}
+	e2eAssertUnitGone(t, sup, runID)
+
+	// The completed run files itself as ConvergeExit on the next pass — the
+	// supervisor-side shape of final→completed — and later passes have
+	// nothing left to act on.
+	results := e2eReconcile(t, sup, func(string) bool { return true })
+	if d := decisionFor(t, results, runID); d != DecisionConvergeExit {
+		t.Fatalf("reconcile decision = %s, want converge_exit", d)
+	}
+	if err := sup.Manager().MarkConverged(runID); err != nil {
+		t.Fatalf("mark converged: %v", err)
+	}
+	results = e2eReconcile(t, sup, func(string) bool { return true })
+	for _, res := range results {
+		if res.RunID == runID {
+			t.Fatalf("consumed run re-decided: %+v", res)
+		}
+	}
+
+	// The turn's wire evidence stays readable inside the retention window.
+	data, err := os.ReadFile(filepath.Join(sup.Manager().Dir(runID), "worker-stdout.log"))
+	if err != nil {
+		t.Fatalf("evidence log unreadable after convergence: %v", err)
+	}
+	if !strings.Contains(string(data), "turn_end") {
+		t.Fatalf("turn evidence missing from retained stdout: %q", string(data[max(0, len(data)-300):]))
+	}
+	_ = sup.Manager().RemoveRun(runID)
 }

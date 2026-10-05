@@ -191,3 +191,114 @@ func TestReattachWireSignals(t *testing.T) {
 		}
 	})
 }
+
+// TestKimiNormalFinishForwardsStdinEOFWithoutKill pins the RUYI-390 cancel
+// timing convergence on the normal-completion path: once the turn's result
+// is in, the backend closes stdin — the supervised bridge forwards that EOF
+// to the worker's stdin (RUYI-424) — and gives the worker a bounded window
+// to exit on its own. The cancel driver's kill is only the fallback for a
+// worker that ignores EOF. The old wiring cancelled unconditionally at this
+// boundary, SIGKILLing a finishing worker and leaving the launcher a kill
+// record where the daemon task layer's completed convergence needs the
+// worker's own natural-exit record.
+func TestKimiNormalFinishForwardsStdinEOFWithoutKill(t *testing.T) {
+	t.Parallel()
+
+	sup, h := newFakeSupervisor(t)
+	// Supervised mode never execs this path, but the backend still resolves
+	// the CLI before building the command.
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte("#!/bin/sh\nexit 0\n"))
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	session, err := backend.Execute(ctx, "count to ten", ExecOptions{
+		Timeout: 30 * time.Second,
+		Supervision: &Supervision{
+			Supervisor: sup, RunID: "task-2-1", TaskID: "task-2",
+			Runtime: "kimi",
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	// Feed the wire in lockstep with what the backend actually sends: a
+	// response is only deliverable once its request is on the worker's
+	// stdin, so poll stdinBuf before answering each request.
+	waitForStdin := func(substr string) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			h.mu.Lock()
+			buf := h.stdinBuf.String()
+			h.mu.Unlock()
+			if strings.Contains(buf, substr) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("worker never received %q; stdin so far: %q", substr, buf)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	waitForStdin(`"initialize"`)
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":false},"authMethods":[]}}`)
+	waitForStdin(`"session/new"`)
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","id":1,"result":{"sessionId":"ses_finish"}}`)
+	waitForStdin(`"session/prompt"`)
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_finish","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"1 2 3"}}}}`)
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_finish","update":{"sessionUpdate":"turn_end","stopReason":"end_turn"}}}`)
+	acpReattachFrame(t, h, `{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}`)
+
+	// One-shot CLI semantics: the worker exits on stdin EOF and nothing
+	// else. Prove the exit only after the EOF was actually delivered —
+	// never before, mirroring what a real one-shot worker does.
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			h.mu.Lock()
+			cl := h.stdinCl
+			h.mu.Unlock()
+			if cl {
+				h.mu.Lock()
+				h.exit = &WorkerExit{Code: 0}
+				h.mu.Unlock()
+				h.CloseForExit()
+				return
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "completed" {
+			t.Fatalf("expected status=completed, got %q (error=%q)", result.Status, result.Error)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	h.mu.Lock()
+	forwarded, signals := h.stdinCl, h.signalled
+	h.mu.Unlock()
+	if !forwarded {
+		t.Fatal("backend never forwarded stdin EOF to the worker")
+	}
+	if len(signals) != 0 {
+		t.Fatalf("cancel driver signalled a finishing worker: %v", signals)
+	}
+}

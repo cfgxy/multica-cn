@@ -492,8 +492,7 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("grok finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "grok")
 
 		// Grok ACP may keep the process — and the stdout/stderr pipes — open
 		// briefly after session/prompt returns. Bound the drain.

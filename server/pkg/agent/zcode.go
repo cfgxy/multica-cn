@@ -665,8 +665,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("zcode finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "zcode")
 
 		drainCtx, drainCancel := context.WithTimeout(context.Background(), zcodeReaderDrainGrace)
 		select {

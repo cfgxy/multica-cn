@@ -650,8 +650,7 @@ func (b *dimBackend) Execute(ctx context.Context, prompt string, opts ExecOption
 			closeCancel()
 		}
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "dim")
 
 		// Dim's ACP server may keep the process — and the stdout/stderr
 		// pipes — open briefly after session/prompt returns. Bound the drain.

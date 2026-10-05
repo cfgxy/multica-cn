@@ -474,8 +474,7 @@ func (b *reasonixBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("reasonix finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "reasonix")
 
 		<-readerDone
 		// Ensure the stderr copier has drained before consulting the
