@@ -504,5 +504,23 @@
     "created_probe_invalid": "已注册，但连通性检查失败——请检查 API Key",
     "create_failed": "注册语音实例失败",
     "key_save_failed": "已注册，但保存 API Key 失败——请在实例设置中补填"
+  },
+  "mobile": {
+    "list_loading": "加载中…",
+    "empty": {
+      "title": "暂无语音实例"
+    },
+    "detail": {
+      "not_found": "该实例已不存在。"
+    },
+    "status": {
+      "online": "在线",
+      "offline": "离线",
+      "disabled": "已停用"
+    },
+    "advanced": {
+      "expand": "展开",
+      "collapse": "收起"
+    }
   }
 }
