@@ -57,6 +57,8 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "list_runtimes",
   "list_squads",
   "get_squad",
+  // RUYI-458 project resource binding read.
+  "list_project_resources",
 ]);
 
 export function createMcpServer(client: MulticaClient): Server {
