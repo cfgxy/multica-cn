@@ -52,7 +52,7 @@ type noopReplier struct {
 
 func (n *noopReplier) Reply(ctx context.Context, inst Installation, msg InboundMessage, res DispatchResult) {
 	switch res.Outcome {
-	case OutcomeNeedsBinding, OutcomeAgentOffline, OutcomeAgentArchived, OutcomeSessionUnavailable, OutcomeFreshPending, OutcomeChatStarted, OutcomeIssueUsage:
+	case OutcomeNeedsBinding, OutcomeAgentOffline, OutcomeAgentArchived, OutcomeSessionUnavailable, OutcomeFreshPending, OutcomeChatStarted, OutcomeIssueUsage, OutcomeHelp, OutcomeUnknownCommand:
 		n.log.Warn("lark outcome replier: outbound reply skipped (replier not wired)",
 			"outcome", string(res.Outcome),
 			"installation_id", uuidString(inst.ID),
@@ -206,6 +206,22 @@ func (r *LarkOutcomeReplier) Reply(ctx context.Context, inst Installation, msg I
 		}
 		if err := r.sendChatNotice(ctx, inst, msg, copy); err != nil {
 			r.log.Warn("lark outcome replier: issue usage reply failed",
+				"installation_id", uuidString(inst.ID),
+				"chat_id", string(msg.ChatID),
+				"err", err.Error(),
+			)
+		}
+	case OutcomeHelp:
+		if err := r.sendHelpCard(ctx, inst, msg, res); err != nil {
+			r.log.Warn("lark outcome replier: help card failed",
+				"installation_id", uuidString(inst.ID),
+				"chat_id", string(msg.ChatID),
+				"err", err.Error(),
+			)
+		}
+	case OutcomeUnknownCommand:
+		if err := r.sendChatNotice(ctx, inst, msg, unknownCommandCopy(res.CommandToken)); err != nil {
+			r.log.Warn("lark outcome replier: unknown-command guidance failed",
 				"installation_id", uuidString(inst.ID),
 				"chat_id", string(msg.ChatID),
 				"err", err.Error(),
@@ -368,6 +384,43 @@ func (r *LarkOutcomeReplier) sendChatNotice(ctx context.Context, inst Installati
 	})
 }
 
+// sendHelpCard posts the interactive command card on OutcomeHelp. The
+// buttons mint their chat type from the inbound trigger (typed /help or a
+// card click — both carry it), so a later click decodes with the same
+// routing attributes the card was rendered under.
+func (r *LarkOutcomeReplier) sendHelpCard(ctx context.Context, inst Installation, msg InboundMessage, res DispatchResult) error {
+	if msg.ChatID == "" {
+		return errors.New("missing chat_id")
+	}
+	if len(res.HelpCommands) == 0 {
+		// The registry guarantees /help at minimum, so an empty list is a
+		// wiring bug; degrade to a text notice rather than a blank card.
+		return r.sendChatNotice(ctx, inst, msg, helpUnavailableCopy)
+	}
+	creds, err := r.installationCredentials(inst)
+	if err != nil {
+		return err
+	}
+	header := r.noticeHeader
+	if agent, aerr := r.queries.GetAgent(ctx, inst.AgentID); aerr == nil && agent.Name != "" {
+		header = agent.Name
+	}
+	cardJSON, err := renderHelpCard(header, res.HelpCommands, msg.ChatType)
+	if err != nil {
+		return fmt.Errorf("render help card: %w", err)
+	}
+	// Same classified thread fallback as the other notice cards.
+	return sendWithThreadFallback(r.log, "send help card", inboundReplyTarget(msg), func(t ReplyTarget) error {
+		_, err := r.client.SendInteractiveCard(ctx, SendCardParams{
+			InstallationID: creds,
+			ChatID:         msg.ChatID,
+			CardJSON:       cardJSON,
+			ReplyTarget:    t,
+		})
+		return err
+	})
+}
+
 func (r *LarkOutcomeReplier) installationCredentials(inst Installation) (InstallationCredentials, error) {
 	secret, err := r.credentials.DecryptAppSecret(inst)
 	if err != nil {
@@ -426,4 +479,13 @@ const (
 	chatStartedCopy         = "✅ 已新建 Multica 对话。你的下一条消息会进入该对话。"
 	issueUsageCopy          = "请填写任务标题，格式如下：\n\n`/issue <标题>`\n`[描述]`（可选）"
 	issueUsageWithMediaCopy = "请添加标题，并与图片或视频一起重新发送（*图片或视频可以位于命令之前或之后*）：\n\n`/issue <标题>`\n`[描述]`（可选）"
+	helpUnavailableCopy     = "当前没有可用的斜杠命令。"
 )
+
+// unknownCommandCopy composes the guidance shown when the first non-empty
+// line opened with a slash token the registry does not know. The token is
+// echoed verbatim (case-sensitive, arguments stripped) so the sender can
+// see exactly what failed to match.
+func unknownCommandCopy(token string) string {
+	return fmt.Sprintf("未识别的命令 %s。\n发送 /help 查看可用命令列表，或直接输入自然语言与我对话。", token)
+}
