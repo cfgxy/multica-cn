@@ -25,6 +25,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
 | 925 | 925_agent_context_dual_slot | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-agent-context | reserved |
 | 926 | 926_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
+| 927 | 927_voice_fact_event | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-writeback | reserved |
 
 Notes:
 
