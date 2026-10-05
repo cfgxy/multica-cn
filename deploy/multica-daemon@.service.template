@@ -32,6 +32,21 @@ MemoryHigh=@MEMORY_HIGH@
 MemoryMax=@MEMORY_MAX@
 # 双保险：oom-guard 服务每秒把 MainPID 钉 -1000（内核 OOM 永不选中 daemon 本体）
 OOMScoreAdjust=-1000
+# OOM 安全键位（RUYI-396 收编进模板基线）：值即两台生产机既有 OOM drop-in 的现网
+# 生效值，键位入模板后迁移窗口一次性退役人工 drop-in，生效值不变。机器/实例级
+# 特殊值走 systemd 原生人工 override 通道（drop-in / set-property），install/update
+# 链路永不读写这些通道。
+OOMPolicy=continue
+ManagedOOMPreference=omit
+# 显式锁定 kill 语义：systemd 默认即 control-group，写死防不同版本默认漂移。
+KillMode=control-group
+# 背压准入阈值（RUYI-393/396）：主机内存/swap 水位驱动的新 Run 准入暂停与恢复，
+# 数值经 make 变量渲染（默认 15/25/80/60 = 代码默认），环境变量名以
+# server/internal/daemon/config.go 为权威；按机覆盖与持久化见 Makefile daemon-install 注释。
+Environment=MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT=@BP_MEM_HIGH_PCT@
+Environment=MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT=@BP_MEM_RECOVERY_PCT@
+Environment=MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT=@BP_SWAP_HIGH_PCT@
+Environment=MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT=@BP_SWAP_RECOVERY_PCT@
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60

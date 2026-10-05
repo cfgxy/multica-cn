@@ -124,6 +124,11 @@ const (
 	// self-describing); nothing routes on it.
 	EventIssueStatusChanged = "issue_status:changed"
 
+	// Workspace quick-reply catalog (RUYI-435). Same shape as the issue
+	// status catalog event: one event for every write (settings tab or MCP
+	// tool), no row payload — clients re-read the whole list.
+	EventQuickRepliesChanged = "quick_reply:changed"
+
 	// Pin events
 	EventPinCreated   = "pin:created"
 	EventPinDeleted   = "pin:deleted"

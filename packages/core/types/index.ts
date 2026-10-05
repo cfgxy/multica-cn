@@ -7,6 +7,12 @@ export type {
   UpdateIssueStatusRequest,
 } from "./issue-status";
 export type {
+  QuickReply,
+  ListQuickRepliesResponse,
+  CreateQuickReplyRequest,
+  UpdateQuickReplyRequest,
+} from "./quick-reply";
+export type {
   Agent,
   AgentConversationStarter,
   AgentStatus,

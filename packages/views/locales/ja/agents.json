@@ -665,7 +665,8 @@
     "over_limit": " · 制限を {{count}} 文字超過"
   },
   "presence": {
-    "queue_badge": "+{{count}} 待機中"
+    "queue_badge": "+{{count}} 待機中",
+    "running_ratio": "実行中 {{running}}/{{capacity}}"
   },
   "visibility": {
     "private": {
@@ -706,7 +707,8 @@
     "public_group": "公開アクセス",
     "owner_only_readonly": "このエージェントを実行できる相手は、オーナーのみが変更できます。",
     "members_empty": "選択できるワークスペースメンバーがいません",
-    "composio_switch_hint": "ご注意 — このエージェントは Composio アプリが有効です。共有すると、アクセス権を持つ全員がこのエージェントを通じてこれらのアプリを利用できます。"
+    "composio_switch_hint": "ご注意 — このエージェントは Composio アプリが有効です。共有すると、アクセス権を持つ全員がこのエージェントを通じてこれらのアプリを利用できます。",
+    "save_failed": "アクセス権の更新に失敗しました"
   },
   "profile_card": {
     "unavailable": "エージェントを利用できません",
@@ -1036,10 +1038,20 @@
       "edit_profile": "プロフィールを編集",
       "tab_active": "進行中",
       "fact_status": "ステータス",
-      "fact_runtime_unbound": "ランタイム未設定"
+      "fact_runtime_unbound": "ランタイム未設定",
+      "bind_runtime": "ランタイムをバインド",
+      "fact_concurrency": "同時実行上限",
+      "forbidden_title": "このエージェントへのアクセス権がありません",
+      "runtime_unbound_banner": "このエージェントにはランタイムが未バインドです — 実行にはバインドが必要です。",
+      "forbidden_body": "このエージェントを表示する権限がありません。所有者に共有を依頼してください。"
     },
     "edit": {
-      "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します"
+      "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します",
+      "avatar_change": "アイコンを変更",
+      "avatar_hint": "アイコンをタップして変更できます",
+      "concurrency_range": "許可範囲：{{min}}–{{max}}",
+      "model_catalog": "検出されたモデル",
+      "model_default": "デフォルト"
     },
     "env": {
       "add_row": "変数を追加"
@@ -1047,6 +1059,17 @@
     "webhooks": {
       "copy_aria": "Webhookリンクをコピー",
       "rotated_title": "新しいリンクを生成しました"
+    },
+    "integrations": {
+      "bound_here": "このエージェントにバインド済み",
+      "connected": "ワークスペースに接続済み",
+      "not_configured": "未設定",
+      "platform_lark": "Lark",
+      "platform_slack": "Slack",
+      "platform_dingtalk": "DingTalk",
+      "platform_wecom": "WeCom",
+      "platform_telegram": "Telegram",
+      "manage_hint": "接続とバインドは Web またはデスクトップの設定から行えます。"
     }
   }
 }

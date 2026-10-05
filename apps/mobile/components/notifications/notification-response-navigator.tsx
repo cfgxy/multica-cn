@@ -17,6 +17,10 @@
  * (idle), and once ready the native side is necessarily up — a short
  * bounded retry there is a jitter safety net, not the wake-up mechanism.
  * The launch response is cached natively, so probing late loses nothing.
+ * RUYI-415 retest: the post-ready window itself could still burn out on a
+ * slow/degraded device (bridge init lagging seconds behind the tree), so
+ * the schedule lives in `lib/launch-response-probe.ts` — a fast 6×500ms
+ * net followed by a slow 2s tail up to a 30s total window.
  *
  * Navigation is gated on the same readiness: a `router.push` issued before
  * the tree exists is a silent no-op. Responses arriving early (or probing
@@ -52,6 +56,7 @@ import * as Notifications from "expo-notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/data/auth-store";
 import { freshWorkspaceListOptions } from "@/data/queries/workspaces";
+import { probeServer } from "@/data/probe-server";
 import { useServerStore } from "@/data/server-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { switchServer } from "@/data/switch-server";
@@ -59,6 +64,7 @@ import {
   executeNotificationAction,
   type WorkspaceActivationResult,
 } from "@/lib/notification-action";
+import { probeLaunchResponse } from "@/lib/launch-response-probe";
 import { useT } from "@/lib/use-t";
 import {
   parseNotificationTarget,
@@ -69,15 +75,6 @@ import {
 
 /** Bounded so a pathological session can't grow it forever. */
 const HANDLED_CAPACITY = 20;
-
-/**
- * Post-readiness jitter net for the initial probe. Once the navigation tree
- * is mounted the native bridge is up, so this is expected to succeed on the
- * first attempt; the retries only cover a pathological slow bridge. NOT a
- * wake-up mechanism — readiness (below) is what starts the probe.
- */
-const POST_READY_PROBE_ATTEMPTS = 6;
-const POST_READY_PROBE_DELAY_MS = 500;
 
 export function NotificationResponseNavigator() {
   const userId = useAuthStore((s) => s.user?.id ?? null);
@@ -150,6 +147,13 @@ export function NotificationResponseNavigator() {
       navigate,
       activateWorkspace,
       switchServer: (serverId) => switchServer(serverId, qc),
+      probeTargetServer: async (serverId) => {
+        const entry = useServerStore
+          .getState()
+          .servers.find((item) => item.id === serverId);
+        if (!entry) return false;
+        return probeServer(entry.apiUrl, new AbortController().signal);
+      },
       requestWorkspaceConfirmation: (workspaceAction, onConfirm) =>
         Alert.alert(
           t("mobile.bridge.cross_workspace_title", "Switch workspace?"),
@@ -176,6 +180,20 @@ export function NotificationResponseNavigator() {
             {
               text: t("mobile.bridge.confirm_switch", "Switch"),
               onPress: () => void onConfirm(),
+            },
+          ],
+        ),
+      showServerUnreachable: (serverAction, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.server_unreachable_title", "Can't reach the server"),
+          t("mobile.bridge.server_unreachable_message", {
+            server: serverAction.serverLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
             },
           ],
         ),
@@ -294,36 +312,29 @@ export function NotificationResponseNavigator() {
 
   // Readiness-driven initial probe (cold-start tap path). Idle until the
   // tree is mounted — probing earlier is guaranteed-null by D3 evidence.
-  // The initial response is cached natively, so this late probe recovers
-  // the full launch intent. offer() parks if the session isn't restored
-  // yet; the flush effect above completes the navigation once it is.
+  // The launch response is cached natively, so this late probe recovers
+  // the full launch intent; the schedule (fast net + slow tail, bounded
+  // window) lives in lib/launch-response-probe.ts. offer() parks if the
+  // session isn't restored yet; the flush effect above completes the
+  // navigation once it is.
   useEffect(() => {
     if (!navReady || initialResolvedRef.current) return;
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const probe = async (attempt: number): Promise<void> => {
-      const response = await Notifications.getLastNotificationResponseAsync();
+    void probeLaunchResponse(
+      () => Notifications.getLastNotificationResponseAsync(),
+      { shouldStop: () => cancelled || initialResolvedRef.current },
+    ).then((result) => {
       if (cancelled || initialResolvedRef.current) return;
-      if (response) {
-        initialResolvedRef.current = true;
-        offer(response);
-        return;
+      // Confirmed no launch response for this session (plain app open).
+      initialResolvedRef.current = true;
+      if (result.found) {
+        offer(result.response as Notifications.NotificationResponse);
       }
-      if (attempt + 1 < POST_READY_PROBE_ATTEMPTS) {
-        timer = setTimeout(() => {
-          if (!cancelled) void probe(attempt + 1);
-        }, POST_READY_PROBE_DELAY_MS);
-      } else {
-        // Confirmed no launch response for this session (plain app open).
-        initialResolvedRef.current = true;
-      }
-    };
-    void probe(0);
+    });
 
     return () => {
       cancelled = true;
-      if (timer) clearTimeout(timer);
     };
     // offer reads nav via navReadyRef; navReady is the actual trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps

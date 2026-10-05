@@ -63,3 +63,7 @@ func testUUID(lastByte byte) pgtype.UUID {
 	value[len(value)-1] = lastByte
 	return pgtype.UUID{Bytes: value, Valid: true}
 }
+
+func (catalogFailureDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by catalogFailureDB")
+}

@@ -154,6 +154,7 @@ component_port() { # $1 = component -> the slot port it serves ("" for none)
     api)     slot_field "$SLOT" backend_port ;;
     web)     slot_field "$SLOT" frontend_port ;;
     desktop) slot_field "$SLOT" desktop_renderer_port ;;
+    mcp)     slot_field "$SLOT" mcp_port ;;
     *)       printf '' ;;
   esac
 }
@@ -276,7 +277,7 @@ while :; do
   [ -f "$STOP_FILE" ] && exit 0
   [ -d "$SLOT_DIR" ] || exit 0
   [ -f "$MANIFEST" ] || exit 0
-  for comp in api web daemon desktop; do
+  for comp in api web mcp daemon desktop; do
     check_component "$comp" "$issue"
   done
   sleep "$INTERVAL"

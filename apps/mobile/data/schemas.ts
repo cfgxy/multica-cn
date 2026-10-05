@@ -939,3 +939,46 @@ export const EMPTY_ISSUE_FALLBACK: import("@multica/core/types").Issue = {
 
 // Helpers re-exported for ergonomic single-import at the call site.
 export type { Label, Project, ProjectResource };
+
+// RUYI-418 B3: the agent detail screen's integrations entry consumes
+// `configured` from the five IM installation listings (lark / slack /
+// dingtalk / wecom / telegram) — the same predicate web's agent overview
+// pane applies — and the integrations screen additionally reads a minimal
+// installation row (agent_id + status) to report whether THIS agent is
+// bound. The full per-platform rows stay in their platform domains; this
+// minimal schema keeps the drift-defense parse without their shapes.
+export const IntegrationInstallationsSchema = z.object({
+  configured: z.boolean().default(false),
+  installations: z
+    .array(
+      z.object({
+        agent_id: z.string().nullable().optional(),
+        status: z.string().optional(),
+      }),
+    )
+    .default([]),
+});
+
+export type IntegrationInstallations = z.infer<
+  typeof IntegrationInstallationsSchema
+>;
+
+export const EMPTY_INTEGRATION_INSTALLATIONS: IntegrationInstallations = {
+  configured: false,
+  installations: [],
+};
+
+// RUYI-418 B3: the viewer's own Composio connections, reduced to the fields
+// the agent MCP-apps screen renders (active-slug dedupe + "connected" copy).
+// Mirrors core's ComposioConnection status union without importing it — the
+// server may grow states, and unknown statuses just fail the active filter.
+export const ComposioConnectionsSchema = z.array(
+  z.object({
+    toolkit_slug: z.string(),
+    status: z.string().default(""),
+  }),
+);
+
+export type ComposioConnections = z.infer<typeof ComposioConnectionsSchema>;
+
+export const EMPTY_COMPOSIO_CONNECTIONS: ComposioConnections = [];
