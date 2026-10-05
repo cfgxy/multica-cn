@@ -285,6 +285,9 @@ func (deadDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
 func (deadDB) QueryRow(context.Context, string, ...any) pgx.Row {
 	return nil
 }
+func (deadDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by deadDB")
+}
 
 func mintGateToken(t *testing.T, signer *oauth.Signer, scope string) string {
 	t.Helper()
