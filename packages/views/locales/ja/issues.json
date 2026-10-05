@@ -1075,6 +1075,7 @@
       "outcome_files_other": "{{count}} ファイル",
       "outcome_commands_other": "{{count}} コマンド",
       "result_label": "結果",
+      "group_calls_other": "{{count}} 回の呼び出し",
       "truncated": "…（切り捨て）",
       "empty": "この実行で記録されたイベントはありません。",
       "empty_queued": "この実行はまだ開始していません。"

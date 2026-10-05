@@ -1114,6 +1114,8 @@
       "outcome_commands_one": "{{count}} command",
       "outcome_commands_other": "{{count}} commands",
       "result_label": "Result",
+      "group_calls_one": "{{count}} call",
+      "group_calls_other": "{{count}} calls",
       "truncated": "… (truncated)",
       "empty": "No events were recorded for this run.",
       "empty_queued": "This run hasn't started yet."

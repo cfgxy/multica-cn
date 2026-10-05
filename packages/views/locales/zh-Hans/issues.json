@@ -1075,6 +1075,7 @@
       "outcome_files_other": "{{count}} 个文件",
       "outcome_commands_other": "{{count}} 条命令",
       "result_label": "结果",
+      "group_calls_other": "{{count}} 次调用",
       "truncated": "…（已截断）",
       "empty": "该运行没有记录任何事件。",
       "empty_queued": "该运行尚未开始。"
