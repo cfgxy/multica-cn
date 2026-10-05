@@ -24,8 +24,8 @@ Rules (see workspace/project instructions, RUYI-359):
 | 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
 | 925 | 925_oauth_management | RUYI-420 | agent/agent-f70e39b85abd/ruyi-420 | reserved |
-| 926 | 926_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
-| 928 | 928_agent_execution_profile_revision | RUYI-433 | agent/agent-f70e39b85abd/ruyi-433 | reserved |
+| 926 | 926_activity_audit | RUYI-355 | merged to main via PR #214 | applied |
+| 928 | 928_agent_execution_profile_revision | RUYI-433 | merged to main via PR #231 | applied |
 
 Notes:
 
