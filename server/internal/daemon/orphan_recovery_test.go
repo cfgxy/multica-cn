@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -399,5 +400,50 @@ func TestFirstRegistrationBlindFallbackSkipsProbeVisibleTasks(t *testing.T) {
 		if !call.OnlyUnprobeable {
 			t.Fatalf("blind recover-orphans for %s not scoped to unprobeable tasks; the held-lock task would be blanket-failed server-side", call.RuntimeID)
 		}
+	}
+}
+
+// TestRecoverInFlightTasks_SupervisedStaleManifestUnitGoneFails: a supervised
+// manifest still claiming "running" is not liveness evidence once its systemd
+// unit is gone — a host reboot or user-manager restart strands such manifests
+// with no exit record (the reconcile matrix's Lost corner). The stale
+// manifest must stop vetoing the probe: with the unit provably dead the task
+// is failed for auto-retry exactly like a dead legacy worker, which is the
+// bounded recovery path — without it the row runs forever, because the
+// server-side stale-running sweeper exempts runtimes that are back online
+// (RUYI-460).
+func TestRecoverInFlightTasks_SupervisedStaleManifestUnitGoneFails(t *testing.T) {
+	fx := newRecoveryFixture(t)
+	mgr := wireShimmedSupervisor(t, fx.daemon) // nothing active
+	runID := testTaskID + "-1"
+	seedRunningManifest(t, mgr, runID)
+	envRoot := buildEnvRoot(t, fx.root, "ws1", testTaskID)
+	fx.setInFlight(InFlightTask{ID: testTaskID, WorkspaceID: "ws1", Status: "running", WorkDir: filepath.Join(envRoot, "repo")})
+
+	fx.daemon.recoverInFlightTasksForRuntime(context.Background(), "rt-1")
+
+	fails := fx.recordedFails()
+	if len(fails) != 1 || fails[0].TaskID != testTaskID || fails[0].FailureReason != "runtime_recovery" {
+		t.Fatalf("stale-manifest task not failed for retry: %+v", fails)
+	}
+}
+
+// TestRecoverInFlightTasks_SupervisedLiveUnitLeftAlone pins the other half of
+// the cross-check: the env-root lock reads dead (the daemon process holds it,
+// so a daemon death releases it) but the systemd unit is still active — the
+// worker survived the daemon, which is RUYI-349's whole point, and the task
+// must come out of recovery untouched.
+func TestRecoverInFlightTasks_SupervisedLiveUnitLeftAlone(t *testing.T) {
+	fx := newRecoveryFixture(t)
+	runID := testTaskID + "-1"
+	mgr := wireShimmedSupervisor(t, fx.daemon, supervisor.UnitName(runID))
+	seedRunningManifest(t, mgr, runID)
+	envRoot := buildEnvRoot(t, fx.root, "ws1", testTaskID)
+	fx.setInFlight(InFlightTask{ID: testTaskID, WorkspaceID: "ws1", Status: "running", WorkDir: filepath.Join(envRoot, "repo")})
+
+	fx.daemon.recoverInFlightTasksForRuntime(context.Background(), "rt-1")
+
+	if fails := fx.recordedFails(); len(fails) != 0 {
+		t.Fatalf("live supervised worker was failed: %+v", fails)
 	}
 }
