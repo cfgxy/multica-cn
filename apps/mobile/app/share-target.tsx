@@ -81,10 +81,14 @@ export default function ShareTargetScreen() {
   } = useQuery(workspaceListOptions());
 
   // The selected workspace may differ from the active one, so the agent list
-  // is fetched for the PICKED workspace id — never read the current-workspace
-  // mirrors here.
+  // is fetched for the PICKED workspace: the slug rides the request itself
+  // (RUYI-463 P1) — the fetch layer's mirror injection stays out of this
+  // screen, matching the "never read the current-workspace mirrors here"
+  // contract. Members use a scoped URL and never needed the mirror.
   const { data: agents = [] } = useQuery({
-    ...agentListOptions(workspace?.id ?? ""),
+    ...agentListOptions(workspace?.id ?? "", {
+      workspaceSlug: workspace?.slug,
+    }),
     enabled: workspace != null,
   });
   const { data: members = [] } = useQuery({
