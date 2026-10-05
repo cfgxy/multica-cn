@@ -73,6 +73,7 @@ function RowHeader({
   summaryMono,
   meta,
   clockLabel,
+  durationLabel,
   error,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
@@ -84,6 +85,8 @@ function RowHeader({
   /** Small trailing tag between the summary and the clock (group call count). */
   meta?: string;
   clockLabel?: string;
+  /** Rightmost tail tag (group whole-run duration, mirroring PC's DurationCell). */
+  durationLabel?: string;
   error?: boolean;
 }) {
   return (
@@ -116,6 +119,11 @@ function RowHeader({
       {clockLabel ? (
         <Text className="ml-1 text-[10px] tabular-nums text-muted-foreground/70">
           {clockLabel}
+        </Text>
+      ) : null}
+      {durationLabel ? (
+        <Text className="ml-1 text-[10px] tabular-nums text-muted-foreground/70">
+          {durationLabel}
         </Text>
       ) : null}
     </>
@@ -198,6 +206,7 @@ function GroupRow({ view }: { view: RunGroupStepView }) {
             summaryMono
             meta={t("mobile.run_detail.group_calls", { count: view.steps.length })}
             clockLabel={view.clockLabel}
+            durationLabel={view.durationLabel}
           />
         </View>
       </CollapsibleTrigger>
