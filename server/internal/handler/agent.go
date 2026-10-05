@@ -304,6 +304,26 @@ func (h *Handler) validateAgentVoiceBinding(w http.ResponseWriter, r *http.Reque
 	return voiceUUID, true
 }
 
+// validateAgentTextBinding is the text-slot mirror of validateAgentVoiceBinding
+// (RUYI-425 §4.4 rule 2): every agent create/bind entrypoint — the main agent
+// API, the onboarding shim, the agent builder, and the Mika quickstart —
+// resolves the runtime's Type-layer capability declaration and refuses a
+// family that cannot execute text tasks. Takes an already-loaded runtime so
+// entrypoints with their own lookup/transaction reuse the row they resolved.
+func (h *Handler) validateAgentTextBinding(w http.ResponseWriter, r *http.Request, runtime db.AgentRuntime) bool {
+	caps, err := h.runtimeInstanceCapabilities(r.Context(), runtime)
+	if err != nil {
+		slog.Warn("resolve text runtime capabilities failed", "runtime_id", uuidToString(runtime.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve text runtime capabilities")
+		return false
+	}
+	if err := agent.ValidateSlotCapability(agent.SlotText, runtime.Provider, caps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
 // runtimeInstanceCapabilities resolves the effective Type-layer capability
 // declaration for a runtime instance (§4.4): a custom-profile instance reads
 // its profile's stored declaration (baseline '{}'.resolve), while a built-in
