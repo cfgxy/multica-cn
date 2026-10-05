@@ -806,6 +806,7 @@ func (s *TaskService) captureTaskDispatched(ctx context.Context, task db.AgentTa
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskDispatched(util.UUIDToString(task.ID), source, runtimeMode, taskQueueWaitSeconds(task))
 	}
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunDispatched, "", AuditActorSystem, pgtype.UUID{}, task))
 }
 
 func (s *TaskService) AnalyticsContextForTask(ctx context.Context, task db.AgentTaskQueue) analytics.TaskContext {
@@ -817,6 +818,7 @@ func (s *TaskService) captureTaskStarted(ctx context.Context, task db.AgentTaskQ
 		source, runtimeMode, provider := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskStarted(source, runtimeMode, provider)
 	}
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunStarted, "", AuditActorDaemon, task.RuntimeID, task))
 }
 
 func (s *TaskService) captureTaskCompleted(ctx context.Context, task db.AgentTaskQueue) {
@@ -824,6 +826,7 @@ func (s *TaskService) captureTaskCompleted(ctx context.Context, task db.AgentTas
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunCompleted, "", AuditActorDaemon, task.RuntimeID, task))
 }
 
 func (s *TaskService) captureTaskFailed(ctx context.Context, task db.AgentTaskQueue) {
@@ -1319,6 +1322,8 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		"agent_id", util.UUIDToString(issue.AssigneeID),
 		"force_fresh_session", forceFreshSession,
 	)
+	queuedActor, queuedActorID := memberOrSystemActor(createParams.OriginatorUserID)
+	TryAuditTaskQueued(ctx, s.Queries, task, queuedActor, queuedActorID)
 	if fireAt.Valid {
 		return task, nil
 	}
@@ -1452,6 +1457,8 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	}
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
+	queuedActor, queuedActorID := memberOrSystemActor(originatorUserID)
+	TryAuditTaskQueued(ctx, s.Queries, task, queuedActor, queuedActorID)
 	// See EnqueueTaskForIssue for ordering rationale.
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
@@ -1530,6 +1537,8 @@ func (s *TaskService) EnqueueDeferredAssigneeFallback(ctx context.Context, issue
 		"agent_id", util.UUIDToString(agentID),
 		"fire_at", fireAt.UTC().Format(time.RFC3339),
 	)
+	fallbackActor, fallbackActorID := memberOrSystemActor(attr.UserID)
+	TryAuditTaskQueued(ctx, s.Queries, task, fallbackActor, fallbackActorID)
 	return task, nil
 }
 
@@ -1735,6 +1744,8 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		"project_id", payload.ProjectID,
 		"parent_issue_id", payload.ParentIssueID,
 	)
+	qcActor, qcActorID := memberOrSystemActor(createParams.OriginatorUserID)
+	TryAuditTaskQueued(ctx, s.Queries, task, qcActor, qcActorID)
 	// Match every other Enqueue* path: kick the daemon WS so the task
 	// gets claimed promptly instead of waiting for the next 30 s poll
 	// cycle. Without this the user perceives "quick create never
@@ -2227,6 +2238,11 @@ func (s *TaskService) enqueueChatTaskTx(
 
 // FinalizeChatTaskEnqueue performs only post-commit effects.
 func (s *TaskService) FinalizeChatTaskEnqueue(ctx context.Context, task db.AgentTaskQueue) {
+	// Shared exit for BOTH chat enqueue paths (EnqueueChatTask and the
+	// channel-chat variant): the run.queued audit event lands here, after the
+	// insert transaction committed.
+	chatActor, chatActorID := memberOrSystemActor(task.InitiatorUserID)
+	TryAuditTaskQueued(ctx, s.Queries, task, chatActor, chatActorID)
 	if task.Status == "deferred" {
 		slog.Info("chat task deferred for channel media",
 			"task_id", util.UUIDToString(task.ID),
@@ -2706,6 +2722,10 @@ func (s *TaskService) CancelTasksForIssue(ctx context.Context, issueID pgtype.UU
 		if err != nil {
 			return err
 		}
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonIssueDeleted, AuditActorSystem, pgtype.UUID{}, nil,
+			AuditTrigger{Kind: "issue", Ref: util.UUIDToString(issueID)}); err != nil {
+			return err
+		}
 		return SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled...)
 	}); err != nil {
 		return err
@@ -2789,6 +2809,27 @@ func (s *TaskService) CancelRunsForCancelledIssue(ctx context.Context, issueID p
 				requested = append(requested, t)
 			}
 		}
+		// Same-transaction audit attribution (RUYI-355): terminal flips get
+		// run.cancelled (reason=issue_cancelled); in-flight rows get
+		// run.cancel_requested — the daemon ack writes their run.cancelled
+		// later, inheriting the requester via cancel_requested_by_user_id.
+		cancellerActor := AuditActorSystem
+		if cancellerUserID.Valid {
+			cancellerActor = AuditActorMember
+		}
+		issueCancelledTrigger := AuditTrigger{Kind: "issue", Ref: util.UUIDToString(issueID)}
+		if err := appendTaskCancelledAudits(ctx, qtx, flipped, AuditReasonIssueCancelled, cancellerActor, cancellerUserID, nil, issueCancelledTrigger); err != nil {
+			return err
+		}
+		if len(requested) > 0 {
+			events := make([]Event, 0, len(requested))
+			for _, t := range requested {
+				events = append(events, RunEventFromTask(ctx, qtx, AuditRunCancelRequested, AuditReasonIssueCancelled, cancellerActor, cancellerUserID, t).withTrigger(issueCancelledTrigger))
+			}
+			if err := AppendAuditEvents(ctx, qtx, events...); err != nil {
+				return err
+			}
+		}
 		// Same-tx settlement for the direct flips, matching CancelTasksForIssue:
 		// a delivered-receipt settled after the cancel committed could never be
 		// repaired. cancel_requested rows are not terminal yet — their
@@ -2869,6 +2910,19 @@ func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UU
 		if err != nil {
 			return err
 		}
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonAgentStopped, AuditActorSystem, pgtype.UUID{}, nil,
+			AuditTrigger{Kind: "agent", Ref: util.UUIDToString(agentID)}); err != nil {
+			return err
+		}
+		// Agent-domain rollup: one event naming the sweep, next to the
+		// per-run cancelled events.
+		if len(cancelled) > 0 {
+			details, _ := json.Marshal(map[string]int{"cancelled_runs": len(cancelled)})
+			if err := AppendAuditEvents(ctx, qtx, AgentEvent(AuditAgentRunsCancelled, AuditActorSystem, pgtype.UUID{},
+				AuditWorkspaceIDForTask(ctx, qtx, cancelled[0]), agentID, details)); err != nil {
+				return err
+			}
+		}
 		return SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled...)
 	}); err != nil {
 		return nil, err
@@ -2895,6 +2949,10 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 		var err error
 		cancelled, err = qtx.CancelAgentTasksByTriggerComment(ctx, commentID)
 		if err != nil {
+			return err
+		}
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonTriggerCommentDeleted, AuditActorSystem, pgtype.UUID{}, nil,
+			AuditTrigger{Kind: "comment", Ref: util.UUIDToString(commentID)}); err != nil {
 			return err
 		}
 		return SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled...)
@@ -3000,6 +3058,11 @@ type CancelTaskOptions struct {
 	// delegated-failure recovery signal planned into the task; automatic
 	// cancellations must leave that signal replayable.
 	UserInitiated bool
+	// CancellerUserID is the acting member for user-initiated cancels; it
+	// lands on the cancelled row (cancel_actor_id) and the run.cancelled audit
+	// event so "who stopped this" has a direct answer. Zero for
+	// server-initiated cancels.
+	CancellerUserID pgtype.UUID
 }
 
 // CancelTask cancels a single task by ID for an automatic server path. It does
@@ -3023,10 +3086,11 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID pgtype.UUID) (*db.A
 // automatic server cancellation, it terminally acknowledges any delegated-
 // failure recovery signal carried by the task so the sweeper respects the
 // user's decision instead of recreating the task.
-func (s *TaskService) CancelTaskByUser(ctx context.Context, taskID pgtype.UUID) (*db.AgentTaskQueue, error) {
+func (s *TaskService) CancelTaskByUser(ctx context.Context, taskID, cancellerUserID pgtype.UUID) (*db.AgentTaskQueue, error) {
 	result, err := s.CancelTaskWithResult(ctx, taskID, CancelTaskOptions{
 		ClientSupportsDraftRestore: true,
 		UserInitiated:              true,
+		CancellerUserID:            cancellerUserID,
 	})
 	if err != nil {
 		return nil, err
@@ -3088,6 +3152,13 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 			if err != nil {
 				return fmt.Errorf("cancel queued task: %w", err)
 			}
+			// Same-transaction audit attribution (RUYI-355): queue edit/remove
+			// is always a member action, so the run.cancelled event commits
+			// with the flip or not at all.
+			ev := TaskCancelledEvent(ctx, qtx, task, AuditReasonUserRequested, AuditActorMember, opts.CancellerUserID, nil, AuditTrigger{})
+			if err := AppendAuditEvents(ctx, qtx, ev); err != nil {
+				return err
+			}
 			cancelledChatMessage, err = s.settleQueuedChatInput(ctx, qtx, task, opts.QueueAction)
 			return err
 		})
@@ -3105,7 +3176,10 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				err       error
 			)
 			if opts.UserInitiated {
-				cancelled, err = qtx.CancelAgentTaskByUser(ctx, taskID)
+				cancelled, err = qtx.CancelAgentTaskByUser(ctx, db.CancelAgentTaskByUserParams{
+					ID:            taskID,
+					CancelActorID: opts.CancellerUserID,
+				})
 			} else if opts.ErrorMessage != "" || opts.FailureReason != "" {
 				cancelled, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
 					ID:            taskID,
@@ -3119,6 +3193,20 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 				return err
 			}
 			task = cancelled
+			// Same-transaction audit attribution (RUYI-355): the run.cancelled
+			// event commits with the terminal flip or not at all. The
+			// structured reason names who ended the run; a persisted
+			// failure_reason (server repairs) rides along in details.
+			cancelReason, cancelActor := TaskCancelAttribution(opts.UserInitiated)
+			cancelDetails := map[string]any{}
+			if cancelled.FailureReason.Valid {
+				cancelDetails["failure_reason"] = cancelled.FailureReason.String
+			}
+			if err := AppendAuditEvents(ctx, qtx,
+				TaskCancelledEvent(ctx, qtx, cancelled, cancelReason, cancelActor, opts.CancellerUserID, cancelDetails, AuditTrigger{}),
+			); err != nil {
+				return err
+			}
 			// CancelAgentTaskByUser appends the recovery receipt in the same
 			// statement, so the returned row already carries it.
 			if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, cancelled); err != nil {
@@ -3182,6 +3270,10 @@ func (s *TaskService) CancelQueuedChatTasks(ctx context.Context, sessionID, agen
 		tasks, err = qtx.CancelQueuedAgentTasksForSession(ctx, sessionID)
 		if err != nil {
 			return fmt.Errorf("cancel queued chat tasks: %w", err)
+		}
+		if err := appendTaskCancelledAudits(ctx, qtx, tasks, AuditReasonChatSessionDeleted, AuditActorSystem, pgtype.UUID{}, nil,
+			AuditTrigger{Kind: "chat_session", Ref: util.UUIDToString(sessionID)}); err != nil {
+			return err
 		}
 		if err := SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, tasks...); err != nil {
 			return err
@@ -4245,6 +4337,13 @@ func (s *TaskService) cancelSupersededDeferredRetries(ctx context.Context, runti
 		slog.Warn("cancel superseded deferred retries failed", "error", err)
 		return
 	}
+	if len(cancelled) > 0 {
+		events := make([]Event, 0, len(cancelled))
+		for _, task := range cancelled {
+			events = append(events, RunEventFromTask(ctx, s.Queries, AuditRunCancelled, AuditReasonSupersededByRetry, AuditActorSystem, pgtype.UUID{}, task))
+		}
+		TryAppendAuditEvents(ctx, s.Queries, events...)
+	}
 	for _, task := range cancelled {
 		slog.Info("deferred auto-retry cancelled: superseded by an active task",
 			"task_id", util.UUIDToString(task.ID),
@@ -4344,6 +4443,13 @@ func (s *TaskService) cancelDeferredEscalationsForTask(ctx context.Context, task
 		slog.Warn("cancel deferred escalations for task failed", "task_id", util.UUIDToString(taskID), "error", err)
 		return
 	}
+	if len(cancelled) > 0 {
+		events := make([]Event, 0, len(cancelled))
+		for _, task := range cancelled {
+			events = append(events, RunEventFromTask(ctx, s.Queries, AuditRunCancelled, AuditReasonEscalationAcknowledged, AuditActorSystem, pgtype.UUID{}, task))
+		}
+		TryAppendAuditEvents(ctx, s.Queries, events...)
+	}
 	for _, task := range cancelled {
 		slog.Info("deferred fallback task cancelled",
 			"task_id", util.UUIDToString(task.ID),
@@ -4364,6 +4470,21 @@ func (s *TaskService) CancelDeferredEscalationsForIssueAgent(ctx context.Context
 			"agent_id", util.UUIDToString(agentID),
 			"error", err)
 		return
+	}
+	if len(cancelled) > 0 {
+		events := make([]Event, 0, len(cancelled))
+		for _, task := range cancelled {
+			// Row shape (CTE RETURNING), not the full AgentTaskQueue — the
+			// escalation_for_task_id predicate guarantees issue_id, so the
+			// workspace resolves straight from the issue.
+			wsID := pgtype.UUID{}
+			if issue, ierr := s.Queries.GetIssue(ctx, task.IssueID); ierr == nil {
+				wsID = issue.WorkspaceID
+			}
+			events = append(events, runEventFromDims(wsID, task.IssueID, task.ID, task.AgentID, task.RuntimeID,
+				AuditRunCancelled, AuditReasonEscalationAcknowledged, AuditActorSystem, pgtype.UUID{}))
+		}
+		TryAppendAuditEvents(ctx, s.Queries, events...)
 	}
 	for _, task := range cancelled {
 		slog.Info("deferred fallback task cancelled",
@@ -4415,6 +4536,12 @@ func (s *TaskService) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID 
 		return nil, fmt.Errorf("mark task waiting_local_directory: %w", err)
 	}
 	s.forgetTaskReclaim(task)
+
+	// Wait reason is already sanitized (no absolute paths) before it reaches
+	// either the socket event or the audit payload.
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunWaitingLocalDirectory, "",
+		AuditActorDaemon, task.RuntimeID, task).
+		WithDetails(jsonDetails(map[string]any{"wait_reason": reason})))
 
 	slog.Info("task waiting_local_directory",
 		"task_id", util.UUIDToString(task.ID),
@@ -4523,6 +4650,17 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		} else if converged.ID.Valid {
 			task = converged
 			guardConverged = true
+			// Same-tx audit: the stop the requester asked for just landed;
+			// attribution inherits the cancel_requested actor.
+			convergeActor := AuditActorSystem
+			if converged.CancelRequestedByUserID.Valid {
+				convergeActor = AuditActorMember
+			}
+			if err := AppendAuditEvents(ctx, qtx, TaskCancelledEvent(ctx, qtx, converged,
+				AuditReasonUserRequested, convergeActor, converged.CancelRequestedByUserID,
+				map[string]any{"converged_from": "complete_cancel_race_guard"}, AuditTrigger{})); err != nil {
+				return err
+			}
 			return nil
 		}
 		t, err := qtx.CompleteAgentTask(ctx, db.CompleteAgentTaskParams{
@@ -5022,6 +5160,17 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		} else if converged.ID.Valid {
 			task = converged
 			guardConverged = true
+			// Same-tx audit: the stop the requester asked for just landed;
+			// attribution inherits the cancel_requested actor.
+			convergeActor := AuditActorSystem
+			if converged.CancelRequestedByUserID.Valid {
+				convergeActor = AuditActorMember
+			}
+			if err := AppendAuditEvents(ctx, qtx, TaskCancelledEvent(ctx, qtx, converged,
+				AuditReasonUserRequested, convergeActor, converged.CancelRequestedByUserID,
+				map[string]any{"converged_from": "fail_cancel_race_guard"}, AuditTrigger{})); err != nil {
+				return err
+			}
 			return nil
 		}
 		t, err := qtx.FailAgentTask(ctx, db.FailAgentTaskParams{
@@ -5263,6 +5412,14 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
+	// run.failed for the agent-reported terminal: reason carries the
+	// structured failure_reason when the daemon supplied one; the raw error
+	// text stays on the task row (audit payloads never duplicate it).
+	failReason := failureReason
+	if failReason == "" {
+		failReason = AuditReasonAgentReported
+	}
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunFailed, failReason, AuditActorDaemon, task.RuntimeID, task))
 
 	// The auto-retry child (if any) was created inside the transaction above so
 	// no newer chat task could jump ahead of it. Surface it now: broadcast
@@ -5916,6 +6073,11 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		"is_leader", isLeader,
 		"cancelled_pending", cancelledCount,
 	)
+	// run.rerun: the replacement row's creation, linked to its source. RetryRun
+	// additionally logs run.retried at its own layer.
+	rerunActor, rerunActorID := memberOrSystemActor(actorUserID)
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunRerun, "", rerunActor, rerunActorID, task).
+		WithTrigger("rerun_of_task", util.UUIDToString(sourceTaskID)))
 	return &task, nil
 }
 
@@ -6007,9 +6169,13 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 // FailTasksForOfflineRuntimes fails in-flight tasks whose runtime stayed
 // offline past the reconnect grace.
 func (s *TaskService) FailTasksForOfflineRuntimes(ctx context.Context, arg db.FailTasksForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.FailTasksForOfflineRuntimes(ctx, arg)
-	})
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			return appendTaskFailedAudits(ctx, qtx, rows, AuditReasonRuntimeOffline)
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.FailTasksForOfflineRuntimes(ctx, arg)
+		})
 }
 
 // ConvergeCancelRequestedForOfflineRuntimes closes out runs whose stop was
@@ -6017,31 +6183,47 @@ func (s *TaskService) FailTasksForOfflineRuntimes(ctx context.Context, arg db.Fa
 // ack-confirm it: they converge to cancelled, not failed — the user ended
 // these runs, the runtime merely made the confirmation impossible (RUYI-292).
 func (s *TaskService) ConvergeCancelRequestedForOfflineRuntimes(ctx context.Context, arg db.ConvergeCancelRequestedForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.ConvergeCancelRequestedForOfflineRuntimes(ctx, arg)
-	})
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			return appendTaskCancelledAudits(ctx, qtx, rows, AuditReasonRuntimeOfflineConverge, AuditActorSystem, pgtype.UUID{}, nil, AuditTrigger{})
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.ConvergeCancelRequestedForOfflineRuntimes(ctx, arg)
+		})
 }
 
 // FailExpiredRuntimeReconnectRetries fails deferred retries that reached their
 // terminal reconnect deadline.
 func (s *TaskService) FailExpiredRuntimeReconnectRetries(ctx context.Context, arg db.FailExpiredRuntimeReconnectRetriesParams) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.FailExpiredRuntimeReconnectRetries(ctx, arg)
-	})
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			return appendTaskFailedAudits(ctx, qtx, rows, AuditReasonReconnectExhausted)
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.FailExpiredRuntimeReconnectRetries(ctx, arg)
+		})
 }
 
 // FailStaleTasks fails claimed work whose runtime stopped reporting.
 func (s *TaskService) FailStaleTasks(ctx context.Context, arg db.FailStaleTasksParams) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.FailStaleTasks(ctx, arg)
-	})
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			return appendTaskFailedAudits(ctx, qtx, rows, AuditReasonRuntimeOffline)
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.FailStaleTasks(ctx, arg)
+		})
 }
 
 // ExpireStaleQueuedTasks fails queued work whose runtime never came back.
 func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireStaleQueuedTasksParams) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.ExpireStaleQueuedTasks(ctx, arg)
-	})
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			return appendTaskFailedAudits(ctx, qtx, rows, AuditReasonRuntimeOffline)
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.ExpireStaleQueuedTasks(ctx, arg)
+		})
 }
 
 // RecoverOrphanedTasksForRuntime fails work a restarted daemon reports it lost.
@@ -6050,12 +6232,16 @@ func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireS
 // alone; probe-visible tasks keep whatever verdict the probe reached. The
 // runtime_gone re-register path passes false for the historical blanket fail.
 func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID, onlyUnprobeable bool) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.RecoverOrphanedTasksForRuntime(ctx, db.RecoverOrphanedTasksForRuntimeParams{
-			RuntimeID:       runtimeID,
-			OnlyUnprobeable: onlyUnprobeable,
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			return appendTaskFailedAudits(ctx, qtx, rows, AuditReasonOpsSweep)
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.RecoverOrphanedTasksForRuntime(ctx, db.RecoverOrphanedTasksForRuntimeParams{
+				RuntimeID:       runtimeID,
+				OnlyUnprobeable: onlyUnprobeable,
+			})
 		})
-	})
 }
 
 // CancelTasksForArchivedAgent cancels every active task belonging to an agent
@@ -6065,18 +6251,43 @@ func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtim
 // agent:archived event the caller publishes already invalidates every client's
 // active-task view, so per-row events would be redundant noise.
 func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.CancelAgentTasksByAgent(ctx, agentID)
-	})
+	return s.terminateTasksInTx(ctx,
+		func(qtx *db.Queries, rows []db.AgentTaskQueue) error {
+			if err := appendTaskCancelledAudits(ctx, qtx, rows, AuditReasonAgentArchived, AuditActorSystem, pgtype.UUID{}, nil,
+				AuditTrigger{Kind: "agent", Ref: util.UUIDToString(agentID)}); err != nil {
+				return err
+			}
+			if len(rows) > 0 {
+				details, _ := json.Marshal(map[string]int{"cancelled_runs": len(rows)})
+				if err := AppendAuditEvents(ctx, qtx, AgentEvent(AuditAgentRunsCancelled, AuditActorSystem, pgtype.UUID{},
+					AuditWorkspaceIDForTask(ctx, qtx, rows[0]), agentID, details)); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+			return qtx.CancelAgentTasksByAgent(ctx, agentID)
+		})
 }
 
-func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
+// terminateTasksInTx terminalizes a batch of rows inside one transaction with
+// their delegated-failure settlement, and lets the caller append the
+// RUYI-355 audit events in the SAME transaction (auditFn) — attribution
+// commits with the flip or not at all. auditFn may be nil for paths with no
+// coverage-matrix event.
+func (s *TaskService) terminateTasksInTx(ctx context.Context, auditFn func(qtx *db.Queries, rows []db.AgentTaskQueue) error, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
 	var failed []db.AgentTaskQueue
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		var err error
 		failed, err = fail(qtx)
 		if err != nil {
 			return err
+		}
+		if auditFn != nil {
+			if err := auditFn(qtx, failed); err != nil {
+				return err
+			}
 		}
 		return SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, failed...)
 	}); err != nil {
@@ -6680,6 +6891,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 				"recovery_task_id", util.UUIDToString(task.ID),
 				"coordinator_agent_id", util.UUIDToString(target.agent.ID),
 			)
+			TryAuditTaskQueued(ctx, s.Queries, task, AuditActorSystem, pgtype.UUID{})
 			s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 			s.NotifyTaskEnqueued(ctx, task)
 			return delegatedFailureRecoveryReplayed, nil

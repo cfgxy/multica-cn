@@ -21,6 +21,8 @@ import type {
   AgentDetailInfo,
   AgentInfo,
   AgentRuntimeInfo,
+  AuditEventListParams,
+  AuditEventListResult,
   CancelRunResult,
   CommentInfo,
   CommentListParams,
@@ -367,6 +369,50 @@ export class MulticaClient {
       `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}/retry`,
       { workspace, body: {} },
     );
+  }
+
+  // The workspace audit search (RUYI-355): the same endpoint the web app
+  // reads, so the MCP tool and the UI always see the same trail. Issue-level
+  // filtering is just issue_id here — the server pins it on the issue route.
+  // Unlike every header-scoped route, this one keys the workspace by UUID in
+  // its path and has no slug resolution, so a slug input resolves to its UUID
+  // first via the caller's own workspace list (the PAT user is necessarily a
+  // member of any workspace it may read here).
+  async listAuditEvents(
+    workspace: string,
+    params: AuditEventListParams = {},
+  ): Promise<AuditEventListResult> {
+    const workspaceId = isUuid(workspace)
+      ? workspace
+      : await this.resolveWorkspaceIdBySlug(workspace);
+    return this.request("GET", `/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events`, {
+      workspace,
+      query: {
+        domain: params.domain,
+        event_type: params.event_type,
+        actor_type: params.actor_type,
+        actor_id: params.actor_id,
+        issue_id: params.issue_id,
+        task_id: params.task_id,
+        agent_id: params.agent_id,
+        runtime_id: params.runtime_id,
+        reason: params.reason,
+        since: params.since,
+        until: params.until,
+        limit: params.limit,
+        cursor: params.cursor,
+        cursor_id: params.cursor_id,
+      },
+    });
+  }
+
+  private async resolveWorkspaceIdBySlug(slug: string): Promise<string> {
+    const workspaces = await this.listWorkspaces();
+    const match = workspaces.find((w) => w.slug === slug);
+    if (!match) {
+      throw new MulticaRequestError(`workspace not found for slug: ${slug}`);
+    }
+    return match.id;
   }
 
   // ---- workspace management surface (RUYI-419) ----------------------------

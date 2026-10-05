@@ -92,7 +92,7 @@ func (s *TaskService) CancelRunByUser(ctx context.Context, taskID pgtype.UUID, c
 		// No process anywhere: the server is authoritative. The legacy
 		// user-cancel flow does the direct flip together with every side effect
 		// a queued run owns (chat input settle, agent status, terminal event).
-		cancelled, err := s.CancelTaskByUser(ctx, taskID)
+		cancelled, err := s.CancelTaskByUser(ctx, taskID, cancellerUserID)
 		if err != nil {
 			return nil, err
 		}
@@ -115,6 +115,12 @@ func (s *TaskService) CancelRunByUser(ctx context.Context, taskID pgtype.UUID, c
 		if err != nil {
 			return nil, fmt.Errorf("request cancel: %w", err)
 		}
+		// Audit: phase-1 acceptance of the stop. The terminal run.cancelled
+		// lands later from the daemon ack (or the offline converger), and both
+		// inherit this requester via cancel_requested_by_user_id.
+		reqActor, reqActorID := memberOrSystemActor(cancellerUserID)
+		TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunCancelRequested,
+			AuditReasonUserRequested, reqActor, reqActorID, updated))
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelRequested, updated)
 		return &RunCancelOutcome{Task: updated, Code: RunCancelCodeCancelRequested}, nil
 	}
@@ -216,5 +222,11 @@ func (s *TaskService) RetryRun(ctx context.Context, issueID pgtype.UUID, sourceT
 	if err != nil {
 		return nil, false, err
 	}
+	// The replacement row itself logged run.rerun inside RerunIssue; this
+	// event records the RETRY intent (double-click damping, throttle
+	// descendants) as its own audit entry.
+	retryActor, retryActorID := memberOrSystemActor(actorUserID)
+	TryAppendAuditEvents(ctx, s.Queries, RunEventFromTask(ctx, s.Queries, AuditRunRetried, "", retryActor, retryActorID, *created).
+		WithTrigger("rerun_of_task", util.UUIDToString(sourceTaskID)))
 	return created, true, nil
 }

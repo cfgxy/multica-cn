@@ -25,16 +25,21 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// still shows which workspace an action affected; classified Settle
 	// (not Keep) because the row is left in place with workspace_id intact
 	// rather than being genuinely workspace-agnostic.
-	"admin_audit_log":             workspaceDeleteSettle,
-	"agent":                       workspaceDelete,
-	"agent_builder_draft":         workspaceDelete,
-	"agent_invocation_target":     workspaceDelete,
-	"agent_runtime":               workspaceDelete,
-	"agent_skill":                 workspaceDelete,
-	"agent_task_queue":            workspaceDelete,
-	"agent_to_label":              workspaceDelete,
-	"agent_webhook":               workspaceDelete,
-	"attachment":                  workspaceDelete,
+	"admin_audit_log":         workspaceDeleteSettle,
+	"agent":                   workspaceDelete,
+	"agent_builder_draft":     workspaceDelete,
+	"agent_invocation_target": workspaceDelete,
+	"agent_runtime":           workspaceDelete,
+	"agent_skill":             workspaceDelete,
+	"agent_task_queue":        workspaceDelete,
+	"agent_to_label":          workspaceDelete,
+	"agent_webhook":           workspaceDelete,
+	"attachment":              workspaceDelete,
+	// Workspace-scoped audit trail (RUYI-355): append-only rows carry no
+	// foreign keys by design and outlive the business rows they describe,
+	// so like admin_audit_log they are left in place with workspace_id
+	// intact — the trail still shows what the deleted workspace did.
+	"audit_event":                 workspaceDeleteSettle,
 	"autopilot":                   workspaceDelete,
 	"autopilot_collaborator":      workspaceDelete,
 	"autopilot_quota_period":      workspaceDelete,
