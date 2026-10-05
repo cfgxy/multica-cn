@@ -126,6 +126,7 @@ var postConsolidationStems = []string{
 	"924_agent_resource_weight",          // RUYI-397
 	"925_agent_context_dual_slot",        // RUYI-425
 	"926_live_session",                   // RUYI-425 stage 3
+	"927_voice_fact_event",               // RUYI-425 stage 4
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

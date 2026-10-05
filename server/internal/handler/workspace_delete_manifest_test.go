@@ -132,6 +132,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// (migration 926), so no explicit DELETE is needed — same shape as
 	// agent_webhook.
 	"live_session": workspaceDelete,
+	// RUYI-425 stage 4: the authoritative facts layer of the voice write-back
+	// (design §3.3 layers.facts / §3.6). Same teardown shape as live_session:
+	// the workspace_id CASCADE FK covers it; agent/live_session columns are
+	// historical UUIDs by design (migration 927).
+	"agent_fact_event": workspaceDelete,
 	// A published prompt version outlives the workspace it came from
 	// (RUYI-100): other workspaces hold installs against it, and the catalog
 	// only ever shows the publisher, never the source workspace. Keep, not
