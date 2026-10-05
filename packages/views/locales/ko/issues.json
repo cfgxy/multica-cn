@@ -578,6 +578,7 @@
   "agent_live": {
     "is_working": "{{name}} 작업 중",
     "is_queued": "{{name}} 대기 중",
+    "past_runs": "실행 기록 · {{count}}회",
     "is_waiting_local_directory": "{{name}} 로컬 디렉터리 대기 중",
     "queued_elapsed_prefix": "{{elapsed}} 동안 대기 중",
     "fallback_name": "에이전트",
@@ -609,6 +610,8 @@
     "trigger_handoff_prefix": "인계: ",
     "included_comments_other": "댓글 {{count}}개 포함",
     "status_queued": "대기 중",
+    "status_queued_backpressure": "대기 중 · 호스트 메모리 부족",
+    "queued_backpressure_hint": "호스트가 메모리 백프레셔를 보고하여, 회복될 때까지 새 실행은 대기합니다.",
     "status_dispatched": "시작 중",
     "status_waiting_local_directory": "로컬 디렉터리 대기 중",
     "status_running": "작업 중",
@@ -917,6 +920,15 @@
       "pill_label": "댓글 추가, @로 멘션"
     },
     "comment": {
+      "menu_copy": "복사",
+      "menu_copy_link": "링크 복사",
+      "menu_edit": "수정",
+      "menu_more_reactions": "더 많은 반응…",
+      "menu_react": "반응…",
+      "menu_reply": "답글",
+      "menu_resolve": "스레드 해결",
+      "menu_select_text": "텍스트 선택",
+      "menu_unresolve": "스레드 해결 취소",
       "resolved_bar_other": "해결됨 · 메시지 {{count}}개 ({{authors}}님)",
       "resolved_bar_a11y_other": "해결된 스레드, 메시지 {{count}}개 ({{authors}}님). 탭하여 펼치기.",
       "resolved_by": "해결한 사람",
@@ -1076,6 +1088,7 @@
     "agent_activity": {
       "runs_count": "실행 · {{count}}회",
       "badge_a11y": "에이전트 실행 중 — 실행 기록 열기",
+      "badge_idle_a11y": "실행 기록 보기",
       "row_running_a11y": "에이전트가 이 작업 처리 중",
       "row_queued_a11y": "에이전트 작업 대기 중"
     },

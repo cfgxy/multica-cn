@@ -332,6 +332,8 @@
       "message": "{{name}} needs a runtime before it can run. Bind one on web or desktop."
     },
     "message_list": {
+      "menu_copy": "Copy",
+      "menu_select_text": "Select Text",
       "quick_actions_a11y": "Suggested follow-ups",
       "show_error_details_a11y": "Show error details"
     },

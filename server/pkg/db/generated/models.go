@@ -69,6 +69,7 @@ type Agent struct {
 	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	ResourceWeight         int32  `json:"resource_weight"`
 	Revision               int64  `json:"revision"`
 }
 
@@ -193,6 +194,9 @@ type AgentTaskQueue struct {
 	PromptVersions          []byte             `json:"prompt_versions"`
 	CancelRequestedByUserID pgtype.UUID        `json:"cancel_requested_by_user_id"`
 	CancelRequestedAt       pgtype.Timestamptz `json:"cancel_requested_at"`
+	CancelReason            pgtype.Text        `json:"cancel_reason"`
+	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
+	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 }
 
 type AgentToLabel struct {
@@ -230,6 +234,24 @@ type Attachment struct {
 	ChatMessageID   pgtype.UUID        `json:"chat_message_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
+}
+
+type AuditEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Domain      string             `json:"domain"`
+	EventType   string             `json:"event_type"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+	ActorType   string             `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	TriggerKind pgtype.Text        `json:"trigger_kind"`
+	TriggerRef  pgtype.Text        `json:"trigger_ref"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	Reason      pgtype.Text        `json:"reason"`
+	Details     []byte             `json:"details"`
 }
 
 type Autopilot struct {
@@ -1269,6 +1291,24 @@ type OauthClient struct {
 	CreatedBy        pgtype.UUID        `json:"created_by"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	// Soft-disable timestamp. NULL = enabled. A disabled client cannot mint new tokens and its existing tokens fail the grant gate within the cache window.
+	DisabledAt pgtype.Timestamptz `json:"disabled_at"`
+	// User who set disabled_at. No DB foreign key, resolved in application code.
+	DisabledBy pgtype.UUID `json:"disabled_by"`
+	// When the current client_secret_hash was written. NULL = original create-time secret. Shown as "rotated at"; never the hash itself.
+	SecretUpdatedAt pgtype.Timestamptz `json:"secret_updated_at"`
+}
+
+// One row per (client, user) OAuth authorization (RUYI-420). Access tokens carry the grant id; middleware.Auth checks revoked_at/client state after signature verification, making revocation effective within the gate cache TTL. scope stores the consented scope string; the legacy value "mcp" means full MCP access.
+type OauthGrant struct {
+	ID        pgtype.UUID        `json:"id"`
+	ClientID  string             `json:"client_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Scope     string             `json:"scope"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	// Refreshed at most once per gate-cache TTL window per grant, mirroring the PAT last_used_at throttle.
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 }
 
 type PersonalAccessToken struct {

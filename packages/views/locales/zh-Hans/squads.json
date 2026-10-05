@@ -146,7 +146,8 @@
     "delete_action": "删除 Profile",
     "delete_confirm_title": "删除 Profile「{{name}}」？",
     "delete_confirm_description": "该方案及其成员配置将被删除，此操作不可撤销。",
-    "delete_active_warning": "该方案当前处于激活状态。删除仅清除激活标识，已覆盖到成员的执行配置不会回滚。"
+    "delete_active_warning": "该方案当前处于激活状态。删除仅清除激活标识，已覆盖到成员的执行配置不会回滚。",
+    "thinking_default": "运行时默认"
   },
   "detail_tabs": {
     "members": "成员",
@@ -203,6 +204,24 @@
   "mobile": {
     "page": {
       "search_placeholder": "搜索小队…"
+    },
+    "create": {
+      "avatar_add": "设置头像",
+      "avatar_hint": "可选。显示在小队出现的所有位置。",
+      "search_placeholder": "搜索智能体…",
+      "search_empty": "没有符合条件的智能体。",
+      "group_my": "我的智能体",
+      "group_workspace": "工作区智能体"
+    },
+    "detail": {
+      "unsaved_title": "有未保存的修改",
+      "unsaved_keep": "继续编辑",
+      "unsaved_discard": "放弃",
+      "unsaved_body": "你对指令的修改尚未保存。"
+    },
+    "execution": {
+      "add_member": "添加成员",
+      "no_candidates": "所有活跃智能体均已在列。"
     }
   }
 }

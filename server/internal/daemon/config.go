@@ -97,8 +97,21 @@ const (
 	DefaultBackpressureMemRecoveryPct  = 25.0
 	DefaultBackpressureSwapHighPct     = 80.0
 	DefaultBackpressureSwapRecoveryPct = 60.0
-	DefaultBackpressureSampleInterval  = 5 * time.Second
-	DefaultBackpressureWindowSize      = 6 // samples; 6 × 5s = 30s smoothing window
+	// PSI memory pressure joins the gate as a third condition (RUYI-397):
+	// trigger OR, recovery AND, same hysteresis discipline as the
+	// watermarks. /proc/pressure/memory "some" avg10 is the share of
+	// wall-clock time at least one task stalled on memory — a host stalling
+	// half the time is starved even while MemAvailable still looks
+	// acceptable, because reclaimable caches evaporate exactly under the
+	// allocation bursts that matter (the RUYI-392 incident profile). 50/20
+	// are INITIAL SAFETY PARAMETERS pending GTI field calibration, same
+	// standing as the watermarks above; PSIHighPct <= 0 disables the
+	// condition entirely, and an unreadable PSI source is skipped (degrades
+	// without blocking mem/swap).
+	DefaultBackpressurePSIHighPct     = 50.0
+	DefaultBackpressurePSIRecoveryPct = 20.0
+	DefaultBackpressureSampleInterval = 5 * time.Second
+	DefaultBackpressureWindowSize     = 6 // samples; 6 × 5s = 30s smoothing window
 )
 
 // DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
@@ -129,6 +142,8 @@ type Config struct {
 	BackpressureMemRecoveryPct     float64               // MemAvailable% above which claiming resumes (default: 25)
 	BackpressureSwapHighPct        float64               // SwapUsed% above which new claims pause; <=0 disables the swap condition (default: 80)
 	BackpressureSwapRecoveryPct    float64               // SwapUsed% below which claiming resumes (default: 60)
+	BackpressurePSIHighPct         float64               // PSI memory "some" avg10% above which new claims pause; <=0 disables the PSI condition (default: 50)
+	BackpressurePSIRecoveryPct     float64               // PSI some avg10% below which claiming resumes (default: 20)
 	BackpressureSampleInterval     time.Duration         // /proc sampling cadence for the watermark gate (default: 5s)
 	BackpressureWindowSize         int                   // smoothing window in samples before thresholds are evaluated on the mean (default: 6)
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
@@ -488,6 +503,14 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	bpPSIHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", DefaultBackpressurePSIHighPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpPSIRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", DefaultBackpressurePSIRecoveryPct)
+	if err != nil {
+		return Config{}, err
+	}
 	bpSampleInterval, err := durationFromEnv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", DefaultBackpressureSampleInterval)
 	if err != nil {
 		return Config{}, err
@@ -502,6 +525,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 			MemRecoveryPct:  bpMemRecovery,
 			SwapHighPct:     bpSwapHigh,
 			SwapRecoveryPct: bpSwapRecovery,
+			PSIHighPct:      bpPSIHigh,
+			PSIRecoveryPct:  bpPSIRecovery,
 		}, bpSampleInterval, bpWindowSize); err != nil {
 			return Config{}, err
 		}
@@ -683,6 +708,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		BackpressureMemRecoveryPct:      bpMemRecovery,
 		BackpressureSwapHighPct:         bpSwapHigh,
 		BackpressureSwapRecoveryPct:     bpSwapRecovery,
+		BackpressurePSIHighPct:          bpPSIHigh,
+		BackpressurePSIRecoveryPct:      bpPSIRecovery,
 		BackpressureSampleInterval:      bpSampleInterval,
 		BackpressureWindowSize:          bpWindowSize,
 		PollInterval:                    pollInterval,

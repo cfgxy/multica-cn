@@ -1,7 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@multica/core/types";
-import { groupIssuesByCategory } from "./group-issues-by-category";
+import { statusCategoryOfKey } from "./issue-status";
+import {
+  categoryOrderFromStatusFilters,
+  groupIssuesByCategory,
+} from "./group-issues-by-category";
 
 function issue(id: string, status: string, statusCategory?: string): Issue {
   return {
@@ -134,5 +138,94 @@ describe("groupIssuesByCategory({ includeCancelled })", () => {
     expect(
       groupIssuesByCategory([issue("a", "cancelled")], {}),
     ).toEqual([]);
+  });
+});
+
+// RUYI-344 增量：全部 TAB 的分组顺序跟随状态多选的勾选顺序。勾选顺序以
+// 状态 KEY 记录（statusFilters 追加式），分组以 CATEGORY 为单元——
+// categoryOrderFromStatusFilters 把 key 顺序解析成 category 顺序，
+// groupIssuesByCategory 的 categoryOrder 选项负责按它装配 sections。
+describe("categoryOrderFromStatusFilters", () => {
+  it("maps built-in keys to their own categories in check order", () => {
+    expect(
+      categoryOrderFromStatusFilters(["blocked", "in_progress", "backlog"]),
+    ).toEqual(["blocked", "in_progress", "backlog"]);
+  });
+
+  it("resolves custom status keys through the injected resolver", () => {
+    const catalogCategoryOf = (key: string) =>
+      key === "in-dev"
+        ? "in_progress"
+        : key === "wont-do"
+          ? "cancelled"
+          : statusCategoryOfKey(key);
+    expect(
+      categoryOrderFromStatusFilters(
+        ["in-dev", "wont-do", "blocked"],
+        catalogCategoryOf,
+      ),
+    ).toEqual(["in_progress", "cancelled", "blocked"]);
+  });
+
+  it("dedupes categories, keeping the first position", () => {
+    const twoCustomsOneCategory = (key: string) =>
+      key === "dev-a" || key === "dev-b" ? "in_progress" : "todo";
+    expect(
+      categoryOrderFromStatusFilters(["dev-a", "todo", "dev-b"], twoCustomsOneCategory),
+    ).toEqual(["in_progress", "todo"]);
+  });
+
+  it("falls back to todo for keys nothing resolves", () => {
+    expect(categoryOrderFromStatusFilters(["mystery", "qa"])).toEqual(["todo"]);
+  });
+
+  it("returns nothing for an empty selection", () => {
+    expect(categoryOrderFromStatusFilters([])).toEqual([]);
+  });
+});
+
+describe("groupIssuesByCategory({ categoryOrder })", () => {
+  it("orders sections by the given order, remainder canonically behind", () => {
+    const sections = groupIssuesByCategory(
+      [issue("a", "done"), issue("b", "backlog"), issue("c", "blocked")],
+      { categoryOrder: ["blocked", "in_progress", "backlog"] },
+    );
+    expect(sections.map((s) => s.category)).toEqual([
+      "blocked",
+      "backlog",
+      "done",
+    ]);
+  });
+
+  it("keeps cancelled pinned last when the order does not mention it", () => {
+    const sections = groupIssuesByCategory(
+      [issue("a", "cancelled"), issue("b", "done")],
+      { includeCancelled: true, categoryOrder: ["done"] },
+    );
+    expect(sections.map((s) => s.category)).toEqual(["done", "cancelled"]);
+  });
+
+  it("places a selected cancelled category at its selection position", () => {
+    const sections = groupIssuesByCategory(
+      [issue("a", "cancelled"), issue("b", "blocked")],
+      { includeCancelled: true, categoryOrder: ["cancelled", "blocked"] },
+    );
+    expect(sections.map((s) => s.category)).toEqual(["cancelled", "blocked"]);
+  });
+
+  it("ignores a cancelled entry when includeCancelled is off", () => {
+    const sections = groupIssuesByCategory(
+      [issue("a", "todo"), issue("b", "cancelled")],
+      { categoryOrder: ["cancelled", "todo"] },
+    );
+    expect(sections.map((s) => s.category)).toEqual(["todo"]);
+  });
+
+  it("keeps the canonical order for an empty order array", () => {
+    const sections = groupIssuesByCategory(
+      [issue("a", "done"), issue("b", "backlog")],
+      { categoryOrder: [] },
+    );
+    expect(sections.map((s) => s.category)).toEqual(["backlog", "done"]);
   });
 });

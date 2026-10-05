@@ -45,13 +45,18 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // RUYI-433 execution-config reads.
   "list_daemon_instances",
   "get_daemon_instance",
-  "list_runtimes",
   "get_runtime",
   "get_runtime_models",
   "get_agent_runtime_config",
   "list_execution_profiles",
   "get_execution_profile",
   "get_execution_topology",
+  "search_audit_events",
+  "list_runs",
+  "get_agent",
+  "list_runtimes",
+  "list_squads",
+  "get_squad",
 ]);
 
 export function createMcpServer(client: MulticaClient): Server {
