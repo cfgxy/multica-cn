@@ -63,9 +63,58 @@ func TestPlanSupervisedRun(t *testing.T) {
 			t.Fatalf("want nil, got %+v", got)
 		}
 	})
-	t.Run("provider whitelist", func(t *testing.T) {
-		if got := newDaemon(newTestSupervisor(t)).planSupervisedRun("kimi", testTaskID, 1); got != nil {
-			t.Fatalf("kimi is Phase 2; want nil, got %+v", got)
+	t.Run("phase 2 target set goes supervised", func(t *testing.T) {
+		// RUYI-390: every ACP-family provider, zcode and deerflow reattach
+		// mid-turn without a prompt replay, so each must plan a supervised
+		// run — the feature test pinning the launch path per provider.
+		d := newDaemon(newTestSupervisor(t))
+		for _, p := range supervisedTargets {
+			got := d.planSupervisedRun(p, testTaskID, 1)
+			if got == nil {
+				t.Fatalf("%s: want supervised plan, got legacy", p)
+			}
+			if got.Runtime != p || got.Reattach {
+				t.Fatalf("%s: want fresh supervised plan, got %+v", p, got)
+			}
+		}
+	})
+	t.Run("phase 2 reattach plan across providers", func(t *testing.T) {
+		// Same deterministic run id for every provider: a restart reenters
+		// the live worker regardless of which family launched it.
+		sup := newTestSupervisor(t)
+		d := newDaemon(sup)
+		if err := sup.Manager().WriteManifest(&supervisor.Manifest{
+			Version: 1, RunID: testTaskID + "-1", TaskID: testTaskID, State: supervisor.StateRunning,
+		}); err != nil {
+			t.Fatalf("seed manifest: %v", err)
+		}
+		for _, p := range supervisedTargets {
+			got := d.planSupervisedRun(p, testTaskID, 1)
+			if got == nil || !got.Reattach || got.RunID != testTaskID+"-1" {
+				t.Fatalf("%s: want reattach %s-1, got %+v", p, testTaskID, got)
+			}
+		}
+	})
+	t.Run("non-target providers stay legacy", func(t *testing.T) {
+		d := newDaemon(newTestSupervisor(t))
+		for _, p := range []string{"codex", "cursor", "copilot", "qwen", "antigravity", "opencode", "pi", "omp"} {
+			if got := d.planSupervisedRun(p, testTaskID, 1); got != nil {
+				t.Fatalf("%s: not a phase 2 target; want legacy, got %+v", p, got)
+			}
+		}
+	})
+	t.Run("builtin runtime resolves to its protocol family", func(t *testing.T) {
+		// "omp" dispatches to the pi family; the whitelist decision must
+		// follow the family, not the runtime id, so a future ACP-family
+		// builtin runtime inherits supervision without a whitelist edit.
+		if got := supervisedProviderFamily("omp"); got != "pi" {
+			t.Fatalf("supervisedProviderFamily(omp) = %q, want pi", got)
+		}
+		if got := supervisedProviderFamily("kimi"); got != "kimi" {
+			t.Fatalf("supervisedProviderFamily(kimi) = %q, want kimi", got)
+		}
+		if got := supervisedProviderFamily("no-such-provider"); got != "no-such-provider" {
+			t.Fatalf("unknown provider must pass through, got %q", got)
 		}
 	})
 	t.Run("non-uuid task id falls back to legacy", func(t *testing.T) {

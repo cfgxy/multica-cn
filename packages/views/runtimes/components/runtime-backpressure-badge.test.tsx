@@ -41,6 +41,23 @@ describe("BackpressureBadge", () => {
     );
   });
 
+  it("renders for a psi-only active report", () => {
+    renderBadge({
+      backpressure: {
+        active: true,
+        reason: "psi",
+        mem_available_pct: 40,
+        swap_used_pct: 10,
+        psi_some_avg10: 62.5,
+        psi_read_ok: true,
+        deferred_claims: 3,
+      },
+    });
+    expect(screen.getByTestId("backpressure-badge")).toHaveTextContent(
+      "Memory backpressure",
+    );
+  });
+
   it("renders nothing for an inactive or missing report", () => {
     const inactive = renderBadge({
       backpressure: { active: false, reason: "", mem_available_pct: 30, swap_used_pct: 10 },

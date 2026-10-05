@@ -596,6 +596,17 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		// and go (MUL-4217). Shared with the failed-profile path below.
 		registered = h.inheritMachineCustomName(r.Context(), registered, inserted)
 
+		// Audit (RUYI-355): runtime connected. Reconnects log too — the
+		// connect/disconnect alternation IS the availability trail.
+		if registered.Status == "online" {
+			service.TryAppendAuditEvents(r.Context(), h.Queries,
+				service.RuntimeEventFromRow(service.AuditRuntimeConnected, service.AuditActorDaemon, registered).
+					WithDetails(service.JSONDetails(map[string]string{
+						"provider":  provider,
+						"daemon_id": req.DaemonID,
+					})))
+		}
+
 		// Inserted is false for normal daemon reconnects/upserts, so
 		// runtime_ready is a first-ready-per-runtime-row signal.
 		if inserted {
@@ -959,6 +970,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("deregister: failed to set offline", "runtime_id", rid, "error", err)
 			continue
 		}
+		// Audit (RUYI-355): the daemon itself reported the disconnect.
+		service.TryAppendAuditEvents(r.Context(), h.Queries,
+			service.RuntimeEventFromRow(service.AuditRuntimeDisconnected, service.AuditActorDaemon, rt))
 		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.RuntimeOffline(
 			uuidToString(rt.OwnerID),
 			wsID,
@@ -982,9 +996,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 }
 
 type DaemonHeartbeatRequest struct {
-	RuntimeID           string                                `json:"runtime_id"`
-	SupportsBatchImport bool                                  `json:"supports_batch_import,omitempty"`
-	Backpressure        *protocol.DaemonBackpressureReport    `json:"backpressure,omitempty"`
+	RuntimeID           string                             `json:"runtime_id"`
+	SupportsBatchImport bool                               `json:"supports_batch_import,omitempty"`
+	Backpressure        *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -1643,10 +1657,10 @@ const claimBatchMaxTasksCap = 32
 func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		DaemonID      string                              `json:"daemon_id"`
-		RuntimeIDs    []string                            `json:"runtime_ids"`
-		MaxTasks      int                                 `json:"max_tasks"`
-		Backpressure  *protocol.DaemonBackpressureReport  `json:"backpressure,omitempty"`
+		DaemonID     string                             `json:"daemon_id"`
+		RuntimeIDs   []string                           `json:"runtime_ids"`
+		MaxTasks     int                                `json:"max_tasks"`
+		Backpressure *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1752,7 +1766,38 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), authorized, maxTasks)
+	// Multi-runtime preference routing (RUYI-397): claim only from runtimes
+	// not held by host backpressure. The report on THIS request is the
+	// freshest signal (recordBackpressure just persisted it) and is
+	// machine-level — every runtime on the daemon shares the host — so an
+	// active request report holds the whole batch. Without one, fall back to
+	// the stored per-runtime reports with a freshness TTL: a held runtime
+	// keeps re-reporting on every heartbeat so a live hold refreshes itself,
+	// and a stale or malformed report releases the runtime (fail-open; the
+	// daemon's own client-side gate stays the authoritative pre-claim
+	// barrier). Held runtimes' tasks stay queued — nothing fails.
+	claimable := authorized
+	if req.Backpressure != nil {
+		if req.Backpressure.Active {
+			claimable = nil
+		}
+	} else {
+		now := time.Now()
+		claimable = make([]pgtype.UUID, 0, len(authorized))
+		for _, rtID := range authorized {
+			if !runtimeHeldByBackpressure(runtimeByID[uuidToString(rtID)], now) {
+				claimable = append(claimable, rtID)
+			}
+		}
+	}
+	if len(claimable) == 0 {
+		slog.Debug("batch claim: all runtimes held by backpressure",
+			"daemon_id", req.DaemonID, "runtimes", len(authorized))
+		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
+		return
+	}
+
+	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), claimable, maxTasks)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to claim tasks: "+err.Error())
 		return
@@ -3499,6 +3544,17 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)
 	authMs = time.Since(start).Milliseconds()
 
+	// Server-side hold (RUYI-397): the per-runtime endpoint carries no
+	// backpressure body, so the decision rides on the stored report with the
+	// same freshness TTL as the batch path. Held renders exactly like "no
+	// task": the queued row stays queued, the poller just gets nothing.
+	if runtimeHeldByBackpressure(runtime, time.Now()) {
+		outcome = "bp_held"
+		slog.Debug("claim held: runtime backpressure active", "runtime_id", runtimeID)
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
+		return
+	}
+
 	claimStart := time.Now()
 	task, err := h.TaskService.ClaimTaskForRuntime(r.Context(), parseUUID(runtimeID))
 	claimMs = time.Since(claimStart).Milliseconds()
@@ -5091,6 +5147,14 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		slog.Info("cancel ack: cancel_requested confirmed cancelled",
 			"task_id", taskID, "daemon_confirmed", req.Confirmed,
 			"confirmed_at", confirmed.CompletedAt.Time.UTC().Format(time.RFC3339Nano))
+		// RUYI-355: the confirmed stop lands as run.cancelled. Best-effort —
+		// the row itself already carries the cancel_reason/actor attribution.
+		ackActor := service.AuditActorSystem
+		if confirmed.CancelRequestedByUserID.Valid {
+			ackActor = service.AuditActorMember
+		}
+		service.TryAppendAuditEvents(r.Context(), h.Queries, service.TaskCancelledEvent(r.Context(), h.Queries, confirmed,
+			service.AuditReasonUserRequested, ackActor, confirmed.CancelRequestedByUserID, nil, service.AuditTrigger{}))
 	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{
@@ -5510,6 +5574,10 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	// RUYI-397: a queued row whose target runtime is under a backpressure
+	// hold says so, so the trigger/query side reads "waiting for host
+	// resources" instead of a silent stall.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	// Execution-log rows render the "on behalf of <member>" badge, so this
 	// issue-facing surface must resolve initiator/originator names (departed-safe,
 	// one batch) — otherwise the badge falls back to "someone" on issue detail.
@@ -5523,6 +5591,226 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 		h.hydrateTaskUsage(r.Context(), issue.ID, resp)
 	}
 
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// RUYI-419 workspace-level run view bounds. The workspace view spans every
+// agent and every issue, so the default page is tighter than the issue-scoped
+// one; callers paginate with offset rather than raising the cap.
+const (
+	workspaceRunListDefaultLimit = 50
+	workspaceRunListMaxLimit     = 200
+)
+
+// WorkspaceTaskRunResponse is one row of the workspace-wide run view. It
+// embeds the execution-log row (AgentTaskResponse — the same shape the
+// issue-scoped read returns) plus the two fields a workspace scope needs that
+// an issue scope implies: the owning issue's title and the derived trigger
+// source, so a caller can scan a mixed workspace page without hydrating every
+// issue separately.
+type WorkspaceTaskRunResponse struct {
+	AgentTaskResponse
+	IssueTitle string `json:"issue_title,omitempty"`
+	Trigger    string `json:"trigger"`
+}
+
+type workspaceTaskRunsResponse struct {
+	Runs       []WorkspaceTaskRunResponse `json:"runs"`
+	Count      int                        `json:"count"`
+	HasMore    bool                       `json:"has_more"`
+	NextOffset *int                       `json:"next_offset,omitempty"`
+}
+
+// deriveRunTrigger names the source that started a run, with the same
+// precedence the MCP list_issue_runs tool documents for its client-side
+// derivation (RUYI-292): autopilot > system retry > user rerun > comment,
+// and "other" when no evidence column is set.
+func deriveRunTrigger(t db.AgentTaskQueue) string {
+	switch {
+	case t.AutopilotRunID.Valid:
+		return "autopilot"
+	case t.RetryOfTaskID.Valid:
+		return "system_retry"
+	case t.RerunOfTaskID.Valid:
+		return "rerun"
+	case t.TriggerCommentID.Valid:
+		return "comment"
+	default:
+		return "other"
+	}
+}
+
+// ListWorkspaceTaskRuns is the workspace-wide run view behind the MCP
+// `list_runs` tool (RUYI-419): what ran, what is running, what failed —
+// across every issue and agent, without knowing an issue first.
+//
+// Rows are the same execution-log rows as the issue-scoped read. The status
+// and trigger filters reuse the exact semantics RUYI-292 established for the
+// filtered issue path (status CSV with the 'pending' alias, unknown values
+// match nothing; trigger buckets by evidence column with the raw
+// trigger_evidence_kind fallback), extended with agent/project/issue/time
+// filters and limit/offset paging. A reference the server cannot resolve
+// (unknown issue identifier, non-existent UUID) yields an empty page under
+// 200 rather than 404 — filters, not resource paths. The page fetches one
+// probe row past the limit so has_more is exact without a COUNT scan.
+//
+// Visibility matches the UI snapshot: the caller must be a workspace member,
+// and rows for agents outside the caller's access set are dropped, so a
+// member never learns a private agent's runs from this endpoint. Because the
+// visibility trim runs after the row window is cut, a page can return fewer
+// rows than the limit while more visible rows exist beyond it — callers
+// continue via next_offset.
+func (h *Handler) ListWorkspaceTaskRuns(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	member, ok := h.workspaceMember(w, r, workspaceID)
+	if !ok {
+		return
+	}
+
+	q := r.URL.Query()
+	limit := workspaceRunListDefaultLimit
+	if limitStr := q.Get("limit"); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil || n < 1 || n > workspaceRunListMaxLimit {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be an integer between 1 and %d", workspaceRunListMaxLimit))
+			return
+		}
+		limit = n
+	}
+	offset := 0
+	if offsetStr := q.Get("offset"); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			return
+		}
+		offset = n
+	}
+
+	params := db.ListWorkspaceTaskRunsParams{
+		WorkspaceID: parseUUID(workspaceID),
+		RowLimit:    int32(limit + 1),
+		RowOffset:   int32(offset),
+	}
+	if status := strings.TrimSpace(q.Get("status")); status != "" {
+		params.StatusFilter = pgtype.Text{String: status, Valid: true}
+	}
+	if trigger := strings.TrimSpace(q.Get("trigger")); trigger != "" {
+		params.TriggerFilter = pgtype.Text{String: trigger, Valid: true}
+	}
+	if agentID := strings.TrimSpace(q.Get("agent_id")); agentID != "" {
+		id, ok := parseUUIDOrBadRequest(w, agentID, "agent_id")
+		if !ok {
+			return
+		}
+		params.AgentFilter = id
+	}
+	if projectID := strings.TrimSpace(q.Get("project_id")); projectID != "" {
+		id, ok := parseUUIDOrBadRequest(w, projectID, "project_id")
+		if !ok {
+			return
+		}
+		params.ProjectFilter = id
+	}
+
+	// The issue filter accepts a UUID or "PREFIX-N". An unresolvable
+	// reference means "no runs can match", not "bad request": same
+	// match-nothing convention as an unknown status value.
+	if issueParam := strings.TrimSpace(q.Get("issue")); issueParam != "" {
+		resolved := false
+		if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueParam, workspaceID); ok {
+			params.IssueFilter = issue.ID
+			resolved = true
+		} else if id, err := util.ParseUUID(issueParam); err == nil {
+			if loaded, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+				ID:          id,
+				WorkspaceID: parseUUID(workspaceID),
+			}); err == nil {
+				params.IssueFilter = loaded.ID
+				resolved = true
+			}
+		}
+		if !resolved {
+			writeJSON(w, http.StatusOK, workspaceTaskRunsResponse{Runs: []WorkspaceTaskRunResponse{}})
+			return
+		}
+	}
+
+	if after := strings.TrimSpace(q.Get("created_after")); after != "" {
+		ts, err := time.Parse(time.RFC3339, after)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "created_after must be an RFC3339 timestamp")
+			return
+		}
+		params.CreatedAfter = pgtype.Timestamptz{Time: ts, Valid: true}
+	}
+	if before := strings.TrimSpace(q.Get("created_before")); before != "" {
+		ts, err := time.Parse(time.RFC3339, before)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "created_before must be an RFC3339 timestamp")
+			return
+		}
+		params.CreatedBefore = pgtype.Timestamptz{Time: ts, Valid: true}
+	}
+
+	rows, err := h.Queries.ListWorkspaceTaskRuns(r.Context(), params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workspace runs")
+		return
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+	allowed, ok := h.accessibleAgentIDs(r.Context(), workspaceID, actorType, actorID, member.Role)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "failed to resolve agent access")
+		return
+	}
+
+	// Batch-hydrate the page's issue briefs (identifier + title). They are
+	// display metadata: a lookup failure degrades to empty fields instead of
+	// failing the read. The issue-scoped read gets these for free from its
+	// path parameter; a workspace view spans issues and must hydrate them.
+	prefix := h.getIssuePrefix(r.Context(), parseUUID(workspaceID))
+	issueIDs := make([]pgtype.UUID, 0, len(rows))
+	for _, t := range rows {
+		if t.IssueID.Valid {
+			issueIDs = append(issueIDs, t.IssueID)
+		}
+	}
+	briefs := make(map[pgtype.UUID]db.ListIssuesByIDsRow, len(issueIDs))
+	if len(issueIDs) > 0 {
+		if loaded, err := h.Queries.ListIssuesByIDs(r.Context(), issueIDs); err == nil {
+			for _, b := range loaded {
+				briefs[b.ID] = b
+			}
+		}
+	}
+
+	runs := make([]WorkspaceTaskRunResponse, 0, len(rows))
+	for _, t := range rows {
+		if _, ok := allowed[uuidToString(t.AgentID)]; !ok {
+			continue
+		}
+		row := WorkspaceTaskRunResponse{
+			AgentTaskResponse: taskToResponse(t, workspaceID),
+			Trigger:           deriveRunTrigger(t),
+		}
+		if brief, ok := briefs[t.IssueID]; ok {
+			row.IssueIdentifier = service.IssueIdentifier(prefix, brief.Number)
+			row.IssueTitle = brief.Title
+		}
+		runs = append(runs, row)
+	}
+
+	resp := workspaceTaskRunsResponse{Runs: runs, Count: len(runs), HasMore: hasMore}
+	if hasMore {
+		next := offset + len(rows)
+		resp.NextOffset = &next
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

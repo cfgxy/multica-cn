@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -982,6 +983,12 @@ func (h *Handler) applyExecutionProfileEntry(
 		slog.Error("execution profile audit write failed",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(entry.AgentID))...)
 	}
+	// RUYI-355: audit twin on the pool (not qtx — same best-effort
+	// disposition as the activity row, and a failed statement must not
+	// poison the transaction the agent write rides on).
+	service.TryAppendAuditEvents(r.Context(), h.Queries,
+		service.AgentEvent(service.AuditAgentExecutionProfileActived, service.AuditActorMember,
+			parseUUID(requestUserID(r)), workspaceID, entry.AgentID, details))
 
 	result.Status = executionProfileEntryApplied
 	return result

@@ -105,6 +105,11 @@ type AgentResponse struct {
 	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
 	Status             string                     `json:"status"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
+	// ResourceWeight is the claim-budget multiplier (RUYI-397): a running
+	// task from this agent occupies ResourceWeight slots of
+	// MaxConcurrentTasks, so heavy workloads hit the ceiling sooner than
+	// light ones. 1 = one task per slot (historical behaviour).
+	ResourceWeight int32 `json:"resource_weight"`
 	// SessionMaxContextTokens / SessionCompactPct configure the session context
 	// gate (RUYI-107): once a resumable session reaches SessionCompactPct of
 	// SessionMaxContextTokens, the next run starts fresh with a bounded brief
@@ -237,6 +242,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		InvocationTargets:        []AgentInvocationTargetDTO{},
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
+		ResourceWeight:           a.ResourceWeight,
 		SessionMaxContextTokens:  a.SessionMaxContextTokens,
 		SessionCompactPct:        a.SessionCompactPct,
 		Model:                    a.Model.String,
@@ -419,22 +425,29 @@ type AgentTaskResponse struct {
 	Result               any                    `json:"result"`
 	Error                *string                `json:"error"`
 	FailureReason        string                 `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
-	Attempt              int32                  `json:"attempt"`
-	MaxAttempts          int32                  `json:"max_attempts"`
-	ParentTaskID         *string                `json:"parent_task_id,omitempty"`
-	IsLeaderTask         bool                   `json:"is_leader_task,omitempty"`
-	LeaderRoleResolved   bool                   `json:"leader_role_resolved,omitempty"` // claim-only capability, always true here: IsLeaderTask/SquadID authoritatively answer "is this a leader run", so the daemon must not infer the role from briefing text. Servers predating it make no such promise — before #4951 they sent no is_leader_task at all, after it they sent the flag without guaranteeing a briefing — so a daemon seeing no capability keeps the legacy inference. Never rendered into a prompt; see daemon.taskIsSquadLeader (MUL-5811). Mirror field: internal/daemon/types.go, same JSON name
-	Agent                *TaskAgentData         `json:"agent,omitempty"`
-	ConnectedApps        []ConnectedAppData     `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
-	Repos                []RepoData             `json:"repos,omitempty"`
-	ProjectID            string                 `json:"project_id,omitempty"`           // issue's project, when present
-	ProjectTitle         string                 `json:"project_title,omitempty"`        // for surfacing in agent context
-	ProjectDescription   string                 `json:"project_description,omitempty"`  // durable project-level context injected into the brief
-	ProjectInstructions  string                 `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
-	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`    // resources attached to the project
-	CreatedAt            string                 `json:"created_at"`
-	PriorSessionID       string                 `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir         string                 `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	// QueuedReason explains why a queued row is not moving yet (RUYI-397),
+	// from the dispatch.ReasonCode vocabulary: "runtime_backpressure" means
+	// the target runtime's host reported memory backpressure, so the claim is
+	// deferred until it recovers. Set only while the condition holds and only
+	// on queued rows — omitted otherwise, so old clients and old backends
+	// interoperate unchanged.
+	QueuedReason        string                `json:"queued_reason,omitempty"`
+	Attempt             int32                 `json:"attempt"`
+	MaxAttempts         int32                 `json:"max_attempts"`
+	ParentTaskID        *string               `json:"parent_task_id,omitempty"`
+	IsLeaderTask        bool                  `json:"is_leader_task,omitempty"`
+	LeaderRoleResolved  bool                  `json:"leader_role_resolved,omitempty"` // claim-only capability, always true here: IsLeaderTask/SquadID authoritatively answer "is this a leader run", so the daemon must not infer the role from briefing text. Servers predating it make no such promise — before #4951 they sent no is_leader_task at all, after it they sent the flag without guaranteeing a briefing — so a daemon seeing no capability keeps the legacy inference. Never rendered into a prompt; see daemon.taskIsSquadLeader (MUL-5811). Mirror field: internal/daemon/types.go, same JSON name
+	Agent               *TaskAgentData        `json:"agent,omitempty"`
+	ConnectedApps       []ConnectedAppData    `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
+	Repos               []RepoData            `json:"repos,omitempty"`
+	ProjectID           string                `json:"project_id,omitempty"`           // issue's project, when present
+	ProjectTitle        string                `json:"project_title,omitempty"`        // for surfacing in agent context
+	ProjectDescription  string                `json:"project_description,omitempty"`  // durable project-level context injected into the brief
+	ProjectInstructions string                `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
+	ProjectResources    []ProjectResourceData `json:"project_resources,omitempty"`    // resources attached to the project
+	CreatedAt           string                `json:"created_at"`
+	PriorSessionID      string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	PriorWorkDir        string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback. The daemon surfaces the continuity gap in
@@ -475,7 +488,7 @@ type AgentTaskResponse struct {
 	// verbatim: it is a ref inside the user's own repo, not a filesystem path.
 	// Populated on both terminal paths — a failed run can still have committed
 	// partial work, and that is when the pointer matters most.
-	BranchName               string `json:"branch_name,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
 	// RUYI-292: who asked to stop this run and when the stop was accepted
 	// (status → cancel_requested). The run detail surfaces show the canceller;
 	// clients compute the unconfirmed-stop warning by comparing
@@ -487,8 +500,8 @@ type AgentTaskResponse struct {
 	// RUYI-292: which earlier run this one re-attempts, through either lineage
 	// column (manual rerun vs system retry). One or the other is set on retry
 	// children; the full chain itself lives on the run-detail payload.
-	RerunOfTaskID *string `json:"rerun_of_task_id,omitempty"`
-	RetryOfTaskID *string `json:"retry_of_task_id,omitempty"`
+	RerunOfTaskID            *string                `json:"rerun_of_task_id,omitempty"`
+	RetryOfTaskID            *string                `json:"retry_of_task_id,omitempty"`
 	TriggerCommentID         *string                `json:"trigger_comment_id,omitempty"`          // comment that triggered this task
 	CoalescedCommentIDs      []string               `json:"coalesced_comment_ids,omitempty"`       // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
 	CoalescedComments        []CoalescedCommentData `json:"coalesced_comments,omitempty"`          // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
@@ -840,38 +853,38 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		branchName = t.BranchName.String
 	}
 	return AgentTaskResponse{
-		ID:                     uuidToString(t.ID),
-		AgentID:                uuidToString(t.AgentID),
-		RuntimeID:              uuidToString(t.RuntimeID),
-		IssueID:                uuidToString(t.IssueID),
-		WorkspaceID:            workspaceID,
-		Status:                 t.Status,
-		Priority:               t.Priority,
-		DispatchedAt:           timestampToPtr(t.DispatchedAt),
-		StartedAt:              timestampToPtr(t.StartedAt),
-		CompletedAt:            timestampToPtr(t.CompletedAt),
-		Result:                 result,
-		Error:                  textToPtr(t.Error),
-		FailureReason:          failureReason,
-		BranchName:             branchName,
-		CancelRequestedAt:      timestampToPtr(t.CancelRequestedAt),
+		ID:                      uuidToString(t.ID),
+		AgentID:                 uuidToString(t.AgentID),
+		RuntimeID:               uuidToString(t.RuntimeID),
+		IssueID:                 uuidToString(t.IssueID),
+		WorkspaceID:             workspaceID,
+		Status:                  t.Status,
+		Priority:                t.Priority,
+		DispatchedAt:            timestampToPtr(t.DispatchedAt),
+		StartedAt:               timestampToPtr(t.StartedAt),
+		CompletedAt:             timestampToPtr(t.CompletedAt),
+		Result:                  result,
+		Error:                   textToPtr(t.Error),
+		FailureReason:           failureReason,
+		BranchName:              branchName,
+		CancelRequestedAt:       timestampToPtr(t.CancelRequestedAt),
 		CancelRequestedByUserID: uuidToString(t.CancelRequestedByUserID),
-		RerunOfTaskID:          uuidToPtr(t.RerunOfTaskID),
-		RetryOfTaskID:          uuidToPtr(t.RetryOfTaskID),
-		Attempt:                t.Attempt,
-		MaxAttempts:            t.MaxAttempts,
-		ParentTaskID:           uuidToPtr(t.ParentTaskID),
-		IsLeaderTask:           t.IsLeaderTask,
-		CreatedAt:              timestampToString(t.CreatedAt),
-		TriggerCommentID:       uuidToPtr(t.TriggerCommentID),
-		CoalescedCommentIDs:    uuidsToStrings(t.CoalescedCommentIds),
-		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
-		TriggerSummary:         textToPtr(t.TriggerSummary),
-		HandoffNote:            handoffNote,
-		WorkDir:                workDir,
-		RelativeWorkDir:        relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
-		DurableWorkDir:         durableWorkDir,
-		RelativeDurableWorkDir: relativeWorkDir(durableWorkDir, "", ""),
+		RerunOfTaskID:           uuidToPtr(t.RerunOfTaskID),
+		RetryOfTaskID:           uuidToPtr(t.RetryOfTaskID),
+		Attempt:                 t.Attempt,
+		MaxAttempts:             t.MaxAttempts,
+		ParentTaskID:            uuidToPtr(t.ParentTaskID),
+		IsLeaderTask:            t.IsLeaderTask,
+		CreatedAt:               timestampToString(t.CreatedAt),
+		TriggerCommentID:        uuidToPtr(t.TriggerCommentID),
+		CoalescedCommentIDs:     uuidsToStrings(t.CoalescedCommentIds),
+		DeliveredCommentIDs:     uuidStringsOrEmpty(t.DeliveredCommentIds),
+		TriggerSummary:          textToPtr(t.TriggerSummary),
+		HandoffNote:             handoffNote,
+		WorkDir:                 workDir,
+		RelativeWorkDir:         relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
+		DurableWorkDir:          durableWorkDir,
+		RelativeDurableWorkDir:  relativeWorkDir(durableWorkDir, "", ""),
 		// Surface task source so the UI can distinguish issue-linked tasks
 		// from chat-spawned or autopilot-spawned ones; all three may arrive
 		// with issue_id = "" once a task has no linked issue.
@@ -1230,6 +1243,9 @@ type CreateAgentRequest struct {
 	PermissionMode     *string                    `json:"permission_mode"`
 	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
+	// ResourceWeight is the claim-budget multiplier (RUYI-397). Omitted/null
+	// means 1 — see defaultAndValidateAgentResourceWeight.
+	ResourceWeight int32 `json:"resource_weight"`
 	// Session context gate (RUYI-107). Omitted means "use the default", not
 	// zero — see defaultAndValidateAgentSessionGate.
 	SessionMaxContextTokens int64  `json:"session_max_context_tokens"`
@@ -1336,6 +1352,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		req.Visibility = "private"
 	}
 	if err := defaultAndValidateAgentMaxConcurrentTasks(rawFields, &req.MaxConcurrentTasks); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := defaultAndValidateAgentResourceWeight(rawFields, &req.ResourceWeight); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1495,6 +1515,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Visibility:               perm.legacyVisibility(),
 		PermissionMode:           perm.mode,
 		MaxConcurrentTasks:       req.MaxConcurrentTasks,
+		ResourceWeight:           pgtype.Int4{Int32: req.ResourceWeight, Valid: true},
 		SessionMaxContextTokens:  pgtype.Int8{Int64: req.SessionMaxContextTokens, Valid: true},
 		SessionCompactPct:        pgtype.Int4{Int32: req.SessionCompactPct, Valid: true},
 		OwnerID:                  parseUUID(ownerID),
@@ -1601,6 +1622,9 @@ type UpdateAgentRequest struct {
 	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
 	Status             *string                     `json:"status"`
 	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
+	// ResourceWeight follows the update-pointer contract: omitted preserves
+	// the stored weight (RUYI-397).
+	ResourceWeight *int32 `json:"resource_weight"`
 	// Pointer, so an omitted field preserves the stored value. A non-pointer
 	// would make every partial update reset the gate to zero, i.e. off.
 	SessionMaxContextTokens *int64  `json:"session_max_context_tokens"`
@@ -1990,6 +2014,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.MaxConcurrentTasks = pgtype.Int4{Int32: *req.MaxConcurrentTasks, Valid: true}
+	}
+	if req.ResourceWeight != nil {
+		if err := validateAgentResourceWeight(*req.ResourceWeight); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.ResourceWeight = pgtype.Int4{Int32: *req.ResourceWeight, Valid: true}
 	}
 	if req.SessionMaxContextTokens != nil {
 		if err := validateAgentSessionMaxContextTokens(*req.SessionMaxContextTokens); err != nil {

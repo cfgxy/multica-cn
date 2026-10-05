@@ -19,14 +19,19 @@ import type {
   AddIssueRelationBody,
   AddIssueRelationResult,
   AgentConfigInfo,
+  AgentDetailInfo,
   AgentInfo,
+  AuditEventListParams,
+  AuditEventListResult,
   CancelRunResult,
   CommentInfo,
   CommentListParams,
+  CreateAgentBody,
   CreateCommentBody,
   CreateExecutionProfileBody,
   CreateIssueBody,
   CreateProjectBody,
+  CreateSquadBody,
   ExecutionProfileActivationInfo,
   ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
@@ -46,12 +51,16 @@ import type {
   SquadInfo,
   SquadMemberInfo,
   UpdateAgentConfigBody,
+  UpdateAgentBody,
   UpdateCommentBody,
   UpdateExecutionProfileBody,
   UpdateIssueBody,
   UpdateProjectBody,
+  UpdateSquadBody,
   UpsertExecutionProfileEntryBody,
   WorkspaceInfo,
+  WorkspaceRunListParams,
+  WorkspaceRunListResult,
 } from "./types.js";
 
 const UUID_PATTERN =
@@ -526,6 +535,136 @@ export class MulticaClient {
       `/api/squads/${encodeURIComponent(squadId)}/members`,
       { workspace },
     );
+  }
+
+  // The workspace audit search (RUYI-355): the same endpoint the web app
+  // reads, so the MCP tool and the UI always see the same trail. Issue-level
+  // filtering is just issue_id here — the server pins it on the issue route.
+  // Unlike every header-scoped route, this one keys the workspace by UUID in
+  // its path and has no slug resolution, so a slug input resolves to its UUID
+  // first via the caller's own workspace list (the PAT user is necessarily a
+  // member of any workspace it may read here).
+  async listAuditEvents(
+    workspace: string,
+    params: AuditEventListParams = {},
+  ): Promise<AuditEventListResult> {
+    const workspaceId = isUuid(workspace)
+      ? workspace
+      : await this.resolveWorkspaceIdBySlug(workspace);
+    return this.request("GET", `/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events`, {
+      workspace,
+      query: {
+        domain: params.domain,
+        event_type: params.event_type,
+        actor_type: params.actor_type,
+        actor_id: params.actor_id,
+        issue_id: params.issue_id,
+        task_id: params.task_id,
+        agent_id: params.agent_id,
+        runtime_id: params.runtime_id,
+        reason: params.reason,
+        since: params.since,
+        until: params.until,
+        limit: params.limit,
+        cursor: params.cursor,
+        cursor_id: params.cursor_id,
+      },
+    });
+  }
+
+  private async resolveWorkspaceIdBySlug(slug: string): Promise<string> {
+    const workspaces = await this.listWorkspaces();
+    const match = workspaces.find((w) => w.slug === slug);
+    if (!match) {
+      throw new MulticaRequestError(`workspace not found for slug: ${slug}`);
+    }
+    return match.id;
+  }
+
+  // ---- workspace management surface (RUYI-419) ----------------------------
+  // Same read/write contract as the run lifecycle: every operation is a REST
+  // call scoped by the workspace headers; run side effects are declared in
+  // the tool descriptions, never inferred by the client.
+
+  async listWorkspaceRuns(
+    workspace: string,
+    params: WorkspaceRunListParams = {},
+  ): Promise<WorkspaceRunListResult> {
+    return this.request("GET", "/api/task-runs", {
+      workspace,
+      query: {
+        status: params.status,
+        agent_id: params.agent_id,
+        project_id: params.project_id,
+        issue: params.issue,
+        trigger: params.trigger,
+        created_after: params.created_after,
+        created_before: params.created_before,
+        limit: params.limit,
+        offset: params.offset,
+      },
+    });
+  }
+
+  async getAgent(workspace: string, agentId: string): Promise<AgentDetailInfo> {
+    return this.request("GET", `/api/agents/${encodeURIComponent(agentId)}`, { workspace });
+  }
+
+  async createAgent(workspace: string, body: CreateAgentBody): Promise<AgentDetailInfo> {
+    return this.request("POST", "/api/agents", { workspace, body });
+  }
+
+  async updateAgent(
+    workspace: string,
+    agentId: string,
+    body: UpdateAgentBody,
+  ): Promise<AgentDetailInfo> {
+    return this.request(
+      "PUT",
+      `/api/agents/${encodeURIComponent(agentId)}`,
+      { workspace, body },
+    );
+  }
+
+  async archiveAgent(workspace: string, agentId: string): Promise<AgentDetailInfo> {
+    return this.request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentId)}/archive`,
+      { workspace, body: {} },
+    );
+  }
+
+  async restoreAgent(workspace: string, agentId: string): Promise<AgentDetailInfo> {
+    return this.request(
+      "POST",
+      `/api/agents/${encodeURIComponent(agentId)}/restore`,
+      { workspace, body: {} },
+    );
+  }
+
+  async getSquad(workspace: string, squadId: string): Promise<SquadInfo> {
+    return this.request("GET", `/api/squads/${encodeURIComponent(squadId)}`, { workspace });
+  }
+
+  async createSquad(workspace: string, body: CreateSquadBody): Promise<SquadInfo> {
+    return this.request("POST", "/api/squads", { workspace, body });
+  }
+
+  async updateSquad(
+    workspace: string,
+    squadId: string,
+    body: UpdateSquadBody,
+  ): Promise<SquadInfo> {
+    return this.request(
+      "PUT",
+      `/api/squads/${encodeURIComponent(squadId)}`,
+      { workspace, body },
+    );
+  }
+
+  async archiveSquad(workspace: string, squadId: string): Promise<void> {
+    // The handler answers 204 with an empty body; request() resolves undefined.
+    await this.request("DELETE", `/api/squads/${encodeURIComponent(squadId)}`, { workspace });
   }
 
   // ---- transport --------------------------------------------------------

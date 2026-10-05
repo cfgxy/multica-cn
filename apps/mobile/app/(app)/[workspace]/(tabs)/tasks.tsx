@@ -2,6 +2,8 @@
  * Full-space Tasks tab (RUYI-344) — the bottom 「任务」 tab, sliced into
  * five quadrant TABs:
  *   全部      no server status filter; 7 category sections, 已取消 pinned last
+ *             (with an active status multi-select, sections follow the
+ *             check order instead — and survive a restart with it)
  *   待处理    status_categories = backlog,todo      (two sections)
  *   进行中    status_categories = in_progress,in_review (two sections)
  *   已阻塞    status_categories = blocked           (flat, no header)
@@ -50,7 +52,7 @@ import { Button } from "@/components/ui/button";
 import { Header } from "@/components/ui/header";
 import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
-import { IssueRow } from "@/components/issue/issue-row";
+import { IssueRowInbox } from "@/components/issue/issue-row-inbox";
 import { IssuesLoading } from "@/components/issue/issues-loading";
 import {
   buildTaskListFilter,
@@ -74,7 +76,11 @@ import {
   statusLabel,
 } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
-import { groupIssuesByCategory } from "@/lib/group-issues-by-category";
+import {
+  categoryOrderFromStatusFilters,
+  groupIssuesByCategory,
+} from "@/lib/group-issues-by-category";
+import { deriveIssueActivityMap } from "@/lib/issue-agent-activity";
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -133,14 +139,23 @@ export default function Tasks() {
     });
   };
 
-  // ── 智能体执行中 window ────────────────────────────────────────────
-  // The running-issue set derives from the agent task snapshot (the mobile
-  // counterpart of web's working-agents projection). Toggle on + empty set
-  // = nothing is running → skip the list queries and render the empty state.
+  // ── Agent-task snapshot ───────────────────────────────────────────
+  // Always on (RUYI-413): the per-row running/queued badge derives from the
+  // same workspace snapshot the inbox tab uses (warmed at workspace entry,
+  // kept fresh by use-presence-realtime — no new fetch on the hot path),
+  // and the 智能体执行中 filter still reads its running-issue set from it.
+  // Toggle on + empty set = nothing is running → skip the list queries and
+  // render the empty state.
   const snapshotQuery = useQuery({
     ...agentTaskSnapshotOptions(wsId),
-    enabled: !!wsId && agentRunning,
+    enabled: !!wsId,
   });
+  // One derivation pass per render for the whole list — the inbox screen's
+  // pattern, not one per row.
+  const activityByIssue = useMemo(
+    () => deriveIssueActivityMap(snapshotQuery.data ?? []),
+    [snapshotQuery.data],
+  );
   const runningIssueIds = useMemo(
     () =>
       agentRunning
@@ -258,7 +273,7 @@ export default function Tasks() {
     ? (assignedQuery.error ?? createdQuery.error ?? involvedQuery.error)
     : (snapshotQuery.error ?? singleQuery.error);
   const refetch = () => {
-    if (agentRunning) snapshotQuery.refetch();
+    snapshotQuery.refetch();
     if (unionMode) {
       assignedQuery.refetch();
       createdQuery.refetch();
@@ -291,6 +306,13 @@ export default function Tasks() {
   // 全部 renders all seven category sections (已取消 pinned last);
   // 待处理/进行中 restrict the canonical sections to the tab's categories;
   // 已阻塞/已完成 render one flat section with no header.
+  // With an active status multi-select, 全部 orders its sections by the
+  // check order instead (RUYI-344 增量): each checked key resolves to its
+  // category via the catalog (built-ins are their own category; a not-yet-
+  // loaded catalog answers `todo`, and the order self-corrects once it
+  // arrives). Unselected categories can only hold rows the key filter
+  // already dropped, so this reorders exactly the visible sections; no
+  // selection → canonical order, 已取消 still pinned last.
   const sections = useMemo(() => {
     if (tab === "blocked" || tab === "completed") {
       return [
@@ -301,8 +323,13 @@ export default function Tasks() {
         },
       ];
     }
+    const categoryOrder =
+      tab === "all" && statusFilters.length > 0
+        ? categoryOrderFromStatusFilters(statusFilters, catalog.categoryOf)
+        : undefined;
     const grouped = groupIssuesByCategory(filtered, {
       includeCancelled: tab === "all",
+      categoryOrder,
     });
     const allowed = TASK_TAB_CATEGORIES[tab];
     return allowed
@@ -310,7 +337,7 @@ export default function Tasks() {
           .filter((s) => allowed.includes(s.category))
           .map((s) => ({ ...s, flat: false }))
       : grouped.map((s) => ({ ...s, flat: false }));
-  }, [filtered, tab]);
+  }, [filtered, tab, statusFilters, catalog]);
 
   const hasActiveFilters =
     (tab === "all" && statusFilters.length > 0) ||
@@ -478,8 +505,9 @@ export default function Tasks() {
           }
           contentContainerClassName="pb-6"
           renderItem={({ item }) => (
-            <IssueRow
+            <IssueRowInbox
               issue={item}
+              activity={activityByIssue.get(item.id)}
               onPress={() => {
                 if (wsSlug) router.push(`/${wsSlug}/issue/${item.id}`);
               }}
