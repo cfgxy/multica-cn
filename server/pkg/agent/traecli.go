@@ -170,6 +170,13 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 	// for Result.Output while retaining the full text for error detection.
 	var deliverable acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -241,126 +248,142 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
-		effectiveModel := strings.TrimSpace(opts.Model)
 
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("traecli initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Drop MCP entries whose remote transport the runtime didn't advertise
-		// (traecli advertises mcpCapabilities {http, sse}). See hermes.go for
-		// why sending an unsupported transport tanks the whole session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "traecli", b.cfg)
-
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" {
-			// traecli advertises loadSession:true, so resume goes through the
-			// standard ACP session/load (same as Kiro).
-			result, err := c.request(runCtx, "session/load", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if err != nil {
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("traecli session/load failed: %v", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "traecli",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var effectiveModel string
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("traecli reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "traecli")
+			sessionID = c.observedSessionID()
 		} else {
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+			effectiveModel = strings.TrimSpace(opts.Model)
+
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("traecli session/new failed: %v", err)
+				finalError = fmt.Sprintf("traecli initialize failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "traecli session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
-		}
 
-		c.sessionID = sessionID
-		b.cfg.Logger.Info("traecli session created", "session_id", sessionID)
+			// Drop MCP entries whose remote transport the runtime didn't advertise
+			// (traecli advertises mcpCapabilities {http, sse}). See hermes.go for
+			// why sending an unsupported transport tanks the whole session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "traecli", b.cfg)
 
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("traecli set_session_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("traecli could not switch to model %q: %v", opts.Model, err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
-					b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			if opts.ResumeSessionID != "" {
+				// traecli advertises loadSession:true, so resume goes through the
+				// standard ACP session/load (same as Kiro).
+				result, err := c.request(runCtx, "session/load", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("traecli session/load failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
 						"backend", "traecli",
-						"session_id", sessionID,
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
 					)
-					sessionID = ""
-					resumeRejected = true
 				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
 				}
-				return
+			} else {
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("traecli session/new failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "traecli session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
+				}
 			}
-			b.cfg.Logger.Info("traecli session model set", "model", opts.Model)
-		}
 
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
+			c.sessionID = sessionID
+			b.cfg.Logger.Info("traecli session created", "session_id", sessionID)
 
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("traecli set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("traecli could not switch to model %q: %v", opts.Model, err)
+					if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+						b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "traecli",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("traecli session model set", "model", opts.Model)
+			}
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
+		}
+		if promptErr != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("traecli timed out after %s", timeout)
@@ -369,8 +392,8 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("traecli session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("traecli session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					b.cfg.Logger.Warn("resumed session not found at prompt time; clearing session id so the daemon retries fresh",
 						"backend", "traecli",
 						"session_id", sessionID,
@@ -395,8 +418,7 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("traecli finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "traecli")
 
 		// traecli ACP may keep the process — and the stdout/stderr pipes — open
 		// briefly after session/prompt returns. The prompt response is already

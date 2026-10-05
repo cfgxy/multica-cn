@@ -96,7 +96,10 @@ export function AgentPresenceIndicator({
         </span>
         {isWorking && (
           <span className="font-mono text-caption tabular-nums text-muted-foreground">
-            {detail.runningCount} / {detail.capacity}
+            {t(($) => $.presence.running_ratio, {
+              running: detail.runningCount,
+              capacity: detail.capacity,
+            })}
           </span>
         )}
         {showQueueBadge && (

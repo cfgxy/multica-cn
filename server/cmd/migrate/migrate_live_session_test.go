@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestLiveSessionMigrationRoundTrip exercises migration 926 in both
+// TestLiveSessionMigrationRoundTrip exercises migration 931 in both
 // directions inside a private schema (RUYI-425 stage 3, design §3.5). Up
 // must create the live_session table with the full lifecycle column set
 // (status CHECK, session_handle, context_snapshot, transcript, started/ended
@@ -39,7 +39,7 @@ func TestLiveSessionMigrationRoundTrip(t *testing.T) {
 
 	pool := openTestPoolWithSearchPath(t, schema)
 
-	// The only production table 926's up actually references: workspace,
+	// The only production table 931's up actually references: workspace,
 	// for the ON DELETE CASCADE foreign key. Everything else live_session
 	// stores (agent/instance/user ids) is deliberately FK-free so history
 	// rows survive reference deletion.
@@ -51,7 +51,7 @@ func TestLiveSessionMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("create workspace fixture: %v", err)
 	}
 
-	const version = "926_live_session"
+	const version = "931_live_session"
 	lockKey := int64(rand.Uint64()&0x7fffffffffffffff) | 1
 	run := func(direction string) error {
 		return runMigrations(ctx, pool, runOptions{
@@ -66,7 +66,7 @@ func TestLiveSessionMigrationRoundTrip(t *testing.T) {
 	assertRelationExists(t, ctx, pool, "live_session", false)
 
 	if err := run("up"); err != nil {
-		t.Fatalf("apply migration 926: %v", err)
+		t.Fatalf("apply migration 931: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, true)
 
@@ -127,7 +127,7 @@ func TestLiveSessionMigrationRoundTrip(t *testing.T) {
 	}
 
 	if err := run("down"); err != nil {
-		t.Fatalf("roll back migration 926: %v", err)
+		t.Fatalf("roll back migration 931: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, false)
 	assertRelationExists(t, ctx, pool, "live_session", false)

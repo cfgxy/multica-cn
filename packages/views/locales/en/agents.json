@@ -787,7 +787,8 @@
     "over_limit": " · {{count}} over limit"
   },
   "presence": {
-    "queue_badge": "+{{count}} queued"
+    "queue_badge": "+{{count}} queued",
+    "running_ratio": "{{running}}/{{capacity}} running"
   },
   "visibility": {
     "private": {
@@ -828,7 +829,8 @@
     "public_group": "Public access",
     "owner_only_readonly": "Only the agent owner can change who can run this agent.",
     "members_empty": "No workspace members to choose from",
-    "composio_switch_hint": "Heads up — this agent has Composio apps enabled. Sharing it lets everyone with access use those apps through this agent."
+    "composio_switch_hint": "Heads up — this agent has Composio apps enabled. Sharing it lets everyone with access use those apps through this agent.",
+    "save_failed": "Failed to update access"
   },
   "profile_card": {
     "unavailable": "Agent unavailable",
@@ -1058,10 +1060,20 @@
       "edit_profile": "Edit Profile",
       "tab_active": "Active",
       "fact_status": "Status",
-      "fact_runtime_unbound": "No runtime"
+      "fact_runtime_unbound": "No runtime",
+      "bind_runtime": "Bind runtime",
+      "fact_concurrency": "Concurrency cap",
+      "forbidden_title": "No access to this agent",
+      "runtime_unbound_banner": "This agent has no runtime bound yet — bind one to start running it.",
+      "forbidden_body": "You don't have permission to view this agent. Ask its owner to share it with you."
     },
     "edit": {
-      "model_placeholder": "Leave empty for the runtime default"
+      "model_placeholder": "Leave empty for the runtime default",
+      "avatar_change": "Change avatar",
+      "avatar_hint": "Tap the avatar to change it",
+      "concurrency_range": "Allowed range: {{min}}–{{max}}",
+      "model_catalog": "Discovered models",
+      "model_default": "Default"
     },
     "env": {
       "add_row": "Add variable"
@@ -1069,6 +1081,17 @@
     "webhooks": {
       "copy_aria": "Copy webhook link",
       "rotated_title": "New link generated"
+    },
+    "integrations": {
+      "bound_here": "Bound to this agent",
+      "connected": "Workspace connected",
+      "not_configured": "Not configured",
+      "platform_lark": "Lark",
+      "platform_slack": "Slack",
+      "platform_dingtalk": "DingTalk",
+      "platform_wecom": "WeCom",
+      "platform_telegram": "Telegram",
+      "manage_hint": "Connect and bind IM channels from the web or desktop settings."
     }
   }
 }

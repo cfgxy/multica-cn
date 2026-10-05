@@ -151,7 +151,9 @@
     "upload_file": "Upload file",
     "file_too_large_title": "File too large",
     "file_too_large_message": "Files must be smaller than {{size}} MB.",
-    "upload_failed_title": "Upload failed"
+    "upload_failed_title": "Upload failed",
+    "quick_replies_title": "Quick replies",
+    "quick_reply_hint": "Insert a quick reply"
   },
   "mobile": {
     "actor": {

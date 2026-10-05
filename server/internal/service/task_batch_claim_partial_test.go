@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"context"
 	"fmt"
 	"strings"
@@ -139,4 +140,8 @@ func TestClaimTasksForRuntimes_PartialSuccessOnCandidateQueryFailureAfterReclaim
 	if util.UUIDToString(claimed[0].ID) != staleTaskID {
 		t.Fatalf("returned task = %s, want the reclaimed stale task %s", util.UUIDToString(claimed[0].ID), staleTaskID)
 	}
+}
+
+func (candidateFailDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by candidateFailDBTX")
 }
