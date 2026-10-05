@@ -38,6 +38,7 @@ import type {
   IssueRelationsInfo,
   ProjectInfo,
   QuickCreateBody,
+  QuickReplyInfo,
   RemoveIssueRelationResult,
   RunDetail,
   RunInfo,
@@ -507,6 +508,38 @@ export class MulticaClient {
   async archiveSquad(workspace: string, squadId: string): Promise<void> {
     // The handler answers 204 with an empty body; request() resolves undefined.
     await this.request("DELETE", `/api/squads/${encodeURIComponent(squadId)}`, { workspace });
+  }
+
+  // Workspace quick replies (RUYI-435). Same REST surface the web settings
+  // tab drives, so the two management views always see one data source; the
+  // backend answers 403 to non-admin PATs on the writes.
+  async listQuickReplies(
+    workspace: string,
+  ): Promise<{ quick_replies: QuickReplyInfo[]; total: number }> {
+    return this.request("GET", "/api/quick-replies", { workspace });
+  }
+
+  async createQuickReply(
+    workspace: string,
+    body: { name: string; content: string },
+  ): Promise<QuickReplyInfo> {
+    return this.request("POST", "/api/quick-replies", { workspace, body });
+  }
+
+  async updateQuickReply(
+    workspace: string,
+    id: string,
+    body: { name?: string; content?: string },
+  ): Promise<QuickReplyInfo> {
+    return this.request("PATCH", `/api/quick-replies/${encodeURIComponent(id)}`, {
+      workspace,
+      body,
+    });
+  }
+
+  async deleteQuickReply(workspace: string, id: string): Promise<void> {
+    // The handler answers 204 with an empty body; request() resolves undefined.
+    await this.request("DELETE", `/api/quick-replies/${encodeURIComponent(id)}`, { workspace });
   }
 
   // ---- transport --------------------------------------------------------

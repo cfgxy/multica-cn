@@ -59,6 +59,8 @@ import type {
   ListPropertiesResponse,
   QuickAction,
   ListQuickActionsResponse,
+  QuickReply,
+  ListQuickRepliesResponse,
   IssuePropertiesResponse,
   IssueTableGroupDescriptor,
   IssueTableFacetsResponse,
@@ -594,6 +596,39 @@ export const ListIssueStatusesResponseSchema = z.object({
 export const EMPTY_LIST_ISSUE_STATUSES_RESPONSE: ListIssueStatusesResponse = {
   statuses: [],
   categories: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
+  total: 0,
+};
+
+// Workspace quick replies (RUYI-435). An empty fallback renders an empty menu
+// (with the manage hint), never a broken picker — a server predating the
+// endpoint is the only way this fires.
+export const QuickReplySchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  name: z.string(),
+  content: z.string(),
+  position: z.number().optional().default(0),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const EMPTY_QUICK_REPLY: QuickReply = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  content: "",
+  position: 0,
+  created_at: "",
+  updated_at: "",
+};
+
+export const ListQuickRepliesResponseSchema = z.object({
+  quick_replies: z.array(QuickReplySchema).default([]),
+  total: z.number().default(0),
+}).loose();
+
+export const EMPTY_LIST_QUICK_REPLIES_RESPONSE: ListQuickRepliesResponse = {
+  quick_replies: [],
   total: 0,
 };
 

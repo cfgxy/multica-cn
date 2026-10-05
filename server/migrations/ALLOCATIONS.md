@@ -25,6 +25,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
 | 925 | 925_oauth_management | RUYI-420 | agent/agent-f70e39b85abd/ruyi-420 | reserved |
 | 926 | 926_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
+| 929 | 929_quick_replies | RUYI-435 | agent/agent-f70e39b85abd/ruyi-435 | reserved |
 
 Notes:
 
@@ -58,3 +59,9 @@ Notes:
   renumber above. Environments whose `schema_migrations` ledger carries
   `925_activity_audit` must have that row rewritten to `926_activity_audit`
   per the renumber rule (version rewritten, `applied_at` preserved).
+- 929 renumber note (RUYI-435): the quick-replies stem originally registered
+  at 926 collided with RUYI-355's `926_activity_audit`, which merged to main
+  first (PR #214, 2026-10-05); RUYI-435 yielded and renumbered to
+  `929_quick_replies` at rebase (927/928 taken by open PRs #228/#231 at the
+  time). The stem never reached any shared `schema_migrations` ledger before
+  the renumber, so no ledger rewrite is needed anywhere.

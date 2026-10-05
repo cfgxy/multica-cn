@@ -22,6 +22,7 @@ import {
   CreditCard,
   Server,
   Store,
+  MessageSquareText,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
@@ -48,6 +49,7 @@ import { LabsTab } from "./labs-tab";
 import { NotificationsTab } from "./notifications-tab";
 import { LabelsTab } from "./labels-tab";
 import { IssueStatusesTab } from "./issue-statuses-tab";
+import { QuickRepliesTab } from "./quick-replies-tab";
 import { PropertiesTab } from "./properties-tab";
 import { QuickActionsTab } from "./quick-actions-tab";
 import { KeyboardShortcutsTab } from "./keyboard-shortcuts-tab";
@@ -80,6 +82,7 @@ const WORKSPACE_TAB_KEYS = [
   "billing",
   "labels",
   "issue_statuses",
+  "quick_replies",
   "properties",
   "quick_actions",
   "marketplace",
@@ -96,6 +99,7 @@ const WORKSPACE_TAB_VALUES = {
   billing: "billing",
   labels: "labels",
   issue_statuses: "issue-statuses",
+  quick_replies: "quick-replies",
   properties: "properties",
   quick_actions: "quick-actions",
   marketplace: "marketplace",
@@ -112,6 +116,7 @@ const WORKSPACE_TAB_ICONS = {
   billing: CreditCard,
   labels: Tags,
   issue_statuses: CircleDot,
+  quick_replies: MessageSquareText,
   properties: SlidersHorizontal,
   quick_actions: Zap,
   marketplace: Store,
@@ -300,6 +305,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           ) : null}
           <TabsContent value="labels"><LabelsTab /></TabsContent>
           <TabsContent value="issue-statuses"><IssueStatusesTab /></TabsContent>
+          <TabsContent value="quick-replies"><QuickRepliesTab /></TabsContent>
           <TabsContent value="properties"><PropertiesTab /></TabsContent>
           <TabsContent value="quick-actions"><QuickActionsTab /></TabsContent>
           {marketplaceEnabled ? (
