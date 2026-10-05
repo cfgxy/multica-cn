@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestAgentContextDualSlotMigrationRoundTrip exercises migration 925 in both
+// TestAgentContextDualSlotMigrationRoundTrip exercises migration 930 in both
 // directions inside a private schema. Up must add the voice slot, the
 // capability / registration-source / credential-ref columns and the
 // server-side credential store without touching a single pre-existing row
@@ -19,7 +19,7 @@ import (
 // text binding), widen the protocol_family whitelist with 'gemini_live', and
 // give the voice slot the same ON DELETE RESTRICT foreign key the text slot
 // has carried since migration 004. Down must return the schema to the exact
-// pre-925 shape: voice-family rows removed (the only rows a pre-925 schema
+// pre-930 shape: voice-family rows removed (the only rows a pre-930 schema
 // cannot represent), text-slot bindings and profiles untouched, whitelist
 // narrowed back, credential store dropped.
 func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
@@ -43,10 +43,10 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 
 	pool := openTestPoolWithSearchPath(t, schema)
 
-	// Minimal stand-ins for the production tables, carrying the shapes 925
+	// Minimal stand-ins for the production tables, carrying the shapes 930
 	// and its down actually touch: the protocol_family CHECK keeps its
 	// production constraint name (so both directions' DROP CONSTRAINT IF
-	// EXISTS find it) with a short pre-925 whitelist, agent.runtime_id keeps
+	// EXISTS find it) with a short pre-930 whitelist, agent.runtime_id keeps
 	// its RESTRICT foreign key from migration 004, and agent_runtime
 	// carries the profile_id link column the down migration joins on.
 	if _, err := pool.Exec(ctx, `
@@ -108,7 +108,7 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("insert legacy agent: %v", err)
 	}
 
-	const version = "925_agent_context_dual_slot"
+	const version = "930_agent_context_dual_slot"
 	lockKey := int64(rand.Uint64()&0x7fffffffffffffff) | 1
 	run := func(direction string) error {
 		return runMigrations(ctx, pool, runOptions{
@@ -120,13 +120,13 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 		})
 	}
 
-	// Before 925 there is no voice slot and no place to store a gemini_live
+	// Before 930 there is no voice slot and no place to store a gemini_live
 	// profile.
 	assertColumnExists(t, ctx, pool, "agent", "voice_runtime_id", false)
 	assertFamilyRejected(t, ctx, pool, "gemini_live")
 
 	if err := run("up"); err != nil {
-		t.Fatalf("apply migration 925: %v", err)
+		t.Fatalf("apply migration 930: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, true)
 
@@ -256,11 +256,11 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 	}
 
 	if err := run("down"); err != nil {
-		t.Fatalf("roll back migration 925: %v", err)
+		t.Fatalf("roll back migration 930: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, false)
 
-	// The schema is back to the pre-925 shape: every added column and the
+	// The schema is back to the pre-930 shape: every added column and the
 	// credential store are gone.
 	assertColumnExists(t, ctx, pool, "agent", "voice_runtime_id", false)
 	assertColumnExists(t, ctx, pool, "runtime_profile", "capabilities", false)
@@ -268,7 +268,7 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 	assertColumnExists(t, ctx, pool, "agent_runtime", "credential_ref", false)
 	assertRelationExists(t, ctx, pool, schema+".runtime_credential", false)
 
-	// Voice-family rows are gone — the only rows a pre-925 schema cannot
+	// Voice-family rows are gone — the only rows a pre-930 schema cannot
 	// represent — and the whitelist is narrow again.
 	var strandedVoice int
 	if err := pool.QueryRow(ctx,
@@ -277,7 +277,7 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("count voice profiles after rollback: %v", err)
 	}
 	if strandedVoice != 0 {
-		t.Errorf("gemini_live profiles left after rollback = %d, want 0 — a pre-925 daemon cannot interpret them", strandedVoice)
+		t.Errorf("gemini_live profiles left after rollback = %d, want 0 — a pre-930 daemon cannot interpret them", strandedVoice)
 	}
 	var voiceInstancesLeft int
 	if err := pool.QueryRow(ctx,
@@ -312,7 +312,7 @@ func TestAgentContextDualSlotMigrationRoundTrip(t *testing.T) {
 	// everything the schema cannot re-derive, so a later upgrade path is
 	// not poisoned by the round trip.
 	if err := run("up"); err != nil {
-		t.Fatalf("re-apply migration 925: %v", err)
+		t.Fatalf("re-apply migration 930: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, true)
 	assertFamilyAccepted(t, ctx, pool, "gemini_live")

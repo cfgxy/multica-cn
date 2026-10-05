@@ -107,6 +107,27 @@ describe("http transport gate", () => {
     expect(await response.text()).toBe("ok");
   });
 
+  // RUYI-420: the admin status page polls this. It must stay credential-free
+  // and static — exactly version plus a name/description catalogue, so the
+  // key-shape assertions below are the leak guard, not just shape docs.
+  it("serves /diag without auth as a static tool catalogue only", async () => {
+    const base = await listen();
+    const response = await fetch(`${base}/diag`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    const payload = (await response.json()) as {
+      version: unknown;
+      tools: Array<Record<string, unknown>>;
+    };
+    expect(Object.keys(payload).sort()).toEqual(["tools", "version"]);
+    expect(typeof payload.version).toBe("string");
+    expect(payload.tools.length).toBeGreaterThan(0);
+    for (const tool of payload.tools) {
+      expect(Object.keys(tool).sort()).toEqual(["description", "name"]);
+    }
+    expect(JSON.stringify(payload)).not.toMatch(/mul_[a-z0-9]{20,}/);
+  });
+
   it("answers 401 on /mcp without a bearer token", async () => {
     const base = await listen();
     const response = await fetch(`${base}/mcp`, {

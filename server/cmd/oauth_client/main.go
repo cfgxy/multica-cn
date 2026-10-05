@@ -1,49 +1,51 @@
-// oauth_client registers, lists and removes the pre-registered OAuth clients
-// the MCP authorization server authenticates at its token endpoint.
+// oauth_client registers and manages the pre-registered OAuth clients the
+// MCP authorization server authenticates at its token endpoint.
 //
 // The flow deliberately has no Dynamic Client Registration (RFC 7591) — see
-// docs/adr/001-mcp-oauth-behind-nextjs-proxy.md §3.6 — so without this command
-// the oauth_client table has no writer and no client can ever be issued a
-// code. An operator creates a row here and pastes the printed client_id and
-// client_secret into the consumer's advanced OAuth settings.
+// docs/adr/001-mcp-oauth-behind-nextjs-proxy.md §3.6 — so without this
+// command (or the System Settings management UI, RUYI-420) the oauth_client
+// table has no writer and no client can ever be issued a code. An operator
+// creates a row here and pastes the printed client_id and client_secret
+// into the consumer's advanced OAuth settings.
 //
-// The secret is printed once and stored only as a SHA-256 hash, the same shape
-// personal access tokens use. A lost secret is rotated by creating a new client
-// and deleting the old one, never by reading the row back.
+// The secret is printed once and stored only as a SHA-256 hash, the same
+// shape personal access tokens use. Rotate replaces the hash in place: the
+// old secret stops authenticating at the token endpoint immediately, while
+// access tokens already issued stay valid until expiry — use disable for
+// that.
+//
+// Cache-window semantics (RUYI-420): disable deletes the client's live
+// grants, but this CLI has no Redis handle, so the grant-gate entries the
+// auth middleware caches keep answering for at most the gate TTL
+// (auth.AuthCacheTTL). The management UI path invalidates those entries
+// on the same write; the CLI path converges within the TTL window.
 package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// randomCredential returns 64 hex chars of CSPRNG output, the same 32-byte
-// strength the authorization codes use.
-func randomCredential() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("read random bytes: %w", err)
-	}
-	return hex.EncodeToString(buf), nil
-}
-
 const usage = `usage:
   oauth_client create --name <name> --redirect-uri <url> [--redirect-uri <url>...] [--created-by <user-uuid>]
   oauth_client list
+  oauth_client update --client-id <id> [--name <name>] [--redirect-uri <url>...]
+  oauth_client disable --client-id <id>
+  oauth_client enable --client-id <id>
+  oauth_client rotate --client-id <id>
   oauth_client delete --client-id <id>
 `
 
@@ -74,6 +76,14 @@ func run(args []string) error {
 		return runCreate(ctx, args[1:])
 	case "list":
 		return runList(ctx, args[1:])
+	case "update":
+		return runUpdate(ctx, args[1:])
+	case "disable":
+		return runSetDisabled(ctx, args[1:], true)
+	case "enable":
+		return runSetDisabled(ctx, args[1:], false)
+	case "rotate":
+		return runRotate(ctx, args[1:])
 	case "delete":
 		return runDelete(ctx, args[1:])
 	default:
@@ -97,30 +107,14 @@ func connect(ctx context.Context) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// ValidateRedirectURIs rejects what the authorization endpoint could never
-// match anyway. redirectURIAllowed compares registered entries byte for byte,
-// so a relative or fragment-carrying entry is dead weight that only surfaces as
-// an opaque "redirect_uri is not registered" at authorize time.
-func ValidateRedirectURIs(uris []string) error {
-	if len(uris) == 0 {
-		return fmt.Errorf("at least one --redirect-uri is required")
+// requireClientRow resolves the public client_id to its row; every verb
+// below operates on the public id, the management UI on the row UUID.
+func requireClientRow(ctx context.Context, q *db.Queries, clientID string) (db.OauthClient, error) {
+	client, err := q.GetOAuthClientByClientID(ctx, strings.TrimSpace(clientID))
+	if err != nil {
+		return db.OauthClient{}, fmt.Errorf("client %q not found", strings.TrimSpace(clientID))
 	}
-	for _, raw := range uris {
-		u, err := url.Parse(raw)
-		if err != nil {
-			return fmt.Errorf("invalid redirect_uri %q: %w", raw, err)
-		}
-		if !u.IsAbs() {
-			return fmt.Errorf("redirect_uri %q must be absolute", raw)
-		}
-		if u.Scheme != "https" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
-			return fmt.Errorf("redirect_uri %q must use https (localhost may use http)", raw)
-		}
-		if u.Fragment != "" || strings.Contains(raw, "#") {
-			return fmt.Errorf("redirect_uri %q must not carry a fragment", raw)
-		}
-	}
-	return nil
+	return client, nil
 }
 
 func runCreate(ctx context.Context, args []string) error {
@@ -135,15 +129,15 @@ func runCreate(ctx context.Context, args []string) error {
 	if strings.TrimSpace(*name) == "" {
 		return fmt.Errorf("--name is required")
 	}
-	if err := ValidateRedirectURIs(redirectURIs); err != nil {
+	if err := oauth.ValidateRedirectURIs(redirectURIs); err != nil {
 		return err
 	}
 
-	clientID, err := randomCredential()
+	clientID, err := oauth.NewClientSecret()
 	if err != nil {
 		return fmt.Errorf("generate client_id: %w", err)
 	}
-	clientSecret, err := randomCredential()
+	clientSecret, err := oauth.NewClientSecret()
 	if err != nil {
 		return fmt.Errorf("generate client_secret: %w", err)
 	}
@@ -180,7 +174,7 @@ func runCreate(ctx context.Context, args []string) error {
 	fmt.Printf("client_secret: %s\n", clientSecret)
 	fmt.Printf("name:          %s\n", client.Name)
 	fmt.Printf("redirect_uris: %s\n", strings.Join(client.RedirectUris, " "))
-	fmt.Println("\nThe secret is not recoverable. Store it now; rotate by creating a new client and deleting this one.")
+	fmt.Println("\nThe secret is not recoverable. Store it now; `oauth_client rotate` replaces it in place.")
 	return nil
 }
 
@@ -204,8 +198,153 @@ func runList(ctx context.Context, args []string) error {
 		return nil
 	}
 	for _, c := range clients {
-		fmt.Printf("%s  %s  %s\n", c.ClientID, c.Name, strings.Join(c.RedirectUris, " "))
+		state := "enabled"
+		if c.DisabledAt.Valid {
+			state = "disabled"
+		}
+		fmt.Printf("%s  %s  [%s]  %s\n", c.ClientID, c.Name, state, strings.Join(c.RedirectUris, " "))
 	}
+	return nil
+}
+
+func runUpdate(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	clientID := fs.String("client-id", "", "client_id to update")
+	name := fs.String("name", "", "new human-readable client name")
+	var redirectURIs redirectURIList
+	fs.Var(&redirectURIs, "redirect-uri", "replacement redirect_uri list, repeatable; omitted keeps the current list")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*clientID) == "" {
+		return fmt.Errorf("--client-id is required")
+	}
+	if strings.TrimSpace(*name) == "" && len(redirectURIs) == 0 {
+		return fmt.Errorf("nothing to update: pass --name and/or --redirect-uri")
+	}
+
+	pool, err := connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	queries := db.New(pool)
+
+	client, err := requireClientRow(ctx, queries, *clientID)
+	if err != nil {
+		return err
+	}
+	newName := client.Name
+	if strings.TrimSpace(*name) != "" {
+		newName = strings.TrimSpace(*name)
+	}
+	// Partial semantics on a full-replace query: the merged list is
+	// validated as a whole so a partial edit can never smuggle in a
+	// redirect_uri the authorize endpoint would never match.
+	newURIs := client.RedirectUris
+	if len(redirectURIs) > 0 {
+		newURIs = redirectURIs
+	}
+	if err := oauth.ValidateRedirectURIs(newURIs); err != nil {
+		return err
+	}
+
+	updated, err := queries.UpdateOAuthClient(ctx, db.UpdateOAuthClientParams{
+		ID:           client.ID,
+		Name:         newName,
+		RedirectUris: newURIs,
+	})
+	if err != nil {
+		return fmt.Errorf("update oauth client: %w", err)
+	}
+	fmt.Printf("updated %s\n  name:          %s\n  redirect_uris: %s\n", updated.ClientID, updated.Name, strings.Join(updated.RedirectUris, " "))
+	return nil
+}
+
+func runSetDisabled(ctx context.Context, args []string, disable bool) error {
+	verb := "enable"
+	if disable {
+		verb = "disable"
+	}
+	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
+	clientID := fs.String("client-id", "", "client_id to "+verb)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*clientID) == "" {
+		return fmt.Errorf("--client-id is required")
+	}
+	pool, err := connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	queries := db.New(pool)
+
+	client, err := requireClientRow(ctx, queries, *clientID)
+	if err != nil {
+		return err
+	}
+	var at pgtype.Timestamptz
+	if disable {
+		at = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
+	if _, err := queries.SetOAuthClientDisabled(ctx, db.SetOAuthClientDisabledParams{
+		ID:         client.ID,
+		DisabledAt: at,
+	}); err != nil {
+		return fmt.Errorf("%s oauth client: %w", verb, err)
+	}
+	if !disable {
+		fmt.Printf("enabled %s\n", client.ClientID)
+		return nil
+	}
+	// Parity with the management UI: disabling kills the client's live
+	// grants. The UI path also drops the auth middleware's gate-cache
+	// entries; this CLI has no Redis handle, so in-flight tokens converge
+	// to rejected within the gate TTL instead of immediately.
+	revoked, err := queries.RevokeOAuthGrantsByClient(ctx, client.ClientID)
+	if err != nil {
+		return fmt.Errorf("revoke grants of %s: %w", client.ClientID, err)
+	}
+	fmt.Printf("disabled %s (%d live grant(s) revoked; cached gate entries expire within the TTL window)\n", client.ClientID, len(revoked))
+	return nil
+}
+
+func runRotate(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("rotate", flag.ContinueOnError)
+	clientID := fs.String("client-id", "", "client_id whose secret rotates")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*clientID) == "" {
+		return fmt.Errorf("--client-id is required")
+	}
+	pool, err := connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	queries := db.New(pool)
+
+	client, err := requireClientRow(ctx, queries, *clientID)
+	if err != nil {
+		return err
+	}
+	secret, err := oauth.NewClientSecret()
+	if err != nil {
+		return fmt.Errorf("generate client_secret: %w", err)
+	}
+	updated, err := queries.RotateOAuthClientSecret(ctx, db.RotateOAuthClientSecretParams{
+		ID:               client.ID,
+		ClientSecretHash: auth.HashToken(secret),
+	})
+	if err != nil {
+		return fmt.Errorf("rotate oauth client secret: %w", err)
+	}
+	fmt.Printf("client_id:     %s\n", updated.ClientID)
+	fmt.Printf("client_secret: %s\n", secret)
+	fmt.Println("\nThe previous secret no longer authenticates at the token endpoint. Access tokens already issued remain valid until expiry or grant revocation.")
 	return nil
 }
 
@@ -223,10 +362,21 @@ func runDelete(ctx context.Context, args []string) error {
 		return err
 	}
 	defer pool.Close()
+	queries := db.New(pool)
 
-	if err := db.New(pool).DeleteOAuthClient(ctx, strings.TrimSpace(*clientID)); err != nil {
+	client, err := requireClientRow(ctx, queries, *clientID)
+	if err != nil {
+		return err
+	}
+	// Parity with the management UI: grants are revoked (not deleted)
+	// before the client row goes, so the audit history and the users' "my
+	// authorizations" records survive the client.
+	if _, err := queries.RevokeOAuthGrantsByClient(ctx, client.ClientID); err != nil {
+		return fmt.Errorf("revoke grants of %s: %w", client.ClientID, err)
+	}
+	if err := queries.DeleteOAuthClientByID(ctx, client.ID); err != nil {
 		return fmt.Errorf("delete oauth client: %w", err)
 	}
-	fmt.Printf("deleted %s\n", strings.TrimSpace(*clientID))
+	fmt.Printf("deleted %s\n", client.ClientID)
 	return nil
 }

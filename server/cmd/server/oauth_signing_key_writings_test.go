@@ -55,7 +55,7 @@ func TestNewOAuthSignerAcceptsBothPEMWritings(t *testing.T) {
 				t.Fatal("signer is nil: this writing of the PEM was not accepted, so the OAuth surface would be off")
 			}
 
-			token, _, err := signer.MintAccessToken("user-42", "", oauth.ScopeMCP, time.Now())
+			token, _, err := signer.MintAccessToken("user-42", "", oauth.ScopeMCP, "", "", time.Now())
 			if err != nil {
 				t.Fatalf("mint access token: %v", err)
 			}

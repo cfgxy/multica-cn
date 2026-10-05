@@ -116,11 +116,12 @@ describe("useRealtimeSync — ws instance change", () => {
     rerender({ ws: ws2 });
 
     // Should have called invalidateQueries for all workspace-scoped keys
-    // (17 workspace-scoped [incl. property definitions and decision cards]
-    // + 6 per-issue prefixes + the workspace working-agents projection +
-    // 5 per-chat prefixes + 1 workspaceKeys.list() + 1 cross-workspace
-    // inbox unread summary = 32 calls)
-    expect(invalidateSpy).toHaveBeenCalledTimes(32);
+    // (18 workspace-scoped [incl. property definitions, decision cards, and
+    // the quick-reply menu] + 6 per-issue prefixes + the workspace
+    // working-agents projection + 5 per-chat prefixes + 1
+    // workspaceKeys.list() + 1 cross-workspace inbox unread summary = 33
+    // calls)
+    expect(invalidateSpy).toHaveBeenCalledTimes(33);
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {

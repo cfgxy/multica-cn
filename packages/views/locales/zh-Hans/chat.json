@@ -328,6 +328,8 @@
       "message": "{{name}} 需要先绑定运行时才能运行。请在网页版或桌面端绑定。"
     },
     "message_list": {
+      "menu_copy": "复制",
+      "menu_select_text": "选择文本",
       "quick_actions_a11y": "推荐的后续提问",
       "show_error_details_a11y": "查看错误详情"
     },
