@@ -15,6 +15,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `list_agents` | 工作区内可派发的 agent |
 | 读 | `list_projects` | 工作区项目清单 |
 | 读 | `get_project` | 单个项目完整元数据与 revision（RUYI-354） |
+| 读 | `list_project_resources` | 项目资源绑定清单：类型/ref/label/顺序（RUYI-458） |
 | 读 | `list_issues` | 按状态/项目/负责人过滤 |
 | 读 | `get_issue` | 单条 issue（默认含评论线程） |
 | 读 | `search_issues` | 关键词检索 |
@@ -32,6 +33,9 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 写 | `create_issue` | 通用创建：任意空间、任意项目 |
 | 写 | `create_project` | 创建项目（纯元数据，不触发 run）（RUYI-354） |
 | 写 | `update_project` | PATCH 更新项目元数据，`expected_revision` 乐观锁（RUYI-354） |
+| 写 | `create_project_resource` | 绑定 github_repo / local_directory 资源到项目；重复绑定返回结构化 already_attached（RUYI-458） |
+| 写 | `update_project_resource` | PATCH 更新绑定 label/position/resource_ref；resource_type 不可变（RUYI-458） |
+| 写 | `delete_project_resource` | 仅解绑：不删除真实 GitHub 仓库或本地目录（RUYI-458） |
 | 写 | `create_agent` | 创建 agent（name + runtime_id 必填；任意成员可建，不触发 run）（RUYI-419） |
 | 写 | `update_agent` | PATCH 更新 agent 元数据；agent/squad 无 revision 字段，last-write-wins；不接受任何秘密键（RUYI-419） |
 | 写 | `archive_agent` | 停用 agent（=归档）：WARNING 取消该 agent 全部活跃 run；恢复用 `restore_agent`（RUYI-419） |

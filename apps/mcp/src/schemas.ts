@@ -7,6 +7,8 @@
  * bad call fails fast with an actionable message instead of a 400 round-trip.
  */
 
+import type { ProjectResourceType } from "./types.js";
+
 export class ToolInputError extends Error {
   constructor(message: string) {
     super(message);
@@ -159,4 +161,61 @@ export function optionalClearableString(
     );
   }
   return trimmed;
+}
+
+// ---- project resource refs (RUYI-458) ---------------------------------------
+//
+// resource_ref is a type-discriminated object (packages/core/types/project.ts):
+// github_repo needs url, local_directory needs an absolute local_path and a
+// daemon_id. The handlers' validateAndNormalizeResourceRef stays authoritative
+// (URL grammar, per-daemon conflicts); these checks catch the obvious shape
+// mistakes before a round trip.
+
+export function optionalProjectResourceRef(
+  args: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ToolInputError(`'${key}' must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length === 0) {
+    throw new ToolInputError(`'${key}' must not be empty`);
+  }
+  return record;
+}
+
+export function requireProjectResourceRef(
+  args: Record<string, unknown>,
+  key: string,
+  resourceType: ProjectResourceType,
+): Record<string, unknown> {
+  const ref = optionalProjectResourceRef(args, key);
+  if (ref === undefined) {
+    throw new ToolInputError(`'${key}' is required and must be an object`);
+  }
+  const refString = (field: string): string => {
+    const value = ref[field];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new ToolInputError(`'${key}.${field}' is required and must be a non-empty string`);
+    }
+    return value;
+  };
+  if (resourceType === "github_repo") {
+    refString("url");
+  } else {
+    refString("local_path");
+    refString("daemon_id");
+    const mode = ref["execution_mode"];
+    if (mode !== undefined && mode !== "in_place" && mode !== "worktree") {
+      throw new ToolInputError(
+        `'${key}.execution_mode' must be 'in_place' or 'worktree' (got '${String(mode)}')`,
+      );
+    }
+  }
+  return ref;
 }
