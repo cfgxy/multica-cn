@@ -14,12 +14,13 @@
       "api": {"memory_mb": 768},
       "web": {"memory_mb": 8192},
       "daemon": {"memory_mb": 256},
-      "desktop": {"memory_mb": 256}
+      "desktop": {"memory_mb": 256},
+      "mcp": {"memory_mb": 256}
     },
     "shared_postgres": {"memory": "2g", "cpus": 4}
   },
   "slots": [
-    {"name": "dev1", "index": 1, "cpuset": "0-3", "backend_port": 21801, "frontend_port": 13801, "desktop_renderer_port": 57801, "database": "multica_dev1", "account": "dev1_app", "profile": "dev1", "worktree_root": "~/.multica/slots/dev1/worktrees", "workspaces_root": "~/.multica/slots/dev1/workspaces", "desktop_app_suffix": "dev1"},
-    {"name": "dev2", "index": 2, "cpuset": "4-7", "backend_port": 21802, "frontend_port": 13802, "desktop_renderer_port": 57802, "database": "multica_dev2", "account": "dev2_app", "profile": "dev2", "worktree_root": "~/.multica/slots/dev2/worktrees", "workspaces_root": "~/.multica/slots/dev2/workspaces", "desktop_app_suffix": "dev2"}
+    {"name": "dev1", "index": 1, "cpuset": "0-3", "backend_port": 21801, "frontend_port": 13801, "desktop_renderer_port": 57801, "mcp_port": 13001, "database": "multica_dev1", "account": "dev1_app", "profile": "dev1", "worktree_root": "~/.multica/slots/dev1/worktrees", "workspaces_root": "~/.multica/slots/dev1/workspaces", "desktop_app_suffix": "dev1"},
+    {"name": "dev2", "index": 2, "cpuset": "4-7", "backend_port": 21802, "frontend_port": 13802, "desktop_renderer_port": 57802, "mcp_port": 13002, "database": "multica_dev2", "account": "dev2_app", "profile": "dev2", "worktree_root": "~/.multica/slots/dev2/worktrees", "workspaces_root": "~/.multica/slots/dev2/workspaces", "desktop_app_suffix": "dev2"}
   ]
 }

@@ -154,6 +154,7 @@ component_port() { # $1 = component -> the slot port it serves ("" for none)
     api)     slot_field "$SLOT" backend_port ;;
     web)     slot_field "$SLOT" frontend_port ;;
     desktop) slot_field "$SLOT" desktop_renderer_port ;;
+    mcp)     slot_field "$SLOT" mcp_port ;;
     *)       printf '' ;;
   esac
 }
