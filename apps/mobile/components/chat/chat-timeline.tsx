@@ -10,6 +10,14 @@
  * the parent renders the assistant message's `content` (or the latest
  * streaming text) as its own markdown block.
  *
+ * Counts and rows come from `lib/chat-process-steps.ts` (RUYI-444), which
+ * runs the raw payloads through the shared `buildTimeline` pipeline and the
+ * web `splitTimeline` middle carve — the raw stream split one streaming
+ * thinking pass into dozens of steps, so the badge disagreed with web chat
+ * on the same reply (2138 vs 416). Text segments sandwiched between
+ * non-text items render inside the fold (web's MiddleTextRow); preface and
+ * final text stay out (the parent bubble renders the reply body).
+ *
  * Folds use RNR `Collapsible` (built on `@rn-primitives/collapsible`).
  * The earlier version of this file hand-rolled four separate
  * `useState + Pressable + chevron` triggers (~60 lines of state +
@@ -22,7 +30,9 @@
  */
 import { View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import type { TimelineItem } from "@multica/core/task-transcript";
 import type { TaskMessagePayload } from "@multica/core/types";
+import { chatProcessSteps } from "@/lib/chat-process-steps";
 import { Text } from "@/components/ui/text";
 import {
   Collapsible,
@@ -40,13 +50,13 @@ interface Props {
 
 export function ChatTimeline({ items, isStreaming = false }: Props) {
   const { t } = useT("chat");
-  const processSteps = items.filter((i) => i.type !== "text");
-  if (processSteps.length === 0) return null;
+  const { middle } = chatProcessSteps(items);
+  if (middle.length === 0) return null;
 
   // 整句复数键（_one / _other），不做 "N" + " step(s)" 拼接 —— 中日韩无复数
   // 形态，量词位置也与英文不同。
   const stepsLabel = t("message_list.process_steps", "{{count}} steps", {
-    count: processSteps.length,
+    count: middle.length,
   });
 
   return (
@@ -64,8 +74,8 @@ export function ChatTimeline({ items, isStreaming = false }: Props) {
       </CollapsibleTrigger>
       <CollapsibleContent>
         <View className="mt-1 rounded-lg border border-border bg-muted/20 px-2 py-1.5 gap-0.5">
-          {processSteps.map((item) => (
-            <StepRow key={`${item.task_id}-${item.seq}`} item={item} />
+          {middle.map((item) => (
+            <StepRow key={item.seq} item={item} />
           ))}
         </View>
       </CollapsibleContent>
@@ -80,10 +90,14 @@ function StreamingDot() {
   return <View className="h-1.5 w-1.5 rounded-full bg-primary" />;
 }
 
-function StepRow({ item }: { item: TaskMessagePayload }) {
+function StepRow({ item }: { item: TimelineItem }) {
   switch (item.type) {
     case "thinking":
       return <ThinkingRow item={item} />;
+    case "text":
+      // Sandwiched intermediate text (web's MiddleTextRow): progress notes
+      // between tool calls read as part of the process, not the reply.
+      return <MiddleTextRow item={item} />;
     case "tool_use":
       return <ToolCallRow item={item} />;
     case "tool_result":
@@ -95,7 +109,35 @@ function StepRow({ item }: { item: TaskMessagePayload }) {
   }
 }
 
-function ThinkingRow({ item }: { item: TaskMessagePayload }) {
+function MiddleTextRow({ item }: { item: TimelineItem }) {
+  const text = item.content ?? "";
+  if (!text) return null;
+  const preview = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+  return (
+    <Collapsible>
+      <CollapsibleTrigger asChild>
+        <View className="py-0.5 flex-row items-start gap-1.5 active:opacity-70">
+          <Ionicons
+            name="chatbubble-ellipses-outline"
+            size={12}
+            color="#a1a1aa"
+            style={{ marginTop: 2 }}
+          />
+          <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={1}>
+            {preview}
+          </Text>
+        </View>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <Text className="ml-4 mt-0.5 text-xs text-muted-foreground">
+          {text}
+        </Text>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function ThinkingRow({ item }: { item: TimelineItem }) {
   const text = item.content ?? "";
   if (!text) return null;
   const preview = text.length > 80 ? `${text.slice(0, 80)}…` : text;
@@ -126,7 +168,7 @@ function ThinkingRow({ item }: { item: TaskMessagePayload }) {
   );
 }
 
-function ToolCallRow({ item }: { item: TaskMessagePayload }) {
+function ToolCallRow({ item }: { item: TimelineItem }) {
   const summary = getToolSummary(item);
   const hasInput = !!item.input && Object.keys(item.input).length > 0;
   // If the call has no expandable input, render a non-interactive row —
@@ -178,7 +220,7 @@ function ToolCallRow({ item }: { item: TaskMessagePayload }) {
   );
 }
 
-function ToolResultRow({ item }: { item: TaskMessagePayload }) {
+function ToolResultRow({ item }: { item: TimelineItem }) {
   const { t } = useT("chat");
   const output = item.output ?? "";
   if (!output) return null;
@@ -216,7 +258,7 @@ function ToolResultRow({ item }: { item: TaskMessagePayload }) {
   );
 }
 
-function ErrorRow({ item }: { item: TaskMessagePayload }) {
+function ErrorRow({ item }: { item: TimelineItem }) {
   return (
     <View className="py-0.5 flex-row items-start gap-1.5">
       <Ionicons
@@ -239,7 +281,7 @@ function ErrorRow({ item }: { item: TaskMessagePayload }) {
  * `prompt` get truncated, and a final loop catches whichever short string
  * a future tool might emit.
  */
-function getToolSummary(item: TaskMessagePayload): string {
+function getToolSummary(item: TimelineItem): string {
   if (!item.input) return "";
   const inp = item.input as Record<string, unknown>;
   const pick = (k: string): string | undefined => {
