@@ -226,13 +226,16 @@ func (s *workerSession) CloseStdin() error {
 // "signal: killed") so failure classification keeps working; nil on exit 0.
 func (s *workerSession) Wait(ctx context.Context) error {
 	if s.mode == sessionLegacy {
-		err := s.cmd.Wait()
-		// The session owns the whole start→reap→release lifecycle now: the
-		// release is what drops the Windows Job Object handle and kills
-		// anything that outlived the reap. Idempotent, so a backend that
-		// kept its own defer is a harmless second call.
-		releaseProcessGroup(s.cmd)
-		return err
+		// cmd.Wait only. The Windows Job Object release stays with the
+		// backend: codex confirms whole-tree termination by reading the
+		// job's accounting BETWEEN the reap and its own releaseProcessGroup
+		// (cleanup_confirmed gates initialize retries), so a release here
+		// would drop the job handle and delete the map entry before that
+		// confirmation can observe anything, permanently reporting
+		// cleanup as unconfirmed on Windows (RUYI-436). Every legacy
+		// starter releases on its terminal path; this is the exact
+		// ownership split that predated RUYI-349.
+		return s.cmd.Wait()
 	}
 	if s.handle == nil {
 		return errors.New("supervised wait before start")

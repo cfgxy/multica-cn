@@ -17,15 +17,18 @@ Rules (see workspace/project instructions, RUYI-359):
 
 | Number | Stem | Issue | Branch / PR | Status |
 | ------ | ---- | ----- | ----------- | ------ |
-| 918 | 918_issue_decisions | RUYI-345 | agent/agent-f70e39b85abd/beec1e804b72 | reserved |
+| 917 | 917_issue_run_cancellation_fence | RUYI-384 | merged to main via PR #194 | applied |
+| 918 | 918_issue_decisions | RUYI-345 | merged to main via PR #181 | applied |
+| 919 | 919_issue_dependency_relationships | RUYI-351 | merged to main via PR #180 | applied |
 | 920 | 920_project_revision | RUYI-354 | agent/agent-f70e39b85abd/ruyi-354 (Owner pinned 2026-10-03 08:59) | applied |
 | 921 | 921_prompt_version_snapshot_scope | RUYI-285 | merged to main via PR #202 (rebuilt from superseded PR #183) | applied |
-| 922 | 922_channel_capability_state | RUYI-400 | agent/agent-f70e39b85abd/ruyi-400 | reserved |
-| 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
-| 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
-| 925 | 925_oauth_management | RUYI-420 | agent/agent-f70e39b85abd/ruyi-420 | reserved |
-| 926 | 926_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
-| 929 | 929_quick_replies | RUYI-435 | agent/agent-f70e39b85abd/ruyi-435 | reserved |
+| 922 | 922_channel_capability_state | RUYI-400 | merged to main via PR #201 | applied |
+| 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | merged to main via PR #179 | applied |
+| 924 | 924_agent_resource_weight | RUYI-397 | merged to main via PR #209 | applied |
+| 925 | 925_oauth_management | RUYI-420 | merged to main via PR #223 | applied |
+| 926 | 926_activity_audit | RUYI-355 | merged to main via PR #214 | applied |
+| 928 | 928_agent_execution_profile_revision | RUYI-433 | merged to main via PR #231 | applied |
+| 929 | 929_quick_replies | RUYI-435 | agent/agent-f70e39b85abd/ruyi-435 (PR #237) | reserved |
 
 Notes:
 
@@ -65,3 +68,6 @@ Notes:
   `929_quick_replies` at rebase (927/928 taken by open PRs #228/#231 at the
   time). The stem never reached any shared `schema_migrations` ledger before
   the renumber, so no ledger rewrite is needed anywhere.
+- 917/919 back-fill note (RUYI-439): both stems predate the RUYI-359 ledger;
+  rows back-filled 2026-10-05, attribution re-verified from first-parent
+  main history (917 -> RUYI-384 via PR #194, 919 -> RUYI-351 via PR #180).

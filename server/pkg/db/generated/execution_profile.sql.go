@@ -20,9 +20,12 @@ SET runtime_id     = $1,
         WHEN $4::boolean THEN $5
         ELSE thinking_level
     END,
-    updated_at     = now()
+    updated_at     = now(),
+    -- Activation moves the execution config, so it must invalidate any
+    -- expected_revision a client read before it (RUYI-433).
+    revision       = revision + 1
 WHERE id = $6 AND workspace_id = $7 AND archived_at IS NULL
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision
 `
 
 type ApplyExecutionProfileEntryToAgentParams struct {
@@ -93,6 +96,7 @@ func (q *Queries) ApplyExecutionProfileEntryToAgent(ctx context.Context, arg App
 		&i.SessionCompactPct,
 		&i.MarketplacePromptState,
 		&i.ResourceWeight,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -152,7 +156,7 @@ const createExecutionProfile = `-- name: CreateExecutionProfile :one
 
 INSERT INTO execution_profile (workspace_id, name, description, created_by)
 VALUES ($1, $2, $3, $4)
-RETURNING id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at
+RETURNING id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at, revision
 `
 
 type CreateExecutionProfileParams struct {
@@ -185,6 +189,7 @@ func (q *Queries) CreateExecutionProfile(ctx context.Context, arg CreateExecutio
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastActivatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -232,7 +237,7 @@ func (q *Queries) DeleteExecutionProfileEntry(ctx context.Context, arg DeleteExe
 }
 
 const getExecutionProfileForWorkspace = `-- name: GetExecutionProfileForWorkspace :one
-SELECT id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at FROM execution_profile
+SELECT id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at, revision FROM execution_profile
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -253,6 +258,7 @@ func (q *Queries) GetExecutionProfileForWorkspace(ctx context.Context, arg GetEx
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastActivatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -293,7 +299,7 @@ func (q *Queries) ListExecutionProfileEntries(ctx context.Context, profileID pgt
 }
 
 const listExecutionProfiles = `-- name: ListExecutionProfiles :many
-SELECT id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at FROM execution_profile
+SELECT id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at, revision FROM execution_profile
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -316,6 +322,7 @@ func (q *Queries) ListExecutionProfiles(ctx context.Context, workspaceID pgtype.
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LastActivatedAt,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -328,7 +335,7 @@ func (q *Queries) ListExecutionProfiles(ctx context.Context, workspaceID pgtype.
 }
 
 const lockExecutionProfileForActivation = `-- name: LockExecutionProfileForActivation :one
-SELECT id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at FROM execution_profile
+SELECT id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at, revision FROM execution_profile
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE
 `
@@ -355,6 +362,7 @@ func (q *Queries) LockExecutionProfileForActivation(ctx context.Context, arg Loc
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastActivatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -362,9 +370,10 @@ func (q *Queries) LockExecutionProfileForActivation(ctx context.Context, arg Loc
 const markExecutionProfileActivated = `-- name: MarkExecutionProfileActivated :one
 UPDATE execution_profile
 SET last_activated_at = now(),
-    updated_at        = now()
+    updated_at        = now(),
+    revision          = revision + 1
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at
+RETURNING id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at, revision
 `
 
 type MarkExecutionProfileActivatedParams struct {
@@ -372,6 +381,12 @@ type MarkExecutionProfileActivatedParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
+// Activation is a material profile state change (last_activated_at), so it
+// bumps the revision: a client that read the profile before someone else
+// activated it must not overwrite the post-activation row believing the
+// content it saw is still current (RUYI-433). Not guarded on
+// expected_revision — the FOR UPDATE lock above already serializes
+// activations against each other.
 func (q *Queries) MarkExecutionProfileActivated(ctx context.Context, arg MarkExecutionProfileActivatedParams) (ExecutionProfile, error) {
 	row := q.db.QueryRow(ctx, markExecutionProfileActivated, arg.ID, arg.WorkspaceID)
 	var i ExecutionProfile
@@ -384,6 +399,7 @@ func (q *Queries) MarkExecutionProfileActivated(ctx context.Context, arg MarkExe
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastActivatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -403,29 +419,66 @@ func (q *Queries) SetWorkspaceActiveExecutionProfile(ctx context.Context, arg Se
 	return err
 }
 
+const touchExecutionProfileRevision = `-- name: TouchExecutionProfileRevision :execrows
+UPDATE execution_profile
+SET revision   = revision + 1,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+  AND ($3::bigint IS NULL OR revision = $3::bigint)
+`
+
+type TouchExecutionProfileRevisionParams struct {
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	ExpectedRevision pgtype.Int8 `json:"expected_revision"`
+}
+
+// Guarded revision bump for entry writes (RUYI-433): runs in the SAME
+// transaction as Upsert/DeleteExecutionProfileEntry so a client holding
+// expected_revision also sees member changes invalidate its token, and so a
+// stale write is refused before it touches the entry set. 0 rows means the
+// guard missed (stale revision) or the profile vanished between the
+// handler's existence check and this write; the handler re-reads to answer
+// 409 revision_conflict or 404.
+func (q *Queries) TouchExecutionProfileRevision(ctx context.Context, arg TouchExecutionProfileRevisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchExecutionProfileRevision, arg.ID, arg.WorkspaceID, arg.ExpectedRevision)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateExecutionProfile = `-- name: UpdateExecutionProfile :one
 UPDATE execution_profile
 SET name        = COALESCE($1, name),
     description = COALESCE($2, description),
-    updated_at  = now()
+    updated_at  = now(),
+    revision    = revision + 1
 WHERE id = $3 AND workspace_id = $4
-RETURNING id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at
+  AND ($5::bigint IS NULL OR revision = $5::bigint)
+RETURNING id, workspace_id, name, description, created_by, created_at, updated_at, last_activated_at, revision
 `
 
 type UpdateExecutionProfileParams struct {
-	Name        pgtype.Text `json:"name"`
-	Description pgtype.Text `json:"description"`
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Name             pgtype.Text `json:"name"`
+	Description      pgtype.Text `json:"description"`
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
+	ExpectedRevision pgtype.Int8 `json:"expected_revision"`
 }
 
 // Partial update via COALESCE: NULL args leave the column unchanged.
+// expected_revision (RUYI-433): when set, the write only lands if the profile
+// still carries that revision; a stale value yields 0 rows and the handler
+// answers 409 revision_conflict with the actual revision. Same contract as
+// UpdateProject / UpdateAgent.
 func (q *Queries) UpdateExecutionProfile(ctx context.Context, arg UpdateExecutionProfileParams) (ExecutionProfile, error) {
 	row := q.db.QueryRow(ctx, updateExecutionProfile,
 		arg.Name,
 		arg.Description,
 		arg.ID,
 		arg.WorkspaceID,
+		arg.ExpectedRevision,
 	)
 	var i ExecutionProfile
 	err := row.Scan(
@@ -437,6 +490,7 @@ func (q *Queries) UpdateExecutionProfile(ctx context.Context, arg UpdateExecutio
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.LastActivatedAt,
+		&i.Revision,
 	)
 	return i, err
 }
