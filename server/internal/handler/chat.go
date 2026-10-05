@@ -1782,6 +1782,12 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Audit attribution (RUYI-355): the acting member rides onto the cancelled
+	// row and the run.cancelled event.
+	cancellerUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
 	workspaceID := ctxWorkspaceID(r.Context())
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
@@ -1880,6 +1886,7 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		ExpectedChatSession:        expectedSession,
 		QueueAction:                queueAction,
 		UserInitiated:              true,
+		CancellerUserID:            cancellerUUID,
 	})
 	if errors.Is(err, service.ErrTaskNoLongerQueued) {
 		writeError(w, http.StatusConflict, err.Error())

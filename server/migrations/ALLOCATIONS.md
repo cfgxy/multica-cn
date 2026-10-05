@@ -24,6 +24,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
 | 925 | 925_oauth_management | RUYI-420 | agent/agent-f70e39b85abd/ruyi-420 | reserved |
+| 926 | 926_activity_audit | RUYI-355 | agent/agent-f70e39b85abd/ruyi-355 | reserved |
 
 Notes:
 
@@ -39,6 +40,21 @@ Notes:
   rows persist in several historical experiment/QA database ledgers; leftovers
   from the RUYI-359 shrink (that stem lives at 904 on the consolidated tree),
   NOT an occupation — same treatment as the 920-923 leftovers note above.
-- 922 note (RUYI-400): RUYI-346's head branch (PR #178) still carries
-  pre-shrink legacy stems in the 920-923 range; those are leftovers, NOT
-  active-branch claims, and resolve on that branch's required rebase.
+- 922 renumber note (RUYI-355): RUYI-400 merged `922_channel_capability_state`
+  first (commit `148cd0479`, 2026-10-03), so RUYI-355's audit stem (then
+  registered at 922) yielded the number and renumbered to `925_activity_audit`
+  before its PR (the branch-side 922 registration never reached main, so
+  RUYI-400's three-source check could not see it). The shared `multica`
+  production ledger still carries that stem's row at 922 from pre-merge
+  verification on this issue; its disposition is pending Owner decision
+  (RUYI-355 decision 3) and is NOT an active claim. RUYI-346's head branch (PR #178)
+  still carries pre-shrink legacy stems in the 920-923 range; those are
+  leftovers, NOT active-branch claims, and resolve on that branch's
+  required rebase.
+- 926 renumber note (RUYI-355): the audit stem registered at 925 collided
+  with RUYI-420's `925_oauth_management` on main disk (2026-10-05 merge
+  preflight); RUYI-355 yielded and renumbered to `926_activity_audit` in
+  its conflict-resolution merge — same yield pattern as the 922→925
+  renumber above. Environments whose `schema_migrations` ledger carries
+  `925_activity_audit` must have that row rewritten to `926_activity_audit`
+  per the renumber rule (version rewritten, `applied_at` preserved).
