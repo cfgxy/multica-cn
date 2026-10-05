@@ -72,6 +72,7 @@ import type {
   SearchIssuesResponse,
   SearchProjectsResponse,
   ListIssueStatusesResponse,
+  ListQuickRepliesResponse,
   SendChatMessageResponse,
   Squad,
   SquadMember,
@@ -108,6 +109,7 @@ import {
   EMPTY_AGENT_WEBHOOK_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
+  EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
@@ -120,6 +122,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  ListQuickRepliesResponseSchema,
   SquadMemberListSchema,
   SquadMemberSchema,
   SquadMemberStatusListResponseSchema,
@@ -1800,6 +1803,23 @@ class ApiClient {
       ListIssueStatusesResponseSchema,
       EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
       { ...opts, endpoint: "GET /api/issue-statuses" },
+    );
+  }
+
+  // --- Workspace quick replies (RUYI-435) ---
+  /**
+   * The workspace's quick-reply catalog — the templates the comment composer
+   * offers behind its quick-reply button. Read-open to every member; the
+   * mutations are owner/admin only and live on web's settings screen (plus
+   * MCP), which is why mobile ships the read alone. An empty fallback renders
+   * an empty menu, never a broken composer.
+   */
+  async listQuickReplies(opts?: { signal?: AbortSignal }): Promise<ListQuickRepliesResponse> {
+    return this.fetchValidated(
+      "/api/quick-replies",
+      ListQuickRepliesResponseSchema,
+      EMPTY_LIST_QUICK_REPLIES_RESPONSE,
+      { ...opts, endpoint: "GET /api/quick-replies" },
     );
   }
 

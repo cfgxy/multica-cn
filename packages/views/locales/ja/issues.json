@@ -551,7 +551,12 @@
       "unresolve_failed": "スレッドの解決を取り消せませんでした"
     },
     "anchor_unavailable": "引用されたコメントは利用できないか削除されています",
-    "anchor_aria": "{{author}} の {{when}} のコメントへ移動：{{excerpt}}"
+    "anchor_aria": "{{author}} の {{when}} のコメントへ移動：{{excerpt}}",
+    "quick_replies": {
+      "menu_label": "クイック返信",
+      "menu_empty": "ワークスペース管理者によってクイック返信はまだ設定されていません",
+      "insert_aria": "クイック返信「{{name}}」を挿入"
+    }
   },
   "reply": {
     "placeholder": "返信を残す..."

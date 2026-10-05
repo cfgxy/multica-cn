@@ -49,6 +49,42 @@
       "cancelled": "决定不做。"
     }
   },
+    "quick_replies": {
+      "title": "快速回复",
+      "description": "Issue 评论框「快速回复」菜单的共享模板。所有成员可读，仅空间管理员可修改；选中后填入评论框，不会直接发送。",
+      "loading": "正在加载快速回复…",
+      "add": "新建快速回复",
+      "empty_title": "还没有快速回复",
+      "empty_hint": "把常用的评论写法存成模板，成员在评论框选中后一键填入。",
+      "reorder_failed": "排序保存失败",
+      "actions": {
+        "open": "打开\"{{name}}\"的操作菜单",
+        "edit": "编辑",
+        "delete": "删除",
+        "reorder": "拖动调整\"{{name}}\"的顺序"
+      },
+      "editor": {
+        "create_title": "新建快速回复",
+        "edit_title": "编辑快速回复",
+        "hint": "成员在评论框选中后，内容会填入输入框，可继续修改再发送。",
+        "name": "名称",
+        "name_placeholder": "例如：跟进发布",
+        "content": "内容",
+        "content_placeholder": "填入评论框的模板正文…",
+        "cancel": "取消",
+        "save": "保存",
+        "saving": "保存中…",
+        "save_failed": "保存失败"
+      },
+      "delete_dialog": {
+        "title": "删除快速回复",
+        "description": "确定删除\"{{name}}\"？所有成员的评论框都会立即不再显示它。",
+        "cancel": "取消",
+        "confirm": "删除",
+        "failed": "删除失败"
+      }
+    }
+,
   "quick_actions": {
     "title": "快捷操作",
     "description": "预先配置好执行的智能体和提示词，之后在任意任务侧边栏一键触发。",
@@ -433,6 +469,7 @@
       "members": "成员",
       "labels": "标签",
       "issue_statuses": "任务状态",
+      "quick_replies": "快速回复",
       "properties": "属性",
       "quick_actions": "快捷操作",
       "plugins": "Plugins",
