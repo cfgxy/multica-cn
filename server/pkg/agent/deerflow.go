@@ -685,8 +685,7 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("deerflow finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "deerflow")
 
 		// The bridge reaps its worker process group before exiting, so the
 		// pipes can stay open briefly after session/prompt returns. Bound the

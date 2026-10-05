@@ -205,11 +205,11 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		defer msgStream.close()
 		defer close(resCh)
 		defer func() {
-			_ = stdin.Close()
-			// Cancellation must remain reachable before Wait. MCode or a tool
-			// descendant may ignore stdin EOF, so waiting first can deadlock every
-			// early-return path, including a rejected session resume.
-			cancel()
+			// EOF first, bounded natural-exit window; the fallback cancel
+			// keeps every early-return path reachable — MCode or a tool
+			// descendant that ignores stdin EOF cannot wedge the Wait past
+			// the grace.
+			finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "mcode")
 			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
@@ -363,8 +363,7 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		streamingCurrentTurn.Store(false)
 
 		duration := time.Since(startTime)
-		_ = stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "mcode")
 		<-readerDone
 		<-stderrDone
 

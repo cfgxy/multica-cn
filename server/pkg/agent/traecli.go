@@ -418,8 +418,7 @@ func (b *traecliBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("traecli finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "traecli")
 
 		// traecli ACP may keep the process — and the stdout/stderr pipes — open
 		// briefly after session/prompt returns. The prompt response is already
