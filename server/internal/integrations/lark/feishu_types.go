@@ -1,6 +1,10 @@
 package lark
 
-import "github.com/jackc/pgx/v5/pgtype"
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+)
 
 // This file holds the Feishu adapter's native-ish inbound/outbound value
 // types. The WS connector decodes a raw Lark event into an InboundMessage;
@@ -69,6 +73,27 @@ type InboundMessage struct {
 	// enricher prepends quoted/forwarded context). `/issue` is parsed from
 	// THIS, not the enriched Body.
 	CommandBody string
+
+	// CardAction is non-nil when this inbound event is a card.action.trigger
+	// (a button click on one of our interactive cards, RUYI-461). The
+	// connector routes those around the enricher and ACKs with a toast
+	// instead of a bare 200. Command empty means the click failed
+	// validation (tampered / stale card schema) and must never dispatch.
+	CardAction *CardActionEvent
+}
+
+// CardActionEvent is the decoded, validated payload of a card action. The
+// ChatType is minted INTO the button value at render time (the
+// card.action.trigger context carries no chat_type); Command is the bare
+// registered command token the button carried. On any validation failure
+// both are empty — the connector answers with an error toast and drops the
+// click.
+type CardActionEvent struct {
+	OperatorOpenID string
+	OpenChatID     string
+	OpenMessageID  string
+	ChatType       ChatType
+	Command        string
 }
 
 // EnrichedMediaMessage is one media-bearing message the enricher surfaced
@@ -101,6 +126,13 @@ const (
 	OutcomeAgentOffline Outcome = "agent_offline"
 	// OutcomeAgentArchived — landed, but the agent is archived.
 	OutcomeAgentArchived Outcome = "agent_archived"
+	// OutcomeHelp — a /help command or card-button click; the replier renders
+	// the interactive command card.
+	OutcomeHelp Outcome = "help"
+	// OutcomeUnknownCommand — the first non-empty line opened with a slash
+	// token the command registry does not know; the replier guides the sender
+	// to /help.
+	OutcomeUnknownCommand Outcome = "unknown_command"
 	// OutcomeSessionUnavailable — the session cannot start a run anymore
 	// (archived, agent removed, route superseded). Copy stays free of
 	// internal detail.
@@ -130,4 +162,10 @@ type DispatchResult struct {
 	// IssueUsageHadMedia asks the usage reply to tell the sender to include the
 	// current message's media again with the corrected command.
 	IssueUsageHadMedia bool
+	// CommandToken is the unrecognized leading slash token on
+	// OutcomeUnknownCommand, echoed back in the /help guidance.
+	CommandToken string
+	// HelpCommands carries the registry's listed commands on OutcomeHelp for
+	// the command-card render. Nil on every other outcome.
+	HelpCommands []engine.CommandDescriptor
 }
