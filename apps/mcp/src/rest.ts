@@ -374,11 +374,18 @@ export class MulticaClient {
   // The workspace audit search (RUYI-355): the same endpoint the web app
   // reads, so the MCP tool and the UI always see the same trail. Issue-level
   // filtering is just issue_id here — the server pins it on the issue route.
+  // Unlike every header-scoped route, this one keys the workspace by UUID in
+  // its path and has no slug resolution, so a slug input resolves to its UUID
+  // first via the caller's own workspace list (the PAT user is necessarily a
+  // member of any workspace it may read here).
   async listAuditEvents(
     workspace: string,
     params: AuditEventListParams = {},
   ): Promise<AuditEventListResult> {
-    return this.request("GET", `/api/workspaces/${encodeURIComponent(workspace)}/audit-events`, {
+    const workspaceId = isUuid(workspace)
+      ? workspace
+      : await this.resolveWorkspaceIdBySlug(workspace);
+    return this.request("GET", `/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events`, {
       workspace,
       query: {
         domain: params.domain,
@@ -397,6 +404,15 @@ export class MulticaClient {
         cursor_id: params.cursor_id,
       },
     });
+  }
+
+  private async resolveWorkspaceIdBySlug(slug: string): Promise<string> {
+    const workspaces = await this.listWorkspaces();
+    const match = workspaces.find((w) => w.slug === slug);
+    if (!match) {
+      throw new MulticaRequestError(`workspace not found for slug: ${slug}`);
+    }
+    return match.id;
   }
 
   // ---- workspace management surface (RUYI-419) ----------------------------

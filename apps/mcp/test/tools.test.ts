@@ -1027,11 +1027,23 @@ describe("run lifecycle tools (RUYI-292)", () => {
       next_cursor: null,
       next_cursor_id: null,
     };
-    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(JSON.stringify(payload), {
+    // The client resolves a slug workspace to its UUID via the workspace
+    // list before the audit call, so the stub answers per route like the
+    // real server would.
+    const wsUuid = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    const fetchImpl = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      if (url.pathname === "/api/workspaces") {
+        return new Response(
+          JSON.stringify([{ id: wsUuid, name: "Voice Notes", slug: WS }]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { "Content-Type": "application/json" },
-      })) as typeof fetch;
+      });
+    }) as typeof fetch;
     const client = new MulticaClient({
       serverUrl: "https://api.example.com",
       token: "mul_test",
