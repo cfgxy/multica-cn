@@ -458,6 +458,24 @@ export default function WorkspaceLayout() {
           name="more/agents/[id]/webhooks"
           options={SHEET_OPTIONS}
         />
+        {/* RUYI-425 §4.3: voice runtime instances — list from the More
+            dropdown, modal create form, settings page (its in-page
+            Stack.Screen overrides the title with the instance name). */}
+        <Stack.Screen
+          name="more/runtimes"
+          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/runtimes/new"
+          options={{
+            presentation: "modal",
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="more/runtimes/[id]"
+          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
+        />
         <Stack.Screen
           name="more/squads"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
