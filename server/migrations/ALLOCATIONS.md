@@ -23,6 +23,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 922 | 922_channel_capability_state | RUYI-400 | agent/agent-f70e39b85abd/ruyi-400 | reserved |
 | 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
+| 925 | 925_oauth_management | RUYI-420 | agent/agent-f70e39b85abd/ruyi-420 | reserved |
 
 Notes:
 

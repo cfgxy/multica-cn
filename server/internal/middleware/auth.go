@@ -54,7 +54,18 @@ func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 // local DB. When nil (Fleet URL unset) mcn_ tokens are rejected at the
 // prefix branch — we don't fall through to the mul_ / JWT paths, since
 // an mcn_ string is by construction not a valid mul_ PAT or JWT.
-func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup, oauthSigner *oauth.Signer) func(http.Handler) http.Handler {
+//
+// oauthGate is optional. When non-nil, an OAuth access token whose claims
+// bind it to a grant (cid/gid, RUYI-420) must resolve to a live grant and
+// an enabled client after signature verification. A token minted before the
+// grant table carries neither claim and skips the gate — it keeps working
+// until natural expiry, which is the documented upgrade path. The gate's nil
+// semantics are fail-closed, not a skip: a gid-carrying token under a nil
+// gate is rejected 401 (Check reports the gate unavailable), and the MCP
+// scope-surface check below runs for every OAuth token regardless of the
+// gate. Only gid-less legacy tokens see JWT-only behaviour — the shape the
+// JWT-only unit tests exercise.
+func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup, oauthSigner *oauth.Signer, oauthGate *auth.OAuthGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source and X-Impersonator-ID are server-set only —
@@ -256,6 +267,42 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				if rejectDisabledUser(w, r, disabled, claims.Subject, "oauth") {
 					return
 				}
+				// Grant gate (RUYI-420): signature proves the token was
+				// minted here; the gate proves the authorization behind it
+				// still lives. Tokens without a gid predate the grant table
+				// and stay valid to natural expiry — that is the upgrade
+				// path, not an escape: they cannot be re-minted without a
+				// consented grant.
+				if claims.GrantID != "" {
+					grantID, gidErr := util.ParseUUID(claims.GrantID)
+					if gidErr != nil {
+						// A token whose gid is not a UUID was not minted by
+						// this server's token endpoint; reject at the gate.
+						slog.Warn("auth: oauth token carries malformed grant id", "path", r.URL.Path)
+						http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+						return
+					}
+					if rejectDeadGrant(w, r, oauthGate, grantID) {
+						return
+					}
+					// Cache-miss lookups refresh the grant's last_used_at
+					// at most once per gate TTL window, the same throttle
+					// the PAT branch applies to its tokens.
+					go queries.TouchOAuthGrantLastUsed(context.Background(), grantID)
+				}
+				// Scope surface (RUYI-420): an OAuth token authorizes the
+				// MCP service, not the user's whole API. Requests outside
+				// the mapped surface are rejected for every scope — fail
+				// closed — and within it the token's scope must cover the
+				// required tier. 403 (not 401): the credential is valid,
+				// the authority is not.
+				if req := oauth.ScopeForRequest(r.Method, r.URL.Path); req == oauth.ScopeUnknown ||
+					!oauth.ScopeCovers(claims.Scope, req.Scope()) {
+					slog.Warn("auth: oauth scope rejected", "path", r.URL.Path, "method", r.Method)
+					w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+					http.Error(w, `{"error":"insufficient_scope"}`, http.StatusForbidden)
+					return
+				}
 				r.Header.Set("X-User-ID", claims.Subject)
 				// Same rationale as task_token / cloud_pat above: this
 				// credential is handed to an external MCP client (ChatGPT)
@@ -359,6 +406,44 @@ func oauthFailureReason(err error) string {
 		return "signing_key_unavailable"
 	default:
 		return "invalid_token"
+	}
+}
+
+// rejectDeadGrant consults the OAuth grant gate and writes the 401 itself
+// when the grant or its client is no longer live (same convention as
+// rejectDisabledUser: true = request rejected). Unavailable counts as dead —
+// a revocation gate that cannot answer must not default to "alive", the
+// same fail-closed direction the token endpoint applies to its stores.
+func rejectDeadGrant(w http.ResponseWriter, r *http.Request, gate *auth.OAuthGate, grantID pgtype.UUID) bool {
+	state, found, _, err := gate.Check(r.Context(), util.UUIDToString(grantID))
+	if err == nil && found && state.Live() {
+		return false
+	}
+	slog.Warn("auth: oauth grant rejected",
+		"path", r.URL.Path,
+		"reason", grantRejectReason(err, found, state),
+	)
+	http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+	return true
+}
+
+// grantRejectReason labels the rejection for the log. Error details stay out
+// — the gate's lookup internals are not credential material, but the auth
+// log's discipline is reason strings only.
+func grantRejectReason(err error, found bool, state auth.OAuthGrantState) string {
+	switch {
+	case err != nil:
+		return "gate_unavailable"
+	case !found:
+		return "grant_not_found"
+	case !state.ClientFound:
+		return "client_deleted"
+	case state.ClientDisabled:
+		return "client_disabled"
+	case state.GrantRevoked:
+		return "grant_revoked"
+	default:
+		return "grant_not_live"
 	}
 }
 

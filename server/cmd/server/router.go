@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -1348,6 +1350,34 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.OAuthSigner = oauthSigner
 	h.OAuthCodes = oauth.NewCodeStore(rdb)
 
+	// Grant gate lookup (RUYI-420): the auth middleware re-checks the
+	// authorization record after signature verification, so a revoked grant
+	// or a disabled/deleted client kills already-issued tokens on the next
+	// request (write-path cache invalidation) instead of at token expiry.
+	// The closure keeps the auth package free of generated-code imports,
+	// same shape as userDisabledLookup.
+	oauthGateLookup := func(ctx context.Context, grantID string) (auth.OAuthGrantState, bool, error) {
+		id, err := util.ParseUUID(grantID)
+		if err != nil {
+			return auth.OAuthGrantState{}, false, nil
+		}
+		row, err := queries.GetOAuthGrantGateState(ctx, id)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return auth.OAuthGrantState{}, false, nil
+			}
+			return auth.OAuthGrantState{}, false, err
+		}
+		return auth.OAuthGrantState{
+			GrantRevoked:   row.RevokedAt.Valid,
+			ClientDisabled: row.DisabledAt.Valid,
+			ClientFound:    row.ClientExists,
+		}, true, nil
+	}
+	oauthGate := auth.NewOAuthGate(rdb, oauthGateLookup)
+	h.OAuthGate = oauthGate
+	h.OAuthConsents = oauth.NewConsentStore(rdb)
+
 	// Empty-claim cache: lets the daemon poll path skip a Postgres
 	// scan when a recent check confirmed the runtime had no queued
 	// task. Returns nil when rdb is nil — TaskService treats that
@@ -1486,6 +1516,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// down a chain that cannot complete.
 	r.With(authRL).Get("/auth/oauth/authorize", h.AuthorizeOAuth)
 	r.With(authVerifyRL).Post("/auth/oauth/token", h.TokenOAuth)
+	// Consent screen (RUYI-420): a first-time or scope-expanding
+	// authorization parks at /auth/oauth/consent/{id} until the user
+	// approves or denies. Same session posture as authorize; the POSTs
+	// additionally verify the CSRF token like every other session write.
+	r.With(authRL).Get("/auth/oauth/consent/{id}", h.GetOAuthConsent)
+	r.With(authVerifyRL).Post("/auth/oauth/consent/{id}/approve", h.ApproveOAuthConsent)
+	r.With(authVerifyRL).Post("/auth/oauth/consent/{id}/deny", h.DenyOAuthConsent)
 	if oauthSigner != nil {
 		// Wildcard: RFC 9728 lets a client probe either the bare path or the
 		// path-insertion form (.../oauth-protected-resource/api/mcp).
@@ -1626,7 +1663,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// userDisabledLookup (RUYI-47) keeps a disabled account's session from
 		// reaching the plugin bridge the same way it is excluded from every
 		// other session-authenticated route below.
-		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup, oauthSigner))
+		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup, oauthSigner, oauthGate))
 		r.Route(pluginBridgePrefix, func(r chi.Router) {
 			registerPluginActionRoutes(r, h)
 			// ui / manual only. `event` is dispatched by the host off the event
@@ -1636,7 +1673,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup, oauthSigner))
+		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup, oauthSigner, oauthGate))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
 
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
@@ -1662,6 +1699,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/me/onboarding/runtime-bootstrap", h.BootstrapOnboardingRuntime)
 		r.Post("/api/me/onboarding/no-runtime-bootstrap", h.BootstrapOnboardingNoRuntime)
 		r.Post("/api/cli-token", h.IssueCliToken)
+		// The signed-in user's own MCP authorizations (RUYI-420): the
+		// Settings "my authorizations" list and self-revocation. Handlers
+		// enforce user_id ownership; foreign ids answer 404.
+		r.Get("/api/oauth/grants", h.ListMyOAuthGrants)
+		r.Delete("/api/oauth/grants/{id}", h.RevokeMyOAuthGrant)
 		// Impersonation exit. Deliberately OUTSIDE the /api/admin group:
 		// the caller authenticates as the impersonated user via the
 		// shadow JWT, and the handler re-mints the impersonator's own
@@ -1710,6 +1752,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/users/{id}/impersonate", h.AdminImpersonate)
 			r.Get("/workspaces", h.AdminListWorkspaces)
 			r.Post("/workspaces/{id}/members", h.AdminAddWorkspaceMember)
+			// OAuth client + grant management and the MCP status panel
+			// (RUYI-420). Every write lands in admin_audit_log; responses
+			// never carry the secret hash (plaintext appears exactly once,
+			// in the create and rotate responses).
+			r.Get("/oauth/clients", h.AdminListOAuthClients)
+			r.Post("/oauth/clients", h.AdminCreateOAuthClient)
+			r.Get("/oauth/clients/{id}", h.AdminGetOAuthClient)
+			r.Patch("/oauth/clients/{id}", h.AdminUpdateOAuthClient)
+			r.Patch("/oauth/clients/{id}/disabled", h.AdminSetOAuthClientDisabled)
+			r.Post("/oauth/clients/{id}/rotate", h.AdminRotateOAuthClientSecret)
+			r.Delete("/oauth/clients/{id}", h.AdminDeleteOAuthClient)
+			r.Get("/oauth/grants", h.AdminListOAuthGrants)
+			r.Delete("/oauth/grants/{id}", h.AdminRevokeOAuthGrant)
+			r.Get("/mcp/status", h.AdminMCPServerStatus)
 		})
 
 		r.Route("/api/workspaces", func(r chi.Router) {

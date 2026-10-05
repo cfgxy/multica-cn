@@ -1268,6 +1268,24 @@ type OauthClient struct {
 	CreatedBy        pgtype.UUID        `json:"created_by"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	// Soft-disable timestamp. NULL = enabled. A disabled client cannot mint new tokens and its existing tokens fail the grant gate within the cache window.
+	DisabledAt pgtype.Timestamptz `json:"disabled_at"`
+	// User who set disabled_at. No DB foreign key, resolved in application code.
+	DisabledBy pgtype.UUID `json:"disabled_by"`
+	// When the current client_secret_hash was written. NULL = original create-time secret. Shown as "rotated at"; never the hash itself.
+	SecretUpdatedAt pgtype.Timestamptz `json:"secret_updated_at"`
+}
+
+// One row per (client, user) OAuth authorization (RUYI-420). Access tokens carry the grant id; middleware.Auth checks revoked_at/client state after signature verification, making revocation effective within the gate cache TTL. scope stores the consented scope string; the legacy value "mcp" means full MCP access.
+type OauthGrant struct {
+	ID        pgtype.UUID        `json:"id"`
+	ClientID  string             `json:"client_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Scope     string             `json:"scope"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	// Refreshed at most once per gate-cache TTL window per grant, mirroring the PAT last_used_at throttle.
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 }
 
 type PersonalAccessToken struct {
