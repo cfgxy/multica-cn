@@ -277,7 +277,7 @@ while :; do
   [ -f "$STOP_FILE" ] && exit 0
   [ -d "$SLOT_DIR" ] || exit 0
   [ -f "$MANIFEST" ] || exit 0
-  for comp in api web daemon desktop; do
+  for comp in api web mcp daemon desktop; do
     check_component "$comp" "$issue"
   done
   sleep "$INTERVAL"
