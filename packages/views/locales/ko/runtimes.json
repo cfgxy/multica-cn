@@ -504,5 +504,23 @@
     "created_probe_invalid": "등록되었지만 연결 확인에 실패했습니다. API 키를 확인하세요",
     "create_failed": "음성 인스턴스 등록 실패",
     "key_save_failed": "등록되었지만 API 키 저장에 실패했습니다. 인스턴스 설정에서 추가하세요"
+  },
+  "mobile": {
+    "list_loading": "불러오는 중…",
+    "empty": {
+      "title": "아직 음성 인스턴스가 없습니다"
+    },
+    "detail": {
+      "not_found": "이 인스턴스는 더 이상 존재하지 않습니다."
+    },
+    "status": {
+      "online": "온라인",
+      "offline": "오프라인",
+      "disabled": "중지됨"
+    },
+    "advanced": {
+      "expand": "보기",
+      "collapse": "숨기기"
+    }
   }
 }
