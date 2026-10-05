@@ -16,6 +16,7 @@ import {
   buildRunOutcome,
   buildSteps,
   buildTimeline,
+  groupSteps,
   redactSecrets,
   traceEventCopyText,
   traceEventDetail,
@@ -24,8 +25,10 @@ import {
   unwrapToolOutput,
   type RunOutcome,
   type TimelineItem,
+  type TraceCallStep,
   type TraceDiffLineKind,
   type TraceEvent,
+  type TraceRow,
   type TraceStep,
 } from "@multica/core/task-transcript";
 import type { AgentTask, TaskMessagePayload } from "@multica/core/types";
@@ -171,9 +174,8 @@ export type RunDetailBody =
   | { variant: "text"; text: string };
 
 export interface RunStepViewBase {
-  /** Stable row key — the originating event's seq. */
+  /** Stable row key — the originating event's seq (group: first member's). */
   key: string;
-  kind: "call" | "text" | "thinking" | "error";
   /** Provider-native label (tool name / "Agent" / "Thinking" / raw type). */
   label: string;
   /** One-line collapsed summary — redacted (input-derived text included). */
@@ -184,6 +186,8 @@ export interface RunStepViewBase {
 
 export interface RunCallStepView extends RunStepViewBase {
   kind: "call";
+  /** Originating tool name (group rows carry it on the fold itself). */
+  tool: string;
   /** Right-column call duration, when both sides carry timestamps. */
   durationLabel?: string;
   /** Expanded input detail (diff / file / patch / JSON fallback), redacted. */
@@ -198,7 +202,24 @@ export interface RunMessageStepView extends RunStepViewBase {
   body: ClampedBody;
 }
 
-export type RunStepView = RunCallStepView | RunMessageStepView;
+/**
+ * Run of consecutive same-tool calls (≥ MIN_GROUP_SIZE, shell excluded),
+ * folded to one line — same shape as web's GroupRow in
+ * AgentTranscriptDialog. `steps` carries the member views for the
+ * expanded list, redacted like every top-level row.
+ */
+export interface RunGroupStepView extends RunStepViewBase {
+  kind: "group";
+  /** Member call views (expanded rendering), redacted. */
+  steps: RunCallStepView[];
+  /** Whole-group duration (first call start → last call end). */
+  durationLabel?: string;
+}
+
+export type RunStepView =
+  | RunCallStepView
+  | RunGroupStepView
+  | RunMessageStepView;
 
 export type DiffLineView = {
   kind: TraceDiffLineKind;
@@ -277,6 +298,11 @@ function offsetLabel(
 /**
  * Build the redacted, render-ready step list from raw task messages.
  *
+ * Rows pass through the same `buildSteps` → `groupSteps` pipeline as web's
+ * AgentTranscriptDialog (RUYI-446): tool pairs fold into calls, and runs of
+ * ≥3 consecutive same-tool non-shell calls fold into one group row, so both
+ * ends read the same transcript the same way.
+ *
  * `runStartMs` (when provided) anchors the per-step clock even if the first
  * event lacks a timestamp; otherwise the earliest event timestamp anchors it.
  */
@@ -285,6 +311,7 @@ export function buildRunStepViews(
   runStartMs?: number,
 ): RunStepView[] {
   const steps: TraceStep[] = buildSteps(items);
+  const rows: TraceRow[] = groupSteps(steps);
   const anchor =
     runStartMs ??
     steps
@@ -297,38 +324,65 @@ export function buildRunStepViews(
         undefined,
       );
 
-  return steps.map((step) => {
-    if (step.kind === "call") {
-      // A paired step shows the call; an orphan result (stream reconnected
-      // mid-flight) still shows its output — never dropped.
-      const event = step.call ?? step.result;
-      const detail = event ? callDetailView(event) : undefined;
-      const output = step.result?.output ?? event?.output;
-      const result = output ? redactedDetailBody(unwrapToolOutput(output)) : undefined;
-      const durationLabel =
-        step.durationMs !== undefined ? formatStepDuration(step.durationMs) : undefined;
+  return rows.map((row) => {
+    if (row.kind === "call") {
+      return callStepView(row, anchor);
+    }
+
+    if (row.kind === "group") {
+      const first = row.steps[0];
+      // Folded-line summary names the first thing it touched, mirroring web's
+      // GroupRow: tool + first member's summary + "N calls" + whole-group
+      // duration. `key` is the first member's seq, same as PC's `row.seq`.
+      const summaryEvent = first ? (first.call ?? first.result) : undefined;
       return {
-        key: String(step.seq),
-        kind: "call" as const,
-        tool: step.tool,
-        label: event ? traceEventLabel(event) : step.tool || "Tool",
-        summary: redactSecrets(event ? traceEventSummary(event) : ""),
-        clockLabel: offsetLabel(step.startedAt, anchor) ?? durationLabel,
-        durationLabel,
-        detail,
-        result,
+        key: String(row.seq),
+        kind: "group" as const,
+        label: row.tool || "Tool",
+        summary: redactSecrets(summaryEvent ? traceEventSummary(summaryEvent) : ""),
+        clockLabel: offsetLabel(row.startedAt, anchor),
+        durationLabel:
+          row.durationMs !== undefined ? formatStepDuration(row.durationMs) : undefined,
+        steps: row.steps.map((step) => callStepView(step, anchor)),
       };
     }
 
     return {
-      key: String(step.seq),
-      kind: step.kind,
-      label: traceEventLabel(step.item),
-      summary: redactSecrets(traceEventSummary(step.item)),
-      clockLabel: offsetLabel(step.startedAt, anchor),
-      body: redactedDetailBody(step.item.content ?? ""),
+      key: String(row.seq),
+      kind: row.kind,
+      label: traceEventLabel(row.item),
+      summary: redactSecrets(traceEventSummary(row.item)),
+      clockLabel: offsetLabel(row.startedAt, anchor),
+      body: redactedDetailBody(row.item.content ?? ""),
     };
   });
+}
+
+/** One call's render-ready view — the single-call branch shared by lone
+ *  rows and group members, so a folded call reads exactly like a flat one. */
+function callStepView(
+  step: TraceCallStep,
+  anchor: number | undefined,
+): RunCallStepView {
+  // A paired step shows the call; an orphan result (stream reconnected
+  // mid-flight) still shows its output — never dropped.
+  const event = step.call ?? step.result;
+  const detail = event ? callDetailView(event) : undefined;
+  const output = step.result?.output ?? event?.output;
+  const result = output ? redactedDetailBody(unwrapToolOutput(output)) : undefined;
+  const durationLabel =
+    step.durationMs !== undefined ? formatStepDuration(step.durationMs) : undefined;
+  return {
+    key: String(step.seq),
+    kind: "call",
+    tool: step.tool,
+    label: event ? traceEventLabel(event) : step.tool || "Tool",
+    summary: redactSecrets(event ? traceEventSummary(event) : ""),
+    clockLabel: offsetLabel(step.startedAt, anchor) ?? durationLabel,
+    durationLabel,
+    detail,
+    result,
+  };
 }
 
 // ─── Outcome summary ────────────────────────────────────────────────────────
