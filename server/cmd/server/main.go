@@ -795,6 +795,21 @@ func main() {
 		}
 	}()
 
+	// RUYI-355: anchor this deployment in every workspace's audit trail so
+	// "what changed around this timestamp" has a queryable answer. Best-effort:
+	// a failed write never blocks serving.
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if wsIDs, err := queries.ListAllWorkspaceIDs(auditCtx); err != nil {
+		slog.Warn("audit: failed to list workspaces for ops.server_started", "error", err)
+	} else {
+		startedEvents := make([]service.Event, 0, len(wsIDs))
+		for _, wsID := range wsIDs {
+			startedEvents = append(startedEvents, service.OpsServerStartedEvent(wsID, version, commit))
+		}
+		service.TryAppendAuditEvents(auditCtx, queries, startedEvents...)
+	}
+	auditCancel()
+
 	go func() {
 		slog.Info("server starting", "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

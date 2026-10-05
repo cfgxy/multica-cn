@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -109,6 +110,15 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		})
 		if err != nil {
 			return empty, err
+		}
+		// Same-tx audit (RUYI-355): workspace teardown ended these runs; the
+		// removed member is the dereferenceable trigger source.
+		if len(result.CancelledTasks) > 0 {
+			if err = service.AppendAuditEvents(ctx, qtx, service.BulkTaskCancelledEvents(ctx, qtx, result.CancelledTasks,
+				service.AuditReasonWorkspaceTeardown, service.AuditActorSystem, pgtype.UUID{}, nil,
+				service.AuditTrigger{Kind: "user", Ref: util.UUIDToString(userID)})...); err != nil {
+				return empty, err
+			}
 		}
 		if err = service.SettleDeliveredDelegatedFailureRecoveries(ctx, qtx, result.CancelledTasks...); err != nil {
 			return empty, err

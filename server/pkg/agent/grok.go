@@ -202,6 +202,13 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	// for Result.Output while retaining the full text for error detection.
 	var deliverable acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -275,154 +282,170 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
-		effectiveModel := strings.TrimSpace(opts.Model)
 
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("grok initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Grok's ACP surface requires an explicit auth handshake between
-		// `initialize` and any session operation: read the advertised
-		// authMethods, pick one, and send `authenticate` before session/new
-		// or session/load. Skipping this makes a real, logged-in CLI reject
-		// every session op (the fake ACP in tests happens to accept them,
-		// which is exactly why this must be asserted in tests too). xAI's
-		// documented preference is the API key when XAI_API_KEY is set and
-		// offered, otherwise the cached login token.
-		// Ref: https://docs.x.ai/build/cli/headless-scripting
-		methodID, err := selectGrokAuthMethod(extractACPAuthMethods(initResult), envHasNonEmpty(childEnv, "XAI_API_KEY"))
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("grok authentication setup failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-		if _, err := c.request(runCtx, "authenticate", map[string]any{
-			"methodId": methodID,
-			"_meta":    map[string]any{"headless": true},
-		}); err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("grok authenticate (%s) failed: %v", methodID, err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-		b.cfg.Logger.Info("grok authenticated", "method", methodID)
-
-		// Drop MCP entries whose remote transport the runtime didn't advertise.
-		// See hermes.go for why sending an unsupported transport tanks session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "grok", b.cfg)
-
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" {
-			result, err := c.request(runCtx, "session/load", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if err != nil {
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("grok session/load failed: %v", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "grok",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var effectiveModel string
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("grok reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "grok")
+			sessionID = c.observedSessionID()
 		} else {
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+			effectiveModel = strings.TrimSpace(opts.Model)
+
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("grok session/new failed: %v", err)
+				finalError = fmt.Sprintf("grok initialize failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
+
+			// Grok's ACP surface requires an explicit auth handshake between
+			// `initialize` and any session operation: read the advertised
+			// authMethods, pick one, and send `authenticate` before session/new
+			// or session/load. Skipping this makes a real, logged-in CLI reject
+			// every session op (the fake ACP in tests happens to accept them,
+			// which is exactly why this must be asserted in tests too). xAI's
+			// documented preference is the API key when XAI_API_KEY is set and
+			// offered, otherwise the cached login token.
+			// Ref: https://docs.x.ai/build/cli/headless-scripting
+			methodID, err := selectGrokAuthMethod(extractACPAuthMethods(initResult), envHasNonEmpty(childEnv, "XAI_API_KEY"))
+			if err != nil {
 				finalStatus = "failed"
-				finalError = "grok session/new returned no session ID"
+				finalError = fmt.Sprintf("grok authentication setup failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
-		}
-
-		c.sessionID = sessionID
-		// Early session pin so a cancelled run still preserves resume pointer.
-		msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
-		b.cfg.Logger.Info("grok session created", "session_id", sessionID)
-
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
+			if _, err := c.request(runCtx, "authenticate", map[string]any{
+				"methodId": methodID,
+				"_meta":    map[string]any{"headless": true},
 			}); err != nil {
-				b.cfg.Logger.Warn("grok set_session_model failed", "error", err, "requested_model", opts.Model)
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("grok could not switch to model %q: %v", opts.Model, err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
-					b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
-						"backend", "grok",
-						"session_id", sessionID,
-					)
-					sessionID = ""
-					resumeRejected = true
-				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
-				}
+				finalError = fmt.Sprintf("grok authenticate (%s) failed: %v", methodID, err)
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			b.cfg.Logger.Info("grok session model set", "model", opts.Model)
-		}
+			b.cfg.Logger.Info("grok authenticated", "method", methodID)
 
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			// Grok also reads AGENTS.md from cwd; inline system prompt covers
-			// Multica runtime brief delivery when file injection is not enough.
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
+			// Drop MCP entries whose remote transport the runtime didn't advertise.
+			// See hermes.go for why sending an unsupported transport tanks session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "grok", b.cfg)
 
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			if opts.ResumeSessionID != "" {
+				result, err := c.request(runCtx, "session/load", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("grok session/load failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
+						"backend", "grok",
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
+					)
+				}
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
+				}
+			} else {
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("grok session/new failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "grok session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
+				}
+			}
+
+			c.sessionID = sessionID
+			// Early session pin so a cancelled run still preserves resume pointer.
+			msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+			b.cfg.Logger.Info("grok session created", "session_id", sessionID)
+
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("grok set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("grok could not switch to model %q: %v", opts.Model, err)
+					if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+						b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "grok",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("grok session model set", "model", opts.Model)
+			}
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				// Grok also reads AGENTS.md from cwd; inline system prompt covers
+				// Multica runtime brief delivery when file injection is not enough.
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
+		}
+		if promptErr != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("grok timed out after %s", timeout)
@@ -431,8 +454,8 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("grok session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("grok session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					b.cfg.Logger.Warn("resumed session not found at prompt time; clearing session id so the daemon retries fresh",
 						"backend", "grok",
 						"session_id", sessionID,
@@ -469,8 +492,7 @@ func (b *grokBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("grok finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "grok")
 
 		// Grok ACP may keep the process — and the stdout/stderr pipes — open
 		// briefly after session/prompt returns. Bound the drain.
