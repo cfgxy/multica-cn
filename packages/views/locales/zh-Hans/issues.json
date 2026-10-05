@@ -551,7 +551,12 @@
       "unresolve_failed": "重新打开失败"
     },
     "anchor_unavailable": "引用的评论不可用或已删除",
-    "anchor_aria": "跳转到 {{author}} 于{{when}}的评论：{{excerpt}}"
+    "anchor_aria": "跳转到 {{author}} 于{{when}}的评论：{{excerpt}}",
+    "quick_replies": {
+      "menu_label": "快速回复",
+      "menu_empty": "空间管理员还没有配置快速回复",
+      "insert_aria": "插入快速回复“{{name}}”"
+    }
   },
   "reply": {
     "placeholder": "回复..."

@@ -127,9 +127,11 @@ describe("tool surface", () => {
         "create_execution_profile",
         "create_issue",
         "create_project",
+        "create_quick_reply",
         "create_squad",
         "delete_comment",
         "delete_execution_profile",
+        "delete_quick_reply",
         "dispatch_agent",
         "edit_comment",
         "get_agent",
@@ -152,6 +154,7 @@ describe("tool surface", () => {
         "list_issue_runs",
         "list_issues",
         "list_projects",
+        "list_quick_replies",
         "list_runs",
         "list_runtimes",
         "list_squads",
@@ -168,6 +171,7 @@ describe("tool surface", () => {
         "update_issue",
         "update_issue_status",
         "update_project",
+        "update_quick_reply",
         "update_squad",
       ].sort(),
     );
@@ -2304,5 +2308,81 @@ describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
     // Management writes declare the no-optimistic-lock reality.
     expect(findTool("update_agent")?.description).toMatch(/no revision field|last-write-wins/i);
     expect(findTool("update_squad")?.description).toMatch(/no revision field|last-write-wins/i);
+  });
+});
+
+describe("quick reply tools (RUYI-435)", () => {
+  function qrClient(): MulticaClient {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const client = {
+      listQuickReplies: async () => ({
+        total: 2,
+        quick_replies: [
+          { id: "qr1", name: "处理合并冲突", content: "我先来处理合并冲突。", position: 0 },
+          { id: "qr2", name: "补充用例", content: "我来补充用例。", position: 1 },
+        ],
+      }),
+      createQuickReply: async (_ws: string, body: Record<string, unknown>) => {
+        calls.push({ method: "createQuickReply", args: [body] });
+        return { id: "qr-new", name: String(body.name), content: String(body.content), position: 2 };
+      },
+      updateQuickReply: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        calls.push({ method: "updateQuickReply", args: [id, body] });
+        return { id, name: "补测试 v2", content: String(body.content ?? "我来补测试。"), position: 1 };
+      },
+      deleteQuickReply: async (_ws: string, id: string) => {
+        calls.push({ method: "deleteQuickReply", args: [id] });
+      },
+    };
+    (client as unknown as { __calls: unknown }).__calls = calls;
+    return client as unknown as MulticaClient;
+  }
+
+  it("list_quick_replies returns the workspace catalog verbatim", async () => {
+    const result = (await findTool("list_quick_replies")!.handler(
+      { workspace: WS },
+      qrClient(),
+    )) as { total: number; quick_replies: Array<{ id: string; name: string }> };
+    expect(result.total).toBe(2);
+    expect(result.quick_replies.map((reply) => reply.id)).toEqual(["qr1", "qr2"]);
+  });
+
+  it("create_quick_reply forwards name and content", async () => {
+    const client = qrClient();
+    const result = (await findTool("create_quick_reply")!.handler(
+      { workspace: WS, name: "推进后续工作", content: "我继续推进这项工作。" },
+      client,
+    )) as { id: string; name: string };
+    expect(result.id).toBe("qr-new");
+    expect(result.name).toBe("推进后续工作");
+    expect(callsOf(client)).toEqual([
+      { method: "createQuickReply", args: [{ name: "推进后续工作", content: "我继续推进这项工作。" }] },
+    ]);
+  });
+
+  it("update_quick_reply sends a PATCH body and refuses an empty one", async () => {
+    const client = qrClient();
+    const result = (await findTool("update_quick_reply")!.handler(
+      { workspace: WS, id: "qr2", content: "我来补齐单元测试。" },
+      client,
+    )) as { id: string; content: string };
+    expect(result.id).toBe("qr2");
+    expect(callsOf(client)).toEqual([
+      { method: "updateQuickReply", args: ["qr2", { content: "我来补齐单元测试。" }] },
+    ]);
+
+    await expect(
+      findTool("update_quick_reply")!.handler({ workspace: WS, id: "qr2" }, client),
+    ).rejects.toThrow(/at least one of/i);
+  });
+
+  it("delete_quick_reply forwards the id and reports deletion", async () => {
+    const client = qrClient();
+    const result = (await findTool("delete_quick_reply")!.handler(
+      { workspace: WS, id: "qr1" },
+      client,
+    )) as { deleted: boolean; id: string };
+    expect(result).toEqual({ deleted: true, id: "qr1" });
+    expect(callsOf(client)).toEqual([{ method: "deleteQuickReply", args: ["qr1"] }]);
   });
 });

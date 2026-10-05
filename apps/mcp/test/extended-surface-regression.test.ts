@@ -97,7 +97,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(54);
+    expect(names).toHaveLength(58);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -118,7 +118,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(54);
+      expect(tools).toHaveLength(58);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -131,7 +131,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(54);
+      expect(Object.keys(hint)).toHaveLength(58);
     } finally {
       await cleanup();
     }

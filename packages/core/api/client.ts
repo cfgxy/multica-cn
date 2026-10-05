@@ -165,6 +165,10 @@ import type {
   CreateQuickActionRequest,
   UpdateQuickActionRequest,
   ListQuickActionsResponse,
+  QuickReply,
+  ListQuickRepliesResponse,
+  CreateQuickReplyRequest,
+  UpdateQuickReplyRequest,
   UpdatePropertyRequest,
   ListPropertiesResponse,
   IssuePropertiesResponse,
@@ -495,6 +499,10 @@ import {
   QuickActionRenderSchema,
   EMPTY_QUICK_ACTION,
   EMPTY_LIST_QUICK_ACTIONS_RESPONSE,
+  QuickReplySchema,
+  ListQuickRepliesResponseSchema,
+  EMPTY_QUICK_REPLY,
+  EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   CommentSchema,
   EMPTY_COMMENT,
   EMPTY_ISSUE_PROPERTY,
@@ -5278,6 +5286,50 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/issue-statuses/${id}`, { method: "DELETE" });
     return parseWithFallback(raw, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, {
       endpoint: "DELETE /api/issue-statuses/{id}",
+    });
+  }
+
+  // Workspace quick replies (RUYI-435). Reads are open to any workspace
+  // member (the composer menu); the writes below are owner/admin only and
+  // answer 403 to plain members.
+  async listQuickReplies(): Promise<ListQuickRepliesResponse> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies`);
+    return parseWithFallback(raw, ListQuickRepliesResponseSchema, EMPTY_LIST_QUICK_REPLIES_RESPONSE, {
+      endpoint: "GET /api/quick-replies",
+    });
+  }
+
+  async createQuickReply(data: CreateQuickReplyRequest): Promise<QuickReply> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickReplySchema, EMPTY_QUICK_REPLY, {
+      endpoint: "POST /api/quick-replies",
+    });
+  }
+
+  async updateQuickReply(id: string, data: UpdateQuickReplyRequest): Promise<QuickReply> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickReplySchema, EMPTY_QUICK_REPLY, {
+      endpoint: "PATCH /api/quick-replies/{id}",
+    });
+  }
+
+  async deleteQuickReply(id: string): Promise<void> {
+    await this.fetch<unknown>(`/api/quick-replies/${id}`, { method: "DELETE" });
+  }
+
+  async reorderQuickReplies(ids: string[]): Promise<ListQuickRepliesResponse> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies/reorder`, {
+      method: "PATCH",
+      body: JSON.stringify({ ids }),
+    });
+    return parseWithFallback(raw, ListQuickRepliesResponseSchema, EMPTY_LIST_QUICK_REPLIES_RESPONSE, {
+      endpoint: "PATCH /api/quick-replies/reorder",
     });
   }
 

@@ -551,7 +551,12 @@
       "unresolve_failed": "스레드 해결을 취소하지 못했습니다"
     },
     "anchor_unavailable": "참조된 댓글을 사용할 수 없거나 삭제되었습니다",
-    "anchor_aria": "{{author}} 님이 {{when}}에 남긴 댓글로 이동: {{excerpt}}"
+    "anchor_aria": "{{author}} 님이 {{when}}에 남긴 댓글로 이동: {{excerpt}}",
+    "quick_replies": {
+      "menu_label": "빠른 답장",
+      "menu_empty": "워크스페이스 관리자가 아직 빠른 답장을 설정하지 않았습니다",
+      "insert_aria": "빠른 답장 \"{{name}}\" 삽입"
+    }
   },
   "reply": {
     "placeholder": "답글 남기기..."

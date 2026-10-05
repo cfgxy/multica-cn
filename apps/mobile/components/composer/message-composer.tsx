@@ -65,6 +65,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
+import {
+  useActionSheet,
+  ActionSheetModal,
+} from "@/components/ui/action-sheet";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useSkillDraftStore } from "@/data/stores/skill-draft-store";
 import { insertSkillReference, serializeSkillReference, skillTriggerFromInput } from "@/lib/skill-reference";
@@ -107,6 +111,13 @@ interface Props {
   mentionPickerPath: Href;
   /** Issue comments may pick a skill; chat keeps its existing input behavior. */
   skillPickerPath?: Href;
+
+  /** Workspace quick replies (RUYI-435). When non-empty the toolbar shows a
+   *  quick-reply button that opens an ActionSheet; the pick APPENDS the
+   *  template body to the draft (never sends) and focuses the input so the
+   *  user can edit before sending. Comment passes the workspace catalog;
+   *  chat doesn't. */
+  quickReplies?: Array<{ id: string; name: string; content: string }>;
 
   /** Attachment upload context — forwarded to `api.uploadFile`. Comment
    *  passes `issueId`; chat omits both (uploads are session-scoped via
@@ -165,6 +176,7 @@ export function MessageComposer({
   onSubmit,
   mentionPickerPath,
   skillPickerPath,
+  quickReplies,
   uploadContext,
   placeholder,
   pillLabel,
@@ -227,6 +239,27 @@ export function MessageComposer({
     },
     [isControlled, controlledOnChange],
   );
+
+  // Quick replies (RUYI-435): the sheet captures the draft text at open
+  // time — both presentations are modal, so the text cannot move between
+  // open and pick — and appends the template body, never replacing it.
+  const quickReplySheet = useActionSheet();
+  const onQuickReplyPress = useCallback(() => {
+    const replies = quickReplies ?? [];
+    if (replies.length === 0) return;
+    const current = text;
+    quickReplySheet.show({
+      title: t("composer.quick_replies_title", "Quick replies"),
+      options: [...replies.map((reply) => reply.name), t("cancel", "Cancel")],
+      cancelButtonIndex: replies.length,
+      onSelect: (index) => {
+        const picked = replies[index];
+        if (!picked) return;
+        setText(current ? `${current}\n\n${picked.content}` : picked.content);
+        focusInputAfterPick();
+      },
+    });
+  }, [quickReplies, quickReplySheet, text, setText, t, focusInputAfterPick]);
 
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
@@ -583,6 +616,19 @@ export function MessageComposer({
               className="h-8 w-8"
             />
           ) : null}
+          {(quickReplies?.length ?? 0) > 0 ? (
+            <IconButton
+              name="text-outline"
+              iconSize={20}
+              onPress={onQuickReplyPress}
+              disabled={toolsDisabled}
+              accessibilityLabel={t(
+                "composer.quick_reply_hint",
+                "Insert a quick reply",
+              )}
+              className="h-8 w-8"
+            />
+          ) : null}
           <IconButton
             name="image-outline"
             iconSize={20}
@@ -623,14 +669,25 @@ export function MessageComposer({
 
   const body = expanded ? expandedContent : pillContent;
 
+  // Android presents the quick-reply sheet through this in-tree modal; iOS
+  // uses ActionSheetIOS from show() and ignores it.
+  const quickReplyModal = <ActionSheetModal {...quickReplySheet.modalProps} />;
+
   // When the parent owns keyboard handling (chat.tsx wraps in
   // KeyboardAvoidingView + SafeAreaView), skip the KeyboardStickyView —
   // double-stacking causes the composer to jump twice on keyboard show.
-  if (!manageKeyboard) return body;
+  if (!manageKeyboard)
+    return (
+      <>
+        {body}
+        {quickReplyModal}
+      </>
+    );
 
   return (
     <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
       {body}
+      {quickReplyModal}
     </KeyboardStickyView>
   );
 }

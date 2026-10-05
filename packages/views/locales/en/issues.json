@@ -567,7 +567,12 @@
       "unresolve_failed": "Failed to unresolve thread"
     },
     "anchor_unavailable": "Referenced comment is unavailable or deleted",
-    "anchor_aria": "Go to {{author}}'s comment from {{when}}: {{excerpt}}"
+    "anchor_aria": "Go to {{author}}'s comment from {{when}}: {{excerpt}}",
+    "quick_replies": {
+      "menu_label": "Quick Replies",
+      "menu_empty": "No quick replies configured by the workspace admins yet",
+      "insert_aria": "Insert quick reply \"{{name}}\""
+    }
   },
   "reply": {
     "placeholder": "Leave a reply..."

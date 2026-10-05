@@ -93,6 +93,7 @@ export interface JsonSchemaProperty {
   };
   minimum?: number;
   maximum?: number;
+  maxLength?: number;
   maxItems?: number;
   pattern?: string;
 }
@@ -3734,6 +3735,113 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         squad_id: squadId,
         note: "Issues assigned to the squad were reassigned to its leader agent; autopilots targeting the squad now target the leader. There is no squad restore.",
       };
+    },
+  },
+  {
+    name: "list_quick_replies",
+    description:
+      "List a workspace's quick replies — the shared comment templates its " +
+      "members pick from the issue composer's quick-reply menu. Read-open to " +
+      "every member; ordered by the admin's arrangement.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const result = await client.listQuickReplies(workspace);
+      return {
+        total: result.total,
+        quick_replies: result.quick_replies.map((reply) => ({
+          id: reply.id,
+          name: reply.name,
+          content: reply.content,
+          position: reply.position,
+          updated_at: reply.updated_at,
+        })),
+      };
+    },
+  },
+  {
+    name: "create_quick_reply",
+    description:
+      "Create a quick reply: a named comment template every member can insert " +
+      "into the issue composer from the quick-reply menu. Requires workspace " +
+      "owner/admin (403 otherwise); names must be unique within the workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: {
+          type: "string",
+          description: "Menu label, 1-64 characters, unique within the workspace.",
+          maxLength: 64,
+        },
+        content: {
+          type: "string",
+          description: "Template body inserted into the composer on selection (never auto-sent), 1-10000 characters.",
+          maxLength: 10000,
+        },
+      },
+      required: ["workspace", "name", "content"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const name = requireString(args, "name");
+      const content = requireString(args, "content");
+      const reply = await client.createQuickReply(workspace, { name, content });
+      return { id: reply.id, name: reply.name, content: reply.content, position: reply.position };
+    },
+  },
+  {
+    name: "update_quick_reply",
+    description:
+      "Update a quick reply's name and/or content (PATCH: omitted fields stay " +
+      "as-is). Requires workspace owner/admin (403 otherwise).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        id: { type: "string", description: "Quick reply UUID, from list_quick_replies." },
+        name: { type: "string", description: "New menu label (1-64 characters).", maxLength: 64 },
+        content: { type: "string", description: "New template body (1-10000 characters).", maxLength: 10000 },
+      },
+      required: ["workspace", "id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const id = requireString(args, "id");
+      const body: { name?: string; content?: string } = {};
+      const name = optionalString(args, "name");
+      const content = optionalString(args, "content");
+      if (name !== undefined) body.name = name;
+      if (content !== undefined) body.content = content;
+      if (Object.keys(body).length === 0) {
+        throw new ToolInputError("update_quick_reply requires at least one of `name` or `content`");
+      }
+      const reply = await client.updateQuickReply(workspace, id, body);
+      return { id: reply.id, name: reply.name, content: reply.content, position: reply.position };
+    },
+  },
+  {
+    name: "delete_quick_reply",
+    description:
+      "Delete a quick reply. It disappears from every member's composer menu " +
+      "immediately. Requires workspace owner/admin (403 otherwise).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        id: { type: "string", description: "Quick reply UUID, from list_quick_replies." },
+      },
+      required: ["workspace", "id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const id = requireString(args, "id");
+      await client.deleteQuickReply(workspace, id);
+      return { deleted: true, id };
     },
   },
 ];

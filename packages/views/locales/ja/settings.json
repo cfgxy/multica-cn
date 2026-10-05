@@ -49,6 +49,42 @@
       "cancelled": "見送り。"
     }
   },
+    "quick_replies": {
+      "title": "クイック返信",
+      "description": "Issue コメント欄のクイック返信メニュー用の共有テンプレート。すべてのメンバーが閲覧でき、編集はワークスペース管理者のみ可能です。選択するとコメント入力欄に挿入され、自動送信はされません。",
+      "loading": "クイック返信を読み込み中…",
+      "add": "クイック返信を作成",
+      "empty_title": "クイック返信はまだありません",
+      "empty_hint": "繰り返し使うコメントの書き方をテンプレートとして保存しましょう — PR コンフリクトの解決、テスト追加、完了確認など。",
+      "reorder_failed": "並び順の保存に失敗しました",
+      "actions": {
+        "open": "\"{{name}}\" のアクションメニューを開く",
+        "edit": "編集",
+        "delete": "削除",
+        "reorder": "ドラッグで \"{{name}}\" の順序を変更"
+      },
+      "editor": {
+        "create_title": "クイック返信を作成",
+        "edit_title": "クイック返信を編集",
+        "hint": "コメント欄で選択すると入力欄に挿入されます。送信前にメンバーが自由に編集できます。",
+        "name": "名前",
+        "name_placeholder": "例：PR コンフリクトの解決",
+        "content": "内容",
+        "content_placeholder": "コメント欄に入力されるテンプレート本文…",
+        "cancel": "キャンセル",
+        "save": "保存",
+        "saving": "保存中…",
+        "save_failed": "保存に失敗しました"
+      },
+      "delete_dialog": {
+        "title": "クイック返信を削除",
+        "description": "\"{{name}}\" を削除しますか？すべてのメンバーのコメントメニューから即座に表示されなくなります。",
+        "cancel": "キャンセル",
+        "confirm": "削除",
+        "failed": "削除に失敗しました"
+      }
+    }
+,
   "quick_actions": {
     "title": "クイックアクション",
     "description": "実行するエージェントとプロンプトを事前に設定し、任意のタスクのサイドバーからワンクリックで実行します。",
@@ -433,6 +469,7 @@
       "members": "メンバー",
       "labels": "ラベル",
       "issue_statuses": "タスクステータス",
+      "quick_replies": "クイック返信",
       "properties": "プロパティ",
       "quick_actions": "クイックアクション",
       "plugins": "Plugins",
