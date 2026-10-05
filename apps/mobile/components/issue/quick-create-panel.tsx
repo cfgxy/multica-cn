@@ -31,6 +31,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -50,6 +51,8 @@ import { AttachmentZone } from "@/components/issue/attachment-zone";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
 import { useFileAttach } from "@/components/editor/use-file-attach";
+import { useSharedIntentStore } from "@/data/stores/shared-intent-store";
+import { assetFromSharedFile } from "@/lib/picked-asset";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
@@ -204,8 +207,22 @@ export function QuickCreatePanel() {
     pickAndUploadFiles,
     removeAttachment,
     retryAttachment,
+    enqueueAssets,
     uploading,
   } = useFileAttach();
+
+  // RUYI-463: 系统分享 → Issue。面板获焦即 one-shot take；目的地是
+  // chat 时 takeFor 返回 null，payload 原样留给 chat 消费。用焦点语义
+  // 而非挂载 effect：落地页 router.replace 进来时 new-issue 屏可能被
+  // 复用（不重挂载），挂载 effect 会漏 take；focus 每次回到本屏都会
+  // 触发，takeFor 幂等保证不重复注入。
+  useFocusEffect(
+    useCallback(() => {
+      const taken = useSharedIntentStore.getState().takeFor("issue");
+      if (!taken) return;
+      enqueueAssets(taken.files.map(assetFromSharedFile));
+    }, [enqueueAssets]),
+  );
 
   // Daemon CLI version gate — same pure checks web runs pre-submit (the
   // server re-validates as the trust boundary). The fields gate only
