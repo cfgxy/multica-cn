@@ -38,6 +38,62 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 写 | `cancel_run` | 按 run id 停止单个 run：执行中转 `cancel_requested` 待运行时确认，排队 run 立即取消（RUYI-292） |
 | 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
 | 派发 | `retry_run` | 重试已完成的 run：同一 agent 以当前配置新建 run 入队（消耗配额）（RUYI-292） |
+| 配置读 | `list_daemon_instances` | 工作区 daemon 实例发现：按 daemon 聚合在线状态与 runtime 清单（RUYI-433） |
+| 配置读 | `get_daemon_instance` | 单个 daemon 实例详情与其全部 runtime（RUYI-433） |
+| 配置读 | `list_runtimes` | runtime 清单：provider/mode/在线状态/可见性/owner（RUYI-433） |
+| 配置读 | `get_runtime` | 单 runtime 详情 + `used_by` 绑定 agent 清单（RUYI-433） |
+| 配置读 | `get_runtime_models` | runtime 模型目录发现：模型清单/不可用项/默认项/每模型 thinking 档位，缓存命中即答、冷目录轮询（RUYI-433） |
+| 配置读 | `get_agent_runtime_config` | 单 agent 执行配置读回：runtime/model/thinking/revision（乐观锁令牌）（RUYI-433） |
+| 配置读 | `list_execution_profiles` | 执行 profile 清单：entry 数/是否激活/revision（RUYI-433） |
+| 配置读 | `get_execution_profile` | 单 profile 完整读回：全部 entry + revision（RUYI-433） |
+| 配置读 | `get_execution_topology` | 执行面一图流：runtime→agent 绑定、daemon 聚合、激活 profile 与逐 agent 漂移标记（RUYI-433） |
+| 配置写 | `update_agent_runtime_config` | 单 agent 执行配置就地修改（runtime/model/thinking），`expected_revision` 乐观锁；目录命中严格拒绝 400 `unsupported_model`、目录未命中放行；不触发 run（RUYI-433） |
+| 配置写 | `bulk_update_agent_runtime_config` | 批量（≤50）按项修改 agent 执行配置：逐项结果/失败分类/逐项 `expected_revision`、`on_error` continue/stop（RUYI-433） |
+| 配置写 | `create_execution_profile` | 创建空 profile（纯存储，不激活）（RUYI-433） |
+| 配置写 | `update_execution_profile` | PATCH profile 元数据 + 可选批量 upsert entry（自动链接 revision），`expected_revision` 乐观锁（RUYI-433） |
+| 配置写 | `delete_execution_profile` | 删除 profile（激活中删除同步清空 workspace 指针；不改 agent 现有配置），`expected_revision` 乐观锁（RUYI-433） |
+| 配置写 | `apply_execution_profile` | 激活 profile：把 entry 落写到各 agent 并指向 workspace 激活指针；支持 `squad`→agent 成员→entry 映射（花名册一次性物化，后续 squad 变动不自动跟随）与 `replace_entries`；逐 agent applied/skipped/failed 结果（RUYI-433） |
+
+执行配置面（RUYI-433）统一读-改-写契约：从 read 工具拿 `revision`，写时以
+`expected_revision` 回传；并发竞争以结构化 `revision_conflict`（带
+`actual_revision`）返回，目录拒绝以 `unsupported_model` 返回。除
+`apply_execution_profile`（激活会把 entry 落写到 agent 的下一次运行）外，其余
+配置工具均不触发 agent run。已知例外：rebind 且未显式给 model 时，服务端保留
+既有「跨族静默清空 model」语义（UI 依赖，本面未改）。
+
+### 执行配置典型调用（RUYI-433）
+
+```jsonc
+// ① 发现：哪个 runtime、有哪些模型与 thinking 档位
+{"tool": "list_runtimes", "arguments": {"workspace": "my-ws"}}
+{"tool": "get_runtime_models", "arguments": {"workspace": "my-ws", "runtime_id": "<uuid>", "wait_ms": 20000}}
+
+// ② 读回当前配置 + revision
+{"tool": "get_agent_runtime_config", "arguments": {"workspace": "my-ws", "agent": "my-agent"}}
+
+// ③ 带乐观锁修改（并发竞争 → code=revision_conflict + actual_revision）
+{"tool": "update_agent_runtime_config", "arguments": {
+  "workspace": "my-ws", "agent": "my-agent",
+  "model": "claude-opus-5", "thinking_level": "high",
+  "expected_revision": 7}}
+
+// ④ 批量（≤50，逐项结果；on_error 默认 continue）
+{"tool": "bulk_update_agent_runtime_config", "arguments": {
+  "workspace": "my-ws", "on_error": "stop",
+  "updates": [
+    {"agent": "alpha", "model": "claude-opus-5", "expected_revision": 3},
+    {"agent": "beta",  "model": "gpt-5.2"}
+  ]}}
+
+// ⑤ squad → profile 一键映射并激活（决策 1 语义：花名册一次性物化为 entry）
+{"tool": "apply_execution_profile", "arguments": {
+  "workspace": "my-ws", "profile_id": "<uuid>",
+  "squad": "dev-squad", "runtime_id": "<uuid>", "model": "claude-opus-5",
+  "thinking_level": null, "replace_entries": true, "expected_revision": 4}}
+
+// ⑥ 拓扑总览（谁在哪个 runtime、跑什么模型、与激活 profile 的漂移）
+{"tool": "get_execution_topology", "arguments": {"workspace": "my-ws"}}
+```
 
 评论编辑/删除（RUYI-352）沿用产品自身的作者-or-管理员权限闸与服务端审计
 （revision + updated_at）；定义内的失败（权限拒绝、revision 冲突、已删除、
