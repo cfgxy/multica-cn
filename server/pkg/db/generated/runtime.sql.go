@@ -211,6 +211,66 @@ func (q *Queries) CountUndrainedTasksByRuntimeOrAgent(ctx context.Context, arg C
 	return count, err
 }
 
+const createManualAgentRuntime = `-- name: CreateManualAgentRuntime :one
+INSERT INTO agent_runtime (
+    workspace_id, name, runtime_mode, provider, status,
+    device_info, metadata, owner_id, profile_id, visibility, registration_source
+) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+`
+
+type CreateManualAgentRuntimeParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Name        string      `json:"name"`
+	Provider    string      `json:"provider"`
+	Metadata    []byte      `json:"metadata"`
+	OwnerID     pgtype.UUID `json:"owner_id"`
+	ProfileID   pgtype.UUID `json:"profile_id"`
+}
+
+// Manual instance registration (RUYI-425 §4.3, stage 3): the ONLY insert
+// path that does not come from a daemon probe. API-backed voice instances
+// have no local binary and no heartbeat, so they are born 'online' (nothing
+// ever flips them offline — setRuntimeOffline is daemon-report-driven) and
+// carry daemon_id NULL, which structurally excludes them from every daemon
+// upsert conflict target ((workspace_id, daemon_id, provider) predicates —
+// NULL never matches). Names deliberately carry no uniqueness constraint:
+// §4.3 allows duplicates (Owner decision 2). visibility is 'public' — §4.3
+// v1 fixes instance visibility to the whole workspace.
+func (q *Queries) CreateManualAgentRuntime(ctx context.Context, arg CreateManualAgentRuntimeParams) (AgentRuntime, error) {
+	row := q.db.QueryRow(ctx, createManualAgentRuntime,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Provider,
+		arg.Metadata,
+		arg.OwnerID,
+		arg.ProfileID,
+	)
+	var i AgentRuntime
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DaemonID,
+		&i.Name,
+		&i.RuntimeMode,
+		&i.Provider,
+		&i.Status,
+		&i.DeviceInfo,
+		&i.Metadata,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OwnerID,
+		&i.LegacyDaemonID,
+		&i.Visibility,
+		&i.ProfileID,
+		&i.CustomName,
+		&i.RegistrationSource,
+		&i.CredentialRef,
+	)
+	return i, err
+}
+
 const deleteAgentRuntime = `-- name: DeleteAgentRuntime :exec
 DELETE FROM agent_runtime WHERE id = $1
 `
