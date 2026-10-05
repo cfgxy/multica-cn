@@ -18,6 +18,7 @@ import { runtimeKeys } from "../runtimes/queries";
 import { labelKeys } from "../labels/queries";
 import { propertyKeys } from "../properties/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
+import { quickReplyKeys } from "../quick-replies/queries";
 import {
   agentTaskSnapshotKeys,
   workspaceWorkingAgentsKeys,
@@ -665,6 +666,10 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
     // 5-minute staleTime — long enough to offer a status the server already
     // archived, or to keep painting its old name.
     qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
+    // Same posture for the quick-reply menu: a missed admin edit would keep
+    // the composer offering a deleted reply (or missing a new one) behind the
+    // 30s staleTime. (RUYI-435)
+    qc.invalidateQueries({ queryKey: quickReplyKeys.all(wsId) });
   }
   // Cross-workspace, so outside the wsId guard: a reconnect may have missed
   // inbox events from any workspace, so re-pull the switcher-dot summary.
@@ -831,6 +836,13 @@ export function useRealtimeSync(
       issue_status: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: issueStatusKeys.all(wsId) });
+      },
+      // The workspace quick-reply menu (RUYI-435). An admin edits it in the
+      // settings page; every composer in the workspace reads from it. Invalidate
+      // only — the event carries no rows, clients re-pull the list wholesale.
+      "quick_reply:changed": () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: quickReplyKeys.all(wsId) });
       },
       pin: () => {
         const wsId = getCurrentWsId();

@@ -2391,6 +2391,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
+			// Workspace quick replies (RUYI-435). Same authorization split as
+			// the status catalog: every member's composer menu reads it,
+			// owner/admin mutates it. The settings tab and the MCP quick-reply
+			// tools hit these same routes — one data source.
+			r.Route("/api/quick-replies", func(r chi.Router) {
+				r.Get("/", h.ListQuickReplies)
+				r.Post("/", h.CreateQuickReply)
+				r.Patch("/reorder", h.ReorderQuickReplies)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetQuickReply)
+					r.Patch("/", h.UpdateQuickReply)
+					r.Delete("/", h.DeleteQuickReply)
+				})
+			})
+
 			// Projects
 			r.Route("/api/projects", func(r chi.Router) {
 				r.Get("/search", h.SearchProjects)

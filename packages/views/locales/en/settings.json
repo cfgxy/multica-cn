@@ -49,6 +49,42 @@
       "cancelled": "Decided not to do."
     }
   },
+    "quick_replies": {
+      "title": "Quick Replies",
+      "description": "Shared templates for the issue comment composer's quick-reply menu. Readable by every member; editable by workspace admins only. Selecting one fills the composer — it never sends on its own.",
+      "loading": "Loading quick replies…",
+      "add": "New quick reply",
+      "empty_title": "No quick replies yet",
+      "empty_hint": "Save recurring comment patterns as templates — conflict resolution, test follow-ups, sign-offs.",
+      "reorder_failed": "Failed to save the new order",
+      "actions": {
+        "open": "Open actions menu for \"{{name}}\"",
+        "edit": "Edit",
+        "delete": "Delete",
+        "reorder": "Drag to reorder \"{{name}}\""
+      },
+      "editor": {
+        "create_title": "New quick reply",
+        "edit_title": "Edit quick reply",
+        "hint": "Selecting this reply in the composer fills the input box; members can edit before sending.",
+        "name": "Name",
+        "name_placeholder": "e.g. Resolve PR conflicts",
+        "content": "Content",
+        "content_placeholder": "Template body filled into the composer…",
+        "cancel": "Cancel",
+        "save": "Save",
+        "saving": "Saving…",
+        "save_failed": "Failed to save"
+      },
+      "delete_dialog": {
+        "title": "Delete quick reply",
+        "description": "Delete \"{{name}}\"? It disappears from every member's composer menu immediately.",
+        "cancel": "Cancel",
+        "confirm": "Delete",
+        "failed": "Failed to delete"
+      }
+    }
+,
   "quick_actions": {
     "title": "Quick Actions",
     "description": "Preset an agent and a prompt once, then trigger it from any issue's sidebar with a single click.",
@@ -433,6 +469,7 @@
       "members": "Members",
       "labels": "Labels",
       "issue_statuses": "Issue Statuses",
+      "quick_replies": "Quick Replies",
       "properties": "Properties",
       "quick_actions": "Quick Actions",
       "plugins": "Plugins",

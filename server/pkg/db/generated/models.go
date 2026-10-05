@@ -1658,6 +1658,18 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Workspace-level quick reply templates for the issue comment composer (RUYI-435). Managed by workspace owner/admin via the Web settings tab or the MCP quick-reply tools; read by every member. Selecting one fills the composer without sending. Seeded per workspace by server/internal/quickreply.Ensure.
+type QuickReply struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Name        string      `json:"name"`
+	Content     string      `json:"content"`
+	// Display order, ascending. Fractional values let a new entry slot between neighbours without rewriting them.
+	Position  float64            `json:"position"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 // Daily retrospective config per workspace (RUYI-305 E3): enabled flag, done/in_review scan scope, window days. Owner-writable.
 type RetrospectiveConfig struct {
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
