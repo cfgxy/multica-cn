@@ -82,6 +82,8 @@ import {
 } from "@/lib/mention-serialize";
 import { mentionTriggerFromInput } from "@/lib/mention-trigger";
 import { useFileAttach } from "@/components/editor/use-file-attach";
+import { assetFromSharedFile } from "@/lib/picked-asset";
+import type { SharedFile } from "@/lib/share-payload";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
 import { useT } from "@/lib/use-t";
@@ -170,6 +172,14 @@ interface Props {
    *  apply them. Comment's parent does NOT handle keyboard, so the
    *  composer keeps the default `true`. */
   manageKeyboard?: boolean;
+
+  /** RUYI-463: 系统分享带来的文件。非空时 composer 在 effect 里经
+   *  `assetFromSharedFile` 转成 PickedAsset 走既有 `enqueueAssets` 上传
+   *  通道（沿用尺寸/类型上限），本组件不感知 shared-intent-store ——
+   *  父层（chat.tsx / 建单面板）take 后传入。 */
+  incomingSharedFiles?: SharedFile[];
+  /** 分享文件入队完成后回调；父层借此清空 `incomingSharedFiles` 闭环。 */
+  onIncomingSharedFilesConsumed?: () => void;
 }
 
 export function MessageComposer({
@@ -192,6 +202,8 @@ export function MessageComposer({
   disabledReason,
   requireVisibleText = false,
   manageKeyboard = true,
+  incomingSharedFiles,
+  onIncomingSharedFilesConsumed,
 }: Props) {
   const { t } = useT("common");
   const { colorScheme } = useColorScheme();
@@ -212,12 +224,35 @@ export function MessageComposer({
     retryAttachment,
     clearAttachments,
     restoreAttachments,
+    enqueueAssets,
     uploading,
   } = useFileAttach({
     uploadContext,
     alertOnError: false,
     onAttachmentsEnqueued: focusInputAfterPick,
   });
+
+  // RUYI-463: 系统分享的文件一次性入队（沿用 pick 工具栏同一条上传
+  // 通道与上限）。ref 记录已处理引用——父层回调若是内联箭头函数，
+  // 其身份随渲染变化会把 effect 再触发一遍导致重复入队。
+  const consumedSharedRef = useRef<SharedFile[] | null>(null);
+  useEffect(() => {
+    if (!incomingSharedFiles || incomingSharedFiles.length === 0) return;
+    if (consumedSharedRef.current === incomingSharedFiles) return;
+    consumedSharedRef.current = incomingSharedFiles;
+    enqueueAssets(incomingSharedFiles.map(assetFromSharedFile));
+    onIncomingSharedFilesConsumed?.();
+  }, [incomingSharedFiles, onIncomingSharedFilesConsumed, enqueueAssets]);
+
+  // RUYI-463: 附件区只渲染在展开卡片里，pill 折叠态看不到。入队后的
+  // 展开原本靠 focusInputAfterPick 的键盘 focus，但分享注入发生在导航
+  // 转场窗口里，rAF 聚焦会被转场吞掉（冷启动实测芯片进了折叠 composer
+  // 而不可见）。附件非空即展开；onBlur 的收起条件要求 attachments 为
+  // 空，不会把带附件的展开态折回去。
+  const attachmentCount = attachments.length;
+  useEffect(() => {
+    if (attachmentCount > 0) setExpanded(true);
+  }, [attachmentCount]);
 
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
   // passes `value`/`onChangeText` for cross-session draft persistence;
