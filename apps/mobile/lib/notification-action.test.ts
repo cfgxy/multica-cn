@@ -10,6 +10,7 @@ function createHarness() {
   let serverConfirmation: (() => Promise<void>) | undefined;
   let workspaceRetry: (() => Promise<void>) | undefined;
   let serverRetry: (() => Promise<void>) | undefined;
+  let serverUnreachableRetry: (() => Promise<void>) | undefined;
 
   const handlers: NotificationActionHandlers = {
     navigate: vi.fn(),
@@ -19,6 +20,7 @@ function createHarness() {
       slug: "acme",
       previousServerId: "server-a",
     })),
+    probeTargetServer: vi.fn(async () => true),
     requestWorkspaceConfirmation: vi.fn((_action, onConfirm) => {
       workspaceConfirmation = onConfirm;
     }),
@@ -26,6 +28,9 @@ function createHarness() {
       serverConfirmation = onConfirm;
     }),
     showUnavailable: vi.fn(),
+    showServerUnreachable: vi.fn((_action, onRetry) => {
+      serverUnreachableRetry = onRetry;
+    }),
     showWorkspaceFailed: vi.fn((_error, onRetry) => {
       workspaceRetry = onRetry;
     }),
@@ -41,6 +46,7 @@ function createHarness() {
     serverConfirmation: () => serverConfirmation,
     workspaceRetry: () => workspaceRetry,
     serverRetry: () => serverRetry,
+    serverUnreachableRetry: () => serverUnreachableRetry,
   };
 }
 
@@ -171,6 +177,94 @@ describe("executeNotificationAction", () => {
       "replace",
       "/select-workspace",
     );
+  });
+
+  it("probes the target server before offering the switch confirmation", async () => {
+    const harness = createHarness();
+
+    await executeNotificationAction(
+      {
+        kind: "confirm-server",
+        route: "/other/issue/issue-1",
+        serverId: "server-b",
+        workspaceSlug: "other",
+        serverLabel: "Server B",
+        workspaceLabel: "Other",
+      },
+      harness.handlers,
+    );
+
+    expect(harness.handlers.probeTargetServer).toHaveBeenCalledWith("server-b");
+    expect(harness.handlers.requestServerConfirmation).toHaveBeenCalledOnce();
+    expect(harness.handlers.switchServer).not.toHaveBeenCalled();
+  });
+
+  it("does not offer the switch confirmation when the target server is unreachable", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.handlers.probeTargetServer).mockResolvedValue(false);
+
+    await executeNotificationAction(
+      {
+        kind: "confirm-server",
+        route: "/other/issue/issue-1",
+        serverId: "server-b",
+        workspaceSlug: "other",
+        serverLabel: "Server B",
+        workspaceLabel: "Other",
+      },
+      harness.handlers,
+    );
+
+    expect(harness.handlers.showServerUnreachable).toHaveBeenCalledOnce();
+    expect(harness.handlers.onRetryAvailable).toHaveBeenCalledOnce();
+    expect(harness.handlers.requestServerConfirmation).not.toHaveBeenCalled();
+    expect(harness.handlers.switchServer).not.toHaveBeenCalled();
+    expect(harness.handlers.navigate).not.toHaveBeenCalled();
+  });
+
+  it("reaches the confirmation dialog through the explicit retry after a failed probe", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.handlers.probeTargetServer)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    await executeNotificationAction(
+      {
+        kind: "confirm-server",
+        route: "/other/issue/issue-1",
+        serverId: "server-b",
+        workspaceSlug: "other",
+        serverLabel: "Server B",
+        workspaceLabel: "Other",
+      },
+      harness.handlers,
+    );
+    await harness.serverUnreachableRetry()?.();
+
+    expect(harness.handlers.showServerUnreachable).toHaveBeenCalledOnce();
+    expect(harness.handlers.requestServerConfirmation).toHaveBeenCalledOnce();
+  });
+
+  it("treats a probe failure as an unreachable server", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.handlers.probeTargetServer).mockRejectedValue(
+      new Error("probe crashed"),
+    );
+
+    await executeNotificationAction(
+      {
+        kind: "confirm-server",
+        route: "/other/issue/issue-1",
+        serverId: "server-b",
+        workspaceSlug: "other",
+        serverLabel: "Server B",
+        workspaceLabel: "Other",
+      },
+      harness.handlers,
+    );
+
+    expect(harness.handlers.showServerUnreachable).toHaveBeenCalledOnce();
+    expect(harness.handlers.requestServerConfirmation).not.toHaveBeenCalled();
   });
 
   it("does not switch or navigate when a server confirmation is cancelled", async () => {
