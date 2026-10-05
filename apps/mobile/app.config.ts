@@ -108,6 +108,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       "./plugins/with-android-release-signing",
       // Keep fbjni aligned with RN 0.83.6; shiki-engine requests an unbounded +.
       "./plugins/with-react-native-fbjni",
+      // RUYI-463: Android 分享入口 —— 给 .MainActivity 追加
+      // ACTION_SEND / ACTION_SEND_MULTIPLE intent-filter（幂等）。android/
+      // 是 gitignore 的 prebuild 产物，原生配置只能走 config plugin。
+      "./plugins/with-android-share-intent",
     ],
     extra: {
       APP_ENV: env,
