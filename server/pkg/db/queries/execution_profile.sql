@@ -39,17 +39,44 @@ GROUP BY profile_id;
 
 -- name: UpdateExecutionProfile :one
 -- Partial update via COALESCE: NULL args leave the column unchanged.
+-- expected_revision (RUYI-433): when set, the write only lands if the profile
+-- still carries that revision; a stale value yields 0 rows and the handler
+-- answers 409 revision_conflict with the actual revision. Same contract as
+-- UpdateProject / UpdateAgent.
 UPDATE execution_profile
 SET name        = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
-    updated_at  = now()
+    updated_at  = now(),
+    revision    = revision + 1
 WHERE id = @id AND workspace_id = @workspace_id
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
 RETURNING *;
 
+-- name: TouchExecutionProfileRevision :execrows
+-- Guarded revision bump for entry writes (RUYI-433): runs in the SAME
+-- transaction as Upsert/DeleteExecutionProfileEntry so a client holding
+-- expected_revision also sees member changes invalidate its token, and so a
+-- stale write is refused before it touches the entry set. 0 rows means the
+-- guard missed (stale revision) or the profile vanished between the
+-- handler's existence check and this write; the handler re-reads to answer
+-- 409 revision_conflict or 404.
+UPDATE execution_profile
+SET revision   = revision + 1,
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint);
+
 -- name: MarkExecutionProfileActivated :one
+-- Activation is a material profile state change (last_activated_at), so it
+-- bumps the revision: a client that read the profile before someone else
+-- activated it must not overwrite the post-activation row believing the
+-- content it saw is still current (RUYI-433). Not guarded on
+-- expected_revision — the FOR UPDATE lock above already serializes
+-- activations against each other.
 UPDATE execution_profile
 SET last_activated_at = now(),
-    updated_at        = now()
+    updated_at        = now(),
+    revision          = revision + 1
 WHERE id = $1 AND workspace_id = $2
 RETURNING *;
 
@@ -116,6 +143,9 @@ SET runtime_id     = @runtime_id,
         WHEN @thinking_level_present::boolean THEN sqlc.narg('thinking_level')
         ELSE thinking_level
     END,
-    updated_at     = now()
+    updated_at     = now(),
+    -- Activation moves the execution config, so it must invalidate any
+    -- expected_revision a client read before it (RUYI-433).
+    revision       = revision + 1
 WHERE id = @id AND workspace_id = @workspace_id AND archived_at IS NULL
 RETURNING *;

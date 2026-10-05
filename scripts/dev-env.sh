@@ -7,6 +7,7 @@
 #   scripts/dev-env.sh dev1 handoff --to qa    # dev -> QA verification handover
 #   scripts/dev-env.sh dev1 status             # what is running, and whose
 #   scripts/dev-env.sh list                    # every slot on this machine
+#   scripts/dev-env.sh audit                   # bypass sweep: stray multica_% dbs + servers
 #   scripts/dev-env.sh dev1 down               # stop the processes, keep the data
 #   scripts/dev-env.sh dev1 orphans            # leftover procs/ports/worktrees
 #   scripts/dev-env.sh dev1 destroy            # stop, then drop slot db + account
@@ -56,8 +57,8 @@ QA_TTL_HOURS="${MULTICA_DEV_QA_TTL_HOURS:-}"
 
 DEV_TMPDIR="${MULTICA_DEV_TMPDIR:-$HOME/.multica/dev-tmp}"
 
-ALL_COMPONENTS="api web daemon desktop"
-DEFAULT_COMPONENTS="api web"
+ALL_COMPONENTS="api web mcp daemon desktop"
+DEFAULT_COMPONENTS="api web mcp"
 
 # The platform's main database and role on the shared instance. Slot tools
 # never construct statements naming these; the constants back the assertions
@@ -193,20 +194,21 @@ render_slots_json() {
   printf '      "api": {"memory_mb": 768},\n'
   printf '      "web": {"memory_mb": 8192},\n'
   printf '      "daemon": {"memory_mb": 256},\n'
-  printf '      "desktop": {"memory_mb": 256}\n'
+  printf '      "desktop": {"memory_mb": 256},\n'
+  printf '      "mcp": {"memory_mb": 256}\n'
   printf '    },\n'
   printf '    "shared_postgres": {"memory": "2g", "cpus": 4}\n'
   printf '  },\n'
   printf '  "slots": [\n'
-  local first=1 n name row frontend renderer cpuset
+  local first=1 n name row frontend renderer mcp cpuset
   for n in 1 2; do
     name="dev$n"
     [ "$first" = 1 ] || printf ',\n'
     first=0
-    row=$((21800 + n)); frontend=$((13800 + n)); renderer=$((57800 + n))
+    row=$((21800 + n)); frontend=$((13800 + n)); renderer=$((57800 + n)); mcp=$((13000 + n))
     cpuset="$(( (n - 1) * 4 ))-$(( n * 4 - 1 ))"
-    printf '    {"name": "%s", "index": %s, "cpuset": "%s", "backend_port": %s, "frontend_port": %s, "desktop_renderer_port": %s, "database": "multica_%s", "account": "%s_app", "profile": "%s", "worktree_root": "~/.multica/slots/%s/worktrees", "workspaces_root": "~/.multica/slots/%s/workspaces", "desktop_app_suffix": "%s"}' \
-      "$name" "$n" "$cpuset" "$row" "$frontend" "$renderer" "$name" "$name" "$name" "$name" "$name" "$name"
+    printf '    {"name": "%s", "index": %s, "cpuset": "%s", "backend_port": %s, "frontend_port": %s, "desktop_renderer_port": %s, "mcp_port": %s, "database": "multica_%s", "account": "%s_app", "profile": "%s", "worktree_root": "~/.multica/slots/%s/worktrees", "workspaces_root": "~/.multica/slots/%s/workspaces", "desktop_app_suffix": "%s"}' \
+      "$name" "$n" "$cpuset" "$row" "$frontend" "$renderer" "$mcp" "$name" "$name" "$name" "$name" "$name" "$name"
   done
   printf '\n  ]\n}\n'
 }
@@ -244,6 +246,7 @@ require_slot() {
   SLOT_BACKEND_PORT="$(slot_field "$slot" backend_port)"
   SLOT_FRONTEND_PORT="$(slot_field "$slot" frontend_port)"
   SLOT_RENDERER_PORT="$(slot_field "$slot" desktop_renderer_port)"
+  SLOT_MCP_PORT="$(slot_field "$slot" mcp_port)"
   SLOT_PROFILE="$(slot_field "$slot" profile)"
   # ~/-style roots from slots.json follow MULTICA_SLOTS_HOME: everything a slot
   # owns lives under one root, so an overridden home moves the worktrees and
@@ -291,6 +294,10 @@ component_resource_env() {
       ;;
     web)
       mb="$(budget_field components.web.memory_mb)" || return 0
+      printf 'NODE_OPTIONS=--max-old-space-size=%s\n' "$mb"
+      ;;
+    mcp)
+      mb="$(budget_field components.mcp.memory_mb)" || return 0
       printf 'NODE_OPTIONS=--max-old-space-size=%s\n' "$mb"
       ;;
     daemon)
@@ -555,12 +562,31 @@ cmd_lock_release() {
   if [ "$force" != 1 ]; then
     local status
     if status="$(issue_status "$issue")"; then
-      [ "$status" != "in_progress" ] || die "Issue $issue is still in_progress; its slot cannot be released. Re-run with --force only after the issue is closed."
+      # A qa-phase holder closes its verification window the moment the check
+      # ends — that is the whole point of the phase (dual-server test windows
+      # hold BOTH slots for one issue, RUYI-431); waiting for issue closure
+      # would pin the second slot for the issue's whole remaining lifetime.
+      # The dev phase keeps the closure-only rule.
+      if [ "$status" = "in_progress" ] && [ "$(lease_phase)" != "qa" ]; then
+        die "Issue $issue is still in_progress; its slot cannot be released. Re-run with --force only after the issue is closed."
+      fi
     else
       die "Cannot verify the status of issue $issue (multica CLI unavailable or issue unknown); refusing to release. Re-run with --force to override."
     fi
   fi
   rm -f "$SLOT_LOCK_FILE"
+  # Closing the window clears the tenancy, not just the lease file: the
+  # manifest's ISSUE/PHASE/TTL fields are the fallback every gate, takeover
+  # and display reads once the lock file is gone, so leaving the old holder
+  # behind kept released slots "held by issue" for everyone else (RUYI-431).
+  if [ -f "$SLOT_MANIFEST" ]; then
+    load_manifest || true
+    MANIFEST_ISSUE=""
+    PHASE="dev"
+    TTL_HOURS=0
+    EXPIRES_AT=""
+    save_manifest
+  fi
   ok "released lease on $SLOT (was: $issue)"
 }
 
@@ -573,6 +599,14 @@ cmd_lock_recover() {
   if [ -z "$issue" ] || [ "$issue" = "$owner" ]; then
     OWNER_ROLE="agent"
     write_lease "$owner" "$(lease_phase)"
+    # Adopt the manifest too, or recovering a released slot would hold the
+    # lease file while the manifest still reads free — the mirror image of
+    # the residue this verb exists to clean up (RUYI-431).
+    MANIFEST_ISSUE="$owner"
+    if [ -f "$SLOT_MANIFEST" ]; then
+      load_manifest || true
+      save_manifest
+    fi
     ok "lease on $SLOT is now held by $owner"
     return 0
   fi
@@ -665,8 +699,33 @@ generate_slot_env() {
     printf 'MULTICA_DEV_EMAIL=%s\n' "$DEV_EMAIL"
     printf 'WORKSPACE_NAME=%s\n' "$WORKSPACE_NAME"
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
+    printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
+    printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
+}
+
+# `use` and `up` both funnel through here. A missing env file is generated
+# fresh; a file written before MCP joined the slot facts (RUYI-428) is
+# upgraded in place by appending the missing MCP lines — never regenerated,
+# so the stored POSTGRES_PASSWORD, the one the shared instance's slot role was
+# provisioned with, survives the upgrade untouched.
+ensure_slot_env() {
+  local password="$1" appended=""
+  if [ ! -f "$SLOT_ENV_FILE" ]; then
+    generate_slot_env "$password"
+    ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
+    return 0
+  fi
+  if ! grep -q '^MCP_URL=' "$SLOT_ENV_FILE"; then
+    printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
+    appended="MCP_URL"
+  fi
+  if ! grep -q '^MULTICA_MCP_PORT=' "$SLOT_ENV_FILE"; then
+    printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
+    appended="${appended:+$appended }MULTICA_MCP_PORT"
+  fi
+  [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
 
 env_file_field() {
@@ -1080,6 +1139,48 @@ start_web() {
   die "web never came up. Log: $(log_file web)"
 }
 
+# The MCP Node process (apps/mcp) behind the dev web's /api/mcp rewrite
+# (RUYI-428). Stateless: every request carries its own PAT, so startup needs
+# no token — only the backend REST origin, which the mcp-dev Makefile target
+# passes as --server-url (overriding the daemon-shaped ws://.../ws
+# MULTICA_SERVER_URL in the slot env) and the public site root for 401
+# resource_metadata (MULTICA_APP_URL, already in the slot env). Loopback-only,
+# on the slot's fixed mcp_port from slots.json.
+start_mcp() {
+  local waited=0 listener
+  if curl -sf --max-time 3 "http://localhost:${SLOT_MCP_PORT}/healthz" >/dev/null 2>&1 \
+    && listener_belongs_to_component mcp "$SLOT_MCP_PORT"; then
+    ok "mcp already running on :$SLOT_MCP_PORT"
+    return 0
+  fi
+  if ! port_free "$SLOT_MCP_PORT"; then
+    die "Port $SLOT_MCP_PORT is busy: $(describe_port_owner "$SLOT_MCP_PORT"). Stop the other process first."
+  fi
+
+  (cd "$DIR" && "${CLEAN_ENV[@]}" pnpm --filter @multica/mcp build) > "$(log_file mcp-build)" 2>&1 \
+    || { tail -20 "$(log_file mcp-build)" | sed 's/^/    /' >&2; die "mcp build failed. Log: $(log_file mcp-build)"; }
+  resource_env_args mcp
+  launch_detached mcp env "${RE_ARGS[@]}" make -C "$DIR" -s mcp-dev ENV_FILE="$SLOT_ENV_FILE"
+  info "mcp launching (pid $(cat "$(pid_file mcp)")), log: $(log_file mcp)"
+
+  while [ "$waited" -lt 60 ]; do
+    if curl -sf --max-time 3 "http://localhost:${SLOT_MCP_PORT}/healthz" >/dev/null 2>&1; then
+      listener="$(port_listener_pid "$SLOT_MCP_PORT")"
+      if ! listener_belongs_to_component mcp "$SLOT_MCP_PORT"; then
+        stop_component mcp
+        die "MCP on :$SLOT_MCP_PORT is not owned by the process group this slot launched."
+      fi
+      record_listener_pid mcp "$SLOT_MCP_PORT"
+      ok "mcp serving http://localhost:$SLOT_MCP_PORT (pid ${listener:-?})"
+      return 0
+    fi
+    component_pid mcp >/dev/null || { tail -20 "$(log_file mcp)" | sed 's/^/    /' >&2; die "mcp exited during startup. Log: $(log_file mcp)"; }
+    sleep 2
+    waited=$((waited + 2))
+  done
+  die "mcp never came up. Log: $(log_file mcp)"
+}
+
 # send-code once, verify-code once. Repeated verify attempts lock the code out
 # and start returning 400 even when it is correct, so retrying is self-defeating.
 write_profile_config() {
@@ -1308,6 +1409,7 @@ stop_component() {
     api) port="$SLOT_BACKEND_PORT" ;;
     web) port="$SLOT_FRONTEND_PORT" ;;
     desktop) port="$SLOT_RENDERER_PORT" ;;
+    mcp) port="$SLOT_MCP_PORT" ;;
   esac
 
   recorded_listener="$(cat "$(listener_pid_file "$name")" 2>/dev/null || true)"
@@ -1453,6 +1555,16 @@ component_state() {
         printf 'stopped|http://localhost:%s|' "$SLOT_FRONTEND_PORT"
       fi
       ;;
+    mcp)
+      if curl -sf --max-time 3 "http://localhost:${SLOT_MCP_PORT}/healthz" >/dev/null 2>&1 \
+        && listener_belongs_to_component mcp "$SLOT_MCP_PORT"; then
+        printf 'running|http://localhost:%s|pid %s' "$SLOT_MCP_PORT" "$(port_listener_pid "$SLOT_MCP_PORT")"
+      elif [ -n "$(port_listener_pid "$SLOT_MCP_PORT")" ]; then
+        printf 'mismatch|http://localhost:%s|listener is not owned by this slot' "$SLOT_MCP_PORT"
+      else
+        printf 'stopped|http://localhost:%s|' "$SLOT_MCP_PORT"
+      fi
+      ;;
     daemon)
       local status state
       if [ -x "${MULTICA_BIN:-}" ]; then
@@ -1541,6 +1653,7 @@ ${C_GREEN}✓ Slot ${SLOT} ready.${C_OFF}
   ${entrypoint}
   Sign in     ${DEV_EMAIL}  ·  code ${DEV_CODE_DEFAULT}
   Backend     http://localhost:${SLOT_BACKEND_PORT}   (GET /health reports pid + commit + started_at)
+  MCP         http://localhost:${SLOT_MCP_PORT}  (web /api/mcp → here; loopback only)
   Database    ${SLOT_DB} @ ${SLOT_PG_ENDPOINT} (account ${SLOT_ACCOUNT})
   Commit      $(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
   Slot        ${SLOT}$( [ "${TTL_HOURS:-0}" != 0 ] && printf ' (expires %s)' "$EXPIRES_AT" )
@@ -1577,6 +1690,11 @@ manifest_env_field() {
   [ -f "$SLOT_MANIFEST" ] || return 0
   local issue
   issue="$(sed -n 's/^ISSUE=//p' "$SLOT_MANIFEST" | head -1)"
+  # write_manifest_value %q-quotes; a cleared tenancy lands as '' — read it
+  # back as empty, or a released slot would still look held (RUYI-431).
+  case "$issue" in
+    "''" | '""') issue="" ;;
+  esac
   printf '%s' "$issue"
 }
 
@@ -1666,11 +1784,8 @@ cmd_use() {
   fi
 
   DESKTOP_ENV_FILE="$DIR/apps/desktop/.env.development.local"
-  if [ ! -f "$SLOT_ENV_FILE" ]; then
-    mkdir -p "$SLOT_DIR"
-    generate_slot_env "$(random_hex 16)"
-    ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
-  fi
+  mkdir -p "$SLOT_DIR"
+  ensure_slot_env "$(random_hex 16)"
   save_manifest
   bind_paths
   ok "slot $SLOT now runs $CODE_SOURCE $CODE_SHA from $DIR"
@@ -1701,7 +1816,7 @@ cmd_up() {
   for comp in $requested; do
     case " $ALL_COMPONENTS " in *" $comp "*) ;; *) die "Unknown component '$comp'. Valid: $ALL_COMPONENTS" ;; esac
   done
-  # web, daemon and desktop are all clients of the backend; selecting one
+  # web, daemon, desktop and mcp are all clients of the backend; selecting one
   # without api would produce an environment that cannot serve a single request.
   case " $requested " in *" api "*) ;; *) requested="api $requested" ;; esac
   COMPONENTS="$requested"
@@ -1715,7 +1830,7 @@ cmd_up() {
   local missing=() tool needed="node go git curl docker"
   # pnpm is only required by the components that actually build JavaScript, so
   # `up C=api` works on a checkout that has never run an install.
-  if component_selected web || component_selected desktop; then needed="$needed pnpm"; fi
+  if component_selected web || component_selected desktop || component_selected mcp; then needed="$needed pnpm"; fi
   for tool in $needed; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
@@ -1750,10 +1865,7 @@ Start the rest with 'up --components api,web', or run 'up --components daemon' f
 
   step "Environment"
   mkdir -p "$SLOT_DIR"
-  if [ ! -f "$SLOT_ENV_FILE" ]; then
-    generate_slot_env "$(random_hex 16)"
-    ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
-  fi
+  ensure_slot_env "$(random_hex 16)"
   preflight_manifest_consistency
   preflight_env_identity
   save_manifest
@@ -1770,7 +1882,7 @@ Start the rest with 'up --components api,web', or run 'up --components daemon' f
   migrate_database
   ok "$SLOT_DB reachable through the slot account and migrated"
 
-  if [ ! -d "$DIR/node_modules" ] && { component_selected web || component_selected desktop; }; then
+  if [ ! -d "$DIR/node_modules" ] && { component_selected web || component_selected desktop || component_selected mcp; }; then
     step "Dependencies"
     (cd "$DIR" && pnpm install) || die "pnpm install failed."
   fi
@@ -1778,6 +1890,7 @@ Start the rest with 'up --components api,web', or run 'up --components daemon' f
   step "Components: $COMPONENTS"
   component_selected api && start_api
   component_selected web && start_web
+  component_selected mcp && start_mcp
   component_selected daemon && start_daemon
   component_selected desktop && start_desktop
 
@@ -2112,7 +2225,7 @@ slot_orphans() {
 
   # 3) the slot's fixed ports must be free.
   local port
-  for port in "$SLOT_BACKEND_PORT" "$SLOT_FRONTEND_PORT" "$SLOT_RENDERER_PORT"; do
+  for port in "$SLOT_BACKEND_PORT" "$SLOT_FRONTEND_PORT" "$SLOT_RENDERER_PORT" "$SLOT_MCP_PORT"; do
     while read -r pid; do
       [ -n "$pid" ] || continue
       comm="$(cat "/proc/$pid/comm" 2>/dev/null || printf '?')"
@@ -2307,6 +2420,140 @@ cmd_main_db() {
   info "this entry is read-only; backups and ACL work belong to the shared-face tooling"
 }
 
+# --- audit (RUYI-431): read-only bypass detection ----------------------------
+# The RUYI-415 lesson: QA built a second server against a scratch multica_*
+# database on the shared instance and nothing reported it. `audit` sweeps for
+# exactly that shape and never modifies anything: (1) every multica_% database
+# on the shared instance that is neither the protected main db nor a slot's
+# fixed database; (2) TCP listeners outside the registered ports that look
+# like Multica servers — their DATABASE_URL names an unregistered multica_%
+# database, their cwd sits under the legacy QA root or the slot home, or they
+# are a cmd/api build. Slot-tagged processes and `multica daemon` are the
+# slot model's own and never reported. Exit 1 means findings exist.
+audit_findings=()
+
+audit_finding() { audit_findings+=("$1"$'\t'"$2"); }
+
+audit_registry() { # registered ports + databases, one line each: port|db TAB value
+  node -e '
+    const fs = require("fs");
+    const facts = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const sp = facts.shared_postgres || {};
+    for (const db of sp.protected_databases || []) process.stdout.write("db\t" + db + "\n");
+    const endpoint = String(sp.endpoint || "").replace(/.*:/, "");
+    if (endpoint) process.stdout.write("port\t" + endpoint + "\n");
+    for (const s of facts.slots || []) {
+      for (const key of ["backend_port", "frontend_port", "desktop_renderer_port", "mcp_port"]) {
+        if (s[key] !== undefined) process.stdout.write("port\t" + s[key] + "\n");
+      }
+      if (s.database) process.stdout.write("db\t" + s.database + "\n");
+    }
+  ' "$SLOTS_FILE"
+}
+
+audit_qa_root() { printf '%s' "${MULTICA_QA_ROOT:-$HOME/.multica/qa}"; }
+
+audit_db_finding() {
+  local reg_dbs="$1" name size
+  while IFS='|' read -r name size; do
+    [ -n "$name" ] || continue
+    printf '%s\n' "$reg_dbs" | grep -Fxq "$name" && continue
+    audit_finding "unregistered-database" "$name ($size)"
+  done
+}
+
+audit_bypass_finding() { # line from ss -ltnpH, reg_ports reg_dbs
+  local line="$1" reg_ports="$2" reg_dbs="$3"
+  local addr port pid cmd cwd db_url db_in_url detail reason
+  addr="$(printf '%s\n' "$line" | awk '{print $4}')"
+  port="${addr##*:}"
+  case "$port" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s\n' "$reg_ports" | grep -Fxq "$port" && return 0
+  pid="$(printf '%s\n' "$line" | sed -n 's/.*pid=\([0-9]\{1,\}\).*/\1/p' | head -1)"
+  [ -n "$pid" ] || return 0 # no owner visible: report-only verb, cannot judge
+  [ -r "/proc/$pid/environ" ] || return 0 # exited between the scan and now
+  cmd="$(ps -o cmd= -p "$pid" 2>/dev/null || true)"
+  case "$cmd" in *"multica daemon"*) return 0 ;; esac
+  if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^MULTICA_SLOT='; then
+    return 0 # the slot model's own process, on whatever port it holds
+  fi
+  reason=""
+  db_url="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DATABASE_URL=//p' | head -1)"
+  if [ -n "$db_url" ]; then
+    db_in_url="${db_url%%\?*}"
+    db_in_url="${db_in_url##*/}"
+    if printf '%s' "$db_in_url" | grep -q '^multica' \
+       && ! printf '%s\n' "$reg_dbs" | grep -Fxq "$db_in_url"; then
+      reason="DATABASE_URL names $db_in_url, which is not a registered slot database"
+    fi
+  fi
+  if [ -z "$reason" ]; then
+    local qa_root
+    qa_root="$(audit_qa_root)"
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    case "$cwd" in
+      "") ;;
+      "$qa_root"|"$qa_root"/*|"$SLOT_HOME"|"$SLOT_HOME"/*)
+        reason="listener cwd sits under the QA/slot home" ;;
+    esac
+  fi
+  if [ -z "$reason" ]; then
+    case "$cmd" in *cmd/api*) reason="process is a Multica api server (cmd/api)" ;; esac
+  fi
+  [ -n "$reason" ] || return 0
+  detail="pid $pid port $port cmd ${cmd:0:120} ($reason)"
+  audit_finding "bypass-listener" "$detail"
+}
+
+cmd_audit() {
+  local json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      *) die "Unknown flag for audit: $1" ;;
+    esac
+  done
+
+  local registry reg_ports reg_dbs line
+  registry="$(audit_registry)"
+  reg_ports="$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "port" { print $2 }')"
+  reg_dbs="$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "db" { print $2 }')"
+
+  if container_running; then
+    # Process substitution, not a pipe: audit_finding appends to audit_findings
+    # and a pipeline would run the collector in a subshell, losing every row.
+    audit_db_finding "$reg_dbs" < <(db_admin_psql postgres -tAc "SELECT datname, pg_size_pretty(pg_database_size(datname)) FROM pg_database WHERE datname LIKE 'multica%' ORDER BY 1")
+  else
+    info "shared container $SLOT_PG_CONTAINER is not running; the database sweep is skipped"
+  fi
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    audit_bypass_finding "$line" "$reg_ports" "$reg_dbs"
+  done < <(ss -ltnpH 2>/dev/null || ss -ltnp 2>/dev/null || true)
+
+  if [ "$json" = 1 ]; then
+    printf '['
+    local first=1 f class detail
+    for f in ${audit_findings[@]+"${audit_findings[@]}"}; do
+      class="${f%%$'\t'*}"
+      detail="${f#*$'\t'}"
+      [ "$first" = 1 ] || printf ','
+      first=0
+      printf '{"class":"%s","detail":"%s"}' "$(json_escape "$class")" "$(json_escape "$detail")"
+    done
+    printf ']\n'
+  elif [ "${#audit_findings[@]}" -eq 0 ]; then
+    ok "audit clean: no unregistered multica_% databases, no bypass listeners"
+  else
+    for f in "${audit_findings[@]}"; do
+      printf '%s\n' "$f"
+    done
+    warn "audit found ${#audit_findings[@]} item(s); this verb is report-only — reclaim with qa-clean/dev-env destroy, never by hand here"
+  fi
+  [ "${#audit_findings[@]}" -eq 0 ]
+}
+
 usage() {
   cat <<'EOF'
 Fixed-slot local development environments (fact source: scripts/slots.json).
@@ -2325,6 +2572,7 @@ Fixed-slot local development environments (fact source: scripts/slots.json).
   dev-env.sh <slot> logs    [component] [lines]
   dev-env.sh list           [--json]
   dev-env.sh gc             [--dry-run]
+  dev-env.sh audit          [--json]  # read-only bypass sweep; exit 1 = findings
   dev-env.sh main-db status --allow     # read-only inventory; refuses without --allow
 
 Slots: dev1, dev2. Each slot owns database multica_<slot> and account
@@ -2333,7 +2581,16 @@ at ~/.multica/slots/<slot>/env and verified before every start. The slot lease
 carries a role phase — dev (development) or qa (verification) — with exactly
 one holder at a time; `handoff --to` moves it atomically within the same
 issue (dev -> qa -> release at closure). qa phase is the only TTL'd phase
-(gc collects after 24h idle); dev phase has no timer.
+(gc collects after 24h idle); dev phase has no timer. A dual-server test
+window is the one shape where ONE issue holds BOTH slots: arm each slot's
+lease with `use --phase qa`, run the two servers, then close the window by
+releasing both leases with `lock-release` right away — a qa-phase holder may
+release while its issue is still in_progress (the dev phase releases only at
+issue closure). `audit` reports Multica-shaped activity outside this model:
+unregistered multica_% databases on the shared instance, and listeners off
+the registered ports whose DATABASE_URL names an unregistered multica_%
+database, whose cwd sits under the QA/slot home, or that are a cmd/api
+build. It never modifies anything.
 
 Resource budget per slot (scripts/slots.json resource_budget): 4 CPU cores
 pinned via taskset (dev1=0-3, dev2=4-7), api <= 768MB (GOMEMLIMIT),
@@ -2374,6 +2631,12 @@ main() {
       load_shared_facts
       cmd_main_db "$@"
       exit 0
+      ;;
+    audit)
+      shift
+      load_shared_facts
+      cmd_audit "$@"
+      exit "$?"
       ;;
   esac
 

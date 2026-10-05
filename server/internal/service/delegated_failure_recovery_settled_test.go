@@ -147,7 +147,11 @@ func TestUserCancelledRecoveryIsSettled(t *testing.T) {
 	ctx := context.Background()
 	recoveryTaskID, recoveryCommentID := f.seedRecoverySignal(t, svc)
 
-	if _, err := svc.CancelTaskByUser(ctx, recoveryTaskID); err != nil {
+	cancellerID, err := util.ParseUUID(f.userID)
+	if err != nil {
+		t.Fatalf("parse canceller: %v", err)
+	}
+	if _, err := svc.CancelTaskByUser(ctx, recoveryTaskID, cancellerID); err != nil {
 		t.Fatalf("CancelTaskByUser: %v", err)
 	}
 	if !f.settled(t, recoveryCommentID) {

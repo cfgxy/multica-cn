@@ -551,7 +551,12 @@
       "unresolve_failed": "스레드 해결을 취소하지 못했습니다"
     },
     "anchor_unavailable": "참조된 댓글을 사용할 수 없거나 삭제되었습니다",
-    "anchor_aria": "{{author}} 님이 {{when}}에 남긴 댓글로 이동: {{excerpt}}"
+    "anchor_aria": "{{author}} 님이 {{when}}에 남긴 댓글로 이동: {{excerpt}}",
+    "quick_replies": {
+      "menu_label": "빠른 답장",
+      "menu_empty": "워크스페이스 관리자가 아직 빠른 답장을 설정하지 않았습니다",
+      "insert_aria": "빠른 답장 \"{{name}}\" 삽입"
+    }
   },
   "reply": {
     "placeholder": "답글 남기기..."
@@ -578,6 +583,7 @@
   "agent_live": {
     "is_working": "{{name}} 작업 중",
     "is_queued": "{{name}} 대기 중",
+    "past_runs": "실행 기록 · {{count}}회",
     "is_waiting_local_directory": "{{name}} 로컬 디렉터리 대기 중",
     "queued_elapsed_prefix": "{{elapsed}} 동안 대기 중",
     "fallback_name": "에이전트",
@@ -919,6 +925,15 @@
       "pill_label": "댓글 추가, @로 멘션"
     },
     "comment": {
+      "menu_copy": "복사",
+      "menu_copy_link": "링크 복사",
+      "menu_edit": "수정",
+      "menu_more_reactions": "더 많은 반응…",
+      "menu_react": "반응…",
+      "menu_reply": "답글",
+      "menu_resolve": "스레드 해결",
+      "menu_select_text": "텍스트 선택",
+      "menu_unresolve": "스레드 해결 취소",
       "resolved_bar_other": "해결됨 · 메시지 {{count}}개 ({{authors}}님)",
       "resolved_bar_a11y_other": "해결된 스레드, 메시지 {{count}}개 ({{authors}}님). 탭하여 펼치기.",
       "resolved_by": "해결한 사람",
@@ -1078,6 +1093,7 @@
     "agent_activity": {
       "runs_count": "실행 · {{count}}회",
       "badge_a11y": "에이전트 실행 중 — 실행 기록 열기",
+      "badge_idle_a11y": "실행 기록 보기",
       "row_running_a11y": "에이전트가 이 작업 처리 중",
       "row_queued_a11y": "에이전트 작업 대기 중"
     },

@@ -95,6 +95,30 @@ vi.mock("./execution-log-section", () => ({
       </button>
     </div>
   ),
+  PastRow: ({
+    task,
+    onOpenDetail,
+  }: {
+    task: AgentTask;
+    onOpenDetail?: () => void;
+  }) => (
+    <div data-testid="past-task-row">
+      <span>{task.id}</span>
+      <button type="button" aria-label={`open detail ${task.id}`} onClick={onOpenDetail}>
+        Open detail
+      </button>
+    </div>
+  ),
+  isTerminalTask: (task: AgentTask) =>
+    ["completed", "failed", "cancelled"].includes(task.status),
+  sortPastRuns: (tasks: AgentTask[]) => tasks,
+}));
+
+vi.mock("./run-detail-drawer", () => ({
+  RunDetailDrawer: ({ task }: { task: AgentTask | null }) =>
+    task ? (
+      <div data-testid="run-detail-drawer">{task.id}</div>
+    ) : null,
 }));
 
 vi.mock("../../common/task-transcript/agent-transcript-dialog", () => ({
@@ -332,9 +356,10 @@ describe("IssueAgentHeaderChip", () => {
     expect(label.className).toContain("md:inline");
   });
 
-  it("does not render when the issue has only terminal tasks", () => {
-    // The list is issue-scoped by the endpoint, so the chip's only job is to
-    // ignore terminal statuses (those are the execution log's story).
+  it("keeps a persistent history entry when only terminal runs exist (RUYI-417)", () => {
+    // RUYI-417: the chip used to vanish once nothing was active, leaving the
+    // issue's run history without a header entry. With past runs on record it
+    // now stays as an inactive, count-carrying chip.
     mockState.tasks = [
       makeTask({
         id: "task-done",
@@ -347,6 +372,39 @@ describe("IssueAgentHeaderChip", () => {
         completed_at: "2026-06-08T08:06:00Z",
       }),
     ];
+
+    renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
+
+    const trigger = screen.getByRole("button", { name: "Past runs · 2" });
+    // Non-active styling: the history chip never wears the running beam.
+    expect(trigger.className).not.toContain("border-beam");
+    // Label appears twice: the trigger text and the popover card header.
+    expect(screen.getAllByText("Past runs · 2")).toHaveLength(2);
+    expect(screen.getAllByTestId("past-task-row")).toHaveLength(2);
+    expect(screen.queryByTestId("active-task-row")).not.toBeInTheDocument();
+  });
+
+  it("opens a past run's detail drawer from the history chip", () => {
+    mockState.tasks = [
+      makeTask({
+        id: "task-failed",
+        status: "failed",
+        completed_at: "2026-06-08T08:05:00Z",
+      }),
+    ];
+
+    renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
+
+    expect(screen.queryByTestId("run-detail-drawer")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "open detail task-failed" }));
+
+    expect(screen.getByTestId("run-detail-drawer")).toHaveTextContent(
+      "task-failed",
+    );
+  });
+
+  it("still renders nothing when the issue has never had a run", () => {
+    mockState.tasks = [];
 
     renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
 

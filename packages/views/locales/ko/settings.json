@@ -49,6 +49,42 @@
       "cancelled": "진행하지 않기로 함."
     }
   },
+    "quick_replies": {
+      "title": "빠른 답장",
+      "description": "이슈 댓글 입력창의 빠른 답장 메뉴에 표시되는 공유 템플릿입니다. 모든 멤버가 읽을 수 있으며, 워크스페이스 관리자만 수정할 수 있습니다. 선택하면 입력창에 채워질 뿐 자동으로 전송되지 않습니다.",
+      "loading": "빠른 답장을 불러오는 중…",
+      "add": "새 빠른 답장",
+      "empty_title": "빠른 답장이 아직 없습니다",
+      "empty_hint": "반복적으로 쓰는 댓글 문구를 템플릿으로 저장하세요 — PR 충돌 해결, 테스트 보완, 완료 확인 등.",
+      "reorder_failed": "순서 저장에 실패했습니다",
+      "actions": {
+        "open": "\"{{name}}\" 작업 메뉴 열기",
+        "edit": "편집",
+        "delete": "삭제",
+        "reorder": "\"{{name}}\" 순서를 드래그로 변경"
+      },
+      "editor": {
+        "create_title": "새 빠른 답장",
+        "edit_title": "빠른 답장 편집",
+        "hint": "댓글 입력창에서 선택하면 입력란에 채워집니다. 전송 전에 자유롭게 수정할 수 있습니다.",
+        "name": "이름",
+        "name_placeholder": "예: PR 충돌 해결",
+        "content": "내용",
+        "content_placeholder": "입력창에 채워질 템플릿 본문…",
+        "cancel": "취소",
+        "save": "저장",
+        "saving": "저장 중…",
+        "save_failed": "저장에 실패했습니다"
+      },
+      "delete_dialog": {
+        "title": "빠른 답장 삭제",
+        "description": "\"{{name}}\"을(를) 삭제할까요? 모든 멤버의 댓글 메뉴에서 즉시 사라집니다.",
+        "cancel": "취소",
+        "confirm": "삭제",
+        "failed": "삭제에 실패했습니다"
+      }
+    }
+,
   "quick_actions": {
     "title": "퀵 액션",
     "description": "실행할 에이전트와 프롬프트를 미리 설정한 뒤, 어떤 태스크의 사이드바에서든 한 번의 클릭으로 실행합니다.",
@@ -433,12 +469,14 @@
       "members": "멤버",
       "labels": "레이블",
       "issue_statuses": "태스크 상태",
+      "quick_replies": "빠른 답장",
       "properties": "속성",
       "quick_actions": "퀵 액션",
       "plugins": "Plugins",
       "marketplace": "마켓플레이스",
       "mcp": "MCP",
-      "billing": "결제 및 요금제"
+      "billing": "결제 및 요금제",
+      "authorizations": "내 인가"
     }
   },
   "plugins": {
@@ -798,6 +836,39 @@
       "copy_command_tooltip": "명령 복사",
       "done": "완료"
     }
+  },
+  "authorizations": {
+    "title": "내 인가",
+    "description": "외부 MCP 클라이언트에 부여한 인가 기록입니다. 언제든 철회할 수 있습니다.",
+    "list_title": "인가 기록",
+    "empty": "인가 기록이 없습니다.",
+    "col_client": "클라이언트",
+    "col_scope": "범위",
+    "col_authorized_at": "인가 시각",
+    "col_last_used": "마지막 사용",
+    "col_status": "상태",
+    "status_active": "활성",
+    "status_revoked": "철회됨",
+    "revoke": "철회",
+    "revoke_confirm_title": "이 인가를 철회하시겠습니까?",
+    "revoke_confirm_body": "「{{client}}」의 인가를 철회하면 기존 액세스 토큰은 캐시 창(최대 약 10분) 내에 실패합니다.",
+    "cancel": "취소"
+  },
+  "oauth_consent": {
+    "brand": "Multica MCP",
+    "title": "{{client}}이(가) 내 계정 접근을 요청합니다",
+    "subtitle": "허용하면 이 클라이언트가 아래 권한으로 Multica MCP 서비스에 접근합니다.",
+    "scopes_title": "요청된 권한",
+    "scope_read": "태스크·워크스페이스 등 데이터 읽기",
+    "scope_write": "태스크·댓글 등 데이터 생성 및 수정",
+    "scope_run": "태스크 실행 및 자동화 작업 트리거",
+    "scope_legacy": "읽기·쓰기·실행 전체 권한(구버전 인가)",
+    "approve": "허용",
+    "deny": "거부",
+    "error_title": "인가를 계속할 수 없습니다",
+    "expired": "인가 요청이 만료되었거나 존재하지 않습니다. 클라이언트에서 다시 시작하세요.",
+    "not_signed_in": "먼저 Multica에 로그인한 뒤 클라이언트에서 인가를 다시 시작하세요.",
+    "invalid_request": "잘못된 인가 요청입니다."
   },
   "workspace": {
     "section_general": "워크스페이스 정보",
@@ -1550,7 +1621,8 @@
       "too_large_body": "5 MB 미만의 이미지를 선택하세요.",
       "upload_failed_body": "아바타를 업로드하지 못했습니다.",
       "remove_failed_title": "삭제 실패",
-      "remove_failed_body": "아바타를 삭제하지 못했습니다."
+      "remove_failed_body": "아바타를 삭제하지 못했습니다.",
+      "permission_library": "이미지를 선택하려면 사진 라이브러리 접근 권한이 필요합니다."
     },
     "account": {
       "save_failed_title": "저장 실패",
