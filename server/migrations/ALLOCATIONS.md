@@ -24,6 +24,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
 | 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
 | 925 | 925_agent_context_dual_slot | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-agent-context | reserved |
+| 926 | 926_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
 
 Notes:
 
