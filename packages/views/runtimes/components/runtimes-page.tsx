@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronRight,
   Cloud,
+  AudioLines,
   Loader2,
   Monitor,
   Plus,
@@ -50,6 +51,7 @@ import {
 } from "../../onboarding/templates";
 import { ConnectRemoteDialog } from "./connect-remote-dialog";
 import { CloudRuntimeDialog } from "./cloud-runtime-dialog";
+import { VoiceInstanceCreateDialog } from "./voice-instance-create-dialog";
 import { ProviderLogo } from "./provider-logo";
 import { buildWorkloadIndex, RuntimeList } from "./runtime-list";
 import { pendingRuntimeFromProfile } from "./pending-runtime";
@@ -93,6 +95,7 @@ export function RuntimesPage({
   const qc = useQueryClient();
   const [showConnectDialog, setShowConnectDialog] = useState(false);
   const [showCloudRuntimeDialog, setShowCloudRuntimeDialog] = useState(false);
+  const [showVoiceCreateDialog, setShowVoiceCreateDialog] = useState(false);
 
   const { data: runtimes = [], isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
@@ -170,6 +173,7 @@ export function RuntimesPage({
         onConnectRemote={() => setShowConnectDialog(true)}
         cloudRuntimeEnabled={cloudRuntimeEnabled}
         onOpenCloudRuntime={() => setShowCloudRuntimeDialog(true)}
+        onOpenVoiceCreate={() => setShowVoiceCreateDialog(true)}
       />
 
       {showEmpty ? (
@@ -212,6 +216,11 @@ export function RuntimesPage({
       )}
       {cloudRuntimeEnabled && showCloudRuntimeDialog && (
         <CloudRuntimeDialog onClose={() => setShowCloudRuntimeDialog(false)} />
+      )}
+      {showVoiceCreateDialog && (
+        <VoiceInstanceCreateDialog
+          onClose={() => setShowVoiceCreateDialog(false)}
+        />
       )}
     </div>
   );
@@ -377,11 +386,13 @@ function PageHeaderBar({
   onConnectRemote,
   cloudRuntimeEnabled,
   onOpenCloudRuntime,
+  onOpenVoiceCreate,
 }: {
   totalCount: number;
   onConnectRemote: () => void;
   cloudRuntimeEnabled: boolean;
   onOpenCloudRuntime: () => void;
+  onOpenVoiceCreate: () => void;
 }) {
   const { t, i18n } = useT("runtimes");
   return (
@@ -403,6 +414,14 @@ function PageHeaderBar({
               onClick={onOpenCloudRuntime}
             />
           )}
+          {/* RUYI-425 §4.3 stage 3: the manual Gemini Live registration
+              entry — always available (voice is workspace-level, not
+              daemon-bound). */}
+          <CollectionPageHeaderAction
+            icon={AudioLines}
+            label={t(($) => $.voice_instance_create.action)}
+            onClick={onOpenVoiceCreate}
+          />
           <CollectionPageHeaderAction
             icon={Plus}
             label={t(($) => $.page.connect_remote)}
