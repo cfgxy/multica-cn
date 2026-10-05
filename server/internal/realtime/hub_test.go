@@ -636,3 +636,228 @@ func TestReadPump_AcceptsFrameUnderReadLimit(t *testing.T) {
 		t.Fatalf("got %s, want a pong frame", raw)
 	}
 }
+
+// ---- Cookie auth fallback (RUYI-429 fix A) ----
+//
+// Cookies are host-scoped (RFC 6265): with two servers on the same host at
+// different ports, a later login overwrites the earlier server's cookie and
+// every WS upgrade would carry the wrong credential. A cookie that fails to
+// authenticate must therefore degrade to the first-frame token path instead
+// of rejecting the upgrade at the HTTP layer.
+
+// allowListMembershipChecker passes only the listed users — the fallback
+// cases need a checker that can distinguish "wrong identity" from "any
+// identity", which mockMembershipChecker (always true) cannot.
+type allowListMembershipChecker map[string]bool
+
+func (m allowListMembershipChecker) IsMember(_ context.Context, userID, _ string) bool {
+	return m[userID]
+}
+
+// newAuthTestServer wires HandleWebSocket with explicit membership and
+// disabled gates; newTestHub's all-allow wiring is not enough here.
+func newAuthTestServer(t *testing.T, mc MembershipChecker, disabled auth.DisabledLookup) (*Hub, *httptest.Server) {
+	t.Helper()
+	hub := NewHub()
+	go hub.Run()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		HandleWebSocket(hub, mc, nil, nil, disabled, w, r)
+	})
+	return hub, httptest.NewServer(mux)
+}
+
+func dialWSWithCookie(t *testing.T, server *httptest.Server, cookieValue string) (*websocket.Conn, int, error) {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?workspace_id=" + testWorkspaceID
+	header := http.Header{}
+	if cookieValue != "" {
+		header.Set("Cookie", auth.AuthCookieName+"="+cookieValue)
+	}
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	return conn, status, err
+}
+
+func sendWSAuthFrame(t *testing.T, conn *websocket.Conn, msgType, token string) {
+	t.Helper()
+	msg, err := json.Marshal(map[string]any{
+		"type":    msgType,
+		"payload": map[string]string{"token": token},
+	})
+	if err != nil {
+		t.Fatalf("marshal auth frame: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		t.Fatalf("write first frame: %v", err)
+	}
+}
+
+func readWSFrame(t *testing.T, conn *websocket.Conn, timeout time.Duration) (string, error) {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	_, raw, err := conn.ReadMessage()
+	return string(raw), err
+}
+
+func TestHandleWebSocket_InvalidCookieFallsBackToFirstFrameToken(t *testing.T) {
+	_, server := newAuthTestServer(t, &mockMembershipChecker{}, nil)
+	defer server.Close()
+
+	conn, status, err := dialWSWithCookie(t, server, "not-a-jwt")
+	if err != nil {
+		t.Fatalf("invalid cookie must fall back to first-frame auth, got HTTP %d rejection: %v", status, err)
+	}
+	defer conn.Close()
+
+	sendWSAuthFrame(t, conn, "auth", makeTestToken(t))
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read auth_ack: %v", err)
+	}
+	if !strings.Contains(frame, "auth_ack") {
+		t.Fatalf("expected auth_ack after fallback, got %s", frame)
+	}
+}
+
+func TestHandleWebSocket_ValidCookieAuthsDirectly(t *testing.T) {
+	_, server := newAuthTestServer(t, &mockMembershipChecker{}, nil)
+	defer server.Close()
+
+	// A valid cookie must keep authenticating without any first frame: the
+	// server registers the client immediately, so a short read window ends
+	// in a read timeout, never in an auth_error close or an HTTP rejection.
+	conn, status, err := dialWSWithCookie(t, server, makeTestToken(t))
+	if err != nil {
+		t.Fatalf("valid cookie rejected at HTTP %d: %v", status, err)
+	}
+	defer conn.Close()
+
+	if _, err := readWSFrame(t, conn, 1500*time.Millisecond); err == nil {
+		t.Fatal("expected no frame (client registered via cookie), got one")
+	} else if closeErr := (*websocket.CloseError)(nil); errors.As(err, &closeErr) {
+		t.Fatalf("server closed a valid-cookie connection instead of registering it: %v", err)
+	}
+}
+
+func TestHandleWebSocket_InvalidCookieNonAuthFrameCloses(t *testing.T) {
+	_, server := newAuthTestServer(t, &mockMembershipChecker{}, nil)
+	defer server.Close()
+
+	conn, _, err := dialWSWithCookie(t, server, "not-a-jwt")
+	if err != nil {
+		t.Fatalf("invalid cookie must fall back, got upgrade rejection: %v", err)
+	}
+	defer conn.Close()
+
+	// Same path as the first-frame timeout, exercised via a malformed frame
+	// so the test stays fast: the fallback path must still demand a proper
+	// auth frame and close with the established auth_error contract.
+	sendWSAuthFrame(t, conn, "subscribe", makeTestToken(t))
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected auth_error frame, got read error: %v", err)
+	}
+	if !strings.Contains(frame, "expected auth message as first frame") {
+		t.Fatalf("expected first-frame-format auth_error, got %s", frame)
+	}
+}
+
+func TestHandleWebSocket_InvalidCookieInvalidFirstFrameTokenCloses(t *testing.T) {
+	_, server := newAuthTestServer(t, &mockMembershipChecker{}, nil)
+	defer server.Close()
+
+	conn, _, err := dialWSWithCookie(t, server, "not-a-jwt")
+	if err != nil {
+		t.Fatalf("invalid cookie must fall back, got upgrade rejection: %v", err)
+	}
+	defer conn.Close()
+
+	sendWSAuthFrame(t, conn, "auth", "garbage-token")
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected auth_error frame, got read error: %v", err)
+	}
+	if !strings.Contains(frame, "invalid token") {
+		t.Fatalf("expected invalid-token auth_error, got %s", frame)
+	}
+}
+
+func TestHandleWebSocket_ForeignUserCookieFallsBackToTokenIdentity(t *testing.T) {
+	// The cookie names a user this (membership) database has never heard of
+	// — the QA-observed shape: sibling server, same JWT_SECRET, foreign sub.
+	// The upgrade must survive the cookie's failed membership check and
+	// authenticate on the strength of the first-frame token identity.
+	mc := allowListMembershipChecker{testUserID: true}
+	_, server := newAuthTestServer(t, mc, nil)
+	defer server.Close()
+
+	foreignCookie := makeTestTokenForUser(t, "foreign-user", "")
+	conn, status, err := dialWSWithCookie(t, server, foreignCookie)
+	if err != nil {
+		t.Fatalf("foreign-user cookie must fall back, got HTTP %d rejection: %v", status, err)
+	}
+	defer conn.Close()
+
+	sendWSAuthFrame(t, conn, "auth", makeTestToken(t))
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read auth_ack: %v", err)
+	}
+	if !strings.Contains(frame, "auth_ack") {
+		t.Fatalf("expected auth_ack for token identity, got %s", frame)
+	}
+}
+
+func TestHandleWebSocket_DisabledAccountRejectedViaFallback(t *testing.T) {
+	// RUYI-429 review checkpoint: the fallback path must not weaken the
+	// disabled-account gate — a disabled user riding an invalid cookie plus
+	// a validly-signed token is still rejected, with the same
+	// "account disabled" semantics the cookie path had.
+	disabledID := "disabled-user"
+	_, server := newAuthTestServer(t, &mockMembershipChecker{}, stubWSDisabledLookup{disabledID: true})
+	defer server.Close()
+
+	conn, _, err := dialWSWithCookie(t, server, "not-a-jwt")
+	if err != nil {
+		t.Fatalf("invalid cookie must fall back, got upgrade rejection: %v", err)
+	}
+	defer conn.Close()
+
+	sendWSAuthFrame(t, conn, "auth", makeTestTokenForUser(t, disabledID, ""))
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected auth_error frame, got read error: %v", err)
+	}
+	if !strings.Contains(frame, "account disabled") {
+		t.Fatalf("expected account-disabled auth_error, got %s", frame)
+	}
+}
+
+func TestHandleWebSocket_DisabledCookieFallsBackToHealthyToken(t *testing.T) {
+	// The disabled check follows the identity being authenticated, not the
+	// mere presence of a cookie: a cookie naming a disabled user must not
+	// poison a connection whose first-frame token names a healthy one.
+	disabledID := "disabled-user"
+	_, server := newAuthTestServer(t, &mockMembershipChecker{}, stubWSDisabledLookup{disabledID: true})
+	defer server.Close()
+
+	disabledCookie := makeTestTokenForUser(t, disabledID, "")
+	conn, status, err := dialWSWithCookie(t, server, disabledCookie)
+	if err != nil {
+		t.Fatalf("disabled-user cookie must fall back rather than reject the upgrade, got HTTP %d: %v", status, err)
+	}
+	defer conn.Close()
+
+	sendWSAuthFrame(t, conn, "auth", makeTestToken(t))
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read auth_ack: %v", err)
+	}
+	if !strings.Contains(frame, "auth_ack") {
+		t.Fatalf("expected auth_ack for healthy token identity, got %s", frame)
+	}
+}
