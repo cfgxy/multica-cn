@@ -125,6 +125,7 @@ var postConsolidationStems = []string{
 	"923_prompt_proposal_jev_advisory",   // RUYI-347
 	"924_agent_resource_weight",          // RUYI-397
 	"925_oauth_management",               // RUYI-420
+	"926_activity_audit",                 // RUYI-355 (missed at merge, registered via RUYI-435)
 	"929_quick_replies",                  // RUYI-435 (renumbered from 926: yielded to RUYI-355's 926_activity_audit on main)
 }
 
