@@ -17,15 +17,21 @@ Rules (see workspace/project instructions, RUYI-359):
 
 | Number | Stem | Issue | Branch / PR | Status |
 | ------ | ---- | ----- | ----------- | ------ |
-| 918 | 918_issue_decisions | RUYI-345 | agent/agent-f70e39b85abd/beec1e804b72 | reserved |
+| 917 | 917_issue_run_cancellation_fence | RUYI-384 | merged to main via PR #194 | applied |
+| 918 | 918_issue_decisions | RUYI-345 | merged to main via PR #181 | applied |
+| 919 | 919_issue_dependency_relationships | RUYI-351 | merged to main via PR #180 | applied |
 | 920 | 920_project_revision | RUYI-354 | agent/agent-f70e39b85abd/ruyi-354 (Owner pinned 2026-10-03 08:59) | applied |
 | 921 | 921_prompt_version_snapshot_scope | RUYI-285 | merged to main via PR #202 (rebuilt from superseded PR #183) | applied |
-| 922 | 922_channel_capability_state | RUYI-400 | agent/agent-f70e39b85abd/ruyi-400 | reserved |
-| 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | agent/agent-f70e39b85abd/ruyi-347-1ff5e2ca3358 (PR #179) | reserved |
-| 924 | 924_agent_resource_weight | RUYI-397 | agent/agent-f70e39b85abd/ruyi-397 | reserved |
-| 925 | 925_agent_context_dual_slot | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-agent-context | reserved |
-| 926 | 926_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
-| 927 | 927_voice_fact_event | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-writeback | reserved |
+| 922 | 922_channel_capability_state | RUYI-400 | merged to main via PR #201 | applied |
+| 923 | 923_prompt_proposal_jev_advisory | RUYI-347 | merged to main via PR #179 | applied |
+| 924 | 924_agent_resource_weight | RUYI-397 | merged to main via PR #209 | applied |
+| 925 | 925_oauth_management | RUYI-420 | merged to main via PR #223 | applied |
+| 926 | 926_activity_audit | RUYI-355 | merged to main via PR #214 | applied |
+| 928 | 928_agent_execution_profile_revision | RUYI-433 | merged to main via PR #231 | applied |
+| 929 | 929_quick_replies | RUYI-435 | agent/agent-f70e39b85abd/ruyi-435 (PR #237) | reserved |
+| 930 | 930_agent_context_dual_slot | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-agent-context | reserved |
+| 931 | 931_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
+| 932 | 932_voice_fact_event | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-writeback | reserved |
 
 Notes:
 
@@ -41,6 +47,30 @@ Notes:
   rows persist in several historical experiment/QA database ledgers; leftovers
   from the RUYI-359 shrink (that stem lives at 904 on the consolidated tree),
   NOT an occupation — same treatment as the 920-923 leftovers note above.
-- 922 note (RUYI-400): RUYI-346's head branch (PR #178) still carries
-  pre-shrink legacy stems in the 920-923 range; those are leftovers, NOT
-  active-branch claims, and resolve on that branch's required rebase.
+- 922 renumber note (RUYI-355): RUYI-400 merged `922_channel_capability_state`
+  first (commit `148cd0479`, 2026-10-03), so RUYI-355's audit stem (then
+  registered at 922) yielded the number and renumbered to `925_activity_audit`
+  before its PR (the branch-side 922 registration never reached main, so
+  RUYI-400's three-source check could not see it). The shared `multica`
+  production ledger still carries that stem's row at 922 from pre-merge
+  verification on this issue; its disposition is pending Owner decision
+  (RUYI-355 decision 3) and is NOT an active claim. RUYI-346's head branch (PR #178)
+  still carries pre-shrink legacy stems in the 920-923 range; those are
+  leftovers, NOT active-branch claims, and resolve on that branch's
+  required rebase.
+- 926 renumber note (RUYI-355): the audit stem registered at 925 collided
+  with RUYI-420's `925_oauth_management` on main disk (2026-10-05 merge
+  preflight); RUYI-355 yielded and renumbered to `926_activity_audit` in
+  its conflict-resolution merge — same yield pattern as the 922→925
+  renumber above. Environments whose `schema_migrations` ledger carries
+  `925_activity_audit` must have that row rewritten to `926_activity_audit`
+  per the renumber rule (version rewritten, `applied_at` preserved).
+- 929 renumber note (RUYI-435): the quick-replies stem originally registered
+  at 926 collided with RUYI-355's `926_activity_audit`, which merged to main
+  first (PR #214, 2026-10-05); RUYI-435 yielded and renumbered to
+  `929_quick_replies` at rebase (927/928 taken by open PRs #228/#231 at the
+  time). The stem never reached any shared `schema_migrations` ledger before
+  the renumber, so no ledger rewrite is needed anywhere.
+- 917/919 back-fill note (RUYI-439): both stems predate the RUYI-359 ledger;
+  rows back-filled 2026-10-05, attribution re-verified from first-parent
+  main history (917 -> RUYI-384 via PR #194, 919 -> RUYI-351 via PR #180).

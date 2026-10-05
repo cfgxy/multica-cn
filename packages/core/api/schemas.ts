@@ -59,6 +59,8 @@ import type {
   ListPropertiesResponse,
   QuickAction,
   ListQuickActionsResponse,
+  QuickReply,
+  ListQuickRepliesResponse,
   IssuePropertiesResponse,
   IssueTableGroupDescriptor,
   IssueTableFacetsResponse,
@@ -100,6 +102,16 @@ import type {
   AdminWorkspaceList,
   ImpersonationResponse,
 } from "../admin/types";
+import type {
+  AdminMCPStatus,
+  AdminOAuthClient,
+  AdminOAuthClientList,
+  AdminOAuthGrantList,
+  MyOAuthGrantList,
+  OAuthClientSecretReveal,
+  OAuthConsentInfo,
+  OAuthRedirectResponse,
+} from "../oauth-admin/types";
 import type {
 
   WebhookDelivery,
@@ -584,6 +596,39 @@ export const ListIssueStatusesResponseSchema = z.object({
 export const EMPTY_LIST_ISSUE_STATUSES_RESPONSE: ListIssueStatusesResponse = {
   statuses: [],
   categories: ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"],
+  total: 0,
+};
+
+// Workspace quick replies (RUYI-435). An empty fallback renders an empty menu
+// (with the manage hint), never a broken picker — a server predating the
+// endpoint is the only way this fires.
+export const QuickReplySchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  name: z.string(),
+  content: z.string(),
+  position: z.number().optional().default(0),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const EMPTY_QUICK_REPLY: QuickReply = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  content: "",
+  position: 0,
+  created_at: "",
+  updated_at: "",
+};
+
+export const ListQuickRepliesResponseSchema = z.object({
+  quick_replies: z.array(QuickReplySchema).default([]),
+  total: z.number().default(0),
+}).loose();
+
+export const EMPTY_LIST_QUICK_REPLIES_RESPONSE: ListQuickRepliesResponse = {
+  quick_replies: [],
   total: 0,
 };
 
@@ -2655,6 +2700,176 @@ export const ImpersonationResponseSchema = z.object({
 export const EMPTY_IMPERSONATION_RESPONSE: ImpersonationResponse = {
   token: "",
   user: EMPTY_USER,
+};
+
+// ---------------------------------------------------------------------------
+// OAuth management (RUYI-420). Management reads never carry the secret
+// hash — the schemas below have no such field by construction, so a future
+// server leak would surface as a dropped field, not as rendered data.
+// ---------------------------------------------------------------------------
+
+export const AdminOAuthClientSchema = z.object({
+  id: z.string(),
+  client_id: z.string().default(""),
+  name: z.string().default(""),
+  redirect_uris: z.array(z.string()).default([]),
+  created_by: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  secret_updated_at: z.string().nullable().default(null),
+  disabled_at: z.string().nullable().default(null),
+  grant_count: z.number().default(0),
+  active_grants: z.number().default(0),
+  last_used_at: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_ADMIN_OAUTH_CLIENT: AdminOAuthClient = {
+  id: "",
+  client_id: "",
+  name: "",
+  redirect_uris: [],
+  created_by: null,
+  created_at: "",
+  secret_updated_at: null,
+  disabled_at: null,
+  grant_count: 0,
+  active_grants: 0,
+  last_used_at: null,
+};
+
+export const AdminOAuthClientListSchema = z.object({
+  clients: z.array(AdminOAuthClientSchema).default([]),
+}).loose();
+
+export const EMPTY_ADMIN_OAUTH_CLIENT_LIST: AdminOAuthClientList = {
+  clients: [],
+};
+
+export const AdminOAuthGrantSchema = z.object({
+  id: z.string(),
+  client_id: z.string().default(""),
+  client_name: z.string().nullable().default(null),
+  user_id: z.string().default(""),
+  user_name: z.string().nullable().default(null),
+  user_email: z.string().nullable().default(null),
+  scope: z.string().default(""),
+  created_at: z.string().default(""),
+  last_used_at: z.string().nullable().default(null),
+  revoked_at: z.string().nullable().default(null),
+}).loose();
+
+export const AdminOAuthGrantListSchema = z.object({
+  grants: z.array(AdminOAuthGrantSchema).default([]),
+}).loose();
+
+export const EMPTY_ADMIN_OAUTH_GRANT_LIST: AdminOAuthGrantList = {
+  grants: [],
+};
+
+export const MyOAuthGrantSchema = z.object({
+  id: z.string(),
+  client_id: z.string().default(""),
+  client_name: z.string().nullable().default(null),
+  scope: z.string().default(""),
+  created_at: z.string().default(""),
+  last_used_at: z.string().nullable().default(null),
+  revoked_at: z.string().nullable().default(null),
+}).loose();
+
+export const MyOAuthGrantListSchema = z.object({
+  grants: z.array(MyOAuthGrantSchema).default([]),
+}).loose();
+
+export const EMPTY_MY_OAUTH_GRANT_LIST: MyOAuthGrantList = {
+  grants: [],
+};
+
+export const OAuthClientSecretRevealSchema = z.object({
+  secret: z.string().default(""),
+  secret_updated_at: z.string().optional(),
+  client: AdminOAuthClientSchema.optional(),
+}).loose();
+
+export const EMPTY_OAUTH_SECRET_REVEAL: OAuthClientSecretReveal = {
+  secret: "",
+};
+
+export const AdminMCPStatusSchema = z.object({
+  oauth: z.object({
+    enabled: z.boolean().default(false),
+    issuer: z.string().default(""),
+    key_id: z.string().default(""),
+    authorization_endpoint: z.string().default(""),
+    token_endpoint: z.string().default(""),
+    jwks_url: z.string().default(""),
+    protected_resource_url: z.string().default(""),
+  }).loose().default({
+    enabled: false,
+    issuer: "",
+    key_id: "",
+    authorization_endpoint: "",
+    token_endpoint: "",
+    jwks_url: "",
+    protected_resource_url: "",
+  }),
+  mcp: z.object({
+    url_configured: z.boolean().default(false),
+    reachable: z.boolean().default(false),
+    version: z.string().default(""),
+    tool_count: z.number().default(0),
+    tools: z.array(z.object({
+      name: z.string().default(""),
+      description: z.string().default(""),
+    }).loose()).default([]),
+  }).loose().default({
+    url_configured: false,
+    reachable: false,
+    version: "",
+    tool_count: 0,
+    tools: [],
+  }),
+  clients: z.object({
+    total: z.number().default(0),
+    active: z.number().default(0),
+  }).loose().default({ total: 0, active: 0 }),
+  grants: z.object({
+    total: z.number().default(0),
+    active: z.number().default(0),
+  }).loose().default({ total: 0, active: 0 }),
+}).loose();
+
+export const EMPTY_ADMIN_MCP_STATUS: AdminMCPStatus = {
+  oauth: {
+    enabled: false,
+    issuer: "",
+    key_id: "",
+    authorization_endpoint: "",
+    token_endpoint: "",
+    jwks_url: "",
+    protected_resource_url: "",
+  },
+  mcp: { url_configured: false, reachable: false, version: "", tool_count: 0, tools: [] },
+  clients: { total: 0, active: 0 },
+  grants: { total: 0, active: 0 },
+};
+
+export const OAuthConsentInfoSchema = z.object({
+  client_id: z.string().default(""),
+  client_name: z.string().default(""),
+  scopes: z.array(z.string()).default([]),
+}).loose();
+
+export const EMPTY_OAUTH_CONSENT_INFO: OAuthConsentInfo = {
+  client_id: "",
+  client_name: "",
+  scopes: [],
+};
+
+export const OAuthRedirectResponseSchema = z.object({
+  redirect: z.string().default(""),
+}).loose();
+
+export const EMPTY_OAUTH_REDIRECT: OAuthRedirectResponse = {
+  redirect: "",
 };
 
 // ---------------------------------------------------------------------------

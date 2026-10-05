@@ -62,9 +62,14 @@ jest.mock("expo-router", () => ({
   router: { push: jest.fn() },
 }));
 
+// Switchable per test: the default passthrough keeps the fallback-English
+// assertions above valid; the i18n suite swaps in a key-prefixed renderer
+// to prove the menu labels flow through t() (RUYI-416).
+const mockT = jest.fn((_key: string, fallback: string) => fallback);
+
 jest.mock("@/lib/use-t", () => ({
   useT: () => ({
-    t: (_key: string, fallback: string) => fallback,
+    t: mockT,
   }),
 }));
 
@@ -205,6 +210,56 @@ describe("useCommentLongPress edit entry", () => {
       result.current.closeEdit();
     });
     expect(result.current.isEditing).toBe(false);
+    await unmount();
+  });
+});
+
+describe("useCommentLongPress i18n labels (RUYI-416)", () => {
+  beforeEach(() => {
+    mockT.mockClear();
+    mockT.mockImplementation((_key: string, fallback: string) => fallback);
+  });
+
+  it("builds the main menu labels through issues-namespace t() keys", async () => {
+    mockT.mockImplementation((key: string, fallback: string) => `[${key}]${fallback}`);
+    const { result, unmount } = await renderLongPress(ownComment());
+    await act(async () => {
+      result.current.onLongPress();
+    });
+    await waitFor(() => {
+      expect(result.current.mainModalProps.visible).toBe(true);
+    });
+    const options = result.current.mainModalProps.sheet!.options as string[];
+    expect(options).toContain("[mobile.comment.menu_reply]Reply");
+    expect(options).toContain("[mobile.comment.menu_react]React…");
+    expect(options).toContain("[mobile.comment.menu_copy]Copy");
+    expect(options).toContain("[mobile.comment.menu_select_text]Select Text");
+    expect(options).toContain("[mobile.comment.menu_copy_link]Copy Link");
+    expect(options).toContain("[mobile.comment.menu_edit]Edit");
+    expect(options).toContain("[common:cancel]Cancel");
+    await unmount();
+  });
+
+  it("builds the nested React sheet labels through t() keys", async () => {
+    mockT.mockImplementation((key: string, fallback: string) => `[${key}]${fallback}`);
+    const { result, unmount } = await renderLongPress(ownComment());
+    await act(async () => {
+      result.current.onLongPress();
+    });
+    await waitFor(() => {
+      expect(result.current.mainModalProps.visible).toBe(true);
+    });
+    const options = result.current.mainModalProps.sheet!.options as string[];
+    await act(async () => {
+      result.current.mainModalProps.onSelect(options.indexOf("[mobile.comment.menu_react]React…"));
+    });
+    await waitFor(() => {
+      expect(result.current.reactModalProps.visible).toBe(true);
+    });
+    const reactOptions = result.current.reactModalProps.sheet!.options as string[];
+    expect(reactOptions).toContain("[mobile.comment.menu_more_reactions]More reactions…");
+    expect(reactOptions).toContain("[common:cancel]Cancel");
+    mockT.mockImplementation((_key: string, fallback: string) => fallback);
     await unmount();
   });
 });
