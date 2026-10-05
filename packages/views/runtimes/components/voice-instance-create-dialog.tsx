@@ -183,7 +183,7 @@ export function VoiceInstanceCreateDialog({
             </Label>
             {voiceProfiles.length === 0 ? (
               <div className="flex items-center justify-between gap-2 rounded-md border border-dashed p-3">
-                <span className="text-sm text-muted-foreground">
+                <span className="text-body text-muted-foreground">
                   {t(($) => $.voice_instance_create.no_profiles)}
                 </span>
                 <Button
@@ -233,7 +233,7 @@ export function VoiceInstanceCreateDialog({
               placeholder={t(($) => $.voice_instance_create.key_placeholder)}
               autoComplete="off"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-caption text-muted-foreground">
               {t(($) => $.voice_instance.key_hint)}
             </p>
           </div>
@@ -252,7 +252,7 @@ export function VoiceInstanceCreateDialog({
           </div>
 
           <details className="rounded-md border p-3">
-            <summary className="cursor-pointer text-sm font-medium">
+            <summary className="cursor-pointer text-body font-medium">
               {t(($) => $.voice_instance.advanced_label)}
             </summary>
             <div className="grid gap-2 pt-2">
@@ -265,14 +265,14 @@ export function VoiceInstanceCreateDialog({
                 placeholder={t(($) => $.voice_instance.advanced_placeholder)}
               />
               {!advanced.ok && (
-                <p className="text-xs text-destructive">
+                <p className="text-caption text-destructive">
                   {t(($) => $.voice_instance.advanced_invalid)}
                 </p>
               )}
             </div>
           </details>
 
-          <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="grid grid-cols-2 gap-2 text-body">
             <div>
               <span className="text-muted-foreground">
                 {t(($) => $.voice_instance.registration_label)}:{" "}

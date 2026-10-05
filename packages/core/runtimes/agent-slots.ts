@@ -64,20 +64,23 @@ export interface AgentSlotChoiceOptions {
 /**
  * Choices for one slot of the agent runtime picker: online + usable by the
  * current user (`isRuntimeUsableForUser`, the MUL-6126 contract) + capable of
- * the slot, minus the other slot's selection.
+ * the slot + not disabled (§4.5: a disabled instance offers no new bindings),
+ * minus the other slot's selection. The slot's own binding (keepRuntimeId)
+ * survives all of it, including disabled.
  */
 export function agentSlotChoices(
   runtimes: RuntimeDevice[] | undefined,
   capability: AgentSlotCapability,
   opts: AgentSlotChoiceOptions,
 ): RuntimeDevice[] {
+  const { excludeRuntimeId, keepRuntimeId } = opts;
   const usable = (runtimes ?? []).filter(
     (r) =>
       r.status === "online" &&
       isRuntimeUsableForUser(r, opts.currentUserId) &&
-      runtimeSupportsCapability(r, capability),
+      runtimeSupportsCapability(r, capability) &&
+      (r.metadata?.disabled !== true || r.id === keepRuntimeId),
   );
-  const { excludeRuntimeId, keepRuntimeId } = opts;
   if (!excludeRuntimeId || excludeRuntimeId === keepRuntimeId) return usable;
   return usable.filter((r) => r.id !== excludeRuntimeId);
 }
