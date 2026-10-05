@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/oauth"
+)
 
 func TestValidateRedirectURIsAcceptsHTTPSAndLoopback(t *testing.T) {
 	for _, uri := range []string{
@@ -8,7 +12,7 @@ func TestValidateRedirectURIsAcceptsHTTPSAndLoopback(t *testing.T) {
 		"http://localhost:3000/callback",
 		"http://127.0.0.1:3000/callback",
 	} {
-		if err := ValidateRedirectURIs([]string{uri}); err != nil {
+		if err := oauth.ValidateRedirectURIs([]string{uri}); err != nil {
 			t.Errorf("ValidateRedirectURIs(%q) = %v, want nil", uri, err)
 		}
 	}
@@ -23,21 +27,21 @@ func TestValidateRedirectURIsRejectsUnusableEntries(t *testing.T) {
 	}
 	for name, uris := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := ValidateRedirectURIs(uris); err == nil {
+			if err := oauth.ValidateRedirectURIs(uris); err == nil {
 				t.Fatalf("ValidateRedirectURIs(%v) = nil, want an error", uris)
 			}
 		})
 	}
 }
 
-func TestRandomCredentialIsUniqueAndFullLength(t *testing.T) {
-	first, err := randomCredential()
+func TestNewClientSecretIsUniqueAndFullLength(t *testing.T) {
+	first, err := oauth.NewClientSecret()
 	if err != nil {
-		t.Fatalf("randomCredential() error = %v", err)
+		t.Fatalf("NewClientSecret() error = %v", err)
 	}
-	second, err := randomCredential()
+	second, err := oauth.NewClientSecret()
 	if err != nil {
-		t.Fatalf("randomCredential() error = %v", err)
+		t.Fatalf("NewClientSecret() error = %v", err)
 	}
 	if len(first) != 64 {
 		t.Errorf("len = %d, want 64 hex chars", len(first))

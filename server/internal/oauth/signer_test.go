@@ -81,7 +81,7 @@ func TestMintAccessTokenMapsResourceToAudience(t *testing.T) {
 	const resource = "https://multica.example.com/api/mcp"
 	now := time.Now()
 
-	token, expiresAt, err := signer.MintAccessToken("user-1", resource, ScopeMCP, now)
+	token, expiresAt, err := signer.MintAccessToken("user-1", resource, ScopeMCP, "", "", now)
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestMintAccessTokenFallsBackToIssuerAudience(t *testing.T) {
 	// `resource` is optional in RFC 8707; a client that omits it must still get
 	// an audience-bound token rather than one with an empty aud.
 	signer := testSigner(t)
-	token, _, err := signer.MintAccessToken("user-1", "", "", time.Now())
+	token, _, err := signer.MintAccessToken("user-1", "", "", "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestMintAccessTokenFallsBackToIssuerAudience(t *testing.T) {
 func TestVerifyAccessTokenRoundTrip(t *testing.T) {
 	signer := testSigner(t)
 	const resource = "https://multica.example.com/api/mcp"
-	token, _, err := signer.MintAccessToken("user-7", resource, ScopeMCP, time.Now())
+	token, _, err := signer.MintAccessToken("user-7", resource, ScopeMCP, "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestVerifyAccessTokenRoundTrip(t *testing.T) {
 // refuses tokens addressed elsewhere.
 func TestVerifyAccessTokenRejectsForeignAudience(t *testing.T) {
 	signer := testSigner(t)
-	token, _, err := signer.MintAccessToken("user-1", "https://attacker.example.com/api/mcp", ScopeMCP, time.Now())
+	token, _, err := signer.MintAccessToken("user-1", "https://attacker.example.com/api/mcp", ScopeMCP, "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestVerifyAccessTokenRejectsForeignAudience(t *testing.T) {
 func TestVerifyAccessTokenAcceptsThisResource(t *testing.T) {
 	signer := testSigner(t)
 	for _, resource := range []string{testIssuer + MCPResourcePath, testIssuer} {
-		token, _, err := signer.MintAccessToken("user-1", resource, ScopeMCP, time.Now())
+		token, _, err := signer.MintAccessToken("user-1", resource, ScopeMCP, "", "", time.Now())
 		if err != nil {
 			t.Fatalf("MintAccessToken: %v", err)
 		}
@@ -169,7 +169,7 @@ func TestVerifyAccessTokenRejectsForeignKey(t *testing.T) {
 	minter := testSigner(t)
 	verifier := testSigner(t) // different key pair, same issuer
 
-	token, _, err := minter.MintAccessToken("user-1", "", ScopeMCP, time.Now())
+	token, _, err := minter.MintAccessToken("user-1", "", ScopeMCP, "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestVerifyAccessTokenRejectsForeignKey(t *testing.T) {
 
 func TestVerifyAccessTokenRejectsExpiredToken(t *testing.T) {
 	signer := testSigner(t)
-	token, _, err := signer.MintAccessToken("user-1", "", ScopeMCP, time.Now().Add(-2*AccessTokenTTL))
+	token, _, err := signer.MintAccessToken("user-1", "", ScopeMCP, "", "", time.Now().Add(-2*AccessTokenTTL))
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestVerifyAccessTokenRejectsForeignIssuer(t *testing.T) {
 	// Same key, different issuer: only the iss check can reject this, which is
 	// what stops one deployment's token from being replayed at another that
 	// happens to share key material.
-	token, _, err := other.MintAccessToken("user-1", "", ScopeMCP, time.Now())
+	token, _, err := other.MintAccessToken("user-1", "", ScopeMCP, "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestNilSignerFailsClosed(t *testing.T) {
 	// A deployment without OAUTH_SIGNING_KEY holds a nil signer; every method
 	// must report the missing key rather than panic.
 	var signer *Signer
-	if _, _, err := signer.MintAccessToken("user-1", "", ScopeMCP, time.Now()); !errors.Is(err, ErrNoSigningKey) {
+	if _, _, err := signer.MintAccessToken("user-1", "", ScopeMCP, "", "", time.Now()); !errors.Is(err, ErrNoSigningKey) {
 		t.Fatalf("nil signer MintAccessToken error = %v, want ErrNoSigningKey", err)
 	}
 	if _, err := signer.VerifyAccessToken("anything"); !errors.Is(err, ErrNoSigningKey) {
@@ -279,7 +279,7 @@ func TestJWKSPublishesTheSigningKey(t *testing.T) {
 func TestMintedTokenCarriesKeyIDHeader(t *testing.T) {
 	// Without kid a client holding a rotated JWKS cannot tell which key to use.
 	signer := testSigner(t)
-	token, _, err := signer.MintAccessToken("user-1", "", ScopeMCP, time.Now())
+	token, _, err := signer.MintAccessToken("user-1", "", ScopeMCP, "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}

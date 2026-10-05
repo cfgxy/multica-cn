@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -1101,6 +1102,12 @@ func (h *Handler) RecordSquadLeaderEvaluation(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "failed to record evaluation")
 		return
 	}
+
+	// RUYI-355: audit twin of the evaluation record (best-effort; the
+	// activity row stays the no_action-suppression lookup authority).
+	service.TryAppendAuditEvents(r.Context(), h.Queries,
+		service.IssueEvent(service.AuditIssueSquadLeaderEvaluated, service.AuditActorAgent,
+			task.AgentID, issue.WorkspaceID, issue.ID, details))
 
 	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), "agent", actorID, map[string]any{
 		"issue_id": uuidToString(issue.ID),

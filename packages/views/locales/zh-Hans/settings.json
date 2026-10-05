@@ -49,6 +49,42 @@
       "cancelled": "决定不做。"
     }
   },
+    "quick_replies": {
+      "title": "快速回复",
+      "description": "Issue 评论框「快速回复」菜单的共享模板。所有成员可读，仅空间管理员可修改；选中后填入评论框，不会直接发送。",
+      "loading": "正在加载快速回复…",
+      "add": "新建快速回复",
+      "empty_title": "还没有快速回复",
+      "empty_hint": "把常用的评论写法存成模板，成员在评论框选中后一键填入。",
+      "reorder_failed": "排序保存失败",
+      "actions": {
+        "open": "打开\"{{name}}\"的操作菜单",
+        "edit": "编辑",
+        "delete": "删除",
+        "reorder": "拖动调整\"{{name}}\"的顺序"
+      },
+      "editor": {
+        "create_title": "新建快速回复",
+        "edit_title": "编辑快速回复",
+        "hint": "成员在评论框选中后，内容会填入输入框，可继续修改再发送。",
+        "name": "名称",
+        "name_placeholder": "例如：跟进发布",
+        "content": "内容",
+        "content_placeholder": "填入评论框的模板正文…",
+        "cancel": "取消",
+        "save": "保存",
+        "saving": "保存中…",
+        "save_failed": "保存失败"
+      },
+      "delete_dialog": {
+        "title": "删除快速回复",
+        "description": "确定删除\"{{name}}\"？所有成员的评论框都会立即不再显示它。",
+        "cancel": "取消",
+        "confirm": "删除",
+        "failed": "删除失败"
+      }
+    }
+,
   "quick_actions": {
     "title": "快捷操作",
     "description": "预先配置好执行的智能体和提示词，之后在任意任务侧边栏一键触发。",
@@ -433,12 +469,14 @@
       "members": "成员",
       "labels": "标签",
       "issue_statuses": "任务状态",
+      "quick_replies": "快速回复",
       "properties": "属性",
       "quick_actions": "快捷操作",
       "plugins": "Plugins",
       "marketplace": "应用市场",
       "mcp": "MCP",
-      "billing": "账单与套餐"
+      "billing": "账单与套餐",
+      "authorizations": "我的授权"
     }
   },
   "plugins": {
@@ -798,6 +836,39 @@
       "copy_command_tooltip": "复制命令",
       "done": "完成"
     }
+  },
+  "authorizations": {
+    "title": "我的授权",
+    "description": "你授予外部 MCP 客户端的授权记录，可随时撤销。",
+    "list_title": "授权记录",
+    "empty": "暂无授权记录。",
+    "col_client": "客户端",
+    "col_scope": "授权范围",
+    "col_authorized_at": "授权时间",
+    "col_last_used": "最近使用",
+    "col_status": "状态",
+    "status_active": "有效",
+    "status_revoked": "已撤销",
+    "revoke": "撤销",
+    "revoke_confirm_title": "撤销该授权？",
+    "revoke_confirm_body": "撤销「{{client}}」的授权后，其存量访问令牌将在缓存窗口内失效（最长约 10 分钟）。",
+    "cancel": "取消"
+  },
+  "oauth_consent": {
+    "brand": "Multica MCP",
+    "title": "{{client}} 请求访问你的账户",
+    "subtitle": "确认后该客户端将以上述权限访问 Multica MCP 服务。",
+    "scopes_title": "请求的权限",
+    "scope_read": "读取任务、空间等数据",
+    "scope_write": "创建与修改任务、评论等数据",
+    "scope_run": "触发任务执行与自动化操作",
+    "scope_legacy": "完整读写与执行权限（旧版授权）",
+    "approve": "允许",
+    "deny": "拒绝",
+    "error_title": "无法继续授权",
+    "expired": "授权请求已过期或不存在，请回到客户端重新发起。",
+    "not_signed_in": "请先登录 Multica，再回到客户端重新发起授权。",
+    "invalid_request": "授权请求无效。"
   },
   "workspace": {
     "section_general": "工作区信息",
@@ -1550,7 +1621,8 @@
       "too_large_body": "请选择小于 5 MB 的图片。",
       "upload_failed_body": "无法上传头像。",
       "remove_failed_title": "移除失败",
-      "remove_failed_body": "无法移除头像。"
+      "remove_failed_body": "无法移除头像。",
+      "permission_library": "需要相册权限才能选择图片。"
     },
     "account": {
       "save_failed_title": "保存失败",

@@ -140,6 +140,10 @@ func (h *Handler) recordSuppressedIssueRun(ctx context.Context, issue db.Issue, 
 	}); err != nil {
 		slog.Warn("insert run_suppressed activity", "issue_id", uuidToString(issue.ID), "error", err)
 	}
+	// RUYI-355: best-effort audit twin, same payload, same disposition.
+	aType, aID := service.AuditActorFor(actorType, actorUUID)
+	service.TryAppendAuditEvents(ctx, h.Queries,
+		service.IssueEvent(service.AuditIssueRunSuppressed, aType, aID, issue.WorkspaceID, issue.ID, details))
 }
 
 // suppressedActivityAction is the activity_log action for an honored
