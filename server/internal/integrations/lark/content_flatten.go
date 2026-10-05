@@ -59,6 +59,38 @@ func flattenContent(msgType, rawContent string) string {
 	}
 }
 
+// mediaPlaceholderWithFilename re-renders the bracketed media placeholder
+// for the msg_types whose body.content declares a file name, so the
+// enricher's context blocks can show WHAT was attached — "[File:
+// 报表.xlsx]" rather than a bare "[File]" (RUYI-448: when the download
+// fails or the agent needs to correlate the block with a delivered
+// attachment, the declared name is the one piece of information it can
+// always rely on). Empty for types that carry no name (image), content
+// without a name field, or unparseable content — the structural
+// placeholder from flattenContent stands unchanged, and the global
+// "[File]"/"[Audio]"/"[Video]" literal contract (title derivation,
+// cross-channel alignment) is never affected.
+func mediaPlaceholderWithFilename(msgType, rawContent string) string {
+	if rawContent == "" {
+		return ""
+	}
+	var payload struct {
+		FileName string `json:"file_name"`
+	}
+	if json.Unmarshal([]byte(rawContent), &payload) != nil || payload.FileName == "" {
+		return ""
+	}
+	switch msgType {
+	case "file":
+		return "[File: " + payload.FileName + "]"
+	case "audio":
+		return "[Audio: " + payload.FileName + "]"
+	case "media", "video":
+		return "[Video: " + payload.FileName + "]"
+	}
+	return ""
+}
+
 // larkPostContent mirrors the RECEIVE-side shape of a `post` rich-text
 // body.content. Crucially this is NOT the locale-wrapped form the SEND
 // API takes ({"zh_cn": {...}}): an inbound post body.content unmarshals
