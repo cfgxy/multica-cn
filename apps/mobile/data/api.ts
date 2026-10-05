@@ -667,9 +667,21 @@ class ApiClient {
   // scope and its count are filtered client-side from this one list, so
   // without the flag the archived segment renders permanently empty
   // (RUYI-346 defect #1).
-  async listAgents(opts?: { signal?: AbortSignal }): Promise<Agent[]> {
+  //
+  // `workspaceSlug` pins the request to a workspace that may differ from the
+  // active mirror (or when no mirror exists yet): share-target lists agents
+  // for the PICKED workspace before any setCurrentWorkspace transition
+  // (RUYI-463 P1 — the mirror used to be the only context carrier, leaving
+  // fresh users with a 400 and a permanently empty list).
+  async listAgents(opts?: {
+    signal?: AbortSignal;
+    workspaceSlug?: string;
+  }): Promise<Agent[]> {
     const raw = await this.fetch<unknown>("/api/agents?include_archived=true", {
       signal: opts?.signal,
+      headers: opts?.workspaceSlug
+        ? { "X-Workspace-Slug": opts.workspaceSlug }
+        : undefined,
     });
     return parseWithFallback(raw, AgentListSchema, EMPTY_AGENT_LIST, {
       endpoint: "listAgents",
