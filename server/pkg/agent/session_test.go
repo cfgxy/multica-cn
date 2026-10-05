@@ -105,10 +105,44 @@ func (h *fakeHandle) closeStreams() {
 	}
 }
 
+// CloseForExit simulates the worker exiting on its own: the tailer proves
+// the exit (Wait unblocks) and ends its streams with EOF.
+func (h *fakeHandle) CloseForExit() {
+	h.mu.Lock()
+	select {
+	case <-h.waitCh:
+	default:
+		close(h.waitCh)
+	}
+	outR, errR := h.stdoutR, h.stderrR
+	h.mu.Unlock()
+	if outR != nil {
+		outR.Close()
+	}
+	if errR != nil {
+		errR.Close()
+	}
+}
+
 func (h *fakeHandle) Signal(sig syscall.Signal) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.signalled = append(h.signalled, sig)
+	// A SIGKILL ends the worker: the tailer proves the exit and EOFs the
+	// streams, exactly what a real supervisor's handle does. Without this
+	// a cancel-driven teardown can never unblock the backend reader that
+	// sits between the lifecycle goroutine and its deferred Wait.
+	if sig == syscall.SIGKILL {
+		// The kill ends the worker: the tailer proves the exit and EOFs
+		// the streams, exactly what a real supervisor's handle does.
+		// async + out of h.mu — closeStreams takes the same lock.
+		select {
+		case <-h.waitCh:
+		default:
+			close(h.waitCh)
+		}
+		go h.closeStreams()
+	}
 	return nil
 }
 
