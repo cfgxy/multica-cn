@@ -1550,7 +1550,8 @@
       "too_large_body": "请选择小于 5 MB 的图片。",
       "upload_failed_body": "无法上传头像。",
       "remove_failed_title": "移除失败",
-      "remove_failed_body": "无法移除头像。"
+      "remove_failed_body": "无法移除头像。",
+      "permission_library": "需要相册权限才能选择图片。"
     },
     "account": {
       "save_failed_title": "保存失败",

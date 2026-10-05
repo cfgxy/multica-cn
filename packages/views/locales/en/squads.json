@@ -149,7 +149,8 @@
     "delete_action": "Delete profile",
     "delete_confirm_title": "Delete “{{name}}”?",
     "delete_confirm_description": "The profile and its member configuration are deleted. This cannot be undone.",
-    "delete_active_warning": "This profile is currently active. Deleting it only clears the active marker — the configuration it wrote to members is not rolled back."
+    "delete_active_warning": "This profile is currently active. Deleting it only clears the active marker — the configuration it wrote to members is not rolled back.",
+    "thinking_default": "runtime default"
   },
   "detail_tabs": {
     "members": "Members",
@@ -209,6 +210,24 @@
   "mobile": {
     "page": {
       "search_placeholder": "Search squads…"
+    },
+    "create": {
+      "avatar_add": "Set avatar",
+      "avatar_hint": "Optional. Shown wherever the squad appears.",
+      "search_placeholder": "Search agents…",
+      "search_empty": "No agents match this search.",
+      "group_my": "My agents",
+      "group_workspace": "Workspace agents"
+    },
+    "detail": {
+      "unsaved_title": "Unsaved changes",
+      "unsaved_keep": "Keep editing",
+      "unsaved_discard": "Discard",
+      "unsaved_body": "Your edits to the instructions haven't been saved yet."
+    },
+    "execution": {
+      "add_member": "Add member",
+      "no_candidates": "Every active agent is already named."
     }
   }
 }
