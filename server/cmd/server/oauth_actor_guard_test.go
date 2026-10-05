@@ -67,7 +67,7 @@ func newOAuthEnabledServer(t *testing.T) (*httptest.Server, *oauth.Signer) {
 
 func mintGuardToken(t *testing.T, signer *oauth.Signer) string {
 	t.Helper()
-	token, _, err := signer.MintAccessToken(testUserID, oauthGuardIssuer+oauth.MCPResourcePath, oauth.ScopeMCP, time.Now())
+	token, _, err := signer.MintAccessToken(testUserID, oauthGuardIssuer+oauth.MCPResourcePath, oauth.ScopeMCP, "", "", time.Now())
 	if err != nil {
 		t.Fatalf("MintAccessToken: %v", err)
 	}
@@ -95,19 +95,26 @@ func callWithBearer(t *testing.T, server *httptest.Server, method, path, bearer,
 	return resp.StatusCode, payload
 }
 
-// The two account-level entry points must refuse the OAuth credential. 403
-// rather than 401: the token authenticated fine, it is the actor kind that is
-// wrong, and the distinction is what tells an operator reading logs apart from
-// a forged token.
+// The account-level entry points must refuse the OAuth credential, whichever
+// guard fires. RUYI-209 pinned handler.RequireHumanActor's own message here;
+// RUYI-420 moved that refusal earlier — middleware.Auth's scope surface check
+// now fails every OAuth token closed outside the MCP surface (see
+// TestAuthOAuthFullScopeStillRejectedOffSurface in internal/middleware), so a
+// Bearer credential can no longer reach RequireHumanActor on these routes at
+// all. 403 rather than 401 still holds: the token authenticated fine, the
+// authority does not cover the route. RequireHumanActor keeps its direct
+// coverage in the handler package (actor_guards_test.go) for the credentials
+// that still reach it, and TestOAuthTokenCreatesNoPATRow below pins that the
+// refused call writes no PAT row.
 func TestOAuthTokenIsRefusedByAccountLevelRoutes(t *testing.T) {
 	server, signer := newOAuthEnabledServer(t)
 	token := mintGuardToken(t, signer)
 
 	// The status code alone is not enough on /api/admin: RequireSuperAdmin
 	// also answers 403, and the test user is not a super admin, so a missing
-	// RequireHumanActor there would still produce a green 403. Assert on the
+	// guard there would still produce a green 403. Assert on the operative
 	// guard's own message so each case pins the guard it is about.
-	const humanActorMessage = "this endpoint is only available to human actors"
+	const insufficientScopeMessage = `"error":"insufficient_scope"`
 
 	cases := []struct {
 		name   string
@@ -127,8 +134,8 @@ func TestOAuthTokenIsRefusedByAccountLevelRoutes(t *testing.T) {
 			if status != http.StatusForbidden {
 				t.Fatalf("%s %s = %d, want 403; body=%s", tc.method, tc.path, status, body)
 			}
-			if !bytes.Contains(body, []byte(humanActorMessage)) {
-				t.Fatalf("%s %s refused by the wrong guard: body=%s, want the actor-source message", tc.method, tc.path, body)
+			if !bytes.Contains(body, []byte(insufficientScopeMessage)) {
+				t.Fatalf("%s %s refused by an unexpected guard: body=%s, want the scope surface message", tc.method, tc.path, body)
 			}
 		})
 	}

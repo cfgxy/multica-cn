@@ -1,11 +1,11 @@
--- Down for 925_agent_context_dual_slot (RUYI-425 stage 1).
+-- Down for 930_agent_context_dual_slot (RUYI-425 stage 1).
 --
--- Restores the pre-925 shape: single runtime slot, no capability column, no
+-- Restores the pre-930 shape: single runtime slot, no capability column, no
 -- registration source, no credential_ref, no server-side credential store,
 -- and the 27-family protocol whitelist (no 'gemini_live'). Rollback
 -- semantics follow design doc §7.5: voice bindings are detached and
 -- voice-family profiles (and their instances and credentials) are removed —
--- the only rows a pre-925 schema cannot represent. Text-slot bindings,
+-- the only rows a pre-930 schema cannot represent. Text-slot bindings,
 -- profiles, instances and agents survive the round trip untouched.
 --
 -- Order matters. Voice bindings must leave agent.voice_runtime_id before the
@@ -13,7 +13,7 @@
 -- ON DELETE RESTRICT foreign key as the text slot (migration 004), so the
 -- database itself refuses to delete a referenced instance. Voice-family rows
 -- must leave agent_runtime and runtime_profile before the narrower CHECK
--- returns (a pre-925 daemon would refuse to register a 'gemini_live' profile
+-- returns (a pre-930 daemon would refuse to register a 'gemini_live' profile
 -- it cannot map to any backend). Credentials must go before their table is
 -- dropped; column drops come last so the cleanup statements above can still
 -- reference the columns they inspect.

@@ -139,6 +139,11 @@ RETURNING *;
 -- Distinguish "field omitted" (preserve) from "explicit clear" via
 -- ClearAgentComposioToolkitAllowlist below, mirroring the
 -- thinking_level / mcp_config two-query pattern: COALESCE can't restore NULL.
+--
+-- expected_revision (RUYI-433): when set, the write only lands if the row
+-- still carries that revision (the optimistic-lock token every config write
+-- bumps); a stale value yields 0 rows and the handler answers 409
+-- revision_conflict with the actual revision. Same contract as UpdateProject.
 UPDATE agent SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
@@ -166,8 +171,10 @@ UPDATE agent SET
     service_tier = COALESCE(sqlc.narg('service_tier'), service_tier),
     conversation_starters = COALESCE(sqlc.narg('conversation_starters'), conversation_starters),
     composio_toolkit_allowlist = COALESCE(sqlc.narg('composio_toolkit_allowlist')::text[], composio_toolkit_allowlist),
-    updated_at = now()
+    updated_at = now(),
+    revision = revision + 1
 WHERE id = $1
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
 RETURNING *;
 
 -- name: MigrateAgentTaskQueueOnRuntimeRebind :execrows
@@ -755,7 +762,8 @@ WHERE id = sqlc.arg(task_id)
 -- is CancelOpenAgentTasksByIssueCancellation (RUYI-384), which keeps in-flight
 -- rows two-phase.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'issue_deleted', cancel_actor_type = 'system'
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
@@ -789,7 +797,13 @@ SET status = CASE WHEN status IN ('queued', 'deferred')
     cancel_requested_by_user_id = CASE WHEN status IN ('dispatched', 'running', 'waiting_local_directory')
                                        THEN sqlc.narg('cancel_requested_by_user_id')::uuid END,
     prepare_lease_expires_at = NULL,
-    failure_reason = CASE WHEN status IN ('queued', 'deferred') THEN 'issue_cancelled' END
+    failure_reason = CASE WHEN status IN ('queued', 'deferred') THEN 'issue_cancelled' END,
+    cancel_reason = CASE WHEN status IN ('queued', 'deferred') THEN 'issue_cancelled' END,
+    cancel_actor_type = CASE WHEN status IN ('queued', 'deferred')
+                             THEN CASE WHEN sqlc.narg('cancel_requested_by_user_id')::uuid IS NOT NULL
+                                       THEN 'member' ELSE 'system' END END,
+    cancel_actor_id = CASE WHEN status IN ('queued', 'deferred')
+                           THEN sqlc.narg('cancel_requested_by_user_id')::uuid END
 WHERE issue_id = $1
   AND status IN ('queued', 'deferred', 'dispatched', 'running', 'waiting_local_directory')
 RETURNING *;
@@ -821,7 +835,8 @@ WHERE issue_id = $1 AND status = 'cancel_requested';
 -- escalations, so rerun keeps its prior "replace the pending plan" behaviour for
 -- those rows.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'reassignment_cleanup', cancel_actor_type = 'system'
 WHERE issue_id = $1 AND agent_id = $2
   AND status IN ('queued', 'dispatched', 'deferred')
 RETURNING *;
@@ -833,7 +848,8 @@ RETURNING *;
 -- (also :many + RETURNING + completed_at) so the three sibling cancel paths
 -- behave consistently.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'agent_stopped', cancel_actor_type = 'system'
 WHERE agent_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
@@ -843,7 +859,8 @@ RETURNING *;
 -- coalesced input; cancellation prevents an agent from acting on a stale or
 -- deleted version. Must run before deletion clears trigger_comment_id.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'trigger_comment_deleted', cancel_actor_type = 'system'
 WHERE (trigger_comment_id = $1 OR $1 = ANY(coalesced_comment_ids))
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
@@ -855,7 +872,8 @@ RETURNING *;
 -- the FK ON DELETE SET NULL would otherwise nullify chat_session_id and we
 -- could no longer reach those tasks.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'chat_session_deleted', cancel_actor_type = 'system'
 WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
@@ -1735,7 +1753,8 @@ RETURNING retry.*;
 -- Automatic cancellation without an explicit persisted failure reason. Unlike
 -- CancelAgentTaskByUser, this deliberately leaves recovery inputs replayable.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'server_repair', cancel_actor_type = 'system'
 WHERE id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
@@ -1748,6 +1767,9 @@ UPDATE agent_task_queue AS task
 SET status = 'cancelled',
     completed_at = now(),
     prepare_lease_expires_at = NULL,
+    cancel_reason = 'user_requested',
+    cancel_actor_type = 'member',
+    cancel_actor_id = sqlc.narg('cancel_actor_id')::uuid,
     delivered_comment_ids = CASE
       -- Chat and ordinary issue tasks almost never carry a delegated-failure
       -- recovery signal. Keep their high-frequency user-cancel path to a
@@ -1852,7 +1874,9 @@ SET status = 'cancelled',
     completed_at = now(),
     error = sqlc.arg('error'),
     failure_reason = sqlc.arg('failure_reason'),
-    prepare_lease_expires_at = NULL
+    prepare_lease_expires_at = NULL,
+    cancel_reason = 'server_repair',
+    cancel_actor_type = 'system'
 WHERE id = sqlc.arg('id') AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
@@ -1860,7 +1884,8 @@ RETURNING *;
 -- Queue editing is a compare-and-set: never cancel a task that the daemon
 -- promoted between the user's click and this statement.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'user_requested', cancel_actor_type = 'member'
 WHERE id = sqlc.arg('id')
   AND chat_session_id = sqlc.arg('chat_session_id')
   AND status = 'queued'
@@ -1889,7 +1914,8 @@ WITH head AS MATERIALIZED (
   LIMIT 1
 )
 UPDATE agent_task_queue AS queued
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'chat_session_deleted', cancel_actor_type = 'system'
 WHERE queued.chat_session_id = $1
   AND queued.status = 'queued'
   AND queued.id IS DISTINCT FROM (SELECT id FROM head)
@@ -2151,7 +2177,10 @@ SET status = 'cancelled',
     prepare_lease_expires_at = NULL,
     error = sqlc.narg('error'),
     failure_reason = sqlc.narg('failure_reason'),
-    parent_task_id = sqlc.narg('parent_task_id')::uuid
+    parent_task_id = sqlc.narg('parent_task_id')::uuid,
+    cancel_reason = 'consumed_by_running_task',
+    cancel_actor_type = 'agent',
+    cancel_actor_id = sqlc.narg('parent_task_id')::uuid
 WHERE issue_id = sqlc.arg('issue_id')::uuid
   AND agent_id = sqlc.arg('agent_id')::uuid
   AND status = 'queued'
@@ -2496,7 +2525,8 @@ ORDER BY atq.priority DESC, atq.created_at ASC;
 -- fires precisely when the rerun has STARTED, which is when the row would
 -- otherwise no longer look blocked.
 UPDATE agent_task_queue r
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'superseded_by_retry', cancel_actor_type = 'system'
 WHERE r.runtime_id = ANY(@runtime_ids::uuid[])
   AND r.status = 'deferred'
   AND r.issue_id IS NOT NULL
@@ -2635,7 +2665,8 @@ RETURNING *;
 
 -- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancel_reason = 'escalation_acknowledged', cancel_actor_type = 'system'
 WHERE escalation_for_task_id = $1
   AND status IN ('deferred', 'queued', 'dispatched', 'waiting_local_directory')
 RETURNING *;
@@ -2643,7 +2674,8 @@ RETURNING *;
 -- name: CancelDeferredEscalationsForIssueAgent :many
 WITH cancelled AS (
     UPDATE agent_task_queue fallback
-    SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
+    SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+        cancel_reason = 'escalation_acknowledged', cancel_actor_type = 'system'
     FROM agent_task_queue primary_task
     WHERE fallback.escalation_for_task_id = primary_task.id
       AND fallback.status IN ('deferred', 'queued', 'dispatched', 'waiting_local_directory')
@@ -3056,7 +3088,11 @@ RETURNING *;
 -- run. CAS on status='cancel_requested' makes both entries idempotent and
 -- keeps a completed/failed row untouched.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = COALESCE(completed_at, now())
+SET status = 'cancelled', completed_at = COALESCE(completed_at, now()),
+    cancel_reason = 'user_requested',
+    cancel_actor_type = CASE WHEN cancel_requested_by_user_id IS NOT NULL
+                             THEN 'member' ELSE 'system' END,
+    cancel_actor_id = cancel_requested_by_user_id
 WHERE id = $1 AND status = 'cancel_requested'
 RETURNING *;
 
@@ -3227,7 +3263,11 @@ WITH victims AS (
   FOR UPDATE OF task SKIP LOCKED
 )
 UPDATE agent_task_queue AS task
-SET status = 'cancelled', completed_at = COALESCE(task.completed_at, now())
+SET status = 'cancelled', completed_at = COALESCE(task.completed_at, now()),
+    cancel_reason = 'runtime_offline_converged',
+    cancel_actor_type = CASE WHEN task.cancel_requested_by_user_id IS NOT NULL
+                             THEN 'member' ELSE 'system' END,
+    cancel_actor_id = task.cancel_requested_by_user_id
 FROM victims
 WHERE task.id = victims.id
   AND task.status = 'cancel_requested'

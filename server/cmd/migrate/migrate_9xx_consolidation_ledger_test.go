@@ -116,17 +116,21 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 // never applied on a pre-consolidation database and reach its ledger via the
 // normal migrator.
 var postConsolidationStems = []string{
-	"917_issue_run_cancellation_fence",   // RUYI-384
-	"918_issue_decisions",                // RUYI-345
-	"919_issue_dependency_relationships", // RUYI-351 (consolidates 958+959)
-	"920_project_revision",               // RUYI-354
-	"921_prompt_version_snapshot_scope",  // RUYI-285
-	"922_channel_capability_state",       // RUYI-400
-	"923_prompt_proposal_jev_advisory",   // RUYI-347
-	"924_agent_resource_weight",          // RUYI-397
-	"925_agent_context_dual_slot",        // RUYI-425
-	"926_live_session",                   // RUYI-425 stage 3
-	"927_voice_fact_event",               // RUYI-425 stage 4
+	"917_issue_run_cancellation_fence",     // RUYI-384
+	"918_issue_decisions",                  // RUYI-345
+	"919_issue_dependency_relationships",   // RUYI-351 (consolidates 958+959)
+	"920_project_revision",                 // RUYI-354
+	"921_prompt_version_snapshot_scope",    // RUYI-285
+	"922_channel_capability_state",         // RUYI-400
+	"923_prompt_proposal_jev_advisory",     // RUYI-347
+	"924_agent_resource_weight",            // RUYI-397
+	"925_oauth_management",                 // RUYI-420
+	"926_activity_audit",                   // RUYI-355
+	"928_agent_execution_profile_revision", // RUYI-433
+	"929_quick_replies",                    // RUYI-435 (renumbered from 926: yielded to RUYI-355's 926_activity_audit on main)
+	"930_agent_context_dual_slot",          // RUYI-425
+	"931_live_session",                     // RUYI-425 stage 3
+	"932_voice_fact_event",                 // RUYI-425 stage 4
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

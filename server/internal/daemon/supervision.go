@@ -23,14 +23,57 @@ import (
 // default under ~/.multica, which survives daemon restarts by construction.
 const supervisedRunsDirEnv = "MULTICA_SUPERVISOR_RUNS_DIR"
 
-// supervisedProviders is the Phase 1 runtime whitelist: providers whose
-// worker protocol tolerates a mid-run daemon restart on reattach. The
-// bidirectional ACP family (hermes/kimi/kiro/mcode/zcode/qoder/dim/…, codex
-// app-server) owns an RPC session state machine that cannot re-enter a turn
-// without protocol-level state recovery — Phase 2. The code layer routes
-// every provider through agent's workerSession either way; this whitelist
-// only decides where the daemon injects Supervision.
-var supervisedProviders = map[string]bool{"claude": true}
+// supervisedProviders is the runtime whitelist whose workers tolerate a
+// mid-run daemon restart on reattach. Phase 1 carried claude only; RUYI-390
+// adds the ACP family plus zcode and deerflow: their bidirectional sessions
+// rebuild daemon-side state from the wire instead of replaying it — session
+// ids arrive on every session/update notification, responses to requests the
+// dead daemon sent are tolerated as orphans, and a reattached client skips
+// the handshake and prompt because the worker already consumed them.
+// "cloud" needs no entry: it is not a provider key but the cloud-mode
+// deployment of this same daemon, whose tasks still carry a concrete
+// provider and therefore inherit this decision.
+//
+// The code layer routes every provider through agent's workerSession either
+// way; this whitelist only decides where the daemon injects Supervision.
+//
+// Lifecycle note (updated 2026-10-05, RUYI-390): these entries rode Phase
+// 1's terminal-collection and reattach judgment while the stuck-running
+// root cause was open (provisional then). The lifecycle has since
+// converged: stdin EOF reaches the worker (RUYI-424), a finishing worker
+// gets a bounded natural-exit window with cancel as the fallback
+// (finishWorkerStdin), and the final→completed convergence is pinned end
+// to end by the ruyi349e2e lifecycle scenarios. New runtimes still enter
+// through this whitelist plus the supervisedTargets registration, under
+// RUYI-349's unified lifecycle plan.
+var supervisedProviders = map[string]bool{
+	"claude": true,
+	// ACP family + zcode + deerflow (RUYI-390 phase 2).
+	"hermes": true, "kimi": true, "kiro": true, "qoder": true,
+	"qoderclicn": true, "traecli": true, "grok": true, "qwenpaw": true,
+	"mcode": true, "dim": true, "zeroclaw": true, "deerflow": true,
+	"reasonix": true, "zcode": true,
+}
+
+// supervisedTargets enumerates the phase 2 additions for tests: each entry
+// must plan a supervised run, pinning its launch path.
+var supervisedTargets = []string{
+	"hermes", "kimi", "kiro", "qoder", "qoderclicn", "traecli", "grok",
+	"qwenpaw", "mcode", "dim", "zeroclaw", "deerflow", "reasonix", "zcode",
+}
+
+// supervisedProviderFamily resolves a task provider to the protocol family
+// the supervision decision applies to. Builtin runtime identities (e.g.
+// "omp") are not protocol families; they dispatch to one via
+// agent.BuiltinRuntimes, and the whitelist must follow that family so a
+// future ACP-family builtin runtime inherits supervision without a
+// whitelist edit. Non-runtime ids pass through unchanged.
+func supervisedProviderFamily(provider string) string {
+	if desc, ok := agent.BuiltinRuntimeByID(provider); ok {
+		return desc.ProtocolFamily
+	}
+	return provider
+}
 
 // setupSupervisor builds the daemon's WorkerSupervisor when this host can
 // run transient user units. Leaves d.supervisor nil (and logs why) when any
@@ -139,6 +182,23 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 				"decision", res.Decision.String(), "reason", res.Reason)
 		}
 	}
+
+	// After the pass settles the classifications, reclaim spent evidence:
+	// runs consumed past the retention window. Runs converged by THIS pass
+	// are inside the window and survive until a later pass.
+	gc := &supervisor.RetentionGC{
+		Mgr:   d.supervisor.Manager(),
+		Units: d.supervisor.Systemd(),
+		Log:   d.logger,
+	}
+	summary, err := gc.Run(ctx)
+	if err != nil {
+		d.logger.Warn("supervisor retention GC failed", "error", err)
+		return
+	}
+	if summary.Removed > 0 {
+		d.logger.Info("supervisor retention GC", "removed", summary.Removed, "run_ids", summary.RemovedRunIDs)
+	}
 }
 
 // runIDSanitizer matches what ValidateRunID accepts: lowercase, digits and
@@ -177,7 +237,7 @@ func sanitizeRunID(taskID string) string {
 // from (hex digits and dashes only); a task id outside that grammar after
 // sanitizing falls back to the legacy path rather than guessing.
 func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.Supervision {
-	if d.supervisor == nil || !supervisedProviders[provider] || attempt < 1 {
+	if d.supervisor == nil || attempt < 1 || !supervisedProviders[supervisedProviderFamily(provider)] {
 		return nil
 	}
 	base := fmt.Sprintf("%s-%d", sanitizeRunID(taskID), attempt)

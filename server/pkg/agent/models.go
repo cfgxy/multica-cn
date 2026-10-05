@@ -493,6 +493,15 @@ func modelIDForCapabilityLookup(providerType, model string) string {
 	return claudeContextWindowTagRe.ReplaceAllString(model, "")
 }
 
+// ModelCatalogLookupID is the API-layer form of modelIDForCapabilityLookup
+// (RUYI-433): server-side catalog validation maps the submitted model onto
+// this identity before comparing it against a runtime's advertised catalog,
+// so a Claude context-window variant matches its base model's entry. It
+// never changes the value persisted on the agent.
+func ModelCatalogLookupID(providerType, model string) string {
+	return modelIDForCapabilityLookup(providerType, model)
+}
+
 func acceptedModelIDsForProvider(providerType string) (map[string]bool, bool) {
 	switch {
 	case providerType == "claude":

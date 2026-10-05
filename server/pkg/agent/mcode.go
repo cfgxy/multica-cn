@@ -146,6 +146,13 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	resCh := make(chan Result, 1)
 	var deliverable acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
 
@@ -198,11 +205,11 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		defer msgStream.close()
 		defer close(resCh)
 		defer func() {
-			_ = stdin.Close()
-			// Cancellation must remain reachable before Wait. MCode or a tool
-			// descendant may ignore stdin EOF, so waiting first can deadlock every
-			// early-return path, including a rejected session resume.
-			cancel()
+			// EOF first, bounded natural-exit window; the fallback cancel
+			// keeps every early-return path reachable — MCode or a tool
+			// descendant that ignores stdin EOF cannot wedge the Wait past
+			// the grace.
+			finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "mcode")
 			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
@@ -213,113 +220,128 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		var sessionID string
 		var resumeRejected bool
 
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "initialize", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		mcpServers = filterACPMcpServersByCapability(
-			mcpServers,
-			extractACPMcpCapabilities(initResult),
-			"mcode",
-			b.cfg,
-		)
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" {
-			if !mcodeLoadSessionSupported(initResult) {
-				finalStatus = "failed"
-				finalError = "mcode ACP does not support session loading; retry with a fresh session"
-				resumeRejected = true
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					ResumeRejected: true,
-				}
-				return
-			}
-			if err := mcodeWaitForSessionStartup(runCtx); err != nil {
-				finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/load", err)
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					ResumeRejected: resumeRejected,
-				}
-				return
-			}
-			result, loadErr := c.request(runCtx, "session/load", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if loadErr != nil {
-				finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/load", loadErr)
-				if finalStatus == "failed" && isACPSessionNotFound(loadErr) {
-					resumeRejected = true
-				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					ResumeRejected: resumeRejected,
-				}
-				return
-			}
-			sessionID, _ = resolveResumedSessionID(opts.ResumeSessionID, result)
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("mcode reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "mcode")
+			sessionID = c.observedSessionID()
 		} else {
-			if err := mcodeWaitForSessionStartup(runCtx); err != nil {
-				finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/new", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			result, newErr := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
-			})
-			if newErr != nil {
-				finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/new", newErr)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				resCh <- Result{
-					Status:     "failed",
-					Error:      "mcode session/new returned no session ID",
-					DurationMs: time.Since(startTime).Milliseconds(),
-				}
-				return
-			}
-		}
 
-		c.sessionID = sessionID
-		if opts.SystemPrompt != "" {
-			b.cfg.Logger.Debug("mcode ignoring ExecOptions.SystemPrompt; using cwd-scoped AGENTS.md", "cwd", opts.Cwd)
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
+			})
+			if err != nil {
+				finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "initialize", err)
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+				return
+			}
+
+			mcpServers = filterACPMcpServersByCapability(
+				mcpServers,
+				extractACPMcpCapabilities(initResult),
+				"mcode",
+				b.cfg,
+			)
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			if opts.ResumeSessionID != "" {
+				if !mcodeLoadSessionSupported(initResult) {
+					finalStatus = "failed"
+					finalError = "mcode ACP does not support session loading; retry with a fresh session"
+					resumeRejected = true
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						ResumeRejected: true,
+					}
+					return
+				}
+				if err := mcodeWaitForSessionStartup(runCtx); err != nil {
+					finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/load", err)
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				result, loadErr := c.request(runCtx, "session/load", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if loadErr != nil {
+					finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/load", loadErr)
+					if finalStatus == "failed" && isACPSessionNotFound(loadErr) {
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				sessionID, _ = resolveResumedSessionID(opts.ResumeSessionID, result)
+			} else {
+				if err := mcodeWaitForSessionStartup(runCtx); err != nil {
+					finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/new", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				result, newErr := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if newErr != nil {
+					finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/new", newErr)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					resCh <- Result{
+						Status:     "failed",
+						Error:      "mcode session/new returned no session ID",
+						DurationMs: time.Since(startTime).Milliseconds(),
+					}
+					return
+				}
+			}
+
+			c.sessionID = sessionID
+			if opts.SystemPrompt != "" {
+				b.cfg.Logger.Debug("mcode ignoring ExecOptions.SystemPrompt; using cwd-scoped AGENTS.md", "cwd", opts.Cwd)
+			}
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": prompt},
+				},
+			})
 		}
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": prompt},
-			},
-		})
-		if err != nil {
-			finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/prompt", err)
-			if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+		if promptErr != nil {
+			finalStatus, finalError = mcodeRequestFailure(runCtx, opts.Timeout, "session/prompt", promptErr)
+			if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 				resumeRejected = true
 				sessionID = ""
 			}
@@ -341,8 +363,7 @@ func (b *mcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		streamingCurrentTurn.Store(false)
 
 		duration := time.Since(startTime)
-		_ = stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "mcode")
 		<-readerDone
 		<-stderrDone
 

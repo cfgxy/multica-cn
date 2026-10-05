@@ -193,121 +193,135 @@ func (b *qwenpawBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		var sessionID string
 		var resumeRejected bool
 
-		// 1. Initialize handshake.
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("qwenpaw initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var promptErr error
+		if sess.Reattaching() {
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("qwenpaw reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "qwenpaw")
+			sessionID = c.observedSessionID()
+		} else {
 
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "qwenpaw", b.cfg)
-
-		// 2. Create or resume a session.
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" {
-			loadParams := map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			}
-			if cwd != "." {
-				loadParams["_meta"] = map[string]any{
-					"qwenpaw.coding_project_dir": cwd,
-				}
-			}
-			result, err := c.request(runCtx, "session/load", loadParams)
+			// 1. Initialize handshake.
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
+			})
 			if err != nil {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("qwenpaw session/load failed: %v", err)
-				if isACPSessionNotFound(err) {
-					sessionID = ""
-					resumeRejected = true
+				finalError = fmt.Sprintf("qwenpaw initialize failed: %v", err)
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+				return
+			}
+
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "qwenpaw", b.cfg)
+
+			// 2. Create or resume a session.
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			if opts.ResumeSessionID != "" {
+				loadParams := map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
 				}
+				if cwd != "." {
+					loadParams["_meta"] = map[string]any{
+						"qwenpaw.coding_project_dir": cwd,
+					}
+				}
+				result, err := c.request(runCtx, "session/load", loadParams)
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("qwenpaw session/load failed: %v", err)
+					if isACPSessionNotFound(err) {
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+					return
+				}
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
+						"backend", "qwenpaw",
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
+					)
+				}
+			} else {
+				newParams := map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				}
+				if cwd != "." {
+					newParams["_meta"] = map[string]any{
+						"qwenpaw.coding_project_dir": cwd,
+					}
+				}
+				result, err := c.request(runCtx, "session/new", newParams)
+				if err != nil {
+					// Handle context timeout as "session/new failed"
+					if runCtx.Err() == context.DeadlineExceeded {
+						finalStatus = "timeout"
+						finalError = fmt.Sprintf("qwenpaw timed out during session/new: %v", timeout)
+					} else if runCtx.Err() == context.Canceled {
+						finalStatus = "aborted"
+						finalError = fmt.Sprintf("qwenpaw aborted: %v", err)
+					} else {
+						finalStatus = "failed"
+						finalError = fmt.Sprintf("qwenpaw session/new failed: %v", err)
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "qwenpaw session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+			}
+
+			if sessionID == "" {
+				// Can't continue without a session.
+				finalStatus = "failed"
+				finalError = "qwenpaw session ID is empty"
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
 				return
 			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "qwenpaw",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
+
+			c.sessionID = sessionID
+			b.cfg.Logger.Info("qwenpaw session created", "session_id", sessionID)
+
+			// 3. Build the prompt content. If we have a system prompt, prepend it.
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
 			}
-		} else {
-			newParams := map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
-			}
-			if cwd != "." {
-				newParams["_meta"] = map[string]any{
-					"qwenpaw.coding_project_dir": cwd,
-				}
-			}
-			result, err := c.request(runCtx, "session/new", newParams)
-			if err != nil {
-				// Handle context timeout as "session/new failed"
-				if runCtx.Err() == context.DeadlineExceeded {
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("qwenpaw timed out during session/new: %v", timeout)
-				} else if runCtx.Err() == context.Canceled {
-					finalStatus = "aborted"
-					finalError = fmt.Sprintf("qwenpaw aborted: %v", err)
-				} else {
-					finalStatus = "failed"
-					finalError = fmt.Sprintf("qwenpaw session/new failed: %v", err)
-				}
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "qwenpaw session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
+
+			// 4. Send the prompt and wait for PromptResponse.
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
 		}
-
-		if sessionID == "" {
-			// Can't continue without a session.
-			finalStatus = "failed"
-			finalError = "qwenpaw session ID is empty"
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
-			return
-		}
-
-		c.sessionID = sessionID
-		b.cfg.Logger.Info("qwenpaw session created", "session_id", sessionID)
-
-		// 3. Build the prompt content. If we have a system prompt, prepend it.
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
-
-		// 4. Send the prompt and wait for PromptResponse.
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("qwenpaw timed out after %s", timeout)
@@ -316,8 +330,8 @@ func (b *qwenpawBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("qwenpaw session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("qwenpaw session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					sessionID = ""
 					resumeRejected = true
 				}
@@ -337,8 +351,7 @@ func (b *qwenpawBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("qwenpaw finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "qwenpaw")
 
 		<-readerDone
 		<-stderrDone
