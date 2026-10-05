@@ -489,5 +489,20 @@
     "badge_configured": "已配置 ✓",
     "badge_invalid": "凭据失效",
     "badge_not_configured": "未配置"
+  },
+  "voice_instance_create": {
+    "action": "添加语音实例",
+    "title": "注册语音实例",
+    "description": "手动注册一个 Gemini Live 实例供本工作区使用。名称允许重复；API Key 加密存储，保存后不再显示。",
+    "name_placeholder": "例如：Gemini Live（个人）",
+    "no_profiles": "本工作区还没有语音协议 Profile。",
+    "create_default_profile": "创建 Gemini Live Profile",
+    "key_placeholder": "粘贴 Gemini API Key",
+    "submit": "注册",
+    "creating": "注册中…",
+    "created": "语音实例已注册",
+    "created_probe_invalid": "已注册，但连通性检查失败——请检查 API Key",
+    "create_failed": "注册语音实例失败",
+    "key_save_failed": "已注册，但保存 API Key 失败——请在实例设置中补填"
   }
 }
