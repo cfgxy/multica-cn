@@ -72,6 +72,7 @@ if [ -n "\$query" ]; then
   if [ -n "\$name" ]; then grep -Fqx "\$name" "\$dbs" && echo 1 || echo 0; exit 0; fi
   name="\$(printf '%s' "\$query" | sed -n "s/^SELECT datname FROM pg_database WHERE pg_get_userbyid(datdba)='\\(.*\\)' AND datname <> '.*'\$/\\1/p")"
   if [ -n "\$name" ]; then cat "$state/scratch-\$name" 2>/dev/null; exit 0; fi
+  case "\$query" in *"LIKE 'multica%'"*) cat "$state/audit-dbs" 2>/dev/null; exit 0 ;; esac
   [ "\$query" = "SELECT 1" ] && { echo 1; exit 0; }
   exit 0
 fi
@@ -139,6 +140,45 @@ chmod +x "$fake_bin/multica"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_bin/make"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_bin/go"
 chmod +x "$fake_bin/make" "$fake_bin/go"
+
+# --- fake ss/lsof/curl: the sandbox never sees the real host's listeners ----
+# dev-env's port checks (start_api/up, audit) must be decided by sandbox state,
+# not by whichever slots happen to be running on the test machine — otherwise
+# the suite is red whenever dev1's api is live. Listeners are seeded as
+# "port pid" lines in $state/ss-listeners; curl never reaches a server.
+ss_listeners="$state/ss-listeners"
+: >"$ss_listeners"
+cat > "$fake_bin/ss" <<SSEOF
+#!/usr/bin/env bash
+args="\$*"
+case "\$args" in
+  *"sport = :"*)
+    want="\${args##*sport = :}"
+    want="\${want%%[!0-9]*}"
+    ;;
+  *)
+    want=""
+    ;;
+esac
+while IFS= read -r entry; do
+  [ -n "\$entry" ] || continue
+  p="\${entry%% *}"; pid="\${entry#* }"
+  if [ -n "\$want" ]; then
+    [ "\$p" = "\$want" ] || continue
+  fi
+  printf 'LISTEN 0 128 127.0.0.1:%s 0.0.0.0:* users:(("stub",pid=%s,fd=5))\n' "\$p" "\$pid"
+done < "$ss_listeners"
+exit 0
+SSEOF
+chmod +x "$fake_bin/ss"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fake_bin/lsof"
+printf '#!/usr/bin/env bash\nexit 7\n' > "$fake_bin/curl"
+chmod +x "$fake_bin/lsof" "$fake_bin/curl"
+
+# Absolute path to the real ss, captured BEFORE the fakes take over PATH —
+# the audit stubs use it to find the true socket-owning pid.
+real_ss="$(command -v ss || true)"
+[ -n "$real_ss" ] || { echo "FAIL: audit stubs need a real ss binary"; exit 1; }
 
 export PATH="$fake_bin:$PATH"
 
@@ -782,6 +822,133 @@ bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "q
 bash "$repo/scripts/qa-clean.sh" --yes > "$out" 2>&1 || fail "qa-clean unscoped --yes must succeed"
 [ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "qa-clean unscoped --yes must not destroy a slot it has no owner for"
 require_contains "$out" "skipped slot dev2"
+
+# ---------------------------------------------------------------------------
+# RUYI-431: dual-server test windows on the two fixed slots. One issue may
+# hold BOTH slots at once — two independent servers on two fixed fact sets,
+# never a second slot model — and a qa-phase holder closes its window with
+# lock-release while its issue is still in_progress. The dev phase keeps the
+# closure-only rule.
+# ---------------------------------------------------------------------------
+rm -rf "$MULTICA_SLOTS_HOME/dev1" "$MULTICA_SLOTS_HOME/dev2"
+printf 'in_progress' > "$state/issue-$issue_a"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use --phase qa > "$out" 2>&1 || fail "dual-window: use dev1 --phase qa must succeed"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev2 use --phase qa > "$out" 2>&1 || fail "dual-window: the same issue must be able to hold the second slot"
+grep -q '^PHASE=qa' "$MULTICA_SLOTS_HOME/dev1/manifest.env" || fail "dual-window: dev1 must be armed in the qa phase"
+grep -q "OWNER_ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev2/.slot-lock" || fail "dual-window: dev2's lease must name the same issue"
+
+dev_env list --json > "$out" 2>&1 || fail "dual-window: list --json must work"
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  const held = a.filter(s => s.lease_issue === process.argv[1]);
+  if (held.length !== 2 || !held.every(s => s.phase === "qa")) process.exit(1);
+' "$issue_a" < "$out" || fail "dual-window: list --json must show both slots held by one issue in qa phase"
+
+# The window closes the moment the test ends: the qa-phase holder releases
+# both slots without waiting for the issue to leave in_progress and without
+# --force.
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release > "$out" 2>&1 || fail "qa-window: lock-release of dev1 must succeed while the issue is in_progress"
+[ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "qa-window: dev1's lease must be gone"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev2 lock-release > "$out" 2>&1 || fail "qa-window: lock-release of dev2 must succeed"
+[ ! -f "$MULTICA_SLOTS_HOME/dev2/.slot-lock" ] || fail "qa-window: dev2's lease must be gone"
+
+# The dev phase keeps the closure-only rule: an in_progress issue cannot
+# release its development slot, owner or not.
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "qa-window: rebinding dev1 in dev phase must succeed"
+status=0
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "qa-window: dev-phase lock-release while in_progress must stay refused"
+require_contains "$out" "still in_progress"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "qa-window: cleanup release must succeed"
+
+# ---------------------------------------------------------------------------
+# audit (RUYI-431): report-only bypass detection. Unregistered multica_%
+# databases on the shared instance and Multica-shaped listeners outside the
+# slot model are listed; registered facts never are. Exit 1 = findings,
+# and the verb never kills or drops anything.
+# ---------------------------------------------------------------------------
+printf 'multica|1 GB\nmultica_dev1|120 MB\nmultica_dev2|130 MB\nmultica_qa415ra|16 MB\nmultica_c1|16 MB\n' > "$state/audit-dbs"
+status=0
+dev_env audit > "$out" 2>&1 || status=$?
+[ "$status" = 1 ] || fail "audit must exit 1 while unregistered multica_% databases exist"
+require_contains "$out" "unregistered-database"
+require_contains "$out" "multica_qa415ra"
+require_contains "$out" "multica_c1"
+require_absent "$out" "unregistered-database	multica_dev1"
+require_absent "$out" "unregistered-database	multica_dev2"
+require_absent "$out" "unregistered-database	multica	"
+
+dev_env audit --json > "$out" 2>&1 || true
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  if (!Array.isArray(a)) process.exit(1);
+  const dbs = a.filter(f => f.class === "unregistered-database").map(f => f.detail);
+  if (!dbs.some(d => d.startsWith("multica_qa415ra"))) process.exit(1);
+  if (dbs.some(d => d.startsWith("multica_dev1") || d.startsWith("multica ("))) process.exit(1);
+' < "$out" || fail "audit --json must classify unregistered databases only"
+
+# A listener whose DATABASE_URL names an unregistered multica_% database is a
+# bypass server even on a port the registry never mentions. The stub is
+# bounded three ways: a memory ulimit, a timeout suicide timer, and an
+# explicit kill verified by the port actually closing. The real ss (absolute
+# path — PATH carries the sandbox ss) reports the socket-owning pid, exactly
+# what production discovery would see; the stub is then registered into the
+# sandbox listener table so the tool under test finds it there.
+audit_stub() { # port db-url [extra env K=V...] -> echoes the listening pid
+  local port=$1 url=$2; shift 2
+  # stdio detached: a background child holding this function's stdout pipe
+  # would keep the caller's command substitution open until timeout kills it.
+  ( ulimit -v 2097152; cd "$tmp_dir" 2>/dev/null || cd /
+    exec timeout 60 env "$@" DATABASE_URL="$url" \
+      node -e "require('net').createServer(()=>{}).listen($port, '127.0.0.1')" ) \
+    </dev/null >/dev/null 2>&1 &
+  local waited=0 listener=""
+  while [ "$waited" -lt 50 ]; do
+    listener="$("$real_ss" -ltnp "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9]\{1,\}\).*/\1/p' | head -1)"
+    [ -n "$listener" ] && break
+    waited=$((waited + 1)); sleep 0.1
+  done
+  [ -n "$listener" ] || fail "audit stub on :$port never came up"
+  printf '%s %s\n' "$port" "$listener" >> "$state/ss-listeners"
+  printf '%s' "$listener"
+}
+audit_stub_down() { # listening-pid port
+  kill "$1" 2>/dev/null || true
+  local waited=0
+  while "$real_ss" -ltn "sport = :$2" 2>/dev/null | grep -q LISTEN; do
+    waited=$((waited + 1)); [ "$waited" -lt 100 ] || break
+    sleep 0.1
+  done
+  grep -v "^$2 " "$state/ss-listeners" > "$state/ss-listeners.next" \
+    && mv "$state/ss-listeners.next" "$state/ss-listeners" || : > "$state/ss-listeners"
+}
+
+stub_bypass="$(audit_stub 21999 "postgres://qa:pw@localhost:5432/multica_qa415ra?sslmode=disable")"
+status=0
+dev_env audit > "$out" 2>&1 || status=$?
+[ "$status" = 1 ] || fail "audit must flag the DATABASE_URL bypass stub"
+require_contains "$out" "bypass-listener"
+require_contains "$out" "$stub_bypass"
+require_contains "$out" "multica_qa415ra"
+audit_stub_down "$stub_bypass" 21999
+
+# Slot-tagged processes and registered-database URLs are the slot model's own:
+# neither may be reported, whatever port they sit on. The JSON must also PARSE —
+# a half-finished scan that crashed partway would otherwise sneak past the
+# pid-absence greps.
+stub_tagged="$(audit_stub 21998 "postgres://qa:pw@localhost:5432/multica_qa415ra?sslmode=disable" MULTICA_SLOT=dev1)"
+stub_registered="$(audit_stub 21997 "postgres://dev1_app:pw@localhost:5432/multica_dev1?sslmode=disable")"
+dev_env audit --json > "$out" 2>&1 || true
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  if (!Array.isArray(a)) process.exit(1);
+  const hits = a.filter(f => JSON.stringify(f).includes(process.argv[1])
+                             || JSON.stringify(f).includes(process.argv[2]));
+  process.exit(hits.length ? 1 : 0);
+' "$stub_tagged" "$stub_registered" < "$out" \
+  || fail "audit must skip MULTICA_SLOT-tagged and registered-database listeners"
+audit_stub_down "$stub_tagged" 21998
+audit_stub_down "$stub_registered" 21997
 
 echo ""
 echo "All dev-env slot tests passed."
