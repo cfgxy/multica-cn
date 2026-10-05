@@ -287,9 +287,15 @@ node -e '
   if (b.slot_cpus !== 4) process.exit(1);
   const m = b.components;
   if (m.api.memory_mb !== 768 || m.web.memory_mb !== 8192 ||
-      m.daemon.memory_mb !== 256 || m.desktop.memory_mb !== 256) process.exit(1);
+      m.daemon.memory_mb !== 256 || m.desktop.memory_mb !== 256 ||
+      m.mcp.memory_mb !== 256) process.exit(1);
   if (b.shared_postgres.memory !== "2g" || b.shared_postgres.cpus !== 4) process.exit(1);
 ' "$repo/scripts/slots.json" || fail "slots.json must carry the two-slot resource budget"
+
+# The per-slot MCP Node port is a fixed fact too (RUYI-428): dev1=13001,
+# dev2=13002, base 13000 + slot index — same shape as the other port columns.
+grep -q '"mcp_port": 13001' "$repo/scripts/slots.json" || fail "dev1's mcp_port must be a registered fact"
+grep -q '"mcp_port": 13002' "$repo/scripts/slots.json" || fail "dev2's mcp_port must be a registered fact"
 
 # component_resource_env translates the budget into per-component env so the
 # quota travels with the process even before the watchdog is up.
@@ -297,7 +303,8 @@ for check in \
   'api|GOMEMLIMIT=768MiB' \
   'api|GOMAXPROCS=4' \
   'web|--max-old-space-size=8192' \
-  'daemon|GOMEMLIMIT=256MiB'; do
+  'daemon|GOMEMLIMIT=256MiB' \
+  'mcp|--max-old-space-size=256'; do
   comp="${check%%|*}"; want="${check#*|}"
   bash -c 'source "$1"; require_slot dev2; component_resource_env "$2"' _ "$repo/scripts/dev-env.sh" "$comp" > "$out" 2>&1 \
     || fail "component_resource_env $comp must work"
@@ -566,6 +573,22 @@ fi
 if grep -q '^POSTGRES_USER=multica$' "$slot_env"; then
   fail "slot env must never use the main role as its identity"
 fi
+# MCP_URL assembly (RUYI-428): the slot env carries both the proxy target the
+# web process reads (MCP_URL) and the port the mcp-dev Makefile target binds
+# (MULTICA_MCP_PORT), so the dev /api/mcp path never depends on a hand-started
+# MCP process.
+grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "slot env must carry MCP_URL pointing at the slot MCP port"
+grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "slot env must carry the slot MCP port for the mcp-dev target"
+
+# Env files generated before RUYI-428 predate the MCP lines: `use` upgrades
+# them in place (append only) instead of regenerating, so the stored account
+# password — the one the shared instance's role was provisioned with — survives.
+sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d' "$slot_env"
+password_before="$(grep '^POSTGRES_PASSWORD=' "$slot_env")"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "use must accept a pre-MCP legacy env"
+grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "legacy env must gain MCP_URL via the in-place upgrade"
+grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "legacy env must gain MULTICA_MCP_PORT via the in-place upgrade"
+[ "$(grep '^POSTGRES_PASSWORD=' "$slot_env")" = "$password_before" ] || fail "the in-place upgrade must not rotate the stored password"
 
 lines_before="$(wc -l < "$psql_log")"
 status=0

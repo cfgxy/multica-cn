@@ -99,12 +99,13 @@ node -e '
   const die = (m) => { console.error(m); process.exit(1); };
   const b = f.resource_budget;
   if (b.slot_cpus !== 4) die("slot_cpus must stay 4");
-  const want = { api: 768, web: 8192, daemon: 256, desktop: 256 };
+  const want = { api: 768, web: 8192, daemon: 256, desktop: 256, mcp: 256 };
   for (const [c, mb] of Object.entries(want))
     if (b.components[c]?.memory_mb !== mb) die(`components.${c}.memory_mb must stay ${mb}`);
   if (b.components.api.memory_mb + b.components.web.memory_mb
-      + b.components.daemon.memory_mb + b.components.desktop.memory_mb !== 9472)
-    die("per-slot component budget must stay 9472MB (768+8192+256+256)");
+      + b.components.daemon.memory_mb + b.components.desktop.memory_mb
+      + b.components.mcp.memory_mb !== 9728)
+    die("per-slot component budget must stay 9728MB (768+8192+256+256+256)");
   if (b.shared_postgres.memory !== "2g" || b.shared_postgres.cpus !== 4)
     die("shared_postgres cap must stay 2g / 4 cpus");
   if (f.slots.length !== 2 || f.slots[0].name !== "dev1" || f.slots[1].name !== "dev2")
@@ -112,7 +113,7 @@ node -e '
   f.slots.forEach((s, i) => {
     if (s.cpuset !== `${i * 4}-${i * 4 + 3}`) die(`${s.name} cpuset must pin slot_cpus cores (${i * 4}-${i * 4 + 3})`);
   });
-  const ports = f.slots.flatMap(s => [s.backend_port, s.frontend_port, s.desktop_renderer_port]);
+  const ports = f.slots.flatMap(s => [s.backend_port, s.frontend_port, s.desktop_renderer_port, s.mcp_port]);
   if (new Set(ports).size !== ports.length) die("slot ports must be disjoint");
 ' "$repo/scripts/slots.json" || fail "slots.json budget accounting does not match the documented budget"
 

@@ -362,6 +362,161 @@ export interface CancelRunResult {
   task: RunInfo;
 }
 
+// ---- execution-config management (RUYI-433) ------------------------------
+// Wire shapes mirroring the Go handlers (AgentRuntimeResponse, ModelListRequest,
+// AgentResponse, ExecutionProfileResponse, SquadResponse). Fields not listed
+// are ignored, never re-serialized.
+
+export interface RuntimeInfo {
+  id: string;
+  workspace_id?: string;
+  /** Daemon instance this runtime belongs to; null for cloud runtimes. */
+  daemon_id?: string | null;
+  name: string;
+  custom_name?: string | null;
+  runtime_mode?: string;
+  provider?: string;
+  status?: string;
+  device_info?: string;
+  owner_id?: string | null;
+  visibility?: string;
+  profile_id?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelThinkingInfo {
+  supported_levels?: Array<{ value: string; label?: string; description?: string }>;
+  [key: string]: unknown;
+}
+
+export interface ModelEntryInfo {
+  id: string;
+  label?: string;
+  default?: boolean;
+  thinking?: ModelThinkingInfo;
+  [key: string]: unknown;
+}
+
+export interface UnavailableModelEntryInfo {
+  id?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+/** One model-list discovery round trip: initiate returns it pending or (cache
+ * hit) completed; polling the same shape until status leaves pending/running. */
+export interface ModelListRequestInfo {
+  id: string;
+  runtime_id: string;
+  status: string;
+  models?: ModelEntryInfo[];
+  unavailable_models?: UnavailableModelEntryInfo[];
+  supported?: boolean;
+  error?: string;
+  created_at?: string;
+  updated_at?: string;
+  cached?: boolean;
+  cached_at?: string;
+}
+
+export interface AgentConfigInfo {
+  id: string;
+  name: string;
+  description?: string;
+  /** null = the agent is not bound to any runtime. */
+  runtime_id?: string | null;
+  runtime_mode?: string;
+  model?: string;
+  /** Runtime-native reasoning token; empty = runtime default (MUL-2339). */
+  thinking_level?: string;
+  service_tier?: string;
+  status?: string;
+  max_concurrent_tasks?: number;
+  owner_id?: string | null;
+  archived_at?: string | null;
+  updated_at?: string;
+  /** Optimistic-lock token for execution-config writes (RUYI-433). */
+  revision: number;
+}
+
+export interface UpdateAgentConfigBody {
+  expected_revision?: number;
+  runtime_id?: string;
+  /** Empty string clears the model (fall back to the runtime default). */
+  model?: string;
+  /** Tri-state: omitted = keep, "" = explicit clear, value = set. */
+  thinking_level?: string;
+}
+
+export interface ExecutionProfileEntryInfo {
+  agent_id: string;
+  runtime_id: string;
+  model: string;
+  /** null = no opinion, "" = clear on activation, value = write as-is. */
+  thinking_level?: string | null;
+  updated_at?: string;
+}
+
+export interface ExecutionProfileInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string | null;
+  is_active: boolean;
+  entry_count: number;
+  last_activated_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  entries: ExecutionProfileEntryInfo[];
+  /** Optimistic-lock token, including entry upserts/deletes (RUYI-433). */
+  revision: number;
+}
+
+export interface CreateExecutionProfileBody {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateExecutionProfileBody {
+  name?: string;
+  description?: string | null;
+  expected_revision?: number;
+}
+
+export interface UpsertExecutionProfileEntryBody {
+  agent_id: string;
+  runtime_id: string;
+  model: string;
+  thinking_level?: string | null;
+  expected_revision?: number;
+}
+
+export interface ExecutionProfileActivationResultInfo {
+  agent_id: string;
+  status: string;
+  reason?: string;
+}
+
+export interface ExecutionProfileActivationInfo {
+  profile: ExecutionProfileInfo;
+  applied: number;
+  skipped: number;
+  failed: number;
+  results: ExecutionProfileActivationResultInfo[];
+}
+
+export interface SquadMemberInfo {
+  id: string;
+  squad_id?: string;
+  member_type: string;
+  member_id: string;
+  role?: string;
+  created_at?: string;
+}
+
 // One audit_event row (RUYI-355). Dimensions the event does not name come
 // back as null so a timeline renders absence, not zero UUIDs. details is the
 // raw JSONB payload — key names and metadata only, never secret values.

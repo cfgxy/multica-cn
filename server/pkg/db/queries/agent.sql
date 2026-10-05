@@ -134,6 +134,11 @@ RETURNING *;
 -- Distinguish "field omitted" (preserve) from "explicit clear" via
 -- ClearAgentComposioToolkitAllowlist below, mirroring the
 -- thinking_level / mcp_config two-query pattern: COALESCE can't restore NULL.
+--
+-- expected_revision (RUYI-433): when set, the write only lands if the row
+-- still carries that revision (the optimistic-lock token every config write
+-- bumps); a stale value yields 0 rows and the handler answers 409
+-- revision_conflict with the actual revision. Same contract as UpdateProject.
 UPDATE agent SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
@@ -157,8 +162,10 @@ UPDATE agent SET
     service_tier = COALESCE(sqlc.narg('service_tier'), service_tier),
     conversation_starters = COALESCE(sqlc.narg('conversation_starters'), conversation_starters),
     composio_toolkit_allowlist = COALESCE(sqlc.narg('composio_toolkit_allowlist')::text[], composio_toolkit_allowlist),
-    updated_at = now()
+    updated_at = now(),
+    revision = revision + 1
 WHERE id = $1
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
 RETURNING *;
 
 -- name: MigrateAgentTaskQueueOnRuntimeRebind :execrows
