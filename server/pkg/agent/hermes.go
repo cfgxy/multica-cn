@@ -444,12 +444,11 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		defer close(msgCh)
 		defer close(resCh)
 		defer func() {
-			stdin.Close()
-			// Cancellation must be reachable before Wait. A pathological child
-			// can close stdout/stderr (so the pipe drain succeeds) but keep the
-			// process alive; waiting first would then block until the overall
-			// task timeout and make a later deferred cancel ineffective.
-			cancel()
+			// EOF first, bounded natural-exit window, cancel driver as the
+			// fallback: a worker that closes stdout but ignores EOF still
+			// cannot wedge the lifecycle past the grace — the fallback
+			// cancel unblocks the armed Wait.
+			finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "hermes")
 			_ = sess.Wait(runCtx)
 			releaseProcessGroup(cmd)
 		}()
@@ -3245,4 +3244,3 @@ func promoteACPResultOnProviderError(finalStatus, finalError, finalOutput string
 	}
 	return finalStatus, finalError
 }
-

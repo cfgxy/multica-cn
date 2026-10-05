@@ -37,11 +37,15 @@ const supervisedRunsDirEnv = "MULTICA_SUPERVISOR_RUNS_DIR"
 // The code layer routes every provider through agent's workerSession either
 // way; this whitelist only decides where the daemon injects Supervision.
 //
-// Provisional (RUYI-349, Owner directive 2026-10-04): the phase 2 entries
-// inherit Phase 1's terminal-collection and reattach judgment as-is. While
-// RUYI-349's stuck-running root cause is open, this inherited path must not
-// be extended further and is expected to be reshaped by that plan's
-// corrected unified lifecycle.
+// Lifecycle note (updated 2026-10-05, RUYI-390): these entries rode Phase
+// 1's terminal-collection and reattach judgment while the stuck-running
+// root cause was open (provisional then). The lifecycle has since
+// converged: stdin EOF reaches the worker (RUYI-424), a finishing worker
+// gets a bounded natural-exit window with cancel as the fallback
+// (finishWorkerStdin), and the final→completed convergence is pinned end
+// to end by the ruyi349e2e lifecycle scenarios. New runtimes still enter
+// through this whitelist plus the supervisedTargets registration, under
+// RUYI-349's unified lifecycle plan.
 var supervisedProviders = map[string]bool{
 	"claude": true,
 	// ACP family + zcode + deerflow (RUYI-390 phase 2).

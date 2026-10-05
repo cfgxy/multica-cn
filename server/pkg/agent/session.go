@@ -50,6 +50,7 @@ type workerSession struct {
 	closeOnce   sync.Once
 	waitOnce    sync.Once
 	waitResult  error
+	reapDone    chan struct{} // closed once the worker's exit is proven; past it the cancel driver has no kill target
 }
 
 type sessionMode int
@@ -68,6 +69,7 @@ func newWorkerSession(cmd *exec.Cmd, sup *Supervision) *workerSession {
 		s.sup = sup
 		s.mode = sessionSupervised
 		s.reattaching = sup.Reattach
+		s.reapDone = make(chan struct{})
 	}
 	return s
 }
@@ -237,6 +239,10 @@ func (s *workerSession) Wait(ctx context.Context) error {
 	}
 	s.waitOnce.Do(func() {
 		exit, err := s.handle.Wait(ctx)
+		// The exit is proven: the cancel driver's job — unblocking a live
+		// worker — is over, so context cleanup that races past the happy
+		// path must not end in a signal against a reaped worker.
+		close(s.reapDone)
 		if s.startCancel != nil {
 			s.startCancel()
 		}
@@ -316,6 +322,15 @@ func (s *workerSession) armCancelDriver() {
 			return
 		}
 		s.driverOnce.Do(func() {
+			// A reaped worker is never a kill target: the natural-exit
+			// path proves the exit before any cancellation fan-out. Past
+			// this point the check is best-effort — a worker exiting in
+			// the race window just receives a no-op signal, as before.
+			select {
+			case <-s.reapDone:
+				return
+			default:
+			}
 			if grace <= 0 {
 				_ = s.Signal(syscall.SIGKILL)
 				return

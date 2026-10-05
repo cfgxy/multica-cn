@@ -83,7 +83,7 @@ func TestRetentionGCKeepsUnqualifiedRuns(t *testing.T) {
 	seedRun(t, mgr, "aabbccdd-3-1", convergedManifest("aabbccdd-3-1", time.Hour), false)
 	// Exited and old but never consumed — the daemon may still need the
 	// output to converge the run on its next startup pass.
-	old := convergedManifest("aabbccdd-4-1", 72 * time.Hour)
+	old := convergedManifest("aabbccdd-4-1", 72*time.Hour)
 	old.ConvergedAt = nil
 	seedRun(t, mgr, "aabbccdd-4-1", old, false)
 	// Consumed and old but with no exit record — the terminal evidence is

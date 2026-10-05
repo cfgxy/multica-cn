@@ -27,10 +27,14 @@ import (
 //     terminal calls) are answered by the reader goroutine exactly as they
 //     would be in a fresh session.
 //
-// Provisional (RUYI-349, Owner directive 2026-10-04): this reattach judgment
-// extends the Phase 1 pattern to the ACP family while the stuck-running root
-// cause is open. Do not replicate it to further runtimes; it converges into
-// the corrected unified lifecycle plan RUYI-349 will deliver.
+// Lifecycle note (updated 2026-10-05, RUYI-390): this judgment extended the
+// Phase 1 pattern to the ACP family while the stuck-running root cause was
+// open (provisional then). The lifecycle has since converged — the
+// stdin-EOF bridge (RUYI-424) and the bounded natural-exit teardown
+// (finishWorkerStdin) are the shipped mechanism, and this reattach contract
+// is pinned by unit and ruyi349e2e E2E coverage. Replicating it to a new
+// runtime still goes through the supervisedProviders whitelist and RUYI-349's
+// unified lifecycle plan.
 
 const (
 	// reattachIDBase re-seeds the JSON-RPC id counter after a reattach so
