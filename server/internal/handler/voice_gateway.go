@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/agentcontext"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -148,7 +149,7 @@ func (h *Handler) resolveVoiceSessionTarget(ctx context.Context, agentRow db.Age
 	if !agentRow.VoiceRuntimeID.Valid {
 		return db.AgentRuntime{}, "", &voiceGateRejection{"no_voice_runtime", "this agent has no voice runtime bound"}, nil
 	}
-	rt, err := h.Queries.GetAgentRuntime(ctx, agentRow.VoiceRuntimeID)
+	rt, err := h.getAgentRuntime(ctx, obsmetrics.RuntimeLookupSourceVoiceGateway, agentRow.VoiceRuntimeID)
 	if err != nil || rt.WorkspaceID != agentRow.WorkspaceID {
 		return db.AgentRuntime{}, "", &voiceGateRejection{"no_voice_runtime", "the bound voice runtime no longer exists"}, nil
 	}
