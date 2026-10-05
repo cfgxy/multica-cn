@@ -504,5 +504,23 @@
     "created_probe_invalid": "登録されましたが、接続確認に失敗しました。API キーを確認してください",
     "create_failed": "音声インスタンスの登録に失敗しました",
     "key_save_failed": "登録されましたが、API キーの保存に失敗しました。インスタンス設定から追加してください"
+  },
+  "mobile": {
+    "list_loading": "読み込み中…",
+    "empty": {
+      "title": "音声インスタンスはまだありません"
+    },
+    "detail": {
+      "not_found": "このインスタンスは存在しません。"
+    },
+    "status": {
+      "online": "オンライン",
+      "offline": "オフライン",
+      "disabled": "無効"
+    },
+    "advanced": {
+      "expand": "表示",
+      "collapse": "閉じる"
+    }
   }
 }
