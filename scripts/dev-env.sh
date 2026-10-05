@@ -569,6 +569,18 @@ cmd_lock_release() {
     fi
   fi
   rm -f "$SLOT_LOCK_FILE"
+  # Closing the window clears the tenancy, not just the lease file: the
+  # manifest's ISSUE/PHASE/TTL fields are the fallback every gate, takeover
+  # and display reads once the lock file is gone, so leaving the old holder
+  # behind kept released slots "held by issue" for everyone else (RUYI-431).
+  if [ -f "$SLOT_MANIFEST" ]; then
+    load_manifest || true
+    MANIFEST_ISSUE=""
+    PHASE="dev"
+    TTL_HOURS=0
+    EXPIRES_AT=""
+    save_manifest
+  fi
   ok "released lease on $SLOT (was: $issue)"
 }
 
@@ -581,6 +593,14 @@ cmd_lock_recover() {
   if [ -z "$issue" ] || [ "$issue" = "$owner" ]; then
     OWNER_ROLE="agent"
     write_lease "$owner" "$(lease_phase)"
+    # Adopt the manifest too, or recovering a released slot would hold the
+    # lease file while the manifest still reads free — the mirror image of
+    # the residue this verb exists to clean up (RUYI-431).
+    MANIFEST_ISSUE="$owner"
+    if [ -f "$SLOT_MANIFEST" ]; then
+      load_manifest || true
+      save_manifest
+    fi
     ok "lease on $SLOT is now held by $owner"
     return 0
   fi
@@ -1585,6 +1605,11 @@ manifest_env_field() {
   [ -f "$SLOT_MANIFEST" ] || return 0
   local issue
   issue="$(sed -n 's/^ISSUE=//p' "$SLOT_MANIFEST" | head -1)"
+  # write_manifest_value %q-quotes; a cleared tenancy lands as '' — read it
+  # back as empty, or a released slot would still look held (RUYI-431).
+  case "$issue" in
+    "''" | '""') issue="" ;;
+  esac
   printf '%s' "$issue"
 }
 
