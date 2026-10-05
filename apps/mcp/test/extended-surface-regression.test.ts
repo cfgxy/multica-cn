@@ -64,11 +64,20 @@ const PURE_READ_TOOLS = [
   "get_issue_relations",
   "list_issue_runs",
   "get_run",
+  // RUYI-433 execution-config reads.
+  "list_daemon_instances",
+  "get_daemon_instance",
+  "list_runtimes",
+  "get_runtime",
+  "get_runtime_models",
+  "get_agent_runtime_config",
+  "list_execution_profiles",
+  "get_execution_profile",
+  "get_execution_topology",
   "search_audit_events",
   // RUYI-419 workspace management reads.
   "list_runs",
   "get_agent",
-  "list_runtimes",
   "list_squads",
   "get_squad",
 ] as const;
@@ -88,7 +97,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(40);
+    expect(names).toHaveLength(54);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -109,7 +118,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(40);
+      expect(tools).toHaveLength(54);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -122,7 +131,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(40);
+      expect(Object.keys(hint)).toHaveLength(54);
     } finally {
       await cleanup();
     }
