@@ -836,15 +836,21 @@ WHERE agent_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_l
 RETURNING *;
 
 -- name: CancelAgentTasksByTriggerComment :many
--- Cancels active tasks whose planned batch contains the edited/deleted comment.
--- The body may already have been embedded as either the primary trigger or a
--- coalesced input; cancellation prevents an agent from acting on a stale or
--- deleted version. Must run before deletion clears trigger_comment_id.
+-- Cancels NOT-YET-STARTED tasks whose planned batch contains the edited or
+-- deleted comment. The body may already have been embedded as either the
+-- primary trigger or a coalesced input; revoking queued/dispatched/deferred
+-- work prevents an agent from acting on a stale or deleted version. Runs that
+-- already entered the execution path (running, waiting_local_directory) are
+-- deliberately SPARED (RUYI-462): editing or deleting text is not a stop
+-- command, and the pre-fix blanket cancel turned a source edit into an
+-- unrequested, unaudited interruption of in-flight work. Stopping such a run
+-- is cancel_run's job and carries its own attribution. Must run before
+-- deletion clears trigger_comment_id.
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancel_reason = 'trigger_comment_deleted', cancel_actor_type = 'system'
 WHERE (trigger_comment_id = $1 OR $1 = ANY(coalesced_comment_ids))
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND status IN ('queued', 'dispatched', 'deferred')
 RETURNING *;
 
 -- name: CancelAgentTasksByChatSession :many
