@@ -57,8 +57,8 @@ QA_TTL_HOURS="${MULTICA_DEV_QA_TTL_HOURS:-}"
 
 DEV_TMPDIR="${MULTICA_DEV_TMPDIR:-$HOME/.multica/dev-tmp}"
 
-ALL_COMPONENTS="api web daemon desktop"
-DEFAULT_COMPONENTS="api web"
+ALL_COMPONENTS="api web mcp daemon desktop"
+DEFAULT_COMPONENTS="api web mcp"
 
 # The platform's main database and role on the shared instance. Slot tools
 # never construct statements naming these; the constants back the assertions
@@ -194,20 +194,21 @@ render_slots_json() {
   printf '      "api": {"memory_mb": 768},\n'
   printf '      "web": {"memory_mb": 8192},\n'
   printf '      "daemon": {"memory_mb": 256},\n'
-  printf '      "desktop": {"memory_mb": 256}\n'
+  printf '      "desktop": {"memory_mb": 256},\n'
+  printf '      "mcp": {"memory_mb": 256}\n'
   printf '    },\n'
   printf '    "shared_postgres": {"memory": "2g", "cpus": 4}\n'
   printf '  },\n'
   printf '  "slots": [\n'
-  local first=1 n name row frontend renderer cpuset
+  local first=1 n name row frontend renderer mcp cpuset
   for n in 1 2; do
     name="dev$n"
     [ "$first" = 1 ] || printf ',\n'
     first=0
-    row=$((21800 + n)); frontend=$((13800 + n)); renderer=$((57800 + n))
+    row=$((21800 + n)); frontend=$((13800 + n)); renderer=$((57800 + n)); mcp=$((13000 + n))
     cpuset="$(( (n - 1) * 4 ))-$(( n * 4 - 1 ))"
-    printf '    {"name": "%s", "index": %s, "cpuset": "%s", "backend_port": %s, "frontend_port": %s, "desktop_renderer_port": %s, "database": "multica_%s", "account": "%s_app", "profile": "%s", "worktree_root": "~/.multica/slots/%s/worktrees", "workspaces_root": "~/.multica/slots/%s/workspaces", "desktop_app_suffix": "%s"}' \
-      "$name" "$n" "$cpuset" "$row" "$frontend" "$renderer" "$name" "$name" "$name" "$name" "$name" "$name"
+    printf '    {"name": "%s", "index": %s, "cpuset": "%s", "backend_port": %s, "frontend_port": %s, "desktop_renderer_port": %s, "mcp_port": %s, "database": "multica_%s", "account": "%s_app", "profile": "%s", "worktree_root": "~/.multica/slots/%s/worktrees", "workspaces_root": "~/.multica/slots/%s/workspaces", "desktop_app_suffix": "%s"}' \
+      "$name" "$n" "$cpuset" "$row" "$frontend" "$renderer" "$mcp" "$name" "$name" "$name" "$name" "$name" "$name"
   done
   printf '\n  ]\n}\n'
 }
@@ -245,6 +246,7 @@ require_slot() {
   SLOT_BACKEND_PORT="$(slot_field "$slot" backend_port)"
   SLOT_FRONTEND_PORT="$(slot_field "$slot" frontend_port)"
   SLOT_RENDERER_PORT="$(slot_field "$slot" desktop_renderer_port)"
+  SLOT_MCP_PORT="$(slot_field "$slot" mcp_port)"
   SLOT_PROFILE="$(slot_field "$slot" profile)"
   # ~/-style roots from slots.json follow MULTICA_SLOTS_HOME: everything a slot
   # owns lives under one root, so an overridden home moves the worktrees and
@@ -292,6 +294,10 @@ component_resource_env() {
       ;;
     web)
       mb="$(budget_field components.web.memory_mb)" || return 0
+      printf 'NODE_OPTIONS=--max-old-space-size=%s\n' "$mb"
+      ;;
+    mcp)
+      mb="$(budget_field components.mcp.memory_mb)" || return 0
       printf 'NODE_OPTIONS=--max-old-space-size=%s\n' "$mb"
       ;;
     daemon)
@@ -693,8 +699,33 @@ generate_slot_env() {
     printf 'MULTICA_DEV_EMAIL=%s\n' "$DEV_EMAIL"
     printf 'WORKSPACE_NAME=%s\n' "$WORKSPACE_NAME"
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
+    printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
+    printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
+}
+
+# `use` and `up` both funnel through here. A missing env file is generated
+# fresh; a file written before MCP joined the slot facts (RUYI-428) is
+# upgraded in place by appending the missing MCP lines — never regenerated,
+# so the stored POSTGRES_PASSWORD, the one the shared instance's slot role was
+# provisioned with, survives the upgrade untouched.
+ensure_slot_env() {
+  local password="$1" appended=""
+  if [ ! -f "$SLOT_ENV_FILE" ]; then
+    generate_slot_env "$password"
+    ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
+    return 0
+  fi
+  if ! grep -q '^MCP_URL=' "$SLOT_ENV_FILE"; then
+    printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
+    appended="MCP_URL"
+  fi
+  if ! grep -q '^MULTICA_MCP_PORT=' "$SLOT_ENV_FILE"; then
+    printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
+    appended="${appended:+$appended }MULTICA_MCP_PORT"
+  fi
+  [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
 
 env_file_field() {
@@ -1108,6 +1139,48 @@ start_web() {
   die "web never came up. Log: $(log_file web)"
 }
 
+# The MCP Node process (apps/mcp) behind the dev web's /api/mcp rewrite
+# (RUYI-428). Stateless: every request carries its own PAT, so startup needs
+# no token — only the backend REST origin, which the mcp-dev Makefile target
+# passes as --server-url (overriding the daemon-shaped ws://.../ws
+# MULTICA_SERVER_URL in the slot env) and the public site root for 401
+# resource_metadata (MULTICA_APP_URL, already in the slot env). Loopback-only,
+# on the slot's fixed mcp_port from slots.json.
+start_mcp() {
+  local waited=0 listener
+  if curl -sf --max-time 3 "http://localhost:${SLOT_MCP_PORT}/healthz" >/dev/null 2>&1 \
+    && listener_belongs_to_component mcp "$SLOT_MCP_PORT"; then
+    ok "mcp already running on :$SLOT_MCP_PORT"
+    return 0
+  fi
+  if ! port_free "$SLOT_MCP_PORT"; then
+    die "Port $SLOT_MCP_PORT is busy: $(describe_port_owner "$SLOT_MCP_PORT"). Stop the other process first."
+  fi
+
+  (cd "$DIR" && "${CLEAN_ENV[@]}" pnpm --filter @multica/mcp build) > "$(log_file mcp-build)" 2>&1 \
+    || { tail -20 "$(log_file mcp-build)" | sed 's/^/    /' >&2; die "mcp build failed. Log: $(log_file mcp-build)"; }
+  resource_env_args mcp
+  launch_detached mcp env "${RE_ARGS[@]}" make -C "$DIR" -s mcp-dev ENV_FILE="$SLOT_ENV_FILE"
+  info "mcp launching (pid $(cat "$(pid_file mcp)")), log: $(log_file mcp)"
+
+  while [ "$waited" -lt 60 ]; do
+    if curl -sf --max-time 3 "http://localhost:${SLOT_MCP_PORT}/healthz" >/dev/null 2>&1; then
+      listener="$(port_listener_pid "$SLOT_MCP_PORT")"
+      if ! listener_belongs_to_component mcp "$SLOT_MCP_PORT"; then
+        stop_component mcp
+        die "MCP on :$SLOT_MCP_PORT is not owned by the process group this slot launched."
+      fi
+      record_listener_pid mcp "$SLOT_MCP_PORT"
+      ok "mcp serving http://localhost:$SLOT_MCP_PORT (pid ${listener:-?})"
+      return 0
+    fi
+    component_pid mcp >/dev/null || { tail -20 "$(log_file mcp)" | sed 's/^/    /' >&2; die "mcp exited during startup. Log: $(log_file mcp)"; }
+    sleep 2
+    waited=$((waited + 2))
+  done
+  die "mcp never came up. Log: $(log_file mcp)"
+}
+
 # send-code once, verify-code once. Repeated verify attempts lock the code out
 # and start returning 400 even when it is correct, so retrying is self-defeating.
 write_profile_config() {
@@ -1336,6 +1409,7 @@ stop_component() {
     api) port="$SLOT_BACKEND_PORT" ;;
     web) port="$SLOT_FRONTEND_PORT" ;;
     desktop) port="$SLOT_RENDERER_PORT" ;;
+    mcp) port="$SLOT_MCP_PORT" ;;
   esac
 
   recorded_listener="$(cat "$(listener_pid_file "$name")" 2>/dev/null || true)"
@@ -1481,6 +1555,16 @@ component_state() {
         printf 'stopped|http://localhost:%s|' "$SLOT_FRONTEND_PORT"
       fi
       ;;
+    mcp)
+      if curl -sf --max-time 3 "http://localhost:${SLOT_MCP_PORT}/healthz" >/dev/null 2>&1 \
+        && listener_belongs_to_component mcp "$SLOT_MCP_PORT"; then
+        printf 'running|http://localhost:%s|pid %s' "$SLOT_MCP_PORT" "$(port_listener_pid "$SLOT_MCP_PORT")"
+      elif [ -n "$(port_listener_pid "$SLOT_MCP_PORT")" ]; then
+        printf 'mismatch|http://localhost:%s|listener is not owned by this slot' "$SLOT_MCP_PORT"
+      else
+        printf 'stopped|http://localhost:%s|' "$SLOT_MCP_PORT"
+      fi
+      ;;
     daemon)
       local status state
       if [ -x "${MULTICA_BIN:-}" ]; then
@@ -1569,6 +1653,7 @@ ${C_GREEN}✓ Slot ${SLOT} ready.${C_OFF}
   ${entrypoint}
   Sign in     ${DEV_EMAIL}  ·  code ${DEV_CODE_DEFAULT}
   Backend     http://localhost:${SLOT_BACKEND_PORT}   (GET /health reports pid + commit + started_at)
+  MCP         http://localhost:${SLOT_MCP_PORT}  (web /api/mcp → here; loopback only)
   Database    ${SLOT_DB} @ ${SLOT_PG_ENDPOINT} (account ${SLOT_ACCOUNT})
   Commit      $(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
   Slot        ${SLOT}$( [ "${TTL_HOURS:-0}" != 0 ] && printf ' (expires %s)' "$EXPIRES_AT" )
@@ -1699,11 +1784,8 @@ cmd_use() {
   fi
 
   DESKTOP_ENV_FILE="$DIR/apps/desktop/.env.development.local"
-  if [ ! -f "$SLOT_ENV_FILE" ]; then
-    mkdir -p "$SLOT_DIR"
-    generate_slot_env "$(random_hex 16)"
-    ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
-  fi
+  mkdir -p "$SLOT_DIR"
+  ensure_slot_env "$(random_hex 16)"
   save_manifest
   bind_paths
   ok "slot $SLOT now runs $CODE_SOURCE $CODE_SHA from $DIR"
@@ -1734,7 +1816,7 @@ cmd_up() {
   for comp in $requested; do
     case " $ALL_COMPONENTS " in *" $comp "*) ;; *) die "Unknown component '$comp'. Valid: $ALL_COMPONENTS" ;; esac
   done
-  # web, daemon and desktop are all clients of the backend; selecting one
+  # web, daemon, desktop and mcp are all clients of the backend; selecting one
   # without api would produce an environment that cannot serve a single request.
   case " $requested " in *" api "*) ;; *) requested="api $requested" ;; esac
   COMPONENTS="$requested"
@@ -1748,7 +1830,7 @@ cmd_up() {
   local missing=() tool needed="node go git curl docker"
   # pnpm is only required by the components that actually build JavaScript, so
   # `up C=api` works on a checkout that has never run an install.
-  if component_selected web || component_selected desktop; then needed="$needed pnpm"; fi
+  if component_selected web || component_selected desktop || component_selected mcp; then needed="$needed pnpm"; fi
   for tool in $needed; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
@@ -1783,10 +1865,7 @@ Start the rest with 'up --components api,web', or run 'up --components daemon' f
 
   step "Environment"
   mkdir -p "$SLOT_DIR"
-  if [ ! -f "$SLOT_ENV_FILE" ]; then
-    generate_slot_env "$(random_hex 16)"
-    ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
-  fi
+  ensure_slot_env "$(random_hex 16)"
   preflight_manifest_consistency
   preflight_env_identity
   save_manifest
@@ -1803,7 +1882,7 @@ Start the rest with 'up --components api,web', or run 'up --components daemon' f
   migrate_database
   ok "$SLOT_DB reachable through the slot account and migrated"
 
-  if [ ! -d "$DIR/node_modules" ] && { component_selected web || component_selected desktop; }; then
+  if [ ! -d "$DIR/node_modules" ] && { component_selected web || component_selected desktop || component_selected mcp; }; then
     step "Dependencies"
     (cd "$DIR" && pnpm install) || die "pnpm install failed."
   fi
@@ -1811,6 +1890,7 @@ Start the rest with 'up --components api,web', or run 'up --components daemon' f
   step "Components: $COMPONENTS"
   component_selected api && start_api
   component_selected web && start_web
+  component_selected mcp && start_mcp
   component_selected daemon && start_daemon
   component_selected desktop && start_desktop
 
@@ -2145,7 +2225,7 @@ slot_orphans() {
 
   # 3) the slot's fixed ports must be free.
   local port
-  for port in "$SLOT_BACKEND_PORT" "$SLOT_FRONTEND_PORT" "$SLOT_RENDERER_PORT"; do
+  for port in "$SLOT_BACKEND_PORT" "$SLOT_FRONTEND_PORT" "$SLOT_RENDERER_PORT" "$SLOT_MCP_PORT"; do
     while read -r pid; do
       [ -n "$pid" ] || continue
       comm="$(cat "/proc/$pid/comm" 2>/dev/null || printf '?')"
@@ -2363,7 +2443,7 @@ audit_registry() { # registered ports + databases, one line each: port|db TAB va
     const endpoint = String(sp.endpoint || "").replace(/.*:/, "");
     if (endpoint) process.stdout.write("port\t" + endpoint + "\n");
     for (const s of facts.slots || []) {
-      for (const key of ["backend_port", "frontend_port", "desktop_renderer_port"]) {
+      for (const key of ["backend_port", "frontend_port", "desktop_renderer_port", "mcp_port"]) {
         if (s[key] !== undefined) process.stdout.write("port\t" + s[key] + "\n");
       }
       if (s.database) process.stdout.write("db\t" + s.database + "\n");
