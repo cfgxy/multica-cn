@@ -311,6 +311,13 @@ func (b *zeroclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// request that triggered them, so the gate has to be closed from process
 	// start. Flipped to true only just before session/prompt is sent.
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -385,133 +392,148 @@ func (b *zeroclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
+
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
 		var effectiveModel string
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("zeroclaw reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "zeroclaw")
+			sessionID = c.observedSessionID()
+		} else {
 
-		// Keep elicitation absent: this headless client cannot collect a user's
-		// form response. ZeroClaw's legacy structured-choice bridge is handled
-		// fail-closed by selectZeroclawPermissionOption instead.
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("zeroclaw initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" && !zeroclawResumeSupported(initResult) {
-			b.cfg.Logger.Warn("zeroclaw persistence is unavailable; the daemon will retry from a rebuilt fresh-session context",
-				"backend", "zeroclaw",
-				"requested_session", opts.ResumeSessionID,
-			)
-			resumeRejected = true
-			resCh <- Result{
-				Status:         "failed",
-				Error:          "zeroclaw session/resume unavailable: initialize did not advertise sessionCapabilities.resume",
-				DurationMs:     time.Since(startTime).Milliseconds(),
-				ResumeRejected: resumeRejected,
-			}
-			return
-		}
-
-		if opts.ResumeSessionID != "" {
-			// session/resume, not session/load. Both restore the transcript
-			// into the agent and both answer a bare `{}`, but load also
-			// replays every retained message back to us as session/update
-			// notifications, so a resumed turn would re-emit the previous
-			// answer as its own output.
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"sessionId": opts.ResumeSessionID,
+			// Keep elicitation absent: this headless client cannot collect a user's
+			// form response. ZeroClaw's legacy structured-choice bridge is handled
+			// fail-closed by selectZeroclawPermissionOption instead.
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
-				if isACPSessionNotFound(err) {
-					b.cfg.Logger.Warn("zeroclaw resumed session not found; the daemon will retry fresh",
-						"backend", "zeroclaw",
-						"requested_session", opts.ResumeSessionID,
-					)
-					resumeRejected = true
-					resCh <- Result{Status: "failed", Error: fmt.Sprintf("zeroclaw session/resume failed: %v", err), DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+				finalStatus = "failed"
+				finalError = fmt.Sprintf("zeroclaw initialize failed: %v", err)
+				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+				return
+			}
+
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			if opts.ResumeSessionID != "" && !zeroclawResumeSupported(initResult) {
+				b.cfg.Logger.Warn("zeroclaw persistence is unavailable; the daemon will retry from a rebuilt fresh-session context",
+					"backend", "zeroclaw",
+					"requested_session", opts.ResumeSessionID,
+				)
+				resumeRejected = true
+				resCh <- Result{
+					Status:         "failed",
+					Error:          "zeroclaw session/resume unavailable: initialize did not advertise sessionCapabilities.resume",
+					DurationMs:     time.Since(startTime).Milliseconds(),
+					ResumeRejected: resumeRejected,
+				}
+				return
+			}
+
+			if opts.ResumeSessionID != "" {
+				// session/resume, not session/load. Both restore the transcript
+				// into the agent and both answer a bare `{}`, but load also
+				// replays every retained message back to us as session/update
+				// notifications, so a resumed turn would re-emit the previous
+				// answer as its own output.
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"sessionId": opts.ResumeSessionID,
+				})
+				if err != nil {
+					if isACPSessionNotFound(err) {
+						b.cfg.Logger.Warn("zeroclaw resumed session not found; the daemon will retry fresh",
+							"backend", "zeroclaw",
+							"requested_session", opts.ResumeSessionID,
+						)
+						resumeRejected = true
+						resCh <- Result{Status: "failed", Error: fmt.Sprintf("zeroclaw session/resume failed: %v", err), DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
+						return
+					}
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("zeroclaw session/resume failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
 					return
 				}
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("zeroclaw session/resume failed: %v", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds(), ResumeRejected: resumeRejected}
-				return
-			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("zeroclaw returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "zeroclaw",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
-		} else {
-			// mcpServers stays empty on purpose: ZeroClaw never reads it.
-			// agentAlias is omitted unless the operator named one — sending a
-			// guess would forfeit ZeroClaw's sole-agent auto-select and turn a
-			// working single-agent install into `Unknown agent`.
-			params := map[string]any{
-				"cwd":        cwd,
-				"mcpServers": []any{},
-			}
-			if agentAlias != "" {
-				params["agentAlias"] = agentAlias
-			}
-			result, err := c.request(runCtx, "session/new", params)
-			if err != nil {
-				if runCtx.Err() == context.DeadlineExceeded {
-					finalStatus = "timeout"
-					finalError = fmt.Sprintf("zeroclaw timed out during session/new: %v", timeout)
-				} else if runCtx.Err() == context.Canceled {
-					finalStatus = "aborted"
-					finalError = fmt.Sprintf("zeroclaw aborted: %v", err)
-				} else {
-					finalStatus = "failed"
-					finalError = zeroclawSessionNewErrorMessage(err)
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("zeroclaw returned a different session id on resume — original was likely lost; continuing with the new id",
+						"backend", "zeroclaw",
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
+					)
 				}
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
+			} else {
+				// mcpServers stays empty on purpose: ZeroClaw never reads it.
+				// agentAlias is omitted unless the operator named one — sending a
+				// guess would forfeit ZeroClaw's sole-agent auto-select and turn a
+				// working single-agent install into `Unknown agent`.
+				params := map[string]any{
+					"cwd":        cwd,
+					"mcpServers": []any{},
+				}
+				if agentAlias != "" {
+					params["agentAlias"] = agentAlias
+				}
+				result, err := c.request(runCtx, "session/new", params)
+				if err != nil {
+					if runCtx.Err() == context.DeadlineExceeded {
+						finalStatus = "timeout"
+						finalError = fmt.Sprintf("zeroclaw timed out during session/new: %v", timeout)
+					} else if runCtx.Err() == context.Canceled {
+						finalStatus = "aborted"
+						finalError = fmt.Sprintf("zeroclaw aborted: %v", err)
+					} else {
+						finalStatus = "failed"
+						finalError = zeroclawSessionNewErrorMessage(err)
+					}
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "zeroclaw session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
 			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "zeroclaw session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
+
+			c.sessionID = sessionID
+			// Early session pin so a cancelled run still preserves resume pointer.
+			msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
+			b.cfg.Logger.Info("zeroclaw session ready", "session_id", sessionID)
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
 			}
+
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
 		}
-
-		c.sessionID = sessionID
-		// Early session pin so a cancelled run still preserves resume pointer.
-		msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
-		b.cfg.Logger.Info("zeroclaw session ready", "session_id", sessionID)
-
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
-
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+		if promptErr != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("zeroclaw timed out after %s", timeout)
@@ -520,8 +542,8 @@ func (b *zeroclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("zeroclaw session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("zeroclaw session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					b.cfg.Logger.Warn("resumed session not found at prompt time; clearing session id so the daemon retries fresh",
 						"backend", "zeroclaw",
 						"session_id", sessionID,
@@ -552,8 +574,7 @@ func (b *zeroclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("zeroclaw finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "zeroclaw")
 
 		// ZeroClaw's ACP server may keep the process — and the stdout/stderr
 		// pipes — open briefly after session/prompt returns. Bound the drain.

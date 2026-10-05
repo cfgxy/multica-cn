@@ -14,12 +14,14 @@
 
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
 import type { ServerResponse } from "node:http";
+import { createRequire } from "node:module";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { stderrLogger, type Logger } from "./log.js";
 import { MulticaClient } from "./rest.js";
 import { createMcpServer } from "./server.js";
+import { TOOL_DEFINITIONS } from "./tools.js";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
@@ -41,6 +43,32 @@ export function extractBearerToken(header: string | undefined): string | null {
   }
   const match = BEARER_PATTERN.exec(header.trim());
   return match?.[1] ?? null;
+}
+
+/**
+ * Static diagnostic payload for GET /diag (RUYI-420): the tool catalogue
+ * and this process's version, nothing else. Computed once at startup —
+ * the registry is compile-time static, so answering the admin status page
+ * never constructs a client, touches the backend, or can trigger a run.
+ * Unauthenticated on purpose: the listener binds loopback by default and
+ * the payload is marketing-grade metadata (names and descriptions only).
+ */
+export function diagnosticPayload(): { version: string; tools: Array<{ name: string; description: string }> } {
+  let version = "unknown";
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require("../package.json") as { version?: string };
+    if (typeof pkg.version === "string") {
+      version = pkg.version;
+    }
+  } catch {
+    // Packaged without a readable package.json — report "unknown" rather
+    // than failing the diagnostic.
+  }
+  return {
+    version,
+    tools: TOOL_DEFINITIONS.map((tool) => ({ name: tool.name, description: tool.description })),
+  };
 }
 
 /**
@@ -106,6 +134,13 @@ async function handleRequest(
       // Liveness only — deliberately unauthenticated, carries no data.
       response.writeHead(200, { "Content-Type": "text/plain" });
       response.end("ok");
+      return;
+    }
+    if (url === "/diag" || url.startsWith("/diag?")) {
+      // Static read-only diagnostic (RUYI-420): version + tool names,
+      // computed at startup, no credential, no backend call.
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(diagnosticPayload()));
       return;
     }
     if (url.startsWith("/.well-known/")) {

@@ -136,6 +136,8 @@
       "cancel": "取消",
       "switch_failed_title": "切换失败",
       "switch_failed_message": "无法切换服务器。",
+      "server_unreachable_title": "无法连接服务器",
+      "server_unreachable_message": "暂时无法连接「{{server}}」。请检查网络后重试。",
       "workspace_failed_title": "无法打开通知",
       "workspace_failed_message": "无法切换工作区。",
       "retry": "重试",

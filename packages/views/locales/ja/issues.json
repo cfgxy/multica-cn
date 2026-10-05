@@ -578,6 +578,7 @@
   "agent_live": {
     "is_working": "{{name}} が作業中",
     "is_queued": "{{name}} が待機中",
+    "past_runs": "実行履歴 · {{count}}件",
     "is_waiting_local_directory": "{{name}} がローカルディレクトリを待機中",
     "queued_elapsed_prefix": "{{elapsed}} 待機中",
     "fallback_name": "エージェント",
@@ -919,6 +920,15 @@
       "pill_label": "コメントを追加、@ でメンション"
     },
     "comment": {
+      "menu_copy": "コピー",
+      "menu_copy_link": "リンクをコピー",
+      "menu_edit": "編集",
+      "menu_more_reactions": "その他のリアクション…",
+      "menu_react": "リアクション…",
+      "menu_reply": "返信",
+      "menu_resolve": "スレッドを解決",
+      "menu_select_text": "テキストを選択",
+      "menu_unresolve": "スレッドの解決を取り消す",
       "resolved_bar_other": "解決済み · メッセージ {{count}} 件（{{authors}}）",
       "resolved_bar_a11y_other": "解決済みスレッド、メッセージ {{count}} 件（{{authors}}）。タップして展開します。",
       "resolved_by": "解決者",
@@ -1078,6 +1088,7 @@
     "agent_activity": {
       "runs_count": "実行 · {{count}}件",
       "badge_a11y": "エージェントが実行中 — 実行履歴を開く",
+      "badge_idle_a11y": "実行履歴を見る",
       "row_running_a11y": "エージェントがこのタスクを処理中",
       "row_queued_a11y": "エージェントのタスクが待機中"
     },
