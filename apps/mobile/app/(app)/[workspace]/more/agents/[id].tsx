@@ -10,10 +10,14 @@
  *           The only cancel endpoint in P0 is agent-level cancel-tasks, so
  *           the confirm dialog is the web `cancel_dialog_*` copy that says
  *           exactly that ("cancel ALL of <name>'s tasks").
- *   - 设置   grouped navigation rows into the skills / env / webhooks
- *           sub-screens. MCP / integrations / runtime config / custom args
- *           / conversation starters are P1 (design §2) — rows simply don't
- *           exist yet.
+ *   - 设置   grouped navigation rows into the skills / access / custom args /
+ *           env / webhooks sub-screens plus the capability rows with the
+ *           same visibility conditions as web's agent overview pane
+ *           (RUYI-418 B3): MCP (`providerSupportsMcpConfig` or unbound),
+ *           MCP Apps (composio feature flag + owner), Integrations (any of
+ *           the five IM listings reports `configured`), Routing (openclaw
+ *           runtimes only). Env stays `canManage`-gated like web — it is
+ *           the only row backed by a secret-bearing endpoint.
  *
  * Data: `agentDetailOptions` is the primary source (deep-link safe and the
  * cache mutations keep it warm); presence / snapshot / issues / members /
@@ -22,7 +26,8 @@
  * flight. Archive and restore live in the header more-menu (system_key
  * agents hide the menu — they cannot be archived, mirroring web's
  * agent-row-actions); an archived agent renders read-only behind a restore
- * banner.
+ * banner. A 403 from the detail fetch renders the forbidden state (S3) —
+ * distinct copy from the not-found state, same layout.
  */
 import { useCallback, useMemo, useState } from "react";
 import { Alert, FlatList, Pressable, ScrollView, View } from "react-native";
@@ -30,6 +35,9 @@ import { useQuery } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router, useLocalSearchParams } from "expo-router";
+import { providerSupportsMcpConfig } from "@multica/core/agents/mcp-support";
+import { canAssignAgentToIssue } from "@multica/core/permissions";
+import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import type { Agent } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -38,7 +46,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentPresenceLine } from "@/components/agents/agent-presence-line";
 import { AgentTaskRow } from "@/components/agents/agent-task-row";
 import { AccessScopeBadge } from "@/components/agents/access-scope-badge";
+import { ApiError } from "@/data/api";
 import { agentDetailOptions, agentListOptions } from "@/data/queries/agents";
+import { appConfigOptions } from "@/data/queries/billing";
+import {
+  dingTalkInstallationsOptions,
+  larkInstallationsOptions,
+  slackInstallationsOptions,
+  telegramInstallationsOptions,
+  wecomInstallationsOptions,
+} from "@/data/queries/integrations";
 import { issueListOptions } from "@/data/queries/issues";
 import { agentTaskSnapshotOptions } from "@/data/queries/agent-task-snapshot";
 import { runtimeListOptions } from "@/data/queries/runtimes";
@@ -50,8 +67,11 @@ import {
 } from "@/data/mutations/agents";
 import { selectAgentActiveTasks } from "@/lib/issue-agent-activity";
 import { useWorkspacePresenceMap } from "@/lib/use-agent-presence";
+import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useChatAgentRequestStore } from "@/data/stores/chat-agent-request-store";
+import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -77,9 +97,13 @@ export default function AgentDetailPage() {
     data: fetched,
     isLoading,
     isError,
+    error,
   } = useQuery(agentDetailOptions(wsId, agentId));
   // `id: ""` is the schema fallback sentinel — treat it as "not found".
   const detailAgent: Agent | null = fetched && fetched.id ? fetched : null;
+  // S3: a 403 (no permission to see this agent) gets its own copy —
+  // distinct from the not-found fallback below.
+  const isForbidden = error instanceof ApiError && error.status === 403;
 
   // List cache as paint-from-push fallback: navigating from the list has the
   // row warm before the detail fetch resolves; detail wins once present.
@@ -129,10 +153,99 @@ export default function AgentDetailPage() {
     [runtimes, agent],
   );
 
+  // Capability-row visibility — same predicates as web agent-overview-pane:
+  // composio needs the server feature flag + viewer-is-owner; integrations
+  // need any of the five IM listings to report `configured`.
+  const { data: appConfig } = useQuery(appConfigOptions());
+  const composioMcpEnabled =
+    appConfig?.feature_flags?.[COMPOSIO_MCP_APPS_FLAG] === true;
+  const { data: larkListing } = useQuery(larkInstallationsOptions(wsId));
+  const { data: slackListing } = useQuery(slackInstallationsOptions(wsId));
+  const { data: dingtalkListing } = useQuery(dingTalkInstallationsOptions(wsId));
+  const { data: wecomListing } = useQuery(wecomInstallationsOptions(wsId));
+  const { data: telegramListing } = useQuery(telegramInstallationsOptions(wsId));
+  const integrationsConfigured =
+    larkListing?.configured === true ||
+    slackListing?.configured === true ||
+    dingtalkListing?.configured === true ||
+    wecomListing?.configured === true ||
+    telegramListing?.configured === true;
+  const isOwner = !!agent && !!me && agent.owner_id === me.id;
+  const showMcpRow = runtime
+    ? providerSupportsMcpConfig(runtime.provider)
+    : true;
+  const showComposioRow = composioMcpEnabled && isOwner;
+  const showRoutingRow = runtime?.provider === "openclaw";
+
   const canManage =
     !!agent && (isWorkspaceAdmin || (!!me && agent.owner_id === me.id));
   const isArchived = !!agent?.archived_at;
   const isSystem = !!agent?.system_key;
+
+  // A7 DM / Assign Work gate — web shares one invocation gate for both
+  // (MUL-3963, canAssignAgentToIssue). While membership is resolving the
+  // decision is undetermined, so DM stays disabled rather than alerting a
+  // false "no access" at a real member.
+  const myRole = useMemo(
+    () =>
+      me
+        ? members?.find((m) => m.user_id === me.id)?.role ?? null
+        : null,
+    [members, me],
+  );
+  const permissionsReady = !!me && !!members;
+  const canInvoke = useMemo(
+    () =>
+      !!agent &&
+      canAssignAgentToIssue(agent, {
+        userId: me?.id ?? null,
+        role: myRole,
+      }).allowed,
+    [agent, me, myRole],
+  );
+
+  // A7: DM hands off to the chat tab through the one-shot request store;
+  // Assign Work seeds the quick-create smart actor and opens new-issue.
+  const requestAgent = useChatAgentRequestStore((s) => s.requestAgent);
+  const setSmartActor = useNewIssueDraftStore((s) => s.setSmartActor);
+  const handleDm = useCallback(() => {
+    if (!agent || !wsSlug) return;
+    if (!canInvoke) {
+      Alert.alert(
+        t(
+          "detail.dm_no_permission_toast",
+          "You don't have access to chat with this agent.",
+        ),
+      );
+      return;
+    }
+    if (!runtime) {
+      Alert.alert(
+        t(
+          "detail.runtime_required_toast",
+          "Bind a runtime before running this agent.",
+        ),
+      );
+      return;
+    }
+    requestAgent(agent.id);
+    router.push(`/${wsSlug}/chat`);
+  }, [agent, wsSlug, canInvoke, runtime, requestAgent, t]);
+
+  const handleAssign = useCallback(() => {
+    if (!agent || !wsSlug) return;
+    if (!runtime) {
+      Alert.alert(
+        t(
+          "detail.runtime_required_toast",
+          "Bind a runtime before running this agent.",
+        ),
+      );
+      return;
+    }
+    setSmartActor({ type: "agent", id: agent.id });
+    router.push(`/${wsSlug}/new-issue`);
+  }, [agent, wsSlug, runtime, setSmartActor, t]);
 
   const confirmArchive = useCallback(() => {
     if (!agent) return;
@@ -246,18 +359,25 @@ export default function AgentDetailPage() {
     return (
       <View className="flex-1 items-center justify-center bg-background px-8 gap-3">
         <Ionicons
-          name="help-circle-outline"
+          name={isForbidden ? "lock-closed-outline" : "help-circle-outline"}
           size={42}
           color={THEME[colorScheme].mutedForeground}
         />
         <Text className="text-base font-medium text-foreground text-center">
-          {t("detail.not_found_title", "Agent not found")}
+          {isForbidden
+            ? t("mobile.detail.forbidden_title", "No access to this agent")
+            : t("detail.not_found_title", "Agent not found")}
         </Text>
         <Text className="text-sm text-muted-foreground text-center">
-          {t(
-            "detail.not_found_default",
-            "This agent may have been archived or deleted.",
-          )}
+          {isForbidden
+            ? t(
+                "mobile.detail.forbidden_body",
+                "You don't have permission to view this agent. Ask its owner to share it with you.",
+              )
+            : t(
+                "detail.not_found_default",
+                "This agent may have been archived or deleted.",
+              )}
         </Text>
       </View>
     );
@@ -293,7 +413,7 @@ export default function AgentDetailPage() {
       ),
     },
     {
-      label: t("inspector.prop_concurrency", "Concurrency"),
+      label: t("mobile.detail.fact_concurrency", "Concurrency cap"),
       value: (
         <Text className="text-sm text-foreground">{a.max_concurrent_tasks}</Text>
       ),
@@ -337,6 +457,38 @@ export default function AgentDetailPage() {
         </View>
       ) : null}
 
+      {/* A8：未绑定 runtime 的引导横幅（可管理者可见，直达编辑页 runtime 段）。 */}
+      {!a.runtime_id && canManage && !isArchived ? (
+        <View className="flex-row items-center gap-2 bg-warning/10 px-4 py-2.5 border-b border-border">
+          <Ionicons
+            name="alert-circle-outline"
+            size={16}
+            color={THEME[colorScheme].warning}
+          />
+          <Text className="flex-1 text-xs text-foreground">
+            {t(
+              "mobile.detail.runtime_unbound_banner",
+              "This agent has no runtime bound yet — bind one to start running it.",
+            )}
+          </Text>
+          <Pressable
+            onPress={() => {
+              if (!wsSlug) return;
+              router.push({
+                pathname: "/[workspace]/more/agents/[id]/edit-profile",
+                params: { workspace: wsSlug, id: a.id },
+              });
+            }}
+            className="px-2 py-1"
+            hitSlop={6}
+          >
+            <Text className="text-sm font-medium text-brand">
+              {t("mobile.detail.bind_runtime", "Bind runtime")}
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       <Tabs
         value={tab}
         onValueChange={(v) => setTab(v as DetailTab)}
@@ -361,7 +513,12 @@ export default function AgentDetailPage() {
         <TabsContent value="overview" className="flex-1">
           <ScrollView className="flex-1" contentContainerClassName="pb-8">
             <View className="flex-row items-center gap-3 px-4 pt-4 pb-4">
-              <ActorAvatar type="agent" id={a.id} size={56} />
+              <ActorAvatar
+                type="agent"
+                id={a.id}
+                avatarUrl={a.avatar_url ? resolveAttachmentUrl(a.avatar_url) : null}
+                size={56}
+              />
               <View className="flex-1 min-w-0 gap-1.5">
                 <Text
                   className="text-lg font-semibold text-foreground"
@@ -382,6 +539,49 @@ export default function AgentDetailPage() {
                 </View>
               </View>
             </View>
+
+            {/* A7：DM / Assign Work —— web 详情头同一对动作。chat 共享
+                invocation 门（MUL-3963）；runtime 未绑定点了如实提示，
+                与 web 的 toast 语义一致。 */}
+            {!isArchived ? (
+              <View className="flex-row gap-2 mx-4 mb-3">
+                <Pressable
+                  onPress={handleDm}
+                  disabled={!permissionsReady}
+                  className={`flex-row items-center justify-center gap-1.5 flex-1 rounded-lg border border-border py-2.5 ${
+                    permissionsReady ? "active:bg-secondary" : "opacity-50"
+                  }`}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("detail.dm", "DM")}
+                >
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={16}
+                    color={THEME[colorScheme].foreground}
+                  />
+                  <Text className="text-sm font-medium text-foreground">
+                    {t("detail.dm", "DM")}
+                  </Text>
+                </Pressable>
+                {canInvoke ? (
+                  <Pressable
+                    onPress={handleAssign}
+                    className="flex-row items-center justify-center gap-1.5 flex-1 rounded-lg bg-primary py-2.5 active:opacity-80"
+                    accessibilityRole="button"
+                    accessibilityLabel={t("detail.assign_work", "Assign work")}
+                  >
+                    <Ionicons
+                      name="add"
+                      size={16}
+                      color={THEME[colorScheme].primaryForeground}
+                    />
+                    <Text className="text-sm font-medium text-primary-foreground">
+                      {t("detail.assign_work", "Assign work")}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
 
             {canManage && !isArchived ? (
               <Pressable
@@ -507,6 +707,46 @@ export default function AgentDetailPage() {
             contentContainerClassName="px-4 pt-3 pb-8"
           >
             <View className="rounded-lg border border-border overflow-hidden">
+              {/* 能力行可见性与 web agent-overview-pane 同判定（RUYI-418 B3）。 */}
+              {showMcpRow ? (
+                <SettingsRow
+                  icon="hardware-chip-outline"
+                  label={t("tabs.mcp_config", "MCP")}
+                  onPress={() =>
+                    wsSlug &&
+                    router.push({
+                      pathname: "/[workspace]/more/agents/[id]/mcp",
+                      params: { workspace: wsSlug, id: a.id },
+                    })
+                  }
+                />
+              ) : null}
+              {showComposioRow ? (
+                <SettingsRow
+                  icon="apps-outline"
+                  label={t("tabs.composio_mcp", "MCP Apps")}
+                  onPress={() =>
+                    wsSlug &&
+                    router.push({
+                      pathname: "/[workspace]/more/agents/[id]/composio",
+                      params: { workspace: wsSlug, id: a.id },
+                    })
+                  }
+                />
+              ) : null}
+              {integrationsConfigured ? (
+                <SettingsRow
+                  icon="chatbubble-ellipses-outline"
+                  label={t("tabs.integrations", "Integrations")}
+                  onPress={() =>
+                    wsSlug &&
+                    router.push({
+                      pathname: "/[workspace]/more/agents/[id]/integrations",
+                      params: { workspace: wsSlug, id: a.id },
+                    })
+                  }
+                />
+              ) : null}
               <SettingsRow
                 icon="sparkles-outline"
                 label={t("tabs.skills", "Skills")}
@@ -519,16 +759,55 @@ export default function AgentDetailPage() {
                 }
               />
               <SettingsRow
-                icon="key-outline"
-                label={t("tabs.environment", "Environment")}
+                icon="shield-outline"
+                label={t("tabs.access", "Access")}
                 onPress={() =>
                   wsSlug &&
                   router.push({
-                    pathname: "/[workspace]/more/agents/[id]/env",
+                    pathname: "/[workspace]/more/agents/[id]/access",
                     params: { workspace: wsSlug, id: a.id },
                   })
                 }
               />
+              <SettingsRow
+                icon="terminal-outline"
+                label={t("tabs.custom_args", "Custom Args")}
+                onPress={() =>
+                  wsSlug &&
+                  router.push({
+                    pathname: "/[workspace]/more/agents/[id]/custom-args",
+                    params: { workspace: wsSlug, id: a.id },
+                  })
+                }
+              />
+              {showRoutingRow ? (
+                <SettingsRow
+                  icon="git-network-outline"
+                  label={t("tabs.runtime_config", "Routing")}
+                  onPress={() =>
+                    wsSlug &&
+                    router.push({
+                      pathname: "/[workspace]/more/agents/[id]/runtime-config",
+                      params: { workspace: wsSlug, id: a.id },
+                    })
+                  }
+                />
+              ) : null}
+              {/* env 是唯一携带密钥语义的端点（web 同规则：仅 canEdit 可见），
+                  其余行对全部读者可见。 */}
+              {canManage ? (
+                <SettingsRow
+                  icon="key-outline"
+                  label={t("tabs.environment", "Environment")}
+                  onPress={() =>
+                    wsSlug &&
+                    router.push({
+                      pathname: "/[workspace]/more/agents/[id]/env",
+                      params: { workspace: wsSlug, id: a.id },
+                    })
+                  }
+                />
+              ) : null}
               <SettingsRow
                 icon="link-outline"
                 label={t("tabs.webhooks", "Webhook")}
@@ -542,8 +821,6 @@ export default function AgentDetailPage() {
                 last
               />
             </View>
-            {/* P1 行（MCP / 集成 / 运行时配置 / 自定义参数 / 开场白）按设计
-                §2 直接隐藏，功能到位后再补导航行。 */}
           </ScrollView>
         </TabsContent>
       </Tabs>
