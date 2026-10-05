@@ -17,7 +17,9 @@ Rules (see workspace/project instructions, RUYI-359):
 
 | Number | Stem | Issue | Branch / PR | Status |
 | ------ | ---- | ----- | ----------- | ------ |
+| 917 | 917_issue_run_cancellation_fence | RUYI-384 | merged to main via PR #194 | applied |
 | 918 | 918_issue_decisions | RUYI-345 | merged to main via PR #181 | applied |
+| 919 | 919_issue_dependency_relationships | RUYI-351 | merged to main via PR #180 | applied |
 | 920 | 920_project_revision | RUYI-354 | agent/agent-f70e39b85abd/ruyi-354 (Owner pinned 2026-10-03 08:59) | applied |
 | 921 | 921_prompt_version_snapshot_scope | RUYI-285 | merged to main via PR #202 (rebuilt from superseded PR #183) | applied |
 | 922 | 922_channel_capability_state | RUYI-400 | merged to main via PR #201 | applied |
@@ -59,3 +61,6 @@ Notes:
   renumber above. Environments whose `schema_migrations` ledger carries
   `925_activity_audit` must have that row rewritten to `926_activity_audit`
   per the renumber rule (version rewritten, `applied_at` preserved).
+- 917/919 back-fill note (RUYI-439): both stems predate the RUYI-359 ledger;
+  rows back-filled 2026-10-05, attribution re-verified from first-parent
+  main history (917 -> RUYI-384 via PR #194, 919 -> RUYI-351 via PR #180).
