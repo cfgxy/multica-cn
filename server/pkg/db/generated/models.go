@@ -69,6 +69,7 @@ type Agent struct {
 	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	Revision               int64  `json:"revision"`
 }
 
 type AgentBuilderDraft struct {
@@ -714,6 +715,7 @@ type ExecutionProfile struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	LastActivatedAt pgtype.Timestamptz `json:"last_activated_at"`
+	Revision        int64              `json:"revision"`
 }
 
 type ExecutionProfileEntry struct {
