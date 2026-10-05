@@ -97,6 +97,9 @@ const (
 
 	// Ops domain: deployment anchoring.
 	AuditOpsServerStarted = "ops.server_started"
+	// RUYI-355 P2-3: ops.server_started only reaches workspaces that exist
+	// at boot; the creation event anchors workspaces born mid-flight.
+	AuditOpsWorkspaceCreated = "ops.workspace_created"
 )
 
 // Structured cancel/failure reasons. Cancel-class events (run.cancelled) MUST
@@ -384,8 +387,13 @@ func runEventFromDims(workspaceID, issueID, taskID, agentID, runtimeID pgtype.UU
 // statement just terminalized. Same-transaction callers pass their qtx so the
 // workspace resolution rides the cancel's own snapshot; reason names WHY the
 // run ended and actorType/actorID name WHO ended it (audit reason vocabulary).
-func TaskCancelledEvent(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, reason, actorType string, actorID pgtype.UUID, extraDetails map[string]any) Event {
+// trig names the causal upstream object when the caller holds one (batch
+// cancel paths); pass the zero value when the run itself is the only object
+// (single-run cancels) so the pair stays NULL instead of carrying
+// non-dereferenceable noise.
+func TaskCancelledEvent(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, reason, actorType string, actorID pgtype.UUID, extraDetails map[string]any, trig AuditTrigger) Event {
 	ev := RunEventFromTask(ctx, q, AuditRunCancelled, reason, actorType, actorID, task)
+	ev = ev.withTrigger(trig)
 	if len(extraDetails) > 0 {
 		if d, err := json.Marshal(extraDetails); err == nil {
 			ev = ev.WithDetails(d)
@@ -407,10 +415,10 @@ func TaskCancelAttribution(userInitiated bool) (reason, actorType string) {
 // BulkTaskCancelledEvents builds one run.cancelled event per cancelled row.
 // Same-transaction callers pass their qtx; pair with AppendAuditEvents to
 // commit attribution with the flip.
-func BulkTaskCancelledEvents(ctx context.Context, q *db.Queries, cancelled []db.AgentTaskQueue, reason, actorType string, actorID pgtype.UUID, extraDetails map[string]any) []Event {
+func BulkTaskCancelledEvents(ctx context.Context, q *db.Queries, cancelled []db.AgentTaskQueue, reason, actorType string, actorID pgtype.UUID, extraDetails map[string]any, trig AuditTrigger) []Event {
 	events := make([]Event, 0, len(cancelled))
 	for _, t := range cancelled {
-		events = append(events, TaskCancelledEvent(ctx, q, t, reason, actorType, actorID, extraDetails))
+		events = append(events, TaskCancelledEvent(ctx, q, t, reason, actorType, actorID, extraDetails, trig))
 	}
 	return events
 }
@@ -419,11 +427,11 @@ func BulkTaskCancelledEvents(ctx context.Context, q *db.Queries, cancelled []db.
 // caller's cancel transaction — attribution commits with the flip or not at
 // all. reason names the server-side decision; actorID stays zero for system
 // actors and carries the acting member/agent otherwise.
-func appendTaskCancelledAudits(ctx context.Context, qtx *db.Queries, cancelled []db.AgentTaskQueue, reason, actorType string, actorID pgtype.UUID, extraDetails map[string]any) error {
+func appendTaskCancelledAudits(ctx context.Context, qtx *db.Queries, cancelled []db.AgentTaskQueue, reason, actorType string, actorID pgtype.UUID, extraDetails map[string]any, trig AuditTrigger) error {
 	if len(cancelled) == 0 {
 		return nil
 	}
-	return AppendAuditEvents(ctx, qtx, BulkTaskCancelledEvents(ctx, qtx, cancelled, reason, actorType, actorID, extraDetails)...)
+	return AppendAuditEvents(ctx, qtx, BulkTaskCancelledEvents(ctx, qtx, cancelled, reason, actorType, actorID, extraDetails, trig)...)
 }
 
 // appendTaskFailedAudits writes one run.failed event per row inside the
@@ -579,6 +587,25 @@ func OpsServerStartedEvent(workspaceID pgtype.UUID, version, commit string) Even
 	}
 }
 
+// OpsWorkspaceCreatedEvent anchors a workspace's birth in its ops trail
+// (RUYI-355 P2-3): the startup hook only reaches workspaces that existed at
+// boot, so without this event a workspace created mid-flight has no
+// ops-domain row until the next restart. The creator is the acting member;
+// name/slug ride in details. Written from the creation transaction.
+func OpsWorkspaceCreatedEvent(workspaceID, actorID pgtype.UUID, name, slug string) Event {
+	details, _ := json.Marshal(map[string]string{"name": name, "slug": slug})
+	return Event{
+		ID:          dbid.NewV7(),
+		WorkspaceID: workspaceID,
+		Domain:      AuditDomainOps,
+		EventType:   AuditOpsWorkspaceCreated,
+		OccurredAt:  time.Now().UTC(),
+		ActorType:   AuditActorMember,
+		ActorID:     actorID,
+		Details:     details,
+	}
+}
+
 // WithTrigger attaches causal-upstream evidence (semantics reused from
 // agent_task_queue.trigger_evidence_kind/ref_id).
 func (e Event) WithTrigger(kind, ref string) Event {
@@ -586,6 +613,27 @@ func (e Event) WithTrigger(kind, ref string) Event {
 	e.TriggerKind = &k
 	e.TriggerRef = &r
 	return e
+}
+
+// AuditTrigger is the typed shape behind WithTrigger for cancel-class call
+// sites (RUYI-355 P2-2): Kind names the causal object type — issue, agent,
+// comment, chat_session, task, runtime, user — and Ref carries that
+// row's id as a string, so every batch-cancel run.cancelled event carries a
+// dereferenceable trigger source (the MUL-4302 §2 evidence-handle pair; free
+// TEXT kind so new sources need no migration). The zero value means "no
+// causal object beyond the run itself" and keeps the DB pair NULL.
+type AuditTrigger struct {
+	Kind string
+	Ref  string
+}
+
+// withTrigger applies an AuditTrigger, keeping both columns NULL when either
+// half is empty — a kind without a ref (or vice versa) resolves to nothing.
+func (e Event) withTrigger(trig AuditTrigger) Event {
+	if trig.Kind == "" || trig.Ref == "" {
+		return e
+	}
+	return e.WithTrigger(trig.Kind, trig.Ref)
 }
 
 // WithDetails sets/overrides the JSONB payload.
