@@ -83,6 +83,23 @@ export function useDeleteRuntimeCredential(wsId: string) {
   });
 }
 
+// RUYI-425 §4.3 (stage 3): registers a manual voice instance. Refreshes the
+// runtime list so the new instance's machine card appears immediately.
+export function useCreateManualRuntime(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      name: string;
+      profile_id: string;
+      model?: string;
+      advanced?: Record<string, unknown>;
+    }) => api.createManualRuntime(body),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
 // useUpdateRuntime patches editable fields on a runtime (visibility, custom
 // name). Invalidates the runtime list so the picker disabled-state and
 // display names recompute.

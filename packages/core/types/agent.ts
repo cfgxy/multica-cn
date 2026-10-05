@@ -137,9 +137,10 @@ export interface RuntimeCapabilities {
 // runtimes against it; those instances carry `profile_id` pointing back here.
 // ---------------------------------------------------------------------------
 
-// The fixed allow-list of base protocol families a custom runtime can wrap.
-// These are the only backends the create flow may select; the server rejects
-// anything else with 400. Kept as a const tuple so the union type is derived
+// The fixed allow-list of base protocol families a custom runtime can wrap,
+// plus the API-backed voice families (RUYI-425): gemini_live has no CLI
+// binary but is a first-class profile family the server validates against
+// agent.SupportedTypes. Kept as a const tuple so the union type is derived
 // from the single source of truth.
 export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "claude",
@@ -169,6 +170,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "zeroclaw",
   "deerflow",
   "zcode",
+  "gemini_live",
 ] as const;
 
 export type RuntimeProtocolFamily =

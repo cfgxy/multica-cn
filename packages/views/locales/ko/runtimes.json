@@ -489,5 +489,20 @@
     "badge_configured": "구성됨 ✓",
     "badge_invalid": "키 무효",
     "badge_not_configured": "미구성"
+  },
+  "voice_instance_create": {
+    "action": "음성 인스턴스 추가",
+    "title": "음성 인스턴스 등록",
+    "description": "이 워크스페이스에 Gemini Live 인스턴스를 수동으로 등록합니다. 이름은 중복될 수 있으며, API 키는 암호화되어 저장되고 다시 표시되지 않습니다.",
+    "name_placeholder": "예: Gemini Live (개인)",
+    "no_profiles": "이 워크스페이스에는 아직 음성 프로필이 없습니다.",
+    "create_default_profile": "Gemini Live 프로필 만들기",
+    "key_placeholder": "Gemini API 키 붙여넣기",
+    "submit": "등록",
+    "creating": "등록 중…",
+    "created": "음성 인스턴스가 등록되었습니다",
+    "created_probe_invalid": "등록되었지만 연결 확인에 실패했습니다. API 키를 확인하세요",
+    "create_failed": "음성 인스턴스 등록 실패",
+    "key_save_failed": "등록되었지만 API 키 저장에 실패했습니다. 인스턴스 설정에서 추가하세요"
   }
 }

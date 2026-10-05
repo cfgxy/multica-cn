@@ -2286,6 +2286,26 @@ export class ApiClient {
     });
   }
 
+  /**
+   * RUYI-425 §4.3 (stage 3): manually registers a voice instance. Names may
+   * duplicate; capabilities derive server-side from the profile's protocol
+   * family; the instance is born online/public and structurally invisible to
+   * daemon probing. The API key is NOT part of this call — store it right
+   * after via putRuntimeCredential, which also triggers the connectivity
+   * probe.
+   */
+  async createManualRuntime(body: {
+    name: string;
+    profile_id: string;
+    model?: string;
+    advanced?: Record<string, unknown>;
+  }): Promise<AgentRuntime> {
+    return this.fetch("/api/runtimes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   async updateRuntime(
     runtimeId: string,
     patch: {

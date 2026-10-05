@@ -489,5 +489,20 @@
     "badge_configured": "設定済み ✓",
     "badge_invalid": "キー無効",
     "badge_not_configured": "未設定"
+  },
+  "voice_instance_create": {
+    "action": "音声インスタンスを追加",
+    "title": "音声インスタンスを登録",
+    "description": "このワークスペースに Gemini Live インスタンスを手動で登録します。名前は重複できます。API キーは暗号化して保存され、再表示されません。",
+    "name_placeholder": "例：Gemini Live（個人）",
+    "no_profiles": "このワークスペースにはまだ音声プロファイルがありません。",
+    "create_default_profile": "Gemini Live プロファイルを作成",
+    "key_placeholder": "Gemini API キーを貼り付け",
+    "submit": "登録",
+    "creating": "登録中…",
+    "created": "音声インスタンスを登録しました",
+    "created_probe_invalid": "登録されましたが、接続確認に失敗しました。API キーを確認してください",
+    "create_failed": "音声インスタンスの登録に失敗しました",
+    "key_save_failed": "登録されましたが、API キーの保存に失敗しました。インスタンス設定から追加してください"
   }
 }

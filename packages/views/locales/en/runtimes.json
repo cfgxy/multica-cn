@@ -505,5 +505,20 @@
     "badge_configured": "Key configured",
     "badge_invalid": "Key invalid",
     "badge_not_configured": "No key"
+  },
+  "voice_instance_create": {
+    "action": "Add voice instance",
+    "title": "Register a voice instance",
+    "description": "Manually register a Gemini Live instance for this workspace. Names can repeat; the API key is stored encrypted and never shown again.",
+    "name_placeholder": "e.g. Gemini Live (personal)",
+    "no_profiles": "No voice profile in this workspace yet.",
+    "create_default_profile": "Create Gemini Live profile",
+    "key_placeholder": "Paste the Gemini API key",
+    "submit": "Register",
+    "creating": "Registering…",
+    "created": "Voice instance registered",
+    "created_probe_invalid": "Registered, but the connectivity check failed — check the API key",
+    "create_failed": "Failed to register the voice instance",
+    "key_save_failed": "Registered, but saving the API key failed — add it from the instance settings"
   }
 }
