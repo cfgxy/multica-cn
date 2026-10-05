@@ -90,8 +90,10 @@ func (s *TaskService) ConsumeQueuedTasksForRunningTask(ctx context.Context, cons
 			return nil
 		}
 		// Same-tx audit (RUYI-355): the consuming run is the actor — it
-		// declared it has read and is handling the queued messages.
-		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonConsumedByRunningTask, AuditActorAgent, consuming.ID, nil); err != nil {
+		// declared it has read and is handling the queued messages — and the
+		// dereferenceable trigger source of the consumed runs' cancellation.
+		if err := appendTaskCancelledAudits(ctx, qtx, cancelled, AuditReasonConsumedByRunningTask, AuditActorAgent, consuming.ID, nil,
+			AuditTrigger{Kind: "task", Ref: util.UUIDToString(consuming.ID)}); err != nil {
 			return err
 		}
 

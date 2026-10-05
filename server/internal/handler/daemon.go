@@ -5154,7 +5154,7 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 			ackActor = service.AuditActorMember
 		}
 		service.TryAppendAuditEvents(r.Context(), h.Queries, service.TaskCancelledEvent(r.Context(), h.Queries, confirmed,
-			service.AuditReasonUserRequested, ackActor, confirmed.CancelRequestedByUserID, nil))
+			service.AuditReasonUserRequested, ackActor, confirmed.CancelRequestedByUserID, nil, service.AuditTrigger{}))
 	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{
