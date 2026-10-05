@@ -13,11 +13,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"fmt"
 	"strings"
 	"syscall"
 	"testing"
@@ -39,6 +40,18 @@ while :; do
   i=$((i+1))
   sleep 0.3
 done
+`
+	// RUYI-424 stub mimicking the claude stream-json input-mode contract:
+	// consume one prompt line, emit the final result, then KEEP LIVING —
+	// only stdin EOF ends the process. A run whose stdin EOF is lost in the
+	// supervision chain strands here forever, exactly like the production
+	// zombies.
+	e2eClaudeStubScript = `#!/bin/sh
+IFS= read -r prompt
+echo "{\"type\":\"result\",\"result\":\"done:$prompt\"}"
+while IFS= read -r _; do :; done
+echo "stdin-eof-observed"
+exit 0
 `
 )
 
@@ -462,4 +475,76 @@ func TestE2eSystemdCancelDuringRestartWindowLeavesWorkerUntouched(t *testing.T) 
 	}
 	e2eAssertUnitGone(t, sup2, runID)
 	t.Logf("pending cancel delivered after restart: exit=%+v record_source=%s", exit, man.Exit.Source)
+}
+
+// Scenario 4 — RUYI-424 stdin-EOF lifecycle: a claude-shaped worker (final
+// result emitted, process alive until stdin EOF) must (a) receive prompt
+// bytes through the control socket, (b) stay alive after the result while
+// stdin is open — the exact zombie shape the production incident produced —
+// and (c) exit BY ITSELF with code 0 once stdin EOF is delivered, leaving
+// launcher-observed exit evidence. No Stop, no signal: the only thing that
+// may end this worker is its stdin reaching EOF.
+func TestE2eSystemdStdinEOFEndsClaudeShapedWorker(t *testing.T) {
+	launcher := buildE2eLauncher(t)
+	runsDir := e2eRunsDir(t)
+	runID := "e2e001a0-cafe-beef-0004"
+
+	sup := newE2eSupervisor(t, runsDir, launcher)
+	workDir := t.TempDir()
+	script := filepath.Join(workDir, "claude-stub.sh")
+	if err := os.WriteFile(script, []byte(e2eClaudeStubScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h, err := sup.Launch(ctx, agent.LaunchSpec{
+		RunID:   runID,
+		TaskID:  e2eTaskID,
+		Runtime: "e2e-claude-stub",
+		Path:    script,
+		Dir:     workDir,
+	})
+	if err != nil {
+		t.Fatalf("launch %s: %v", runID, err)
+	}
+	pid := e2eWaitWorkerPID(t, sup, runID)
+
+	// (a) prompt bytes traverse stdin → control.sock → launcher → worker.
+	if _, err := io.WriteString(h.Stdin(), "prompt-r424\n"); err != nil {
+		t.Fatalf("stdin write: %v", err)
+	}
+	e2eReadUntil(t, sup, h, runID, `done:prompt-r424`, 30*time.Second)
+
+	// (b) negative adjacency: the result alone must NOT end the worker. The
+	// production zombie was a CLI idling after its result waiting for stdin
+	// EOF — assert that shape holds while stdin is open, then break it.
+	aliveEnd := time.Now().Add(2 * time.Second)
+	for time.Now().Before(aliveEnd) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			t.Fatalf("worker exited before stdin EOF — stub contract broken: %v", err)
+		}
+		if man := e2eManifest(t, sup, runID); man.Exit != nil {
+			t.Fatalf("exit evidence appeared while stdin still open: %+v", man.Exit)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// (c) deliver stdin EOF — the only shutdown primitive this scenario
+	// allows — and the worker must exit on its own, code 0.
+	if err := h.CloseStdin(); err != nil {
+		t.Fatalf("close stdin: %v", err)
+	}
+	exit := e2eWaitExit(t, h, 30*time.Second)
+	man := e2eManifest(t, sup, runID)
+	if man.State != StateExited || man.Exit == nil {
+		t.Fatalf("manifest after stdin EOF: state=%s exit=%+v", man.State, man.Exit)
+	}
+	if exit.Code != 0 || exit.Signal != "" {
+		t.Fatalf("worker did not exit cleanly on stdin EOF: %+v", exit)
+	}
+	if man.Exit.Source != ExitSourceLauncher {
+		t.Fatalf("exit source = %s, want %s (the launcher must have observed the natural exit)", man.Exit.Source, ExitSourceLauncher)
+	}
+	e2eAssertUnitGone(t, sup, runID)
+	t.Logf("stdin-EOF lifecycle: result survived %v of idle, then exit=%+v source=%s", 2*time.Second, exit, man.Exit.Source)
 }

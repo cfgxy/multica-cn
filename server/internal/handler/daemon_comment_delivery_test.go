@@ -1045,3 +1045,11 @@ func TestFinalizeTaskClaim_TriggerDeletedAfterClaimRejectsStaleProvenance(t *tes
 		t.Fatalf("stale trigger race advanced receipt: %v", got)
 	}
 }
+
+func (f *failDeleteCommentDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by failDeleteCommentDB")
+}
+
+func (z *zeroDeleteCommentDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by zeroDeleteCommentDB")
+}

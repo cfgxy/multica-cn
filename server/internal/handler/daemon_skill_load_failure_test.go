@@ -170,3 +170,7 @@ func TestResolveTaskSkillBundles_SkillReadFailureReturns500(t *testing.T) {
 	req = withURLParams(req, "runtimeId", runtimeID, "taskId", taskID)
 	testutil.Call(t, failing.ResolveTaskSkillBundles, req).Want(http.StatusInternalServerError)
 }
+
+func (skillFileBatchFailDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by skillFileBatchFailDBTX")
+}

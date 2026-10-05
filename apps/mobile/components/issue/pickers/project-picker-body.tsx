@@ -17,6 +17,11 @@ import { ProjectIcon } from "@/components/ui/project-icon";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  recordProjectSelection,
+  sortProjectsByRecency,
+  useProjectRecencyStore,
+} from "@/data/stores/project-recency-store";
 import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -33,6 +38,9 @@ export function ProjectPickerBody({ value, query, onChange }: Props) {
   const { t } = useT("projects");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  // RUYI-413: device-local "picked last, when" memory — recent projects
+  // float to the top of the browse list and survive a cold start.
+  const lastSelectedAt = useProjectRecencyStore((s) => s.lastSelectedAt);
   const listRef = useScrollToTopOnChange(query);
   const { colorScheme } = useColorScheme();
   const checkColor =
@@ -41,26 +49,39 @@ export function ProjectPickerBody({ value, query, onChange }: Props) {
   const rows = useMemo<Row[]>(() => {
     const q = query.trim().toLowerCase();
     const matchName = (n: string) => !q || n.toLowerCase().includes(q);
-    const projectRows: Row[] = [...projects]
-      .filter((p) => matchName(p.title))
-      .sort((a, b) => a.title.localeCompare(b.title))
-      .map((p) => ({ kind: "project" as const, project: p }));
+    if (q) {
+      // Search results stay alphabetical — the user is looking up a known
+      // name, not browsing; recency ordering is a browse-list concern.
+      return projects
+        .filter((p) => matchName(p.title))
+        .sort((a, b) => a.title.localeCompare(b.title))
+        .map((p) => ({ kind: "project" as const, project: p }));
+    }
 
-    if (q) return projectRows;
+    // Browse list (RUYI-413): last-selected first, never-selected after in
+    // title order (`sortProjectsByRecency`).
+    const sorted = sortProjectsByRecency(
+      projects.filter((p) => matchName(p.title)),
+      lastSelectedAt,
+      wsId,
+    ).map((p) => ({ kind: "project" as const, project: p }));
 
-    // Pin selected project to the top (below "No project"). Apple HIG
-    // doesn't require this — product UX choice that mirrors assignee.
-    const selected = projectRows.find(
+    // Pin selected project to the top (below "No project") — unchanged
+    // product choice mirroring the assignee picker. In the common flow the
+    // selection is also the most recent, so the pin and the recency order
+    // agree; it only shows when the current value was never picked here
+    // (e.g. set from web).
+    const selected = sorted.find(
       (r) => r.kind === "project" && r.project.id === value?.id,
     );
     return [
       { kind: "none" },
       ...(selected ? [selected] : []),
-      ...projectRows.filter(
+      ...sorted.filter(
         (r) => !(r.kind === "project" && r.project.id === value?.id),
       ),
     ];
-  }, [projects, query, value]);
+  }, [projects, query, value, lastSelectedAt, wsId]);
 
   const isSelected = (row: Row) => {
     if (row.kind === "none") return value === null;
@@ -80,9 +101,18 @@ export function ProjectPickerBody({ value, query, onChange }: Props) {
       }
       renderItem={({ item }) => (
         <Pressable
-          onPress={() =>
-            item.kind === "none" ? onChange(null) : onChange(item.project)
-          }
+          onPress={() => {
+            if (item.kind === "none") {
+              onChange(null);
+              return;
+            }
+            // Record for the recency order before handing the pick to the
+            // route. Not awaited: the in-memory map is what this session's
+            // next open reads, and the disk write flushes long before any
+            // realistic cold start (RUYI-413 store doc).
+            void recordProjectSelection(wsId, item.project.id);
+            onChange(item.project);
+          }}
           className="flex-row items-center gap-3 px-4 py-3 active:bg-secondary"
         >
           {item.kind === "none" ? (
