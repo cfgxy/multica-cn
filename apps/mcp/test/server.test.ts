@@ -84,9 +84,11 @@ describe("createMcpServer (via in-memory client)", () => {
       "create_execution_profile",
       "create_issue",
       "create_project",
+      "create_quick_reply",
       "create_squad",
       "delete_comment",
       "delete_execution_profile",
+      "delete_quick_reply",
       "dispatch_agent",
       "edit_comment",
       "get_agent",
@@ -109,6 +111,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "list_issue_runs",
       "list_issues",
       "list_projects",
+      "list_quick_replies",
       "list_runs",
       "list_runtimes",
       "list_squads",
@@ -125,6 +128,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "update_issue",
       "update_issue_status",
       "update_project",
+      "update_quick_reply",
       "update_squad",
     ]);
     for (const tool of tools) {

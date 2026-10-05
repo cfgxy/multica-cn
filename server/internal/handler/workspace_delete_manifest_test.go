@@ -121,6 +121,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
 	"issue_vcs_pull_request":             workspaceDelete,
+	// Quick replies (RUYI-435) are a per-workspace catalog owned outright by
+	// the workspace; nothing outside the database references a row.
+	"quick_reply": workspaceDelete,
 	// Decision cards (RUYI-345) own nothing outside the database; the answer
 	// echo is a plain comment row swept with the rest of comment.
 	"issue_decisions":            workspaceDelete,

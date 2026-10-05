@@ -715,3 +715,17 @@ export interface UpdateSquadBody {
   instructions?: string;
   leader_id?: string;
 }
+
+export interface QuickReplyInfo {
+  id: string;
+  workspace_id?: string;
+  /** Menu label, unique within the workspace (the backend answers 409 otherwise). */
+  name: string;
+  /** Template body the composer inserts on selection — never auto-sent. */
+  content: string;
+  /** Display order, ascending. */
+  position?: number;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
