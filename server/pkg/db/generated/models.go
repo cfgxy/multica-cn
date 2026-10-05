@@ -80,6 +80,21 @@ type AgentBuilderDraft struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+type AgentFactEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	LiveSessionID pgtype.UUID        `json:"live_session_id"`
+	EventID       string             `json:"event_id"`
+	Seq           int64              `json:"seq"`
+	SourceRuntime string             `json:"source_runtime"`
+	Kind          string             `json:"kind"`
+	Payload       []byte             `json:"payload"`
+	EvidenceRef   string             `json:"evidence_ref"`
+	RecordedAt    pgtype.Timestamptz `json:"recorded_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 // Allow-list of who may invoke a public_to agent (MUL-3963). One row per (agent, target_type, target); targets stack and canInvokeAgent OR-matches. workspace rows store the agent workspace_id in target_id; member rows store the user id; team rows are reserved and inert in V1. Rows only matter when agent.permission_mode = public_to. No DB foreign keys: agent_id / created_by / member target_id relationships are maintained in the application layer (see migration comment).
 type AgentInvocationTarget struct {
 	ID         pgtype.UUID        `json:"id"`
@@ -1197,6 +1212,7 @@ type LiveSession struct {
 	EndedAt           pgtype.Timestamptz `json:"ended_at"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Summary           string             `json:"summary"`
 }
 
 // One workspace-published skill or MCP marketplace listing (RUYI-99). Merged with the embedded static catalog at read time. A withdrawn row is a tombstone that keeps its (kind, name_key) reserved; only source_workspace_id may republish it. source_workspace_id is authority only and must not be returned by any API.
