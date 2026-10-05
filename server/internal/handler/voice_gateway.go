@@ -9,12 +9,15 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/agentcontext"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -283,6 +286,25 @@ type liveServerFrame struct {
 			Text string `json:"text"`
 		} `json:"outputTranscription"`
 	} `json:"serverContent"`
+	ToolCall *struct {
+		FunctionCalls []struct {
+			ID   string          `json:"id"`
+			Name string          `json:"name"`
+			Args json.RawMessage `json:"args"`
+		} `json:"functionCalls"`
+	} `json:"toolCall"`
+}
+
+// liveClientToolFrame is the client→gateway half: function responses
+// returning tool results upstream.
+type liveClientToolFrame struct {
+	ToolResponse *struct {
+		FunctionResponses []struct {
+			ID       string          `json:"id"`
+			Name     string          `json:"name"`
+			Response json.RawMessage `json:"response"`
+		} `json:"functionResponses"`
+	} `json:"toolResponse"`
 }
 
 // StartVoiceSession handles GET /api/agents/{agentId}/voice-session: the
@@ -375,31 +397,46 @@ func (h *Handler) relayVoiceSession(
 	if err != nil {
 		slog.Warn("voice provider dial failed", "session_id", uuidToString(session.ID), "error", err)
 		writeErrorCode(w, http.StatusBadGateway, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
-		h.endLiveSession(context.Background(), session, nil)
+		h.endLiveSession(context.Background(), session, nil, nil)
 		return
 	}
 	defer providerConn.Close()
 
 	if err := providerConn.WriteJSON(composeVoiceSetupFrame(instructions, model, advanced)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(session.ID), "error", err)
-		h.endLiveSession(context.Background(), session, nil)
+		h.endLiveSession(context.Background(), session, nil, nil)
 		return
 	}
 
 	clientConn, err := voiceUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade already wrote the HTTP error.
-		h.endLiveSession(context.Background(), session, nil)
+		h.endLiveSession(context.Background(), session, nil, nil)
 		return
 	}
 	defer clientConn.Close()
 
 	var transcript []voiceTranscriptEntry
+	// Tool interactions feed the facts write-back (stage 4); both pumps parse
+	// frames, so the slice needs its own lock — the transcript stays
+	// single-writer (provider pump only).
+	var toolFrames []agentcontext.VoiceToolFrame
+	var toolMu sync.Mutex
+	recordToolFrame := func(f agentcontext.VoiceToolFrame) {
+		toolMu.Lock()
+		defer toolMu.Unlock()
+		toolFrames = append(toolFrames, f)
+	}
 	// Exactly one terminal write covers every teardown path from here: client
-	// disconnect, provider close, or a relay write failure. The closure reads
-	// the slice variable at defer-run time, so EndLiveSession carries
-	// whatever the pump accumulated.
-	defer func() { h.endLiveSession(context.Background(), session, transcript) }()
+	// disconnect, provider close, or a relay write failure. The closures read
+	// the slice variables at defer-run time, so the terminal write carries
+	// whatever the pumps accumulated — an abnormal disconnect loses nothing.
+	defer func() {
+		toolMu.Lock()
+		frames := toolFrames
+		toolMu.Unlock()
+		h.endLiveSession(context.Background(), session, transcript, frames)
+	}()
 
 	// The transcript is owned by the provider pump (single writer); the
 	// client pump only closes the provider conn to tear both down.
@@ -430,6 +467,12 @@ func (h *Handler) relayVoiceSession(
 			if isClientSetupFrame(data) {
 				continue
 			}
+			var toolFrame liveClientToolFrame
+			if json.Unmarshal(data, &toolFrame) == nil && toolFrame.ToolResponse != nil {
+				for _, resp := range toolFrame.ToolResponse.FunctionResponses {
+					recordToolFrame(agentcontext.VoiceToolFrame{Name: resp.Name, CallID: resp.ID, Args: resp.Response, IsResult: true})
+				}
+			}
 			if err := providerConn.WriteMessage(msgType, data); err != nil {
 				clientConn.Close()
 				return
@@ -456,6 +499,11 @@ func (h *Handler) relayVoiceSession(
 					slog.Warn("live session handle write failed", "session_id", uuidToString(session.ID), "error", err)
 				}
 			}
+			if frame.ToolCall != nil {
+				for _, call := range frame.ToolCall.FunctionCalls {
+					recordToolFrame(agentcontext.VoiceToolFrame{Name: call.Name, CallID: call.ID, Args: call.Args})
+				}
+			}
 			if content := frame.ServerContent; content != nil {
 				var entry *voiceTranscriptEntry
 				if content.InputTranscription != nil && content.InputTranscription.Text != "" {
@@ -478,8 +526,13 @@ func (h *Handler) relayVoiceSession(
 
 // endLiveSession is the single terminal transition; safe to call from every
 // teardown path. transcript may be nil (nothing transcribed yet) — the column
-// default '[]' shape is preserved.
-func (h *Handler) endLiveSession(ctx context.Context, session db.LiveSession, transcript []voiceTranscriptEntry) {
+// default '[]' shape is preserved. After the terminal row lands, the stage-4
+// write-back extracts facts and the summary projection: at-least-once with
+// database-side idempotency (the (workspace_id, event_id) unique index), so
+// retries and replays never duplicate. If the write-back still fails, the
+// transcript is already persisted and replayVoiceSessionWriteBack can
+// rebuild the projection from it (§3.5 失败语义).
+func (h *Handler) endLiveSession(ctx context.Context, session db.LiveSession, transcript []voiceTranscriptEntry, toolFrames []agentcontext.VoiceToolFrame) {
 	if transcript == nil {
 		transcript = []voiceTranscriptEntry{}
 	}
@@ -489,12 +542,115 @@ func (h *Handler) endLiveSession(ctx context.Context, session db.LiveSession, tr
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := h.Queries.EndLiveSession(ctx, db.EndLiveSessionParams{
+	ended, err := h.Queries.EndLiveSession(ctx, db.EndLiveSessionParams{
 		ID:         session.ID,
 		Transcript: encoded,
-	}); err != nil {
+	})
+	if err != nil {
 		slog.Error("end live session failed", "session_id", uuidToString(session.ID), "error", err)
+		return
 	}
+	h.writeBackVoiceSession(ctx, ended, transcript, toolFrames, true)
+}
+
+// writeBackVoiceSession extracts the facts layer and the summary projection
+// for a closed session and persists both. Retries bound the transient case;
+// the hard-failure case logs and relies on the replay path. SessionHandle
+// comes from the session row, so resumption-handle facts survive replays.
+func (h *Handler) writeBackVoiceSession(ctx context.Context, session db.LiveSession, transcript []voiceTranscriptEntry, toolFrames []agentcontext.VoiceToolFrame, retry bool) {
+	facts := agentcontext.ExtractVoiceFacts(agentcontext.VoiceFactsInput{
+		SessionID:     uuidToString(session.ID),
+		Entries:       transcriptEntries(transcript),
+		ToolFrames:    toolFrames,
+		EndedAt:       endedAtOrNow(session),
+		SessionHandle: session.SessionHandle,
+	})
+	summary := agentcontext.BuildVoiceSummary(uuidToString(session.ID), facts, len(agentcontext.MergeVoiceTurns(transcriptEntries(transcript))))
+
+	attempts := 1
+	if retry {
+		attempts = 3
+	}
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+		if err = h.insertFactsAndSummary(ctx, session, facts, summary); err == nil {
+			return
+		}
+	}
+	// Last resort: the transcript column already holds everything received
+	// (EndLiveSession above), so nothing is lost — an operator or a later
+	// run can call replayVoiceSessionWriteBack.
+	slog.Error("voice write-back failed after retries",
+		"session_id", uuidToString(session.ID), "attempts", attempts, "error", err)
+}
+
+// insertFactsAndSummary is one idempotent write-back attempt.
+func (h *Handler) insertFactsAndSummary(ctx context.Context, session db.LiveSession, facts []agentcontext.Fact, summary string) error {
+	for _, f := range facts {
+		payload, err := json.Marshal(f.Payload)
+		if err != nil {
+			payload = []byte("{}")
+		}
+		recorded, perr := time.Parse(time.RFC3339, f.RecordedAt)
+		if perr != nil {
+			recorded = time.Now().UTC()
+		}
+		if _, err := h.Queries.InsertFactEvent(ctx, db.InsertFactEventParams{
+			WorkspaceID:   session.WorkspaceID,
+			AgentID:       session.AgentID,
+			LiveSessionID: session.ID,
+			EventID:       f.EventID,
+			Seq:           f.Seq,
+			SourceRuntime: f.SourceRuntime,
+			Kind:          string(f.Kind),
+			Payload:       payload,
+			EvidenceRef:   f.EvidenceRef,
+			RecordedAt:    pgtype.Timestamptz{Time: recorded, Valid: true},
+		}); err != nil {
+			return err
+		}
+	}
+	return h.Queries.SetLiveSessionSummary(ctx, db.SetLiveSessionSummaryParams{
+		ID:      session.ID,
+		Summary: summary,
+	})
+}
+
+// replayVoiceSessionWriteBack rebuilds the projection from the persisted
+// authoritative inputs (§3.6-3 重建路径): transcript + session handle →
+// facts → summary. v1 boundary: tool interactions live only in the facts
+// layer (never in the transcript), so a replay restores decision and
+// lifecycle events; tool facts depend on their original insert (the unique
+// index keeps either path duplicate-free).
+func (h *Handler) replayVoiceSessionWriteBack(ctx context.Context, session db.LiveSession) error {
+	var transcript []voiceTranscriptEntry
+	if err := json.Unmarshal(session.Transcript, &transcript); err != nil {
+		return fmt.Errorf("decode transcript: %w", err)
+	}
+	h.writeBackVoiceSession(ctx, session, transcript, nil, false)
+	return nil
+}
+
+// transcriptEntries converts the persisted transcript shape into the
+// extraction input.
+func transcriptEntries(entries []voiceTranscriptEntry) []agentcontext.VoiceTranscriptEntry {
+	out := make([]agentcontext.VoiceTranscriptEntry, len(entries))
+	for i, e := range entries {
+		out[i] = agentcontext.VoiceTranscriptEntry{Role: e.Role, Text: e.Text, At: e.At}
+	}
+	return out
+}
+
+// endedAtOrNow normalizes the event timestamp: ended sessions carry their
+// ended_at, mid-write callers fall back to now.
+func endedAtOrNow(session db.LiveSession) time.Time {
+	if session.EndedAt.Valid {
+		return session.EndedAt.Time
+	}
+	return time.Now().UTC()
 }
 
 // voiceProviderWSBaseURL resolves the injectable provider endpoint.

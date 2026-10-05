@@ -35,3 +35,19 @@ UPDATE live_session
 SET status = 'ended', ended_at = now(), transcript = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: SetLiveSessionSummary :exec
+-- RUYI-425 stage 4: write-back projection (design §3.6-3). The summary is a
+-- template rebuild of the agent_fact_event rows for this session — never
+-- authoritative, always safe to overwrite from facts.
+UPDATE live_session SET summary = $2, updated_at = now()
+WHERE id = $1;
+
+-- name: ListLatestEndedLiveSessions :many
+-- Brief assembly (RUYI-425 stage 4, design §3.5): the most recent closed
+-- voice conversation of an agent. LIMIT 1 by the caller's contract, :many so
+-- "no voice session yet" is an empty result instead of a row error.
+SELECT * FROM live_session
+WHERE workspace_id = $1 AND agent_id = $2 AND status = 'ended'
+ORDER BY ended_at DESC
+LIMIT 1;
