@@ -70,6 +70,8 @@ import {
 } from "@/data/stores/chat-drafts-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatAgentRequestStore } from "@/data/stores/chat-agent-request-store";
+import { useSharedIntentStore } from "@/data/stores/shared-intent-store";
+import type { SharedFile } from "@/lib/share-payload";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
@@ -476,6 +478,30 @@ export default function ChatTab() {
     consumeAgent();
   }, [agentRequest, consumeAgent]);
 
+  // RUYI-463: 系统分享 → Chat。落地页已选好 agent 并把
+  // {files, destination} 写进 shared-intent-store；这里 one-shot take
+  // 后切到该 agent 的新会话并把文件交给 composer 入队。用户即便仍停
+  // 在会话列表（composer 已挂载），注入同样生效。
+  //
+  // 必须用 useFocusEffect 而非订阅 effect：落地页是 router.replace
+  // 进来的，根栈上可能同时存在新旧两个 chat 屏实例（旧的被压在栈
+  // 下但仍然 mounted、仍然订阅着 store）。订阅 effect 会让旧实例抢
+  // 走 one-shot payload，文件注入进用户看不见的那个实例；焦点语义
+  // 保证只有用户看得见的屏执行 take。takeFor 本身幂等（take 后置
+  // 空），重复 focus 不会重复注入。
+  const [incomingSharedFiles, setIncomingSharedFiles] = useState<SharedFile[]>(
+    [],
+  );
+  useFocusEffect(
+    useCallback(() => {
+      const taken = useSharedIntentStore.getState().takeFor("chat");
+      if (!taken) return;
+      setSelectedAgentId(taken.destination.agentId);
+      setActiveSessionId(null);
+      setIncomingSharedFiles(taken.files);
+    }, []),
+  );
+
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;
     Alert.alert(
@@ -630,6 +656,8 @@ export default function ChatTab() {
           allowStop={pendingTask?.status !== "queued"}
           disabled={disabled}
           disabledReason={disabledReason}
+          incomingSharedFiles={incomingSharedFiles}
+          onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
         />
       </KeyboardAvoidingView>
 

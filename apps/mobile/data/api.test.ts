@@ -2,19 +2,23 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { api } from "./api";
+
+const { getCurrentSlug } = vi.hoisted(() => ({
+  getCurrentSlug: vi.fn<() => string | null>(() => null),
+}));
+
 vi.mock("@/data/server-store", () => ({
   getApiUrl: () => "https://api.example.test",
 }));
 
 vi.mock("@/data/workspace-store", () => ({
-  getCurrentSlug: () => null,
+  getCurrentSlug,
 }));
 
 vi.mock("@/lib/request-id", () => ({
   createRequestId: () => "request-1",
 }));
-
-import { api } from "./api";
 
 const timelineEntry = {
   type: "activity",
@@ -27,6 +31,7 @@ const timelineEntry = {
 describe("ApiClient.listAgents", () => {
   afterEach(() => {
     api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -47,6 +52,67 @@ describe("ApiClient.listAgents", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.test/api/agents?include_archived=true",
       expect.anything(),
+    );
+  });
+
+  // RUYI-463 P1: share-target fetches agents for the PICKED workspace while
+  // the current-workspace mirror may be empty (fresh user, never opened any
+  // workspace) or point at a different one (active A, picked B). The explicit
+  // slug must ride the wire so the request never depends on the mirror.
+  it("pins X-Workspace-Slug from the explicit workspaceSlug when the mirror is empty", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([]),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.listAgents({ workspaceSlug: "picked-ws" }),
+    ).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/agents?include_archived=true",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Workspace-Slug": "picked-ws" }),
+      }),
+    );
+  });
+
+  it("lets the explicit workspaceSlug win over the mirror-injected one", async () => {
+    getCurrentSlug.mockReturnValue("active-ws");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([]),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.listAgents({ workspaceSlug: "picked-ws" }),
+    ).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/agents?include_archived=true",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Workspace-Slug": "picked-ws" }),
+      }),
+    );
+  });
+
+  it("keeps the mirror-injected slug when no explicit workspace is pinned", async () => {
+    getCurrentSlug.mockReturnValue("active-ws");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([]),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(api.listAgents()).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/agents?include_archived=true",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Workspace-Slug": "active-ws" }),
+      }),
     );
   });
 });

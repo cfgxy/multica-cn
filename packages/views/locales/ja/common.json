@@ -156,6 +156,21 @@
     "quick_reply_hint": "クイック返信を挿入"
   },
   "mobile": {
+    "share": {
+      "select_workspace": "ワークスペースを選択",
+      "select_destination": "送信先を選択",
+      "select_agent": "エージェントを選択",
+      "close": "閉じる",
+      "attached_count_other": "添付予定のファイルが {{count}} 件あります",
+      "dest_chat": "チャット",
+      "dest_chat_desc": "エージェントにファイルを送ります",
+      "no_agent": "このワークスペースには呼び出し可能なエージェントがありません。",
+      "dest_issue": "タスク",
+      "dest_issue_desc": "ファイルから新しいタスクを作成します",
+      "load_failed": "ワークスペースの読み込みに失敗しました：{{reason}}",
+      "retry": "再試行",
+      "no_workspaces": "まだワークスペースに参加していません。"
+    },
     "actor": {
       "system": "システム",
       "unknown_member": "不明",

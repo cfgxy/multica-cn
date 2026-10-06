@@ -20,10 +20,18 @@ export const agentKeys = {
     [...agentKeys.all(wsId), "webhooks", id] as const,
 };
 
-export const agentListOptions = (wsId: string | null) =>
+// `opts.workspaceSlug` pins the wire request to that workspace (share-target,
+// RUYI-463 P1): without it the slug comes from the current-workspace mirror,
+// which is empty for a fresh user or points at a different space than the one
+// the caller is querying. In-shell callers omit it and keep mirror semantics.
+export const agentListOptions = (
+  wsId: string | null,
+  opts?: { workspaceSlug?: string },
+) =>
   queryOptions({
     queryKey: agentKeys.list(wsId),
-    queryFn: ({ signal }) => api.listAgents({ signal }),
+    queryFn: ({ signal }) =>
+      api.listAgents({ signal, workspaceSlug: opts?.workspaceSlug }),
     enabled: !!wsId,
   });
 

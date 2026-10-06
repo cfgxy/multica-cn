@@ -33,6 +33,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { MessageComposer } from "@/components/composer/message-composer";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import type { SharedFile } from "@/lib/share-payload";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -58,6 +59,11 @@ interface Props {
   disabled?: boolean;
   /** When `disabled`, replaces the pill label with the reason. */
   disabledReason?: string;
+
+  /** RUYI-463: 系统分享的附件，原样透传给 `MessageComposer`（语义见其
+   *  同名 prop）。chat.tsx 从 shared-intent-store take 后传入。 */
+  incomingSharedFiles?: SharedFile[];
+  onIncomingSharedFilesConsumed?: () => void;
 }
 
 const IS_IOS = process.env.EXPO_OS === "ios";
@@ -71,6 +77,8 @@ export function ChatComposer({
   allowStop = true,
   disabled = false,
   disabledReason,
+  incomingSharedFiles,
+  onIncomingSharedFilesConsumed,
 }: Props) {
   const { t } = useT("chat");
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -130,6 +138,8 @@ export function ChatComposer({
         allowStop ? () => <StopButton onPress={handleStop} /> : undefined
       }
       manageKeyboard={false}
+      incomingSharedFiles={incomingSharedFiles}
+      onIncomingSharedFilesConsumed={onIncomingSharedFilesConsumed}
     />
   );
 }
