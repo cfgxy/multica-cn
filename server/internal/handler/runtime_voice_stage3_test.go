@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -147,10 +149,31 @@ func (p *stubVoiceProvider) setupsRecorded(t *testing.T) []map[string]any {
 	return p.setups
 }
 
-// startVoiceSession issues the plain-HTTP initiation request.
+// voiceAuthCookie mints a signed session JWT for userID — the same token
+// shape the Auth middleware issues — wrapped as the auth cookie. RUYI-449:
+// the voice route no longer trusts X-User-ID (it sits outside the Auth
+// group, where the header would be client-controlled), so tests present
+// real credentials like production clients do.
+func voiceAuthCookie(t *testing.T, userID string) *http.Cookie {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": userID,
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	signed, err := token.SignedString(auth.JWTSecret())
+	if err != nil {
+		t.Fatalf("mint voice session token: %v", err)
+	}
+	return &http.Cookie{Name: auth.AuthCookieName, Value: signed}
+}
+
+// startVoiceSession issues the plain-HTTP initiation request with cookie
+// identity (the browser/desktop path).
 func startVoiceSession(t *testing.T, agentID string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := withURLParam(newRequest(http.MethodGet, "/api/agents/"+agentID+"/voice-session", nil), "id", agentID)
+	req.Header.Del("X-User-ID")
+	req.AddCookie(voiceAuthCookie(t, testUserID))
 	w := httptest.NewRecorder()
 	testHandler.StartVoiceSession(w, req)
 	return w
@@ -283,12 +306,12 @@ func voiceGatewayServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// dialVoiceSession connects a websocket client to the gateway with the test
-// identity headers.
+// dialVoiceSession connects a websocket client to the gateway with cookie
+// identity and the workspace header.
 func dialVoiceSession(t *testing.T, srv *httptest.Server, agentID string) *websocket.Conn {
 	t.Helper()
 	header := http.Header{}
-	header.Set("X-User-ID", testUserID)
+	header.Set("Cookie", voiceAuthCookie(t, testUserID).String())
 	header.Set("X-Workspace-ID", testWorkspaceID)
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/agents/" + agentID + "/voice-session"
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
@@ -577,4 +600,140 @@ func TestTextSlotGate_ClosesEveryLegacyBindingBypass(t *testing.T) {
 		})
 		expectCapabilityRejection(t, "mika quickstart", w)
 	})
+}
+
+// dialVoiceSessionFirstFrame connects a websocket client with NO identity
+// headers or cookie — the mobile upgrade — and returns the connection for
+// the test to drive the auth frame by hand.
+func dialVoiceSessionFirstFrame(t *testing.T, srv *httptest.Server, agentID string, query string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/agents/" + agentID + "/voice-session" + query
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial gateway (first-frame path): %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn
+}
+
+// readVoiceFrame reads one text frame with a bounded deadline.
+func readVoiceFrame(t *testing.T, conn *websocket.Conn) []byte {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read gateway frame: %v", err)
+	}
+	return data
+}
+
+// expectVoiceFrameCode asserts the post-upgrade rejection contract: one JSON
+// error frame carrying `code`, then the connection goes away.
+func expectVoiceFrameCode(t *testing.T, entrypoint string, conn *websocket.Conn, wantCode string) {
+	t.Helper()
+	var body map[string]string
+	if err := json.Unmarshal(readVoiceFrame(t, conn), &body); err != nil {
+		t.Fatalf("%s: decode error frame: %v", entrypoint, err)
+	}
+	if body["code"] != wantCode {
+		t.Fatalf("%s: code = %q, want %q", entrypoint, body["code"], wantCode)
+	}
+}
+
+// voiceFirstFrameToken mints the first-frame auth payload's token for
+// testUserID.
+func voiceFirstFrameToken(t *testing.T) string {
+	t.Helper()
+	return voiceAuthCookie(t, testUserID).Value
+}
+
+// TestVoiceSessionFirstFrameAuth covers the RUYI-449 header-less path end to
+// end: the mobile upgrade authenticates from the first frame and then meets
+// the identical gate chain; failures arrive as error frames, not statuses.
+func TestVoiceSessionFirstFrameAuth(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	t.Run("auth+gate pass relays", func(t *testing.T) {
+		provider := newStubVoiceProvider(t)
+		agentID, _ := seedUsableVoiceSetup(t, "FirstFrame Pass", "")
+		srv := voiceGatewayServer(t)
+
+		conn := dialVoiceSessionFirstFrame(t, srv, agentID, "?workspace_id="+testWorkspaceID)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"auth","payload":{"token":"`+voiceFirstFrameToken(t)+`"}}`)); err != nil {
+			t.Fatalf("send auth frame: %v", err)
+		}
+
+		// setupComplete is the first downstream frame — the auth frame was
+		// consumed server-side and the relay is live.
+		var first map[string]any
+		if err := json.Unmarshal(readVoiceFrame(t, conn), &first); err != nil || first["setupComplete"] == nil {
+			t.Fatalf("expected setupComplete after first-frame auth, got %s", first)
+		}
+		if _, query := provider.handshake(t); query != "" {
+			t.Fatalf("provider URL query = %q, want empty", query)
+		}
+	})
+
+	t.Run("malformed first frame", func(t *testing.T) {
+		newStubVoiceProvider(t)
+		agentID, _ := seedUsableVoiceSetup(t, "FirstFrame Malformed", "")
+		srv := voiceGatewayServer(t)
+
+		conn := dialVoiceSessionFirstFrame(t, srv, agentID, "?workspace_id="+testWorkspaceID)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"hello"}`)); err != nil {
+			t.Fatalf("send malformed frame: %v", err)
+		}
+		expectVoiceFrameCode(t, "malformed first frame", conn, "VOICE_AUTH_FAILED")
+	})
+
+	t.Run("invalid token", func(t *testing.T) {
+		newStubVoiceProvider(t)
+		agentID, _ := seedUsableVoiceSetup(t, "FirstFrame BadToken", "")
+		srv := voiceGatewayServer(t)
+
+		conn := dialVoiceSessionFirstFrame(t, srv, agentID, "?workspace_id="+testWorkspaceID)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"auth","payload":{"token":"not-a-jwt"}}`)); err != nil {
+			t.Fatalf("send auth frame: %v", err)
+		}
+		expectVoiceFrameCode(t, "invalid token", conn, "VOICE_AUTH_FAILED")
+	})
+
+	t.Run("gate rejection as frame", func(t *testing.T) {
+		newStubVoiceProvider(t)
+		// An agent with no voice runtime — the same §4.4 fact the 409 path
+		// refuses, now delivered inside the websocket.
+		agentID := dbfx.Agent(t, "FirstFrame NoVoice Agent", handlerTestRuntimeID(t))
+		srv := voiceGatewayServer(t)
+
+		conn := dialVoiceSessionFirstFrame(t, srv, agentID, "?workspace_id="+testWorkspaceID)
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"auth","payload":{"token":"`+voiceFirstFrameToken(t)+`"}}`)); err != nil {
+			t.Fatalf("send auth frame: %v", err)
+		}
+		expectVoiceFrameCode(t, "gate rejection", conn, "VOICE_UNAVAILABLE:no_voice_runtime")
+	})
+
+	t.Run("workspace required", func(t *testing.T) {
+		newStubVoiceProvider(t)
+		agentID, _ := seedUsableVoiceSetup(t, "FirstFrame NoWS", "")
+		srv := voiceGatewayServer(t)
+
+		conn := dialVoiceSessionFirstFrame(t, srv, agentID, "")
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"auth","payload":{"token":"`+voiceFirstFrameToken(t)+`"}}`)); err != nil {
+			t.Fatalf("send auth frame: %v", err)
+		}
+		expectVoiceFrameCode(t, "workspace required", conn, "VOICE_SESSION_REJECTED")
+	})
+}
+
+// TestVoiceSessionHeaderPathKeeps409 pins the RUYI-425 contract that survived
+// the RUYI-449 rework: cookie-authenticated gate rejections are plain 409s
+// before any upgrade.
+func TestVoiceSessionHeaderPathKeeps409(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "Header Path NoVoice Agent", handlerTestRuntimeID(t))
+	expectVoiceUnavailable(t, "header path", startVoiceSession(t, agentID), "no_voice_runtime")
 }

@@ -155,6 +155,13 @@ interface Props {
   isSending?: boolean;
   renderStop?: () => ReactNode;
 
+  /** RUYI-449 three-state input: when the draft is EMPTY and this render
+   *  prop is provided, the trailing send button is replaced by the mic —
+   *  typed content swaps it straight back to send. Chat passes it (voice
+   *  session entry); comments don't. A disabled composer keeps the send
+   *  arrow so the no-agent placeholder state stays honest. */
+  renderVoiceWhenEmpty?: () => ReactNode;
+
   /** Hard-disable. Used when chat has no usable agent. The pill shows
    *  `disabledReason` instead of `pillLabel`, and the pill is
    *  non-interactive (cannot expand). */
@@ -198,6 +205,7 @@ export function MessageComposer({
   expandTrigger,
   isSending = false,
   renderStop,
+  renderVoiceWhenEmpty,
   disabled = false,
   disabledReason,
   requireVisibleText = false,
@@ -683,6 +691,8 @@ export function MessageComposer({
           <View className="flex-1" />
           {isSending && renderStop ? (
             renderStop()
+          ) : renderVoiceWhenEmpty && !text.trim() && !disabled ? (
+            renderVoiceWhenEmpty()
           ) : (
             <IconButton
               name="arrow-up"

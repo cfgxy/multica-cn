@@ -17,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/agentcontext"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -369,39 +372,85 @@ func watchVoiceInstanceDisabled(
 // StartVoiceSession handles GET /api/agents/{agentId}/voice-session: the
 // §4.4 rule-3 gate, then a websocket upgrade into the §3.5 relay
 // (client ⇄ gateway ⇄ provider).
+//
+// The route lives outside the Auth middleware group, so identity comes from
+// two surfaces (RUYI-449): the session cookie / bearer header for browser
+// and desktop clients — rejections stay plain HTTP statuses there — and,
+// when neither is present or valid, the first websocket frame for the
+// header-less mobile upgrade (the RUYI-429 realtime pattern). Both paths
+// run the identical gate chain in openVoiceSession; only the failure
+// transport differs.
 func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	workspaceID := h.resolveWorkspaceID(r)
 	agentUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "agent_id")
 	if !ok {
 		return
 	}
-	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
-	if !ok {
+	if userID := h.voiceRequestUserID(r); userID != "" {
+		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID)
+		if hsErr != nil {
+			hsErr.writeHTTP(w)
+			return
+		}
+		h.relayVoiceSession(w, r, plan.session, plan.instructions, plan.model, plan.advanced, plan.apiKey)
 		return
 	}
-	agentRow, err := h.Queries.GetAgent(r.Context(), agentUUID)
-	if err != nil || uuidToString(agentRow.WorkspaceID) != workspaceID {
-		writeError(w, http.StatusNotFound, "agent not found")
+	h.startVoiceSessionFirstFrame(w, r, agentUUID)
+}
+
+// voiceSessionPlan carries everything the relay needs once the §4.4 gate
+// chain has passed and the live session row exists.
+type voiceSessionPlan struct {
+	session      db.LiveSession
+	apiKey       string
+	instructions string
+	model        string
+	advanced     map[string]json.RawMessage
+}
+
+// voiceHandshakeError is a guard/gate failure both start paths can express:
+// an HTTP status pre-upgrade, a JSON error frame post-upgrade.
+type voiceHandshakeError struct {
+	status int
+	code   string // stable machine code; empty means plain-text error only
+	detail string
+}
+
+func (e *voiceHandshakeError) writeHTTP(w http.ResponseWriter) {
+	if e.code != "" {
+		writeErrorCode(w, e.status, e.code, e.detail)
 		return
+	}
+	writeError(w, e.status, e.detail)
+}
+
+// openVoiceSession runs the full guard chain — workspace membership, agent
+// existence, the §4.4 rule-3 initiation recheck, the actor-vs-runtime slot
+// check — and creates the live session row. Identity and workspace have
+// already been resolved by the caller. The rejection order mirrors the
+// pre-RUYI-449 header path exactly.
+func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionPlan, *voiceHandshakeError) {
+	if workspaceID == "" {
+		return nil, &voiceHandshakeError{status: http.StatusBadRequest, detail: "workspace_id is required"}
+	}
+	member, err := h.getWorkspaceMember(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, &voiceHandshakeError{status: http.StatusNotFound, detail: "workspace not found"}
+	}
+	agentRow, err := h.Queries.GetAgent(ctx, agentUUID)
+	if err != nil || uuidToString(agentRow.WorkspaceID) != workspaceID {
+		return nil, &voiceHandshakeError{status: http.StatusNotFound, detail: "agent not found"}
 	}
 
-	rt, apiKey, rejection, serverErr := h.resolveVoiceSessionTarget(r.Context(), agentRow)
+	rt, apiKey, rejection, serverErr := h.resolveVoiceSessionTarget(ctx, agentRow)
 	if serverErr != nil {
-		slog.Error("voice session gate failed", "agent_id", agentUUID, "error", serverErr)
-		writeError(w, http.StatusServiceUnavailable, "voice session unavailable due to a server configuration problem")
-		return
+		slog.Error("voice session gate failed", "agent_id", uuidToString(agentUUID), "error", serverErr)
+		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
 	}
 	if rejection != nil {
-		voiceUnavailable(w, rejection.reason, rejection.detail)
-		return
+		return nil, &voiceHandshakeError{status: http.StatusConflict, code: "VOICE_UNAVAILABLE:" + rejection.reason, detail: rejection.detail}
 	}
 	if !canUseRuntimeForAgent(member, rt) {
-		writeError(w, http.StatusForbidden, "you cannot use this agent's voice runtime")
-		return
+		return nil, &voiceHandshakeError{status: http.StatusForbidden, detail: "you cannot use this agent's voice runtime"}
 	}
 
 	model := runtimeMetadataString(rt, "model")
@@ -413,7 +462,7 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(raw, &advanced)
 	}
 
-	session, err := h.Queries.CreateLiveSession(r.Context(), db.CreateLiveSessionParams{
+	session, err := h.Queries.CreateLiveSession(ctx, db.CreateLiveSessionParams{
 		WorkspaceID:       agentRow.WorkspaceID,
 		AgentID:           agentRow.ID,
 		RuntimeInstanceID: rt.ID,
@@ -422,12 +471,177 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 		ContextSnapshot:   liveSessionSnapshot(agentRow, rt, model),
 	})
 	if err != nil {
-		slog.Error("create live session failed", "agent_id", agentUUID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to start voice session")
+		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
+		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
+	}
+	return &voiceSessionPlan{session: session, apiKey: apiKey, instructions: agentRow.Instructions, model: model, advanced: advanced}, nil
+}
+
+// voiceRequestUserID resolves the caller identity from the request's bearer
+// header or session cookie — the same token surfaces the Auth middleware
+// accepts — without the middleware (the voice route is registered outside
+// the Auth group). Empty means "no usable header identity", which degrades
+// to the first-frame path; a header token that fails validation degrades
+// the same way, mirroring realtime.HandleWebSocket's cookie rule.
+func (h *Handler) voiceRequestUserID(r *http.Request) string {
+	token := voiceRequestToken(r)
+	if token == "" {
+		return ""
+	}
+	uid, errMsg := realtime.ResolveUserToken(r.Context(), token, h.VoicePATResolver, h.VoiceDisabledLookup)
+	if errMsg != "" {
+		slog.Debug("voice: header token rejected; degrading to first-frame auth", "error", errMsg)
+		return ""
+	}
+	return uid
+}
+
+// voiceRequestToken extracts the session token from the Authorization
+// header or the auth cookie — the same extraction order and prefix rule as
+// the middleware's extractToken.
+func voiceRequestToken(r *http.Request) string {
+	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString != authHeader {
+			return tokenString
+		}
+	}
+	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	return ""
+}
+
+// resolveVoiceWorkspaceID resolves the workspace for a voice session start:
+// the standard header surfaces first, then the upgrade URL's query string —
+// the realtime hub's contract for header-less websocket clients. Empty when
+// nothing resolves (membership then fails closed).
+func (h *Handler) resolveVoiceWorkspaceID(r *http.Request) string {
+	if wsID := h.resolveWorkspaceID(r); wsID != "" {
+		return wsID
+	}
+	if raw := r.URL.Query().Get("workspace_id"); raw != "" {
+		if id, err := util.ParseUUID(raw); err == nil {
+			return util.UUIDToString(id)
+		}
+		return ""
+	}
+	if slug := r.URL.Query().Get("workspace_slug"); slug != "" {
+		ws, err := h.Queries.GetWorkspaceBySlug(r.Context(), slug)
+		if err != nil {
+			return ""
+		}
+		return util.UUIDToString(ws.ID)
+	}
+	return ""
+}
+
+// voiceAuthReadDeadline matches the realtime hub's first-frame budget.
+const voiceAuthReadDeadline = 10 * time.Second
+
+// readVoiceAuthFrame reads the first websocket message expecting the
+// realtime auth envelope {"type":"auth","payload":{"token":...}}. A
+// non-empty second return is the client-safe rejection text.
+func readVoiceAuthFrame(conn *websocket.Conn) (token, errMsg string) {
+	conn.SetReadDeadline(time.Now().Add(voiceAuthReadDeadline))
+	defer conn.SetReadDeadline(time.Time{})
+
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return "", "auth timeout or read error"
+	}
+	var msg struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Token string `json:"token"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil || msg.Type != "auth" || msg.Payload.Token == "" {
+		return "", "expected auth message as first frame"
+	}
+	return msg.Payload.Token, ""
+}
+
+// writeVoiceWSError sends one JSON error frame and tears the connection
+// down — the post-upgrade analogue of the HTTP status codes. The frame
+// shape mirrors writeErrorCode ({"error", "code"}) so clients parse one
+// shape regardless of path.
+func writeVoiceWSError(conn *websocket.Conn, code, detail string) {
+	payload, err := json.Marshal(map[string]string{"error": detail, "code": code})
+	if err != nil {
+		payload = []byte(`{"error":"voice session failed","code":"VOICE_SESSION_FAILED"}`)
+	}
+	if werr := conn.WriteMessage(websocket.TextMessage, payload); werr != nil {
+		slog.Warn("voice: failed to send error frame", "code", code, "error", werr)
+	}
+	conn.Close()
+}
+
+// startVoiceSessionFirstFrame serves header-less clients (mobile): upgrade
+// immediately, authenticate from the first frame, then run the same gate
+// chain. Failures after the upgrade become error frames; the provider dial
+// moves after the upgrade too, so its failure surfaces as
+// VOICE_PROVIDER_UNREACHABLE instead of HTTP 502.
+func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Request, agentUUID pgtype.UUID) {
+	conn, err := voiceUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		// Upgrade already wrote the HTTP error.
+		return
+	}
+	defer conn.Close()
+
+	token, errMsg := readVoiceAuthFrame(conn)
+	if errMsg != "" {
+		writeVoiceWSError(conn, "VOICE_AUTH_FAILED", errMsg)
+		return
+	}
+	userID, errMsg := realtime.ResolveUserToken(r.Context(), token, h.VoicePATResolver, h.VoiceDisabledLookup)
+	if errMsg != "" {
+		slog.Debug("voice: first-frame auth rejected", "error", errMsg)
+		writeVoiceWSError(conn, "VOICE_AUTH_FAILED", errMsg)
 		return
 	}
 
-	h.relayVoiceSession(w, r, session, agentRow.Instructions, model, advanced, apiKey)
+	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID)
+	if hsErr != nil {
+		// Guard failures carry no stable code; the frame path always names
+		// one so clients branch on `code` uniformly.
+		code := hsErr.code
+		if code == "" {
+			code = "VOICE_SESSION_REJECTED"
+		}
+		writeVoiceWSError(conn, code, hsErr.detail)
+		return
+	}
+
+	providerConn, err := dialVoiceProvider(r.Context(), h.voiceProviderWSBaseURL(), plan.apiKey)
+	if err != nil {
+		slog.Warn("voice provider dial failed", "session_id", uuidToString(plan.session.ID), "error", err)
+		writeVoiceWSError(conn, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
+		h.endLiveSession(context.Background(), plan.session, nil, nil)
+		return
+	}
+	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
+		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
+		providerConn.Close()
+		writeVoiceWSError(conn, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
+		h.endLiveSession(context.Background(), plan.session, nil, nil)
+		return
+	}
+	h.relayVoiceSessionConn(r, plan.session, providerConn, conn)
+}
+
+// dialVoiceProvider opens the provider relay hop. The key rides the
+// x-goog-api-key header only — never the URL, never a frame (§4.5;
+// negative-asserted in tests).
+func dialVoiceProvider(ctx context.Context, baseURL, apiKey string) (*websocket.Conn, error) {
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	providerConn, _, err := websocket.DefaultDialer.DialContext(dialCtx,
+		baseURL+voiceProviderWSPath,
+		http.Header{"x-goog-api-key": []string{apiKey}},
+	)
+	return providerConn, err
 }
 
 // relayVoiceSession pumps frames both ways until either side disconnects,
@@ -445,14 +659,7 @@ func (h *Handler) relayVoiceSession(
 ) {
 	// Dial the provider before upgrading the client so connect failures
 	// surface as HTTP status codes instead of a websocket that dies mid-handshake.
-	dialCtx, cancelDial := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancelDial()
-	// The key rides the x-goog-api-key header only — never the URL, never a
-	// frame (§4.5; negative-asserted in tests).
-	providerConn, _, err := websocket.DefaultDialer.DialContext(dialCtx,
-		h.voiceProviderWSBaseURL()+voiceProviderWSPath,
-		http.Header{"x-goog-api-key": []string{apiKey}},
-	)
+	providerConn, err := dialVoiceProvider(r.Context(), h.voiceProviderWSBaseURL(), apiKey)
 	if err != nil {
 		slog.Warn("voice provider dial failed", "session_id", uuidToString(session.ID), "error", err)
 		writeErrorCode(w, http.StatusBadGateway, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
@@ -473,6 +680,18 @@ func (h *Handler) relayVoiceSession(
 		h.endLiveSession(context.Background(), session, nil, nil)
 		return
 	}
+	h.relayVoiceSessionConn(r, session, providerConn, clientConn)
+}
+
+// relayVoiceSessionConn is the pump shared by both start paths; it owns two
+// already-live connections (the provider hop and the upgraded client) and
+// every teardown flows through the single endLiveSession defer.
+func (h *Handler) relayVoiceSessionConn(
+	r *http.Request,
+	session db.LiveSession,
+	providerConn, clientConn *websocket.Conn,
+) {
+	defer providerConn.Close()
 	defer clientConn.Close()
 
 	// §4.5 禁用: a mid-session toggle must gracefully stop the relay. The
