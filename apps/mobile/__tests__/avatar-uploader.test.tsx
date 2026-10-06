@@ -10,6 +10,8 @@
 import React from "react";
 import { act, render, renderHook } from "@testing-library/react-native";
 import { Platform } from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import { api } from "@/data/api";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAvatarUploader } from "@/lib/avatar";
 
@@ -26,6 +28,11 @@ jest.mock("expo-image-picker", () => ({
     .mockResolvedValue({ granted: true }),
   launchCameraAsync: jest.fn(),
   launchImageLibraryAsync: jest.fn(),
+  UIImagePickerPreferredAssetRepresentationMode: {
+    Automatic: "automatic",
+    Current: "current",
+    Compatible: "compatible",
+  },
 }));
 
 jest.mock("@/lib/use-t", () => ({
@@ -116,5 +123,53 @@ describe("useAvatarUploader Android sheet rendering contract", () => {
       result.current.modalProps.onSelect(2);
       await expect(picked).resolves.toBe("");
     });
+  });
+
+  // RUYI-477 同型套用：头像入口与贴图入口同一根因——iOS 默认 .current 会把
+  // HEIC 原样透出，渲染端无法解码；且手写 mimeType ?? "image/jpeg" 兜底会把
+  // HEIC 字节标成 image/jpeg 毒化存储 content-type。两条契约都钉在这里。
+  describe("RUYI-477 pick + upload normalization", () => {
+    // SDK 55 实测形态：HEIC 静态帧 fileName 带 .HEIC 扩展名、mimeType 为 null。
+    const heicAsset = {
+      uri: "file:///tmp/IMG_0001.HEIC",
+      fileName: "IMG_0001.HEIC",
+      mimeType: null,
+      fileSize: 12_345,
+      width: 100,
+      height: 100,
+    };
+
+    it.each([
+      ["camera", 0, ImagePicker.launchCameraAsync] as const,
+      ["library", 1, ImagePicker.launchImageLibraryAsync] as const,
+    ])(
+      "%s pick requests the Compatible representation and uploads the normalized asset",
+      async (_label, sheetIndex, picker) => {
+        // SDK 55 运行时 mimeType 确实返回 null（picked-asset.ts 注释记录），
+        // 但其类型面声明 string | undefined——断言绕过类型面钉住运行时现实。
+        jest
+          .mocked(picker)
+          .mockResolvedValue({ canceled: false, assets: [heicAsset] } as never);
+
+        const { result } = await renderHook(() => useAvatarUploader());
+
+        let picked: Promise<string | null> = Promise.resolve(null);
+        await act(async () => {
+          picked = result.current.showAvatarSheet(null);
+        });
+        await act(async () => {
+          result.current.modalProps.onSelect(sheetIndex);
+          await picked;
+        });
+
+        expect(jest.mocked(picker).mock.calls[0][0]).toMatchObject({
+          preferredAssetRepresentationMode: "compatible",
+        });
+        expect(jest.mocked(api.uploadFile)).toHaveBeenCalledWith(
+          expect.objectContaining({ name: "IMG_0001.HEIC", type: "image/heic" }),
+        );
+        await expect(picked).resolves.toBe("https://cdn.example/a.png");
+      },
+    );
   });
 });
