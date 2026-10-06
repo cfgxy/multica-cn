@@ -127,10 +127,12 @@ describe("tool surface", () => {
         "create_execution_profile",
         "create_issue",
         "create_project",
+        "create_project_resource",
         "create_quick_reply",
         "create_squad",
         "delete_comment",
         "delete_execution_profile",
+        "delete_project_resource",
         "delete_quick_reply",
         "dispatch_agent",
         "edit_comment",
@@ -154,6 +156,7 @@ describe("tool surface", () => {
         "list_issue_runs",
         "list_issues",
         "list_projects",
+        "list_project_resources",
         "list_quick_replies",
         "list_runs",
         "list_runtimes",
@@ -171,6 +174,7 @@ describe("tool surface", () => {
         "update_issue",
         "update_issue_status",
         "update_project",
+        "update_project_resource",
         "update_quick_reply",
         "update_squad",
       ].sort(),
@@ -2384,5 +2388,290 @@ describe("quick reply tools (RUYI-435)", () => {
     )) as { deleted: boolean; id: string };
     expect(result).toEqual({ deleted: true, id: "qr1" });
     expect(callsOf(client)).toEqual([{ method: "deleteQuickReply", args: ["qr1"] }]);
+  });
+});
+
+describe("project resource tools (RUYI-458)", () => {
+  function resourceFixture(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "pr-1",
+      project_id: "p1",
+      workspace_id: "w1",
+      resource_type: "github_repo",
+      resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      label: null,
+      position: 0,
+      created_at: "2026-10-05T00:00:00Z",
+      created_by: "u-1",
+      ...over,
+    };
+  }
+
+  function resourceClient(overrides: Record<string, unknown> = {}): MulticaClient {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const client = {
+      listProjectResources: async (_ws: string, projectId: string) => {
+        calls.push({ method: "listProjectResources", args: [projectId] });
+        return {
+          total: 2,
+          resources: [
+            resourceFixture(),
+            resourceFixture({
+              id: "pr-2",
+              resource_type: "local_directory",
+              resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+              label: "本地开发目录",
+              position: 1,
+            }),
+          ],
+        };
+      },
+      createProjectResource: async (_ws: string, projectId: string, body: Record<string, unknown>) => {
+        calls.push({ method: "createProjectResource", args: [projectId, body] });
+        return resourceFixture({ ...body, id: "pr-new", position: 2 });
+      },
+      updateProjectResource: async (
+        _ws: string,
+        projectId: string,
+        resourceId: string,
+        body: Record<string, unknown>,
+      ) => {
+        calls.push({ method: "updateProjectResource", args: [projectId, resourceId, body] });
+        return resourceFixture({ id: resourceId, ...body });
+      },
+      deleteProjectResource: async (_ws: string, projectId: string, resourceId: string) => {
+        calls.push({ method: "deleteProjectResource", args: [projectId, resourceId] });
+      },
+      ...overrides,
+    };
+    (client as unknown as { __calls: unknown }).__calls = calls;
+    return client as unknown as MulticaClient;
+  }
+
+  function apiError(status: number, body: Record<string, unknown>): MulticaApiError {
+    return new MulticaApiError(status, typeof body.error === "string" ? body.error : "error", body);
+  }
+
+  it("list_project_resources returns the binding list with type, ref, label and order", async () => {
+    const result = (await findTool("list_project_resources")!.handler(
+      { workspace: WS, project_id: "p1" },
+      resourceClient(),
+    )) as {
+      total: number;
+      resources: Array<{ id: string; resource_type: string; resource_ref: unknown; label: string | null; position: number }>;
+    };
+    expect(result.total).toBe(2);
+    expect(result.resources[0]).toMatchObject({
+      id: "pr-1",
+      resource_type: "github_repo",
+      resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      label: null,
+      position: 0,
+    });
+    expect(result.resources[1]).toMatchObject({
+      id: "pr-2",
+      resource_type: "local_directory",
+      label: "本地开发目录",
+      position: 1,
+    });
+  });
+
+  it("create_project_resource forwards the type-discriminated ref verbatim", async () => {
+    const client = resourceClient();
+    const result = (await findTool("create_project_resource")!.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        resource_type: "local_directory",
+        resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1", execution_mode: "worktree" },
+        label: "工作副本",
+      },
+      client,
+    )) as { created: boolean; id: string; resource_type: string };
+    expect(result.created).toBe(true);
+    expect(result.resource_type).toBe("local_directory");
+    expect(callsOf(client)).toEqual([
+      {
+        method: "createProjectResource",
+        args: [
+          "p1",
+          {
+            resource_type: "local_directory",
+            resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1", execution_mode: "worktree" },
+            label: "工作副本",
+            position: undefined,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("create_project_resource validates the ref against the declared type", async () => {
+    const client = resourceClient();
+    await expect(
+      findTool("create_project_resource")!.handler(
+        {
+          workspace: WS,
+          project_id: "p1",
+          resource_type: "github_repo",
+          resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(ToolInputError);
+    await expect(
+      findTool("create_project_resource")!.handler(
+        {
+          workspace: WS,
+          project_id: "p1",
+          resource_type: "local_directory",
+          resource_ref: { local_path: "/home/guxy/work" },
+        },
+        client,
+      ),
+    ).rejects.toThrow(/daemon_id/);
+    // Zero wire traffic for both refusals.
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("create_project_resource answers a duplicate binding with a structured already_attached", async () => {
+    const client = resourceClient({
+      createProjectResource: async () => {
+        throw apiError(409, { error: "this resource is already attached to the project" });
+      },
+    });
+    const result = (await findTool("create_project_resource")!.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        resource_type: "github_repo",
+        resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      },
+      client,
+    )) as { created: boolean; code: string; hint?: string };
+    expect(result.created).toBe(false);
+    expect(result.code).toBe("already_attached");
+    expect(result.hint).toMatch(/list_project_resources/);
+  });
+
+  it("update_project_resource sends a PATCH body with only the provided fields", async () => {
+    const client = resourceClient();
+    const result = (await findTool("update_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1", label: "主仓库" },
+      client,
+    )) as { updated: boolean; label: string | null };
+    expect(result.updated).toBe(true);
+    expect(result.label).toBe("主仓库");
+    expect(callsOf(client)).toEqual([
+      { method: "updateProjectResource", args: ["p1", "pr-1", { label: "主仓库" }] },
+    ]);
+  });
+
+  it("update_project_resource clears the label on null or empty string", async () => {
+    const client = resourceClient();
+    await findTool("update_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1", label: null },
+      client,
+    );
+    expect(callsOf(client)).toEqual([
+      { method: "updateProjectResource", args: ["p1", "pr-1", { label: null }] },
+    ]);
+  });
+
+  it("update_project_resource refuses an empty body and forbids resource_type", async () => {
+    const client = resourceClient();
+    await expect(
+      findTool("update_project_resource")!.handler(
+        { workspace: WS, project_id: "p1", resource_id: "pr-1" },
+        client,
+      ),
+    ).rejects.toThrow(/at least one of/i);
+    await expect(
+      findTool("update_project_resource")!.handler(
+        {
+          workspace: WS,
+          project_id: "p1",
+          resource_id: "pr-1",
+          resource_type: "local_directory",
+          label: "x",
+        },
+        client,
+      ),
+    ).rejects.toThrow(/immutable/);
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("update_project_resource maps defined server failures to structured codes", async () => {
+    const notFound = resourceClient({
+      updateProjectResource: async () => {
+        throw apiError(404, { error: "project resource not found" });
+      },
+    });
+    const result = (await findTool("update_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-x", label: "x" },
+      notFound,
+    )) as { updated: boolean; code: string };
+    expect(result).toMatchObject({ updated: false, code: "not_found" });
+
+    const daemonGate = resourceClient({
+      updateProjectResource: async () => {
+        throw apiError(422, {
+          error: "local_directory does not support worktree",
+          code: "daemon_version_unsupported",
+          daemon_id: "d-1",
+          min_version: "0.4.30",
+        });
+      },
+    });
+    const gated = (await findTool("update_project_resource")!.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        resource_id: "pr-2",
+        resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1", execution_mode: "worktree" },
+      },
+      daemonGate,
+    )) as { updated: boolean; code: string; min_version: string | null };
+    expect(gated).toMatchObject({
+      updated: false,
+      code: "daemon_version_unsupported",
+      min_version: "0.4.30",
+    });
+  });
+
+  it("delete_project_resource forwards the binding id and reports deletion", async () => {
+    const client = resourceClient();
+    const result = (await findTool("delete_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1" },
+      client,
+    )) as { deleted: boolean; id: string };
+    expect(result).toEqual({ deleted: true, id: "pr-1" });
+    expect(callsOf(client)).toEqual([
+      { method: "deleteProjectResource", args: ["p1", "pr-1"] },
+    ]);
+  });
+
+  it("delete_project_resource answers a repeat unbind with a structured not_found", async () => {
+    const client = resourceClient({
+      deleteProjectResource: async () => {
+        throw apiError(404, { error: "project resource not found" });
+      },
+    });
+    const result = (await findTool("delete_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1" },
+      client,
+    )) as { deleted: boolean; code: string };
+    expect(result).toMatchObject({ deleted: false, code: "not_found" });
+  });
+
+  it("pins the safety prose: unbind never touches the real repo or directory", () => {
+    expect(findTool("delete_project_resource")?.description).toMatch(/never deleted or modified/);
+    expect(findTool("delete_project_resource")?.description).toMatch(/GitHub/i);
+    expect(findTool("delete_project_resource")?.description).toMatch(/local directory/i);
+    // resource_type is immutable server-side: the update schema must not
+    // even declare the key.
+    const updateProps = findTool("update_project_resource")?.inputSchema
+      .properties as Record<string, unknown>;
+    expect(updateProps.resource_type).toBeUndefined();
   });
 });
