@@ -931,6 +931,7 @@
       "runtime_cli_timeout": "本地运行时 CLI 超时",
       "environment_prepare_failed": "无法准备执行环境",
       "invalid_task_identity": "task 身份不匹配",
+      "delivery_guard": "交付守护拦下了任务分支",
       "agent_error_provider_auth_or_access": "提供商认证失败",
       "agent_error_provider_quota_limit": "提供商配额已用尽",
       "agent_error_provider_capacity_or_rate_limit": "受到提供商速率限制",
