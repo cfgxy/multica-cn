@@ -258,12 +258,20 @@ export default function WorkspaceLayout() {
         {/* 同 label：无 native header 则 `headerSearchBarOptions` 无处挂载，
             搜索框不渲染，`query` 恒为空 —— 本批新增的
             `common:mobile.common.no_matches`（搜索态才渲染）因此永不可达。 */}
+        {/* RUYI-476: 长列表选择器以最大 detent 打开（sheetInitialDetentIndex
+            只覆盖本路由，不进 SHEET_OPTIONS）。以 0.6 小档打开时，列表顶部
+            的纵向手势被 detent 切换抢走：上滑先涨高度再滚动、下滑收层而不
+            滚列表（iOS prefersScrollingExpandsWhenScrolledToEdge 与
+            Android BottomSheetBehavior 在非最大档都是 sheet 拖拽优先）。
+            打开即落 0.95 档后列表独占纵向手势，0.6 档仅作 grabber 下拉的
+            停靠点。 */}
         <Stack.Screen
           name="issue/[id]/picker/project"
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("layout:tab.project", "Project"),
+            sheetInitialDetentIndex: "last",
           }}
         />
         <Stack.Screen
@@ -369,13 +377,16 @@ export default function WorkspaceLayout() {
             title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
-        {/* 同 issue/[id]/picker/project。 */}
+        {/* 同 issue/[id]/picker/project。sheetInitialDetentIndex 见彼处
+            RUYI-476 注释：长列表选择器以最大 detent 打开，避免 detent
+            切换抢走列表的纵向手势。 */}
         <Stack.Screen
           name="new-issue-picker/project"
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("layout:tab.project", "Project"),
+            sheetInitialDetentIndex: "last",
           }}
         />
         <Stack.Screen
