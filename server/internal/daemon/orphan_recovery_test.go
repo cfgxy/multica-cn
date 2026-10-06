@@ -26,13 +26,24 @@ type recoveryFixture struct {
 	root   string // workspaces root with real env-root directories
 
 	mu           sync.Mutex
-	inFlight     []InFlightTask   // served for any runtime's in-flight list
-	inFlightAsk  []string         // runtime IDs the daemon asked about
-	failed       []failedTaskCall // /tasks/<id>/fail bodies, in order
-	orphans      []string         // runtime IDs that got recover-orphans
-	orphanBodies []orphanCall     // recover-orphans request bodies, in order
-	workspaces   []WorkspaceInfo  // served from /api/daemon/workspaces
-	registered   [][]string       // providers per register call, in order
+	inFlight     []InFlightTask      // served for any runtime's in-flight list
+	inFlightAsk  []string            // runtime IDs the daemon asked about
+	failed       []failedTaskCall    // /tasks/<id>/fail bodies, in order
+	completed    []completedTaskCall // /tasks/<id>/complete bodies, in order
+	orphans      []string            // runtime IDs that got recover-orphans
+	orphanBodies []orphanCall        // recover-orphans request bodies, in order
+	workspaces   []WorkspaceInfo     // served from /api/daemon/workspaces
+	registered   [][]string          // providers per register call, in order
+	// completeStatus / failStatus inject a non-200 response for the next
+	// terminal call on a task (RUYI-464 transient / permanent-rejection
+	// paths); nil or missing task falls through to 200.
+	completeStatus map[string]int
+	failStatus     map[string]int
+}
+
+type completedTaskCall struct {
+	TaskID string `json:"-"`
+	Output string `json:"output"`
 }
 
 // orphanCall is one blind recover-orphans request the fake server received.
@@ -70,13 +81,36 @@ func newRecoveryFixture(t *testing.T) *recoveryFixture {
 			fx.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(tasks)
+		case strings.HasPrefix(r.URL.Path, "/api/daemon/tasks/") && strings.HasSuffix(r.URL.Path, "/complete"):
+			var call completedTaskCall
+			_ = json.NewDecoder(r.Body).Decode(&call)
+			call.TaskID = strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/daemon/tasks/"), "/complete")
+			fx.mu.Lock()
+			fx.completed = append(fx.completed, call)
+			taskID := call.TaskID
+			status := fx.completeStatus[taskID]
+			fx.mu.Unlock()
+			if status != 0 && status != http.StatusOK {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"injected"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
 		case strings.HasPrefix(r.URL.Path, "/api/daemon/tasks/") && strings.HasSuffix(r.URL.Path, "/fail"):
 			var call failedTaskCall
 			_ = json.NewDecoder(r.Body).Decode(&call)
 			call.TaskID = strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/daemon/tasks/"), "/fail")
 			fx.mu.Lock()
 			fx.failed = append(fx.failed, call)
+			taskID := call.TaskID
+			status := fx.failStatus[taskID]
 			fx.mu.Unlock()
+			if status != 0 && status != http.StatusOK {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"injected"}`))
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/recover-orphans"):
@@ -138,6 +172,31 @@ func (fx *recoveryFixture) recordedFails() []failedTaskCall {
 	fx.mu.Lock()
 	defer fx.mu.Unlock()
 	return append([]failedTaskCall(nil), fx.failed...)
+}
+
+func (fx *recoveryFixture) recordedCompletes() []completedTaskCall {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	return append([]completedTaskCall(nil), fx.completed...)
+}
+
+// injectTerminalStatus makes the next terminal call for taskID answer with
+// the given HTTP status (0 restores the default 200).
+func (fx *recoveryFixture) injectTerminalStatus(taskID string, completeStatus, failStatus int) {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	if completeStatus != 0 {
+		if fx.completeStatus == nil {
+			fx.completeStatus = map[string]int{}
+		}
+		fx.completeStatus[taskID] = completeStatus
+	}
+	if failStatus != 0 {
+		if fx.failStatus == nil {
+			fx.failStatus = map[string]int{}
+		}
+		fx.failStatus[taskID] = failStatus
+	}
 }
 
 func (fx *recoveryFixture) askedInFlight() []string {

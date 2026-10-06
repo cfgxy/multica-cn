@@ -69,8 +69,9 @@ type Manifest struct {
 	StartedAt     time.Time   `json:"started_at"`
 	Exit          *ExitRecord `json:"exit,omitempty"`
 	// ConvergedAt is set by the daemon task layer once a finished run's
-	// output and exit have been consumed into the task's final state.
-	// Reconciliation skips converged runs; their cleanup is retention GC.
+	// output and exit have been reported to the server and folded into the
+	// task's final state (RUYI-464). Reconciliation skips converged runs;
+	// their cleanup is retention GC.
 	ConvergedAt *time.Time `json:"converged_at,omitempty"`
 }
 
@@ -254,9 +255,10 @@ func (m *Manager) ReadQuarantine(runID string) (*QuarantineRecord, error) {
 	return rec, nil
 }
 
-// MarkConverged stamps the run as consumed by the daemon task layer. Only
-// callable after the worker is terminal — the launcher (the other manifest
-// writer) is gone by then.
+// MarkConverged stamps the run as consumed by the daemon task layer: the
+// run's proven exit and drained output have been reported to the server as
+// the task's terminal state (RUYI-464). Only callable after the worker is
+// terminal — the launcher (the other manifest writer) is gone by then.
 func (m *Manager) MarkConverged(runID string) error {
 	man, err := m.ReadManifest(runID)
 	if err != nil {
