@@ -381,6 +381,49 @@ func (c *WSLongConnConnector) Run(ctx context.Context, inst Installation, emit E
 			continue
 		}
 
+		// Card actions (RUYI-461): a button click on one of our cards.
+		// It skips the enricher — a click carries no quotable message —
+		// and answers with a toast-carrying ACK: the Feishu client only
+		// renders click feedback when the card.action ACK embeds a
+		// CardActionTriggerResponse; a bare 200 leaves the button spinning.
+		if msg.CardAction != nil {
+			if msg.CardAction.Command == "" {
+				// Tampered or stale-schema click: visible refusal, never
+				// dispatched, no retry (the value won't validate any
+				// better on redelivery).
+				log.Warn("lark ws connector: card action refused",
+					"event_id", msg.EventID,
+					"chat_id", string(msg.ChatID),
+				)
+				refusal := NewCardActionAckFrame(frame, CardActionToastJSON("error", "命令校验未通过，发送 /help 查看可用命令"))
+				if werr := c.writeFrame(&writeMu, conn, refusal); werr != nil {
+					log.Warn("lark ws connector: card-action refusal ack write failed", "err", werr.Error())
+					return fmt.Errorf("write ack: %w", werr)
+				}
+				continue
+			}
+			if _, emitErr := emit(ctx, msg); emitErr != nil {
+				// Same infra-failure policy as messages: NACK so Lark
+				// retries on a healthy replica. The Router's dedup keys
+				// on event_id, so the retry is a no-op if we actually
+				// dispatched.
+				if werr := c.writeFrame(&writeMu, conn, NewAckFrame(frame, false)); werr != nil {
+					log.Warn("lark ws connector: card-action nack write failed", "err", werr.Error())
+				}
+				log.Error("lark ws connector: card action emit infra error",
+					"event_id", msg.EventID,
+					"err", emitErr.Error(),
+				)
+				return fmt.Errorf("dispatch: %w", emitErr)
+			}
+			accepted := NewCardActionAckFrame(frame, CardActionToastJSON("success", "命令已发送"))
+			if werr := c.writeFrame(&writeMu, conn, accepted); werr != nil {
+				log.Warn("lark ws connector: card-action ack write failed", "err", werr.Error())
+				return fmt.Errorf("write ack: %w", werr)
+			}
+			continue
+		}
+
 		// Enrich the decoded body with explicitly-attached context
 		// (quoted reply / forwarded bundle) before emitting. This runs
 		// before the frame ACK, so it is bounded by EnrichTimeout and
