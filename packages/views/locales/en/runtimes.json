@@ -520,5 +520,23 @@
     "created_probe_invalid": "Registered, but the connectivity check failed — check the API key",
     "create_failed": "Failed to register the voice instance",
     "key_save_failed": "Registered, but saving the API key failed — add it from the instance settings"
+  },
+  "mobile": {
+    "list_loading": "Loading…",
+    "empty": {
+      "title": "No voice instances yet"
+    },
+    "detail": {
+      "not_found": "This instance no longer exists."
+    },
+    "status": {
+      "online": "Online",
+      "offline": "Offline",
+      "disabled": "Disabled"
+    },
+    "advanced": {
+      "expand": "Show",
+      "collapse": "Hide"
+    }
   }
 }

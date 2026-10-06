@@ -6365,6 +6365,213 @@ func (q *Queries) ListActiveAgentsByRuntimeForUpdate(ctx context.Context, runtim
 	return items, nil
 }
 
+const listActiveAgentsByVoiceRuntime = `-- name: ListActiveAgentsByVoiceRuntime :many
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+WHERE voice_runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
+ORDER BY name ASC
+`
+
+// RUYI-425 §4.5 删除: agents actively bound through the voice slot. The hard
+// DELETE refusal must cover voice references the same way runtime_id (text
+// slot) does; the response carries this list so the dialog can point at the
+// bindings to clear first. Deliberately its own query + 409 code — the
+// cascade-confirm snapshot contract stays text-slot-only.
+func (q *Queries) ListActiveAgentsByVoiceRuntime(ctx context.Context, voiceRuntimeID pgtype.UUID) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listActiveAgentsByVoiceRuntime, voiceRuntimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+			&i.ConversationStarters,
+			&i.SessionMaxContextTokens,
+			&i.SessionCompactPct,
+			&i.MarketplacePromptState,
+			&i.ResourceWeight,
+			&i.Revision,
+			&i.VoiceRuntimeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveAgentsByVoiceRuntimeForUpdate = `-- name: ListActiveAgentsByVoiceRuntimeForUpdate :many
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+WHERE voice_runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
+ORDER BY name ASC
+FOR UPDATE
+`
+
+// FOR UPDATE variant of the voice-slot reference check, re-run inside the
+// delete transaction so a concurrent voice binding cannot slip in between
+// the pre-check and the row deletion (the voice_runtime_id FK is RESTRICT;
+// an unchecked binding would surface as an opaque FK error instead of the
+// structured 409).
+func (q *Queries) ListActiveAgentsByVoiceRuntimeForUpdate(ctx context.Context, voiceRuntimeID pgtype.UUID) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listActiveAgentsByVoiceRuntimeForUpdate, voiceRuntimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+			&i.ConversationStarters,
+			&i.SessionMaxContextTokens,
+			&i.SessionCompactPct,
+			&i.MarketplacePromptState,
+			&i.ResourceWeight,
+			&i.Revision,
+			&i.VoiceRuntimeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveAgentsByVoiceRuntimeProfile = `-- name: ListActiveAgentsByVoiceRuntimeProfile :many
+SELECT a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.session_max_context_tokens, a.session_compact_pct, a.marketplace_prompt_state, a.resource_weight, a.revision, a.voice_runtime_id FROM agent a
+JOIN agent_runtime ar ON ar.id = a.voice_runtime_id
+WHERE ar.profile_id = $1 AND ar.workspace_id = $2 AND a.archived_at IS NULL AND a.kind = 'user'
+ORDER BY a.name ASC
+`
+
+type ListActiveAgentsByVoiceRuntimeProfileParams struct {
+	ProfileID   pgtype.UUID `json:"profile_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-425 §4.5 删除 (profile path): active agents voice-bound to any runtime
+// instance of this profile — the voice-slot mirror of CountAgentsByProfile's
+// text-slot join. Returned on the structured 409 so the dialog can name the
+// bindings to clear before the profile disappears.
+func (q *Queries) ListActiveAgentsByVoiceRuntimeProfile(ctx context.Context, arg ListActiveAgentsByVoiceRuntimeProfileParams) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listActiveAgentsByVoiceRuntimeProfile, arg.ProfileID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+			&i.ConversationStarters,
+			&i.SessionMaxContextTokens,
+			&i.SessionCompactPct,
+			&i.MarketplacePromptState,
+			&i.ResourceWeight,
+			&i.Revision,
+			&i.VoiceRuntimeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActiveSiblingIssueTasks = `-- name: ListActiveSiblingIssueTasks :many
 SELECT
     atq.id AS task_id,

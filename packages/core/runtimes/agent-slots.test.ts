@@ -116,4 +116,36 @@ describe("agentSlotChoices", () => {
     });
     expect(choices.map((r) => r.id)).toEqual(["rt-text"]);
   });
+
+  it("excludes disabled instances (§4.5: 禁用 → picker hides them)", () => {
+    const disabled = makeRuntime({
+      id: "rt-disabled",
+      metadata: { disabled: true },
+    });
+    const choices = agentSlotChoices([textRt, disabled], "text", {
+      currentUserId: OWNER,
+    });
+    expect(choices.map((r) => r.id)).toEqual(["rt-text"]);
+  });
+
+  it("treats disabled:false or absent as enabled", () => {
+    const off = makeRuntime({ id: "rt-off", metadata: { disabled: false } });
+    const blank = makeRuntime({ id: "rt-blank" });
+    const choices = agentSlotChoices([off, blank], "text", {
+      currentUserId: OWNER,
+    });
+    expect(choices.map((r) => r.id)).toEqual(["rt-off", "rt-blank"]);
+  });
+
+  it("keeps the slot's own binding visible even when disabled (edit screens)", () => {
+    const disabled = makeRuntime({
+      id: "rt-disabled",
+      metadata: { disabled: true },
+    });
+    const choices = agentSlotChoices([disabled], "text", {
+      currentUserId: OWNER,
+      keepRuntimeId: "rt-disabled",
+    });
+    expect(choices.map((r) => r.id)).toEqual(["rt-disabled"]);
+  });
 });

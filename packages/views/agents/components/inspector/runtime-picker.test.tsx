@@ -210,6 +210,57 @@ describe("RuntimePicker (agent settings)", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  // §4.5 (RUYI-425): a disabled instance offers no new bindings, so it is
+  // excluded from the option domain entirely — same semantics as
+  // agentSlotChoices, not merely shown-but-locked like private runtimes.
+  it("excludes disabled instances from the option domain", () => {
+    const rtDisabled = makeRuntime({
+      id: "rt-disabled",
+      daemon_id: "daemon-1",
+      name: "Gemini (mbp.local)",
+      custom_name: "Jiayuan's MacBook Pro",
+      provider: "gemini",
+      metadata: { disabled: true },
+    });
+    renderPicker({ runtimes: [RT_CLAUDE, RT_CODEX, rtDisabled] });
+    openPicker();
+
+    // Lands inside the selected runtime's machine; the disabled sibling is
+    // gone while its enabled peers remain.
+    expect(screen.queryByRole("button", { name: /^Gemini/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Claude/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Codex/ })).toBeTruthy();
+  });
+
+  // keepRuntimeId semantics (agent-slots.ts): the slot's own current binding
+  // stays visible even when disabled, so the form never lies about stored
+  // state by rendering the binding as "none".
+  it("keeps the disabled current binding visible", () => {
+    const disabledSelection = { ...RT_CLAUDE, metadata: { disabled: true } };
+    renderPicker({ runtimes: [disabledSelection, RT_CODEX] });
+    openPicker();
+
+    expect(screen.getByRole("button", { name: /^Claude/ })).toBeTruthy();
+  });
+
+  // A machine whose every runtime is disabled offers nothing — it disappears
+  // from the machine list too, instead of leaving a dead-end drill-in.
+  it("hides a machine whose only runtime is disabled", () => {
+    const secretDisabled = {
+      ...RT_OTHER_PRIVATE,
+      metadata: { disabled: true },
+    };
+    renderPicker({ runtimes: [RT_CLAUDE, RT_CODEX, secretDisabled] });
+    openPicker();
+    fireEvent.click(screen.getByRole("button", { name: "Back to machines" }));
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    expect(screen.queryByRole("button", { name: /^secret\.local/ })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /^Jiayuan's MacBook Pro/ }),
+    ).toBeTruthy();
+  });
+
   it("shows the machine list when nothing is selected and several machines exist", () => {
     renderPicker({
       value: "",
