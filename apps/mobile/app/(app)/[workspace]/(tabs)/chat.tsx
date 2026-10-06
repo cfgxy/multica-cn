@@ -86,17 +86,23 @@ import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
+import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
 import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 import { useT } from "@/lib/use-t";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
+import { IconButton } from "@/components/ui/icon-button";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 
 export default function ChatTab() {
   const qc = useQueryClient();
   const { t } = useT("chat");
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
@@ -104,6 +110,9 @@ export default function ChatTab() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  // RUYI-449: 非空时经 VoiceSessionOverlay 对当前 agent 发起语音会话
+  // （425 链路）；关闭即结束，不影响文本发送。
+  const [voiceOpen, setVoiceOpen] = useState(false);
 
   // Bridge to the chat-sessions formSheet route. Mirror local
   // activeSessionId into the store so the picker can render the current
@@ -658,6 +667,22 @@ export default function ChatTab() {
           disabledReason={disabledReason}
           incomingSharedFiles={incomingSharedFiles}
           onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
+          renderVoiceWhenEmpty={
+            runtimeBound && currentAgent !== null && !voiceOpen
+              ? () => (
+                  <IconButton
+                    name="mic-outline"
+                    iconSize={18}
+                    color={theme.primaryForeground}
+                    variant="default"
+                    onPress={() => setVoiceOpen(true)}
+                    hitSlop={12}
+                    className="h-8 w-8 rounded-full"
+                    accessibilityLabel={t("voice:button.start", "Start voice conversation")}
+                  />
+                )
+              : undefined
+          }
         />
       </KeyboardAvoidingView>
 
@@ -667,6 +692,12 @@ export default function ChatTab() {
         currentAgentId={currentAgent?.id ?? null}
         onPick={handlePickAgent}
         onClose={() => setAgentPickerOpen(false)}
+      />
+
+      <VoiceSessionOverlay
+        agentId={voiceOpen && currentAgent !== null ? currentAgent.id : null}
+        workspaceSlug={wsSlug ?? ""}
+        onClose={() => setVoiceOpen(false)}
       />
     </View>
   );
