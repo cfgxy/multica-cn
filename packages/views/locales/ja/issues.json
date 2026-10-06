@@ -1175,6 +1175,8 @@
     "submitting": "送信中…",
     "cancel_card": "カードをキャンセル",
     "answer_failed": "回答の送信に失敗しました",
-    "cancel_failed": "カードのキャンセルに失敗しました"
+    "cancel_failed": "カードのキャンセルに失敗しました",
+    "batch_title": "一括回答",
+    "batch_submit": "すべて送信"
   }
 }

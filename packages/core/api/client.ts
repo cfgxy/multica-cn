@@ -3,6 +3,8 @@ import { configStore } from "../config";
 import type {
   Issue,
   IssueDecision,
+  BatchDecisionAnswerResult,
+  BatchIssueDecisionAnswer,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -334,6 +336,7 @@ import {
   CommentsListSchema,
   IssueDecisionsListSchema,
   IssueDecisionSchema,
+  BatchDecisionAnswersSchema,
   CommentTriggerPreviewSchema,
   IssueTriggerPreviewSchema,
   CloudRuntimeNodeListSchema,
@@ -1674,6 +1677,19 @@ export class ApiClient {
     });
     if (!decision) throw new Error("Invalid decision answer response");
     return decision;
+  }
+
+  // Batch answer (RUYI-471): several open cards in one request. The server
+  // answers each card through the same CAS as the single endpoint and reports
+  // per-card outcomes — callers must inspect `results`, not just the HTTP code.
+  async answerIssueDecisionsBatch(issueId: string, answers: BatchIssueDecisionAnswer[]): Promise<BatchDecisionAnswerResult> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/answer-batch`, {
+      method: "POST",
+      body: JSON.stringify({ answers }),
+    });
+    return parseWithFallback(raw, BatchDecisionAnswersSchema, { results: [] }, {
+      endpoint: "POST /api/issues/:id/decisions/answer-batch",
+    });
   }
 
   async cancelIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
