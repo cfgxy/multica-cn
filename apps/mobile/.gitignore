@@ -14,6 +14,10 @@ web-build/
 # Native (Expo prebuild output)
 ios/
 android/
+# ...but local Expo modules keep their native source under modules/*/android
+# (RUYI-463 share-intent module) — only the top-level prebuild dirs above are
+# disposable. Their build/ output stays ignored via the root `build` rule.
+!modules/*/android/
 
 # Override the root .gitignore "data/" rule (intended for backend runtime
 # dirs). apps/mobile/data/ is source — TanStack Query queries, mutations,

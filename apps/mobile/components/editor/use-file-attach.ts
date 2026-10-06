@@ -242,6 +242,9 @@ export function useFileAttach({
     retryAttachment,
     clearAttachments,
     restoreAttachments,
+    // RUYI-463: 供系统分享路径复用同一条入队/上传通道（原生选 paper 的
+    // pickAndUpload* 只覆盖系统选择器入口）。
+    enqueueAssets,
     uploading: inFlight > 0,
   };
 }
