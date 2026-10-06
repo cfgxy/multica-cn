@@ -366,6 +366,62 @@ func TestUploadFileResolvesWorkspaceViaIDHeaderStill(t *testing.T) {
 	}
 }
 
+// TestUploadFile_HEICContentType pins the RUYI-477 fix: Go's sniffer has no
+// HEIF ftyp brand, so a HEIC upload (Live-Photo still from iOS, or Android
+// HEIC libraries) would otherwise be stored as application/octet-stream and
+// fail to render as an image on every Chromium-based client. The extension
+// override must label it image/heic.
+func TestUploadFile_HEICContentType(t *testing.T) {
+	origStorage := testHandler.Storage
+	testHandler.Storage = &mockStorage{}
+	defer func() { testHandler.Storage = origStorage }()
+
+	// Minimal ISOBMFF header: ftyp box declaring the "heic" major brand —
+	// what iOS writes for Live-Photo stills. http.DetectContentType does not
+	// recognise it (returns application/octet-stream); the test passes only
+	// when the extension override kicks in.
+	heic := []byte{
+		0x00, 0x00, 0x00, 0x18,
+		'f', 't', 'y', 'p',
+		'h', 'e', 'i', 'c',
+		0x00, 0x00, 0x00, 0x00,
+		'h', 'e', 'i', 'c',
+		'm', 'i', 'f', '1',
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "IMG_0001.heic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	part.Write(heic)
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/api/upload-file", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+
+	w := httptest.NewRecorder()
+	testHandler.UploadFile(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UploadFile HEIC: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp AttachmentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v; body: %s", err, w.Body.String())
+	}
+	if resp.ContentType != "image/heic" {
+		t.Fatalf("HEIC content type: want image/heic, got %q", resp.ContentType)
+	}
+
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, resp.ID)
+	})
+}
+
 // TestUploadFile_AttachesToChatSession verifies that a multipart upload with
 // a chat_session_id form field creates an attachment row linked to that chat
 // session (chat_message_id remains NULL — it is back-filled on send).

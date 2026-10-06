@@ -19,6 +19,7 @@ import {
   partitionOversize,
   type PickedAsset,
 } from "@/lib/picked-asset";
+import { useActionSheet } from "@/components/ui/action-sheet";
 import {
   removeAttachmentZoneItem,
   updateAttachmentZoneItem,
@@ -40,6 +41,22 @@ interface UseFileAttachOptions {
 function makeLocalId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// RUYI-477: expo-image-picker ~55 在 iOS 上默认
+// preferredAssetRepresentationMode=.current，选 HEIC（实况照片静态帧、
+// 高效格式拍摄）时原样透出 HEIC 容器，Chromium/Android 渲染端无法解码。
+// compatible 让 PHPicker 直接给出 JPEG 兼容表示，从选择段根修。
+const IMAGE_PICKER_OPTIONS = {
+  mediaTypes: ["images"] as ["images"],
+  quality: 1,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+};
+const LIBRARY_PICKER_OPTIONS = {
+  ...IMAGE_PICKER_OPTIONS,
+  // RUYI-42 multi-select: 相册一次可多选，拍照单张。
+  allowsMultipleSelection: true,
+};
 
 /** One alert for the oversize part of a multi-pick. Filenames are user
  * content and follow the translated size-limit sentence. */
@@ -69,6 +86,10 @@ export function useFileAttach({
 }: UseFileAttachOptions = {}) {
   const { t } = useT("common");
   const onOversize = useOversizeAlert();
+  // RUYI-477: 贴图按钮的「拍照/相册」源选择弹层；消费方挂载
+  // <ActionSheetModal {...imageSourceModalProps} />（Android 为 RN Modal，
+  // iOS 走 ActionSheetIOS 命令式路径）。
+  const imageSourceSheet = useActionSheet();
   const [attachments, setAttachments] = useState<AttachmentZoneItem[]>([]);
   const attachmentsRef = useRef(attachments);
   const activeUploadsRef = useRef(new Set<string>());
@@ -158,18 +179,52 @@ export function useFileAttach({
     [onAttachmentsEnqueued, startUpload, updateAttachments],
   );
 
+  // RUYI-477: 相册/拍照共用 IMAGE_PICKER_OPTIONS（见模块头注释）。
   const pickAndUploadImages = useCallback(async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 1,
-      allowsMultipleSelection: true,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync(
+      LIBRARY_PICKER_OPTIONS,
+    );
     if (result.canceled) return;
     const assets = (result.assets ?? []).map(assetFromImagePicker);
     const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
     onOversize(oversized);
     if (ok.length > 0) enqueueAssets(ok);
   }, [enqueueAssets, onOversize]);
+
+  const takeAndUploadPhoto = useCallback(async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        t("composer.camera_permission_title", "Camera permission needed"),
+        t(
+          "composer.camera_permission_message",
+          "Multica needs camera access to take photos for attachments. Enable it in system settings.",
+        ),
+      );
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync(IMAGE_PICKER_OPTIONS);
+    if (result.canceled) return;
+    const assets = (result.assets ?? []).map(assetFromImagePicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length > 0) enqueueAssets(ok);
+  }, [enqueueAssets, onOversize, t]);
+
+  const chooseImageSource = useCallback(() => {
+    imageSourceSheet.show({
+      options: [
+        t("composer.image_source_camera", "Take Photo"),
+        t("composer.image_source_library", "Choose from Library"),
+        t("composer.cancel", "Cancel"),
+      ],
+      cancelButtonIndex: 2,
+      onSelect: (index) => {
+        if (index === 0) void takeAndUploadPhoto();
+        else if (index === 1) void pickAndUploadImages();
+      },
+    });
+  }, [imageSourceSheet, pickAndUploadImages, t, takeAndUploadPhoto]);
 
   const pickAndUploadFiles = useCallback(async () => {
     const result = await DocumentPicker.getDocumentAsync({
@@ -238,6 +293,10 @@ export function useFileAttach({
     attachments,
     pickAndUploadImages,
     pickAndUploadFiles,
+    // RUYI-477: 贴图按钮入口——弹出「拍照 / 相册」源选择；
+    // imageSourceModalProps 供消费方挂载 <ActionSheetModal />。
+    chooseImageSource,
+    imageSourceModalProps: imageSourceSheet.modalProps,
     removeAttachment,
     retryAttachment,
     clearAttachments,

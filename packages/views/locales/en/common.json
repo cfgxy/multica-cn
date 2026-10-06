@@ -153,7 +153,12 @@
     "file_too_large_message": "Files must be smaller than {{size}} MB.",
     "upload_failed_title": "Upload failed",
     "quick_replies_title": "Quick replies",
-    "quick_reply_hint": "Insert a quick reply"
+    "quick_reply_hint": "Insert a quick reply",
+    "camera_permission_title": "Camera permission needed",
+    "camera_permission_message": "Multica needs camera access to take photos for attachments. Enable it in system settings.",
+    "image_source_camera": "Take Photo",
+    "image_source_library": "Choose from Library",
+    "cancel": "Cancel"
   },
   "mobile": {
     "share": {
