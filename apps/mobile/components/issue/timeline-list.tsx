@@ -632,6 +632,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           const idx = dataRef.current.findIndex(
             (r) =>
               !("decision" in r) &&
+              !("batchBar" in r) &&
               r.entry.type === "comment" &&
               r.entry.id === rootId,
           );
@@ -672,6 +673,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
               const idx = dataRef.current.findIndex(
                 (r) =>
                   !("decision" in r) &&
+                  !("batchBar" in r) &&
                   r.entry.type === "comment" &&
                   r.entry.id === rootId,
               );
