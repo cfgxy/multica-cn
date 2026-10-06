@@ -3049,3 +3049,283 @@ func TestCommitEverythingExcludesOversizedUntracked(t *testing.T) {
 		t.Error("commit carries the oversized untracked entry blob_dir")
 	}
 }
+
+// Build artifacts are regenerable by definition and historically the single
+// biggest reason a session later reset the daemon's own checkpoints off the
+// conversation branch (RUYI-475 class A): commitBaseline / commitAll swept
+// untracked .apk/.ipa output and QA artifact dirs into the chore(agent)
+// history, the session stripped them back out per the build-artifact red line,
+// and the delivery guard then refused the rewritten branch. The artifacts must
+// stay out of every checkpoint commit — baseline and finalize alike — and be
+// preserved aside at finalize like the budget exclusions they now ride with.
+func TestFinalizeKeepsBuildArtifactsOutOfTheDeliveredBranch(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeFile(t, filepath.Join(wt.Path, "app-release.apk"), "fake apk\n")
+	writeFile(t, filepath.Join(wt.Path, "app-store.ipa"), "fake ipa\n")
+	writeFile(t, filepath.Join(wt.Path, "play.aab"), "fake aab\n")
+	writeFile(t, filepath.Join(wt.Path, "apk-parts", "app-debug.apk.part-00"), "part\n")
+	writeFile(t, filepath.Join(wt.Path, "apps", "mobile", "dist", "bundle.js"), "bundled\n")
+	writeFile(t, filepath.Join(wt.Path, "qa-artifacts", "run.json"), "{}\n")
+	writeFile(t, filepath.Join(wt.Path, "agent-output.txt"), "work product\n")
+
+	outcome := finalizeOK(t, wt)
+
+	if got := gitRun(t, repo, "show", wt.Branch+":agent-output.txt"); got != "work product" {
+		t.Errorf("branch does not carry agent output, got %q", got)
+	}
+	// The whole delivered history, not just the tip: a leaked artifact must
+	// not survive in the baseline commit either.
+	history := gitRun(t, repo, "log", "--name-only", "--format=", wt.Branch)
+	for _, banned := range []string{
+		"app-release.apk",
+		"app-store.ipa",
+		"play.aab",
+		"apk-parts/app-debug.apk.part-00",
+		"apps/mobile/dist/bundle.js",
+		"qa-artifacts/run.json",
+	} {
+		if strings.Contains(history, banned) {
+			t.Errorf("delivered branch history carries build artifact %s", banned)
+		}
+	}
+	// Preserved aside, never silently deleted: each artifact unit stays
+	// recoverable until the env root is reclaimed.
+	if len(outcome.Excluded) != 6 {
+		t.Fatalf("Excluded = %+v, want the 6 artifact units", outcome.Excluded)
+	}
+	for _, excl := range outcome.Excluded {
+		if excl.AsidePath == "" {
+			t.Errorf("exclusion %s has no AsidePath; artifact content was not preserved", excl.Name)
+		}
+		if _, err := os.Lstat(excl.AsidePath); err != nil {
+			t.Errorf("exclusion %s not preserved at %s: %v", excl.Name, excl.AsidePath, err)
+		}
+	}
+}
+
+// The baseline commit runs at prepare, before the agent does anything; an
+// artifact the user (or a previous QA run) left in their tree must not enter
+// it either, while still being replayed into the worktree for the agent.
+func TestCommitBaselineKeepsBuildArtifactsUntracked(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "user-build.apk"), "apk\n")
+	writeFile(t, filepath.Join(repo, "notes.txt"), "untracked notes\n")
+
+	wt := prepareForTest(t, repo)
+
+	if wt.BaseCommit == "" {
+		t.Fatal("BaseCommit is empty; the dirty worktree got no baseline")
+	}
+	names := gitRun(t, repo, "show", "--name-only", "--format=", wt.BaseCommit)
+	if strings.Contains(names, "user-build.apk") {
+		t.Error("baseline commit carries the user's build artifact")
+	}
+	if !strings.Contains(names, "notes.txt") {
+		t.Error("baseline commit lost the user's regular untracked file")
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "user-build.apk")); err != nil {
+		t.Errorf("artifact not replayed into the worktree for the agent: %v", err)
+	}
+}
+
+// The exclusion is an untracked-staging rule, not a content judgement:
+// a dist/ path the repo itself tracks is repo content, and `add -u` still
+// delivers edits to it exactly as it does for the runtime state dirs.
+func TestTrackedFilesUnderArtifactDirsStillCommit(t *testing.T) {
+	repo := newTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "dist"), 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	writeFile(t, filepath.Join(repo, "dist", "manifest.txt"), "v1\n")
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-m", "track dist manifest")
+
+	wt := prepareForTest(t, repo)
+	writeFile(t, filepath.Join(wt.Path, "dist", "manifest.txt"), "v2\n")
+
+	outcome := finalizeOK(t, wt)
+	if got := gitRun(t, repo, "show", wt.Branch+":dist/manifest.txt"); got != "v2" {
+		t.Errorf("tracked edit under dist/ did not land, got %q", got)
+	}
+	if len(outcome.Excluded) != 0 {
+		t.Errorf("Excluded = %+v, want empty: tracked content is not an artifact exclusion", outcome.Excluded)
+	}
+}
+
+// ---- RUYI-479 A2: the delivery guard's refusal must be retryable, and a
+// retry whose only lost commits are daemon checkpoints must heal itself. ----
+
+// guardMarkerRef mirrors the implementation's refusal marker location; the
+// tests read it to verify the retry handshake.
+func guardMarkerRef(branch string) string {
+	return "refs/multica/guard-refusal/" + branch
+}
+
+// A guard refusal is a dedicated failure, not the generic unknown bucket, and
+// it pins the refused tip where the retry's prepare can find it. The fixture
+// is the RUYI-471 shape: the session resets the turn's baseline checkpoint
+// away and re-lands its own work on the older base.
+func TestGuardRefusalWrapsDeliveryGuardErrorAndMarksBranch(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "notes.txt"), "wip\n")
+	wt := prepareTurn(t, repo, "mul-6881", turnOneTask)
+
+	writeFile(t, filepath.Join(wt.Path, "agent-output.txt"), "work\n")
+	gitRun(t, wt.Path, "reset", "--hard", "HEAD~1")
+	writeFile(t, filepath.Join(wt.Path, "fix.txt"), "session work\n")
+	gitRun(t, wt.Path, "add", "-A")
+	gitRun(t, wt.Path, "commit", "-m", "session fix")
+
+	outcome, err := wt.Finalize(worktreeTestLogger())
+	if err == nil {
+		t.Fatal("Finalize delivered a branch that no longer contains the turn's base commit")
+	}
+	var guardErr *DeliveryGuardError
+	if !errors.As(err, &guardErr) {
+		t.Fatalf("refusal is not a DeliveryGuardError: %v", err)
+	}
+	if outcome.Branch != "" || outcome.PreservedPath != wt.Path {
+		t.Errorf("outcome = %+v, want an empty branch and the preserved worktree", outcome)
+	}
+	refusedTip := gitRun(t, repo, "rev-parse", "refs/heads/"+wt.Branch)
+	if marker := gitRun(t, repo, "rev-parse", "--verify", guardMarkerRef(wt.Branch)); marker != refusedTip {
+		t.Errorf("refusal marker = %s, want the refused tip %s", marker, refusedTip)
+	}
+	if list := gitRun(t, repo, "worktree", "list"); !strings.Contains(list, wt.Path) {
+		t.Errorf("preserved worktree is no longer registered:\n%s", list)
+	}
+}
+
+// The retry of a guard-refused task heals by itself when everything the
+// session's reset dropped is a daemon checkpoint: the same branch continues
+// from the refused tip, with the work that tip carries, instead of forking
+// away from the conversation.
+func TestRetryPrepareHealsDroppedCheckpointChain(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "notes.txt"), "wip\n")
+	first := prepareTurn(t, repo, "mul-6881", turnOneTask)
+	writeFile(t, filepath.Join(first.Path, "turn1.txt"), "turn one\n")
+	finalizeOK(t, first)
+
+	// Turn two: new user WIP makes a fresh baseline checkpoint, which the
+	// session then resets away and replaces with its own commit.
+	writeFile(t, filepath.Join(repo, "notes2.txt"), "more wip\n")
+	second := prepareTurn(t, repo, "mul-6881", turnTwoTask)
+	if second.Branch != first.Branch {
+		t.Fatalf("turn two continued %s, want %s", second.Branch, first.Branch)
+	}
+	gitRun(t, second.Path, "reset", "--hard", "HEAD~1")
+	writeFile(t, filepath.Join(second.Path, "fix.txt"), "session work\n")
+	gitRun(t, second.Path, "add", "-A")
+	gitRun(t, second.Path, "commit", "-m", "session fix")
+	refusedTip := gitRun(t, repo, "rev-parse", "refs/heads/"+second.Branch)
+	if outcome, err := second.Finalize(worktreeTestLogger()); err == nil {
+		t.Fatalf("turn two finalized cleanly (%+v); the fixture did not trip the guard", outcome)
+	}
+
+	third := prepareTurn(t, repo, "mul-6881", turnThreeTask)
+	if third.Branch != first.Branch {
+		t.Fatalf("retry forked %s; the heal must continue %s", third.Branch, first.Branch)
+	}
+	// The replayed WIP makes the turn commit its own baseline; what pins the
+	// heal is that baseline sitting directly on the refused tip.
+	if parent := gitRun(t, repo, "rev-parse", third.BaseCommit+"^"); parent != refusedTip {
+		t.Errorf("retry baseline sits on %s, want the refused tip %s", parent, refusedTip)
+	}
+	// The work the refused tip carries, plus the user WIP that lived only in
+	// the dropped checkpoint — the replay has to put that back, or the heal
+	// quietly ate the user's edit.
+	for _, name := range []string{"turn1.txt", "fix.txt", "notes2.txt"} {
+		if _, err := os.Stat(filepath.Join(third.Path, name)); err != nil {
+			t.Errorf("work carried by the refused tip is missing from the healed worktree: %v", err)
+		}
+	}
+	if got := readFile(t, filepath.Join(third.Path, "notes2.txt")); got != "more wip\n" {
+		t.Errorf("healed turn lost the user WIP the dropped checkpoint carried: %q", got)
+	}
+
+	// The healed turn delivers normally, and delivery clears the marker.
+	writeFile(t, filepath.Join(third.Path, "turn3.txt"), "turn three\n")
+	outcome := finalizeOK(t, third)
+	if outcome.Branch != first.Branch {
+		t.Errorf("healed turn delivered %s, want %s", outcome.Branch, first.Branch)
+	}
+	if _, err := gitTry(t, repo, "rev-parse", "--verify", "--quiet", guardMarkerRef(first.Branch)); err == nil {
+		t.Error("refusal marker survived a successful delivery")
+	}
+}
+
+// A divergence that carried session work away is not the daemon's to heal:
+// the retry continues the branch as it stands, the refused worktree stays
+// preserved, and the marker survives until a real delivery clears it.
+func TestRetryPrepareRefusesHealWhenDroppedWorkIsNotCheckpointOnly(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "notes.txt"), "wip\n")
+	first := prepareTurn(t, repo, "mul-6881", turnOneTask)
+	writeFile(t, filepath.Join(first.Path, "turn1.txt"), "turn one\n")
+	finalizeOK(t, first)
+
+	// Turn two detaches and commits off-branch: the guard refuses because the
+	// branch does not point at the delivered tip.
+	second := prepareTurn(t, repo, "mul-6881", turnTwoTask)
+	gitRun(t, second.Path, "checkout", "--detach", "HEAD")
+	writeFile(t, filepath.Join(second.Path, "session.txt"), "session work\n")
+	gitRun(t, second.Path, "add", "-A")
+	gitRun(t, second.Path, "commit", "-m", "session work")
+	sessionTip := gitRun(t, second.Path, "rev-parse", "HEAD")
+	if outcome, err := second.Finalize(worktreeTestLogger()); err == nil {
+		t.Fatalf("turn two finalized cleanly (%+v); the fixture did not trip the guard", outcome)
+	}
+
+	third := prepareTurn(t, repo, "mul-6881", turnThreeTask)
+	if third.Branch != first.Branch {
+		t.Fatalf("retry forked %s, want the conversation branch %s", third.Branch, first.Branch)
+	}
+	firstTip := gitRun(t, repo, "rev-parse", "refs/heads/"+first.Branch)
+	if third.BaseCommit != firstTip {
+		t.Errorf("retry anchored at %s, want the branch's own tip %s: the heal must not rewrite session work away", third.BaseCommit, firstTip)
+	}
+	if _, err := gitTry(t, repo, "merge-base", "--is-ancestor", sessionTip, "refs/heads/"+first.Branch); err == nil {
+		t.Error("the heal adopted the session's off-branch commit onto the conversation branch")
+	}
+	if _, err := gitTry(t, repo, "rev-parse", "--verify", "--quiet", guardMarkerRef(first.Branch)); err != nil {
+		t.Error("refusal marker dropped by a refused heal")
+	}
+	if list := gitRun(t, repo, "worktree", "list"); !strings.Contains(list, second.Path) {
+		t.Errorf("refused worktree is no longer preserved:\n%s", list)
+	}
+
+	// The retry still delivers normally, clearing the stale marker.
+	writeFile(t, filepath.Join(third.Path, "turn3.txt"), "retry work\n")
+	finalizeOK(t, third)
+	if _, err := gitTry(t, repo, "rev-parse", "--verify", "--quiet", guardMarkerRef(first.Branch)); err == nil {
+		t.Error("refusal marker survived a later successful delivery")
+	}
+}
+
+// Without a refusal marker there is nothing to heal from: a branch whose
+// recorded checkpoint is gone still refuses to continue, exactly as before
+// the heal existed, and the conversation lands on its fingerprint fork.
+func TestCheckpointResetWithoutRefusalMarkerStillForks(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "notes.txt"), "wip\n")
+	first := prepareTurn(t, repo, "mul-6881", turnOneTask)
+	writeFile(t, filepath.Join(first.Path, "turn1.txt"), "turn one\n")
+	finalizeOK(t, first)
+
+	second := prepareTurn(t, repo, "mul-6881", turnTwoTask)
+	gitRun(t, second.Path, "reset", "--hard", "HEAD~1")
+	resetTip := gitRun(t, repo, "rev-parse", "refs/heads/"+first.Branch)
+
+	third := prepareTurn(t, repo, "mul-6881", turnThreeTask)
+	if third.Branch == first.Branch {
+		t.Fatal("retry reused a branch whose ownership proof was reset away")
+	}
+	if tip := gitRun(t, repo, "rev-parse", "refs/heads/"+first.Branch); tip != resetTip {
+		t.Errorf("old branch moved to %s, want it untouched at %s", tip, resetTip)
+	}
+	writeFile(t, filepath.Join(third.Path, "turn3.txt"), "turn three\n")
+	finalizeOK(t, third)
+}

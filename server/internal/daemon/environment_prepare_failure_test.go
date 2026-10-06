@@ -125,3 +125,26 @@ func TestTaskRunFailureReasonLeavesAgentErrorsAlone(t *testing.T) {
 		t.Errorf("taskRunFailureReason = %q, want %q", got, want)
 	}
 }
+
+// TestTaskRunFailureReasonLabelsDeliveryGuard pins the daemon half of
+// RUYI-479 A2. The finalize guard's refusal is a retryable condition — the
+// next attempt heals a checkpoint-only reset by itself — so it must carry its
+// own reason instead of falling into taskfailure.Classify's
+// agent_error.unknown, which is not on the retry allowlist and reads like the
+// agent misbehaved. The refusal reaches the classifier through the
+// worktreePreservedError wrapper the finalize path adds, so the branch has to
+// find it through that.
+func TestTaskRunFailureReasonLabelsDeliveryGuard(t *testing.T) {
+	err := &worktreePreservedError{err: fmt.Errorf("local_directory worktree: %w",
+		fmt.Errorf("refusing to record branch agent/j/x: %w", &execenv.DeliveryGuardError{
+			Err: errors.New("the delivered commit abc123 no longer contains def456, the commit this turn started from"),
+		}))}
+
+	want := taskfailure.ReasonDeliveryGuard.String()
+	if got := taskRunFailureReason(err); got != want {
+		t.Errorf("taskRunFailureReason = %q, want %q", got, want)
+	}
+	if taskfailure.Reason(taskRunFailureReason(err)).IsAgentError() {
+		t.Error("a refusal the daemon itself produced must not be filed under agent_error.*")
+	}
+}
