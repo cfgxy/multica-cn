@@ -52,6 +52,12 @@ func NewFeishuResolverSet(store *ChannelStore, session *engine.ChatSession, audi
 		Session:      &feishuSessionBinder{session: session},
 		Audit:        &feishuAuditor{audit: audit},
 		OriginType:   originFeishuChat,
+		// SlashCommandFeedback (RUYI-461): Feishu is the only channel with
+		// the /help command card and an OutcomeReplier that renders
+		// OutcomeHelp / OutcomeUnknownCommand. The other channels sharing
+		// the engine.Router keep the legacy behavior (slash text ingests as
+		// an ordinary message) until they grow their own replier support.
+		SlashCommandFeedback: true,
 	}
 	if replier != nil {
 		set.Replier = &feishuOutboundReplier{replier: replier}
@@ -311,6 +317,8 @@ func dispatchResultFromEngine(res engine.Result) DispatchResult {
 		IssueTitle:         res.IssueTitle,
 		IssueDuplicate:     res.IssueDuplicate,
 		IssueUsageHadMedia: res.IssueUsageHadMedia,
+		CommandToken:       res.CommandToken,
+		HelpCommands:       res.HelpCommands,
 	}
 }
 

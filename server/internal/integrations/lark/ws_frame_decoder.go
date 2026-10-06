@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 )
 
 // LarkJSONFrameDecoder decodes the JSON event payload Lark nests
@@ -16,8 +18,9 @@ import (
 //
 // Three outcomes:
 //
-//   - (msg, true,  nil) — `im.message.receive_v1` event. The Hub
-//     forwards through the Dispatcher.
+//   - (msg, true,  nil) — `im.message.receive_v1` event, or a validated
+//     `card.action.trigger` button click (RUYI-461). The Hub forwards
+//     through the Router.
 //   - (zero, false, nil) — heartbeat-shaped JSON or an event_type we
 //     don't yet handle (im.chat.access_event_v1, etc.). The connector
 //     drops these silently and still sends a 200 ACK to Lark so the
@@ -29,9 +32,16 @@ import (
 //
 // The decoder is stateless and goroutine-safe — a single instance
 // serves every supervisor goroutine.
-type LarkJSONFrameDecoder struct{}
+type LarkJSONFrameDecoder struct {
+	// commands validates card-button payloads against the shared command
+	// registry: only a bare registered command token dispatches, so a
+	// tampered value (e.g. "/issue evil title") is refused at the door.
+	commands *engine.CommandRegistry
+}
 
-func NewLarkJSONFrameDecoder() *LarkJSONFrameDecoder { return &LarkJSONFrameDecoder{} }
+func NewLarkJSONFrameDecoder() *LarkJSONFrameDecoder {
+	return &LarkJSONFrameDecoder{commands: engine.DefaultCommandRegistry()}
+}
 
 // Decode implements FrameDecoder.
 func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst Installation) (InboundMessage, bool, error) {
@@ -50,6 +60,10 @@ func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst Installation) (Inboun
 	// schema-driven.
 	if env.Type != "" && env.Type != "event_callback" {
 		return InboundMessage{}, false, nil
+	}
+
+	if env.Header.EventType == cardActionEventType {
+		return d.decodeCardAction(env)
 	}
 
 	if env.Header.EventType != "im.message.receive_v1" {
@@ -117,6 +131,123 @@ func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst Installation) (Inboun
 	}
 
 	return msg, true, nil
+}
+
+// cardActionEventType is the Lark event_type for interactive-card button
+// clicks. It arrives on the same long-conn WS as im.message.receive_v1,
+// wrapped in the identical v2 envelope — only header.event_type differs.
+const cardActionEventType = "card.action.trigger"
+
+// larkCardActionEvent is the payload of card.action.trigger. Only the
+// fields the command path needs are modeled: who clicked, which card
+// message it belongs to, and the action value the clicked button was
+// minted with.
+type larkCardActionEvent struct {
+	Operator struct {
+		OpenID string `json:"open_id"`
+	} `json:"operator"`
+	Action struct {
+		// Value is the button's business payload as OUR renderer wrote it
+		// (see helpCard.go): {"v":1,"cmd":"/new","ct":"group"}. Lark
+		// round-trips it verbatim; anything else is treated as tampered.
+		Value map[string]any `json:"value"`
+	} `json:"action"`
+	Context struct {
+		OpenChatID    string `json:"open_chat_id"`
+		OpenMessageID string `json:"open_message_id"`
+	} `json:"context"`
+}
+
+// cardActionValue is the schema OUR code writes into a card button value.
+// v is a schema version so a future revision can evolve the shape without
+// misreading old help cards still sitting in chat history.
+type cardActionValue struct {
+	V   int    `json:"v"`
+	Cmd string `json:"cmd"`
+	CT  string `json:"ct"`
+}
+
+// decodeCardAction turns a card.action.trigger envelope into an
+// InboundMessage the shared Router can process. A button click carries no
+// message of its own, so the synthesized body IS the minted command:
+// Body/CommandBody = cmd, letting "/new" flow through the exact
+// ParseControlCommand path a typed "/new" takes (RUYI-461 AC4 — one
+// dispatch path, no copied business logic).
+//
+// Validation is strict and happens here, at the door:
+//   - v must be 1 (unknown schema versions are refused, not guessed)
+//   - ct must normalize to p2p or group (the event context carries no
+//     chat_type, so the card mints its own)
+//   - cmd must EXACTLY match a registered command token — no arguments,
+//     no case folding. "/issue evil title" or "/ISSUE" leave Command
+//     empty; the connector then error-toasts and never emits.
+//
+// A structurally valid envelope whose value fails the checks still
+// returns (msg, true, nil) with CardAction set but Command empty: the
+// caller needs the operator/chat context to ACK a meaningful error
+// toast, and the empty Command is its signal not to dispatch.
+//
+// MessageID is header.event_id: Lark redelivers card actions with the
+// same event_id, so the Router's message-level dedup absorbs button
+// double-clicks and WS redeliveries for free.
+func (d *LarkJSONFrameDecoder) decodeCardAction(env larkEventEnvelope) (InboundMessage, bool, error) {
+	if env.Event == nil {
+		return InboundMessage{}, false, errors.New("card.action.trigger with empty event payload")
+	}
+	var evt larkCardActionEvent
+	if err := json.Unmarshal(env.Event, &evt); err != nil {
+		return InboundMessage{}, false, fmt.Errorf("card action: %w", err)
+	}
+
+	action := &CardActionEvent{
+		OperatorOpenID: evt.Operator.OpenID,
+		OpenChatID:     evt.Context.OpenChatID,
+		OpenMessageID:  evt.Context.OpenMessageID,
+	}
+	// Round-trip the free-form value map through JSON so a malformed or
+	// unexpectedly-typed value degrades to a validation refusal instead of
+	// a decode error the user gets no feedback for.
+	raw, err := json.Marshal(evt.Action.Value)
+	if err == nil {
+		var v cardActionValue
+		if jerr := json.Unmarshal(raw, &v); jerr == nil {
+			action.Command, action.ChatType = d.validateCardActionValue(v)
+		}
+	}
+
+	return InboundMessage{
+		EventType:      cardActionEventType,
+		EventID:        env.Header.EventID,
+		AppID:          env.Header.AppID,
+		ChatID:         ChatID(action.OpenChatID),
+		ChatType:       action.ChatType,
+		MessageID:      env.Header.EventID,
+		SenderOpenID:   OpenID(action.OperatorOpenID),
+		MessageType:    "interactive",
+		Body:           action.Command,
+		CommandBody:    action.Command,
+		AddressedToBot: true,
+		CardAction:     action,
+	}, true, nil
+}
+
+// validateCardActionValue checks a minted button value against the shared
+// command registry. It returns the validated command token ("" when
+// refused) and the chat type to attribute. Refusal order: v schema
+// mismatch, chat type outside {p2p, group}, cmd not an exact registry
+// entry.
+func (d *LarkJSONFrameDecoder) validateCardActionValue(v cardActionValue) (string, ChatType) {
+	if v.V != 1 {
+		return "", ""
+	}
+	ct := normalizeChatType(v.CT)
+	if ct != ChatTypeP2P && ct != ChatTypeGroup {
+		return "", ""
+	}
+	if _, ok := d.commands.Lookup(v.Cmd); !ok {
+		return "", ""
+	}
+	return v.Cmd, ct
 }
 
 // larkEventEnvelope mirrors the outer JSON Lark wraps every push in.
