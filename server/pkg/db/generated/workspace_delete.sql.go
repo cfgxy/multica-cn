@@ -610,6 +610,12 @@ func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID p
 
 const deleteWorkspaceRuntimesAndProjects = `-- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+deleted_runtime_credentials AS (
+    DELETE FROM runtime_credential
+    WHERE runtime_instance_id IN (
+        SELECT id FROM agent_runtime WHERE agent_runtime.workspace_id = $1
+    )
+),
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),
@@ -626,6 +632,10 @@ deleted_execution_profiles AS (
 DELETE FROM project WHERE project.workspace_id = $1
 `
 
+// runtime_credential has no FK to agent_runtime (house rule), so the sweep
+// owns it: matched through the runtime set rather than a workspace column
+// (same construction as execution_profile_entry below). The encrypted
+// payloads are destroyed with the workspace; nothing plaintext ever existed.
 // execution_profile has no FK to workspace (house rule), so teardown owns it.
 // Entries are matched through the profile set rather than a workspace column:
 // an entry only exists under a profile, and deleting both in one statement

@@ -190,6 +190,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_quiz_sweep_state": workspaceDeleteKeep,
 	"quick_action":            workspaceDelete,
 	"runtime_profile":         workspaceDelete,
+	// Runtime instance credentials (RUYI-425 §4.5) carry only ciphertext and
+	// are keyed by (runtime_instance_id, credential_key) with no workspace
+	// column; DeleteWorkspaceRuntimesAndProjects sweeps them through the
+	// workspace's runtime set in the same statement that deletes the
+	// runtimes. Destroying the workspace destroys its secrets.
+	"runtime_credential": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery":        workspaceDelete,

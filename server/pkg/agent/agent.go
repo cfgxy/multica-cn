@@ -346,8 +346,9 @@ type Config struct {
 // migration 242 to add qoderclicn, migration 253 to add qwenpaw,
 // migration 254 to add reasonix, migration 313 to add dsh, migration 342 to
 // add mcode, migration 370 to add dim, migration 403 to add zeroclaw,
-// migration 441 to add codearts, and migration 923 to add deerflow and
-// zcode): a custom runtime profile may
+// migration 441 to add codearts, migration 923 to add deerflow and
+// zcode, and migration 925 to add gemini_live (the first API-backed voice
+// family, RUYI-425)): a custom runtime profile may
 // only be based on a backend Multica officially supports.
 // qoder and qoderclicn share the same ACP backend; keeping both provider keys
 // lets the daemon auto-detect and register the international and China-region
@@ -389,6 +390,10 @@ var SupportedTypes = []string{
 	"zeroclaw",
 	"deerflow",
 	"zcode",
+	// gemini_live is the first API-backed voice family (RUYI-425): a runtime
+	// profile family with no CLI binary. New() deliberately does not dispatch
+	// it — see the voiceFamily case there.
+	"gemini_live",
 }
 
 // IsSupportedType reports whether agentType is in the SupportedTypes whitelist.
@@ -444,6 +449,14 @@ func New(agentType string, cfg Config) (Backend, error) {
 	// would accept a fixed_args `--output-format text` and break its own
 	// stream-json channel.
 	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
+
+	// Voice families (RUYI-425) are API-backed: they have no CLI backend to
+	// dispatch and no task may launch on one. Fail with a nameable error
+	// instead of the generic unknown-type message below, which would
+	// misleadingly list gemini_live among the launchable backends.
+	if IsVoiceProtocolFamily(agentType) {
+		return nil, fmt.Errorf("protocol family %q is an API-backed voice family with no CLI backend; tasks cannot be dispatched to it", agentType)
+	}
 
 	switch agentType {
 	case "claude":
@@ -547,6 +560,9 @@ var launchHeaders = map[string]string{
 	"zeroclaw":    "zeroclaw acp",
 	"deerflow":    "deerflow-acp acp",
 	"zcode":       "zcode-acp acp",
+	// Voice families have no CLI command to preview; the header is a mode
+	// label so the UI skeleton contract stays universal (RUYI-425).
+	"gemini_live": "Gemini Live (realtime voice API)",
 }
 
 // LaunchHeader returns the user-visible launch skeleton for agentType, or an
