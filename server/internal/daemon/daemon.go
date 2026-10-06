@@ -637,6 +637,13 @@ type Daemon struct {
 	activeTaskIDsMu sync.Mutex
 	activeTaskIDs   map[string]struct{}
 
+	// convergeInFlight records tasks with an offline-completion converge
+	// pass currently running (RUYI-464): the startup reconcile and the
+	// workspace-sync recovery loop can fire for the same finished run, and
+	// only one may report its terminal state.
+	convergeInFlightMu sync.Mutex
+	convergeInFlight   map[string]struct{}
+
 	activeStoresMu   sync.Mutex
 	activeStoresCond *sync.Cond      // signalled when an in-flight store deletion finishes, so a blocked markActive can proceed
 	activeStores     map[string]int  // persistent store path (per-conversation Codex sessions, per-agent Hermes memories) -> live-task refcount; guards the store from GC mid-task (MUL-4424)
@@ -714,6 +721,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		activeEnvRoots:            make(map[string]int),
 		deletingEnvRoots:          make(map[string]bool),
 		activeTaskIDs:             make(map[string]struct{}),
+		convergeInFlight:          make(map[string]struct{}),
 		activeStores:              make(map[string]int),
 		deletingStores:            make(map[string]bool),
 		localPathLocks:            NewLocalPathLocker(),

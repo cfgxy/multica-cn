@@ -118,9 +118,9 @@ func (d *Daemon) setupSupervisor() {
 // StopOrphan kills provably unclaimed units, Quarantine records unknown
 // evidence. Resume runs are left untouched — their workers keep running and
 // the next claim of their task reenters them via the reattach probe in
-// planSupervisedRun. ConvergeExit runs are marked consumed; their task-level
-// fate stays with the server's own recovery paths, which already own the
-// in-flight row.
+// planSupervisedRun. ConvergeExit runs are converged for real (RUYI-464):
+// their proven exit and drained output are reported to the server as the
+// task's terminal state, then the run is marked consumed.
 //
 // The server in-flight set is best effort: on a listing failure every active
 // unit is treated as in-flight (Resume), because the one irreversible action
@@ -171,12 +171,20 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 			d.logger.Info("supervisor reconcile: run resumed for reattach on next claim",
 				"run_id", res.RunID, "task_id", res.TaskID)
 		case supervisor.DecisionConvergeExit:
-			// Mark consumed so later passes skip it; the run's exit evidence
-			// stays in the manifest for the audit trail.
-			if err := d.supervisor.Manager().MarkConverged(res.RunID); err != nil {
-				d.logger.Warn("supervisor reconcile: mark converged failed", "run_id", res.RunID, "error", err)
+			// RUYI-464: report the finished run's proven exit and drained
+			// output to the server as the task's terminal state (previously
+			// local-only), then mark consumed so later passes skip it. A
+			// none outcome (consumed by a racing pass) falls back to the
+			// plain local mark; a superseded run stays on disk for the audit
+			// trail — its fate was decided by the newer generation.
+			out := d.convergeFinishedSupervisedRun(ctx, res.TaskID)
+			if out == convergeNone {
+				if err := d.supervisor.Manager().MarkConverged(res.RunID); err != nil {
+					d.logger.Warn("supervisor reconcile: mark converged failed", "run_id", res.RunID, "error", err)
+				}
 			}
-			d.logger.Info("supervisor reconcile: finished run converged", "run_id", res.RunID, "task_id", res.TaskID)
+			d.logger.Info("supervisor reconcile: finished run converge pass done",
+				"run_id", res.RunID, "task_id", res.TaskID, "outcome", out.String())
 		default:
 			d.logger.Info("supervisor reconcile", "run_id", res.RunID, "task_id", res.TaskID,
 				"decision", res.Decision.String(), "reason", res.Reason)
