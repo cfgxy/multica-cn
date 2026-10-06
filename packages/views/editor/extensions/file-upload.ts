@@ -194,6 +194,31 @@ function moveSelectionToParagraphAfterImage(editor: any, src: string) {
 }
 
 /**
+ * Uploads whose pasting editor died before their settled link could be
+ * swapped into the document.
+ *
+ * When {@link uploadAndInsertFile} resumes after `handler()` and finds the
+ * editor destroyed, the inline blob→URL swap is skipped and nobody else will
+ * write the finished link — the attachment is recorded "uploaded" while the
+ * document and draft body never show it (RUYI-478). The flag is the only
+ * signal that delivery is owed: it distinguishes this from a user deleting
+ * the placeholder mid-upload on a LIVE editor, which must keep the
+ * placeholder-deleted-means-deleted behavior (MUL-5181). The coordinated
+ * uploads hook consumes the flag on its post-settle recheck and backfills
+ * the body through `deliverFinishedUpload`.
+ */
+const editorLostUploadIds = new Set<string>();
+
+function markUploadEditorLost(uploadId: string): void {
+  editorLostUploadIds.add(uploadId);
+}
+
+/** Test/hook API: did this upload lose its editor, and consume the flag. */
+export function consumeUploadEditorLost(uploadId: string): boolean {
+  return editorLostUploadIds.delete(uploadId);
+}
+
+/**
  * Shared upload flow: insert blob preview → upload → replace with real URL.
  * Used by both paste/drop (at cursor) and button upload (at end of doc).
  */
@@ -231,7 +256,13 @@ export async function uploadAndInsertFile(
       // time it settles this editor may be destroyed. Dispatching against a
       // destroyed EditorView throws, and the catch would dispatch again —
       // the write-back path owns delivery for dead editors, not this swap.
-      if (editor.isDestroyed) return;
+      if (editor.isDestroyed) {
+        // A success nobody will ever paint: flag it so the coordinated
+        // uploads hook backfills the draft body (RUYI-478). A failure is
+        // already owned by onSettled's remove path.
+        if (result) markUploadEditorLost(uploadId);
+        return;
+      }
       if (result) settleUploadNode(editor, uploadId, result);
       else removeUploadNode(editor, uploadId);
     } catch {
@@ -253,7 +284,10 @@ export async function uploadAndInsertFile(
       const result = await handler(file, uploadId);
       // See the image branch: a settle after this editor's destroy must not
       // dispatch against the dead EditorView.
-      if (editor.isDestroyed) return;
+      if (editor.isDestroyed) {
+        if (result) markUploadEditorLost(uploadId);
+        return;
+      }
       if (result) settleUploadNode(editor, uploadId, result);
       else removeUploadNode(editor, uploadId);
     } catch {
