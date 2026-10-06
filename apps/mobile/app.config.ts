@@ -56,6 +56,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     android: {
       // 与 iOS 同一套统一包名：环境变量为自建副本的单点覆盖出口。
       package: process.env.EXPO_ANDROID_PACKAGE ?? "ai.multica.mobile",
+      // RUYI-449: 语音会话的麦克风采集。显式声明 RECORD_AUDIO——
+      // 该权限曾因 microphonePermission: false 的合并期 remove 指令
+      // 被拒绝（QA P1），此处与插件行为双保险。
+      permissions: ["android.permission.RECORD_AUDIO"],
       // 复用与 iOS 相同的 1024 源图标;Android 12+ 实际展示的是
       // adaptiveIcon,monochromeImage 供主题图标(Material You)使用。
       adaptiveIcon: {
@@ -79,12 +83,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         {
           // iOS NSPhotoLibraryUsageDescription. Without this string in
           // Info.plist, calling launchImageLibraryAsync hard-crashes on
-          // iOS 14+. Camera + microphone are disabled — we only ever read
+          // iOS 14+. Camera capture stays disabled — we only ever read
           // from the existing photo library.
           photosPermission:
             "Allow Multica to access your photos to attach images to issues and comments.",
           cameraPermission: false,
-          microphonePermission: false,
+          // RUYI-449: 语音会话需要麦克风。`false` 会令插件写入
+          // `tools:node="remove"`，在 manifest 合并时把 voice-audio 模块
+          // 自带的 RECORD_AUDIO 显式拒绝（QA P1：真机权限弹窗 100% 不
+          // 出现）。字符串既是 iOS 用途文案（NSMicrophoneUsageDescription），
+          // 也使插件在 Android 侧补加 RECORD_AUDIO；android.permissions
+          // 再显式声明一次兜底，防插件配置漂移。
+          microphonePermission:
+            "Allow $(PRODUCT_NAME) to access your microphone for voice conversations.",
         },
       ],
       [
