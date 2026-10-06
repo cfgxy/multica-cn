@@ -989,6 +989,7 @@
       "leader_needs_runtime": "队长需绑定运行时",
       "everyone_all": "所有人（@all）",
       "done": "完成",
+      "change_date": "修改日期",
       "create_label": "创建\"{{name}}\"",
       "no_labels": "此工作区还没有标签。",
       "no_members_or_agents": "此工作区还没有成员或 Agent。"

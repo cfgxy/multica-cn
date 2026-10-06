@@ -1026,6 +1026,7 @@
       "leader_needs_runtime": "Leader needs runtime",
       "everyone_all": "Everyone (@all)",
       "done": "Done",
+      "change_date": "Change",
       "create_label": "Create “{{name}}”",
       "no_labels": "No labels in this workspace yet.",
       "no_members_or_agents": "No members or agents in this workspace yet."
