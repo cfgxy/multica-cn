@@ -226,6 +226,10 @@ export type {
   AssigneeFrequencyEntry,
 } from "./activity";
 export type {
+  BatchDecisionAnswerOutcome,
+  BatchDecisionAnswerResult,
+  BatchDecisionAnswerStatus,
+  BatchIssueDecisionAnswer,
   DecisionOption,
   IssueDecision,
   IssueDecisionStatus,
