@@ -336,6 +336,37 @@ WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 FOR UPDATE;
 
+-- name: ListActiveAgentsByVoiceRuntime :many
+-- RUYI-425 §4.5 删除: agents actively bound through the voice slot. The hard
+-- DELETE refusal must cover voice references the same way runtime_id (text
+-- slot) does; the response carries this list so the dialog can point at the
+-- bindings to clear first. Deliberately its own query + 409 code — the
+-- cascade-confirm snapshot contract stays text-slot-only.
+SELECT * FROM agent
+WHERE voice_runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
+ORDER BY name ASC;
+
+-- name: ListActiveAgentsByVoiceRuntimeForUpdate :many
+-- FOR UPDATE variant of the voice-slot reference check, re-run inside the
+-- delete transaction so a concurrent voice binding cannot slip in between
+-- the pre-check and the row deletion (the voice_runtime_id FK is RESTRICT;
+-- an unchecked binding would surface as an opaque FK error instead of the
+-- structured 409).
+SELECT * FROM agent
+WHERE voice_runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
+ORDER BY name ASC
+FOR UPDATE;
+
+-- name: ListActiveAgentsByVoiceRuntimeProfile :many
+-- RUYI-425 §4.5 删除 (profile path): active agents voice-bound to any runtime
+-- instance of this profile — the voice-slot mirror of CountAgentsByProfile's
+-- text-slot join. Returned on the structured 409 so the dialog can name the
+-- bindings to clear before the profile disappears.
+SELECT a.* FROM agent a
+JOIN agent_runtime ar ON ar.id = a.voice_runtime_id
+WHERE ar.profile_id = $1 AND ar.workspace_id = $2 AND a.archived_at IS NULL AND a.kind = 'user'
+ORDER BY a.name ASC;
+
 -- name: ListUserAgentsByRuntimeForUpdate :many
 -- Locks active AND archived user agents before a runtime teardown. Locking only
 -- the active snapshot leaves a restore race: an archived row can become active

@@ -434,6 +434,10 @@ type Handler struct {
 	// public Gemini endpoint as the default; tests inject a stub provider URL
 	// so the relay is exercised end-to-end without touching the real service.
 	VoiceProviderWSBaseURL string
+	// VoiceDisablePollInterval is how often an in-flight voice relay re-reads
+	// the instance's disabled flag (§4.5: 禁用 → graceful termination).
+	// Zero means the production default; tests inject a shorter interval.
+	VoiceDisablePollInterval time.Duration
 	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
 	// tight transports). Nil means a 5s-timeout default client.
 	VoiceProbeHTTPClient *http.Client

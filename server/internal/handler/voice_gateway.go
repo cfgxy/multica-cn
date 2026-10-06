@@ -308,6 +308,64 @@ type liveClientToolFrame struct {
 	} `json:"toolResponse"`
 }
 
+// voiceDisablePollInterval is the effective mid-session disable poll cadence
+// (§4.5: 禁用 → gateway 优雅终止). Zero on the struct means the production
+// default; tests shrink it so the termination path runs in milliseconds.
+func (h *Handler) voiceDisablePollInterval() time.Duration {
+	if h.VoiceDisablePollInterval > 0 {
+		return h.VoiceDisablePollInterval
+	}
+	return 3 * time.Second
+}
+
+// watchVoiceInstanceDisabled polls the voice instance's disabled flag while
+// the relay is in flight. The moment the operator's toggle lands, both sides
+// get a normal-close frame (1000) and the pumps unblock — teardown flows
+// through the relay's single endLiveSession defer, so the write-back
+// completes exactly as on any other disconnect. Poll errors are logged and
+// retried next tick: a transient DB blip must not kill a live conversation.
+// WriteControl is safe concurrently with the pump writes (gorilla contract).
+func watchVoiceInstanceDisabled(
+	ctx context.Context,
+	h *Handler,
+	instanceID pgtype.UUID,
+	providerConn, clientConn *websocket.Conn,
+	stop <-chan struct{},
+	interval time.Duration,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			rt, err := h.getAgentRuntime(ctx, obsmetrics.RuntimeLookupSourceVoiceGateway, instanceID)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("voice disable poll failed", "instance_id", uuidToString(instanceID), "error", err)
+				}
+				continue
+			}
+			if !runtimeMetadataFlag(rt, "disabled") {
+				continue
+			}
+			for _, conn := range []*websocket.Conn{clientConn, providerConn} {
+				deadline := time.Now().Add(2 * time.Second)
+				if err := conn.WriteControl(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "voice instance disabled"),
+					deadline); err != nil {
+					slog.Warn("voice disable close frame failed", "instance_id", uuidToString(instanceID), "error", err)
+				}
+				conn.SetReadDeadline(time.Now())
+			}
+			return
+		}
+	}
+}
+
 // StartVoiceSession handles GET /api/agents/{agentId}/voice-session: the
 // §4.4 rule-3 gate, then a websocket upgrade into the §3.5 relay
 // (client ⇄ gateway ⇄ provider).
@@ -416,6 +474,17 @@ func (h *Handler) relayVoiceSession(
 		return
 	}
 	defer clientConn.Close()
+
+	// §4.5 禁用: a mid-session toggle must gracefully stop the relay. The
+	// watcher sends normal-close frames to both sides; teardown then flows
+	// through the single endLiveSession defer below — the write-back
+	// completes exactly as on any other disconnect. stopWatch is closed by
+	// defer before the connection closes run (LIFO), never leaking the
+	// goroutine past the handler.
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go watchVoiceInstanceDisabled(r.Context(), h, session.RuntimeInstanceID,
+		providerConn, clientConn, stopWatch, h.voiceDisablePollInterval())
 
 	var transcript []voiceTranscriptEntry
 	// Tool interactions feed the facts write-back (stage 4); both pumps parse
