@@ -179,10 +179,12 @@ func TestPlanSupervisedRun(t *testing.T) {
 var _ = agent.Supervision{}
 
 // writeSystemctlShim drops a minimal `systemctl` onto binDir: it answers the
-// two verbs a reconcile pass uses (list-units from $FAKE_ACTIVE_UNITS, kill
-// appended to $FAKE_KILL_LOG) so the kill path is observable in-process. The
-// caller must t.Setenv PATH (and the two env vars) before NewSystemdCtl —
-// the controller snapshots os.Environ() at construction.
+// verbs the daemon drives — list-units from $FAKE_ACTIVE_UNITS, is-active
+// ("active" only for units in $FAKE_ACTIVE_UNITS, "inactive" otherwise),
+// and every other verb is recorded as a kill in $FAKE_KILL_LOG — so the kill
+// path and the liveness cross-check are both observable in-process. The
+// caller must t.Setenv PATH (and the env vars) before NewSystemdCtl — the
+// controller snapshots os.Environ() at construction.
 func writeSystemctlShim(t *testing.T, binDir string) {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
@@ -192,6 +194,18 @@ case "$*" in
 		printf '%%s loaded active running -\n' "$u"
 	done
 	exit 0
+	;;
+*is-active*)
+	unit=""
+	for a in "$@"; do unit="$a"; done
+	for u in $FAKE_ACTIVE_UNITS; do
+		if [ "$u" = "$unit" ]; then
+			printf 'active\n'
+			exit 0
+		fi
+	done
+	printf 'inactive\n'
+	exit 3
 	;;
 *)
 	unit=""
@@ -332,6 +346,112 @@ func TestReconcileSupervisedRunsKillSafety(t *testing.T) {
 		}
 		if man.Exit == nil || man.Exit.Source != supervisor.ExitSourceSupervisor {
 			t.Fatalf("orphan stop must leave a supervisor exit record, got %+v", man.Exit)
+		}
+	})
+}
+
+// wireShimmedSupervisor replaces d.supervisor with one that probes a shimmed
+// systemctl: units listed in activeUnits answer "active", everything else
+// answers "inactive". Unlike newTestSupervisor (nil systemd, so liveness
+// cross-checks fail open to the manifest-trusting answer), this one
+// exercises the cross-check itself. Returns the manager so callers can seed
+// manifests.
+func wireShimmedSupervisor(t *testing.T, d *Daemon, activeUnits ...string) *supervisor.Manager {
+	t.Helper()
+	binDir := t.TempDir()
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_KILL_LOG", filepath.Join(t.TempDir(), "kills.log"))
+	t.Setenv("FAKE_ACTIVE_UNITS", strings.Join(activeUnits, " "))
+	writeSystemctlShim(t, binDir)
+	mgr, err := supervisor.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sup, err := supervisor.New(mgr, supervisor.NewSystemdCtl(nil), "/tmp/fake-daemon", nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	d.supervisor = sup
+	return mgr
+}
+
+// seedRunningManifest installs the stranded-record shape the cross-check
+// exists for: a manifest written at launch, claiming a running worker, with
+// no exit record — exactly what a host reboot or user-manager restart leaves
+// behind (the reconcile matrix's Lost corner).
+func seedRunningManifest(t *testing.T, mgr *supervisor.Manager, runID string) {
+	t.Helper()
+	if err := mgr.WriteManifest(&supervisor.Manifest{
+		Version: 1, RunID: runID, TaskID: testTaskID,
+		Unit: supervisor.UnitName(runID), State: supervisor.StateRunning,
+		StartedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed manifest: %v", err)
+	}
+}
+
+// TestPlanSupervisedRunUnitCrossCheck: the claim-side reattach probe must not
+// trust a manifest that claims a running worker once systemd says its unit is
+// gone — reattaching a corpse wedges the task on a dead control socket, so
+// the plan steps to a fresh generation instead. A unit systemd still reports
+// active keeps the reattach (no double launch). Supervisors without a systemd
+// controller fail open to the manifest-trusting answer (pinned by
+// TestPlanSupervisedRun, which runs on newTestSupervisor's nil systemd).
+func TestPlanSupervisedRunUnitCrossCheck(t *testing.T) {
+	runID := testTaskID + "-1"
+	unit := supervisor.UnitName(runID)
+
+	t.Run("inactive unit steps to a fresh generation", func(t *testing.T) {
+		d := &Daemon{logger: slog.Default()}
+		mgr := wireShimmedSupervisor(t, d)
+		seedRunningManifest(t, mgr, runID)
+		got := d.planSupervisedRun("claude", testTaskID, 1)
+		if got == nil || got.Reattach || got.RunID != testTaskID+"-1-2" {
+			t.Fatalf("unit gone: want fresh generation %s-1-2, got %+v", testTaskID, got)
+		}
+	})
+	t.Run("active unit keeps the reattach", func(t *testing.T) {
+		d := &Daemon{logger: slog.Default()}
+		mgr := wireShimmedSupervisor(t, d, unit)
+		seedRunningManifest(t, mgr, runID)
+		got := d.planSupervisedRun("claude", testTaskID, 1)
+		if got == nil || !got.Reattach || got.RunID != runID {
+			t.Fatalf("unit live: want reattach %s, got %+v", runID, got)
+		}
+	})
+}
+
+// TestSupervisedWorkerAliveUnitCrossCheck: a "running" manifest is liveness
+// evidence only while its unit exists. After a host reboot the stranded
+// manifest would permanently veto the RUYI-225 in-flight recovery (the
+// env-root lock reads dead because the daemon held it), leaving the task
+// running forever — the server-side stale-running sweeper exempts runtimes
+// that are back online. Inactive unit → not alive; active unit → alive.
+func TestSupervisedWorkerAliveUnitCrossCheck(t *testing.T) {
+	runID := testTaskID + "-1"
+	unit := supervisor.UnitName(runID)
+
+	t.Run("inactive unit reads dead", func(t *testing.T) {
+		d := &Daemon{logger: slog.Default()}
+		mgr := wireShimmedSupervisor(t, d)
+		seedRunningManifest(t, mgr, runID)
+		if d.supervisedWorkerAlive(testTaskID) {
+			t.Fatalf("unit gone but stranded manifest still reads alive")
+		}
+	})
+	t.Run("active unit reads alive", func(t *testing.T) {
+		d := &Daemon{logger: slog.Default()}
+		mgr := wireShimmedSupervisor(t, d, unit)
+		seedRunningManifest(t, mgr, runID)
+		if !d.supervisedWorkerAlive(testTaskID) {
+			t.Fatalf("unit live but worker reads dead")
+		}
+	})
+	t.Run("no manifest reads dead", func(t *testing.T) {
+		d := &Daemon{logger: slog.Default()}
+		wireShimmedSupervisor(t, d)
+		if d.supervisedWorkerAlive(testTaskID) {
+			t.Fatalf("no manifest must read dead")
 		}
 	})
 }

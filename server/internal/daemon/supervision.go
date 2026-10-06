@@ -220,12 +220,38 @@ func sanitizeRunID(taskID string) string {
 	return s
 }
 
+// supervisedUnitAlive cross-checks the systemd unit recorded in a run
+// manifest against the user manager itself. Manifests are written once at
+// launch and only gain an exit record on a proven exit, so a host reboot or
+// user-manager restart strands them claiming a worker whose unit no longer
+// exists — the reconcile matrix's Lost corner. An inactive unit proves the
+// recorded worker is gone; a nil systemd (supervision disabled, test
+// supervisors) or a probe error fails open and keeps the
+// manifest-trusting answer, so no reattach-or-abandon decision ever rides on
+// a probe failure.
+func (d *Daemon) supervisedUnitAlive(man *supervisor.Manifest) bool {
+	if d.supervisor == nil || d.supervisor.Systemd() == nil {
+		return true
+	}
+	active, err := d.supervisor.Systemd().UnitActive(context.Background(), man.Unit)
+	if err != nil {
+		d.logger.Warn("supervised liveness: unit probe failed; assuming alive",
+			"run_id", man.RunID, "unit", man.Unit, "error", err)
+		return true
+	}
+	return active
+}
+
 // planSupervisedRun decides how (and whether) one backend Execute is
 // supervised. It is the claim-side reattach probe: a manifest that exists
 // without an exit record means a previous daemon launched this task's worker
 // and died before consuming it — the Execute must REENTER that worker (no
 // prompt rewrite, logs resume from the persisted offset) instead of launching
-// a second one on top of it.
+// a second one on top of it. The reattach trusts the manifest only as far as
+// systemd corroborates it: a manifest whose unit the user manager reports
+// gone is a stranded record (host reboot, manager restart), not a live
+// worker, and the plan steps to a fresh generation instead of reattaching a
+// corpse.
 //
 // Runs are one Execute each: a task's segmented-continuation retry is a new
 // worker and takes the next attempt slot. Attempt generations (`-2`, `-3`)
@@ -251,9 +277,17 @@ func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.
 		if err != nil || man == nil {
 			break // no manifest: fresh launch under this id
 		}
-		if man.Exit == nil {
+		if man.Exit == nil && d.supervisedUnitAlive(man) {
 			reattach = true // live worker from a previous daemon
 			break
+		}
+		if man.Exit == nil {
+			// The manifest claims a running worker but its unit is gone:
+			// the worker cannot come back, so step past the stale record to
+			// a fresh generation instead of reattaching a corpse. The
+			// manifest stays on disk as audit trail.
+			d.logger.Info("supervised run plan: manifest claims running but unit is gone; stepping to a fresh generation",
+				"run_id", runID, "task_id", taskID, "unit", man.Unit)
 		}
 		if gen > 64 {
 			// Absurd attempt count: fall back to legacy rather than loop.
@@ -279,7 +313,11 @@ func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.
 // taskID records a worker that launched and never exited. This is the
 // daemon-side liveness signal that survives daemon death — unlike the
 // env-root lock, which the daemon process holds and therefore releases on
-// exactly the crash this package exists to survive.
+// exactly the crash this package exists to survive. The manifest is only
+// corroborated as far as systemd agrees: a running-shaped manifest whose
+// unit the user manager reports gone is a stranded record (host reboot,
+// manager restart), not a live worker, and must not veto the in-flight
+// recovery forever.
 func (d *Daemon) supervisedWorkerAlive(taskID string) bool {
 	if d.supervisor == nil {
 		return false
@@ -293,7 +331,7 @@ func (d *Daemon) supervisedWorkerAlive(taskID string) bool {
 		if err != nil || man == nil || man.TaskID != taskID {
 			continue
 		}
-		if man.Exit == nil && man.State == supervisor.StateRunning {
+		if man.Exit == nil && man.State == supervisor.StateRunning && d.supervisedUnitAlive(man) {
 			return true
 		}
 	}
