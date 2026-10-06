@@ -409,6 +409,17 @@ SET runtime_id = NULL, updated_at = now()
 WHERE runtime_id = $1 AND kind = 'user'
 RETURNING *;
 
+-- name: UnbindUserAgentsFromVoiceRuntime :many
+-- RUYI-425: voice-slot counterpart of UnbindUserAgentsFromRuntime. Runs in
+-- the voice-instance delete transaction BEFORE DeleteAgentRuntime — the
+-- voice_runtime_id RESTRICT foreign key (migration 925) refuses to delete a
+-- referenced instance. kind = 'user' mirrors the text-slot detach: system
+-- carriers never bind the voice slot at this stage.
+UPDATE agent
+SET voice_runtime_id = NULL, updated_at = now()
+WHERE voice_runtime_id = $1 AND kind = 'user'
+RETURNING *;
+
 -- name: DeleteAgentRuntime :exec
 DELETE FROM agent_runtime WHERE id = $1;
 
@@ -417,6 +428,56 @@ DELETE FROM agent_runtime WHERE id = $1;
 -- Builder). Remove them before deleting their runtime so the RESTRICT runtime
 -- FK cannot block an otherwise dependency-free delete.
 DELETE FROM agent WHERE runtime_id = $1 AND kind = 'system';
+
+-- name: UpsertRuntimeCredential :one
+-- RUYI-425 §4.5: stores a runtime instance credential in the server-side
+-- secret store. secret_encrypted is sealed by the caller with the
+-- MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY box (secretbox AES-256-GCM, the same
+-- at-rest construction as the Lark/VCS/plugin boxes); plaintext never reaches
+-- this query. The instance row's credential_ref pointer is written by the
+-- handler in the same transaction, not here.
+INSERT INTO runtime_credential (runtime_instance_id, credential_key, secret_encrypted)
+VALUES ($1, $2, $3)
+ON CONFLICT (runtime_instance_id, credential_key)
+DO UPDATE SET
+    secret_encrypted = EXCLUDED.secret_encrypted,
+    updated_at = now()
+RETURNING *;
+
+-- name: GetRuntimeCredential :one
+SELECT * FROM runtime_credential
+WHERE runtime_instance_id = $1 AND credential_key = $2;
+
+-- name: DeleteRuntimeCredential :execrows
+DELETE FROM runtime_credential
+WHERE runtime_instance_id = $1 AND credential_key = $2;
+
+-- name: DeleteRuntimeCredentialsByInstance :execrows
+-- Application-layer cascade for instance deletion (runtime_credential has no
+-- DB FK, migration 925): the runtime-delete path removes every stored
+-- credential of the instance before deleting the agent_runtime row.
+DELETE FROM runtime_credential
+WHERE runtime_instance_id = $1;
+
+-- name: SetAgentRuntimeCredentialRef :one
+-- RUYI-425 §4.5: points the instance row at a stored credential. The ref is
+-- the ONLY credential-derived data on the DB row — shape
+-- '<instance-uuid>:<credential-key>' — and is what the Agent Context
+-- secrets_refs layer references. Rotation rewrites the secret behind the
+-- same ref, so callers pass the same ref they read.
+UPDATE agent_runtime
+SET credential_ref = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentRuntimeCredentialRef :one
+-- Unsets the instance's credential pointer. Runs in the same transaction as
+-- DeleteRuntimeCredential so a credential can never be deleted while its ref
+-- still names it.
+UPDATE agent_runtime
+SET credential_ref = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
 
 -- name: CountActiveAgentsByRuntime :one
 SELECT count(*) FROM agent WHERE runtime_id = $1 AND archived_at IS NULL;

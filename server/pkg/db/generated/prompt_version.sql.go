@@ -526,7 +526,7 @@ func (q *Queries) SummarizePromptVersionsByWorkspace(ctx context.Context, worksp
 const updateAgentInstructionsForPromptVersion = `-- name: UpdateAgentInstructionsForPromptVersion :one
 UPDATE agent SET instructions = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
 `
 
 type UpdateAgentInstructionsForPromptVersionParams struct {
@@ -572,6 +572,7 @@ func (q *Queries) UpdateAgentInstructionsForPromptVersion(ctx context.Context, a
 		&i.MarketplacePromptState,
 		&i.ResourceWeight,
 		&i.Revision,
+		&i.VoiceRuntimeID,
 	)
 	return i, err
 }

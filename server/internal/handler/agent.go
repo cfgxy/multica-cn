@@ -60,9 +60,15 @@ type AgentResponse struct {
 	// branch on this rather than on RuntimeID being falsy, and must not confuse
 	// it with a bound-but-offline runtime (a different user story: reconnect the
 	// machine vs. pick a new one).
-	RuntimeBound bool   `json:"runtime_bound"`
-	Name         string `json:"name"`
-	Description  string `json:"description"`
+	RuntimeBound bool `json:"runtime_bound"`
+	// VoiceRuntimeID/VoiceRuntimeBound mirror the text-slot pair for the
+	// optional voice slot (RUYI-425): empty string + false when the agent has
+	// no voice binding. The binding is management-visible in stage 1; using it
+	// for dispatch arrives with the voice adapter.
+	VoiceRuntimeID    string `json:"voice_runtime_id"`
+	VoiceRuntimeBound bool   `json:"voice_runtime_bound"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
 	// Instructions is what this agent's owner wrote. For a system agent it
 	// holds only the workspace's own notes — the product half lives in
 	// SystemInstructions and is never stored on the row.
@@ -224,6 +230,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		WorkspaceID:              uuidToString(a.WorkspaceID),
 		RuntimeID:                uuidToString(a.RuntimeID),
 		RuntimeBound:             a.RuntimeID.Valid,
+		VoiceRuntimeID:           uuidToString(a.VoiceRuntimeID),
+		VoiceRuntimeBound:        a.VoiceRuntimeID.Valid,
 		Name:                     a.Name,
 		Description:              a.Description,
 		Instructions:             a.Instructions,
@@ -258,6 +266,67 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
 		Revision:                 a.Revision,
 	}
+}
+
+// validateAgentVoiceBinding resolves and gates the optional voice-slot target
+// (RUYI-425). An empty requestedID means "no voice binding" and returns a NULL
+// UUID. The full rule set, mirroring the text slot's create/update gates:
+// the target must be a parseable UUID that exists in the agent's workspace,
+// must pass the same visibility gate (canUseRuntimeForAgent), must declare the
+// realtime_voice capability (§4.4 — capability is enforced at EVERY binding
+// site; the session-initiation site reuses this same validator when the voice
+// adapter lands), and must not be the same instance the agent already uses in
+// the text slot.
+func (h *Handler) validateAgentVoiceBinding(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, member db.Member, requestedID string, textRuntimeID pgtype.UUID) (pgtype.UUID, bool) {
+	if requestedID == "" {
+		return pgtype.UUID{}, true
+	}
+	voiceUUID, ok := parseUUIDOrBadRequest(w, requestedID, "voice_runtime_id")
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	if textRuntimeID.Valid && voiceUUID == textRuntimeID {
+		writeError(w, http.StatusBadRequest, "voice_runtime_id must differ from runtime_id: one runtime cannot serve both slots of the same agent")
+		return pgtype.UUID{}, false
+	}
+	vr, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+		ID:          voiceUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid voice_runtime_id")
+		return pgtype.UUID{}, false
+	}
+	if !canUseRuntimeForAgent(member, vr) {
+		writeError(w, http.StatusForbidden, "this voice runtime is private; only its owner can bind agents to it")
+		return pgtype.UUID{}, false
+	}
+	caps, err := h.runtimeInstanceCapabilities(r.Context(), vr)
+	if err != nil {
+		slog.Warn("resolve voice runtime capabilities failed", "runtime_id", uuidToString(vr.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve voice runtime capabilities")
+		return pgtype.UUID{}, false
+	}
+	if err := agent.ValidateSlotCapability(agent.SlotVoice, vr.Provider, caps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return pgtype.UUID{}, false
+	}
+	return voiceUUID, true
+}
+
+// runtimeInstanceCapabilities resolves the effective Type-layer capability
+// declaration for a runtime instance (§4.4): a custom-profile instance reads
+// its profile's stored declaration (baseline '{}'.resolve), while a built-in
+// runtime derives straight from its protocol family.
+func (h *Handler) runtimeInstanceCapabilities(ctx context.Context, rt db.AgentRuntime) (agent.Capabilities, error) {
+	if !rt.ProfileID.Valid {
+		return agent.CapabilitiesForFamily(rt.Provider), nil
+	}
+	profile, err := h.Queries.GetRuntimeProfile(ctx, rt.ProfileID)
+	if err != nil {
+		return agent.Capabilities{}, fmt.Errorf("load runtime profile: %w", err)
+	}
+	return agent.ResolveCapabilities(profile.ProtocolFamily, profile.Capabilities)
 }
 
 // maskGatewayToken replaces runtime_config.gateway.token with the public
@@ -1230,11 +1299,15 @@ type CreateAgentRequest struct {
 	ConversationStarters []AgentConversationStarter `json:"conversation_starters"`
 	AvatarURL            *string                    `json:"avatar_url"`
 	RuntimeID            string                     `json:"runtime_id"`
-	RuntimeConfig        any                        `json:"runtime_config"`
-	CustomEnv            map[string]string          `json:"custom_env"`
-	CustomArgs           []string                   `json:"custom_args"`
-	McpConfig            json.RawMessage            `json:"mcp_config"`
-	Visibility           string                     `json:"visibility"`
+	// VoiceRuntimeID optionally binds the voice slot (RUYI-425). Empty = the
+	// historical text-only shape. The target must be a workspace runtime whose
+	// protocol family declares realtime_voice, and must differ from runtime_id.
+	VoiceRuntimeID string            `json:"voice_runtime_id"`
+	RuntimeConfig  any               `json:"runtime_config"`
+	CustomEnv      map[string]string `json:"custom_env"`
+	CustomArgs     []string          `json:"custom_args"`
+	McpConfig      json.RawMessage   `json:"mcp_config"`
+	Visibility     string            `json:"visibility"`
 	// PermissionMode + InvocationTargets are the new invocation-permission
 	// inputs (MUL-3963). When permission_mode is present it is authoritative
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
@@ -1402,6 +1475,19 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-425 §4.4 rule 2: the text slot has its own capability gate — a
+	// voice-only family cannot execute text tasks, so a gemini_live instance
+	// is refused here exactly as a CLI family is refused on the voice side.
+	textCaps, capsErr := h.runtimeInstanceCapabilities(r.Context(), runtime)
+	if capsErr != nil {
+		writeError(w, http.StatusBadRequest, "unable to resolve runtime capabilities")
+		return
+	}
+	if err := agent.ValidateSlotCapability(agent.SlotText, runtime.Provider, textCaps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// thinking_level validation: fixed-enum providers reject unknown literals;
 	// dynamic-catalog providers (Codex/OpenCode) reject malformed tokens here.
 	// Pi has a fixed token universe and a daemon-discovered per-model subset.
@@ -1426,6 +1512,16 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if !agent.IsKnownServiceTier(runtime.Provider, req.ServiceTier) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("service_tier %q is not a recognised value for runtime %q", req.ServiceTier, runtime.Provider))
+		return
+	}
+
+	// RUYI-425: optional voice slot. Same workspace + visibility gates as the
+	// text slot, then the capability gate — the target's protocol family must
+	// declare realtime_voice. This is the binding half of the validation
+	// chain; the session-initiation half reuses the same validator when the
+	// voice adapter lands.
+	voiceRuntimeUUID, ok := h.validateAgentVoiceBinding(w, r, wsUUID, member, req.VoiceRuntimeID, runtime.ID)
+	if !ok {
 		return
 	}
 
@@ -1527,6 +1623,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
+		VoiceRuntimeID:           voiceRuntimeUUID,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1640,6 +1737,13 @@ type UpdateAgentRequest struct {
 	// ServiceTier follows the same tri-state contract as ThinkingLevel:
 	// omitted preserves, empty clears, and non-empty sets a Codex catalog ID.
 	ServiceTier *string `json:"service_tier"`
+	// VoiceRuntimeID is a tri-state per the same contract (RUYI-425):
+	//   - field omitted → no change (leave the voice binding alone)
+	//   - field present with "" → explicit unbind (ClearAgentVoiceRuntime)
+	//   - field present with a runtime id → validate capability + workspace
+	//     scope, then bind. The decode-time raw fields map distinguishes
+	//     "omitted" from "explicitly cleared".
+	VoiceRuntimeID *string `json:"voice_runtime_id"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -1955,10 +2059,47 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
 			return
 		}
+		// RUYI-425 §4.4 rule 2: same text-slot capability gate as CreateAgent —
+		// an update must not re-bind an agent onto a voice-only instance.
+		textCaps, capsErr := h.runtimeInstanceCapabilities(r.Context(), runtime)
+		if capsErr != nil {
+			writeError(w, http.StatusBadRequest, "unable to resolve runtime capabilities")
+			return
+		}
+		if err := agent.ValidateSlotCapability(agent.SlotText, runtime.Provider, textCaps); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		params.RuntimeID = runtime.ID
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
 		targetRuntimeID = runtime.ID
 		targetProvider = runtime.Provider
+	}
+
+	// RUYI-425: voice slot, tri-state like thinking_level. Omitted preserves
+	// (COALESCE narg); "" queues the explicit clear query; a runtime id is
+	// validated and bound. targetRuntimeID feeds the same-instance guard so
+	// one instance can never occupy both slots of the same agent.
+	shouldClearVoiceRuntime := false
+	if rawVoice, ok := rawFields["voice_runtime_id"]; ok {
+		var requested string
+		if err := json.Unmarshal(rawVoice, &requested); err != nil {
+			writeError(w, http.StatusBadRequest, "voice_runtime_id must be a runtime id or an empty string")
+			return
+		}
+		if requested == "" {
+			shouldClearVoiceRuntime = true
+		} else {
+			member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
+			if !ok {
+				return
+			}
+			voiceUUID, ok := h.validateAgentVoiceBinding(w, r, existing.WorkspaceID, member, requested, targetRuntimeID)
+			if !ok {
+				return
+			}
+			params.VoiceRuntimeID = voiceUUID
+		}
 	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
@@ -2274,6 +2415,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent thinking_level failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear thinking_level: "+err.Error())
+			return
+		}
+	}
+	if shouldClearVoiceRuntime {
+		updated, err = h.Queries.ClearAgentVoiceRuntime(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent voice_runtime_id failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to unbind the voice runtime: "+err.Error())
 			return
 		}
 	}

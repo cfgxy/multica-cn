@@ -113,6 +113,22 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 	}
 	out.UnboundAgents = unbound
 
+	// RUYI-425: detach voice-slot bindings and prune the instance's stored
+	// credentials before the row disappears. voice_runtime_id carries the same
+	// RESTRICT foreign key as runtime_id (the UPDATE below would otherwise be
+	// optional), and runtime_credential has no FK at all — both cleanups are
+	// application-layer obligations. Voice unbinds are intentionally NOT
+	// folded into out.UnboundAgents: that slice drives the text-slot "agent
+	// needs a new runtime" event contract, and an agent bound in both slots
+	// must not be reported twice. Voice-slot presence is plumbing-only until
+	// the stage-2 voice adapter ships, so no subscriber depends on it yet.
+	if _, err := qtx.UnbindUserAgentsFromVoiceRuntime(ctx, runtimeID); err != nil {
+		return out, fmt.Errorf("unbind voice agents: %w", err)
+	}
+	if _, err := qtx.DeleteRuntimeCredentialsByInstance(ctx, runtimeID); err != nil {
+		return out, fmt.Errorf("delete stored credentials: %w", err)
+	}
+
 	unboundIDs := make([]pgtype.UUID, len(unbound))
 	for i, agent := range unbound {
 		unboundIDs[i] = agent.ID
