@@ -1078,6 +1078,22 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-425 §4.5 删除: voice-slot references block the hard delete exactly
+	// like text-slot ones — the response carries the referencing agents so
+	// the dialog can point at the bindings to clear first. Deliberately a
+	// distinct code from the text-slot conflict: the cascade-confirm snapshot
+	// contract compares text-slot actives only, so this refusal must not be
+	// fed into that comparison.
+	voiceAgents, err := h.Queries.ListActiveAgentsByVoiceRuntime(r.Context(), rt.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check runtime dependencies")
+		return
+	}
+	if len(voiceAgents) > 0 {
+		writeJSON(w, http.StatusConflict, h.runtimeHasVoiceBindingsResponse(voiceAgents))
+		return
+	}
+
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
@@ -1104,6 +1120,18 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(activeAgents) > 0 {
 		writeJSON(w, http.StatusConflict, h.runtimeHasActiveAgentsResponse(activeAgents))
+		return
+	}
+	// Voice-slot mirror of the locked revalidation: a binding that lands
+	// between the pre-check and the row lock must refuse with the structured
+	// 409, not surface later as an opaque voice_runtime_id FK error.
+	voiceAgents, err = qtx.ListActiveAgentsByVoiceRuntimeForUpdate(r.Context(), rt.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check runtime dependencies")
+		return
+	}
+	if len(voiceAgents) > 0 {
+		writeJSON(w, http.StatusConflict, h.runtimeHasVoiceBindingsResponse(voiceAgents))
 		return
 	}
 
@@ -1156,6 +1184,23 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	h.publishRuntimeTeardown(r.Context(), teardown, wsID, userID)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// runtimeHasVoiceBindingsResponse builds the structured 409 body for a
+// runtime still referenced through the voice slot (RUYI-425 §4.5 删除). Same
+// wire shape as the text-slot conflict so front-ends reuse the agent-list
+// rendering; the distinct `runtime_has_voice_bindings` code keeps the
+// cascade-confirm snapshot comparison text-slot-only.
+func (h *Handler) runtimeHasVoiceBindingsResponse(agents []db.Agent) map[string]any {
+	resp := make([]AgentResponse, len(agents))
+	for i, a := range agents {
+		resp[i] = h.agentToResponse(a)
+	}
+	return map[string]any{
+		"error":         "cannot delete runtime: agents still reference it as their voice runtime. Unbind them first.",
+		"code":          "runtime_has_voice_bindings",
+		"active_agents": resp,
+	}
 }
 
 // runtimeHasActiveAgentsResponse builds the structured 409 body shared by

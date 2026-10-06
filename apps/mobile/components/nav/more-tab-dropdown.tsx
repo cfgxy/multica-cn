@@ -101,6 +101,8 @@ export function MoreTabDropdownAnchor({
     // RUYI-346: 智能体与小队管理入口（P0）。
     { label: i18n.t("layout:nav.agents", "Agents"), icon: "cpu", androidIcon: "hardware-chip-outline", path: "/more/agents" },
     { label: i18n.t("layout:nav.squads", "Squads"), icon: "person.3", androidIcon: "people-outline", path: "/more/squads" },
+    // RUYI-425 §4.3: 语音实例配置入口（Gemini Live 创建/配置，独立页面）。
+    { label: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), icon: "waveform", androidIcon: "mic-outline", path: "/more/runtimes" },
   ];
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);

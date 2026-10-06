@@ -7,6 +7,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import {
   isRuntimeUsableForUser,
   runtimeDisplayName,
+  runtimeOfferableForBinding,
 } from "@multica/core/runtimes";
 import type { MemberWithUser, RuntimeDevice } from "@multica/core/types";
 import {
@@ -62,10 +63,13 @@ export function RuntimePicker({
 
   // Base list honours the mine/all toggle and drives auto-selection; it is
   // intentionally independent of the search box so typing never changes the
-  // seeded selection.
+  // seeded selection. Disabled instances (§4.5) drop out of the option
+  // domain, but the stored selection survives — keepRuntimeId semantics
+  // shared with agentSlotChoices via runtimeOfferableForBinding.
   const filteredRuntimes = useMemo(
-    () => computeFilteredRuntimes(runtimes, filter, currentUserId),
-    [runtimes, filter, currentUserId],
+    () =>
+      computeFilteredRuntimes(runtimes, filter, currentUserId, selectedRuntimeId),
+    [runtimes, filter, currentUserId, selectedRuntimeId],
   );
 
   // Group the (searched) base list by machine so 20+ runtimes read as a
@@ -102,7 +106,12 @@ export function RuntimePicker({
   const handleFilterChange = (next: RuntimeFilter) => {
     if (next === filter) return;
     setFilter(next);
-    const nextList = computeFilteredRuntimes(runtimes, next, currentUserId);
+    const nextList = computeFilteredRuntimes(
+      runtimes,
+      next,
+      currentUserId,
+      selectedRuntimeId,
+    );
     const firstUsable = nextList.find((r) =>
       isRuntimeUsableForUser(r, currentUserId),
     );
@@ -327,11 +336,17 @@ function computeFilteredRuntimes(
   runtimes: RuntimeDevice[],
   filter: RuntimeFilter,
   currentUserId: string | null,
+  keepRuntimeId?: string,
 ): RuntimeDevice[] {
+  // §4.5 (RUYI-425): disabled instances offer no new bindings; the stored
+  // selection (keepRuntimeId) stays so the form never lies about state.
+  const offerable = runtimes.filter((r) =>
+    runtimeOfferableForBinding(r, keepRuntimeId),
+  );
   const filtered =
     filter === "mine" && currentUserId
-      ? runtimes.filter((r) => r.owner_id === currentUserId)
-      : runtimes;
+      ? offerable.filter((r) => r.owner_id === currentUserId)
+      : offerable;
   return filtered.toSorted((a, b) => {
     const aMine = a.owner_id === currentUserId;
     const bMine = b.owner_id === currentUserId;
