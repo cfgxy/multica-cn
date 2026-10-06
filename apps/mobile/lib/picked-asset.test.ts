@@ -36,6 +36,86 @@ describe("assetFromImagePicker", () => {
     expect(asset.type).toBe("image/jpeg");
     expect(asset.size).toBeUndefined();
   });
+
+  // RUYI-477: iOS 选 HEIC（实况照片静态帧）时 expo 可能只给扩展名不给
+  // mimeType。回退 image/jpeg 会把 HEIC 字节贴上 JPEG 标签，服务端与
+  // 渲染端全部错配——必须从扩展名推断真实类型。
+  it("infers image/heic from a .heic filename when mimeType is missing", () => {
+    const asset = assetFromImagePicker({
+      uri: "file:///tmp/live.heic",
+      fileName: "IMG_0001.HEIC",
+      mimeType: null,
+      fileSize: 2048,
+    });
+    expect(asset.type).toBe("image/heic");
+    expect(asset.name).toBe("IMG_0001.HEIC");
+  });
+
+  it("infers image/heif and common image types from extensions", () => {
+    expect(
+      assetFromImagePicker({
+        uri: "file:///tmp/a.heif",
+        fileName: "a.heif",
+        mimeType: null,
+        fileSize: null,
+      }).type,
+    ).toBe("image/heif");
+    expect(
+      assetFromImagePicker({
+        uri: "file:///tmp/a.png",
+        fileName: "a.PNG",
+        mimeType: null,
+        fileSize: null,
+      }).type,
+    ).toBe("image/png");
+    expect(
+      assetFromImagePicker({
+        uri: "file:///tmp/a.webp",
+        fileName: "a.webp",
+        mimeType: null,
+        fileSize: null,
+      }).type,
+    ).toBe("image/webp");
+    // 未知扩展名维持既有 image/jpeg 兜底。
+    expect(
+      assetFromImagePicker({
+        uri: "file:///tmp/a",
+        fileName: "a.unknown",
+        mimeType: null,
+        fileSize: null,
+      }).type,
+    ).toBe("image/jpeg");
+  });
+
+  // RUYI-477: 相机拍摄（iOS 路径）可能缺 fileName；占位名扩展名必须与
+  // mimeType 一致，否则 multipart 文件名与 Content-Type 互相矛盾。
+  it("derives the placeholder extension from the mimeType when fileName is missing", () => {
+    const heic = assetFromImagePicker({
+      uri: "file:///tmp/cap",
+      fileName: null,
+      mimeType: "image/heic",
+      fileSize: null,
+    });
+    expect(heic.name).toMatch(/^image-\d+\.heic$/);
+    const png = assetFromImagePicker({
+      uri: "file:///tmp/cap",
+      fileName: null,
+      mimeType: "image/png",
+      fileSize: null,
+    });
+    expect(png.name).toMatch(/^image-\d+\.png$/);
+  });
+
+  it("keeps both fields verbatim when both fileName and mimeType are present", () => {
+    const asset = assetFromImagePicker({
+      uri: "file:///tmp/keep.jpg",
+      fileName: "keep.jpg",
+      mimeType: "image/jpeg",
+      fileSize: 1,
+    });
+    expect(asset.name).toBe("keep.jpg");
+    expect(asset.type).toBe("image/jpeg");
+  });
 });
 
 describe("assetFromDocumentPicker", () => {

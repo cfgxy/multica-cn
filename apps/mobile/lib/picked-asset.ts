@@ -42,10 +42,46 @@ export function assetFromImagePicker(a: ImagePickerAssetShape): PickedAsset {
     uri: a.uri,
     // expo-image-picker exposes `fileName` (camelCase) on iOS; fall back to
     // a placeholder so the multipart Content-Disposition is never empty.
-    name: a.fileName ?? `image-${Date.now()}.jpg`,
-    type: a.mimeType ?? "image/jpeg",
+    // The placeholder extension follows the mimeType (camera captures),
+    // and a missing mimeType is inferred from the extension (RUYI-477:
+    // iOS HEIC / Live-Photo stills arrive with `.HEIC` and a null
+    // mimeType on some SDK versions — labelling those bytes `image/jpeg`
+    // poisons the stored content-type and every downstream renderer).
+    name: a.fileName ?? placeholderImageName(a.mimeType),
+    type: a.mimeType ?? imageMimeFromFilename(a.fileName) ?? "image/jpeg",
     size: a.fileSize ?? undefined,
   };
+}
+
+/** Extension → image mime for types photo picking can actually produce.
+ *  Kept explicit rather than a full table: the fallback below stays
+ *  `image/jpeg` for anything unlisted, matching the historical default. */
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+};
+
+const EXT_BY_IMAGE_MIME: Record<string, string> = Object.fromEntries(
+  Object.entries(IMAGE_MIME_BY_EXT).map(([ext, mime]) => [mime, ext]),
+);
+
+function imageMimeFromFilename(fileName?: string | null): string | undefined {
+  if (!fileName) return undefined;
+  const dot = fileName.lastIndexOf(".");
+  if (dot < 0) return undefined;
+  return IMAGE_MIME_BY_EXT[fileName.slice(dot).toLowerCase()];
+}
+
+function placeholderImageName(mimeType?: string | null): string {
+  const ext =
+    (mimeType && EXT_BY_IMAGE_MIME[mimeType.toLowerCase()]) || ".jpg";
+  return `image-${Date.now()}${ext}`;
 }
 
 export function assetFromDocumentPicker(

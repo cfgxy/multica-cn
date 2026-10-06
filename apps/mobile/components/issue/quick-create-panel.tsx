@@ -80,6 +80,7 @@ import {
 import { useActorLookup } from "@/data/use-actor-name";
 import { completedAttachmentIds } from "@/lib/attachment-zone";
 import { useMentionInput } from "@/lib/use-mention-input";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useT } from "@/lib/use-t";
 
 /**
@@ -204,8 +205,10 @@ export function QuickCreatePanel() {
   const prompt = useMentionInput({ mentionMode: "chips" });
   const {
     attachments,
-    pickAndUploadImages,
     pickAndUploadFiles,
+    // RUYI-477: 贴图按钮改为「拍照 / 相册」源选择弹层入口。
+    chooseImageSource,
+    imageSourceModalProps,
     removeAttachment,
     retryAttachment,
     enqueueAssets,
@@ -516,7 +519,7 @@ export function QuickCreatePanel() {
 
           <MarkdownToolbar
             onAt={prompt.handlers.onAtButtonPress}
-            onImage={pickAndUploadImages}
+            onImage={chooseImageSource}
             onFile={pickAndUploadFiles}
             disabled={isSubmitting || uploading}
           />
@@ -544,6 +547,8 @@ export function QuickCreatePanel() {
         </ScrollView>
         <MentionSuggestionBar {...prompt.suggestionBar} />
 
+        {/* RUYI-477: Android 侧「拍照/相册」弹层为 RN Modal，必须显式挂载。 */}
+        <ActionSheetModal {...imageSourceModalProps} />
         <VoiceSessionOverlay
           agentId={voiceOpen && voiceAgentId !== null ? voiceAgentId : null}
           workspaceSlug={wsSlug ?? ""}
