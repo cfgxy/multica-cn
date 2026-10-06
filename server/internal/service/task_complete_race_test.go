@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"context"
 	"strings"
 	"testing"
@@ -504,4 +505,8 @@ func TestContextOverflowFromLegacyDaemonRetiresSession(t *testing.T) {
 	if !ResumeUnsafeFailure(current, overflowErr) {
 		t.Errorf("an overflow reported by a current daemon must retire the session; got reason %q", current)
 	}
+}
+
+func (m *mockDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by mockDBTX")
 }

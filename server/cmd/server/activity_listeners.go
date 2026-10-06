@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -46,6 +48,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 			return
 		}
 
+		mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+			service.AuditIssueCreated, e.ActorType, e.ActorID, []byte("{}"))
 		publishActivityEvent(bus, e, activity)
 	})
 
@@ -84,6 +88,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record status change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssueStatusChanged, e.ActorType, e.ActorID, details)
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -107,6 +113,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record priority change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssuePriorityChanged, e.ActorType, e.ActorID, details)
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -143,6 +151,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record assignee change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssueAssigneeChanged, e.ActorType, e.ActorID, details)
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -173,6 +183,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record start date change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssueStartDateChanged, e.ActorType, e.ActorID, details)
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -203,6 +215,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record due date change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssueDueDateChanged, e.ActorType, e.ActorID, details)
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -226,6 +240,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record title change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssueTitleChanged, e.ActorType, e.ActorID, details)
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -244,6 +260,8 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 				slog.Error("activity: failed to record description change",
 					"issue_id", issue.ID, "error", err)
 			} else {
+				mirrorIssueAudit(ctx, queries, parseUUID(issue.WorkspaceID), parseUUID(issue.ID),
+					service.AuditIssueDescriptionUpdated, e.ActorType, e.ActorID, []byte("{}"))
 				publishActivityEvent(bus, e, activity)
 			}
 		}
@@ -295,7 +313,37 @@ func handleTaskActivity(ctx context.Context, bus *events.Bus, queries *db.Querie
 		return
 	}
 
+	// RUYI-355: the audit twin carries the run dimensions the activity row
+	// cannot, so an issue timeline and a run timeline join on the same event.
+	eventType := service.AuditIssueTaskCompleted
+	auditDetails := map[string]string{"task_id": e.TaskID, "agent_id": agentID}
+	if action == "task_failed" {
+		eventType = service.AuditIssueTaskFailed
+		if reason, ok := payload["failure_reason"].(string); ok && reason != "" {
+			auditDetails["failure_reason"] = reason
+		}
+	}
+	details, _ := json.Marshal(auditDetails)
+	mirrorIssueAudit(ctx, queries, issue.WorkspaceID, parseUUID(issueID),
+		eventType, "agent", agentID, details)
 	publishActivityEvent(bus, e, activity)
+}
+
+// mirrorIssueAudit writes the audit_event twin of one activity row (RUYI-355
+// Phase 1 dual-write; activity_log stays the timeline source until Phase 2
+// flips it). Best-effort: a lost mirror row never blocks the user-visible
+// entry.
+func mirrorIssueAudit(ctx context.Context, queries *db.Queries, workspaceID, issueID pgtype.UUID, eventType, actorType, actorID string, details []byte) {
+	aType, aID := auditActorFor(actorType, actorID)
+	service.TryAppendAuditEvents(ctx, queries,
+		service.IssueEvent(eventType, aType, aID, workspaceID, issueID, details))
+}
+
+// auditActorFor maps a bus actor onto the audit contract's vocabulary via the
+// shared service helper — unknown types or a known type with no id degrade to
+// system so a mirror write can never fail validation.
+func auditActorFor(actorType, actorID string) (string, pgtype.UUID) {
+	return service.AuditActorFor(actorType, optionalUUID(actorID))
 }
 
 // publishActivityEvent sends an activity:created event for WS broadcasting.

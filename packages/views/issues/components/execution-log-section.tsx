@@ -81,6 +81,31 @@ const PAST_STATUS_RANK: Record<string, number> = {
   completed: 2,
 };
 
+// Terminal = the run has a final verdict. Shared with the header chip
+// (RUYI-417) so "has run history" means the same thing on every surface.
+export function isTerminalTask(task: AgentTask): boolean {
+  return (
+    task.status === "completed" ||
+    task.status === "failed" ||
+    task.status === "cancelled"
+  );
+}
+
+// Newest-first ordering for terminal runs, shared with the header chip so
+// the popover reads in the same order as this section's past list.
+export function sortPastRuns(tasks: AgentTask[]): AgentTask[] {
+  return tasks.toSorted((a, b) => {
+    const at = a.completed_at ?? a.created_at;
+    const bt = b.completed_at ?? b.created_at;
+    const timeDiff = new Date(bt).getTime() - new Date(at).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return (
+      (PAST_STATUS_RANK[a.status] ?? 99) -
+      (PAST_STATUS_RANK[b.status] ?? 99)
+    );
+  });
+}
+
 // ─── Run list filters (RUYI-292) ───────────────────────────────────────────
 
 // Status filter values are the USER-VISIBLE states, not raw statuses: the
@@ -171,24 +196,10 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
     [tasks],
   );
 
-  const pastTasks = useMemo(() => {
-    const past = tasks.filter(
-      (t) =>
-        t.status === "completed" ||
-        t.status === "failed" ||
-        t.status === "cancelled",
-    );
-    return past.toSorted((a, b) => {
-      const at = a.completed_at ?? a.created_at;
-      const bt = b.completed_at ?? b.created_at;
-      const timeDiff = new Date(bt).getTime() - new Date(at).getTime();
-      if (timeDiff !== 0) return timeDiff;
-      return (
-        (PAST_STATUS_RANK[a.status] ?? 99) -
-        (PAST_STATUS_RANK[b.status] ?? 99)
-      );
-    });
-  }, [tasks]);
+  const pastTasks = useMemo(
+    () => sortPastRuns(tasks.filter(isTerminalTask)),
+    [tasks],
+  );
 
   const filteredPastTasks = useMemo(
     () =>
@@ -568,6 +579,15 @@ export function ActiveTaskRow({
     requestedAtMs !== null &&
     now - requestedAtMs >= CANCEL_UNCONFIRMED_AFTER_MS;
 
+  // RUYI-397 admission code: the server stamps queued_reason while the
+  // agent's host is under a memory-backpressure hold. Swapping the plain
+  // "Queued" label for a named reason turns a silent stall into something a
+  // user can act on (free memory on the host, or wait it out); the tooltip
+  // carries the full sentence. Rows the server sent without the field — old
+  // servers, recovered holds — render exactly as before.
+  const queuedBackpressured =
+    task.status === "queued" && task.queued_reason === "runtime_backpressure";
+
   // Transcript only meaningful once messages exist — pure-queued and
   // waiting_local_directory tasks haven't streamed any agent output yet.
   const showTranscript =
@@ -607,6 +627,13 @@ export function ActiveTaskRow({
               <span className="text-info tabular-nums">{elapsed}</span>
               <span className="sr-only">{label}</span>
             </>
+          ) : queuedBackpressured ? (
+            <span
+              className={`${tone} min-w-0 truncate`}
+              title={t(($) => $.execution_log.queued_backpressure_hint)}
+            >
+              {t(($) => $.execution_log.status_queued_backpressure)}
+            </span>
           ) : (
             <span className={`${tone} min-w-0 truncate`}>{label}</span>
           )}
@@ -676,7 +703,10 @@ export function ActiveTaskRow({
 
 // ─── Past row ──────────────────────────────────────────────────────────────
 
-function PastRow({
+// Exported for the header chip's history popover (RUYI-417): the chip shows
+// the same rows with the same interactions as this section's past list, so
+// the two surfaces never drift apart.
+export function PastRow({
   task,
   issueId,
   onOpenDetail,

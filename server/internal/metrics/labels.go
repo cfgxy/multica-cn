@@ -273,6 +273,9 @@ const (
 	// RuntimeLookupSourceTask covers task analytics context and the usage
 	// provider backfill.
 	RuntimeLookupSourceTask = "task"
+	// RuntimeLookupSourceVoiceGateway covers the voice session gateway: the
+	// per-session-start target recheck and the in-session disable poll.
+	RuntimeLookupSourceVoiceGateway = "voice_gateway"
 	// RuntimeLookupSourceOther is the catch-all for an unclassified call site.
 	RuntimeLookupSourceOther = "other"
 )
@@ -306,6 +309,7 @@ func AllRuntimeLookupSources() []string {
 		RuntimeLookupSourceAutopilot,
 		RuntimeLookupSourceSourceContext,
 		RuntimeLookupSourceTask,
+		RuntimeLookupSourceVoiceGateway,
 		RuntimeLookupSourceOther,
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
@@ -59,9 +60,15 @@ type AgentResponse struct {
 	// branch on this rather than on RuntimeID being falsy, and must not confuse
 	// it with a bound-but-offline runtime (a different user story: reconnect the
 	// machine vs. pick a new one).
-	RuntimeBound bool   `json:"runtime_bound"`
-	Name         string `json:"name"`
-	Description  string `json:"description"`
+	RuntimeBound bool `json:"runtime_bound"`
+	// VoiceRuntimeID/VoiceRuntimeBound mirror the text-slot pair for the
+	// optional voice slot (RUYI-425): empty string + false when the agent has
+	// no voice binding. The binding is management-visible in stage 1; using it
+	// for dispatch arrives with the voice adapter.
+	VoiceRuntimeID    string `json:"voice_runtime_id"`
+	VoiceRuntimeBound bool   `json:"voice_runtime_bound"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
 	// Instructions is what this agent's owner wrote. For a system agent it
 	// holds only the workspace's own notes — the product half lives in
 	// SystemInstructions and is never stored on the row.
@@ -104,6 +111,11 @@ type AgentResponse struct {
 	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
 	Status             string                     `json:"status"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
+	// ResourceWeight is the claim-budget multiplier (RUYI-397): a running
+	// task from this agent occupies ResourceWeight slots of
+	// MaxConcurrentTasks, so heavy workloads hit the ceiling sooner than
+	// light ones. 1 = one task per slot (historical behaviour).
+	ResourceWeight int32 `json:"resource_weight"`
 	// SessionMaxContextTokens / SessionCompactPct configure the session context
 	// gate (RUYI-107): once a resumable session reaches SessionCompactPct of
 	// SessionMaxContextTokens, the next run starts fresh with a bounded brief
@@ -138,6 +150,14 @@ type AgentResponse struct {
 	UpdatedAt                        string                 `json:"updated_at"`
 	ArchivedAt                       *string                `json:"archived_at"`
 	ArchivedBy                       *string                `json:"archived_by"`
+	// Revision is the optimistic-lock token for execution-config writes
+	// (RUYI-433): read it, send it back as expected_revision on update, and a
+	// concurrent config write fails with a structured revision_conflict
+	// instead of silently overwriting. Only the paths that move
+	// runtime_id / model / thinking_level (this endpoint and profile
+	// activation) bump it — status transitions don't, so they never
+	// invalidate a config-write token.
+	Revision int64 `json:"revision"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -210,6 +230,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		WorkspaceID:              uuidToString(a.WorkspaceID),
 		RuntimeID:                uuidToString(a.RuntimeID),
 		RuntimeBound:             a.RuntimeID.Valid,
+		VoiceRuntimeID:           uuidToString(a.VoiceRuntimeID),
+		VoiceRuntimeBound:        a.VoiceRuntimeID.Valid,
 		Name:                     a.Name,
 		Description:              a.Description,
 		Instructions:             a.Instructions,
@@ -228,6 +250,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		InvocationTargets:        []AgentInvocationTargetDTO{},
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
+		ResourceWeight:           a.ResourceWeight,
 		SessionMaxContextTokens:  a.SessionMaxContextTokens,
 		SessionCompactPct:        a.SessionCompactPct,
 		Model:                    a.Model.String,
@@ -241,7 +264,89 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		UpdatedAt:                timestampToString(a.UpdatedAt),
 		ArchivedAt:               timestampToPtr(a.ArchivedAt),
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
+		Revision:                 a.Revision,
 	}
+}
+
+// validateAgentVoiceBinding resolves and gates the optional voice-slot target
+// (RUYI-425). An empty requestedID means "no voice binding" and returns a NULL
+// UUID. The full rule set, mirroring the text slot's create/update gates:
+// the target must be a parseable UUID that exists in the agent's workspace,
+// must pass the same visibility gate (canUseRuntimeForAgent), must declare the
+// realtime_voice capability (§4.4 — capability is enforced at EVERY binding
+// site; the session-initiation site reuses this same validator when the voice
+// adapter lands), and must not be the same instance the agent already uses in
+// the text slot.
+func (h *Handler) validateAgentVoiceBinding(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, member db.Member, requestedID string, textRuntimeID pgtype.UUID) (pgtype.UUID, bool) {
+	if requestedID == "" {
+		return pgtype.UUID{}, true
+	}
+	voiceUUID, ok := parseUUIDOrBadRequest(w, requestedID, "voice_runtime_id")
+	if !ok {
+		return pgtype.UUID{}, false
+	}
+	if textRuntimeID.Valid && voiceUUID == textRuntimeID {
+		writeError(w, http.StatusBadRequest, "voice_runtime_id must differ from runtime_id: one runtime cannot serve both slots of the same agent")
+		return pgtype.UUID{}, false
+	}
+	vr, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+		ID:          voiceUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid voice_runtime_id")
+		return pgtype.UUID{}, false
+	}
+	if !canUseRuntimeForAgent(member, vr) {
+		writeError(w, http.StatusForbidden, "this voice runtime is private; only its owner can bind agents to it")
+		return pgtype.UUID{}, false
+	}
+	caps, err := h.runtimeInstanceCapabilities(r.Context(), vr)
+	if err != nil {
+		slog.Warn("resolve voice runtime capabilities failed", "runtime_id", uuidToString(vr.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve voice runtime capabilities")
+		return pgtype.UUID{}, false
+	}
+	if err := agent.ValidateSlotCapability(agent.SlotVoice, vr.Provider, caps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return pgtype.UUID{}, false
+	}
+	return voiceUUID, true
+}
+
+// validateAgentTextBinding is the text-slot mirror of validateAgentVoiceBinding
+// (RUYI-425 §4.4 rule 2): every agent create/bind entrypoint — the main agent
+// API, the onboarding shim, the agent builder, and the Mika quickstart —
+// resolves the runtime's Type-layer capability declaration and refuses a
+// family that cannot execute text tasks. Takes an already-loaded runtime so
+// entrypoints with their own lookup/transaction reuse the row they resolved.
+func (h *Handler) validateAgentTextBinding(w http.ResponseWriter, r *http.Request, runtime db.AgentRuntime) bool {
+	caps, err := h.runtimeInstanceCapabilities(r.Context(), runtime)
+	if err != nil {
+		slog.Warn("resolve text runtime capabilities failed", "runtime_id", uuidToString(runtime.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to resolve text runtime capabilities")
+		return false
+	}
+	if err := agent.ValidateSlotCapability(agent.SlotText, runtime.Provider, caps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
+// runtimeInstanceCapabilities resolves the effective Type-layer capability
+// declaration for a runtime instance (§4.4): a custom-profile instance reads
+// its profile's stored declaration (baseline '{}'.resolve), while a built-in
+// runtime derives straight from its protocol family.
+func (h *Handler) runtimeInstanceCapabilities(ctx context.Context, rt db.AgentRuntime) (agent.Capabilities, error) {
+	if !rt.ProfileID.Valid {
+		return agent.CapabilitiesForFamily(rt.Provider), nil
+	}
+	profile, err := h.Queries.GetRuntimeProfile(ctx, rt.ProfileID)
+	if err != nil {
+		return agent.Capabilities{}, fmt.Errorf("load runtime profile: %w", err)
+	}
+	return agent.ResolveCapabilities(profile.ProtocolFamily, profile.Capabilities)
 }
 
 // maskGatewayToken replaces runtime_config.gateway.token with the public
@@ -409,22 +514,29 @@ type AgentTaskResponse struct {
 	Result               any                    `json:"result"`
 	Error                *string                `json:"error"`
 	FailureReason        string                 `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
-	Attempt              int32                  `json:"attempt"`
-	MaxAttempts          int32                  `json:"max_attempts"`
-	ParentTaskID         *string                `json:"parent_task_id,omitempty"`
-	IsLeaderTask         bool                   `json:"is_leader_task,omitempty"`
-	LeaderRoleResolved   bool                   `json:"leader_role_resolved,omitempty"` // claim-only capability, always true here: IsLeaderTask/SquadID authoritatively answer "is this a leader run", so the daemon must not infer the role from briefing text. Servers predating it make no such promise — before #4951 they sent no is_leader_task at all, after it they sent the flag without guaranteeing a briefing — so a daemon seeing no capability keeps the legacy inference. Never rendered into a prompt; see daemon.taskIsSquadLeader (MUL-5811). Mirror field: internal/daemon/types.go, same JSON name
-	Agent                *TaskAgentData         `json:"agent,omitempty"`
-	ConnectedApps        []ConnectedAppData     `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
-	Repos                []RepoData             `json:"repos,omitempty"`
-	ProjectID            string                 `json:"project_id,omitempty"`           // issue's project, when present
-	ProjectTitle         string                 `json:"project_title,omitempty"`        // for surfacing in agent context
-	ProjectDescription   string                 `json:"project_description,omitempty"`  // durable project-level context injected into the brief
-	ProjectInstructions  string                 `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
-	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`    // resources attached to the project
-	CreatedAt            string                 `json:"created_at"`
-	PriorSessionID       string                 `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir         string                 `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	// QueuedReason explains why a queued row is not moving yet (RUYI-397),
+	// from the dispatch.ReasonCode vocabulary: "runtime_backpressure" means
+	// the target runtime's host reported memory backpressure, so the claim is
+	// deferred until it recovers. Set only while the condition holds and only
+	// on queued rows — omitted otherwise, so old clients and old backends
+	// interoperate unchanged.
+	QueuedReason        string                `json:"queued_reason,omitempty"`
+	Attempt             int32                 `json:"attempt"`
+	MaxAttempts         int32                 `json:"max_attempts"`
+	ParentTaskID        *string               `json:"parent_task_id,omitempty"`
+	IsLeaderTask        bool                  `json:"is_leader_task,omitempty"`
+	LeaderRoleResolved  bool                  `json:"leader_role_resolved,omitempty"` // claim-only capability, always true here: IsLeaderTask/SquadID authoritatively answer "is this a leader run", so the daemon must not infer the role from briefing text. Servers predating it make no such promise — before #4951 they sent no is_leader_task at all, after it they sent the flag without guaranteeing a briefing — so a daemon seeing no capability keeps the legacy inference. Never rendered into a prompt; see daemon.taskIsSquadLeader (MUL-5811). Mirror field: internal/daemon/types.go, same JSON name
+	Agent               *TaskAgentData        `json:"agent,omitempty"`
+	ConnectedApps       []ConnectedAppData    `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
+	Repos               []RepoData            `json:"repos,omitempty"`
+	ProjectID           string                `json:"project_id,omitempty"`           // issue's project, when present
+	ProjectTitle        string                `json:"project_title,omitempty"`        // for surfacing in agent context
+	ProjectDescription  string                `json:"project_description,omitempty"`  // durable project-level context injected into the brief
+	ProjectInstructions string                `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
+	ProjectResources    []ProjectResourceData `json:"project_resources,omitempty"`    // resources attached to the project
+	CreatedAt           string                `json:"created_at"`
+	PriorSessionID      string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	PriorWorkDir        string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback. The daemon surfaces the continuity gap in
@@ -1223,11 +1335,15 @@ type CreateAgentRequest struct {
 	ConversationStarters []AgentConversationStarter `json:"conversation_starters"`
 	AvatarURL            *string                    `json:"avatar_url"`
 	RuntimeID            string                     `json:"runtime_id"`
-	RuntimeConfig        any                        `json:"runtime_config"`
-	CustomEnv            map[string]string          `json:"custom_env"`
-	CustomArgs           []string                   `json:"custom_args"`
-	McpConfig            json.RawMessage            `json:"mcp_config"`
-	Visibility           string                     `json:"visibility"`
+	// VoiceRuntimeID optionally binds the voice slot (RUYI-425). Empty = the
+	// historical text-only shape. The target must be a workspace runtime whose
+	// protocol family declares realtime_voice, and must differ from runtime_id.
+	VoiceRuntimeID string            `json:"voice_runtime_id"`
+	RuntimeConfig  any               `json:"runtime_config"`
+	CustomEnv      map[string]string `json:"custom_env"`
+	CustomArgs     []string          `json:"custom_args"`
+	McpConfig      json.RawMessage   `json:"mcp_config"`
+	Visibility     string            `json:"visibility"`
 	// PermissionMode + InvocationTargets are the new invocation-permission
 	// inputs (MUL-3963). When permission_mode is present it is authoritative
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
@@ -1236,6 +1352,9 @@ type CreateAgentRequest struct {
 	PermissionMode     *string                    `json:"permission_mode"`
 	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
+	// ResourceWeight is the claim-budget multiplier (RUYI-397). Omitted/null
+	// means 1 — see defaultAndValidateAgentResourceWeight.
+	ResourceWeight int32 `json:"resource_weight"`
 	// Session context gate (RUYI-107). Omitted means "use the default", not
 	// zero — see defaultAndValidateAgentSessionGate.
 	SessionMaxContextTokens int64  `json:"session_max_context_tokens"`
@@ -1345,6 +1464,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := defaultAndValidateAgentResourceWeight(rawFields, &req.ResourceWeight); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err := defaultAndValidateAgentSessionGate(rawFields, &req.SessionMaxContextTokens, &req.SessionCompactPct); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -1388,6 +1511,19 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-425 §4.4 rule 2: the text slot has its own capability gate — a
+	// voice-only family cannot execute text tasks, so a gemini_live instance
+	// is refused here exactly as a CLI family is refused on the voice side.
+	textCaps, capsErr := h.runtimeInstanceCapabilities(r.Context(), runtime)
+	if capsErr != nil {
+		writeError(w, http.StatusBadRequest, "unable to resolve runtime capabilities")
+		return
+	}
+	if err := agent.ValidateSlotCapability(agent.SlotText, runtime.Provider, textCaps); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// thinking_level validation: fixed-enum providers reject unknown literals;
 	// dynamic-catalog providers (Codex/OpenCode) reject malformed tokens here.
 	// Pi has a fixed token universe and a daemon-discovered per-model subset.
@@ -1412,6 +1548,16 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if !agent.IsKnownServiceTier(runtime.Provider, req.ServiceTier) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("service_tier %q is not a recognised value for runtime %q", req.ServiceTier, runtime.Provider))
+		return
+	}
+
+	// RUYI-425: optional voice slot. Same workspace + visibility gates as the
+	// text slot, then the capability gate — the target's protocol family must
+	// declare realtime_voice. This is the binding half of the validation
+	// chain; the session-initiation half reuses the same validator when the
+	// voice adapter lands.
+	voiceRuntimeUUID, ok := h.validateAgentVoiceBinding(w, r, wsUUID, member, req.VoiceRuntimeID, runtime.ID)
+	if !ok {
 		return
 	}
 
@@ -1501,6 +1647,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Visibility:               perm.legacyVisibility(),
 		PermissionMode:           perm.mode,
 		MaxConcurrentTasks:       req.MaxConcurrentTasks,
+		ResourceWeight:           pgtype.Int4{Int32: req.ResourceWeight, Valid: true},
 		SessionMaxContextTokens:  pgtype.Int8{Int64: req.SessionMaxContextTokens, Valid: true},
 		SessionCompactPct:        pgtype.Int4{Int32: req.SessionCompactPct, Valid: true},
 		OwnerID:                  parseUUID(ownerID),
@@ -1512,6 +1659,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ServiceTier:              pgtype.Text{String: req.ServiceTier, Valid: req.ServiceTier != ""},
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
+		VoiceRuntimeID:           voiceRuntimeUUID,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1607,6 +1755,9 @@ type UpdateAgentRequest struct {
 	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
 	Status             *string                     `json:"status"`
 	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
+	// ResourceWeight follows the update-pointer contract: omitted preserves
+	// the stored weight (RUYI-397).
+	ResourceWeight *int32 `json:"resource_weight"`
 	// Pointer, so an omitted field preserves the stored value. A non-pointer
 	// would make every partial update reset the gate to zero, i.e. off.
 	SessionMaxContextTokens *int64  `json:"session_max_context_tokens"`
@@ -1622,6 +1773,13 @@ type UpdateAgentRequest struct {
 	// ServiceTier follows the same tri-state contract as ThinkingLevel:
 	// omitted preserves, empty clears, and non-empty sets a Codex catalog ID.
 	ServiceTier *string `json:"service_tier"`
+	// VoiceRuntimeID is a tri-state per the same contract (RUYI-425):
+	//   - field omitted → no change (leave the voice binding alone)
+	//   - field present with "" → explicit unbind (ClearAgentVoiceRuntime)
+	//   - field present with a runtime id → validate capability + workspace
+	//     scope, then bind. The decode-time raw fields map distinguishes
+	//     "omitted" from "explicitly cleared".
+	VoiceRuntimeID *string `json:"voice_runtime_id"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -1632,6 +1790,11 @@ type UpdateAgentRequest struct {
 	// null" (a *[]string can't, because a nil pointer is the same wire
 	// representation as both). MUL-3869.
 	ComposioToolkitAllowlist *[]string `json:"composio_toolkit_allowlist"`
+	// ExpectedRevision is the optimistic lock on execution-config writes
+	// (RUYI-433): when set, the write only lands if the agent still carries
+	// this revision, and a stale value answers 409 revision_conflict with the
+	// actual revision. Same contract as UpdateIssueRequest / UpdateProject.
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
 }
 
 // workspaceAlwaysRedactSecrets reports whether the workspace has opted
@@ -1839,6 +2002,21 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
 	}
+	// Optimistic lock (RUYI-433): the pre-check answers the common stale
+	// token with the revision the caller raced against; the SQL guard still
+	// decides the write, and a race between this read and the UPDATE is
+	// answered by the ErrNoRows recovery after updateAgentPersisted.
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		if existing.Revision != *req.ExpectedRevision {
+			writeRevisionConflict(w, "agent", existing.ID, *req.ExpectedRevision, existing.Revision)
+			return
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: *req.Name, Valid: true}
 	}
@@ -1917,10 +2095,47 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
 			return
 		}
+		// RUYI-425 §4.4 rule 2: same text-slot capability gate as CreateAgent —
+		// an update must not re-bind an agent onto a voice-only instance.
+		textCaps, capsErr := h.runtimeInstanceCapabilities(r.Context(), runtime)
+		if capsErr != nil {
+			writeError(w, http.StatusBadRequest, "unable to resolve runtime capabilities")
+			return
+		}
+		if err := agent.ValidateSlotCapability(agent.SlotText, runtime.Provider, textCaps); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		params.RuntimeID = runtime.ID
 		params.RuntimeMode = pgtype.Text{String: runtime.RuntimeMode, Valid: true}
 		targetRuntimeID = runtime.ID
 		targetProvider = runtime.Provider
+	}
+
+	// RUYI-425: voice slot, tri-state like thinking_level. Omitted preserves
+	// (COALESCE narg); "" queues the explicit clear query; a runtime id is
+	// validated and bound. targetRuntimeID feeds the same-instance guard so
+	// one instance can never occupy both slots of the same agent.
+	shouldClearVoiceRuntime := false
+	if rawVoice, ok := rawFields["voice_runtime_id"]; ok {
+		var requested string
+		if err := json.Unmarshal(rawVoice, &requested); err != nil {
+			writeError(w, http.StatusBadRequest, "voice_runtime_id must be a runtime id or an empty string")
+			return
+		}
+		if requested == "" {
+			shouldClearVoiceRuntime = true
+		} else {
+			member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
+			if !ok {
+				return
+			}
+			voiceUUID, ok := h.validateAgentVoiceBinding(w, r, existing.WorkspaceID, member, requested, targetRuntimeID)
+			if !ok {
+				return
+			}
+			params.VoiceRuntimeID = voiceUUID
+		}
 	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
@@ -1977,6 +2192,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		params.MaxConcurrentTasks = pgtype.Int4{Int32: *req.MaxConcurrentTasks, Valid: true}
 	}
+	if req.ResourceWeight != nil {
+		if err := validateAgentResourceWeight(*req.ResourceWeight); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.ResourceWeight = pgtype.Int4{Int32: *req.ResourceWeight, Valid: true}
+	}
 	if req.SessionMaxContextTokens != nil {
 		if err := validateAgentSessionMaxContextTokens(*req.SessionMaxContextTokens); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1992,6 +2214,18 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.SessionCompactPct = pgtype.Int4{Int32: *req.SessionCompactPct, Valid: true}
 	}
 	if req.Model != nil {
+		// Catalog gate (RUYI-433, decision 2): when the target runtime's
+		// server-side catalog cache has a usable snapshot, a model the
+		// catalog does not list AND the provider's static catalogs classify
+		// as incompatible is rejected with a structured unsupported_model
+		// BEFORE anything is written — the old behavior stored it and let the
+		// next rebind silently clear it. A catalog miss (offline runtime,
+		// never probed) keeps the custom-model passthrough, and a model the
+		// catalog lists always passes.
+		if msg, ok := h.validateAgentModelAgainstCatalog(r.Context(), existing.WorkspaceID, targetRuntimeID, targetProvider, *req.Model); !ok {
+			writeErrorCode(w, http.StatusBadRequest, "unsupported_model", msg)
+			return
+		}
 		params.Model = pgtype.Text{String: *req.Model, Valid: true}
 	} else if req.RuntimeID != nil && existing.Model.Valid && agent.ModelKnownIncompatibleWithProvider(targetProvider, existing.Model.String) {
 		// Model is runtime-native. When moving an agent across known provider
@@ -2158,6 +2392,16 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	rebinding := params.RuntimeID.Valid && params.RuntimeID != existing.RuntimeID
 	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, rebinding)
 	if err != nil {
+		// 0 rows with an expected_revision means a concurrent config write
+		// won the race between the handler's read and the UPDATE — same
+		// recovery as UpdateProject: reload and answer with the actual
+		// revision.
+		if errors.Is(err, pgx.ErrNoRows) && req.ExpectedRevision != nil {
+			if current, reloadErr := h.Queries.GetAgent(r.Context(), existing.ID); reloadErr == nil {
+				writeRevisionConflict(w, "agent", current.ID, *req.ExpectedRevision, current.Revision)
+				return
+			}
+		}
 		// Unique constraint on (workspace_id, name) — mirror CreateAgent and
 		// return a clear conflict instead of a 500 that leaks the raw
 		// constraint name. The name can still be held by an *archived* agent
@@ -2207,6 +2451,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent thinking_level failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to clear thinking_level: "+err.Error())
+			return
+		}
+	}
+	if shouldClearVoiceRuntime {
+		updated, err = h.Queries.ClearAgentVoiceRuntime(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent voice_runtime_id failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to unbind the voice runtime: "+err.Error())
 			return
 		}
 	}
@@ -2269,6 +2521,79 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		redactComposioToolkitAllowlist(&resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// validateAgentModelAgainstCatalog is the RUYI-433 catalog gate on explicit
+// model writes. Decision 2 (Owner-ruled): when the target runtime's
+// server-side catalog cache holds a usable snapshot, the write is refused
+// with a structured reason when BOTH catalog sources say no — the runtime's
+// own catalog doesn't list the model (matched through
+// agent.ModelCatalogLookupID so Claude context-window variants find their
+// base entry) AND the provider's static catalogs classify it as incompatible
+// (unknown/custom strings stay allowed, manual input keeps working). No
+// usable snapshot → the write passes: an offline or never-probed runtime has
+// no authoritative list to enforce, which is the "目录未命中放行" half of
+// the ruling. Returns the refusal message; ok=false means reject.
+func (h *Handler) validateAgentModelAgainstCatalog(
+	ctx context.Context,
+	workspaceID pgtype.UUID,
+	runtimeID pgtype.UUID,
+	targetProvider string,
+	model string,
+) (string, bool) {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" || !runtimeID.Valid {
+		// Clearing to the runtime default, or an unbound agent with no
+		// runtime to consult — nothing to enforce.
+		return "", true
+	}
+	snapshot := h.cachedModelCatalog(ctx, uuidToString(runtimeID))
+	if snapshot == nil {
+		return "", true
+	}
+	// The static classifier needs the target runtime's provider; resolve it
+	// now when this request didn't change runtime_id (the thinking_level
+	// path resolves the same way). A runtime that vanished mid-request has
+	// no catalog worth enforcing — pass, same as a cold cache.
+	provider := targetProvider
+	if provider == "" {
+		resolved, ok := h.resolveAgentProviderForContext(ctx, workspaceID, runtimeID)
+		if !ok {
+			return "", true
+		}
+		provider = resolved
+	}
+	lookupID := agent.ModelCatalogLookupID(provider, trimmed)
+	for _, entry := range snapshot.Models {
+		if entry.ID == trimmed || entry.ID == lookupID {
+			return "", true
+		}
+	}
+	// The runtime catalog misses it. Only refuse when the static provider
+	// catalogs positively classify the string as a known-family mismatch —
+	// that is the "known incompatible" case Issue range 3 names. Anything
+	// else is a custom model and keeps the manual-input passthrough.
+	if !agent.ModelKnownIncompatibleWithProvider(provider, trimmed) {
+		return "", true
+	}
+	return fmt.Sprintf(
+		"model %q is not in runtime %s's model catalog; pick a model the runtime advertises (get_runtime_models) or clear model to use the runtime default",
+		trimmed, uuidToString(runtimeID),
+	), false
+}
+
+// resolveAgentProviderForContext is resolveAgentProvider without the request:
+// the catalog gate can run before any request-scoped resolution happened and
+// only needs the runtime row.
+func (h *Handler) resolveAgentProviderForContext(ctx context.Context, workspaceID, runtimeID pgtype.UUID) (string, bool) {
+	rt, err := h.Queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{
+		ID:          runtimeID,
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return "", false
+	}
+	return rt.Provider, true
 }
 
 // updateAgentPersisted writes the agent row via UpdateAgent. When the update

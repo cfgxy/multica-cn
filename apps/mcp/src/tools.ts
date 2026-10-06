@@ -21,9 +21,29 @@
  *       manage_issue_relations (RUYI-351 structured issue relations — pure
  *       relationship changes never trigger a run, and the descriptions must
  *       say so explicitly).
+ * Read (RUYI-419 workspace management): list_runs (workspace-wide run view),
+ *       get_agent, list_runtimes, list_squads, get_squad.
+ * Write (RUYI-419 workspace management): create_agent, update_agent,
+ *       archive_agent (SIDE EFFECT: cancels all of the agent's queued and
+ *       in-flight runs), restore_agent, create_squad, update_squad,
+ *       archive_squad (SIDE EFFECT: reassigns the squad's issues to its
+ *       leader; no squad restore exists). These act through the product's own
+ *       ownership gates, never start runs, and expose no secret-bearing
+ *       agent fields — projections only. Agents/squads carry no revision
+ *       field, so these writes have no optimistic locking; the descriptions
+ *       say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
+ * Write (RUYI-458 project resource bindings): list_project_resources,
+ *       create_project_resource, update_project_resource,
+ *       delete_project_resource — the same REST surface the web project page
+ *       drives. Binding/unbinding is metadata-only (a pointer row), never
+ *       touches the real repository or directory, and never starts a run;
+ *       resource_type is immutable server-side, so update_project_resource's
+ *       schema never declares it. Defined failures (duplicate binding,
+ *       unknown ids, the worktree daemon gate) come back as structured
+ *       results keyed by `code`.
  *
  * Every tool takes an explicit `workspace` (slug, or UUID). There is no
  * ambient workspace: the Owner decision makes create_issue universal, so
@@ -38,26 +58,38 @@
  */
 
 import { DIGEST_TRACKED_STATUSES, buildDigest } from "./digest.js";
-import { MulticaApiError, MulticaRequestError } from "./rest.js";
+import { MulticaApiError, MulticaRequestError, isUuid } from "./rest.js";
 import type { MulticaClient } from "./rest.js";
 import {
   optionalBoolean,
   optionalClearableString,
   optionalEnum,
   optionalInt,
+  optionalProjectResourceRef,
   optionalString,
   optionalStringArray,
+  requireProjectResourceRef,
   requireString,
   ToolInputError,
 } from "./schemas.js";
 import type {
+  AgentConfigInfo,
+  AgentDetailInfo,
   CancelRunResult,
   CommentInfo,
+  CreateProjectResourceBody,
+  ExecutionProfileInfo,
   IssueInfo,
+  ModelEntryInfo,
   ProjectInfo,
+  ProjectResourceInfo,
+  RuntimeInfo,
   SearchIssueInfo,
+  SquadInfo,
+  UnavailableModelEntryInfo,
   UpdateIssueBody,
   UpdateProjectBody,
+  UpdateProjectResourceBody,
 } from "./types.js";
 
 export interface JsonSchemaProperty {
@@ -75,6 +107,7 @@ export interface JsonSchemaProperty {
   };
   minimum?: number;
   maximum?: number;
+  maxLength?: number;
   maxItems?: number;
   pattern?: string;
 }
@@ -124,6 +157,10 @@ const PROJECT_STATUS_ENUM = ["planned", "in_progress", "paused", "completed", "c
 const PROJECT_LEAD_TYPES = ["member", "agent"] as const;
 // The backend caps project instructions at 32,000 runes (maxProjectInstructionsLen).
 const PROJECT_INSTRUCTIONS_MAX = 32_000;
+
+// Mirrors packages/core/types/project.ts's ProjectResourceType: the types
+// validateAndNormalizeResourceRef knows today.
+const PROJECT_RESOURCE_TYPES = ["github_repo", "local_directory"] as const;
 
 const DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
@@ -348,6 +385,64 @@ function structuredCommentFailure(error: unknown): Record<string, unknown> | und
   }
 }
 
+// ---- structured project-resource failures (RUYI-458) ----------------------
+//
+// The project_resource endpoints define a small outcome matrix — bad ref
+// shape (400), permission denial (403), unknown project/resource (404),
+// duplicate binding or a per-daemon local_directory conflict (409), and the
+// worktree-mode daemon gate (422 daemon_version_unsupported). Tools surface
+// these as structured results keyed by `code` so callers branch on the code,
+// never on exception strings. Anything outside the matrix (auth, transport,
+// 5xx, other 422s) is rethrown to the MCP error surface unchanged.
+
+function stringField(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function structuredResourceFailure(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof MulticaApiError)) return undefined;
+  const body = error.body ?? {};
+  const message = apiErrorMessage(error);
+  switch (error.status) {
+    case 400:
+      return { code: "invalid_input", message };
+    case 403:
+      return { code: "permission_denied", message };
+    case 404:
+      return { code: "not_found", message };
+    case 409:
+      return { code: "already_attached", message };
+    case 422:
+      if (body.code === "daemon_version_unsupported") {
+        return {
+          code: "daemon_version_unsupported",
+          message,
+          current_version: stringField(body, "current_version") ?? null,
+          min_version: stringField(body, "min_version") ?? null,
+          daemon_id: stringField(body, "daemon_id") ?? null,
+        };
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+// The binding projection the resource tools return (RUYI-458): identity,
+// typed pointer, display metadata and order — the fields a caller needs to
+// re-address the binding (id) or judge what it points at (type + ref).
+function resourceBrief(resource: ProjectResourceInfo): Record<string, unknown> {
+  return {
+    id: resource.id,
+    resource_type: resource.resource_type,
+    resource_ref: resource.resource_ref,
+    label: resource.label,
+    position: resource.position,
+    created_at: resource.created_at,
+  };
+}
+
 // The full base-field projection the project tools return (RUYI-354). Flat on
 // purpose: get_project is the read entry, create/update echo it so the caller
 // always walks away with the revision it needs for the next write.
@@ -373,6 +468,54 @@ function projectFull(project: ProjectInfo): Record<string, unknown> {
   if (project.done_count !== undefined) out.done_count = project.done_count;
   if (project.resource_count !== undefined) out.resource_count = project.resource_count;
   return out;
+}
+
+// Safe projections for the agent/squad management surface (RUYI-419). The
+// Go AgentResponse carries secret-bearing fields (runtime_config, mcp_config,
+// custom_env values, composio allowlist); these helpers re-project onto the
+// metadata subset instead of forwarding the payload, so no secret-bearing
+// value can reach tool output even though the REST response contains it —
+// same envelope the product applies on its own responses (MUL-2600).
+function agentBrief(agent: AgentDetailInfo): Record<string, unknown> {
+  return {
+    id: agent.id,
+    name: agent.name,
+    description: agent.description ?? "",
+    instructions: agent.instructions ?? "",
+    runtime_id: agent.runtime_id || null,
+    runtime_bound: agent.runtime_bound ?? false,
+    model: agent.model ?? "",
+    thinking_level: agent.thinking_level ?? "",
+    service_tier: agent.service_tier ?? "",
+    max_concurrent_tasks: agent.max_concurrent_tasks,
+    permission_mode: agent.permission_mode,
+    visibility: agent.visibility,
+    owner_id: agent.owner_id ?? null,
+    system_key: agent.system_key ?? null,
+    status: agent.status,
+    archived_at: agent.archived_at ?? null,
+    has_custom_env: agent.has_custom_env ?? false,
+    custom_env_key_count: agent.custom_env_key_count ?? 0,
+    mcp_config_redacted: agent.mcp_config_redacted ?? false,
+    created_at: agent.created_at,
+    updated_at: agent.updated_at,
+  };
+}
+
+function squadBrief(squad: SquadInfo): Record<string, unknown> {
+  return {
+    id: squad.id,
+    name: squad.name,
+    description: squad.description ?? "",
+    instructions: squad.instructions ?? "",
+    leader_id: squad.leader_id ?? null,
+    creator_id: squad.creator_id ?? null,
+    member_count: squad.member_count,
+    member_preview: squad.member_preview ?? [],
+    archived_at: squad.archived_at ?? null,
+    created_at: squad.created_at,
+    updated_at: squad.updated_at,
+  };
 }
 
 function projectDateProperty(): JsonSchemaProperty {
@@ -420,7 +563,284 @@ function nullableDate(args: Record<string, unknown>, key: string): string | null
   return validateProjectDate(args, key) ?? null;
 }
 
+// ---- execution-config helpers (RUYI-433) ---------------------------------
+//
+// The config faces share one dialect: read revision → write with
+// expected_revision → structured revision_conflict carrying actual_revision;
+// model writes can be refused 400 unsupported_model when the runtime's
+// discovered catalog lists the model as incompatible. All of it lands as
+// structured results keyed by `code`, never exception strings.
+
+/** Tri-state PATCH argument for the agent config faces (MUL-2339): absent →
+ * keep, "" → explicit clear, value → set. optionalString would collapse ""
+ * to "absent", so this reads the raw arg. */
+function triStateString(args: Record<string, unknown>, key: string): string | undefined {
+  if (!(key in args) || args[key] === undefined) return undefined;
+  const value = args[key];
+  if (typeof value !== "string") {
+    throw new ToolInputError(`'${key}' must be a string ("" clears the stored value)`);
+  }
+  return value;
+}
+
+/** Entry-level tri-state (ExecutionProfileEntryRequest semantics): absent →
+ * undefined (no opinion — activation leaves the agent's level alone),
+ * null → null (explicit "runtime default" clear), "" → "" (also the clear),
+ * value → the token. */
+function triStateNullableString(args: Record<string, unknown>, key: string): string | null | undefined {
+  if (!(key in args) || args[key] === undefined) return undefined;
+  const value = args[key];
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new ToolInputError(`'${key}' must be a string or null`);
+  }
+  return value;
+}
+
+/** Flat full-profile projection: the read entry + every write echoes it, so
+ * the caller always walks away with the revision it needs for the next write. */
+function profileFull(profile: ExecutionProfileInfo): Record<string, unknown> {
+  return {
+    id: profile.id,
+    name: profile.name,
+    description: profile.description ?? null,
+    is_active: profile.is_active,
+    entry_count: profile.entry_count,
+    last_activated_at: profile.last_activated_at ?? null,
+    revision: profile.revision,
+    created_at: profile.created_at ?? null,
+    updated_at: profile.updated_at ?? null,
+    entries: profile.entries.map((entry) => ({
+      agent_id: entry.agent_id,
+      runtime_id: entry.runtime_id,
+      model: entry.model,
+      thinking_level: entry.thinking_level ?? null,
+      updated_at: entry.updated_at ?? null,
+    })),
+  };
+}
+
+/** The execution-profile paths carry the workspace UUID in the URL (the
+ * middleware parses it as a UUID; slugs are header-only), so a slug argument
+ * is resolved once via list_workspaces. */
+async function resolveWorkspaceId(client: MulticaClient, workspace: string): Promise<string> {
+  if (isUuid(workspace)) return workspace;
+  const workspaces = await client.listWorkspaces();
+  const hit = workspaces.find((ws) => ws.slug === workspace);
+  if (hit === undefined) {
+    throw new ToolInputError(`workspace '${workspace}' is not among the token owner's workspaces`);
+  }
+  return hit.id;
+}
+
+/** Agent refs accept the UUID or the agent's exact (case-insensitive) name;
+ * the name path resolves against the workspace's agent list. */
+async function resolveAgentRef(
+  client: MulticaClient,
+  workspace: string,
+  ref: string,
+  label = "agent",
+): Promise<{ id: string; name: string }> {
+  if (isUuid(ref)) {
+    const agent = await client.getAgentConfig(workspace, ref);
+    return { id: agent.id, name: agent.name };
+  }
+  const agents = await client.listAgentConfigs(workspace);
+  const hits = agents.filter((agent) => agent.name.toLowerCase() === ref.toLowerCase());
+  if (hits.length === 0) {
+    throw new ToolInputError(`no ${label} named '${ref}' in this workspace (use its UUID or exact name)`);
+  }
+  if (hits.length > 1) {
+    throw new ToolInputError(
+      `${hits.length} agents share the name '${ref}'; pass the agent UUID instead`,
+    );
+  }
+  const hit = hits[0];
+  if (hit === undefined) {
+    throw new ToolInputError(`no ${label} named '${ref}' in this workspace (use its UUID or exact name)`);
+  }
+  return { id: hit.id, name: hit.name };
+}
+
+/** Structured answer for a refused 400: unsupported_model keeps the server's
+ * code; any other 400 is invalid_input with the server's message. */
+function configInvalidInputResult(error: MulticaApiError): Record<string, unknown> {
+  const message = apiErrorMessage(error);
+  if (error.body?.code === "unsupported_model") {
+    return {
+      updated: false,
+      code: "unsupported_model",
+      message,
+      hint: "Pick a model the runtime advertises (get_runtime_models), or clear the model (\"\") to use the runtime default. A model the runtime has not reported stays accepted (catalog-miss passthrough).",
+    };
+  }
+  return { updated: false, code: "invalid_input", message };
+}
+
+/** Shared 409 shape for the config faces (same dialect as update_project). */
+function configConflictResult(
+  error: MulticaApiError,
+  resource: string,
+): Record<string, unknown> {
+  const conflictBody = error.body ?? {};
+  return {
+    updated: false,
+    code: "revision_conflict",
+    expected_revision: intField(conflictBody, "expected_revision") ?? null,
+    actual_revision: intField(conflictBody, "actual_revision") ?? null,
+    message: `the ${resource} changed since it was read; nothing was written`,
+    hint: "Re-read it with the matching get/list tool, then retry with the fresh expected_revision.",
+  };
+}
+
+interface ConfigItemError {
+  code: string;
+  message: string;
+  actual_revision?: number | null;
+}
+
+function classifyConfigFailure(error: unknown): ConfigItemError {
+  if (error instanceof MulticaApiError) {
+    if (error.status === 409) {
+      return {
+        code: "revision_conflict",
+        message: error.message,
+        actual_revision: intField(error.body ?? {}, "actual_revision") ?? null,
+      };
+    }
+    if (error.status === 400 && error.body?.code === "unsupported_model") {
+      return { code: "unsupported_model", message: apiErrorMessage(error) };
+    }
+    const code =
+      error.status === 403
+        ? "forbidden"
+        : error.status === 404
+          ? "not_found"
+          : error.status === 400
+            ? "invalid_input"
+            : error.status === 429
+              ? "rate_limited"
+              : "error";
+    return { code, message: error.message };
+  }
+  if (error instanceof MulticaRequestError) {
+    return {
+      code: "transport_error",
+      message: `${error.message} (the write's outcome is unknown — re-read the agent before retrying)`,
+    };
+  }
+  return { code: "error", message: error instanceof Error ? error.message : String(error) };
+}
+
+const MAX_BULK_CONFIG_ITEMS = 50;
+const BULK_CONFIG_ITEM_KEYS: ReadonlySet<string> = new Set([
+  "agent",
+  "runtime_id",
+  "model",
+  "thinking_level",
+  "expected_revision",
+]);
+
+function agentConfigBrief(agent: AgentConfigInfo): Record<string, unknown> {
+  return {
+    id: agent.id,
+    name: agent.name,
+    runtime_id: agent.runtime_id ?? null,
+    runtime_mode: agent.runtime_mode ?? null,
+    model: agent.model ?? null,
+    thinking_level: agent.thinking_level ?? null,
+    service_tier: agent.service_tier ?? null,
+    revision: agent.revision,
+    updated_at: agent.updated_at ?? null,
+  };
+}
+
+function runtimeBrief(runtime: RuntimeInfo): Record<string, unknown> {
+  return {
+    id: runtime.id,
+    name: runtime.custom_name ?? runtime.name,
+    provider: runtime.provider ?? null,
+    runtime_mode: runtime.runtime_mode ?? null,
+    status: runtime.status ?? null,
+    daemon_id: runtime.daemon_id ?? null,
+    visibility: runtime.visibility ?? null,
+    owner_id: runtime.owner_id ?? null,
+    last_seen_at: runtime.last_seen_at ?? null,
+  };
+}
+
+/** Daemon instance grouping over the workspace's runtimes (RUYI-433
+ * discovery): the backend has no dedicated daemon-list endpoint for member
+ * tokens, so instances are derived from the runtimes' daemon_id + status. */
+function groupDaemonInstances(runtimes: RuntimeInfo[]): Array<Record<string, unknown>> {
+  const byDaemon = new Map<string, RuntimeInfo[]>();
+  for (const runtime of runtimes) {
+    if (runtime.daemon_id === undefined || runtime.daemon_id === null) continue;
+    const list = byDaemon.get(runtime.daemon_id) ?? [];
+    list.push(runtime);
+    byDaemon.set(runtime.daemon_id, list);
+  }
+  const instances: Array<Record<string, unknown>> = [];
+  for (const [daemonId, list] of byDaemon) {
+    const lastSeen = list
+      .map((rt) => rt.last_seen_at ?? "")
+      .sort()
+      .at(-1);
+    instances.push({
+      daemon_id: daemonId,
+      status: list.some((rt) => rt.status === "online") ? "online" : "offline",
+      runtime_count: list.length,
+      online_runtime_count: list.filter((rt) => rt.status === "online").length,
+      runtimes: list.map(runtimeBrief),
+      last_seen_at: lastSeen === "" ? null : lastSeen,
+    });
+  }
+  instances.sort((a, b) => String(a.daemon_id).localeCompare(String(b.daemon_id)));
+  return instances;
+}
+
+/** Bounded polling for a model-list discovery round trip. Cache hits answer
+ * completed inline; a cold catalog enqueues a daemon round trip that the
+ * tool polls until the deadline, then hands back the request_id. */
+const MODEL_LIST_POLL_INTERVAL_MS = 750;
+const MODEL_LIST_DEFAULT_WAIT_MS = 15_000;
+const MODEL_LIST_MAX_WAIT_MS = 60_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function modelCatalogBrief(request: {
+  id: string;
+  runtime_id: string;
+  status: string;
+  models?: ModelEntryInfo[];
+  unavailable_models?: UnavailableModelEntryInfo[];
+  supported?: boolean;
+  error?: string;
+  cached?: boolean;
+  cached_at?: string;
+}): Record<string, unknown> {
+  return {
+    request_id: request.id,
+    runtime_id: request.runtime_id,
+    status: request.status,
+    supported: request.supported ?? null,
+    cached: request.cached ?? false,
+    cached_at: request.cached_at ?? null,
+    models: (request.models ?? []).map((model) => ({
+      id: model.id,
+      label: model.label ?? null,
+      default: model.default ?? false,
+      thinking_levels: model.thinking?.supported_levels ?? null,
+    })),
+    unavailable_models: request.unavailable_models ?? [],
+    error: request.error ?? null,
+  };
+}
+
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
+
   {
     name: "list_workspaces",
     description:
@@ -1867,6 +2287,113 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "search_audit_events",
+    description:
+      "Search the workspace audit trail (RUYI-355): the unified append-only record of run lifecycle, cancel attribution, runtime connect/sweep/GC verdicts, agent env/profile security events and deployment anchors — the same trail the web app reads. " +
+      "Newest first, keyset-paginated. domain is one of issue | run | agent | runtime | ops; event_type is '<domain>.<action>' (e.g. run.cancelled, runtime.gc). " +
+      "Use it to answer 'what happened to this run/issue/agent, who did it, and why' without touching activity_log. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        domain: {
+          type: "string",
+          enum: ["issue", "run", "agent", "runtime", "ops"],
+          description: "Domain filter (optional).",
+        },
+        event_type: {
+          type: "string",
+          description: "Exact event type filter, '<domain>.<action>' (optional).",
+        },
+        actor_type: {
+          type: "string",
+          enum: ["member", "agent", "system", "daemon"],
+          description: "Who acted (optional).",
+        },
+        issue_id: {
+          type: "string",
+          description: "Issue UUID to scope the trail to one issue (optional).",
+        },
+        task_id: {
+          type: "string",
+          description: "Run (task) UUID filter (optional).",
+        },
+        agent_id: {
+          type: "string",
+          description: "Agent UUID filter (optional).",
+        },
+        runtime_id: {
+          type: "string",
+          description: "Runtime UUID filter (optional).",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Structured reason filter, e.g. user_requested, issue_cancelled, runtime_teardown, reconnect_exhausted (optional).",
+        },
+        since: {
+          type: "string",
+          description: "RFC3339 lower bound on occurred_at (optional).",
+        },
+        until: {
+          type: "string",
+          description: "RFC3339 upper bound on occurred_at (optional).",
+        },
+        limit: {
+          type: "integer",
+          description: "Max events to return, 1–200 (default 50, newest first).",
+          minimum: 1,
+          maximum: 200,
+        },
+        cursor: {
+          type: "string",
+          description: "next_cursor from the previous page (optional, with cursor_id).",
+        },
+        cursor_id: {
+          type: "string",
+          description: "next_cursor_id from the previous page (optional, with cursor).",
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const domain = optionalEnum(args, "domain", ["issue", "run", "agent", "runtime", "ops"]);
+      if (args.domain !== undefined && domain === undefined) {
+        throw new ToolInputError("'domain' must be one of: issue, run, agent, runtime, ops");
+      }
+      const actorType = optionalEnum(args, "actor_type", ["member", "agent", "system", "daemon"]);
+      if (args.actor_type !== undefined && actorType === undefined) {
+        throw new ToolInputError("'actor_type' must be one of: member, agent, system, daemon");
+      }
+      const result = await client.listAuditEvents(workspace, {
+        domain,
+        event_type: optionalString(args, "event_type"),
+        actor_type: actorType,
+        actor_id: optionalString(args, "actor_id"),
+        issue_id: optionalString(args, "issue_id"),
+        task_id: optionalString(args, "task_id"),
+        agent_id: optionalString(args, "agent_id"),
+        runtime_id: optionalString(args, "runtime_id"),
+        reason: optionalString(args, "reason"),
+        since: optionalString(args, "since"),
+        until: optionalString(args, "until"),
+        limit: optionalInt(args, "limit", { min: 1, max: 200 }),
+        cursor: optionalString(args, "cursor"),
+        cursor_id: optionalString(args, "cursor_id"),
+      });
+      return {
+        total: result.events.length,
+        events: result.events,
+        next_cursor: result.next_cursor,
+        next_cursor_id: result.next_cursor_id,
+        note: result.next_cursor
+          ? "More events exist — pass cursor + cursor_id to fetch the next page."
+          : undefined,
+      };
+    },
+  },
+  {
     name: "get_run",
     description:
       "Get ONE run of an issue in detail (RUYI-292): status (including the two-phase 'cancel_requested' stop-in-progress state), timing, failure reason and raw error, cancel attribution (who asked to stop, when), and the full retry chain (ancestors + descendants across both manual-rerun and system-retry lineage). " +
@@ -1989,6 +2516,1622 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         rerun_of_task_id: t.rerun_of_task_id ?? null,
         note: "New run enqueued on the source run's agent with its current configuration, fresh session. The source run is kept unchanged for history.",
       };
+    },
+  },
+
+
+  // ---- execution-config management (RUYI-433) ----------------------------
+  // Discovery + read-modify-write over daemon instances, runtimes, model
+  // catalogs, per-agent execution config (runtime / model / thinking level)
+  // and workspace execution profiles. The write faces follow the same
+  // optimistic-lock contract as the issue/project faces: read revision,
+  // write with expected_revision, lose a race → structured revision_conflict
+  // carrying actual_revision. None of these tools starts an agent run.
+
+  {
+    name: "list_daemon_instances",
+    description:
+      "List the daemon instances (self-hosted devices) visible in a workspace, derived from the workspace's runtimes: per daemon its online status, runtime count and runtime summaries. " +
+      "Cloud runtimes (no daemon) are summarized separately. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const runtimes = await client.listRuntimes(workspace);
+      const cloudCount = runtimes.filter((rt) => rt.daemon_id === undefined || rt.daemon_id === null).length;
+      return {
+        daemons: groupDaemonInstances(runtimes),
+        cloud_runtime_count: cloudCount,
+        total_runtime_count: runtimes.length,
+      };
+    },
+  },
+  {
+    name: "get_daemon_instance",
+    description:
+      "Show one daemon instance (self-hosted device): its derived online status and every runtime it serves, with provider, mode and last-seen. " +
+      "Read-only; unknown daemon ids return code not_found.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        daemon_id: { type: "string", description: "Daemon instance UUID, from list_daemon_instances." },
+      },
+      required: ["workspace", "daemon_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const daemonId = requireString(args, "daemon_id");
+      const runtimes = await client.listRuntimes(workspace);
+      const owned = runtimes.filter((rt) => rt.daemon_id === daemonId);
+      if (owned.length === 0) {
+        return { found: false, code: "not_found", daemon_id: daemonId };
+      }
+      return {
+        found: true,
+        daemon_id: daemonId,
+        status: owned.some((rt) => rt.status === "online") ? "online" : "offline",
+        runtime_count: owned.length,
+        online_runtime_count: owned.filter((rt) => rt.status === "online").length,
+        runtimes: owned.map(runtimeBrief),
+      };
+    },
+  },
+  {
+    name: "list_runtimes",
+    description:
+      "List the agent runtimes (execution backends — daemon-installed CLI runtimes or cloud) in a workspace: name, provider (claude/codex/hermes/…), runtime mode, online status, visibility and owner. " +
+      "Read-only; use get_runtime_models for a runtime's model catalog.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const runtimes = await client.listRuntimes(workspace);
+      return { runtimes: runtimes.map(runtimeBrief), total: runtimes.length };
+    },
+  },
+  {
+    name: "get_runtime",
+    description:
+      "Show one agent runtime in detail plus used_by: every non-archived agent currently bound to it, with the model and thinking level each agent carries. " +
+      "Read-only; unknown runtime ids return code not_found.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        runtime_id: { type: "string", description: "Runtime UUID, from list_runtimes." },
+      },
+      required: ["workspace", "runtime_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const runtimeId = requireString(args, "runtime_id");
+      const [runtimes, agents] = await Promise.all([
+        client.listRuntimes(workspace),
+        client.listAgentConfigs(workspace),
+      ]);
+      const runtime = runtimes.find((rt) => rt.id === runtimeId);
+      if (runtime === undefined) {
+        return { found: false, code: "not_found", runtime_id: runtimeId };
+      }
+      const usedBy = agents
+        .filter((agent) => agent.runtime_id === runtimeId &&
+          (agent.archived_at === undefined || agent.archived_at === null))
+        .map(agentConfigBrief);
+      return {
+        found: true,
+        runtime: runtimeBrief(runtime),
+        device_info: runtime.device_info ?? null,
+        profile_id: runtime.profile_id ?? null,
+        used_by: usedBy,
+        used_by_count: usedBy.length,
+      };
+    },
+  },
+  {
+    name: "get_runtime_models",
+    description:
+      "Discover a runtime's model catalog: the models the daemon advertises (each with its per-model thinking/effort levels), the ones marked unavailable, and which is the runtime default. " +
+      "Answers from the server-side catalog cache when warm; otherwise asks the daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
+      "An offline runtime returns code runtime_offline. Read-only; this is also the source for valid model / thinking_level values on the config-write faces.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        runtime_id: { type: "string", description: "Runtime UUID, from list_runtimes." },
+        request_id: {
+          type: "string",
+          description: "Resume polling this model-list request instead of initiating a new one.",
+        },
+        wait_ms: {
+          type: "integer",
+          description: "How long to wait for the daemon to answer (default 15000, max 60000).",
+          minimum: 0,
+          maximum: 60_000,
+        },
+      },
+      required: ["workspace", "runtime_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const runtimeId = requireString(args, "runtime_id");
+      const requestId = optionalString(args, "request_id");
+      const waitMs = optionalInt(args, "wait_ms", { min: 0, max: MODEL_LIST_MAX_WAIT_MS }) ?? MODEL_LIST_DEFAULT_WAIT_MS;
+
+      let current: Awaited<ReturnType<MulticaClient["getModelListRequest"]>>;
+      try {
+        current = requestId !== undefined
+          ? await client.getModelListRequest(workspace, runtimeId, requestId)
+          : await client.initiateModelList(workspace, runtimeId);
+      } catch (error) {
+        // The initiate face answers 503 when the runtime is offline — a
+        // defined outcome for this tool, not a transport failure.
+        if (error instanceof MulticaApiError && error.status === 503) {
+          return {
+            completed: false,
+            code: "runtime_offline",
+            runtime_id: runtimeId,
+            message: apiErrorMessage(error),
+            hint: "Bring the runtime online (its daemon must be running), then re-call.",
+          };
+        }
+        throw error;
+      }
+
+      const deadline = Date.now() + waitMs;
+      while ((current.status === "pending" || current.status === "running") && Date.now() < deadline) {
+        await sleep(MODEL_LIST_POLL_INTERVAL_MS);
+        current = await client.getModelListRequest(workspace, runtimeId, current.id);
+      }
+      if (current.status === "pending" || current.status === "running") {
+        return {
+          completed: false,
+          code: "still_pending",
+          ...modelCatalogBrief(current),
+          hint: `The daemon has not answered within ${waitMs}ms. Re-call with request_id='${current.id}' to resume polling.`,
+        };
+      }
+      if (current.status === "failed" || (current.error !== undefined && current.error !== "")) {
+        return {
+          completed: false,
+          code: "discovery_failed",
+          ...modelCatalogBrief(current),
+        };
+      }
+      return { completed: true, ...modelCatalogBrief(current) };
+    },
+  },
+  {
+    name: "get_agent_runtime_config",
+    description:
+      "Show one agent's execution config: bound runtime, model, thinking level, service tier, concurrency and session-context gate, plus the agent's revision — the optimistic-lock token to pass back as expected_revision on update_agent_runtime_config. " +
+      "Accepts the agent UUID or its exact name. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent: { type: "string", description: "Agent UUID or exact name." },
+      },
+      required: ["workspace", "agent"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentRef = requireString(args, "agent");
+      const agent = await resolveAgentRef(client, workspace, agentRef);
+      const config = await client.getAgentConfig(workspace, agent.id);
+      return { found: true, config: agentConfigBrief(config) };
+    },
+  },
+  {
+    name: "update_agent_runtime_config",
+    description:
+      "Update ONE agent's execution config in place: rebind its runtime, set its model, or set its thinking level (effort). Omitted fields keep their current value; model \"\" clears to the runtime default; thinking_level \"\" clears to the runtime default. " +
+      "Pass expected_revision (from get_agent_runtime_config or a previous write) — a concurrent config write fails with structured revision_conflict carrying actual_revision instead of overwriting. " +
+      "A model the runtime's discovered catalog lists as incompatible is refused with structured unsupported_model BEFORE anything is written; a model the catalog doesn't know (custom/proxy strings, cold catalog) stays accepted. " +
+      "The change applies to the agent's NEXT runs; this tool never starts a run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent: { type: "string", description: "Agent UUID or exact name." },
+        runtime_id: { type: "string", description: "New runtime UUID (list_runtimes). Omit to keep." },
+        model: {
+          type: "string",
+          description:
+            "New model id. \"\" clears to the runtime default; a catalog-listed id must match the runtime's provider.",
+        },
+        thinking_level: {
+          type: "string",
+          description:
+            "Runtime-native reasoning/effort token (see get_runtime_models thinking_levels). \"\" clears to the runtime default; values are never normalized across providers.",
+        },
+        expected_revision: {
+          type: "integer",
+          description: "Optimistic-lock revision from a previous read/write of this agent.",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "agent"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentRef = requireString(args, "agent");
+      const resolved = await resolveAgentRef(client, workspace, agentRef);
+      const body = {
+        expected_revision: optionalInt(args, "expected_revision", { min: 1 }),
+        runtime_id: optionalString(args, "runtime_id"),
+        model: triStateString(args, "model"),
+        thinking_level: triStateString(args, "thinking_level"),
+      };
+      try {
+        const updated = await client.updateAgentConfig(workspace, resolved.id, body);
+        return { updated: true, config: agentConfigBrief(updated) };
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return configConflictResult(error, "agent");
+        }
+        if (error instanceof MulticaApiError && error.status === 400) {
+          return configInvalidInputResult(error);
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    name: "bulk_update_agent_runtime_config",
+    description:
+      "Apply execution-config changes (runtime_id / model / thinking_level) to up to 50 agents in one call — same semantics as update_agent_runtime_config per item. " +
+      "Each item carries its own agent ref and optional expected_revision; results come back per item (updated / failed with code+message / skipped when on_error='stop' halts the batch). " +
+      "on_error 'continue' (default) attempts every item; 'stop' stops at the first failure. Never starts a run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        updates: {
+          type: "array",
+          maxItems: MAX_BULK_CONFIG_ITEMS,
+          items: {
+            type: "object",
+            properties: {
+              agent: { type: "string", description: "Agent UUID or exact name." },
+              runtime_id: { type: "string", description: "New runtime UUID. Omit to keep." },
+              model: { type: "string", description: "New model id; \"\" clears to the runtime default." },
+              thinking_level: { type: "string", description: "New thinking token; \"\" clears." },
+              expected_revision: { type: "integer", description: "Per-agent optimistic lock.", minimum: 1 },
+            },
+            required: ["agent"],
+          },
+          description: "1–50 per-agent config writes.",
+        },
+        on_error: {
+          type: "string",
+          enum: [...BULK_ON_ERROR],
+          description: "continue (default) attempts every item; stop halts at the first failure.",
+        },
+      },
+      required: ["workspace", "updates"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const rawUpdates = args.updates;
+      if (!Array.isArray(rawUpdates) || rawUpdates.length === 0) {
+        throw new ToolInputError("'updates' must be a non-empty array");
+      }
+      if (rawUpdates.length > MAX_BULK_CONFIG_ITEMS) {
+        throw new ToolInputError(`'updates' accepts at most ${MAX_BULK_CONFIG_ITEMS} items (got ${rawUpdates.length})`);
+      }
+      const onError = optionalEnum(args, "on_error", BULK_ON_ERROR) ?? "continue";
+
+      const results: Array<Record<string, unknown>> = [];
+      let updated = 0;
+      let failed = 0;
+      let skipped = 0;
+      let halted = false;
+
+      for (let index = 0; index < rawUpdates.length; index += 1) {
+        const raw = rawUpdates[index];
+        if (typeof raw !== "object" || raw === null) {
+          failed += 1;
+          results.push({ index, agent: null, outcome: "failed", error: { code: "invalid_input", message: "update item must be an object" } });
+          continue;
+        }
+        const item = raw as Record<string, unknown>;
+        for (const key of Object.keys(item)) {
+          if (!BULK_CONFIG_ITEM_KEYS.has(key)) {
+            throw new ToolInputError(`updates[${index}].${key} is not a recognized field`);
+          }
+        }
+        const itemIndex = index;
+        if (halted) {
+          skipped += 1;
+          results.push({ index: itemIndex, agent: optionalString(item, "agent") ?? null, outcome: "skipped", reason: "not_attempted" });
+          continue;
+        }
+        try {
+          const agentRef = requireString(item, "agent");
+          const resolved = await resolveAgentRef(client, workspace, agentRef);
+          const body = {
+            expected_revision: optionalInt(item, "expected_revision", { min: 1 }),
+            runtime_id: optionalString(item, "runtime_id"),
+            model: triStateString(item, "model"),
+            thinking_level: triStateString(item, "thinking_level"),
+          };
+          const result = await client.updateAgentConfig(workspace, resolved.id, body);
+          updated += 1;
+          results.push({
+            index: itemIndex,
+            agent: agentRef,
+            outcome: "updated",
+            id: result.id,
+            revision: result.revision,
+            model: result.model ?? null,
+            thinking_level: result.thinking_level ?? null,
+            runtime_id: result.runtime_id ?? null,
+          });
+        } catch (error) {
+          failed += 1;
+          const itemError = error instanceof ToolInputError
+            ? { code: "invalid_input", message: error.message }
+            : classifyConfigFailure(error);
+          results.push({
+            index: itemIndex,
+            agent: optionalString(item, "agent") ?? null,
+            outcome: "failed",
+            error: itemError,
+          });
+          if (onError === "stop") halted = true;
+        }
+      }
+      return {
+        total: rawUpdates.length,
+        updated,
+        failed,
+        skipped,
+        on_error: onError,
+        results,
+      };
+    },
+  },
+  {
+    name: "list_execution_profiles",
+    description:
+      "List a workspace's execution profiles: each profile's name, entry count, whether it is the workspace's currently-active profile, last activation time, and its revision — the optimistic-lock token for update/delete/entry writes and apply_execution_profile. " +
+      "Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      const profiles = await client.listExecutionProfiles(workspaceId);
+      return {
+        profiles: profiles.map((profile) => ({
+          id: profile.id,
+          name: profile.name,
+          description: profile.description ?? null,
+          is_active: profile.is_active,
+          entry_count: profile.entry_count,
+          last_activated_at: profile.last_activated_at ?? null,
+          revision: profile.revision,
+          updated_at: profile.updated_at ?? null,
+        })),
+        total: profiles.length,
+      };
+    },
+  },
+  {
+    name: "get_execution_profile",
+    description:
+      "Show one execution profile in full: its entries (agent → runtime, model, thinking level), whether it is active, and its revision — the optimistic-lock token to pass back as expected_revision on update/delete/entry/apply writes. " +
+      "Read-only; unknown profile ids return code not_found.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        profile_id: { type: "string", description: "Execution profile UUID, from list_execution_profiles." },
+      },
+      required: ["workspace", "profile_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const profileId = requireString(args, "profile_id");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      try {
+        const profile = await client.getExecutionProfile(workspaceId, profileId);
+        return { found: true, profile: profileFull(profile) };
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return { found: false, code: "not_found", profile_id: profileId };
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    name: "create_execution_profile",
+    description:
+      "Create an empty execution profile (a named, re-appliable set of per-agent runtime/model/thinking assignments for a workspace). " +
+      "Add entries afterwards with update_execution_profile (entries=…) or apply them from a squad with apply_execution_profile. Never starts a run; activation is a separate, explicit step.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: { type: "string", description: "Profile name, unique within the workspace." },
+        description: { type: "string", description: "Optional human description." },
+      },
+      required: ["workspace", "name"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const name = requireString(args, "name");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      const profile = await client.createExecutionProfile(workspaceId, {
+        name,
+        description: optionalString(args, "description"),
+      });
+      return { created: true, profile: profileFull(profile) };
+    },
+  },
+  {
+    name: "update_execution_profile",
+    description:
+      "Update an execution profile: rename, edit its description, and/or replace-style upsert member entries (agent → runtime, model, thinking level). Omitted fields keep their value; description null clears it. " +
+      "Pass expected_revision (from get_execution_profile / list_execution_profiles / a previous write) — a concurrent write fails with structured revision_conflict carrying actual_revision. " +
+      "Entry writes move the profile's revision too; when 'entries' is given the tool chains the fresh revision after the metadata write automatically. " +
+      "Editing a profile never rewrites agents — call apply_execution_profile to activate it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        profile_id: { type: "string", description: "Execution profile UUID." },
+        name: { type: "string", description: "New name. Omit to keep." },
+        description: { type: ["string", "null"], description: "New description; null clears. Omit to keep." },
+        expected_revision: {
+          type: "integer",
+          description: "Optimistic-lock revision from a previous read/write of this profile.",
+          minimum: 1,
+        },
+        entries: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              agent: { type: "string", description: "Agent UUID or exact name." },
+              runtime_id: { type: "string", description: "Runtime UUID for this agent." },
+              model: { type: "string", description: "Model id for this agent." },
+              thinking_level: {
+                type: ["string", "null"],
+                description: "Thinking token; null = no opinion (activation leaves the agent's level alone), \"\" = clear on activation.",
+              },
+            },
+            required: ["agent", "runtime_id", "model"],
+          },
+          description: "Upsert these member entries after the metadata write.",
+        },
+      },
+      required: ["workspace", "profile_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const profileId = requireString(args, "profile_id");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      const expectedRevision = optionalInt(args, "expected_revision", { min: 1 });
+
+      try {
+        let profile = await client.updateExecutionProfile(workspaceId, profileId, {
+          name: optionalString(args, "name"),
+          description: nullableString(args, "description"),
+          expected_revision: expectedRevision,
+        });
+
+        const rawEntries = args.entries;
+        if (Array.isArray(rawEntries) && rawEntries.length > 0) {
+          for (let index = 0; index < rawEntries.length; index += 1) {
+            const raw = rawEntries[index];
+            if (typeof raw !== "object" || raw === null) {
+              throw new ToolInputError(`entries[${index}] must be an object`);
+            }
+            const item = raw as Record<string, unknown>;
+            const agentRef = requireString(item, "agent");
+            const resolvedAgent = await resolveAgentRef(client, workspace, agentRef);
+            const entryBody = {
+              agent_id: resolvedAgent.id,
+              runtime_id: requireString(item, "runtime_id"),
+              model: requireString(item, "model"),
+              thinking_level: triStateNullableString(item, "thinking_level"),
+              // Entry writes move the profile's revision: guard the FIRST
+              // entry with the revision the metadata write just produced,
+              // then let the rest of the batch land unguarded (one writer,
+              // sequential).
+              expected_revision: index === 0 ? profile.revision : undefined,
+            };
+            await client.upsertExecutionProfileEntry(workspaceId, profileId, entryBody);
+            // Re-read so the next entry (and the response) carry live revisions.
+            profile = await client.getExecutionProfile(workspaceId, profileId);
+          }
+        }
+        return { updated: true, profile: profileFull(profile) };
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return configConflictResult(error, "execution profile");
+        }
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return { updated: false, code: "not_found", profile_id: profileId };
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    name: "delete_execution_profile",
+    description:
+      "Delete an execution profile. Pass expected_revision to refuse deleting a profile that changed since it was read (structured revision_conflict). " +
+      "Deleting the ACTIVE profile also clears the workspace pointer; agents already configured keep their current runtime/model — nothing is rewritten. Never starts a run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        profile_id: { type: "string", description: "Execution profile UUID." },
+        expected_revision: {
+          type: "integer",
+          description: "Optimistic-lock revision; delete fails with revision_conflict if the profile changed since.",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "profile_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const profileId = requireString(args, "profile_id");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      try {
+        await client.deleteExecutionProfile(
+          workspaceId,
+          profileId,
+          optionalInt(args, "expected_revision", { min: 1 }),
+        );
+        return { deleted: true, profile_id: profileId };
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return configConflictResult(error, "execution profile");
+        }
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return { deleted: false, code: "not_found", profile_id: profileId };
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    name: "apply_execution_profile",
+    description:
+      "Activate an execution profile: write every entry's runtime/model/thinking onto its agent, then point the workspace's active-profile at it. THIS REWRITES LIVE AGENT CONFIG — the named agents run with the profile's settings on their next task. " +
+      "Entries come from either explicit 'entries' or 'squad': given a squad, each AGENT member becomes an entry carrying the shared runtime_id/model(/thinking_level) template; human members are skipped. MAPPING SEMANTICS: the squad roster is read ONCE at apply time and materialized as entries — later squad membership changes do NOT follow the profile (re-apply to re-sync). " +
+      "replace_entries=true (default false) first deletes stored entries whose agent is absent from the new set. Pass expected_revision to guard the first write. Per-agent apply results come back applied/skipped/failed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        profile_id: { type: "string", description: "Execution profile UUID." },
+        entries: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              agent: { type: "string", description: "Agent UUID or exact name." },
+              runtime_id: { type: "string", description: "Runtime UUID for this agent." },
+              model: { type: "string", description: "Model id for this agent." },
+              thinking_level: {
+                type: ["string", "null"],
+                description: "null = leave the agent's level alone; \"\" = clear to runtime default.",
+              },
+            },
+            required: ["agent", "runtime_id", "model"],
+          },
+          description: "Explicit entry set. Mutually exclusive with 'squad'.",
+        },
+        squad: {
+          type: "string",
+          description:
+            "Squad UUID or exact name: its agent members become entries carrying the shared runtime_id/model/thinking_level template. Mutually exclusive with 'entries'.",
+        },
+        runtime_id: { type: "string", description: "Required with 'squad': the runtime every squad agent is mapped to." },
+        model: { type: "string", description: "Required with 'squad': the model every squad agent is mapped to." },
+        thinking_level: {
+          type: ["string", "null"],
+          description: "Optional with 'squad': shared thinking token (null = leave levels alone).",
+        },
+        replace_entries: {
+          type: "boolean",
+          description: "Delete stored entries whose agent is absent from the new set before applying (default false = merge).",
+        },
+        expected_revision: {
+          type: "integer",
+          description: "Optimistic-lock revision guarding the first write of the batch.",
+          minimum: 1,
+        },
+        activate_now: {
+          type: "boolean",
+          description: "Activate after writing entries (default true). false stages the entries without rewriting agents.",
+        },
+      },
+      required: ["workspace", "profile_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const profileId = requireString(args, "profile_id");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      if (args.entries !== undefined && args.squad !== undefined) {
+        throw new ToolInputError("pass either 'entries' or 'squad', not both");
+      }
+
+      type PlannedEntry = { agent_id: string; runtime_id: string; model: string; thinking_level: string | null };
+      const planned: PlannedEntry[] = [];
+      let squadInfo: Record<string, unknown> | null = null;
+
+      if (args.squad !== undefined) {
+        const squadRef = requireString(args, "squad");
+        const templateRuntimeId = requireString(args, "runtime_id");
+        const templateModel = requireString(args, "model");
+        const templateThinking = triStateNullableString(args, "thinking_level") ?? null;
+        const squads = await client.listSquads(workspace);
+        const squad = isUuid(squadRef)
+          ? squads.find((s) => s.id === squadRef)
+          : squads.find((s) => s.name.toLowerCase() === squadRef.toLowerCase());
+        if (squad === undefined) {
+          return { applied: false, code: "not_found", squad: squadRef };
+        }
+        const members = await client.listSquadMembers(workspace, squad.id);
+        const agentMembers = members.filter((m) => m.member_type === "agent");
+        const skippedHumans = members.length - agentMembers.length;
+        for (const member of agentMembers) {
+          planned.push({
+            agent_id: member.member_id,
+            runtime_id: templateRuntimeId,
+            model: templateModel,
+            thinking_level: templateThinking,
+          });
+        }
+        squadInfo = {
+          squad_id: squad.id,
+          squad_name: squad.name,
+          members_total: members.length,
+          members_mapped: agentMembers.length,
+          members_skipped_human: skippedHumans,
+          mapping_semantics:
+            "squad roster read once at apply time and materialized as profile entries; later roster changes do not follow the profile — re-apply to re-sync",
+        };
+        if (agentMembers.length === 0) {
+          return {
+            applied: false,
+            code: "no_agent_members",
+            squad: squadInfo,
+            hint: "The squad has no agent members to map; add agents to the squad or pass explicit entries.",
+          };
+        }
+      } else if (args.entries !== undefined) {
+        const rawEntries = args.entries;
+        if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+          throw new ToolInputError("'entries' must be a non-empty array when given");
+        }
+        for (let index = 0; index < rawEntries.length; index += 1) {
+          const raw = rawEntries[index];
+          if (typeof raw !== "object" || raw === null) {
+            throw new ToolInputError(`entries[${index}] must be an object`);
+          }
+          const item = raw as Record<string, unknown>;
+          const resolvedAgent = await resolveAgentRef(client, workspace, requireString(item, "agent"));
+          planned.push({
+            agent_id: resolvedAgent.id,
+            runtime_id: requireString(item, "runtime_id"),
+            model: requireString(item, "model"),
+            thinking_level: triStateNullableString(item, "thinking_level") ?? null,
+          });
+        }
+      } else {
+        // No entry source: apply the profile AS STORED.
+      }
+
+      try {
+        let profile = await client.getExecutionProfile(workspaceId, profileId);
+        let entriesWritten = 0;
+        let entriesDeleted = 0;
+        const deleted: string[] = [];
+
+        if (planned.length > 0) {
+          if (args.replace_entries === true) {
+            const keep = new Set(planned.map((entry) => entry.agent_id));
+            for (const existing of profile.entries) {
+              if (!keep.has(existing.agent_id)) {
+                await client.deleteExecutionProfileEntry(workspaceId, profileId, existing.agent_id);
+                entriesDeleted += 1;
+                deleted.push(existing.agent_id);
+              }
+            }
+            if (entriesDeleted > 0) {
+              profile = await client.getExecutionProfile(workspaceId, profileId);
+            }
+          }
+          for (const [index, entry] of planned.entries()) {
+            await client.upsertExecutionProfileEntry(workspaceId, profileId, {
+              ...entry,
+              expected_revision: index === 0 ? (optionalInt(args, "expected_revision", { min: 1 }) ?? profile.revision) : undefined,
+            });
+            entriesWritten += 1;
+            if (index === 0) {
+              profile = await client.getExecutionProfile(workspaceId, profileId);
+            }
+          }
+        }
+
+        const activateNow = args.activate_now === undefined ? true : args.activate_now === true;
+        if (!activateNow) {
+          return {
+            applied: false,
+            staged: true,
+            code: "staged_not_activated",
+            squad: squadInfo,
+            entries_written: entriesWritten,
+            entries_deleted: entriesDeleted,
+            deleted_agent_ids: deleted,
+            profile: profileFull(profile),
+            hint: "Entries staged; call again with activate_now=true (or activate_execution_profile's flow) to rewrite the agents.",
+          };
+        }
+
+        const activation = await client.activateExecutionProfile(workspaceId, profileId);
+        return {
+          applied: true,
+          squad: squadInfo,
+          entries_written: entriesWritten,
+          entries_deleted: entriesDeleted,
+          deleted_agent_ids: deleted,
+          activation: {
+            profile: profileFull(activation.profile),
+            applied: activation.applied,
+            skipped: activation.skipped,
+            failed: activation.failed,
+            results: activation.results,
+          },
+        };
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return configConflictResult(error, "execution profile");
+        }
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return { applied: false, code: "not_found", profile_id: profileId };
+        }
+        if (error instanceof MulticaApiError && error.status === 403) {
+          return { applied: false, code: "permission_denied", message: apiErrorMessage(error) };
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    name: "get_execution_topology",
+    description:
+      "One read-only overview of a workspace's execution plane: every runtime with the agents bound to it (model, thinking level, revision), the daemon instances behind them, the active execution profile, and per-agent drift — whether a bound agent's current runtime/model still matches what the active profile last wrote. " +
+      "Use it to answer 'what runs where, with what model, and what would applying the active profile change'.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const workspaceId = await resolveWorkspaceId(client, workspace);
+      const [runtimes, agents, profiles] = await Promise.all([
+        client.listRuntimes(workspace),
+        client.listAgentConfigs(workspace),
+        client.listExecutionProfiles(workspaceId),
+      ]);
+      const active = profiles.find((profile) => profile.is_active) ?? null;
+      const activeEntries = new Map(active?.entries.map((entry) => [entry.agent_id, entry]) ?? []);
+
+      const liveAgents = agents.filter((agent) => agent.archived_at === undefined || agent.archived_at === null);
+      const topologyRuntimes = runtimes.map((runtime) => {
+        const bound = liveAgents.filter((agent) => agent.runtime_id === runtime.id);
+        return {
+          ...runtimeBrief(runtime),
+          used_by_count: bound.length,
+          agents: bound.map((agent) => {
+            const entry = activeEntries.get(agent.id);
+            const drift = entry !== undefined
+              ? entry.runtime_id !== agent.runtime_id || entry.model !== (agent.model ?? "")
+              : null;
+            return {
+              ...agentConfigBrief(agent),
+              active_profile_entry_matches: drift,
+            };
+          }),
+        };
+      });
+
+      const unbound = liveAgents
+        .filter((agent) => agent.runtime_id === undefined || agent.runtime_id === null || agent.runtime_id === "")
+        .map(agentConfigBrief);
+      const drifted = liveAgents.filter((agent) => {
+        const entry = activeEntries.get(agent.id);
+        return entry !== undefined
+          && (entry.runtime_id !== agent.runtime_id || entry.model !== (agent.model ?? ""));
+      }).length;
+
+      return {
+        runtimes: topologyRuntimes,
+        daemons: groupDaemonInstances(runtimes),
+        active_profile: active === null ? null : {
+          id: active.id,
+          name: active.name,
+          revision: active.revision,
+          entry_count: active.entry_count,
+          last_activated_at: active.last_activated_at ?? null,
+        },
+        unbound_agents: unbound,
+        drift_summary: active === null
+          ? { active_profile: null, drifted_agent_count: 0, note: "no active profile — nothing to drift from" }
+          : { active_profile_id: active.id, drifted_agent_count: drifted },
+      };
+    },
+  },
+
+  // ---- workspace-wide run view + agent/squad management (RUYI-419) --------
+  // Reads never trigger runs or any other side effect. Writes act on agent /
+  // squad metadata through the product's own ownership gates (owner-or-admin
+  // for agents, creator-or-admin for squads) and never start an agent run;
+  // the two archive operations DO cancel/transfer live work — declared
+  // per-tool below. Agents and squads carry no revision field, so there is
+  // no optimistic locking here: concurrent edits are last-write-wins.
+
+  {
+    name: "list_runs",
+    description:
+      "List agent runs across a WHOLE workspace (RUYI-419) — 'what ran, what is running, what failed' without knowing an issue first. " +
+      "Read-only. Each row carries the run's issue (identifier + title), agent, status, trigger source, timing and failure summary. " +
+      "Filters combine with AND: status (comma-separated raw statuses or the 'pending' alias = queued+dispatched+deferred+waiting_local_directory), agent_id, project_id, issue (UUID or PREFIX-N), trigger (comment/autopilot/rerun/system_retry), created_after/created_before (RFC3339). " +
+      "Unknown filter values match nothing (empty result, not an error). Visibility: only runs of agents you may access; paging via limit+offset with exact has_more/next_offset. " +
+      "Use list_issue_runs/get_run for per-issue drill-down; get_run needs the issue — resolve it from a row's issue identifier first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        status: {
+          type: "string",
+          description:
+            "Comma-separated raw statuses or 'pending' (queued-family bucket). Omit for all runs.",
+        },
+        agent_id: { type: "string", description: "Agent UUID filter, from list_agents." },
+        project_id: { type: "string", description: "Project UUID filter, from list_projects." },
+        issue: {
+          type: "string",
+          description: "Single-issue filter: issue UUID or PREFIX-N identifier (e.g. MUL-42).",
+        },
+        trigger: {
+          type: "string",
+          enum: ["comment", "autopilot", "rerun", "system_retry"],
+          description: "Trigger-source filter (optional).",
+        },
+        created_after: {
+          type: "string",
+          description: "Only runs created at or after this RFC3339 timestamp (e.g. 2026-05-14T09:00:00Z).",
+        },
+        created_before: {
+          type: "string",
+          description: "Only runs created before this RFC3339 timestamp (exclusive).",
+        },
+        limit: {
+          type: "integer",
+          description: "Max runs to return, 1–200 (default 50, newest first).",
+          minimum: 1,
+          maximum: 200,
+        },
+        offset: { type: "integer", description: "Rows to skip for paging (default 0).", minimum: 0 },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const trigger = optionalEnum(args, "trigger", ["comment", "autopilot", "rerun", "system_retry"]);
+      if (args.trigger !== undefined && trigger === undefined) {
+        throw new ToolInputError("'trigger' must be one of: comment, autopilot, rerun, system_retry");
+      }
+      const createdAfter = optionalString(args, "created_after");
+      const createdBefore = optionalString(args, "created_before");
+      if (createdAfter !== undefined && Number.isNaN(Date.parse(createdAfter))) {
+        throw new ToolInputError("'created_after' must be an RFC3339 timestamp, e.g. 2026-05-14T09:00:00Z");
+      }
+      if (createdBefore !== undefined && Number.isNaN(Date.parse(createdBefore))) {
+        throw new ToolInputError("'created_before' must be an RFC3339 timestamp, e.g. 2026-05-14T11:00:00Z");
+      }
+      const result = await client.listWorkspaceRuns(workspace, {
+        status: optionalString(args, "status"),
+        agent_id: optionalString(args, "agent_id"),
+        project_id: optionalString(args, "project_id"),
+        issue: optionalString(args, "issue"),
+        trigger,
+        created_after: createdAfter,
+        created_before: createdBefore,
+        limit: optionalInt(args, "limit", { min: 1, max: 200 }),
+        offset: optionalInt(args, "offset", { min: 0 }),
+      });
+      return {
+        total: result.count,
+        has_more: result.has_more,
+        next_offset: result.next_offset ?? null,
+        runs: result.runs.map((t) => ({
+          id: t.id,
+          issue: t.issue_identifier ?? t.issue_id ?? null,
+          issue_title: t.issue_title ?? null,
+          agent_id: t.agent_id ?? null,
+          status: t.status,
+          trigger: t.trigger ?? "other",
+          created_at: t.created_at,
+          started_at: t.started_at ?? null,
+          completed_at: t.completed_at ?? null,
+          failure_reason: t.failure_reason ?? null,
+        })),
+        note: "cancel_requested = stop accepted, awaiting runtime confirmation. Page with offset=next_offset when has_more.",
+      };
+    },
+  },
+  {
+    name: "get_agent",
+    description:
+      "Get ONE agent's key runtime configuration (RUYI-419): instructions, model, thinking level, concurrency cap, runtime binding and invocation permission mode. " +
+      "Read-only; reading an agent never triggers anything. Secret-bearing values (runtime_config, mcp_config, custom_env) are NOT exposed — only coarse indicators (has_custom_env, custom_env_key_count, mcp_config_redacted); manage secrets in the Multica UI. " +
+      "Agents have no revision field (no optimistic locking). Use list_agents for discovery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Agent UUID, from list_agents." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      return agentBrief(await client.getAgent(workspace, agentId));
+    },
+  },
+  {
+    name: "create_agent",
+    description:
+      "Create an agent in a workspace (RUYI-419). Any workspace member can create one and becomes its owner. " +
+      "Metadata-only: creating an agent never triggers a run. runtime_id is required (pick one with list_runtimes); an agent without a usable runtime cannot be dispatched. " +
+      "Secrets (runtime_config, mcp_config, custom_env) are NOT settable here — configure them in the Multica UI after creation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: { type: "string", description: "Agent name (required)." },
+        runtime_id: { type: "string", description: "Runtime UUID to bind (required; from list_runtimes)." },
+        description: { type: "string", description: "Short description shown in agent lists." },
+        instructions: {
+          type: "string",
+          description: "System-level instructions prepended to every run of this agent.",
+        },
+        model: { type: "string", description: "Model identifier for the bound runtime (optional)." },
+        thinking_level: { type: "string", description: "Runtime-native reasoning/effort token (optional)." },
+        max_concurrent_tasks: {
+          type: "integer",
+          description: "How many runs this agent may execute in parallel (default 1).",
+          minimum: 1,
+        },
+      },
+      required: ["workspace", "name", "runtime_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agent = await client.createAgent(workspace, {
+        name: requireString(args, "name"),
+        runtime_id: requireString(args, "runtime_id"),
+        description: optionalString(args, "description") ?? "",
+        instructions: optionalString(args, "instructions") ?? "",
+        model: optionalString(args, "model") ?? "",
+        thinking_level: optionalString(args, "thinking_level") ?? "",
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 1 }),
+      });
+      return {
+        created: true,
+        agent: agentBrief(agent),
+        note: "The caller becomes the agent owner. Dispatch it with dispatch_agent; no run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "update_agent",
+    description:
+      "Update an existing agent's metadata (RUYI-419): name, description, instructions, model, thinking_level, service_tier, max_concurrent_tasks, or rebind runtime_id. " +
+      "PATCH semantics: an omitted key keeps the current value. Does NOT trigger runs. " +
+      "Gates: only the agent owner or a workspace admin may update; agents have no revision field — concurrent edits are last-write-wins (no expected_revision). " +
+      "Secrets are never editable here (the server rejects custom_env on this path by design, MUL-2600); use the Multica UI.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Agent UUID, from list_agents." },
+        name: { type: "string", description: "New name." },
+        description: { type: "string", description: "New description." },
+        instructions: { type: "string", description: "New system-level instructions." },
+        model: { type: "string", description: "New model identifier." },
+        thinking_level: {
+          type: "string",
+          description: "New reasoning/effort token. Pass empty string to clear back to the runtime default.",
+        },
+        service_tier: { type: "string", description: "Runtime-native execution tier (Codex). Empty string clears." },
+        max_concurrent_tasks: { type: "integer", description: "New parallel-run cap.", minimum: 1 },
+        runtime_id: { type: "string", description: "Rebind to this runtime UUID (from list_runtimes)." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      const agent = await client.updateAgent(workspace, agentId, {
+        name: optionalString(args, "name"),
+        description: optionalString(args, "description"),
+        instructions: optionalString(args, "instructions"),
+        model: optionalString(args, "model"),
+        thinking_level: optionalString(args, "thinking_level"),
+        service_tier: optionalString(args, "service_tier"),
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 1 }),
+        runtime_id: optionalString(args, "runtime_id"),
+      });
+      return {
+        updated: true,
+        agent: agentBrief(agent),
+        note: "No run was started by this call. Already-queued runs keep the configuration they were dispatched with.",
+      };
+    },
+  },
+  {
+    name: "archive_agent",
+    description:
+      "Archive (soft-disable) an agent (RUYI-419). SIDE EFFECT — this is heavier than it looks: archiving CANCELS every queued or in-flight run of this agent immediately, and the agent disappears from list_agents/dispatch until restored. " +
+      "The agent row, history and configuration are kept. Gates: agent owner or workspace admin; built-in system agents cannot be archived. " +
+      "Repeat on an already-archived agent returns the structured outcome already_archived. Restore with restore_agent.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Agent UUID to archive, from list_agents." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      let agent: AgentDetailInfo;
+      try {
+        agent = await client.archiveAgent(workspace, agentId);
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return {
+            code: "already_archived",
+            archived: false,
+            message: "agent is already archived; nothing to do (restore_agent brings it back)",
+          };
+        }
+        throw error;
+      }
+      return {
+        archived: true,
+        agent: agentBrief(agent),
+        note: "All of the agent's queued/in-flight runs were cancelled. The agent is hidden from dispatch until restore_agent.",
+      };
+    },
+  },
+  {
+    name: "restore_agent",
+    description:
+      "Restore a previously archived agent (RUYI-419). The agent becomes dispatchable again; past runs stay cancelled — nothing is re-enqueued automatically. " +
+      "Gates: agent owner or workspace admin. Restoring a non-archived agent returns the structured outcome not_archived. Read-only for runs: restoring never triggers a run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        agent_id: { type: "string", description: "Archived agent UUID, from list_agents (archived agents are excluded from that list; use list_runs to find their recent runs)." },
+      },
+      required: ["workspace", "agent_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const agentId = requireString(args, "agent_id");
+      let agent: AgentDetailInfo;
+      try {
+        agent = await client.restoreAgent(workspace, agentId);
+      } catch (error) {
+        if (error instanceof MulticaApiError && error.status === 409) {
+          return {
+            code: "not_archived",
+            restored: false,
+            message: "agent is not archived; nothing to restore",
+          };
+        }
+        throw error;
+      }
+      return {
+        restored: true,
+        agent: agentBrief(agent),
+        note: "The agent is dispatchable again. No run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "list_squads",
+    description:
+      "List a workspace's squads (RUYI-419): named teams that can be assigned issues and dispatch their leader agent. Read-only. " +
+      "Archived squads are not listed (the server lists active squads only). Use get_squad for one squad's instructions and members.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squads = await client.listSquads(workspace);
+      return {
+        total: squads.length,
+        squads: squads.map((squad) => ({
+          id: squad.id,
+          name: squad.name,
+          description: squad.description ?? "",
+          leader_id: squad.leader_id ?? null,
+          member_count: squad.member_count,
+        })),
+      };
+    },
+  },
+  {
+    name: "get_squad",
+    description:
+      "Get ONE squad's configuration (RUYI-419): description, instructions, leader agent, member preview and archive state. Read-only. Use list_squads for discovery.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        squad_id: { type: "string", description: "Squad UUID, from list_squads." },
+      },
+      required: ["workspace", "squad_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squadId = requireString(args, "squad_id");
+      return squadBrief(await client.getSquad(workspace, squadId));
+    },
+  },
+  {
+    name: "create_squad",
+    description:
+      "Create a squad (RUYI-419): a named team whose issues are worked by its leader agent with named members. Any workspace member can create one and becomes its creator; the leader_id must be an agent in the same workspace (pick one with list_agents). " +
+      "Metadata-only: creating a squad never triggers a run. Dispatch work to it with assign_issue (assignee_type squad).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: { type: "string", description: "Squad name (required)." },
+        leader_id: { type: "string", description: "Leader agent UUID (required; an agent in this workspace)." },
+        description: { type: "string", description: "What the squad is for." },
+      },
+      required: ["workspace", "name", "leader_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squad = await client.createSquad(workspace, {
+        name: requireString(args, "name"),
+        leader_id: requireString(args, "leader_id"),
+        description: optionalString(args, "description") ?? "",
+      });
+      return {
+        created: true,
+        squad: squadBrief(squad),
+        note: "The caller becomes the squad creator (and manager). No run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "update_squad",
+    description:
+      "Update a squad's metadata (RUYI-419): name, description, instructions, or rotate leader_id. " +
+      "PATCH semantics: an omitted key keeps the current value. Does NOT trigger runs. " +
+      "Gates: the squad creator or a workspace admin; squads have no revision field — concurrent edits are last-write-wins (no expected_revision). " +
+      "Note on leader rotation: if the new leader's runtime is unbound, the server pauses autopilots targeting this squad rather than let them dispatch into a dead end.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        squad_id: { type: "string", description: "Squad UUID, from list_squads." },
+        name: { type: "string", description: "New name." },
+        description: { type: "string", description: "New description." },
+        instructions: { type: "string", description: "New squad-level instructions." },
+        leader_id: { type: "string", description: "New leader agent UUID (an agent in this workspace)." },
+      },
+      required: ["workspace", "squad_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squadId = requireString(args, "squad_id");
+      const squad = await client.updateSquad(workspace, squadId, {
+        name: optionalString(args, "name"),
+        description: optionalString(args, "description"),
+        instructions: optionalString(args, "instructions"),
+        leader_id: optionalString(args, "leader_id"),
+      });
+      return {
+        updated: true,
+        squad: squadBrief(squad),
+        note: "No run was started by this call.",
+      };
+    },
+  },
+  {
+    name: "archive_squad",
+    description:
+      "Archive a squad (RUYI-419). SIDE EFFECTS: the squad stops being assignable, and every issue still assigned to it is REASSIGNED to its leader agent; autopilots targeting the squad are retargeted to the leader. " +
+      "This is a soft archive — the squad row and history are kept, but there is NO restore: re-creating a squad or reassigning issues back is manual. Gates: squad creator or workspace admin. " +
+      "Repeat on an already-archived squad returns the structured outcome already_archived.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        squad_id: { type: "string", description: "Squad UUID to archive, from list_squads." },
+      },
+      required: ["workspace", "squad_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const squadId = requireString(args, "squad_id");
+      try {
+        await client.archiveSquad(workspace, squadId);
+      } catch (error) {
+        if (
+          error instanceof MulticaApiError &&
+          error.status === 400 &&
+          /already archived/i.test(error.message)
+        ) {
+          return {
+            code: "already_archived",
+            archived: false,
+            message: "squad is already archived; nothing to do",
+          };
+        }
+        throw error;
+      }
+      return {
+        archived: true,
+        squad_id: squadId,
+        note: "Issues assigned to the squad were reassigned to its leader agent; autopilots targeting the squad now target the leader. There is no squad restore.",
+      };
+    },
+  },
+  {
+    name: "list_quick_replies",
+    description:
+      "List a workspace's quick replies — the shared comment templates its " +
+      "members pick from the issue composer's quick-reply menu. Read-open to " +
+      "every member; ordered by the admin's arrangement.",
+    inputSchema: {
+      type: "object",
+      properties: { workspace: wsProperty() },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const result = await client.listQuickReplies(workspace);
+      return {
+        total: result.total,
+        quick_replies: result.quick_replies.map((reply) => ({
+          id: reply.id,
+          name: reply.name,
+          content: reply.content,
+          position: reply.position,
+          updated_at: reply.updated_at,
+        })),
+      };
+    },
+  },
+  {
+    name: "create_quick_reply",
+    description:
+      "Create a quick reply: a named comment template every member can insert " +
+      "into the issue composer from the quick-reply menu. Requires workspace " +
+      "owner/admin (403 otherwise); names must be unique within the workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        name: {
+          type: "string",
+          description: "Menu label, 1-64 characters, unique within the workspace.",
+          maxLength: 64,
+        },
+        content: {
+          type: "string",
+          description: "Template body inserted into the composer on selection (never auto-sent), 1-10000 characters.",
+          maxLength: 10000,
+        },
+      },
+      required: ["workspace", "name", "content"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const name = requireString(args, "name");
+      const content = requireString(args, "content");
+      const reply = await client.createQuickReply(workspace, { name, content });
+      return { id: reply.id, name: reply.name, content: reply.content, position: reply.position };
+    },
+  },
+  {
+    name: "update_quick_reply",
+    description:
+      "Update a quick reply's name and/or content (PATCH: omitted fields stay " +
+      "as-is). Requires workspace owner/admin (403 otherwise).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        id: { type: "string", description: "Quick reply UUID, from list_quick_replies." },
+        name: { type: "string", description: "New menu label (1-64 characters).", maxLength: 64 },
+        content: { type: "string", description: "New template body (1-10000 characters).", maxLength: 10000 },
+      },
+      required: ["workspace", "id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const id = requireString(args, "id");
+      const body: { name?: string; content?: string } = {};
+      const name = optionalString(args, "name");
+      const content = optionalString(args, "content");
+      if (name !== undefined) body.name = name;
+      if (content !== undefined) body.content = content;
+      if (Object.keys(body).length === 0) {
+        throw new ToolInputError("update_quick_reply requires at least one of `name` or `content`");
+      }
+      const reply = await client.updateQuickReply(workspace, id, body);
+      return { id: reply.id, name: reply.name, content: reply.content, position: reply.position };
+    },
+  },
+  {
+    name: "delete_quick_reply",
+    description:
+      "Delete a quick reply. It disappears from every member's composer menu " +
+      "immediately. Requires workspace owner/admin (403 otherwise).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        id: { type: "string", description: "Quick reply UUID, from list_quick_replies." },
+      },
+      required: ["workspace", "id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const id = requireString(args, "id");
+      await client.deleteQuickReply(workspace, id);
+      return { deleted: true, id };
+    },
+  },
+  // ---- project resource bindings (RUYI-458) ---------------------------------
+  // The exact REST surface the web project page drives, so MCP callers
+  // manage the same rows. Binding and unbinding are metadata-only: they
+  // record or remove a pointer, never clone/delete/modify the underlying
+  // GitHub repository or local directory, and never trigger agent runs.
+  {
+    name: "list_project_resources",
+    description:
+      "List the resources bound to a project — github_repo checkouts and " +
+      "local_directory bindings with their refs, labels and order. Read-only. " +
+      "get_project's resource_count is this list's length; resource ids come " +
+      "from here.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+      },
+      required: ["workspace", "project_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const result = await client.listProjectResources(workspace, projectId);
+      return {
+        total: result.total,
+        resources: result.resources.map(resourceBrief),
+      };
+    },
+  },
+  {
+    name: "create_project_resource",
+    description:
+      "Bind a resource to a project. resource_type=github_repo takes " +
+      "resource_ref.url (http(s)/ssh/scp git URL) plus optional " +
+      "resource_ref.ref and resource_ref.default_branch_hint; " +
+      "resource_type=local_directory takes resource_ref.local_path (absolute " +
+      "path) and resource_ref.daemon_id (the owning runtime), plus optional " +
+      "resource_ref.label and resource_ref.execution_mode (in_place | " +
+      "worktree). Duplicate bindings fail with a structured already_attached " +
+      "result — never dirty duplicates. Binding only records the pointer: " +
+      "nothing is cloned or created, and no agent runs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+        resource_type: {
+          type: "string",
+          enum: [...PROJECT_RESOURCE_TYPES],
+          description: "github_repo | local_directory.",
+        },
+        resource_ref: {
+          type: "object",
+          description:
+            "Type-specific pointer, validated against resource_type. " +
+            "github_repo: { url, ref?, default_branch_hint? }. " +
+            "local_directory: { local_path, daemon_id, label?, execution_mode? }.",
+        },
+        label: { type: "string", description: "Optional display label." },
+        position: {
+          type: "integer",
+          description: "Optional order (default: appended after existing resources).",
+          minimum: 0,
+        },
+      },
+      required: ["workspace", "project_id", "resource_type", "resource_ref"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const resourceType = optionalEnum(args, "resource_type", PROJECT_RESOURCE_TYPES);
+      if (resourceType === undefined) {
+        throw new ToolInputError(
+          "'resource_type' is required and must be one of: github_repo, local_directory",
+        );
+      }
+      const body: CreateProjectResourceBody = {
+        resource_type: resourceType,
+        resource_ref: requireProjectResourceRef(args, "resource_ref", resourceType),
+        label: optionalString(args, "label"),
+        position: optionalInt(args, "position", { min: 0 }),
+      };
+      try {
+        const resource = await client.createProjectResource(workspace, projectId, body);
+        return { created: true, ...resourceBrief(resource) };
+      } catch (error) {
+        const failure = structuredResourceFailure(error);
+        if (failure === undefined) throw error;
+        return {
+          created: false,
+          ...failure,
+          ...(failure.code === "already_attached"
+            ? {
+                hint: "The project already carries this binding — list_project_resources shows the existing row.",
+              }
+            : {}),
+        };
+      }
+    },
+  },
+  {
+    name: "update_project_resource",
+    description:
+      "Update a bound project resource (PATCH): omitted fields keep their " +
+      "current value; label null or \"\" clears the label; position reorders; " +
+      "resource_ref re-points the binding (validated against the stored " +
+      "resource_type). resource_type itself is immutable — re-pointing at a " +
+      "different type is a different resource, so delete and re-add instead. " +
+      "resource_id comes from list_project_resources.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+        resource_id: {
+          type: "string",
+          description: "Resource UUID, from list_project_resources.",
+        },
+        label: {
+          type: ["string", "null"],
+          description: "New label. Pass null or \"\" to clear; omit to keep.",
+        },
+        position: { type: "integer", description: "New order. Omit to keep.", minimum: 0 },
+        resource_ref: {
+          type: "object",
+          description:
+            "Re-pointed binding; the shape must match the resource's stored type. Omit to keep.",
+        },
+      },
+      required: ["workspace", "project_id", "resource_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const resourceId = requireString(args, "resource_id");
+      // resource_type is immutable server-side; refusing it here teaches the
+      // rule at the schema boundary instead of a 400 round trip.
+      if (args.resource_type !== undefined) {
+        throw new ToolInputError(
+          "'resource_type' is immutable — delete and re-add the resource to change its type",
+        );
+      }
+      const label = optionalClearableString(args, "label");
+      const position = optionalInt(args, "position", { min: 0 });
+      const resourceRef = optionalProjectResourceRef(args, "resource_ref");
+      const body: UpdateProjectResourceBody = {};
+      if (label !== undefined) body.label = label;
+      if (position !== undefined) body.position = position;
+      if (resourceRef !== undefined) body.resource_ref = resourceRef;
+      if (Object.keys(body).length === 0) {
+        throw new ToolInputError(
+          "update_project_resource requires at least one of `label`, `position` or `resource_ref`",
+        );
+      }
+      try {
+        const resource = await client.updateProjectResource(
+          workspace,
+          projectId,
+          resourceId,
+          body,
+        );
+        return { updated: true, ...resourceBrief(resource) };
+      } catch (error) {
+        const failure = structuredResourceFailure(error);
+        if (failure === undefined) throw error;
+        return { updated: false, ...failure };
+      }
+    },
+  },
+  {
+    name: "delete_project_resource",
+    description:
+      "Unbind a resource from a project by resource_id. WARNING (binding " +
+      "only): this removes the project's pointer row and nothing else — the " +
+      "real GitHub repository and the real local directory are never deleted " +
+      "or modified. Re-binding the same ref afterwards is allowed; deleting " +
+      "an already-unbound id answers a structured not_found instead of " +
+      "failing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        project_id: { type: "string", description: "Project UUID, from list_projects." },
+        resource_id: {
+          type: "string",
+          description: "Resource UUID, from list_project_resources.",
+        },
+      },
+      required: ["workspace", "project_id", "resource_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const projectId = requireString(args, "project_id");
+      const resourceId = requireString(args, "resource_id");
+      try {
+        await client.deleteProjectResource(workspace, projectId, resourceId);
+        return { deleted: true, id: resourceId };
+      } catch (error) {
+        // Re-running an unbind is a defined outcome (the binding is already
+        // gone), not a transport failure — surface it as a structured result
+        // so idempotent retries read as successes-with-status.
+        if (error instanceof MulticaApiError && error.status === 404) {
+          return {
+            deleted: false,
+            code: "not_found",
+            message: apiErrorMessage(error),
+            hint: "Nothing to unbind — the binding is already gone.",
+          };
+        }
+        throw error;
+      }
     },
   },
 ];

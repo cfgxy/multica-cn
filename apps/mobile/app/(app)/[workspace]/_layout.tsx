@@ -24,6 +24,7 @@ import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
 import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
+import { useChatAgentRequestResetOnWorkspaceChange } from "@/data/stores/chat-agent-request-store";
 
 /**
  * Shared Stack.Screen options for every iOS formSheet-presented sheet route.
@@ -138,6 +139,7 @@ export default function WorkspaceLayout() {
   useNewIssueDraftResetOnWorkspaceChange(matched?.id ?? null);
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
+  useChatAgentRequestResetOnWorkspaceChange(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.
@@ -458,6 +460,49 @@ export default function WorkspaceLayout() {
           name="more/agents/[id]/webhooks"
           options={SHEET_OPTIONS}
         />
+        {/* RUYI-425 §4.3: voice runtime instances — list from the More
+            dropdown, modal create form, settings page (its in-page
+            Stack.Screen overrides the title with the instance name). */}
+        <Stack.Screen
+          name="more/runtimes"
+          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/runtimes/new"
+          options={{
+            presentation: "modal",
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="more/runtimes/[id]"
+          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
+        />
+        {/* RUYI-418 B2/B3：agent 设置/能力子屏（formSheet，body 自绘 header）。 */}
+        <Stack.Screen
+          name="more/agents/[id]/access"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/custom-args"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/runtime-config"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/mcp"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/composio"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/integrations"
+          options={SHEET_OPTIONS}
+        />
         <Stack.Screen
           name="more/squads"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
@@ -475,6 +520,11 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="more/squads/[id]/add-member"
+          options={SHEET_OPTIONS}
+        />
+        {/* RUYI-418 Q10: 执行配置管理（列表/编辑/激活），formSheet。 */}
+        <Stack.Screen
+          name="more/squads/[id]/execution-profiles"
           options={SHEET_OPTIONS}
         />
         <Stack.Screen

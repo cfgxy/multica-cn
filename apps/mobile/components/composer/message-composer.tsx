@@ -65,6 +65,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
+import {
+  useActionSheet,
+  ActionSheetModal,
+} from "@/components/ui/action-sheet";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useSkillDraftStore } from "@/data/stores/skill-draft-store";
 import { insertSkillReference, serializeSkillReference, skillTriggerFromInput } from "@/lib/skill-reference";
@@ -78,6 +82,8 @@ import {
 } from "@/lib/mention-serialize";
 import { mentionTriggerFromInput } from "@/lib/mention-trigger";
 import { useFileAttach } from "@/components/editor/use-file-attach";
+import { assetFromSharedFile } from "@/lib/picked-asset";
+import type { SharedFile } from "@/lib/share-payload";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
 import { useT } from "@/lib/use-t";
@@ -107,6 +113,13 @@ interface Props {
   mentionPickerPath: Href;
   /** Issue comments may pick a skill; chat keeps its existing input behavior. */
   skillPickerPath?: Href;
+
+  /** Workspace quick replies (RUYI-435). When non-empty the toolbar shows a
+   *  quick-reply button that opens an ActionSheet; the pick APPENDS the
+   *  template body to the draft (never sends) and focuses the input so the
+   *  user can edit before sending. Comment passes the workspace catalog;
+   *  chat doesn't. */
+  quickReplies?: Array<{ id: string; name: string; content: string }>;
 
   /** Attachment upload context — forwarded to `api.uploadFile`. Comment
    *  passes `issueId`; chat omits both (uploads are session-scoped via
@@ -142,6 +155,13 @@ interface Props {
   isSending?: boolean;
   renderStop?: () => ReactNode;
 
+  /** RUYI-449 three-state input: when the draft is EMPTY and this render
+   *  prop is provided, the trailing send button is replaced by the mic —
+   *  typed content swaps it straight back to send. Chat passes it (voice
+   *  session entry); comments don't. A disabled composer keeps the send
+   *  arrow so the no-agent placeholder state stays honest. */
+  renderVoiceWhenEmpty?: () => ReactNode;
+
   /** Hard-disable. Used when chat has no usable agent. The pill shows
    *  `disabledReason` instead of `pillLabel`, and the pill is
    *  non-interactive (cannot expand). */
@@ -159,12 +179,21 @@ interface Props {
    *  apply them. Comment's parent does NOT handle keyboard, so the
    *  composer keeps the default `true`. */
   manageKeyboard?: boolean;
+
+  /** RUYI-463: 系统分享带来的文件。非空时 composer 在 effect 里经
+   *  `assetFromSharedFile` 转成 PickedAsset 走既有 `enqueueAssets` 上传
+   *  通道（沿用尺寸/类型上限），本组件不感知 shared-intent-store ——
+   *  父层（chat.tsx / 建单面板）take 后传入。 */
+  incomingSharedFiles?: SharedFile[];
+  /** 分享文件入队完成后回调；父层借此清空 `incomingSharedFiles` 闭环。 */
+  onIncomingSharedFilesConsumed?: () => void;
 }
 
 export function MessageComposer({
   onSubmit,
   mentionPickerPath,
   skillPickerPath,
+  quickReplies,
   uploadContext,
   placeholder,
   pillLabel,
@@ -176,10 +205,13 @@ export function MessageComposer({
   expandTrigger,
   isSending = false,
   renderStop,
+  renderVoiceWhenEmpty,
   disabled = false,
   disabledReason,
   requireVisibleText = false,
   manageKeyboard = true,
+  incomingSharedFiles,
+  onIncomingSharedFilesConsumed,
 }: Props) {
   const { t } = useT("common");
   const { colorScheme } = useColorScheme();
@@ -200,12 +232,35 @@ export function MessageComposer({
     retryAttachment,
     clearAttachments,
     restoreAttachments,
+    enqueueAssets,
     uploading,
   } = useFileAttach({
     uploadContext,
     alertOnError: false,
     onAttachmentsEnqueued: focusInputAfterPick,
   });
+
+  // RUYI-463: 系统分享的文件一次性入队（沿用 pick 工具栏同一条上传
+  // 通道与上限）。ref 记录已处理引用——父层回调若是内联箭头函数，
+  // 其身份随渲染变化会把 effect 再触发一遍导致重复入队。
+  const consumedSharedRef = useRef<SharedFile[] | null>(null);
+  useEffect(() => {
+    if (!incomingSharedFiles || incomingSharedFiles.length === 0) return;
+    if (consumedSharedRef.current === incomingSharedFiles) return;
+    consumedSharedRef.current = incomingSharedFiles;
+    enqueueAssets(incomingSharedFiles.map(assetFromSharedFile));
+    onIncomingSharedFilesConsumed?.();
+  }, [incomingSharedFiles, onIncomingSharedFilesConsumed, enqueueAssets]);
+
+  // RUYI-463: 附件区只渲染在展开卡片里，pill 折叠态看不到。入队后的
+  // 展开原本靠 focusInputAfterPick 的键盘 focus，但分享注入发生在导航
+  // 转场窗口里，rAF 聚焦会被转场吞掉（冷启动实测芯片进了折叠 composer
+  // 而不可见）。附件非空即展开；onBlur 的收起条件要求 attachments 为
+  // 空，不会把带附件的展开态折回去。
+  const attachmentCount = attachments.length;
+  useEffect(() => {
+    if (attachmentCount > 0) setExpanded(true);
+  }, [attachmentCount]);
 
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
   // passes `value`/`onChangeText` for cross-session draft persistence;
@@ -227,6 +282,27 @@ export function MessageComposer({
     },
     [isControlled, controlledOnChange],
   );
+
+  // Quick replies (RUYI-435): the sheet captures the draft text at open
+  // time — both presentations are modal, so the text cannot move between
+  // open and pick — and appends the template body, never replacing it.
+  const quickReplySheet = useActionSheet();
+  const onQuickReplyPress = useCallback(() => {
+    const replies = quickReplies ?? [];
+    if (replies.length === 0) return;
+    const current = text;
+    quickReplySheet.show({
+      title: t("composer.quick_replies_title", "Quick replies"),
+      options: [...replies.map((reply) => reply.name), t("cancel", "Cancel")],
+      cancelButtonIndex: replies.length,
+      onSelect: (index) => {
+        const picked = replies[index];
+        if (!picked) return;
+        setText(current ? `${current}\n\n${picked.content}` : picked.content);
+        focusInputAfterPick();
+      },
+    });
+  }, [quickReplies, quickReplySheet, text, setText, t, focusInputAfterPick]);
 
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
@@ -583,6 +659,19 @@ export function MessageComposer({
               className="h-8 w-8"
             />
           ) : null}
+          {(quickReplies?.length ?? 0) > 0 ? (
+            <IconButton
+              name="text-outline"
+              iconSize={20}
+              onPress={onQuickReplyPress}
+              disabled={toolsDisabled}
+              accessibilityLabel={t(
+                "composer.quick_reply_hint",
+                "Insert a quick reply",
+              )}
+              className="h-8 w-8"
+            />
+          ) : null}
           <IconButton
             name="image-outline"
             iconSize={20}
@@ -602,6 +691,8 @@ export function MessageComposer({
           <View className="flex-1" />
           {isSending && renderStop ? (
             renderStop()
+          ) : renderVoiceWhenEmpty && !text.trim() && !disabled ? (
+            renderVoiceWhenEmpty()
           ) : (
             <IconButton
               name="arrow-up"
@@ -623,14 +714,25 @@ export function MessageComposer({
 
   const body = expanded ? expandedContent : pillContent;
 
+  // Android presents the quick-reply sheet through this in-tree modal; iOS
+  // uses ActionSheetIOS from show() and ignores it.
+  const quickReplyModal = <ActionSheetModal {...quickReplySheet.modalProps} />;
+
   // When the parent owns keyboard handling (chat.tsx wraps in
   // KeyboardAvoidingView + SafeAreaView), skip the KeyboardStickyView —
   // double-stacking causes the composer to jump twice on keyboard show.
-  if (!manageKeyboard) return body;
+  if (!manageKeyboard)
+    return (
+      <>
+        {body}
+        {quickReplyModal}
+      </>
+    );
 
   return (
     <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
       {body}
+      {quickReplyModal}
     </KeyboardStickyView>
   );
 }

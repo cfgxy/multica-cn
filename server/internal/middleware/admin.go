@@ -2,9 +2,11 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -17,10 +19,14 @@ import (
 // sees it within at most one UserStateCacheTTL window — immediately on the
 // next request when the acting node invalidates the entry itself.
 //
-// Failure semantics deliberately match the other auth caches: a Redis or DB
-// error on a cache miss fails OPEN (log + allow), because a dead dependency
-// must not take down every authenticated request. The authoritative reads
-// happen on the login path, which has no cache in front of it.
+// Failure semantics: a Redis or DB error on a cache miss fails OPEN (log +
+// allow), because a dead dependency must not take down every authenticated
+// request. A no-rows lookup is not a dependency failure and fails CLOSED
+// (RUYI-429): a token whose sub names a user this database has never heard
+// of — a physically deleted row, or a token minted against a sibling
+// database sharing the same JWT_SECRET — must not authenticate as a ghost
+// identity. The authoritative reads happen on the login path, which has no
+// cache in front of it.
 type dbDisabledLookup struct {
 	queries *db.Queries
 	cache   *auth.UserStateCache
@@ -51,6 +57,15 @@ func (l *dbDisabledLookup) IsDisabled(ctx context.Context, userID string) bool {
 	}
 	state, err := l.queries.GetUserAdminState(ctx, id)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// RUYI-429: reject an identity this database does not know.
+			// Cached as "disabled" so cache hits and misses behave
+			// identically; if a row with the same UUID is re-created
+			// within one TTL window, the flag self-heals on expiry
+			// (admin disable/enable already invalidates eagerly).
+			l.cache.Set(ctx, userID, true)
+			return true
+		}
 		slog.Warn("auth: user state lookup failed; failing open", "error", err)
 		return false
 	}

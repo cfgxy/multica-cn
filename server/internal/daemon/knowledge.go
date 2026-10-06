@@ -253,7 +253,7 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 }
 
 // scanKnowledgeDir reads one source directory and decides what to report.
-// Unclaimed directories (daemon_id '') are only scanned when the path is
+// Unclaimed directories (daemon_id ”) are only scanned when the path is
 // actually usable here; failures on them stay silent because another daemon
 // may host the path — the first successful scan claims the directory.
 func (d *Daemon) scanKnowledgeDir(ctx context.Context, dir KnowledgePlanDir) *KnowledgeScanReport {

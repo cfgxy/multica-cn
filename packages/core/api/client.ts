@@ -3,6 +3,8 @@ import { configStore } from "../config";
 import type {
   Issue,
   IssueDecision,
+  BatchDecisionAnswerResult,
+  BatchIssueDecisionAnswer,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -165,6 +167,10 @@ import type {
   CreateQuickActionRequest,
   UpdateQuickActionRequest,
   ListQuickActionsResponse,
+  QuickReply,
+  ListQuickRepliesResponse,
+  CreateQuickReplyRequest,
+  UpdateQuickReplyRequest,
   UpdatePropertyRequest,
   ListPropertiesResponse,
   IssuePropertiesResponse,
@@ -286,6 +292,15 @@ import type {
   ImpersonationResponse,
 } from "../admin/types";
 import type {
+  AdminMCPStatus,
+  AdminOAuthClientList,
+  AdminOAuthGrantList,
+  MyOAuthGrantList,
+  OAuthClientSecretReveal,
+  OAuthConsentInfo,
+  OAuthRedirectResponse,
+} from "../oauth-admin/types";
+import type {
   CreateFeedbackResponse,
   FeedbackContext,
   FeedbackKind,
@@ -321,6 +336,7 @@ import {
   CommentsListSchema,
   IssueDecisionsListSchema,
   IssueDecisionSchema,
+  BatchDecisionAnswersSchema,
   CommentTriggerPreviewSchema,
   IssueTriggerPreviewSchema,
   CloudRuntimeNodeListSchema,
@@ -405,6 +421,20 @@ import {
   EMPTY_ADMIN_USER_LIST,
   EMPTY_ADMIN_WORKSPACE_LIST,
   EMPTY_IMPERSONATION_RESPONSE,
+  AdminMCPStatusSchema,
+  AdminOAuthClientListSchema,
+  AdminOAuthGrantListSchema,
+  MyOAuthGrantListSchema,
+  OAuthClientSecretRevealSchema,
+  OAuthConsentInfoSchema,
+  OAuthRedirectResponseSchema,
+  EMPTY_ADMIN_MCP_STATUS,
+  EMPTY_ADMIN_OAUTH_CLIENT_LIST,
+  EMPTY_ADMIN_OAUTH_GRANT_LIST,
+  EMPTY_MY_OAUTH_GRANT_LIST,
+  EMPTY_OAUTH_SECRET_REVEAL,
+  EMPTY_OAUTH_CONSENT_INFO,
+  EMPTY_OAUTH_REDIRECT,
   WebhookDeliveryResponseSchema,
   BillingBalanceSchema,
   BillingTransactionsPageSchema,
@@ -472,6 +502,10 @@ import {
   QuickActionRenderSchema,
   EMPTY_QUICK_ACTION,
   EMPTY_LIST_QUICK_ACTIONS_RESPONSE,
+  QuickReplySchema,
+  ListQuickRepliesResponseSchema,
+  EMPTY_QUICK_REPLY,
+  EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   CommentSchema,
   EMPTY_COMMENT,
   EMPTY_ISSUE_PROPERTY,
@@ -1074,6 +1108,116 @@ export class ApiClient {
     });
   }
 
+  // OAuth management (RUYI-420) — MCP clients, grants, and the MCP status
+  // panel. Same instance-level super-admin surface as the methods above;
+  // the plaintext secret exists only in the create/rotate responses below.
+  async adminListOAuthClients(): Promise<AdminOAuthClientList> {
+    const raw = await this.fetch<unknown>("/api/admin/oauth/clients");
+    return parseWithFallback(raw, AdminOAuthClientListSchema, EMPTY_ADMIN_OAUTH_CLIENT_LIST, {
+      endpoint: "GET /api/admin/oauth/clients",
+    });
+  }
+
+  async adminCreateOAuthClient(body: { name: string; redirect_uris: string[] }): Promise<OAuthClientSecretReveal> {
+    const raw = await this.fetch<unknown>("/api/admin/oauth/clients", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(raw, OAuthClientSecretRevealSchema, EMPTY_OAUTH_SECRET_REVEAL, {
+      endpoint: "POST /api/admin/oauth/clients",
+    });
+  }
+
+  async adminUpdateOAuthClient(id: string, body: { name: string; redirect_uris: string[] }): Promise<void> {
+    await this.fetch(`/api/admin/oauth/clients/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async adminSetOAuthClientDisabled(id: string, disabled: boolean, reason?: string): Promise<void> {
+    await this.fetch(`/api/admin/oauth/clients/${id}/disabled`, {
+      method: "PATCH",
+      body: JSON.stringify({ disabled, reason: reason || undefined }),
+    });
+  }
+
+  async adminRotateOAuthClientSecret(id: string, reason?: string): Promise<OAuthClientSecretReveal> {
+    const raw = await this.fetch<unknown>(`/api/admin/oauth/clients/${id}/rotate?reason=${encodeURIComponent(reason ?? "")}`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, OAuthClientSecretRevealSchema, EMPTY_OAUTH_SECRET_REVEAL, {
+      endpoint: "POST /api/admin/oauth/clients/:id/rotate",
+    });
+  }
+
+  async adminDeleteOAuthClient(id: string, reason?: string): Promise<void> {
+    await this.fetch(`/api/admin/oauth/clients/${id}?reason=${encodeURIComponent(reason ?? "")}`, {
+      method: "DELETE",
+    });
+  }
+
+  async adminListOAuthGrants(): Promise<AdminOAuthGrantList> {
+    const raw = await this.fetch<unknown>("/api/admin/oauth/grants");
+    return parseWithFallback(raw, AdminOAuthGrantListSchema, EMPTY_ADMIN_OAUTH_GRANT_LIST, {
+      endpoint: "GET /api/admin/oauth/grants",
+    });
+  }
+
+  async adminRevokeOAuthGrant(id: string, reason?: string): Promise<void> {
+    await this.fetch(`/api/admin/oauth/grants/${id}?reason=${encodeURIComponent(reason ?? "")}`, {
+      method: "DELETE",
+    });
+  }
+
+  async adminMCPServerStatus(): Promise<AdminMCPStatus> {
+    const raw = await this.fetch<unknown>("/api/admin/mcp/status");
+    return parseWithFallback(raw, AdminMCPStatusSchema, EMPTY_ADMIN_MCP_STATUS, {
+      endpoint: "GET /api/admin/mcp/status",
+    });
+  }
+
+  // The signed-in user's own MCP authorizations (Settings → 我的授权).
+  async listMyOAuthGrants(): Promise<MyOAuthGrantList> {
+    const raw = await this.fetch<unknown>("/api/oauth/grants");
+    return parseWithFallback(raw, MyOAuthGrantListSchema, EMPTY_MY_OAUTH_GRANT_LIST, {
+      endpoint: "GET /api/oauth/grants",
+    });
+  }
+
+  async revokeMyOAuthGrant(id: string): Promise<void> {
+    await this.fetch(`/api/oauth/grants/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // MCP OAuth consent confirmation page (RUYI-420). The {id} is the opaque
+  // consent ticket the authorize endpoint parked; 401/404 surface as ApiError.
+  async getOAuthConsent(id: string): Promise<OAuthConsentInfo> {
+    const raw = await this.fetch<unknown>(`/auth/oauth/consent/${id}`);
+    return parseWithFallback(raw, OAuthConsentInfoSchema, EMPTY_OAUTH_CONSENT_INFO, {
+      endpoint: "GET /auth/oauth/consent/{id}",
+    });
+  }
+
+  async approveOAuthConsent(id: string): Promise<OAuthRedirectResponse> {
+    const raw = await this.fetch<unknown>(`/auth/oauth/consent/${id}/approve`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, OAuthRedirectResponseSchema, EMPTY_OAUTH_REDIRECT, {
+      endpoint: "POST /auth/oauth/consent/{id}/approve",
+    });
+  }
+
+  async denyOAuthConsent(id: string): Promise<OAuthRedirectResponse> {
+    const raw = await this.fetch<unknown>(`/auth/oauth/consent/${id}/deny`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, OAuthRedirectResponseSchema, EMPTY_OAUTH_REDIRECT, {
+      endpoint: "POST /auth/oauth/consent/{id}/deny",
+    });
+  }
+
   async stopImpersonation(): Promise<ImpersonationResponse> {
     const raw = await this.fetch<unknown>("/api/impersonation/stop", {
       method: "POST",
@@ -1533,6 +1677,19 @@ export class ApiClient {
     });
     if (!decision) throw new Error("Invalid decision answer response");
     return decision;
+  }
+
+  // Batch answer (RUYI-471): several open cards in one request. The server
+  // answers each card through the same CAS as the single endpoint and reports
+  // per-card outcomes — callers must inspect `results`, not just the HTTP code.
+  async answerIssueDecisionsBatch(issueId: string, answers: BatchIssueDecisionAnswer[]): Promise<BatchDecisionAnswerResult> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/answer-batch`, {
+      method: "POST",
+      body: JSON.stringify({ answers }),
+    });
+    return parseWithFallback(raw, BatchDecisionAnswersSchema, { results: [] }, {
+      endpoint: "POST /api/issues/:id/decisions/answer-batch",
+    });
   }
 
   async cancelIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
@@ -2248,6 +2405,64 @@ export class ApiClient {
     });
   }
 
+  /**
+   * RUYI-425 §4.5 (stage 2): stores or rotates a runtime instance credential.
+   * The value travels once in the request body and is NEVER returned — the
+   * response carries only the badge plus the §4.3 connectivity-probe outcome.
+   * Server returns 503 when the deployment has no credential encryption key.
+   */
+  async putRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<{
+    runtime_id: string;
+    credential_key: string;
+    credential_status: string;
+    probe?: { status: string; http_status?: number; checked_at?: string };
+  }> {
+    return this.fetch(
+      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      },
+    );
+  }
+
+  /**
+   * RUYI-425 §4.5 (stage 2): removes the stored credential value. Idempotent
+   * server-side (204 even when nothing was stored).
+   */
+  async deleteRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/credentials/${credentialKey}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * RUYI-425 §4.3 (stage 3): manually registers a voice instance. Names may
+   * duplicate; capabilities derive server-side from the profile's protocol
+   * family; the instance is born online/public and structurally invisible to
+   * daemon probing. The API key is NOT part of this call — store it right
+   * after via putRuntimeCredential, which also triggers the connectivity
+   * probe.
+   */
+  async createManualRuntime(body: {
+    name: string;
+    profile_id: string;
+    model?: string;
+    advanced?: Record<string, unknown>;
+  }): Promise<AgentRuntime> {
+    return this.fetch("/api/runtimes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   async updateRuntime(
     runtimeId: string,
     patch: {
@@ -2260,6 +2475,15 @@ export class ApiClient {
       custom_name?: string;
       /** Apply custom_name to every runtime on the same machine. */
       apply_to_machine?: boolean;
+      /**
+       * RUYI-425 §4.3 voice instance settings (stage 2). Only accepted on
+       * manually registered instances; the server merges them into the
+       * instance metadata without touching other keys. `model: ""` clears;
+       * `advanced: {}` clears; `disabled: false` clears the flag.
+       */
+      model?: string;
+      advanced?: Record<string, unknown>;
+      disabled?: boolean;
     },
   ): Promise<AgentRuntime> {
     return this.fetch(`/api/runtimes/${runtimeId}`, {
@@ -5145,6 +5369,50 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/issue-statuses/${id}`, { method: "DELETE" });
     return parseWithFallback(raw, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, {
       endpoint: "DELETE /api/issue-statuses/{id}",
+    });
+  }
+
+  // Workspace quick replies (RUYI-435). Reads are open to any workspace
+  // member (the composer menu); the writes below are owner/admin only and
+  // answer 403 to plain members.
+  async listQuickReplies(): Promise<ListQuickRepliesResponse> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies`);
+    return parseWithFallback(raw, ListQuickRepliesResponseSchema, EMPTY_LIST_QUICK_REPLIES_RESPONSE, {
+      endpoint: "GET /api/quick-replies",
+    });
+  }
+
+  async createQuickReply(data: CreateQuickReplyRequest): Promise<QuickReply> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickReplySchema, EMPTY_QUICK_REPLY, {
+      endpoint: "POST /api/quick-replies",
+    });
+  }
+
+  async updateQuickReply(id: string, data: UpdateQuickReplyRequest): Promise<QuickReply> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickReplySchema, EMPTY_QUICK_REPLY, {
+      endpoint: "PATCH /api/quick-replies/{id}",
+    });
+  }
+
+  async deleteQuickReply(id: string): Promise<void> {
+    await this.fetch<unknown>(`/api/quick-replies/${id}`, { method: "DELETE" });
+  }
+
+  async reorderQuickReplies(ids: string[]): Promise<ListQuickRepliesResponse> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies/reorder`, {
+      method: "PATCH",
+      body: JSON.stringify({ ids }),
+    });
+    return parseWithFallback(raw, ListQuickRepliesResponseSchema, EMPTY_LIST_QUICK_REPLIES_RESPONSE, {
+      endpoint: "PATCH /api/quick-replies/reorder",
     });
   }
 

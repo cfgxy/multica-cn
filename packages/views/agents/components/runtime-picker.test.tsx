@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import type { MemberWithUser, RuntimeDevice } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -119,5 +119,69 @@ describe("RuntimePicker (creation studio)", () => {
       fireEvent.click(button);
     }
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  // §4.5 (RUYI-425): a disabled instance offers no new bindings — it drops
+  // out of the option domain (same semantics as agentSlotChoices), and the
+  // exclusion itself never touches the stored selection.
+  it("excludes disabled instances from the option domain", () => {
+    const disabledRuntime = makeRuntime({
+      id: "rt-disabled",
+      name: "Gemini (disabled.local)",
+      provider: "gemini",
+      metadata: { disabled: true },
+    });
+    const { container, onSelect } = renderPicker({
+      runtimes: [...RUNTIMES, disabledRuntime],
+    });
+    fireEvent.click(trigger(container));
+
+    expect(screen.queryByRole("button", { name: /^Gemini/ })).toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  // Seeding an empty selection must skip disabled instances — otherwise the
+  // create dialog auto-binds an instance that §4.5 refuses to serve.
+  it("seeds the initial selection past disabled instances", () => {
+    const disabledA = makeRuntime({
+      id: "rt-a",
+      name: "Claude (a.local)",
+      metadata: { disabled: true },
+    });
+    const enabledB = makeRuntime({
+      id: "rt-b",
+      name: "Claude (b.local)",
+      provider: "codex",
+    });
+    const { onSelect } = renderPicker({
+      runtimes: [disabledA, enabledB],
+      selectedRuntimeId: "",
+    });
+
+    expect(onSelect).toHaveBeenCalledWith("rt-b");
+  });
+
+  // keepRuntimeId semantics (agent-slots.ts): the stored binding stays in
+  // the list even when disabled, so the form never lies about current state.
+  it("keeps a disabled stored selection visible", () => {
+    const disabledA = makeRuntime({
+      id: "rt-a",
+      name: "Claude (a.local)",
+      metadata: { disabled: true },
+    });
+    const { container, onSelect } = renderPicker({
+      runtimes: [
+        disabledA,
+        makeRuntime({ id: "rt-b", name: "Claude (b.local)", provider: "codex" }),
+      ],
+      selectedRuntimeId: "rt-a",
+    });
+    fireEvent.click(trigger(container));
+
+    expect(onSelect).not.toHaveBeenCalled();
+    // The disabled binding itself is still listed: trigger label + both rows
+    // (disabled kept + enabled peer) = 3 "Claude" buttons; excluding it
+    // would drop the count to 2.
+    expect(screen.getAllByRole("button", { name: /^Claude/ }).length).toBe(3);
   });
 });

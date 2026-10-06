@@ -143,6 +143,11 @@ func (h *Handler) resolveMikaAgent(w http.ResponseWriter, r *http.Request, works
 		writeError(w, http.StatusForbidden, "you cannot bind an agent to this runtime")
 		return db.Agent{}, false, false
 	}
+	// RUYI-425 §4.4 rule 2: Mika is a text agent, so her runtime must declare
+	// the text capability even though callers only ever send a runtime id.
+	if !h.validateAgentTextBinding(w, r, runtime) {
+		return db.Agent{}, false, false
+	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {

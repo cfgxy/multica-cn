@@ -8,6 +8,9 @@ import type { DraftUpload } from "@multica/core/drafts";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
 import enEditor from "../../locales/en/editor.json";
+import enVoice from "../../locales/en/voice.json";
+import { setApiInstance } from "@multica/core/api";
+import type { ApiClient } from "@multica/core/api";
 
 // Uploads flow through the module-level coordinator, which calls
 // `api.uploadFile(file, ctx, signal)` (MUL-5181 L2). Tests drive uploads by
@@ -25,6 +28,8 @@ let mockUploadIdSeq = 0;
 
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: mockApiUploadFile },
+  getApi: () => ({ getBaseUrl: () => "http://localhost:3000" }),
+  setApiInstance: vi.fn(),
 }));
 
 function makeUpload(overrides: Partial<UploadResult> & { id: string; link: string; filename: string }): UploadResult {
@@ -51,7 +56,9 @@ function makeUpload(overrides: Partial<UploadResult> & { id: string; link: strin
   };
 }
 
-const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, editor: enEditor } };
+const TEST_RESOURCES = {
+  en: { common: enCommon, chat: enChat, editor: enEditor, voice: enVoice },
+};
 
 // Track drop-zone callbacks so the test can simulate a real drop.
 const dropHandlers = vi.hoisted(() => ({
@@ -1545,5 +1552,74 @@ describe("ChatInput revoked-access placeholder", () => {
     renderInput({ agentName: "Multica" });
 
     expect(editorProps.last?.placeholder).toBe("Message Multica…");
+  });
+});
+
+// RUYI-449: three-state input. An empty composer shows the voice entry in
+// the send-button slot; typed content swaps it back to the send arrow;
+// clearing restores the mic. Voice never displaces text — the slot swap is
+// driven by exactly the same emptiness signal the send button already uses.
+describe("ChatInput voice three-state slot", () => {
+  it("shows the mic instead of the send arrow when empty and an agent is bound", () => {
+    renderInput({ agentId: "agent-1" });
+
+    expect(
+      screen.getByRole("button", { name: "Start voice conversation" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+  });
+
+  it("swaps the mic for the send arrow as soon as there is text", () => {
+    renderInput({ agentId: "agent-1" });
+
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "hello" } });
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start voice conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores the mic when the composer is cleared", () => {
+    renderInput({ agentId: "agent-1" });
+    const editor = screen.getByTestId("editor");
+
+    fireEvent.change(editor, { target: { value: "hello" } });
+    expect(
+      screen.queryByRole("button", { name: "Start voice conversation" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: "" } });
+    expect(
+      screen.getByRole("button", { name: "Start voice conversation" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the send arrow when no agent is bound", () => {
+    renderInput({});
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start voice conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the voice overlay on mic click without touching the draft", () => {
+    setApiInstance({
+      getBaseUrl: () => "http://localhost:3000",
+    } as unknown as ApiClient);
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatInput onSend={vi.fn()} uploadEnabled agentName="Multica" agentId="agent-1" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Start voice conversation" }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Voice conversation" }),
+    ).toBeInTheDocument();
   });
 });

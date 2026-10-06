@@ -31,6 +31,7 @@ import type {
   Project,
   ProjectResource,
   RuntimeDevice,
+  RuntimeProfile,
   SearchIssuesResponse,
   SearchProjectsResponse,
   SendChatMessageResponse,
@@ -782,6 +783,24 @@ export const RuntimeSchema: z.ZodType<RuntimeDevice> = z.object({
   visibility: z.string().catch("private") as unknown as z.ZodType<
     RuntimeDevice["visibility"]
   >,
+  // RUYI-425 §4.3/§4.5 voice-instance fields the voice config pages read.
+  // All optional-with-default: older backends omit them and the voice
+  // helpers treat missing as "not voice" / "not_configured".
+  custom_name: z.string().nullable().default(null),
+  profile_id: z.string().nullable().default(null),
+  registration_source: z.string().optional(),
+  credential_status: z
+    .enum(["not_configured", "configured", "invalid"])
+    .optional(),
+  protocol_family: z.string().optional(),
+  capabilities: z
+    .object({
+      text: z.boolean(),
+      realtime_voice: z.boolean(),
+      tools: z.boolean(),
+    })
+    .loose()
+    .optional(),
   timezone: z.string().default(""),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
@@ -789,6 +808,83 @@ export const RuntimeSchema: z.ZodType<RuntimeDevice> = z.object({
 
 export const RuntimeListSchema = z.array(RuntimeSchema).default([]);
 export const EMPTY_RUNTIME_LIST: RuntimeDevice[] = [];
+
+// Single-runtime fallback for voice-instance writes that return the entity
+// (create / PATCH). Same safe defaults as RuntimeSchema.
+export const EMPTY_RUNTIME: RuntimeDevice = {
+  id: "",
+  workspace_id: "",
+  daemon_id: null,
+  name: "",
+  runtime_mode: "local",
+  provider: "",
+  launch_header: "",
+  status: "offline",
+  last_seen_at: null,
+  device_info: "",
+  metadata: {},
+  owner_id: null,
+  visibility: "private",
+  created_at: "",
+  updated_at: "",
+};
+
+// RUYI-425 §4.3 voice runtime profiles — the Type layer the create form's
+// voice-filtered picker lists. Loose like RuntimeSchema; `capabilities` is
+// optional so older backends parse (the voice filter treats missing as
+// "not voice").
+export const RuntimeProfileCapabilitiesSchema = z
+  .object({
+    text: z.boolean(),
+    realtime_voice: z.boolean(),
+    tools: z.boolean(),
+  })
+  .loose();
+
+export const RuntimeProfileSchema: z.ZodType<RuntimeProfile> = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  display_name: z.string().default(""),
+  protocol_family: z.string().catch("claude") as unknown as z.ZodType<
+    RuntimeProfile["protocol_family"]
+  >,
+  command_name: z.string().default(""),
+  description: z.string().nullable().default(null),
+  fixed_args: z.array(z.string()).default([]),
+  visibility: z.string().catch("workspace") as unknown as z.ZodType<
+    RuntimeProfile["visibility"]
+  >,
+  created_by: z.string().nullable().default(null),
+  enabled: z.boolean().default(true),
+  capabilities: RuntimeProfileCapabilitiesSchema.optional(),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const RuntimeProfileListSchema = z
+  .array(RuntimeProfileSchema)
+  .default([]);
+export const EMPTY_RUNTIME_PROFILE_LIST: RuntimeProfile[] = [];
+
+// GET /api/workspaces/:id/runtime-profiles returns { runtime_profiles: [...] }.
+export const RuntimeProfileListResponseSchema = z
+  .object({ runtime_profiles: RuntimeProfileListSchema })
+  .loose();
+export const EMPTY_RUNTIME_PROFILE_LIST_RESPONSE = {
+  runtime_profiles: EMPTY_RUNTIME_PROFILE_LIST,
+};
+
+// PUT /api/runtimes/:id/credentials/:key — value-free badge + §4.3 probe
+// outcome. The create/settings screens branch on `probe.status === "invalid"`
+// for the tri-state feedback, so this response is intentionally NOT run
+// through parseWithFallback (a drift must not silently mask the probe
+// result); the api method types it directly.
+export interface RuntimeCredentialPutResult {
+  runtime_id: string;
+  credential_key: string;
+  credential_status: string;
+  probe?: { status: string; http_status?: number; checked_at?: string } | null;
+}
 
 // Squad schema — fields mobile actually consumes for the @mention suggestion
 // bar (id, name, archived_at filter) plus identity/timestamp fields that are
@@ -843,3 +939,46 @@ export const EMPTY_ISSUE_FALLBACK: import("@multica/core/types").Issue = {
 
 // Helpers re-exported for ergonomic single-import at the call site.
 export type { Label, Project, ProjectResource };
+
+// RUYI-418 B3: the agent detail screen's integrations entry consumes
+// `configured` from the five IM installation listings (lark / slack /
+// dingtalk / wecom / telegram) — the same predicate web's agent overview
+// pane applies — and the integrations screen additionally reads a minimal
+// installation row (agent_id + status) to report whether THIS agent is
+// bound. The full per-platform rows stay in their platform domains; this
+// minimal schema keeps the drift-defense parse without their shapes.
+export const IntegrationInstallationsSchema = z.object({
+  configured: z.boolean().default(false),
+  installations: z
+    .array(
+      z.object({
+        agent_id: z.string().nullable().optional(),
+        status: z.string().optional(),
+      }),
+    )
+    .default([]),
+});
+
+export type IntegrationInstallations = z.infer<
+  typeof IntegrationInstallationsSchema
+>;
+
+export const EMPTY_INTEGRATION_INSTALLATIONS: IntegrationInstallations = {
+  configured: false,
+  installations: [],
+};
+
+// RUYI-418 B3: the viewer's own Composio connections, reduced to the fields
+// the agent MCP-apps screen renders (active-slug dedupe + "connected" copy).
+// Mirrors core's ComposioConnection status union without importing it — the
+// server may grow states, and unknown statuses just fail the active filter.
+export const ComposioConnectionsSchema = z.array(
+  z.object({
+    toolkit_slug: z.string(),
+    status: z.string().default(""),
+  }),
+);
+
+export type ComposioConnections = z.infer<typeof ComposioConnectionsSchema>;
+
+export const EMPTY_COMPOSIO_CONNECTIONS: ComposioConnections = [];

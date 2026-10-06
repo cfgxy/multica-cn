@@ -136,6 +136,7 @@ import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { issueDecisionsQueryOptions } from "@multica/core/issues/decisions";
 import { DecisionCard } from "./decision-card";
+import { DecisionBatchBar } from "./decision-batch-bar";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
@@ -481,6 +482,11 @@ type TimelineItem =
   | { kind: "resolved-bar"; id: string; entry: TimelineEntry }
   | { kind: "activity-group"; id: string; entries: TimelineEntry[] }
   | { kind: "decision"; id: string; decision: IssueDecision };
+
+// Batch answer bar (RUYI-471): not a sorted item — spliced into place after
+// the sort, so it stays out of itemTimestampMs's domain.
+type DecisionBatchBarItem = { kind: "decision-batch-bar"; id: string; open: IssueDecision[] };
+type TimelineRow = TimelineItem | DecisionBatchBarItem;
 
 /** Sort key for interleaving decision cards into the comment stream. */
 function itemTimestampMs(item: TimelineItem): number {
@@ -1599,7 +1605,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // carry sub-seconds, so compare parsed ms rather than strings.
   const { data: decisionsData } = useQuery(issueDecisionsQueryOptions(id));
   const issueDecisions = decisionsData ?? EMPTY_DECISION_CARDS;
-  const items = useMemo<TimelineItem[]>(() => {
+  const items = useMemo<TimelineRow[]>(() => {
     const base = flattenGroups(timelineView.groups, expandedResolved);
     if (issueDecisions.length === 0) return base;
     const keyed = base.map((item) => ({ item, key: itemTimestampMs(item) }));
@@ -1610,7 +1616,25 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       });
     }
     keyed.sort((a, b) => a.key - b.key);
-    return keyed.map((k) => k.item);
+    const out: TimelineRow[] = keyed.map((k) => k.item);
+    // Batch answer bar (RUYI-471): with two or more open cards, one row sits
+    // right before the first open card so all picks go out in a single
+    // submit. Spliced after the sort so placement never depends on
+    // timestamp ties.
+    const openDecisions = issueDecisions.filter((d) => d.status === "open");
+    if (openDecisions.length >= 2) {
+      const firstOpenIdx = out.findIndex(
+        (i) => i.kind === "decision" && i.decision.id === openDecisions[0]!.id,
+      );
+      if (firstOpenIdx !== -1) {
+        out.splice(firstOpenIdx, 0, {
+          kind: "decision-batch-bar",
+          id: "decision-batch-bar",
+          open: openDecisions,
+        });
+      }
+    }
+    return out;
   }, [timelineView.groups, expandedResolved, issueDecisions]);
 
   // In-page find (Cmd/Ctrl+F). `items.length` is the content signal that
@@ -2789,7 +2813,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Shared row renderer for both timeline render modes (flat / virtualized).
   // The wrapper `id="comment-..."` is the deep-link target — equivalent to
   // a native `<a href="#comment-...">` anchor.
-  const renderItem = (_i: number, item: TimelineItem): React.ReactElement => {
+  const renderItem = (_i: number, item: TimelineRow): React.ReactElement => {
     if (item.kind === "resolved-bar") {
       return (
         <div className="pb-3" id={`comment-${item.id}`}>
@@ -2805,6 +2829,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       return (
         <div className="pb-3" id={`decision-${item.id}`}>
           <DecisionCard decision={item.decision} />
+        </div>
+      );
+    }
+    if (item.kind === "decision-batch-bar") {
+      return (
+        <div className="pb-3" id={item.id}>
+          <DecisionBatchBar issueId={id} open={item.open} />
         </div>
       );
     }

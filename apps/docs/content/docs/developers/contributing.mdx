@@ -96,8 +96,12 @@ a slot held by an in-progress issue refuses takeover (`lock-status` /
 process on the same port. The slot lease carries a role phase:
 `scripts/dev-env.sh <slot> handoff --to qa` moves it atomically from
 development to QA verification (and back with `--to dev`) within the same
-issue; only the qa phase has a TTL (24h idle, collected by `make gc`) — dev
-phase is handed back at issue closure via `lock-release`. `make destroy
+issue. Only the qa phase has a TTL (24h idle, collected by `make gc`), and it
+closes its verification window with `lock-release` the moment verification
+ends — while the issue is still in progress, and without waiting for issue
+closure (a dual-server test window may even hold both slots at once). The dev
+phase keeps the closure-only rule: it is handed back at issue closure via
+`lock-release` (`--force` overrides). `make destroy
 SLOT=<slot>` removes the database, CLI profile, daemon workspaces, Desktop
 userData and slot directory; a failed deletion keeps the manifest for retry,
 and `make orphans SLOT=<slot>` afterwards proves nothing of the slot survives

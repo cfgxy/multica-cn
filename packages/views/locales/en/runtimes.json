@@ -118,7 +118,8 @@
     "backpressure_hint": "Host memory backpressure ({{reason}}): available memory {{mem}}%, swap used {{swap}}%. New task claims pause until the host recovers — {{count}} claim polls deferred so far.",
     "bp_reason_mem": "low available memory",
     "bp_reason_swap": "swap pressure",
-    "bp_reason_mem_swap": "low memory + swap pressure",
+    "bp_reason_psi": "memory stalls",
+    "backpressure_psi_hint": "Memory stall rate (PSI): {{psi}}%.",
     "fact_owner": "Owner",
     "fact_device": "Device",
     "fact_runtime": "Runtime",
@@ -470,5 +471,72 @@
     "table_cache_r": "Cache R",
     "table_cache_w": "Cache W",
     "no_data": "No usage data yet"
+  },
+  "voice_instance": {
+    "title": "Voice instance",
+    "name_label": "Name",
+    "type_label": "Type",
+    "key_label": "API Key",
+    "key_placeholder": "Enter a new key to update",
+    "key_update": "Update key",
+    "key_clear": "Remove",
+    "key_hint": "The key is stored encrypted and never shown again. Saving triggers a lightweight connectivity check.",
+    "key_saved": "Key saved — connectivity check passed",
+    "key_cleared": "Key removed",
+    "key_update_failed": "Failed to update key",
+    "probe_invalid": "Key saved, but the connectivity check failed (HTTP {{status}})",
+    "model_label": "Model",
+    "model_placeholder": "gemini-3.8-live",
+    "advanced_label": "Advanced params (JSON)",
+    "advanced_placeholder": "{ \"temperature\": 0.7 }",
+    "advanced_invalid": "Advanced params must be a JSON object",
+    "advanced_saved": "Advanced params saved",
+    "registration_label": "Registration",
+    "registration_manual": "Manual",
+    "registration_daemon": "Daemon",
+    "enabled_label": "Enabled",
+    "enabled_desc": "Disabled instances stay configured but are excluded from new agent bindings",
+    "visibility_label": "Visibility",
+    "visibility_workspace": "Entire workspace (fixed)",
+    "save": "Save",
+    "save_failed": "Failed to save",
+    "name_saved": "Name updated",
+    "model_saved": "Model updated",
+    "badge_configured": "Key configured",
+    "badge_invalid": "Key invalid",
+    "badge_not_configured": "No key"
+  },
+  "voice_instance_create": {
+    "action": "Add voice instance",
+    "title": "Register a voice instance",
+    "description": "Manually register a Gemini Live instance for this workspace. Names can repeat; the API key is stored encrypted and never shown again.",
+    "name_placeholder": "e.g. Gemini Live (personal)",
+    "no_profiles": "No voice profile in this workspace yet.",
+    "create_default_profile": "Create Gemini Live profile",
+    "key_placeholder": "Paste the Gemini API key",
+    "submit": "Register",
+    "creating": "Registering…",
+    "created": "Voice instance registered",
+    "created_probe_invalid": "Registered, but the connectivity check failed — check the API key",
+    "create_failed": "Failed to register the voice instance",
+    "key_save_failed": "Registered, but saving the API key failed — add it from the instance settings"
+  },
+  "mobile": {
+    "list_loading": "Loading…",
+    "empty": {
+      "title": "No voice instances yet"
+    },
+    "detail": {
+      "not_found": "This instance no longer exists."
+    },
+    "status": {
+      "online": "Online",
+      "offline": "Offline",
+      "disabled": "Disabled"
+    },
+    "advanced": {
+      "expand": "Show",
+      "collapse": "Hide"
+    }
   }
 }

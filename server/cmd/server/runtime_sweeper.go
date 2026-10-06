@@ -259,6 +259,21 @@ func sweepStaleRuntimes(ctx context.Context, queries *db.Queries, liveness handl
 		// SELECT and the UPDATE. Nothing to broadcast.
 		return
 	}
+
+	// Audit (RUYI-355): the sweeper's offline verdict, one event per runtime.
+	// Best-effort — a lost audit row never re-onlineing a runtime.
+	offlineEvents := make([]service.Event, 0, len(staleRows))
+	for _, row := range staleRows {
+		offlineEvents = append(offlineEvents,
+			service.RuntimeEventFromDims(service.AuditRuntimeOfflineDetected, service.AuditReasonOpsSweep,
+				service.AuditActorSystem, pgtype.UUID{}, row.WorkspaceID, row.ID).
+				WithDetails(service.JSONDetails(map[string]string{
+					"daemon_id": row.DaemonID.String,
+					"provider":  row.Provider,
+				})))
+	}
+	service.TryAppendAuditEvents(ctx, queries, offlineEvents...)
+
 	if taskSvc != nil && taskSvc.Analytics != nil {
 		for _, row := range staleRows {
 			obsmetrics.RecordEvent(taskSvc.Analytics, taskSvc.Metrics, analytics.RuntimeOffline(
@@ -381,6 +396,31 @@ func sweepExpiredRuntimeReconnectRetries(ctx context.Context, queries *db.Querie
 	}
 
 	slog.Info("runtime sweeper: expired reconnect retries", "count", len(failedTasks))
+
+	// Audit (RUYI-355): the per-task run.failed rows are written inside the
+	// fail transaction (FailExpiredRuntimeReconnectRetries); this adds the
+	// runtime verdict, one event per affected runtime.
+	byRuntime := map[pgtype.UUID][]db.AgentTaskQueue{}
+	runtimeOrder := make([]pgtype.UUID, 0, 4)
+	for _, t := range failedTasks {
+		if _, seen := byRuntime[t.RuntimeID]; !seen {
+			runtimeOrder = append(runtimeOrder, t.RuntimeID)
+		}
+		byRuntime[t.RuntimeID] = append(byRuntime[t.RuntimeID], t)
+	}
+	for _, rtID := range runtimeOrder {
+		tasks := byRuntime[rtID]
+		taskIDs := make([]string, 0, len(tasks))
+		for _, t := range tasks {
+			taskIDs = append(taskIDs, util.UUIDToString(t.ID))
+		}
+		wsID := service.AuditWorkspaceIDForTask(ctx, queries, tasks[0])
+		service.TryAppendAuditEvents(ctx, queries,
+			service.RuntimeEventFromDims(service.AuditRuntimeReconnectExhausted, service.AuditReasonReconnectExhausted,
+				service.AuditActorSystem, pgtype.UUID{}, wsID, rtID).
+				WithDetails(service.JSONDetails(map[string]any{"failed_task_ids": taskIDs})))
+	}
+
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
 	return
 }
@@ -596,6 +636,15 @@ func gcRuntime(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Qu
 	}
 	if err := qtx.DeleteAgentRuntime(ctx, runtimeID); err != nil {
 		return result, fmt.Errorf("delete runtime: %w", err)
+	}
+	// Audit (RUYI-355): the runtime row is gone but its trail outlives it —
+	// the event commits with the delete (audit_event holds no FKs, so the
+	// orphaned runtime_id reference is by design).
+	if err := service.AppendAuditEvents(ctx, qtx,
+		service.RuntimeEventFromDims(service.AuditRuntimeGC, service.AuditReasonOpsSweep,
+			service.AuditActorSystem, pgtype.UUID{}, runtime.WorkspaceID, runtimeID).
+			WithDetails(service.JSONDetails(map[string]any{"unbound_agents": len(teardown.UnboundAgents)}))); err != nil {
+		return result, fmt.Errorf("audit runtime gc: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return result, fmt.Errorf("commit transaction: %w", err)
