@@ -1,4 +1,10 @@
-import { parseVoiceRejectionCode, voiceFailureMessageKey } from "./degrade";
+import {
+  parseVoiceRejectionCode,
+  rejectionFromError,
+  VoiceRejectionError,
+  voiceFailureMessageKey,
+  type VoiceRejection,
+} from "./degrade";
 
 describe("parseVoiceRejectionCode", () => {
   it.each([
@@ -48,5 +54,22 @@ describe("voiceFailureMessageKey", () => {
       "voice.failure.connection_failed",
     );
     expect(voiceFailureMessageKey(null)).toBe("voice.failure.connection_failed");
+  });
+});
+
+describe("rejectionFromError", () => {
+  it("recovers the rejection from a typed handshake failure", () => {
+    const rejection: VoiceRejection = {
+      kind: "voice_unavailable",
+      reason: "no_voice_runtime",
+    };
+    expect(rejectionFromError(new VoiceRejectionError(rejection))).toEqual(rejection);
+    expect(rejectionFromError(new VoiceRejectionError(null))).toBeNull();
+  });
+
+  it("maps every other thrown value to null (generic degrade)", () => {
+    expect(rejectionFromError(new Error("boom"))).toBeNull();
+    expect(rejectionFromError("plain string")).toBeNull();
+    expect(rejectionFromError(undefined)).toBeNull();
   });
 });

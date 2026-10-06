@@ -13,12 +13,14 @@
  */
 import {
   buildVoiceSessionUrl,
+  VoiceRejectionError,
   VoiceSessionController,
   type VoiceRejection,
   type VoiceSessionState,
 } from "@multica/core/voice";
 import { getApiUrl, useServerStore } from "@/data/server-store";
 import { getToken } from "@/data/secure-storage";
+import { probeHandshakeRejection } from "./handshake-reason";
 import { getVoiceAudioModule } from "./native-audio";
 
 /** RN WebSocket implementation of the core transport contract. */
@@ -33,6 +35,7 @@ class MobileVoiceTransport {
       const ws = new WebSocket(url);
       this.ws = ws;
       let opened = false;
+      let deciding = false;
       ws.onopen = () => {
         opened = true;
         resolve();
@@ -42,8 +45,24 @@ class MobileVoiceTransport {
       };
       ws.onclose = (event: WebSocketCloseEvent) => {
         this.ws = null;
-        if (!opened) reject(new Error(`voice websocket closed (${event.code})`));
-        this.onClose?.(event.code ?? 1006);
+        if (opened) {
+          this.onClose?.(event.code ?? 1006);
+          return;
+        }
+        // Handshake-level rejection (e.g. the header-auth path's plain HTTP
+        // 409): the socket API hides the body, so recover the precise
+        // reason with a plain authenticated GET on the same URL before
+        // failing. Null keeps the generic degrade copy. The controller's
+        // connect-catch owns the failure, so the close is NOT forwarded.
+        if (deciding) return;
+        deciding = true;
+        void probeHandshakeRejection(url).then((rejection) => {
+          reject(
+            rejection
+              ? new VoiceRejectionError(rejection)
+              : new Error(`voice websocket closed (${event.code})`),
+          );
+        });
       };
       ws.onerror = () => {
         // onclose always follows; nothing actionable here.
