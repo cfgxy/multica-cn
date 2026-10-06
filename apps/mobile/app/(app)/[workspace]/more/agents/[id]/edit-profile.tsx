@@ -10,6 +10,10 @@
  * web create-form parity); the agent's current runtime stays selectable
  * even if it went offline so the field never shows a lie.
  *
+ * RUYI-425 §4.2: adds the optional voice slot (voice_runtime_id). The patch
+ * is tri-state — omitted when untouched, "" to unbind, an id to bind — and
+ * the pickers exclude each other's selection (`agentSlotChoices`).
+ *
  * Model keeps a manual free-text input as the fallback (S4): the discovered
  * catalog renders above it only when the runtime is online and discovery
  * answered with models. Thinking / service-tier vocabularies derive from
@@ -31,7 +35,10 @@ import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { isRuntimeUsableForUser } from "@multica/core/runtimes";
+import {
+  agentSlotChoices,
+  runtimeCredentialStatus,
+} from "@multica/core/runtimes";
 import {
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
@@ -111,6 +118,7 @@ export default function EditAgentProfile() {
   const [avatarUrl, setAvatarUrl] = useState("");
   const [model, setModel] = useState("");
   const [runtimeId, setRuntimeId] = useState("");
+  const [voiceRuntimeId, setVoiceRuntimeId] = useState("");
   const [thinking, setThinking] = useState("");
   const [tier, setTier] = useState("");
   const [concurrency, setConcurrency] = useState("1");
@@ -131,6 +139,7 @@ export default function EditAgentProfile() {
     setAvatarUrl(agent.avatar_url ?? "");
     setModel(agent.model);
     setRuntimeId(agent.runtime_id);
+    setVoiceRuntimeId(agent.voice_runtime_id ?? "");
     setThinking(agent.thinking_level ?? "");
     setTier(agent.service_tier ?? "");
     setConcurrency(String(agent.max_concurrent_tasks || 1));
@@ -147,19 +156,36 @@ export default function EditAgentProfile() {
     setSeeded(true);
   }, [agent, seeded]);
 
-  // Runtime choices: online + usable by me, plus the agent's current runtime
-  // even when offline (so the current binding is always visible/pickable).
+  // Text slot choices: online + usable by me + text-capable, minus the voice
+  // slot's pick — plus the agent's current runtime even when offline (so the
+  // current binding is always visible/pickable, never a lie).
   const runtimeChoices = useMemo(() => {
-    if (!runtimes) return [];
-    const usable = runtimes.filter(
-      (r) => r.status === "online" && isRuntimeUsableForUser(r, me?.id ?? null),
-    );
+    const usable = agentSlotChoices(runtimes, "text", {
+      currentUserId: me?.id ?? null,
+      excludeRuntimeId: voiceRuntimeId,
+      keepRuntimeId: runtimeId,
+    });
     if (runtimeId && !usable.some((r) => r.id === runtimeId)) {
-      const current = runtimes.find((r) => r.id === runtimeId);
+      const current = (runtimes ?? []).find((r) => r.id === runtimeId);
       if (current) return [current, ...usable];
     }
     return usable;
-  }, [runtimes, runtimeId, me]);
+  }, [runtimes, runtimeId, voiceRuntimeId, me]);
+
+  // Voice slot choices: realtime-voice-capable, minus the text slot's pick,
+  // plus the agent's current voice binding even when offline.
+  const voiceChoices = useMemo(() => {
+    const usable = agentSlotChoices(runtimes, "realtime_voice", {
+      currentUserId: me?.id ?? null,
+      excludeRuntimeId: runtimeId,
+      keepRuntimeId: voiceRuntimeId,
+    });
+    if (voiceRuntimeId && !usable.some((r) => r.id === voiceRuntimeId)) {
+      const current = (runtimes ?? []).find((r) => r.id === voiceRuntimeId);
+      if (current) return [current, ...usable];
+    }
+    return usable;
+  }, [runtimes, runtimeId, voiceRuntimeId, me]);
 
   const runtime = runtimes?.find((r) => r.id === runtimeId);
   const provider = runtime?.provider ?? "";
@@ -180,7 +206,8 @@ export default function EditAgentProfile() {
 
   // Changing the runtime resets model-derived state (model / thinking /
   // tier) because the old vocabulary may not exist on the new runtime —
-  // same cascade web's editors apply.
+  // same cascade web's editors apply. The voice slot is independent of the
+  // text runtime, so the cascade never touches it.
   const handleRuntimeChange = (next: string) => {
     if (next === runtimeId) return;
     setRuntimeId(next);
@@ -197,8 +224,9 @@ export default function EditAgentProfile() {
   };
 
   // The patch carries only fields whose value actually changed; tri-state
-  // fields (thinking_level / service_tier) rely on omission = "no change"
-  // and "" = explicit clear, matching UpdateAgentRequest semantics.
+  // fields (thinking_level / service_tier / voice_runtime_id) rely on
+  // omission = "no change" and "" = explicit clear, matching
+  // UpdateAgentRequest semantics.
   const patch = useMemo<UpdateAgentRequest | null>(() => {
     if (!agent || !agent.id || !seeded) return null;
     const trimmed = name.trim();
@@ -209,6 +237,10 @@ export default function EditAgentProfile() {
     if (instructions !== agent.instructions) next.instructions = instructions;
     if (avatarUrl !== (agent.avatar_url ?? "")) next.avatar_url = avatarUrl;
     if (runtimeId !== agent.runtime_id) next.runtime_id = runtimeId;
+    // Tri-state voice slot (RUYI-425 §4.2): omitted = untouched, "" =
+    // unbind, id = bind.
+    if (voiceRuntimeId !== (agent.voice_runtime_id ?? ""))
+      next.voice_runtime_id = voiceRuntimeId;
     if (model !== agent.model) next.model = model;
     if (thinking !== (agent.thinking_level ?? ""))
       next.thinking_level = thinking;
@@ -255,6 +287,7 @@ export default function EditAgentProfile() {
     instructions,
     avatarUrl,
     runtimeId,
+    voiceRuntimeId,
     model,
     thinking,
     tier,
@@ -446,6 +479,80 @@ export default function EditAgentProfile() {
           )}
         </Field>
 
+        <Field label={t("create_dialog.voice_label", "Voice")}>
+          {runtimesLoading ? (
+            <Text className="text-sm text-muted-foreground py-1">
+              {t("create_dialog.runtime_loading", "Loading runtimes...")}
+            </Text>
+          ) : (
+            <View className="rounded-md border border-border overflow-hidden">
+              {/* 首项固定：不配置语音（提交空串解绑，§4.2） */}
+              <Pressable
+                onPress={() => setVoiceRuntimeId("")}
+                className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
+                  voiceChoices.length > 0 ? "border-b border-border" : ""
+                }`}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: voiceRuntimeId === "" }}
+              >
+                <View
+                  className={`size-4 rounded-full border items-center justify-center ${
+                    voiceRuntimeId === "" ? "border-brand" : "border-muted-foreground"
+                  }`}
+                >
+                  {voiceRuntimeId === "" ? (
+                    <View className="size-2 rounded-full bg-brand" />
+                  ) : null}
+                </View>
+                <Text className="flex-1 text-sm text-foreground">
+                  {t("create_dialog.voice_none", "No voice")}
+                </Text>
+              </Pressable>
+              {voiceChoices.length === 0 ? (
+                <Text className="text-sm text-muted-foreground px-3 py-2.5">
+                  {t("create_dialog.voice_empty", "No voice-capable instance")}
+                </Text>
+              ) : (
+                voiceChoices.map((r, i) => {
+                  const selected = r.id === voiceRuntimeId;
+                  const badge = runtimeCredentialStatus(r);
+                  return (
+                    <Pressable
+                      key={r.id}
+                      onPress={() => setVoiceRuntimeId(r.id)}
+                      className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
+                        i > 0 ? "border-t border-border" : ""
+                      }`}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                    >
+                      <View
+                        className={`size-4 rounded-full border items-center justify-center ${
+                          selected ? "border-brand" : "border-muted-foreground"
+                        }`}
+                      >
+                        {selected ? (
+                          <View className="size-2 rounded-full bg-brand" />
+                        ) : null}
+                      </View>
+                      <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                        {r.custom_name || r.name}
+                      </Text>
+                      {r.status !== "online" ? (
+                        <Text className="text-xs text-muted-foreground">
+                          {t("availability.offline", "Offline")}
+                        </Text>
+                      ) : (
+                        <CredentialBadge status={badge} />
+                      )}
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+          )}
+        </Field>
+
         <Field label={t("inspector.prop_model", "Model")}>
           <TextInput
             value={model}
@@ -630,6 +737,35 @@ export default function EditAgentProfile() {
         <ActionSheetModal {...modalProps} />
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+// RUYI-425 §4.2 voice credential tri-state badge. The agent form never edits
+// credentials — it only reflects the instance's stored key state.
+function CredentialBadge({
+  status,
+}: {
+  status: "not_configured" | "configured" | "invalid";
+}) {
+  const { t } = useT("agents");
+  if (status === "configured") {
+    return (
+      <Text className="text-xs text-success">
+        {t("create_dialog.credential_configured", "Configured ✓")}
+      </Text>
+    );
+  }
+  if (status === "invalid") {
+    return (
+      <Text className="text-xs text-destructive">
+        {t("create_dialog.credential_invalid", "Key invalid")}
+      </Text>
+    );
+  }
+  return (
+    <Text className="text-xs text-muted-foreground">
+      {t("create_dialog.credential_not_configured", "Not configured")}
+    </Text>
   );
 }
 

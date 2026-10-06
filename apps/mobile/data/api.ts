@@ -32,6 +32,7 @@ import type {
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
+  CreateRuntimeProfileRequest,
   ExecutionProfile,
   ExecutionProfileActivationResponse,
   ExecutionProfileEntry,
@@ -69,6 +70,7 @@ import type {
   ReorderPinsRequest,
   RemoveSquadMemberRequest,
   RuntimeDevice,
+  RuntimeProfile,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ListIssueStatusesResponse,
@@ -179,7 +181,9 @@ import {
   EMPTY_NOTIFICATION_PREFERENCES,
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
+  EMPTY_RUNTIME,
   EMPTY_RUNTIME_LIST,
+  EMPTY_RUNTIME_PROFILE_LIST_RESPONSE,
   EMPTY_SEARCH_ISSUES_RESPONSE,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
   EMPTY_SQUAD_LIST,
@@ -200,6 +204,8 @@ import {
   PinnedItemSchema,
   ProjectSchema,
   RuntimeListSchema,
+  RuntimeProfileListResponseSchema,
+  RuntimeSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SendChatMessageResponseSchema,
@@ -211,6 +217,7 @@ import {
 } from "./schemas";
 import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
+import type { RuntimeCredentialPutResult } from "./schemas";
 import { getCurrentSlug } from "./workspace-store";
 import { getApiUrl } from "./server-store";
 import { parseWithFallback } from "@/lib/parse-response";
@@ -702,6 +709,122 @@ class ApiClient {
     return parseWithFallback(raw, RuntimeListSchema, EMPTY_RUNTIME_LIST, {
       endpoint: "listRuntimes",
     });
+  }
+
+  // --- Voice runtime instances & profiles (RUYI-425 §4.3, mobile) ---
+  // Endpoint paths + wire shapes mirror packages/core/api/client.ts
+  // one-for-one (web parity); mobile keeps its own client so the
+  // X-Workspace-Slug header follows the workspace store. The plaintext API
+  // key travels once in the PUT body and is never returned — responses
+  // carry only the badge plus the connectivity-probe outcome.
+
+  // GET /api/workspaces/:id/runtime-profiles — the Type layer; the voice
+  // create form filters these by capabilities.realtime_voice.
+  async listRuntimeProfiles(
+    workspaceId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<RuntimeProfile[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/runtime-profiles`,
+      { signal: opts?.signal },
+    );
+    const parsed = parseWithFallback(
+      raw,
+      RuntimeProfileListResponseSchema,
+      EMPTY_RUNTIME_PROFILE_LIST_RESPONSE,
+      { endpoint: "listRuntimeProfiles" },
+    );
+    return parsed.runtime_profiles ?? [];
+  }
+
+  // POST /api/workspaces/:id/runtime-profiles — the §4.3 no-profile escape
+  // hatch creates the workspace's default "Gemini Live" profile (voice
+  // families are API-enforced command-less: command_name: "" is exactly
+  // what the server requires for gemini_live).
+  async createRuntimeProfile(
+    workspaceId: string,
+    body: CreateRuntimeProfileRequest,
+  ): Promise<RuntimeProfile> {
+    return this.fetch<RuntimeProfile>(
+      `/api/workspaces/${workspaceId}/runtime-profiles`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
+  // POST /api/runtimes — manual registration of a voice instance (§4.3).
+  // Names may duplicate; the instance is born online/public with
+  // registration_source "manual"; the API key is NOT part of this call —
+  // store it right after via putRuntimeCredential, which also triggers the
+  // server-side connectivity probe.
+  async createManualRuntime(body: {
+    name: string;
+    profile_id: string;
+    model?: string;
+    advanced?: Record<string, unknown>;
+  }): Promise<RuntimeDevice> {
+    return this.fetchValidatedWith(
+      "/api/runtimes",
+      RuntimeSchema,
+      EMPTY_RUNTIME,
+      { method: "POST", body: JSON.stringify(body) },
+      { endpoint: "createManualRuntime" },
+    );
+  }
+
+  // PATCH /api/runtimes/:id — voice instance settings edits (§4.3):
+  // custom_name / model / advanced / disabled merge into instance metadata;
+  // visibility stays server-fixed to public for voice instances.
+  async updateRuntime(
+    runtimeId: string,
+    patch: {
+      visibility?: "private" | "public";
+      custom_name?: string;
+      apply_to_machine?: boolean;
+      model?: string;
+      advanced?: Record<string, unknown>;
+      disabled?: boolean;
+    },
+  ): Promise<RuntimeDevice> {
+    return this.fetchValidatedWith(
+      `/api/runtimes/${runtimeId}`,
+      RuntimeSchema,
+      EMPTY_RUNTIME,
+      { method: "PATCH", body: JSON.stringify(patch) },
+      { endpoint: "updateRuntime" },
+    );
+  }
+
+  // PUT /api/runtimes/:id/credentials/:key — stores/rotates the §4.5
+  // credential and runs the §4.3 probe. Deliberately NOT routed through
+  // parseWithFallback: the tri-state feedback branches on `probe.status`,
+  // and a schema drift must not silently mask the probe outcome.
+  async putRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<RuntimeCredentialPutResult> {
+    return this.fetch<RuntimeCredentialPutResult>(
+      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      },
+    );
+  }
+
+  // DELETE /api/runtimes/:id/credentials/:key — idempotent server-side
+  // (204 even when nothing was stored); badge falls back to not_configured.
+  async deleteRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
   }
 
   // Workspace-wide active agent tasks + each agent's most recent terminal —

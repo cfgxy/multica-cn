@@ -2389,6 +2389,64 @@ export class ApiClient {
     });
   }
 
+  /**
+   * RUYI-425 §4.5 (stage 2): stores or rotates a runtime instance credential.
+   * The value travels once in the request body and is NEVER returned — the
+   * response carries only the badge plus the §4.3 connectivity-probe outcome.
+   * Server returns 503 when the deployment has no credential encryption key.
+   */
+  async putRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<{
+    runtime_id: string;
+    credential_key: string;
+    credential_status: string;
+    probe?: { status: string; http_status?: number; checked_at?: string };
+  }> {
+    return this.fetch(
+      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      },
+    );
+  }
+
+  /**
+   * RUYI-425 §4.5 (stage 2): removes the stored credential value. Idempotent
+   * server-side (204 even when nothing was stored).
+   */
+  async deleteRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/credentials/${credentialKey}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * RUYI-425 §4.3 (stage 3): manually registers a voice instance. Names may
+   * duplicate; capabilities derive server-side from the profile's protocol
+   * family; the instance is born online/public and structurally invisible to
+   * daemon probing. The API key is NOT part of this call — store it right
+   * after via putRuntimeCredential, which also triggers the connectivity
+   * probe.
+   */
+  async createManualRuntime(body: {
+    name: string;
+    profile_id: string;
+    model?: string;
+    advanced?: Record<string, unknown>;
+  }): Promise<AgentRuntime> {
+    return this.fetch("/api/runtimes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   async updateRuntime(
     runtimeId: string,
     patch: {
@@ -2401,6 +2459,15 @@ export class ApiClient {
       custom_name?: string;
       /** Apply custom_name to every runtime on the same machine. */
       apply_to_machine?: boolean;
+      /**
+       * RUYI-425 §4.3 voice instance settings (stage 2). Only accepted on
+       * manually registered instances; the server merges them into the
+       * instance metadata without touching other keys. `model: ""` clears;
+       * `advanced: {}` clears; `disabled: false` clears the flag.
+       */
+      model?: string;
+      advanced?: Record<string, unknown>;
+      disabled?: boolean;
     },
   ): Promise<AgentRuntime> {
     return this.fetch(`/api/runtimes/${runtimeId}`, {
