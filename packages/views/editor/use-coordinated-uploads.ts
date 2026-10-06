@@ -59,7 +59,7 @@ import { MAX_FILE_SIZE } from "@multica/core/constants/upload";
 import { useT } from "../i18n";
 import type { UploadGate } from "./use-upload-gate";
 import type { ContentEditorRef } from "./content-editor";
-import { pastedTextSource } from "./extensions/file-upload";
+import { pastedTextSource, consumeUploadEditorLost } from "./extensions/file-upload";
 
 const EMPTY_ATTACHMENTS: Attachment[] = [];
 
@@ -115,6 +115,10 @@ const DELIVER_MAX_TRIES = 100; // ~5s — editor init is a passive effect away
  * Land a finished upload's markdown link in the draft BODY after the mount
  * that owned the upload died. Delivery must be CONFIRMED, not assumed:
  *
+ *  - the live editor's document already shows the image → the inline swap
+ *    landed it; nothing to do (checked via `hasImageWithSrc`, not the body —
+ *    the body only catches up after the debounced `onUpdate`, so a body check
+ *    here would double-append inside that window)
  *  - live editor for the key, insert landed → also persist the same body via
  *    `appendToBody` as insurance — the editor's debounced emit is dropped on a
  *    quick unmount, and it converges to identical content anyway.
@@ -140,6 +144,11 @@ function deliverFinishedUpload(
 
   const md = attachmentMarkdown(attachment);
   const live = liveEditors.get(binding.registryKey);
+  // The inline swap already put the finished image in this document — it
+  // serializes into the body through the debounced emit on its own.
+  if (live?.current?.hasImageWithSrc(toUploadResult(attachment).markdownLink) === true) {
+    return;
+  }
   // A composer showing this target rebuilt the placeholder on mount, so the
   // finished attachment REPLACES it where the user last saw it instead of
   // being appended a second time at the end.
@@ -432,6 +441,23 @@ export function useCoordinatedUploads(
                   // deleted mid-upload must stay deleted.
                   if (!mountedRef.current) {
                     deliverFinishedUpload(target, clientUploadId, outcome.attachment);
+                  } else if (uploadId) {
+                    // This mount is alive, but the EDITOR that pasted the file
+                    // can die on its own — any conditional remount of the
+                    // shared editor (quick-create mode switch, chat agent
+                    // swap) destroys the Tiptap instance while this hook lives
+                    // on, and the inline swap silently no-ops on a destroyed
+                    // editor: the attachment ends up "uploaded" with nothing
+                    // in the document or body (RUYI-478). Recheck shortly
+                    // after the swap would have committed; the extension
+                    // flags exactly the destroyed-editor case, so a swap that
+                    // landed and a placeholder the user deleted are both left
+                    // alone. Harmless on the happy path: delivery is guarded
+                    // by the body reference and the document image checks.
+                    setTimeout(() => {
+                      if (!consumeUploadEditorLost(uploadId)) return;
+                      deliverFinishedUpload(target, clientUploadId, outcome.attachment);
+                    }, DELIVER_RETRY_MS);
                   }
                 }
               } else {
