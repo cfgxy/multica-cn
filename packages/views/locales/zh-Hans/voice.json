@@ -1,0 +1,28 @@
+{
+  "button": {
+    "start": "开始语音对话",
+    "stop": "结束语音对话"
+  },
+  "overlay": {
+    "title": "语音对话",
+    "connecting": "连接中…",
+    "live": "正在聆听，请自然说话",
+    "user_label": "你",
+    "assistant_label": "智能体",
+    "end": "结束",
+    "dismiss": "关闭",
+    "permission_denied": "语音对话需要麦克风权限。请在系统设置中开启后重试。",
+    "use_prompt": "你说的话会在结束后填入输入框。"
+  },
+  "failure": {
+    "connection_failed": "语音暂时无法连接。文字发送不受影响，可正常使用。",
+    "unavailable": {
+      "no_voice_runtime": "该智能体尚未绑定语音运行时，请联系工作区管理员配置。文字发送不受影响。",
+      "instance_disabled": "该智能体的语音运行时已停用语音。文字发送不受影响，可正常使用。",
+      "instance_not_active": "该智能体的语音运行时当前未激活。请稍后再试，或继续使用文字。",
+      "capability_mismatch": "该智能体的模型不支持语音对话。文字发送不受影响，可正常使用。",
+      "credential_missing": "该智能体的语音凭据尚未配置完成，请联系工作区管理员补全。",
+      "credential_invalid": "该智能体的语音凭据无效或已过期，请联系工作区管理员更新。"
+    }
+  }
+}

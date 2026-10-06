@@ -1480,6 +1480,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// WebSocket
 	mc := &membershipChecker{queries: queries}
 	pr := &patResolver{queries: queries, cache: patCache}
+	// Voice-session first-frame auth shares the PAT resolver / disabled
+	// lookup with the Auth middleware and the realtime hub (RUYI-449).
+	h.VoicePATResolver = pr
+	h.VoiceDisabledLookup = userDisabledLookup
 	slugResolver := realtime.SlugResolver(func(ctx context.Context, slug string) (string, error) {
 		ws, err := queries.GetWorkspaceBySlug(ctx, slug)
 		if err != nil {
@@ -1490,6 +1494,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
 		realtime.HandleWebSocket(hub, mc, pr, slugResolver, userDisabledLookup, w, r)
 	})
+
+	// Voice session initiation (RUYI-425 §4.4 rule 3 / RUYI-449). Registered
+	// OUTSIDE the Auth group on purpose: the handler self-authenticates via
+	// session cookie / bearer header, or — for header-less websocket clients
+	// (mobile) — via the first auth frame (the RUYI-429 realtime pattern).
+	// Header-auth gate rejections stay plain 409 VOICE_UNAVAILABLE:<reason>;
+	// frame-auth rejections become an error frame + close.
+	r.Get("/api/agents/{id}/voice-session", h.StartVoiceSession)
 
 	// Local file serving (when using local storage). Served through the
 	// handler so /uploads/* carries the same preview security headers as the
@@ -2559,10 +2571,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
-					// Voice session initiation (RUYI-425 §4.4 rule 3): the
-					// gate runs before the websocket upgrade, so every
-					// rejection is a plain 409 VOICE_UNAVAILABLE:<reason>.
-					r.Get("/voice-session", h.StartVoiceSession)
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)

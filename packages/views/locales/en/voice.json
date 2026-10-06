@@ -1,0 +1,28 @@
+{
+  "button": {
+    "start": "Start voice conversation",
+    "stop": "End voice conversation"
+  },
+  "overlay": {
+    "title": "Voice conversation",
+    "connecting": "Connecting…",
+    "live": "Listening — speak naturally",
+    "user_label": "You",
+    "assistant_label": "Agent",
+    "end": "End",
+    "dismiss": "Dismiss",
+    "permission_denied": "Microphone access is required for voice. Enable it in your system settings and try again.",
+    "use_prompt": "What you say will be added to the message box when you're done."
+  },
+  "failure": {
+    "connection_failed": "Voice couldn't connect right now. Text messaging still works as usual.",
+    "unavailable": {
+      "no_voice_runtime": "This agent has no voice runtime bound yet. Ask a workspace admin to configure one — text messaging still works.",
+      "instance_disabled": "Voice is turned off for this agent's voice runtime. Text messaging still works as usual.",
+      "instance_not_active": "The voice runtime for this agent isn't active right now. Try again later, or keep using text.",
+      "capability_mismatch": "This agent's model doesn't support voice conversations. Text messaging still works as usual.",
+      "credential_missing": "Voice isn't fully configured for this agent (missing credentials). A workspace admin needs to finish setup.",
+      "credential_invalid": "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them."
+    }
+  }
+}

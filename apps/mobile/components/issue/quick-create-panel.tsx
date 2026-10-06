@@ -29,7 +29,7 @@
  *   - Success closes the screen without a toast (the manual form does the
  *     same); web shows a "sent" toast in its long-lived dialog.
  */
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
@@ -50,6 +50,7 @@ import { QuickCreateAttributeRow } from "@/components/issue/quick-create-attribu
 import { AttachmentZone } from "@/components/issue/attachment-zone";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
+import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { useSharedIntentStore } from "@/data/stores/shared-intent-store";
 import { assetFromSharedFile } from "@/lib/picked-asset";
@@ -266,6 +267,11 @@ export function QuickCreatePanel() {
 
   const { t } = useT("modals");
   const { t: tCommon } = useT("common");
+  // RUYI-449: 语音入口仅对 agent 生效（squad 无客户端可指定的 agent id，
+  // 与 web AgentCreatePanel 同边界）。口述轮次回填进 prompt，由用户自行
+  // 确认后提交，本面板不做任何自动发送。
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const voiceAgentId = actor?.type === "agent" ? actor.id : null;
 
   const canSubmit =
     !isSubmitting &&
@@ -515,6 +521,21 @@ export function QuickCreatePanel() {
             disabled={isSubmitting || uploading}
           />
 
+          {voiceAgentId !== null && !voiceOpen && (
+            <Pressable
+              onPress={() => setVoiceOpen(true)}
+              className="flex-row items-center gap-2 self-start rounded-full border border-border px-3 py-1.5 active:opacity-60"
+              disabled={isSubmitting}
+              accessibilityRole="button"
+              accessibilityLabel={t("voice:button.start", "Start voice conversation")}
+            >
+              <Ionicons name="mic-outline" size={16} color="#a1a1aa" />
+              <Text className="text-xs text-muted-foreground">
+                {t("voice:overlay.use_prompt", "What you say will be added to the message box when you're done.")}
+              </Text>
+            </Pressable>
+          )}
+
           <QuickCreateAttributeRow />
 
           <Text className="text-xs text-muted-foreground">
@@ -522,6 +543,18 @@ export function QuickCreatePanel() {
           </Text>
         </ScrollView>
         <MentionSuggestionBar {...prompt.suggestionBar} />
+
+        <VoiceSessionOverlay
+          agentId={voiceOpen && voiceAgentId !== null ? voiceAgentId : null}
+          workspaceSlug={wsSlug ?? ""}
+          onClose={() => setVoiceOpen(false)}
+          onUserTurn={(spoken) =>
+            prompt.setText((prev) => {
+              const trimmed = prev.trimEnd();
+              return trimmed ? `${trimmed}\n\n${spoken}` : spoken;
+            })
+          }
+        />
       </KeyboardAvoidingView>
     </>
   );
