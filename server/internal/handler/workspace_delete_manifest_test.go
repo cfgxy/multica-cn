@@ -25,25 +25,30 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// still shows which workspace an action affected; classified Settle
 	// (not Keep) because the row is left in place with workspace_id intact
 	// rather than being genuinely workspace-agnostic.
-	"admin_audit_log":                 workspaceDeleteSettle,
-	"agent":                           workspaceDelete,
-	"agent_builder_draft":             workspaceDelete,
-	"agent_invocation_target":         workspaceDelete,
-	"agent_runtime":                   workspaceDelete,
-	"agent_skill":                     workspaceDelete,
-	"agent_task_queue":                workspaceDelete,
-	"agent_to_label":                  workspaceDelete,
-	"agent_webhook":                   workspaceDelete,
-	"attachment":                      workspaceDelete,
-	"autopilot":                       workspaceDelete,
-	"autopilot_collaborator":          workspaceDelete,
-	"autopilot_quota_period":          workspaceDelete,
-	"autopilot_quota_reservation":     workspaceDelete,
-	"autopilot_rule_version":          workspaceDelete,
-	"autopilot_run":                   workspaceDelete,
-	"autopilot_subscriber":            workspaceDelete,
-	"autopilot_trigger":               workspaceDelete,
-	"channel_binding_token":           workspaceDelete,
+	"admin_audit_log":         workspaceDeleteSettle,
+	"agent":                   workspaceDelete,
+	"agent_builder_draft":     workspaceDelete,
+	"agent_invocation_target": workspaceDelete,
+	"agent_runtime":           workspaceDelete,
+	"agent_skill":             workspaceDelete,
+	"agent_task_queue":        workspaceDelete,
+	"agent_to_label":          workspaceDelete,
+	"agent_webhook":           workspaceDelete,
+	"attachment":              workspaceDelete,
+	// Workspace-scoped audit trail (RUYI-355): append-only rows carry no
+	// foreign keys by design and outlive the business rows they describe,
+	// so like admin_audit_log they are left in place with workspace_id
+	// intact — the trail still shows what the deleted workspace did.
+	"audit_event":                 workspaceDeleteSettle,
+	"autopilot":                   workspaceDelete,
+	"autopilot_collaborator":      workspaceDelete,
+	"autopilot_quota_period":      workspaceDelete,
+	"autopilot_quota_reservation": workspaceDelete,
+	"autopilot_rule_version":      workspaceDelete,
+	"autopilot_run":               workspaceDelete,
+	"autopilot_subscriber":        workspaceDelete,
+	"autopilot_trigger":           workspaceDelete,
+	"channel_binding_token":       workspaceDelete,
 	// Capability probe verdicts (RUYI-400) are installation-scoped
 	// diagnostics: DeleteWorkspace sweeps them through ws_installations.
 	"channel_capability_state":        workspaceDelete,
@@ -116,6 +121,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
 	"issue_vcs_pull_request":             workspaceDelete,
+	// Quick replies (RUYI-435) are a per-workspace catalog owned outright by
+	// the workspace; nothing outside the database references a row.
+	"quick_reply": workspaceDelete,
 	// Decision cards (RUYI-345) own nothing outside the database; the answer
 	// echo is a plain comment row swept with the rest of comment.
 	"issue_decisions":            workspaceDelete,
@@ -126,6 +134,17 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"lark_installation":          workspaceDelete,
 	"lark_outbound_card_message": workspaceDelete,
 	"lark_user_binding":          workspaceDelete,
+	// RUYI-425 stage 3: the voice gateway's per-conversation log (design
+	// §3.5). Rows reach the teardown through the live_session.workspace_id
+	// CASCADE FK; agent/instance/user columns are historical UUIDs by design
+	// (migration 926), so no explicit DELETE is needed — same shape as
+	// agent_webhook.
+	"live_session": workspaceDelete,
+	// RUYI-425 stage 4: the authoritative facts layer of the voice write-back
+	// (design §3.3 layers.facts / §3.6). Same teardown shape as live_session:
+	// the workspace_id CASCADE FK covers it; agent/live_session columns are
+	// historical UUIDs by design (migration 927).
+	"agent_fact_event": workspaceDelete,
 	// A published prompt version outlives the workspace it came from
 	// (RUYI-100): other workspaces hold installs against it, and the catalog
 	// only ever shows the publisher, never the source workspace. Keep, not
@@ -143,7 +162,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// registered by an operator against the whole installation and carries no
 	// workspace_id, so deleting a workspace must not remove it — the access
 	// tokens it mints are scoped by the user behind them, not by workspace.
-	"oauth_client":           workspaceDeleteKeep,
+	"oauth_client": workspaceDeleteKeep,
+	// OAuth grants (RUYI-420) are the user-client authorization anchor for
+	// the whole installation: no workspace_id, and revocation is the only
+	// lifecycle they have (revoked when their client is disabled or deleted,
+	// consulted by the auth gate otherwise). Deleting a workspace must not
+	// sever its members' authorizations to instance-level MCP clients.
+	"oauth_grant":            workspaceDeleteKeep,
 	"personal_access_token":  workspaceDeleteKeep,
 	"pinned_item":            workspaceDelete,
 	"plugin_installation":    workspaceDelete,
@@ -176,6 +201,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_quiz_sweep_state": workspaceDeleteKeep,
 	"quick_action":            workspaceDelete,
 	"runtime_profile":         workspaceDelete,
+	// Runtime instance credentials (RUYI-425 §4.5) carry only ciphertext and
+	// are keyed by (runtime_instance_id, credential_key) with no workspace
+	// column; DeleteWorkspaceRuntimesAndProjects sweeps them through the
+	// workspace's runtime set in the same statement that deletes the
+	// runtimes. Destroying the workspace destroys its secrets.
+	"runtime_credential": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery":        workspaceDelete,

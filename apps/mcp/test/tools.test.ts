@@ -116,32 +116,67 @@ describe("tool surface", () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name).sort()).toEqual(
       [
         "add_comment",
+        "apply_execution_profile",
+        "archive_agent",
+        "archive_squad",
         "assign_issue",
+        "bulk_update_agent_runtime_config",
         "bulk_update_issues",
         "cancel_run",
+        "create_agent",
+        "create_execution_profile",
         "create_issue",
         "create_project",
+        "create_project_resource",
+        "create_quick_reply",
+        "create_squad",
         "delete_comment",
+        "delete_execution_profile",
+        "delete_project_resource",
+        "delete_quick_reply",
         "dispatch_agent",
         "edit_comment",
+        "get_agent",
+        "get_agent_runtime_config",
         "get_comment",
+        "get_daemon_instance",
+        "get_execution_profile",
+        "get_execution_topology",
         "get_issue",
         "get_issue_relations",
         "get_project",
         "get_run",
+        "get_runtime",
+        "get_runtime_models",
+        "get_squad",
         "list_agents",
         "list_comments",
+        "list_daemon_instances",
+        "list_execution_profiles",
         "list_issue_runs",
         "list_issues",
         "list_projects",
+        "list_project_resources",
+        "list_quick_replies",
+        "list_runs",
+        "list_runtimes",
+        "list_squads",
         "list_workspaces",
         "manage_issue_relations",
         "progress_digest",
+        "restore_agent",
         "retry_run",
+        "search_audit_events",
         "search_issues",
+        "update_agent",
+        "update_agent_runtime_config",
+        "update_execution_profile",
         "update_issue",
         "update_issue_status",
         "update_project",
+        "update_project_resource",
+        "update_quick_reply",
+        "update_squad",
       ].sort(),
     );
   });
@@ -942,6 +977,107 @@ describe("run lifecycle tools (RUYI-292)", () => {
       client,
     )) as { total: number };
     expect(result.total).toBe(2);
+  });
+
+  it("search_audit_events passes filters through and surfaces the keyset cursor", async () => {
+    const client = fakeClient({
+      listAuditEvents: async (_ws: string, params: Record<string, unknown>) => {
+        callsOf(client).push({ method: "listAuditEvents", args: [params] });
+        return {
+          events: [
+            {
+              id: "ev1",
+              workspace_id: WS,
+              domain: "run",
+              event_type: "run.cancelled",
+              occurred_at: "2026-10-04T00:00:00Z",
+              actor_type: "member",
+              actor_id: "u1",
+              trigger_kind: null,
+              trigger_ref: null,
+              issue_id: "i1",
+              task_id: "t1",
+              agent_id: null,
+              runtime_id: null,
+              reason: "user_requested",
+              details: {},
+            },
+          ],
+          next_cursor: "2026-10-04T00:00:00Z",
+          next_cursor_id: "ev1",
+        };
+      },
+    });
+    const tool = findTool("search_audit_events");
+    const result = (await tool?.handler(
+      { workspace: WS, domain: "run", reason: "user_requested", limit: 10 },
+      client,
+    )) as { total: number; events: unknown[]; next_cursor: string | null };
+    expect(callsOf(client)[0]).toEqual({
+      method: "listAuditEvents",
+      args: [{ domain: "run", reason: "user_requested", limit: 10 }],
+    });
+    expect(result.total).toBe(1);
+    expect(result.next_cursor).toBe("2026-10-04T00:00:00Z");
+  });
+
+  it("search_audit_events consumes the server's page wrapper over the real client (contract drift guard)", async () => {
+    // Same guard rationale as list_issue_runs above: run the tool against the
+    // REAL MulticaClient over a mocked HTTP layer so a client-declared shape
+    // drifting from the server's { events, next_cursor, next_cursor_id }
+    // wrapper cannot pass unit mocks while integration dies.
+    const payload = {
+      events: [
+        {
+          id: "ev1",
+          workspace_id: WS,
+          domain: "ops",
+          event_type: "ops.server_started",
+          occurred_at: "2026-10-04T00:00:00Z",
+          actor_type: "system",
+          actor_id: null,
+          trigger_kind: null,
+          trigger_ref: null,
+          issue_id: null,
+          task_id: null,
+          agent_id: null,
+          runtime_id: null,
+          reason: null,
+          details: { version: "dev", commit: "unknown" },
+        },
+      ],
+      next_cursor: null,
+      next_cursor_id: null,
+    };
+    // The client resolves a slug workspace to its UUID via the workspace
+    // list before the audit call, so the stub answers per route like the
+    // real server would.
+    const wsUuid = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    const fetchImpl = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      if (url.pathname === "/api/workspaces") {
+        return new Response(
+          JSON.stringify([{ id: wsUuid, name: "Voice Notes", slug: WS }]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new MulticaClient({
+      serverUrl: "https://api.example.com",
+      token: "mul_test",
+      fetchImpl,
+    });
+    const tool = findTool("search_audit_events");
+    const result = (await tool?.handler({ workspace: WS }, client)) as {
+      total: number;
+      next_cursor: string | null;
+    };
+    expect(result.total).toBe(1);
+    expect(result.next_cursor).toBeNull();
   });
 
   it("get_run returns chain detail", async () => {
@@ -1802,5 +1938,740 @@ describe("comment management tools (RUYI-352)", () => {
         findTool("delete_comment")?.handler({ workspace: WS, comment_id: "c1" }, client),
       ).rejects.toThrow(MulticaApiError);
     });
+  });
+});
+
+// ---- RUYI-419 workspace run view + agent/squad management ----------------
+
+describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
+  const agentDetail = {
+    id: "a1",
+    name: "Worker",
+    description: "does things",
+    instructions: "be careful",
+    runtime_id: "rt1",
+    runtime_bound: true,
+    model: "gpt-test",
+    thinking_level: "high",
+    service_tier: "",
+    max_concurrent_tasks: 2,
+    permission_mode: "private",
+    visibility: "workspace",
+    status: "active",
+    owner_id: "u1",
+    // The real Go response carries these secret-bearing fields; the tool must
+    // never project them into its output.
+    runtime_config: { gateway: { token: "supersecret" } },
+    mcp_config: { mcpServers: { x: { url: "https://example.com/?token=supersecret" } } },
+    custom_env: { API_KEY: "supersecret" },
+    composio_toolkit_allowlist: ["github"],
+    has_custom_env: true,
+    custom_env_key_count: 1,
+    mcp_config_redacted: false,
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+    archived_at: null,
+  };
+
+  it("list_runs passes filters through and projects workspace rows", async () => {
+    const client = fakeClient({
+      listWorkspaceRuns: async (_ws: string, params: Record<string, unknown>) => {
+        callsOf(client).push({ method: "listWorkspaceRuns", args: [params] });
+        return {
+          runs: [
+            {
+              id: "t1",
+              status: "running",
+              agent_id: "a1",
+              issue_id: "i1",
+              issue_identifier: "VOI-1",
+              issue_title: "First issue",
+              trigger: "comment",
+              created_at: "2026-10-04T10:00:00Z",
+              failure_reason: "",
+            },
+          ],
+          count: 1,
+          has_more: true,
+          next_offset: 1,
+        };
+      },
+    });
+    const tool = findTool("list_runs");
+    const result = (await tool?.handler(
+      {
+        workspace: WS,
+        status: "pending,failed",
+        agent_id: "a1",
+        issue: "VOI-1",
+        trigger: "comment",
+        created_after: "2026-10-04T09:00:00Z",
+        limit: 50,
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(callsOf(client)[0]).toEqual({
+      method: "listWorkspaceRuns",
+      args: [
+        {
+          status: "pending,failed",
+          agent_id: "a1",
+          project_id: undefined,
+          issue: "VOI-1",
+          trigger: "comment",
+          created_after: "2026-10-04T09:00:00Z",
+          created_before: undefined,
+          limit: 50,
+          offset: undefined,
+        },
+      ],
+    });
+    expect(result.total).toBe(1);
+    expect(result.has_more).toBe(true);
+    expect(result.next_offset).toBe(1);
+    const row = (result.runs as Array<Record<string, unknown>>)[0]!;
+    expect(row.issue).toBe("VOI-1");
+    expect(row.trigger).toBe("comment");
+  });
+
+  it("list_runs consumes the server's wrapper payload over the real client (contract drift guard)", async () => {
+    let requested = "";
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      requested = String(input);
+      return new Response(
+        JSON.stringify({
+          runs: [{ id: "t1", status: "queued", agent_id: "a1", trigger: "other" }],
+          count: 1,
+          has_more: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    const client = new MulticaClient({ serverUrl: "https://api.example.com", token: "mul_test", fetchImpl });
+    const result = (await findTool("list_runs")?.handler(
+      { workspace: WS, status: "queued", limit: 10 },
+      client,
+    )) as { total: number };
+    const url = new URL(requested);
+    expect(url.pathname).toBe("/api/task-runs");
+    expect(url.searchParams.get("status")).toBe("queued");
+    expect(url.searchParams.get("limit")).toBe("10");
+    expect(result.total).toBe(1);
+  });
+
+  it("list_runs rejects a malformed time bound before hitting the API", async () => {
+    const client = fakeClient({
+      listWorkspaceRuns: async () => {
+        throw new Error("must not be called");
+      },
+    });
+    await expect(
+      findTool("list_runs")?.handler({ workspace: WS, created_after: "not-a-time" }, client),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("get_agent projects metadata only — no secret-bearing value reaches the output", async () => {
+    const client = fakeClient({ getAgent: async () => agentDetail });
+    const result = (await findTool("get_agent")?.handler(
+      { workspace: WS, agent_id: "a1" },
+      client,
+    )) as { agent: Record<string, unknown> };
+    // get_agent returns the projection at the top level.
+    const brief = result as unknown as Record<string, unknown>;
+    const text = JSON.stringify(brief);
+    expect(text).not.toContain("supersecret");
+    // No secret-bearing container key survives the projection; the only
+    // allowed mentions are the boolean/count indicator fields themselves.
+    for (const forbidden of ["mcp_config", "runtime_config", "custom_env", "composio_toolkit"]) {
+      expect(Object.keys(brief), `key ${forbidden} must not survive`).not.toContain(forbidden);
+    }
+    expect(brief.has_custom_env).toBe(true);
+    expect(brief.custom_env_key_count).toBe(1);
+    expect(brief.mcp_config_redacted).toBe(false);
+    expect(brief.runtime_bound).toBe(true);
+  });
+
+  it("create_agent maps required fields and never sends secret-bearing keys", async () => {
+    const client = fakeClient({
+      createAgent: async (_ws: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "createAgent", args: [body] });
+        return { ...agentDetail, name: String(body.name) };
+      },
+    });
+    const result = (await findTool("create_agent")?.handler(
+      { workspace: WS, name: "New agent", runtime_id: "rt1", instructions: "hi" },
+      client,
+    )) as Record<string, unknown>;
+    const body = callsOf(client)[0]?.args[0] as Record<string, unknown>;
+    expect(body).toEqual({
+      name: "New agent",
+      runtime_id: "rt1",
+      description: "",
+      instructions: "hi",
+      model: "",
+      thinking_level: "",
+      max_concurrent_tasks: undefined,
+    });
+    expect(Object.keys(body)).not.toContain("custom_env");
+    expect(Object.keys(body)).not.toContain("mcp_config");
+    expect(Object.keys(body)).not.toContain("runtime_config");
+    expect(result.created).toBe(true);
+  });
+
+  it("create_agent requires name and runtime_id", async () => {
+    const client = fakeClient({});
+    await expect(
+      findTool("create_agent")?.handler({ workspace: WS, name: "x" }, client),
+    ).rejects.toThrow(ToolInputError);
+    await expect(
+      findTool("create_agent")?.handler({ workspace: WS, runtime_id: "rt1" }, client),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("update_agent sends only the provided keys (PATCH semantics)", async () => {
+    const client = fakeClient({
+      updateAgent: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateAgent", args: [id, body] });
+        return { ...agentDetail, name: String(body.name) };
+      },
+    });
+    await findTool("update_agent")?.handler(
+      { workspace: WS, agent_id: "a1", name: "Renamed" },
+      client,
+    );
+    expect(callsOf(client)[0]).toEqual({
+      method: "updateAgent",
+      args: ["a1", { name: "Renamed" }],
+    });
+  });
+
+  it("archive_agent reports the side effect and maps 409 to already_archived", async () => {
+    const ok = fakeClient({
+      archiveAgent: async () => ({ ...agentDetail, archived_at: "2026-10-04T10:00:00Z" }),
+    });
+    const result = (await findTool("archive_agent")?.handler(
+      { workspace: WS, agent_id: "a1" },
+      ok,
+    )) as Record<string, unknown>;
+    expect(result.archived).toBe(true);
+    expect(String(result.note)).toMatch(/cancel/i);
+
+    const dup = fakeClient({
+      archiveAgent: async () => {
+        throw new MulticaApiError(409, "agent is already archived");
+      },
+    });
+    const repeat = (await findTool("archive_agent")?.handler(
+      { workspace: WS, agent_id: "a1" },
+      dup,
+    )) as Record<string, unknown>;
+    expect(repeat.code).toBe("already_archived");
+    expect(repeat.archived).toBe(false);
+
+    const denied = fakeClient({
+      archiveAgent: async () => {
+        throw new MulticaApiError(403, "insufficient permissions");
+      },
+    });
+    await expect(
+      findTool("archive_agent")?.handler({ workspace: WS, agent_id: "a1" }, denied),
+    ).rejects.toThrow(MulticaApiError);
+  });
+
+  it("restore_agent maps 409 to not_archived", async () => {
+    const client = fakeClient({
+      restoreAgent: async () => {
+        throw new MulticaApiError(409, "agent is not archived");
+      },
+    });
+    const result = (await findTool("restore_agent")?.handler(
+      { workspace: WS, agent_id: "a1" },
+      client,
+    )) as Record<string, unknown>;
+    expect(result.code).toBe("not_archived");
+    expect(result.restored).toBe(false);
+  });
+
+  it("list_runtimes and list_squads project brief rows", async () => {
+    const runtimes = fakeClient({
+      listRuntimes: async () => [
+        { id: "rt1", name: "desk", runtime_mode: "cloud", status: "online", visibility: "private" },
+      ],
+    });
+    const rt = (await findTool("list_runtimes")?.handler({ workspace: WS }, runtimes)) as {
+      total: number;
+      runtimes: Array<Record<string, unknown>>;
+    };
+    expect(rt.total).toBe(1);
+    expect(rt.runtimes[0]!.id).toBe("rt1");
+
+    const squads = fakeClient({
+      listSquads: async () => [
+        {
+          id: "s1",
+          name: "Dev squad",
+          leader_id: "a1",
+          member_count: 2,
+          member_preview: [],
+          archived_at: null,
+        },
+      ],
+    });
+    const sq = (await findTool("list_squads")?.handler({ workspace: WS }, squads)) as {
+      total: number;
+      squads: Array<Record<string, unknown>>;
+    };
+    expect(sq.squads[0]!.leader_id).toBe("a1");
+  });
+
+  it("get_squad returns the full projection", async () => {
+    const client = fakeClient({
+      getSquad: async () => ({
+        id: "s1",
+        name: "Dev squad",
+        instructions: "squad rules",
+        leader_id: "a1",
+        member_count: 2,
+        archived_at: null,
+      }),
+    });
+    const result = (await findTool("get_squad")?.handler(
+      { workspace: WS, squad_id: "s1" },
+      client,
+    )) as Record<string, unknown>;
+    expect(result.id).toBe("s1");
+    expect(result.instructions).toBe("squad rules");
+  });
+
+  it("create_squad maps name/leader_id and create never triggers a run", async () => {
+    const client = fakeClient({
+      createSquad: async (_ws: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "createSquad", args: [body] });
+        return { id: "s1", name: String(body.name), leader_id: body.leader_id };
+      },
+    });
+    const result = (await findTool("create_squad")?.handler(
+      { workspace: WS, name: "New squad", leader_id: "a1" },
+      client,
+    )) as Record<string, unknown>;
+    expect(callsOf(client)[0]?.args[0]).toEqual({
+      name: "New squad",
+      leader_id: "a1",
+      description: "",
+    });
+    expect(result.created).toBe(true);
+  });
+
+  it("update_squad sends only the provided keys", async () => {
+    const client = fakeClient({
+      updateSquad: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateSquad", args: [id, body] });
+        return { id, name: String(body.name) };
+      },
+    });
+    await findTool("update_squad")?.handler(
+      { workspace: WS, squad_id: "s1", instructions: "new rules" },
+      client,
+    );
+    expect(callsOf(client)[0]).toEqual({
+      method: "updateSquad",
+      args: ["s1", { instructions: "new rules" }],
+    });
+  });
+
+  it("archive_squad maps the already-archived answer and reports the transfer side effect", async () => {
+    const ok = fakeClient({ archiveSquad: async () => undefined });
+    const result = (await findTool("archive_squad")?.handler(
+      { workspace: WS, squad_id: "s1" },
+      ok,
+    )) as Record<string, unknown>;
+    expect(result.archived).toBe(true);
+    expect(String(result.note)).toMatch(/leader/i);
+
+    const dup = fakeClient({
+      archiveSquad: async () => {
+        throw new MulticaApiError(400, "squad is already archived");
+      },
+    });
+    const repeat = (await findTool("archive_squad")?.handler(
+      { workspace: WS, squad_id: "s1" },
+      dup,
+    )) as Record<string, unknown>;
+    expect(repeat.code).toBe("already_archived");
+    expect(repeat.archived).toBe(false);
+  });
+
+  it("archive tools declare their destructive side effects in the description", () => {
+    expect(findTool("archive_agent")?.description).toMatch(/CANCEL/i);
+    expect(findTool("archive_squad")?.description).toMatch(/REASSIGNED/i);
+    expect(findTool("archive_squad")?.description).toMatch(/no restore/i);
+    // Reads stay inert and say so.
+    for (const name of ["list_runs", "get_agent", "list_runtimes", "list_squads", "get_squad"]) {
+      expect(findTool(name)?.description).toMatch(/Read-only|never/i);
+    }
+    // Management writes declare the no-optimistic-lock reality.
+    expect(findTool("update_agent")?.description).toMatch(/no revision field|last-write-wins/i);
+    expect(findTool("update_squad")?.description).toMatch(/no revision field|last-write-wins/i);
+  });
+});
+
+describe("quick reply tools (RUYI-435)", () => {
+  function qrClient(): MulticaClient {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const client = {
+      listQuickReplies: async () => ({
+        total: 2,
+        quick_replies: [
+          { id: "qr1", name: "处理合并冲突", content: "我先来处理合并冲突。", position: 0 },
+          { id: "qr2", name: "补充用例", content: "我来补充用例。", position: 1 },
+        ],
+      }),
+      createQuickReply: async (_ws: string, body: Record<string, unknown>) => {
+        calls.push({ method: "createQuickReply", args: [body] });
+        return { id: "qr-new", name: String(body.name), content: String(body.content), position: 2 };
+      },
+      updateQuickReply: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        calls.push({ method: "updateQuickReply", args: [id, body] });
+        return { id, name: "补测试 v2", content: String(body.content ?? "我来补测试。"), position: 1 };
+      },
+      deleteQuickReply: async (_ws: string, id: string) => {
+        calls.push({ method: "deleteQuickReply", args: [id] });
+      },
+    };
+    (client as unknown as { __calls: unknown }).__calls = calls;
+    return client as unknown as MulticaClient;
+  }
+
+  it("list_quick_replies returns the workspace catalog verbatim", async () => {
+    const result = (await findTool("list_quick_replies")!.handler(
+      { workspace: WS },
+      qrClient(),
+    )) as { total: number; quick_replies: Array<{ id: string; name: string }> };
+    expect(result.total).toBe(2);
+    expect(result.quick_replies.map((reply) => reply.id)).toEqual(["qr1", "qr2"]);
+  });
+
+  it("create_quick_reply forwards name and content", async () => {
+    const client = qrClient();
+    const result = (await findTool("create_quick_reply")!.handler(
+      { workspace: WS, name: "推进后续工作", content: "我继续推进这项工作。" },
+      client,
+    )) as { id: string; name: string };
+    expect(result.id).toBe("qr-new");
+    expect(result.name).toBe("推进后续工作");
+    expect(callsOf(client)).toEqual([
+      { method: "createQuickReply", args: [{ name: "推进后续工作", content: "我继续推进这项工作。" }] },
+    ]);
+  });
+
+  it("update_quick_reply sends a PATCH body and refuses an empty one", async () => {
+    const client = qrClient();
+    const result = (await findTool("update_quick_reply")!.handler(
+      { workspace: WS, id: "qr2", content: "我来补齐单元测试。" },
+      client,
+    )) as { id: string; content: string };
+    expect(result.id).toBe("qr2");
+    expect(callsOf(client)).toEqual([
+      { method: "updateQuickReply", args: ["qr2", { content: "我来补齐单元测试。" }] },
+    ]);
+
+    await expect(
+      findTool("update_quick_reply")!.handler({ workspace: WS, id: "qr2" }, client),
+    ).rejects.toThrow(/at least one of/i);
+  });
+
+  it("delete_quick_reply forwards the id and reports deletion", async () => {
+    const client = qrClient();
+    const result = (await findTool("delete_quick_reply")!.handler(
+      { workspace: WS, id: "qr1" },
+      client,
+    )) as { deleted: boolean; id: string };
+    expect(result).toEqual({ deleted: true, id: "qr1" });
+    expect(callsOf(client)).toEqual([{ method: "deleteQuickReply", args: ["qr1"] }]);
+  });
+});
+
+describe("project resource tools (RUYI-458)", () => {
+  function resourceFixture(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "pr-1",
+      project_id: "p1",
+      workspace_id: "w1",
+      resource_type: "github_repo",
+      resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      label: null,
+      position: 0,
+      created_at: "2026-10-05T00:00:00Z",
+      created_by: "u-1",
+      ...over,
+    };
+  }
+
+  function resourceClient(overrides: Record<string, unknown> = {}): MulticaClient {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const client = {
+      listProjectResources: async (_ws: string, projectId: string) => {
+        calls.push({ method: "listProjectResources", args: [projectId] });
+        return {
+          total: 2,
+          resources: [
+            resourceFixture(),
+            resourceFixture({
+              id: "pr-2",
+              resource_type: "local_directory",
+              resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+              label: "本地开发目录",
+              position: 1,
+            }),
+          ],
+        };
+      },
+      createProjectResource: async (_ws: string, projectId: string, body: Record<string, unknown>) => {
+        calls.push({ method: "createProjectResource", args: [projectId, body] });
+        return resourceFixture({ ...body, id: "pr-new", position: 2 });
+      },
+      updateProjectResource: async (
+        _ws: string,
+        projectId: string,
+        resourceId: string,
+        body: Record<string, unknown>,
+      ) => {
+        calls.push({ method: "updateProjectResource", args: [projectId, resourceId, body] });
+        return resourceFixture({ id: resourceId, ...body });
+      },
+      deleteProjectResource: async (_ws: string, projectId: string, resourceId: string) => {
+        calls.push({ method: "deleteProjectResource", args: [projectId, resourceId] });
+      },
+      ...overrides,
+    };
+    (client as unknown as { __calls: unknown }).__calls = calls;
+    return client as unknown as MulticaClient;
+  }
+
+  function apiError(status: number, body: Record<string, unknown>): MulticaApiError {
+    return new MulticaApiError(status, typeof body.error === "string" ? body.error : "error", body);
+  }
+
+  it("list_project_resources returns the binding list with type, ref, label and order", async () => {
+    const result = (await findTool("list_project_resources")!.handler(
+      { workspace: WS, project_id: "p1" },
+      resourceClient(),
+    )) as {
+      total: number;
+      resources: Array<{ id: string; resource_type: string; resource_ref: unknown; label: string | null; position: number }>;
+    };
+    expect(result.total).toBe(2);
+    expect(result.resources[0]).toMatchObject({
+      id: "pr-1",
+      resource_type: "github_repo",
+      resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      label: null,
+      position: 0,
+    });
+    expect(result.resources[1]).toMatchObject({
+      id: "pr-2",
+      resource_type: "local_directory",
+      label: "本地开发目录",
+      position: 1,
+    });
+  });
+
+  it("create_project_resource forwards the type-discriminated ref verbatim", async () => {
+    const client = resourceClient();
+    const result = (await findTool("create_project_resource")!.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        resource_type: "local_directory",
+        resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1", execution_mode: "worktree" },
+        label: "工作副本",
+      },
+      client,
+    )) as { created: boolean; id: string; resource_type: string };
+    expect(result.created).toBe(true);
+    expect(result.resource_type).toBe("local_directory");
+    expect(callsOf(client)).toEqual([
+      {
+        method: "createProjectResource",
+        args: [
+          "p1",
+          {
+            resource_type: "local_directory",
+            resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1", execution_mode: "worktree" },
+            label: "工作副本",
+            position: undefined,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("create_project_resource validates the ref against the declared type", async () => {
+    const client = resourceClient();
+    await expect(
+      findTool("create_project_resource")!.handler(
+        {
+          workspace: WS,
+          project_id: "p1",
+          resource_type: "github_repo",
+          resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+        },
+        client,
+      ),
+    ).rejects.toBeInstanceOf(ToolInputError);
+    await expect(
+      findTool("create_project_resource")!.handler(
+        {
+          workspace: WS,
+          project_id: "p1",
+          resource_type: "local_directory",
+          resource_ref: { local_path: "/home/guxy/work" },
+        },
+        client,
+      ),
+    ).rejects.toThrow(/daemon_id/);
+    // Zero wire traffic for both refusals.
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("create_project_resource answers a duplicate binding with a structured already_attached", async () => {
+    const client = resourceClient({
+      createProjectResource: async () => {
+        throw apiError(409, { error: "this resource is already attached to the project" });
+      },
+    });
+    const result = (await findTool("create_project_resource")!.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        resource_type: "github_repo",
+        resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      },
+      client,
+    )) as { created: boolean; code: string; hint?: string };
+    expect(result.created).toBe(false);
+    expect(result.code).toBe("already_attached");
+    expect(result.hint).toMatch(/list_project_resources/);
+  });
+
+  it("update_project_resource sends a PATCH body with only the provided fields", async () => {
+    const client = resourceClient();
+    const result = (await findTool("update_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1", label: "主仓库" },
+      client,
+    )) as { updated: boolean; label: string | null };
+    expect(result.updated).toBe(true);
+    expect(result.label).toBe("主仓库");
+    expect(callsOf(client)).toEqual([
+      { method: "updateProjectResource", args: ["p1", "pr-1", { label: "主仓库" }] },
+    ]);
+  });
+
+  it("update_project_resource clears the label on null or empty string", async () => {
+    const client = resourceClient();
+    await findTool("update_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1", label: null },
+      client,
+    );
+    expect(callsOf(client)).toEqual([
+      { method: "updateProjectResource", args: ["p1", "pr-1", { label: null }] },
+    ]);
+  });
+
+  it("update_project_resource refuses an empty body and forbids resource_type", async () => {
+    const client = resourceClient();
+    await expect(
+      findTool("update_project_resource")!.handler(
+        { workspace: WS, project_id: "p1", resource_id: "pr-1" },
+        client,
+      ),
+    ).rejects.toThrow(/at least one of/i);
+    await expect(
+      findTool("update_project_resource")!.handler(
+        {
+          workspace: WS,
+          project_id: "p1",
+          resource_id: "pr-1",
+          resource_type: "local_directory",
+          label: "x",
+        },
+        client,
+      ),
+    ).rejects.toThrow(/immutable/);
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("update_project_resource maps defined server failures to structured codes", async () => {
+    const notFound = resourceClient({
+      updateProjectResource: async () => {
+        throw apiError(404, { error: "project resource not found" });
+      },
+    });
+    const result = (await findTool("update_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-x", label: "x" },
+      notFound,
+    )) as { updated: boolean; code: string };
+    expect(result).toMatchObject({ updated: false, code: "not_found" });
+
+    const daemonGate = resourceClient({
+      updateProjectResource: async () => {
+        throw apiError(422, {
+          error: "local_directory does not support worktree",
+          code: "daemon_version_unsupported",
+          daemon_id: "d-1",
+          min_version: "0.4.30",
+        });
+      },
+    });
+    const gated = (await findTool("update_project_resource")!.handler(
+      {
+        workspace: WS,
+        project_id: "p1",
+        resource_id: "pr-2",
+        resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1", execution_mode: "worktree" },
+      },
+      daemonGate,
+    )) as { updated: boolean; code: string; min_version: string | null };
+    expect(gated).toMatchObject({
+      updated: false,
+      code: "daemon_version_unsupported",
+      min_version: "0.4.30",
+    });
+  });
+
+  it("delete_project_resource forwards the binding id and reports deletion", async () => {
+    const client = resourceClient();
+    const result = (await findTool("delete_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1" },
+      client,
+    )) as { deleted: boolean; id: string };
+    expect(result).toEqual({ deleted: true, id: "pr-1" });
+    expect(callsOf(client)).toEqual([
+      { method: "deleteProjectResource", args: ["p1", "pr-1"] },
+    ]);
+  });
+
+  it("delete_project_resource answers a repeat unbind with a structured not_found", async () => {
+    const client = resourceClient({
+      deleteProjectResource: async () => {
+        throw apiError(404, { error: "project resource not found" });
+      },
+    });
+    const result = (await findTool("delete_project_resource")!.handler(
+      { workspace: WS, project_id: "p1", resource_id: "pr-1" },
+      client,
+    )) as { deleted: boolean; code: string };
+    expect(result).toMatchObject({ deleted: false, code: "not_found" });
+  });
+
+  it("pins the safety prose: unbind never touches the real repo or directory", () => {
+    expect(findTool("delete_project_resource")?.description).toMatch(/never deleted or modified/);
+    expect(findTool("delete_project_resource")?.description).toMatch(/GitHub/i);
+    expect(findTool("delete_project_resource")?.description).toMatch(/local directory/i);
+    // resource_type is immutable server-side: the update schema must not
+    // even declare the key.
+    const updateProps = findTool("update_project_resource")?.inputSchema
+      .properties as Record<string, unknown>;
+    expect(updateProps.resource_type).toBeUndefined();
   });
 });

@@ -30,3 +30,25 @@ export interface IssueDecision {
   /** Present on the answer response only — outcomes of the echo comment's trigger pipeline. */
   trigger_outcomes?: Array<Record<string, unknown>>;
 }
+
+/** Per-card outcome of the batch answer endpoint (RUYI-471). Mirrors handler.BatchDecisionAnswerOutcome. */
+export type BatchDecisionAnswerStatus = "answered" | "conflict" | "invalid" | "not_found";
+
+export interface BatchDecisionAnswerOutcome {
+  decision_id: string;
+  status: BatchDecisionAnswerStatus;
+  error?: string;
+  decision?: IssueDecision;
+}
+
+/** Mirrors handler.BatchAnswerIssueDecisionsResponse. Per-card failures never roll the batch back. */
+export interface BatchDecisionAnswerResult {
+  results: BatchDecisionAnswerOutcome[];
+  echo_comment_id?: string;
+  trigger_outcomes?: Array<Record<string, unknown>>;
+}
+
+export interface BatchIssueDecisionAnswer {
+  decision_id: string;
+  selected_indices: number[];
+}

@@ -151,9 +151,26 @@
     "upload_file": "上传文件",
     "file_too_large_title": "文件过大",
     "file_too_large_message": "文件必须小于 {{size}} MB。",
-    "upload_failed_title": "上传失败"
+    "upload_failed_title": "上传失败",
+    "quick_replies_title": "快速回复",
+    "quick_reply_hint": "插入快速回复"
   },
   "mobile": {
+    "share": {
+      "select_workspace": "选择工作空间",
+      "select_destination": "选择发送目标",
+      "select_agent": "选择智能体",
+      "close": "关闭",
+      "attached_count_other": "已就绪 {{count}} 个文件，将作为附件添加",
+      "dest_chat": "聊天",
+      "dest_chat_desc": "把文件发送给智能体",
+      "no_agent": "此工作空间没有可调用的智能体。",
+      "dest_issue": "议题",
+      "dest_issue_desc": "用这些文件创建新议题",
+      "load_failed": "工作空间加载失败：{{reason}}",
+      "retry": "重试",
+      "no_workspaces": "你还没有加入任何工作空间。"
+    },
     "actor": {
       "system": "系统",
       "unknown_member": "未知用户",

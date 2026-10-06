@@ -27,6 +27,7 @@ import enSquads from "./en/squads.json";
 import enBilling from "./en/billing.json";
 import enPromptMarket from "./en/prompt-market.json";
 import enSelfEvolution from "./en/self-evolution.json";
+import enVoice from "./en/voice.json";
 import zhHansAdmin from "./zh-Hans/admin.json";
 import zhHansCommon from "./zh-Hans/common.json";
 import zhHansAuth from "./zh-Hans/auth.json";
@@ -55,6 +56,7 @@ import zhHansSquads from "./zh-Hans/squads.json";
 import zhHansBilling from "./zh-Hans/billing.json";
 import zhHansPromptMarket from "./zh-Hans/prompt-market.json";
 import zhHansSelfEvolution from "./zh-Hans/self-evolution.json";
+import zhHansVoice from "./zh-Hans/voice.json";
 import koAdmin from "./ko/admin.json";
 import koCommon from "./ko/common.json";
 import koAuth from "./ko/auth.json";
@@ -83,6 +85,7 @@ import koSquads from "./ko/squads.json";
 import koBilling from "./ko/billing.json";
 import koPromptMarket from "./ko/prompt-market.json";
 import koSelfEvolution from "./ko/self-evolution.json";
+import koVoice from "./ko/voice.json";
 import jaAdmin from "./ja/admin.json";
 import jaCommon from "./ja/common.json";
 import jaAuth from "./ja/auth.json";
@@ -111,6 +114,7 @@ import jaSquads from "./ja/squads.json";
 import jaBilling from "./ja/billing.json";
 import jaPromptMarket from "./ja/prompt-market.json";
 import jaSelfEvolution from "./ja/self-evolution.json";
+import jaVoice from "./ja/voice.json";
 
 // Single source of truth for the resource bundle. Both apps (web layout +
 // desktop App.tsx) import from here so adding a locale or namespace happens
@@ -145,6 +149,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     billing: enBilling,
     "prompt-market": enPromptMarket,
     "self-evolution": enSelfEvolution,
+    voice: enVoice,
   },
   "zh-Hans": {
     common: zhHansCommon,
@@ -175,6 +180,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     billing: zhHansBilling,
     "prompt-market": zhHansPromptMarket,
     "self-evolution": zhHansSelfEvolution,
+    voice: zhHansVoice,
   },
   ko: {
     common: koCommon,
@@ -205,6 +211,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     billing: koBilling,
     "prompt-market": koPromptMarket,
     "self-evolution": koSelfEvolution,
+    voice: koVoice,
   },
   ja: {
     common: jaCommon,
@@ -235,5 +242,6 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     billing: jaBilling,
     "prompt-market": jaPromptMarket,
     "self-evolution": jaSelfEvolution,
+    voice: jaVoice,
   },
 };

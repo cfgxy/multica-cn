@@ -43,9 +43,10 @@ INSERT INTO runtime_profile (
     fixed_args,
     visibility,
     created_by,
-    enabled
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at
+    enabled,
+    capabilities
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities
 `
 
 type CreateRuntimeProfileParams struct {
@@ -58,11 +59,17 @@ type CreateRuntimeProfileParams struct {
 	Visibility     string      `json:"visibility"`
 	CreatedBy      pgtype.UUID `json:"created_by"`
 	Enabled        bool        `json:"enabled"`
+	Capabilities   []byte      `json:"capabilities"`
 }
 
 // Custom Runtime profiles (MUL-3284). Workspace-level definitions of a custom
 // runtime; see migration 120 for the table. Relational integrity (workspace,
 // created_by) is enforced in the application layer — there are no DB FKs.
+// capabilities (RUYI-425) is derived server-side from the protocol family's
+// baseline (agent.ResolveCapabilities over agent.CapabilitiesForFamily) and
+// marshalled by the caller; the API accepts no client-supplied capability
+// field at this stage. It is intentionally absent from UpdateRuntimeProfile:
+// the family is immutable on a profile, so its capability declaration is too.
 func (q *Queries) CreateRuntimeProfile(ctx context.Context, arg CreateRuntimeProfileParams) (RuntimeProfile, error) {
 	row := q.db.QueryRow(ctx, createRuntimeProfile,
 		arg.WorkspaceID,
@@ -74,6 +81,7 @@ func (q *Queries) CreateRuntimeProfile(ctx context.Context, arg CreateRuntimePro
 		arg.Visibility,
 		arg.CreatedBy,
 		arg.Enabled,
+		arg.Capabilities,
 	)
 	var i RuntimeProfile
 	err := row.Scan(
@@ -89,6 +97,7 @@ func (q *Queries) CreateRuntimeProfile(ctx context.Context, arg CreateRuntimePro
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Capabilities,
 	)
 	return i, err
 }
@@ -158,7 +167,7 @@ func (q *Queries) DeleteRuntimeProfile(ctx context.Context, arg DeleteRuntimePro
 }
 
 const getRuntimeProfile = `-- name: GetRuntimeProfile :one
-SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
+SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities FROM runtime_profile
 WHERE id = $1
 `
 
@@ -178,12 +187,13 @@ func (q *Queries) GetRuntimeProfile(ctx context.Context, id pgtype.UUID) (Runtim
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Capabilities,
 	)
 	return i, err
 }
 
 const getRuntimeProfileForWorkspace = `-- name: GetRuntimeProfileForWorkspace :one
-SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
+SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities FROM runtime_profile
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -208,6 +218,7 @@ func (q *Queries) GetRuntimeProfileForWorkspace(ctx context.Context, arg GetRunt
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Capabilities,
 	)
 	return i, err
 }
@@ -250,7 +261,7 @@ func (q *Queries) ListAgentRuntimeIDsByProfile(ctx context.Context, arg ListAgen
 }
 
 const listEnabledRuntimeProfilesForWorkspace = `-- name: ListEnabledRuntimeProfilesForWorkspace :many
-SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
+SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities FROM runtime_profile
 WHERE workspace_id = $1 AND enabled = true
 ORDER BY created_at ASC
 `
@@ -279,6 +290,7 @@ func (q *Queries) ListEnabledRuntimeProfilesForWorkspace(ctx context.Context, wo
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Capabilities,
 		); err != nil {
 			return nil, err
 		}
@@ -291,7 +303,7 @@ func (q *Queries) ListEnabledRuntimeProfilesForWorkspace(ctx context.Context, wo
 }
 
 const listRuntimeProfiles = `-- name: ListRuntimeProfiles :many
-SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
+SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities FROM runtime_profile
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -318,6 +330,7 @@ func (q *Queries) ListRuntimeProfiles(ctx context.Context, workspaceID pgtype.UU
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Capabilities,
 		); err != nil {
 			return nil, err
 		}
@@ -330,7 +343,7 @@ func (q *Queries) ListRuntimeProfiles(ctx context.Context, workspaceID pgtype.UU
 }
 
 const lockRuntimeProfileForDelete = `-- name: LockRuntimeProfileForDelete :one
-SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
+SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities FROM runtime_profile
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE
 `
@@ -358,12 +371,13 @@ func (q *Queries) LockRuntimeProfileForDelete(ctx context.Context, arg LockRunti
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Capabilities,
 	)
 	return i, err
 }
 
 const lockRuntimeProfileForRegistration = `-- name: LockRuntimeProfileForRegistration :one
-SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
+SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities FROM runtime_profile
 WHERE id = $1 AND workspace_id = $2
 FOR KEY SHARE
 `
@@ -393,6 +407,7 @@ func (q *Queries) LockRuntimeProfileForRegistration(ctx context.Context, arg Loc
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Capabilities,
 	)
 	return i, err
 }
@@ -407,7 +422,7 @@ SET display_name = COALESCE($1, display_name),
     enabled      = COALESCE($6, enabled),
     updated_at   = now()
 WHERE id = $7 AND workspace_id = $8
-RETURNING id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at
+RETURNING id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at, capabilities
 `
 
 type UpdateRuntimeProfileParams struct {
@@ -450,6 +465,7 @@ func (q *Queries) UpdateRuntimeProfile(ctx context.Context, arg UpdateRuntimePro
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Capabilities,
 	)
 	return i, err
 }

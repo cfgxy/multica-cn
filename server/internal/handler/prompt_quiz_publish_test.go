@@ -22,6 +22,7 @@ package handler
 // the suite quietly passing forever.
 
 import (
+	"errors"
 	"context"
 	"net/http"
 	"strings"
@@ -297,4 +298,8 @@ func TestQuizTripwireFiresOnADeliberateDependency(t *testing.T) {
 	if len(tw.tripped()) == 0 {
 		t.Fatal("the tripwire did not fire on a direct quiz read, so the three no-gate assertions prove nothing")
 	}
+}
+
+func (quizTripwireDB) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, errors.New("CopyFrom not supported by quizTripwireDB")
 }

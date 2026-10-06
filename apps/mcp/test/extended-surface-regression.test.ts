@@ -64,6 +64,24 @@ const PURE_READ_TOOLS = [
   "get_issue_relations",
   "list_issue_runs",
   "get_run",
+  // RUYI-433 execution-config reads.
+  "list_daemon_instances",
+  "get_daemon_instance",
+  "list_runtimes",
+  "get_runtime",
+  "get_runtime_models",
+  "get_agent_runtime_config",
+  "list_execution_profiles",
+  "get_execution_profile",
+  "get_execution_topology",
+  "search_audit_events",
+  // RUYI-419 workspace management reads.
+  "list_runs",
+  "get_agent",
+  "list_squads",
+  "get_squad",
+  // RUYI-458 project resource binding read.
+  "list_project_resources",
 ] as const;
 
 const CAS_TOOLS = [
@@ -81,7 +99,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(27);
+    expect(names).toHaveLength(62);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -102,7 +120,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(27);
+      expect(tools).toHaveLength(62);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -115,7 +133,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(27);
+      expect(Object.keys(hint)).toHaveLength(62);
     } finally {
       await cleanup();
     }
@@ -779,6 +797,222 @@ describe("combined serial path: update → assign → relations → comments (RU
   });
 });
 
+// ---- Part H: project resource face (RUYI-458) ------------------------------
+
+describe("project resource face: bindings, duplicate guard, label clearing (RUYI-458)", () => {
+  const GITHUB_REF = { url: "https://github.com/cfgxy/multica-cn.git" };
+  const LOCAL_REF = { local_path: "/home/guxy/work", daemon_id: "d-1" };
+
+  it("registers the four resource tools once with the read-only split", () => {
+    const names = TOOL_DEFINITIONS.map((tool) => tool.name);
+    for (const name of [
+      "list_project_resources",
+      "create_project_resource",
+      "update_project_resource",
+      "delete_project_resource",
+    ]) {
+      expect(names.filter((candidate) => candidate === name)).toHaveLength(1);
+    }
+    expect(findTool("list_project_resources")?.description).toMatch(/read-only/i);
+    expect(findTool("update_project_resource")?.description).toMatch(/immutable/i);
+  });
+
+  it("create forwards the type-discriminated ref; the list echoes it back", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    const created = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "github_repo",
+      resource_ref: GITHUB_REF,
+      label: "主仓库",
+    });
+    expect(created.created).toBe(true);
+    expect(created.resource_type).toBe("github_repo");
+    expect(backend.requestLog.at(-1)?.body).toEqual({
+      resource_type: "github_repo",
+      resource_ref: GITHUB_REF,
+      label: "主仓库",
+      position: undefined,
+    });
+
+    const local = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "local_directory",
+      resource_ref: LOCAL_REF,
+    });
+    expect(local.created).toBe(true);
+    expect(local.resource_ref).toEqual(LOCAL_REF);
+
+    const list = await callHandlerJson(client, "list_project_resources", {
+      workspace: WS,
+      project_id: "p-1",
+    });
+    expect(list.total).toBe(2);
+    expect(list.resources).toHaveLength(2);
+  });
+
+  it("a duplicate github_repo binding answers structured already_attached and writes nothing", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    for (const _ of [0, 1]) {
+      await callHandlerJson(client, "create_project_resource", {
+        workspace: WS,
+        project_id: "p-1",
+        resource_type: "github_repo",
+        resource_ref: GITHUB_REF,
+      });
+    }
+    // Second create: the handler returned the structured failure (no throw),
+    // the backend stayed at exactly one stored row.
+    expect(backend.resources.size).toBe(1);
+    const duplicate = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "github_repo",
+      resource_ref: GITHUB_REF,
+    });
+    expect(duplicate).toMatchObject({ created: false, code: "already_attached" });
+    expect(backend.resources.size).toBe(1);
+  });
+
+  it("a second local_directory on the same daemon conflicts even with a different path", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    const first = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "local_directory",
+      resource_ref: LOCAL_REF,
+    });
+    expect(first.created).toBe(true);
+    const second = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "local_directory",
+      resource_ref: { local_path: "/home/guxy/other", daemon_id: "d-1" },
+    });
+    expect(second).toMatchObject({ created: false, code: "already_attached" });
+    expect(second.message).toMatch(/daemon/);
+    expect(backend.resources.size).toBe(1);
+  });
+
+  it("update is PATCH-by-key-presence: omitted keys stay off the wire, explicit label clears", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    const created = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "github_repo",
+      resource_ref: GITHUB_REF,
+      label: "主仓库",
+      position: 0,
+    });
+    const resourceId = String(created.id);
+
+    await callHandlerJson(client, "update_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_id: resourceId,
+      label: "",
+    });
+    expect(backend.requestLog.at(-1)?.body).toEqual({ label: null });
+    const cleared = backend.resources.get(resourceId);
+    expect(cleared?.label).toBeNull();
+
+    await callHandlerJson(client, "update_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_id: resourceId,
+      position: 3,
+    });
+    expect(backend.requestLog.at(-1)?.body).toEqual({ position: 3 });
+    expect(backend.resources.get(resourceId)?.position).toBe(3);
+    expect(backend.resources.get(resourceId)?.label).toBeNull();
+  });
+
+  it("resource_ref re-points within the stored type; an off-type shape is refused", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    const created = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "github_repo",
+      resource_ref: GITHUB_REF,
+    });
+    const resourceId = String(created.id);
+
+    const repointed = await callHandlerJson(client, "update_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_id: resourceId,
+      resource_ref: { url: "git@github.com:cfgxy/multica-cn.git" },
+    });
+    expect(repointed.updated).toBe(true);
+    expect(backend.resources.get(resourceId)?.resource_ref).toEqual({
+      url: "git@github.com:cfgxy/multica-cn.git",
+    });
+
+    // A local_directory shape against a github_repo row: the tool forwards,
+    // the server's type validation refuses with a structured invalid_input.
+    const offType = await callHandlerJson(client, "update_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_id: resourceId,
+      resource_ref: LOCAL_REF,
+    });
+    expect(offType).toMatchObject({ updated: false, code: "invalid_input" });
+    expect(backend.resources.get(resourceId)?.resource_ref).toEqual({
+      url: "git@github.com:cfgxy/multica-cn.git",
+    });
+  });
+
+  it("delete removes only the binding; the row's data never reappears as a delete of the target", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    const created = await callHandlerJson(client, "create_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_type: "local_directory",
+      resource_ref: LOCAL_REF,
+    });
+    const resourceId = String(created.id);
+
+    const deleted = await callHandlerJson(client, "delete_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_id: resourceId,
+    });
+    expect(deleted).toEqual({ deleted: true, id: resourceId });
+    expect(backend.requestLog.at(-1)?.method).toBe("DELETE");
+    expect(backend.resources.has(resourceId)).toBe(false);
+
+    // Idempotent repeat: structured not_found, not a thrown failure.
+    const repeat = await callHandlerJson(client, "delete_project_resource", {
+      workspace: WS,
+      project_id: "p-1",
+      resource_id: resourceId,
+    });
+    expect(repeat).toMatchObject({ deleted: false, code: "not_found" });
+
+    const list = await callHandlerJson(client, "list_project_resources", {
+      workspace: WS,
+      project_id: "p-1",
+    });
+    expect(list.total).toBe(0);
+  });
+
+  it("keeps the whole face GET/POST/PUT/DELETE on the binding endpoints only", async () => {
+    const backend = new FakeRestBackend();
+    const client = backend.client();
+    await callHandlerJson(client, "list_project_resources", { workspace: WS, project_id: "p-1" });
+    for (const entry of backend.requestLog) {
+      expect(entry.path).toMatch(/^\/api\/projects\/p-1\/resources/);
+    }
+  });
+});
+
 // ---- Fake REST backend (server contract mirror) ---------------------------
 
 interface FakeIssue {
@@ -827,6 +1061,17 @@ interface FakeProject {
   updated_at: string;
 }
 
+interface FakeResource {
+  id: string;
+  project_id: string;
+  resource_type: "github_repo" | "local_directory";
+  resource_ref: Record<string, unknown>;
+  label: string | null;
+  position: number;
+  created_at: string;
+  created_by: string | null;
+}
+
 interface LoggedRequest {
   method: string;
   path: string;
@@ -864,10 +1109,12 @@ class FakeRestBackend {
   issues = new Map<string, FakeIssue>();
   comments = new Map<string, FakeComment>();
   projects = new Map<string, FakeProject>();
+  resources = new Map<string, FakeResource>();
   blocks = new Set<string>(); // forward edges "blocks:<source>:<target>"
   requestLog: LoggedRequest[] = [];
   private clock = 0;
   private commentSeq = 0;
+  private resourceSeq = 0;
 
   constructor() {
     this.issues.set("i-child", this.seedIssue("i-child", "VOI-1", "Child"));
@@ -950,6 +1197,8 @@ class FakeRestBackend {
       const putComment = path.match(/^\/api\/comments\/([^/]+)$/);
       const putProject = path.match(/^\/api\/projects\/([^/]+)$/);
       const getProject = path.match(/^\/api\/projects\/([^/]+)$/);
+      const projectResources = path.match(/^\/api\/projects\/([^/]+)\/resources$/);
+      const projectResource = path.match(/^\/api\/projects\/([^/]+)\/resources\/([^/]+)$/);
       const taskRuns = path.match(/^\/api\/issues\/([^/]+)\/task-runs$/);
       const taskDetail = path.match(/^\/api\/issues\/([^/]+)\/tasks\/([^/]+)$/);
       const taskCancel = path.match(/^\/api\/issues\/([^/]+)\/tasks\/([^/]+)\/cancel$/);
@@ -987,6 +1236,21 @@ class FakeRestBackend {
         response = this.deleteComment(decodeURIComponent(putComment[1]!));
       } else if (method === "PUT" && putProject) {
         response = this.updateProject(decodeURIComponent(putProject[1]!), body ?? {});
+      } else if (method === "GET" && projectResources) {
+        response = this.listResources(decodeURIComponent(projectResources[1]!));
+      } else if (method === "POST" && projectResources) {
+        response = this.createResource(decodeURIComponent(projectResources[1]!), body ?? {});
+      } else if (method === "PUT" && projectResource) {
+        response = this.updateResource(
+          decodeURIComponent(projectResource[1]!),
+          decodeURIComponent(projectResource[2]!),
+          body ?? {},
+        );
+      } else if (method === "DELETE" && projectResource) {
+        response = this.deleteResource(
+          decodeURIComponent(projectResource[1]!),
+          decodeURIComponent(projectResource[2]!),
+        );
       } else if (method === "GET" && path === "/api/projects") {
         response = json({ projects: [...this.projects.values()], total: this.projects.size });
       } else if (method === "GET" && getProject) {
@@ -1229,6 +1493,149 @@ class FakeRestBackend {
     return json(project);
   }
 
+  // ---- project resource mirror (RUYI-458) -----------------------------------
+  // Mirrors server/internal/handler/project_resource.go's observable contract:
+  // type-aware ref validation (400), UNIQUE(project,type,ref) plus the
+  // per-daemon local_directory conflict (409), PATCH-by-key-presence with the
+  // label null/"" clear, and a bare 204 delete. The worktree-capable-daemon
+  // 422 gate is deliberately not mirrored here (no runtime rows in the fake);
+  // its tool-side mapping is pinned at the handler level in tools.test.ts.
+
+  private listResources(projectId: string): Response {
+    if (!this.projects.has(projectId)) {
+      return json({ error: "project not found" }, 404);
+    }
+    const resources = [...this.resources.values()]
+      .filter((r) => r.project_id === projectId)
+      .sort((a, b) => a.position - b.position);
+    return json({ resources, total: resources.length });
+  }
+
+  private createResource(projectId: string, body: Record<string, unknown>): Response {
+    if (!this.projects.has(projectId)) {
+      return json({ error: "project not found" }, 404);
+    }
+    const resourceType = typeof body.resource_type === "string" ? body.resource_type.trim() : "";
+    if (resourceType === "") return json({ error: "resource_type is required" }, 400);
+    const refError = this.validateResourceRef(resourceType, body.resource_ref);
+    if (refError) return refError;
+    const ref = body.resource_ref as Record<string, unknown>;
+    for (const existing of this.resources.values()) {
+      if (existing.project_id !== projectId) continue;
+      if (resourceType === "local_directory" && existing.resource_type === "local_directory") {
+        if (existing.resource_ref.daemon_id === ref.daemon_id) {
+          return json(
+            {
+              error:
+                "this daemon already has a local_directory attached to the project; remove it before adding another",
+            },
+            409,
+          );
+        }
+        continue;
+      }
+      if (existing.resource_type === resourceType && stableRef(existing.resource_ref) === stableRef(ref)) {
+        return json({ error: "this resource is already attached to the project" }, 409);
+      }
+    }
+    this.resourceSeq += 1;
+    const resource: FakeResource = {
+      id: `pr-new-${this.resourceSeq}`,
+      project_id: projectId,
+      resource_type: resourceType as FakeResource["resource_type"],
+      resource_ref: ref,
+      label: typeof body.label === "string" && body.label.trim() !== "" ? body.label.trim() : null,
+      position:
+        typeof body.position === "number"
+          ? body.position
+          : [...this.resources.values()].filter((r) => r.project_id === projectId).length,
+      created_at: this.nextStamp(),
+      created_by: "u-1",
+    };
+    this.resources.set(resource.id, resource);
+    return json(resource, 201);
+  }
+
+  private updateResource(
+    projectId: string,
+    resourceId: string,
+    body: Record<string, unknown>,
+  ): Response {
+    if (!this.projects.has(projectId)) {
+      return json({ error: "project not found" }, 404);
+    }
+    const resource = this.resources.get(resourceId);
+    if (!resource || resource.project_id !== projectId) {
+      return json({ error: "project resource not found" }, 404);
+    }
+    let nextRef = resource.resource_ref;
+    if ("resource_ref" in body) {
+      const refError = this.validateResourceRef(resource.resource_type, body.resource_ref);
+      if (refError) return refError;
+      nextRef = body.resource_ref as Record<string, unknown>;
+      for (const other of this.resources.values()) {
+        if (other.id === resource.id || other.project_id !== projectId) continue;
+        if (resource.resource_type === "local_directory" && other.resource_type === "local_directory") {
+          if (other.resource_ref.daemon_id === nextRef.daemon_id) {
+            return json(
+              { error: "another local_directory on this daemon is already attached to the project" },
+              409,
+            );
+          }
+          continue;
+        }
+        if (other.resource_type === resource.resource_type && stableRef(other.resource_ref) === stableRef(nextRef)) {
+          return json({ error: "this resource is already attached to the project" }, 409);
+        }
+      }
+      resource.resource_ref = nextRef;
+    }
+    if ("label" in body) {
+      const label = body.label;
+      resource.label = typeof label === "string" && label.trim() !== "" ? label.trim() : null;
+    }
+    if ("position" in body && typeof body.position === "number") {
+      resource.position = body.position;
+    }
+    return json(resource);
+  }
+
+  private deleteResource(projectId: string, resourceId: string): Response {
+    if (!this.projects.has(projectId)) {
+      return json({ error: "project not found" }, 404);
+    }
+    const resource = this.resources.get(resourceId);
+    if (!resource || resource.project_id !== projectId) {
+      return json({ error: "project resource not found" }, 404);
+    }
+    this.resources.delete(resourceId);
+    return new Response(undefined, { status: 204 });
+  }
+
+  /** Mirrors validateAndNormalizeResourceRef's client-observable rules. */
+  private validateResourceRef(resourceType: string, ref: unknown): Response | undefined {
+    if (ref === null || typeof ref !== "object" || Array.isArray(ref)) {
+      return json({ error: "resource_ref is required" }, 400);
+    }
+    const record = ref as Record<string, unknown>;
+    if (resourceType === "github_repo") {
+      if (typeof record.url !== "string" || record.url.trim() === "") {
+        return json({ error: "github_repo: url is required" }, 400);
+      }
+      return undefined;
+    }
+    if (resourceType === "local_directory") {
+      if (typeof record.local_path !== "string" || !record.local_path.startsWith("/")) {
+        return json({ error: "local_directory: local_path must be an absolute path" }, 400);
+      }
+      if (typeof record.daemon_id !== "string" || record.daemon_id.trim() === "") {
+        return json({ error: "local_directory: daemon_id is required" }, 400);
+      }
+      return undefined;
+    }
+    return json({ error: `unknown resource_type "${resourceType}"` }, 400);
+  }
+
   private runShape(id: string, status: string): Record<string, unknown> {
     return {
       id,
@@ -1266,6 +1673,11 @@ function json(payload: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/** Top-level-key-stable JSON text for ref-equality mirrors (refs are flat). */
+function stableRef(ref: Record<string, unknown>): string {
+  return JSON.stringify(ref, Object.keys(ref).sort());
 }
 
 function silentLogger(): Logger {

@@ -74,6 +74,17 @@ jest.mock("@expo/vector-icons", () => ({
   Ionicons: () => null,
 }));
 
+jest.mock("@react-navigation/native", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  return {
+    // 挂载等价模拟：面板真实渲染始终在 navigator 内，focus 语义不在本套
+    // 用例覆盖范围；挂载时执行一次回调，并接住回调返回的清理函数。
+    useFocusEffect: (callback: () => void | (() => void)) => {
+      React.useEffect(() => callback(), [callback]);
+    },
+  };
+});
+
 jest.mock("react-native-keyboard-controller", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual<typeof import("react-native")>(

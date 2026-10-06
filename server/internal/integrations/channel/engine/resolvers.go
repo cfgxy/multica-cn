@@ -31,6 +31,15 @@ const (
 	OutcomeIssueUsage    Outcome = "issue_usage"
 	OutcomeAgentOffline  Outcome = "agent_offline"
 	OutcomeAgentArchived Outcome = "agent_archived"
+	// OutcomeHelp — a /help command (typed or card-button). The replier
+	// renders the interactive command card from the registry. Answered
+	// before any session write, so asking for the menu never appends to or
+	// rotates a chat.
+	OutcomeHelp Outcome = "help"
+	// OutcomeUnknownCommand — the first non-empty line opened with a slash
+	// token the command registry does not know. The replier answers with
+	// guidance pointing at /help; the text is never dispatched to the agent.
+	OutcomeUnknownCommand Outcome = "unknown_command"
 	// OutcomeSessionUnavailable tells the user the session cannot start a run
 	// anymore (archived, agent removed, or route superseded). Text must stay
 	// free of internal detail — table names, error strings, internal paths.
@@ -75,6 +84,13 @@ type Result struct {
 	// message also carried downloadable media. Repliers use it to tell the
 	// sender to include that media again with the corrected command.
 	IssueUsageHadMedia bool
+	// CommandToken is the unrecognized leading slash token carried on
+	// OutcomeUnknownCommand (e.g. "/stop"), echoed back in the guidance.
+	CommandToken string
+	// HelpCommands carries the registry's listed commands on OutcomeHelp so
+	// the replier renders the command card without reading the registry
+	// itself. Nil on every other outcome.
+	HelpCommands []CommandDescriptor
 	// runScheduled reports whether this ingest scheduled a normal chat run.
 	// It is Router-internal state: repliers must continue to use Outcome.
 	runScheduled bool
@@ -413,6 +429,14 @@ type ResolverSet struct {
 	Replier      OutboundReplier
 	Typing       TypingNotifier
 	OriginType   string
+	// SlashCommandFeedback opts the platform into the shared slash-command
+	// affordances: the /help command card and unknown-command guidance.
+	// It MUST only be enabled when the platform's Replier actually renders
+	// OutcomeHelp / OutcomeUnknownCommand — otherwise a leading "/help" or
+	// "/stop" would be intercepted and silently swallowed instead of
+	// reaching the agent as an ordinary message (the pre-RUYI-461
+	// behavior every other channel keeps).
+	SlashCommandFeedback bool
 }
 
 // IssueCreator is the narrow subset of service.IssueService the Router needs

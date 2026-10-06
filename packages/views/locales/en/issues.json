@@ -567,7 +567,12 @@
       "unresolve_failed": "Failed to unresolve thread"
     },
     "anchor_unavailable": "Referenced comment is unavailable or deleted",
-    "anchor_aria": "Go to {{author}}'s comment from {{when}}: {{excerpt}}"
+    "anchor_aria": "Go to {{author}}'s comment from {{when}}: {{excerpt}}",
+    "quick_replies": {
+      "menu_label": "Quick Replies",
+      "menu_empty": "No quick replies configured by the workspace admins yet",
+      "insert_aria": "Insert quick reply \"{{name}}\""
+    }
   },
   "reply": {
     "placeholder": "Leave a reply..."
@@ -600,6 +605,7 @@
   "agent_live": {
     "is_working": "{{name}} is working",
     "is_queued": "{{name}} is queued",
+    "past_runs": "Past runs · {{count}}",
     "is_waiting_local_directory": "{{name}} is waiting for the local directory",
     "queued_elapsed_prefix": "queued for {{elapsed}}",
     "fallback_name": "Agent",
@@ -633,6 +639,8 @@
     "included_comments_one": "Includes {{count}} comment",
     "included_comments_other": "Includes {{count}} comments",
     "status_queued": "Queued",
+    "status_queued_backpressure": "Queued · host memory busy",
+    "queued_backpressure_hint": "The host reported memory backpressure; new runs wait until it recovers.",
     "status_dispatched": "Starting",
     "status_waiting_local_directory": "Waiting for local directory",
     "status_running": "Working",
@@ -948,6 +956,15 @@
       "pill_label": "Add a comment, @ to mention…"
     },
     "comment": {
+      "menu_copy": "Copy",
+      "menu_copy_link": "Copy Link",
+      "menu_edit": "Edit",
+      "menu_more_reactions": "More reactions…",
+      "menu_react": "React…",
+      "menu_reply": "Reply",
+      "menu_resolve": "Resolve thread",
+      "menu_select_text": "Select Text",
+      "menu_unresolve": "Unresolve thread",
       "resolved_bar_one": "Resolved · {{count}} message by {{authors}}",
       "resolved_bar_other": "Resolved · {{count}} messages by {{authors}}",
       "resolved_bar_a11y_one": "Resolved thread by {{authors}}, {{count}} message. Tap to expand.",
@@ -1102,6 +1119,8 @@
       "outcome_commands_one": "{{count}} command",
       "outcome_commands_other": "{{count}} commands",
       "result_label": "Result",
+      "group_calls_one": "{{count}} call",
+      "group_calls_other": "{{count}} calls",
       "truncated": "… (truncated)",
       "empty": "No events were recorded for this run.",
       "empty_queued": "This run hasn't started yet."
@@ -1115,6 +1134,7 @@
     "agent_activity": {
       "runs_count": "Runs · {{count}}",
       "badge_a11y": "Agent working — open runs",
+      "badge_idle_a11y": "View past runs",
       "row_running_a11y": "Agent working on this issue",
       "row_queued_a11y": "Agent task queued for this issue"
     },
@@ -1195,6 +1215,8 @@
     "submitting": "Submitting…",
     "cancel_card": "Cancel card",
     "answer_failed": "Failed to submit answer",
-    "cancel_failed": "Failed to cancel card"
+    "cancel_failed": "Failed to cancel card",
+    "batch_title": "Batch answer",
+    "batch_submit": "Submit all"
   }
 }

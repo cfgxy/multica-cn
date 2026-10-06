@@ -29,8 +29,9 @@
  *   - Success closes the screen without a toast (the manual form does the
  *     same); web shows a "sent" toast in its long-lived dialog.
  */
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -49,7 +50,10 @@ import { QuickCreateAttributeRow } from "@/components/issue/quick-create-attribu
 import { AttachmentZone } from "@/components/issue/attachment-zone";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
+import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { useFileAttach } from "@/components/editor/use-file-attach";
+import { useSharedIntentStore } from "@/data/stores/shared-intent-store";
+import { assetFromSharedFile } from "@/lib/picked-asset";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
@@ -204,8 +208,22 @@ export function QuickCreatePanel() {
     pickAndUploadFiles,
     removeAttachment,
     retryAttachment,
+    enqueueAssets,
     uploading,
   } = useFileAttach();
+
+  // RUYI-463: 系统分享 → Issue。面板获焦即 one-shot take；目的地是
+  // chat 时 takeFor 返回 null，payload 原样留给 chat 消费。用焦点语义
+  // 而非挂载 effect：落地页 router.replace 进来时 new-issue 屏可能被
+  // 复用（不重挂载），挂载 effect 会漏 take；focus 每次回到本屏都会
+  // 触发，takeFor 幂等保证不重复注入。
+  useFocusEffect(
+    useCallback(() => {
+      const taken = useSharedIntentStore.getState().takeFor("issue");
+      if (!taken) return;
+      enqueueAssets(taken.files.map(assetFromSharedFile));
+    }, [enqueueAssets]),
+  );
 
   // Daemon CLI version gate — same pure checks web runs pre-submit (the
   // server re-validates as the trust boundary). The fields gate only
@@ -249,6 +267,11 @@ export function QuickCreatePanel() {
 
   const { t } = useT("modals");
   const { t: tCommon } = useT("common");
+  // RUYI-449: 语音入口仅对 agent 生效（squad 无客户端可指定的 agent id，
+  // 与 web AgentCreatePanel 同边界）。口述轮次回填进 prompt，由用户自行
+  // 确认后提交，本面板不做任何自动发送。
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const voiceAgentId = actor?.type === "agent" ? actor.id : null;
 
   const canSubmit =
     !isSubmitting &&
@@ -498,6 +521,21 @@ export function QuickCreatePanel() {
             disabled={isSubmitting || uploading}
           />
 
+          {voiceAgentId !== null && !voiceOpen && (
+            <Pressable
+              onPress={() => setVoiceOpen(true)}
+              className="flex-row items-center gap-2 self-start rounded-full border border-border px-3 py-1.5 active:opacity-60"
+              disabled={isSubmitting}
+              accessibilityRole="button"
+              accessibilityLabel={t("voice:button.start", "Start voice conversation")}
+            >
+              <Ionicons name="mic-outline" size={16} color="#a1a1aa" />
+              <Text className="text-xs text-muted-foreground">
+                {t("voice:overlay.use_prompt", "What you say will be added to the message box when you're done.")}
+              </Text>
+            </Pressable>
+          )}
+
           <QuickCreateAttributeRow />
 
           <Text className="text-xs text-muted-foreground">
@@ -505,6 +543,18 @@ export function QuickCreatePanel() {
           </Text>
         </ScrollView>
         <MentionSuggestionBar {...prompt.suggestionBar} />
+
+        <VoiceSessionOverlay
+          agentId={voiceOpen && voiceAgentId !== null ? voiceAgentId : null}
+          workspaceSlug={wsSlug ?? ""}
+          onClose={() => setVoiceOpen(false)}
+          onUserTurn={(spoken) =>
+            prompt.setText((prev) => {
+              const trimmed = prev.trimEnd();
+              return trimmed ? `${trimmed}\n\n${spoken}` : spoken;
+            })
+          }
+        />
       </KeyboardAvoidingView>
     </>
   );

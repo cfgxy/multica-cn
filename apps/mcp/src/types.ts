@@ -74,6 +74,64 @@ export interface UpdateProjectBody {
   due_date?: string | null;
 }
 
+// ---- project resource bindings (RUYI-458) ---------------------------------
+// Mirrors packages/core/types/project.ts and the Go handler
+// (server/internal/handler/project_resource.go). resource_type is immutable
+// server-side; only the shapes below exist today.
+
+export type ProjectResourceType = "github_repo" | "local_directory";
+
+export interface GithubRepoResourceRef {
+  url: string;
+  ref?: string;
+  default_branch_hint?: string;
+}
+
+export interface LocalDirectoryResourceRef {
+  local_path: string;
+  daemon_id: string;
+  label?: string;
+  execution_mode?: "in_place" | "worktree";
+}
+
+export type ProjectResourceRef =
+  | GithubRepoResourceRef
+  | LocalDirectoryResourceRef
+  | Record<string, unknown>;
+
+export interface ProjectResourceInfo {
+  id: string;
+  project_id: string;
+  workspace_id: string;
+  resource_type: ProjectResourceType;
+  resource_ref: ProjectResourceRef;
+  label: string | null;
+  position: number;
+  created_at: string;
+  created_by: string | null;
+}
+
+export interface CreateProjectResourceBody {
+  resource_type: ProjectResourceType;
+  resource_ref: ProjectResourceRef;
+  label?: string;
+  position?: number;
+}
+
+// Partial-update body: omitted keys keep the current value, an explicit null
+// label clears it. resource_type is deliberately absent — the server rejects
+// it and the tool schema never declares it.
+export interface UpdateProjectResourceBody {
+  resource_ref?: ProjectResourceRef;
+  label?: string | null;
+  position?: number;
+}
+
+export interface ProjectResourceListResult {
+  resources: ProjectResourceInfo[];
+  total: number;
+}
+
 export interface IssueInfo {
   id: string;
   workspace_id?: string;
@@ -360,4 +418,372 @@ export interface CancelRunResult {
   code: string;
   message?: string;
   task: RunInfo;
+}
+
+// ---- execution-config management (RUYI-433) ------------------------------
+// Wire shapes mirroring the Go handlers (AgentRuntimeResponse, ModelListRequest,
+// AgentResponse, ExecutionProfileResponse, SquadResponse). Fields not listed
+// are ignored, never re-serialized.
+
+export interface RuntimeInfo {
+  id: string;
+  workspace_id?: string;
+  /** Daemon instance this runtime belongs to; null for cloud runtimes. */
+  daemon_id?: string | null;
+  name: string;
+  custom_name?: string | null;
+  runtime_mode?: string;
+  provider?: string;
+  status?: string;
+  device_info?: string;
+  owner_id?: string | null;
+  visibility?: string;
+  profile_id?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelThinkingInfo {
+  supported_levels?: Array<{ value: string; label?: string; description?: string }>;
+  [key: string]: unknown;
+}
+
+export interface ModelEntryInfo {
+  id: string;
+  label?: string;
+  default?: boolean;
+  thinking?: ModelThinkingInfo;
+  [key: string]: unknown;
+}
+
+export interface UnavailableModelEntryInfo {
+  id?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+/** One model-list discovery round trip: initiate returns it pending or (cache
+ * hit) completed; polling the same shape until status leaves pending/running. */
+export interface ModelListRequestInfo {
+  id: string;
+  runtime_id: string;
+  status: string;
+  models?: ModelEntryInfo[];
+  unavailable_models?: UnavailableModelEntryInfo[];
+  supported?: boolean;
+  error?: string;
+  created_at?: string;
+  updated_at?: string;
+  cached?: boolean;
+  cached_at?: string;
+}
+
+export interface AgentConfigInfo {
+  id: string;
+  name: string;
+  description?: string;
+  /** null = the agent is not bound to any runtime. */
+  runtime_id?: string | null;
+  runtime_mode?: string;
+  model?: string;
+  /** Runtime-native reasoning token; empty = runtime default (MUL-2339). */
+  thinking_level?: string;
+  service_tier?: string;
+  status?: string;
+  max_concurrent_tasks?: number;
+  owner_id?: string | null;
+  archived_at?: string | null;
+  updated_at?: string;
+  /** Optimistic-lock token for execution-config writes (RUYI-433). */
+  revision: number;
+}
+
+export interface UpdateAgentConfigBody {
+  expected_revision?: number;
+  runtime_id?: string;
+  /** Empty string clears the model (fall back to the runtime default). */
+  model?: string;
+  /** Tri-state: omitted = keep, "" = explicit clear, value = set. */
+  thinking_level?: string;
+}
+
+export interface ExecutionProfileEntryInfo {
+  agent_id: string;
+  runtime_id: string;
+  model: string;
+  /** null = no opinion, "" = clear on activation, value = write as-is. */
+  thinking_level?: string | null;
+  updated_at?: string;
+}
+
+export interface ExecutionProfileInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string | null;
+  is_active: boolean;
+  entry_count: number;
+  last_activated_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  entries: ExecutionProfileEntryInfo[];
+  /** Optimistic-lock token, including entry upserts/deletes (RUYI-433). */
+  revision: number;
+}
+
+export interface CreateExecutionProfileBody {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateExecutionProfileBody {
+  name?: string;
+  description?: string | null;
+  expected_revision?: number;
+}
+
+export interface UpsertExecutionProfileEntryBody {
+  agent_id: string;
+  runtime_id: string;
+  model: string;
+  thinking_level?: string | null;
+  expected_revision?: number;
+}
+
+export interface ExecutionProfileActivationResultInfo {
+  agent_id: string;
+  status: string;
+  reason?: string;
+}
+
+export interface ExecutionProfileActivationInfo {
+  profile: ExecutionProfileInfo;
+  applied: number;
+  skipped: number;
+  failed: number;
+  results: ExecutionProfileActivationResultInfo[];
+}
+
+export interface SquadMemberInfo {
+  id: string;
+  squad_id?: string;
+  member_type: string;
+  member_id: string;
+  role?: string;
+  created_at?: string;
+}
+
+// One audit_event row (RUYI-355). Dimensions the event does not name come
+// back as null so a timeline renders absence, not zero UUIDs. details is the
+// raw JSONB payload — key names and metadata only, never secret values.
+export interface AuditEventInfo {
+  id: string;
+  workspace_id: string;
+  domain: string;
+  event_type: string;
+  occurred_at: string;
+  actor_type: string;
+  actor_id: string | null;
+  trigger_kind: string | null;
+  trigger_ref: string | null;
+  issue_id: string | null;
+  task_id: string | null;
+  agent_id: string | null;
+  runtime_id: string | null;
+  reason: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditEventListParams {
+  domain?: string;
+  event_type?: string;
+  actor_type?: string;
+  actor_id?: string;
+  issue_id?: string;
+  task_id?: string;
+  agent_id?: string;
+  runtime_id?: string;
+  reason?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  cursor_id?: string;
+}
+
+export interface AuditEventListResult {
+  events: AuditEventInfo[];
+  next_cursor: string | null;
+  next_cursor_id: string | null;
+}
+
+// ---- workspace management surface (RUYI-419) -----------------------------
+
+// One row of the workspace-wide run view (GET /api/task-runs). Same execution
+// row as RunInfo plus the cross-issue fields the issue-scoped read gets from
+// its path parameter: which issue the run belongs to (identifier + title) and
+// the derived trigger source (autopilot > system_retry > rerun > comment >
+// other — the same precedence list_issue_runs documents).
+export interface WorkspaceRunInfo {
+  id: string;
+  status: string;
+  agent_id?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  issue_title?: string;
+  trigger?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  failure_reason?: string;
+  attempt?: number;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_at?: string;
+  cancel_requested_by_user_id?: string;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceRunListResult {
+  runs: WorkspaceRunInfo[];
+  count: number;
+  has_more: boolean;
+  next_offset?: number;
+}
+
+export interface WorkspaceRunListParams {
+  status?: string;
+  agent_id?: string;
+  project_id?: string;
+  issue?: string;
+  trigger?: string;
+  created_after?: string;
+  created_before?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// Agent detail as this server surfaces it. Deliberately narrower than the Go
+// AgentResponse: runtime_config, mcp_config and custom_env VALUES never cross
+// this layer (secrets/credentials) — only the coarse redaction indicators the
+// Go response already carries (has_custom_env, custom_env_key_count,
+// mcp_config_redacted). archived_at non-null = archived (list_agents and
+// dispatch exclude it until restored).
+export interface AgentDetailInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  runtime_id?: string;
+  runtime_bound?: boolean;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  max_concurrent_tasks?: number;
+  visibility?: string;
+  permission_mode?: string;
+  status?: string;
+  owner_id?: string;
+  system_key?: string;
+  has_custom_env?: boolean;
+  custom_env_key_count?: number;
+  mcp_config_redacted?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  archived_at?: string | null;
+  [key: string]: unknown;
+}
+
+// Create/update bodies expose the safe metadata subset only. The server
+// rejects a PUT body carrying custom_env (MUL-2600) and agent creation
+// requires runtime_id; secrets (runtime_config, mcp_config, custom_env,
+// composio allowlist) are configured in the product UI, not through MCP.
+export interface CreateAgentBody {
+  name: string;
+  runtime_id: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  thinking_level?: string;
+  max_concurrent_tasks?: number;
+}
+
+export interface UpdateAgentBody {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  max_concurrent_tasks?: number;
+  runtime_id?: string;
+}
+
+export interface AgentRuntimeInfo {
+  id: string;
+  name: string;
+  custom_name?: string | null;
+  runtime_mode?: string;
+  provider?: string;
+  status?: string;
+  visibility?: string;
+  owner_id?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface SquadMemberPreview {
+  member_type?: string;
+  member_id?: string;
+  role?: string;
+}
+
+export interface SquadInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  leader_id?: string;
+  creator_id?: string;
+  member_count?: number;
+  member_preview?: SquadMemberPreview[];
+  created_at?: string;
+  updated_at?: string;
+  /** Non-null = archived (soft-deleted; there is no squad restore). */
+  archived_at?: string | null;
+  archived_by?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CreateSquadBody {
+  name: string;
+  leader_id: string;
+  description?: string;
+}
+
+export interface UpdateSquadBody {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  leader_id?: string;
+}
+
+export interface QuickReplyInfo {
+  id: string;
+  workspace_id?: string;
+  /** Menu label, unique within the workspace (the backend answers 409 otherwise). */
+  name: string;
+  /** Template body the composer inserts on selection — never auto-sent. */
+  content: string;
+  /** Display order, ascending. */
+  position?: number;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
 }

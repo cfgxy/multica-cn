@@ -6,9 +6,15 @@
  * same dimensions (availability / workload), same tone rules:
  *
  *   - dot colour reads ONLY from availability (3 states + archived)
- *   - workload shows counts: `running / capacity` when working, bare
- *     queued count when queued-only
+ *   - workload shows a labelled `running / capacity` ratio when working,
+ *     bare queued count when queued-only, plus the queue badge when tasks
+ *     are waiting behind a running one (RUYI-418 B4, web parity)
+ *   - a queued label on a healthy (online) runtime composes down to muted —
+ *     amber there is the offline-runtime stuck signal, not a transient race
  *   - archived agents skip the workload segment ("Archived" says it all)
+ *
+ * The ratio never folds resource_weight in: it is running tasks against the
+ * scheduler cap (max_concurrent_tasks), matching web and the daemon.
  *
  * Presentational: the caller passes the already-derived
  * `AgentPresenceDetail` (from `useWorkspacePresenceMap` for lists or
@@ -53,9 +59,11 @@ export function AgentPresenceLine({
   const isWorking = detail.workload === "working";
   const isQueued = detail.workload === "queued";
   const showWorkload = detail.availability !== "archived";
+  const showQueueBadge = isWorking && detail.queuedCount > 0;
+  const queuedMuted = detail.availability === "online";
 
   return (
-    <View className={cn("flex-row items-center gap-1.5", className)}>
+    <View className={cn("flex-row flex-wrap items-center gap-1.5", className)}>
       <PresenceDot availability={detail.availability} size={7} />
       <Text className={cn("text-xs", AVAILABILITY_TEXT[detail.availability])}>
         {availabilityLabel}
@@ -63,13 +71,34 @@ export function AgentPresenceLine({
       {showWorkload ? (
         <>
           <Text className="text-xs text-muted-foreground">·</Text>
-          <Text className={cn("text-xs", WORKLOAD_TEXT[detail.workload])}>
+          <Text
+            className={cn(
+              "text-xs",
+              isQueued && queuedMuted
+                ? "text-muted-foreground"
+                : WORKLOAD_TEXT[detail.workload],
+            )}
+          >
             {workloadLabel}
           </Text>
           {isWorking ? (
             <Text className="text-xs tabular-nums text-muted-foreground">
-              {detail.runningCount} / {detail.capacity}
+              {t("presence.running_ratio", {
+                defaultValue: "{{running}}/{{capacity}} running",
+                running: detail.runningCount,
+                capacity: detail.capacity,
+              })}
             </Text>
+          ) : null}
+          {showQueueBadge ? (
+            <View className="rounded bg-muted-foreground/10 px-1 py-0.5">
+              <Text className="text-[10px] font-medium text-muted-foreground">
+                {t("presence.queue_badge", {
+                  defaultValue: "{{count}} queued",
+                  count: detail.queuedCount,
+                })}
+              </Text>
+            </View>
           ) : null}
           {isQueued ? (
             <Text className="text-xs tabular-nums text-muted-foreground">

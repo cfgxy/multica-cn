@@ -44,6 +44,10 @@ type RuntimeProfileResponse struct {
 	Enabled        bool     `json:"enabled"`
 	CreatedAt      string   `json:"created_at"`
 	UpdatedAt      string   `json:"updated_at"`
+	// Capabilities is the Type-layer capability declaration (RUYI-425 §4.4):
+	// what any runtime instance of this profile can do. Resolved from the
+	// protocol family's baseline unless the row carries an explicit override.
+	Capabilities agent.Capabilities `json:"capabilities"`
 }
 
 func runtimeProfileToResponse(p db.RuntimeProfile) RuntimeProfileResponse {
@@ -53,6 +57,14 @@ func runtimeProfileToResponse(p db.RuntimeProfile) RuntimeProfileResponse {
 		if args == nil {
 			args = []string{}
 		}
+	}
+	caps, err := agent.ResolveCapabilities(p.ProtocolFamily, p.Capabilities)
+	if err != nil {
+		// A malformed stored override must never widen what the profile can
+		// do: deny everything and log loudly rather than guess a baseline.
+		slog.Warn("runtime_profile has malformed capabilities; denying all",
+			"profile_id", uuidToString(p.ID), "error", err)
+		caps = agent.Capabilities{}
 	}
 	return RuntimeProfileResponse{
 		ID:             uuidToString(p.ID),
@@ -67,6 +79,7 @@ func runtimeProfileToResponse(p db.RuntimeProfile) RuntimeProfileResponse {
 		Enabled:        p.Enabled,
 		CreatedAt:      timestampToString(p.CreatedAt),
 		UpdatedAt:      timestampToString(p.UpdatedAt),
+		Capabilities:   caps,
 	}
 }
 
@@ -154,17 +167,36 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "unsupported protocol_family: must be one of "+strings.Join(agent.SupportedTypes, ", "))
 		return
 	}
-	if req.CommandName == "" {
-		writeError(w, http.StatusBadRequest, "command_name is required")
-		return
-	}
-	if err := validateRuntimeProfileCommandName(req.CommandName); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	// Voice protocol families (RUYI-425) are API-backed: they launch no CLI
+	// binary, so command_name must be ABSENT — the mirror image of the CLI
+	// rule. A voice profile carrying a command would look daemon-launchable.
+	if agent.IsVoiceProtocolFamily(req.ProtocolFamily) {
+		if req.CommandName != "" {
+			writeError(w, http.StatusBadRequest, "voice protocol families are API-backed and must not set command_name")
+			return
+		}
+	} else {
+		if req.CommandName == "" {
+			writeError(w, http.StatusBadRequest, "command_name is required")
+			return
+		}
+		if err := validateRuntimeProfileCommandName(req.CommandName); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	fixedArgs, err := marshalFixedArgs(req.FixedArgs)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// RUYI-425: the capability declaration is derived server-side from the
+	// protocol family's baseline — clients cannot supply one. It is stored on
+	// the row so the declaration is inspectable per profile (and hand-
+	// overridable in the DB) rather than only derivable in code.
+	capabilities, err := agent.MarshalCapabilities(agent.CapabilitiesForFamily(req.ProtocolFamily))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to derive profile capabilities")
 		return
 	}
 	enabled := true
@@ -182,6 +214,7 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		Visibility:     runtimeProfileDefaultVisibility,
 		CreatedBy:      member.UserID,
 		Enabled:        enabled,
+		Capabilities:   capabilities,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -194,10 +227,15 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profileID := uuidToString(profile.ID)
-	h.requestDaemonRuntimeProfileRefresh(wsID, profileID)
-	h.publish(protocol.EventDaemonRegister, wsID, "member", uuidToString(member.UserID), map[string]any{
-		"runtime_profile_id": profileID,
-	})
+	if !agent.IsVoiceProtocolFamily(profile.ProtocolFamily) {
+		// Voice profiles are daemon-invisible (no command to resolve), so they
+		// must not trigger a daemon profile refresh — an old daemon that saw
+		// one would try and fail to register it.
+		h.requestDaemonRuntimeProfileRefresh(wsID, profileID)
+		h.publish(protocol.EventDaemonRegister, wsID, "member", uuidToString(member.UserID), map[string]any{
+			"runtime_profile_id": profileID,
+		})
+	}
 
 	writeJSON(w, http.StatusCreated, runtimeProfileToResponse(profile))
 }
@@ -426,6 +464,25 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-425 §4.5 删除: voice-slot references block the profile delete the
+	// same way — CountAgentsByProfile joins on agent.runtime_id only, so a
+	// voice-only binding is invisible to it and would otherwise be silently
+	// unbound by the teardown. The structured 409 carries the referencing
+	// agents (distinct code, so it can never feed the text-slot snapshot
+	// comparison).
+	voiceAgents, err := qtx.ListActiveAgentsByVoiceRuntimeProfile(r.Context(), db.ListActiveAgentsByVoiceRuntimeProfileParams{
+		ProfileID:   profileUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check profile usage")
+		return
+	}
+	if len(voiceAgents) > 0 {
+		writeJSON(w, http.StatusConflict, h.runtimeHasVoiceBindingsResponse(voiceAgents))
+		return
+	}
+
 	// App-layer cascade, per runtime, mirroring DeleteAgentRuntime: unbind the
 	// remaining (archived) agents and their task history, cancel anything still
 	// in flight, and hard-delete only the system agents, so removing the runtime
@@ -520,9 +577,17 @@ func (h *Handler) DaemonListRuntimeProfiles(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "failed to list runtime profiles")
 		return
 	}
-	resp := make([]RuntimeProfileResponse, len(profiles))
-	for i, p := range profiles {
-		resp[i] = runtimeProfileToResponse(p)
+	// RUYI-425: voice protocol families are API-backed and daemon-invisible.
+	// Filtering here (not just on create) keeps voice profiles away from
+	// daemons even if one was created by hand in the DB: an old daemon that
+	// saw a voice profile would try to resolve a command_name it can never
+	// have and fail to register.
+	resp := make([]RuntimeProfileResponse, 0, len(profiles))
+	for _, p := range profiles {
+		if agent.IsVoiceProtocolFamily(p.ProtocolFamily) {
+			continue
+		}
+		resp = append(resp, runtimeProfileToResponse(p))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"workspace_id":     workspaceID,

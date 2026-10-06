@@ -22,7 +22,11 @@ function makeFetch(
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof URL ? input : new URL(String(input));
     calls?.push({ url, init: init ?? {} });
-    return new Response(typeof body === "string" ? body : JSON.stringify(body), {
+    // A 204 response must be constructed bodyless (undici rejects a
+    // zero-length body on 204/205).
+    const responseBody =
+      typeof body === "string" ? (body.length > 0 ? body : undefined) : JSON.stringify(body);
+    return new Response(responseBody, {
       status,
       headers: { "Content-Type": "application/json" },
     });
@@ -312,5 +316,135 @@ describe("MulticaClient", () => {
     expect(logger.lines[0]).toMatch(/^api GET \/api\/issues\/search -> 200 \d+ms$/);
     expect(logger.lines[0]).not.toContain("secret voice note content");
     expect(JSON.stringify(logger.lines)).not.toContain(TOKEN);
+  });
+
+  // The audit search route keys the workspace by UUID in its path — the one
+  // path-keyed workspace route the client calls. A slug input must resolve
+  // to its UUID first, never reach the wire raw.
+  it("resolves a slug workspace to its UUID before the audit search", async () => {
+    const calls: CapturedCall[] = [];
+    const wsId = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      calls.push({ url, init: init ?? {} });
+      if (url.pathname === "/api/workspaces") {
+        return new Response(
+          JSON.stringify([{ id: wsId, name: "My Workspace", slug: "my-workspace" }]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ events: [], next_cursor: null, next_cursor_id: null }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    const client = makeClient(fetchImpl);
+    const result = await client.listAuditEvents("my-workspace", { domain: "run" });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.url.pathname).toBe(`/api/workspaces/${wsId}/audit-events`);
+    expect(calls[1]?.url.searchParams.get("domain")).toBe("run");
+    const headers = calls[1]?.init.headers as Record<string, string>;
+    expect(headers["X-Workspace-Slug"]).toBe("my-workspace");
+    expect(result.events).toEqual([]);
+  });
+
+  it("keeps a UUID workspace on the audit path with no lookup round trip", async () => {
+    const calls: CapturedCall[] = [];
+    const wsId = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    const client = makeClient(
+      makeFetch(200, { events: [], next_cursor: null, next_cursor_id: null }, calls),
+    );
+    await client.listAuditEvents(wsId, {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.pathname).toBe(`/api/workspaces/${wsId}/audit-events`);
+  });
+
+  it("rejects an unresolvable audit-search slug without calling the audit path", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, [], calls));
+    await expect(client.listAuditEvents("no-such-ws", {})).rejects.toThrow(
+      /workspace not found/i,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.pathname).toBe("/api/workspaces");
+  });
+});
+
+describe("project resource client methods (RUYI-458)", () => {
+  const RESOURCE = {
+    id: "pr-1",
+    project_id: "p1",
+    workspace_id: "w1",
+    resource_type: "github_repo",
+    resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+    label: null,
+    position: 0,
+    created_at: "2026-10-05T00:00:00Z",
+    created_by: null,
+  };
+
+  it("GETs the project's resource collection", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { resources: [RESOURCE], total: 1 }, calls));
+    const result = await client.listProjectResources("ws", "p1");
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources");
+    expect(result).toEqual({ resources: [RESOURCE], total: 1 });
+  });
+
+  it("POSTs the create body under /resources", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(201, RESOURCE, calls));
+    const body = {
+      resource_type: "local_directory" as const,
+      resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+      label: "工作副本",
+    };
+    await client.createProjectResource("ws", "p1", body);
+    expect(calls[0]?.init.method).toBe("POST");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual(body);
+  });
+
+  it("PUTs the partial update body to the resource path", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, RESOURCE, calls));
+    await client.updateProjectResource("ws", "p1", "pr-1", { label: null });
+    expect(calls[0]?.init.method).toBe("PUT");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources/pr-1");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ label: null });
+  });
+
+  it("DELETEs the binding and tolerates the empty 204 body", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(204, "", calls));
+    await expect(client.deleteProjectResource("ws", "p1", "pr-1")).resolves.toBeUndefined();
+    expect(calls[0]?.init.method).toBe("DELETE");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p1/resources/pr-1");
+  });
+
+  it("keeps the 409 duplicate-binding body on MulticaApiError.body for structured outcomes", async () => {
+    const client = makeClient(
+      makeFetch(409, { error: "this resource is already attached to the project" }),
+    );
+    try {
+      await client.createProjectResource("ws", "p1", {
+        resource_type: "github_repo",
+        resource_ref: { url: "https://github.com/cfgxy/multica-cn.git" },
+      });
+      throw new Error("expected the create to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(MulticaApiError);
+      const apiErr = error as MulticaApiError;
+      expect(apiErr.status).toBe(409);
+      expect(apiErr.body?.error).toBe("this resource is already attached to the project");
+    }
+  });
+
+  it("percent-encodes path segments", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { resources: [], total: 0 }, calls));
+    await client.listProjectResources("ws", "p/1");
+    expect(calls[0]?.url.pathname).toBe("/api/projects/p%2F1/resources");
   });
 });

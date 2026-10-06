@@ -151,9 +151,27 @@
     "upload_file": "Upload file",
     "file_too_large_title": "File too large",
     "file_too_large_message": "Files must be smaller than {{size}} MB.",
-    "upload_failed_title": "Upload failed"
+    "upload_failed_title": "Upload failed",
+    "quick_replies_title": "Quick replies",
+    "quick_reply_hint": "Insert a quick reply"
   },
   "mobile": {
+    "share": {
+      "select_workspace": "Select a workspace",
+      "select_destination": "Choose a destination",
+      "select_agent": "Choose an agent",
+      "close": "Close",
+      "attached_count_one": "{{count}} file ready to attach",
+      "attached_count_other": "{{count}} files ready to attach",
+      "dest_chat": "Chat",
+      "dest_chat_desc": "Send the files to an agent",
+      "no_agent": "No invocable agents in this workspace.",
+      "dest_issue": "Issue",
+      "dest_issue_desc": "Create a new issue with the files",
+      "load_failed": "Failed to load workspaces: {{reason}}",
+      "retry": "Retry",
+      "no_workspaces": "You don't belong to any workspaces yet."
+    },
     "actor": {
       "system": "System",
       "unknown_member": "Unknown",

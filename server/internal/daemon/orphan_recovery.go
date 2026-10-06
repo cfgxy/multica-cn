@@ -89,6 +89,21 @@ func (d *Daemon) recoverInFlightTasksForRuntime(ctx context.Context, runtimeID s
 				"task", t.ID, "runtime_id", runtimeID, "work_dir", t.WorkDir)
 			continue
 		}
+		// Offline-completion converge (RUYI-464): an exited manifest with an
+		// unconsumed proven exit is a finished run the server never heard
+		// about. Report its real terminal state instead of failing the task
+		// into a duplicate re-execution. Every non-none outcome owns the
+		// task's fate this cycle — reported, fallen back to runtime_recovery,
+		// superseded by a newer generation, or waiting out a transient
+		// report failure for the next pass — so only a task with no finished
+		// supervised run at all reaches the legacy fail below.
+		if d.supervisor != nil {
+			if out := d.convergeFinishedSupervisedRun(ctx, t.ID); out != convergeNone {
+				d.logger.Info("in-flight recovery: finished supervised run converged",
+					"task", t.ID, "runtime_id", runtimeID, "work_dir", t.WorkDir, "outcome", out.String())
+				continue
+			}
+		}
 		if err := d.client.FailTask(ctx, t.ID, orphanRecoveryErrMsg, "", "", "", "runtime_recovery", false, "", ""); err != nil {
 			d.logger.Warn("in-flight recovery: fail task failed", "task", t.ID, "runtime_id", runtimeID, "error", err)
 			continue

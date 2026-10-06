@@ -257,7 +257,26 @@ type Handler struct {
 	// OAuthCodes holds authorization codes in Redis for 60s, single-use. Nil
 	// Redis fails the grant closed rather than issuing codes that can never be
 	// redeemed.
-	OAuthCodes                   *oauth.CodeStore
+	OAuthCodes *oauth.CodeStore
+	// OAuthConsents holds pending consent-screen requests (RUYI-420), the
+	// parked and validated tail of an authorize call. Nil Redis fails the
+	// consent step closed with a temporarily_unavailable redirect.
+	OAuthConsents *oauth.ConsentStore
+	// OAuthGate resolves grant/client liveness for the auth middleware's
+	// revocation gate (RUYI-420). Admin and user handlers also call
+	// Invalidate on the write paths so a revoke is effective immediately
+	// rather than at the gate TTL. Nil disables gate checks entirely.
+	OAuthGate                    *auth.OAuthGate
+	// Voice-session dual auth (RUYI-449). The voice route sits outside the
+	// Auth middleware group so the mobile websocket upgrade — which cannot
+	// set headers and carries no cookie jar — can authenticate via the
+	// first frame (the RUYI-429 realtime pattern). These carry the same PAT
+	// resolver and disabled lookup the middleware and realtime hub share.
+	// A nil PATResolver only fails `mul_` tokens (JWT-only fallback); a nil
+	// disabled lookup skips the account-state check — the same nil contracts
+	// as realtime.HandleWebSocket.
+	VoicePATResolver             realtime.PATResolver
+	VoiceDisabledLookup          auth.DisabledLookup
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
@@ -406,6 +425,32 @@ type Handler struct {
 	// error rather than silently storing plaintext. Wired in
 	// cmd/server/router.go after New.
 	VCSSecretBox *secretbox.Box
+	// RuntimeCredentialBox encrypts runtime instance credentials at rest
+	// (RUYI-425 §4.5: the runtime_credential store behind agent_runtime
+	// .credential_ref). Nil when MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY is
+	// unset; the credential PUT/DELETE handlers return 503 in that case so a
+	// misconfigured self-host deployment fails closed rather than storing
+	// plaintext. Wired in cmd/server/router.go after New.
+	RuntimeCredentialBox *secretbox.Box
+	// VoiceProbeBaseURL is the connectivity-probe target for voice instance
+	// credentials (RUYI-425 §4.3/§4.5 stage 2): a lightweight models.list
+	// against the provider right after a credential save. Wired from
+	// MULTICA_GEMINI_PROBE_BASE_URL with the public Gemini endpoint as the
+	// default; empty disables probing (badges stay "configured"). Tests
+	// inject a stub server URL here.
+	VoiceProbeBaseURL string
+	// VoiceProviderWSBaseURL is the voice gateway's provider websocket origin
+	// (RUYI-425 §3.5 stage 3). Wired from MULTICA_GEMINI_WS_BASE_URL with the
+	// public Gemini endpoint as the default; tests inject a stub provider URL
+	// so the relay is exercised end-to-end without touching the real service.
+	VoiceProviderWSBaseURL string
+	// VoiceDisablePollInterval is how often an in-flight voice relay re-reads
+	// the instance's disabled flag (§4.5: 禁用 → graceful termination).
+	// Zero means the production default; tests inject a shorter interval.
+	VoiceDisablePollInterval time.Duration
+	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
+	// tight transports). Nil means a 5s-timeout default client.
+	VoiceProbeHTTPClient *http.Client
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box

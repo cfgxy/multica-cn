@@ -136,6 +136,8 @@
       "cancel": "キャンセル",
       "switch_failed_title": "切り替えに失敗しました",
       "switch_failed_message": "サーバーを切り替えられませんでした。",
+      "server_unreachable_title": "サーバーに接続できません",
+      "server_unreachable_message": "「{{server}}」に接続できません。ネットワークを確認して、もう一度お試しください。",
       "workspace_failed_title": "通知を開けません",
       "workspace_failed_message": "ワークスペースを切り替えられませんでした。",
       "retry": "再試行",
