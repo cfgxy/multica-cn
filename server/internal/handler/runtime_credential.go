@@ -134,12 +134,26 @@ func (h *Handler) PutRuntimeCredential(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// §4.3/§4.5: saving a credential on a voice-family instance triggers the
+	// connectivity probe. It runs AFTER the commit so it can never block or
+	// roll back the save; a failed probe surfaces as the "invalid" badge and
+	// the next save re-probes.
+	probe := CredentialProbeResult{Status: "skipped"}
+	if h.instanceHasVoiceFamily(r.Context(), rt) {
+		probe = h.probeVoiceCredential(r.Context(), req.Value)
+		if probe.Status != "skipped" {
+			h.recordCredentialProbeOutcome(r.Context(), runtimeUUID, rt.Metadata, probe)
+		}
+		slog.Info("runtime credential probed", "runtime_id", runtimeID, "probe_status", probe.Status, "http_status", probe.HTTPStatus)
+	}
+
 	// The response is the badge shape, deliberately value-free — the same
 	// masked contract the instance list carries.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"runtime_id":        runtimeID,
 		"credential_key":    credentialKey,
 		"credential_status": "configured",
+		"probe":             probe,
 	})
 }
 
@@ -199,6 +213,11 @@ func (h *Handler) DeleteRuntimeCredential(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to delete credential")
 		return
 	}
+
+	// A deleted credential has no probe state left to show; drop the badge
+	// key so a future credential starts from a clean tri-state. Failure to
+	// clean up is a log line — the next save overwrites the stale outcome.
+	h.clearCredentialProbeOutcome(r.Context(), runtimeUUID, rt.Metadata)
 
 	w.WriteHeader(http.StatusNoContent)
 }
