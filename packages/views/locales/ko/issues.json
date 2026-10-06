@@ -1021,6 +1021,7 @@
       "skill_bundle_unavailable": "스킬 내려받기 실패",
       "runtime_cli_timeout": "CLI 시간 초과",
       "environment_prepare_failed": "환경 준비 실패",
+      "delivery_guard": "전송 가드 거부",
       "agent_error__provider_auth_or_access": "인증 실패",
       "agent_error__provider_quota_limit": "할당량 소진",
       "agent_error__provider_capacity_or_rate_limit": "속도 제한",

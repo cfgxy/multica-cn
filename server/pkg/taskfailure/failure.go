@@ -176,6 +176,23 @@ const (
 	// only repeat an isolation failure.
 	ReasonInvalidTaskIdentity Reason = "invalid_task_identity"
 
+	// ReasonDeliveryGuard: the run finished, but its worktree no longer
+	// proved the branch it delivered onto — the delivered commit dropped the
+	// base this turn started from, or the branch stopped pointing at the
+	// delivered tip. Almost always a session rewriting the task branch's
+	// history mid-run (RUYI-471). Platform-side: the agent ran, and the
+	// refusal is the daemon declining to stamp its own record over a branch
+	// it can no longer vouch for, not the agent failing.
+	//
+	// Retryable, and that is the point (RUYI-479): the retry's worktree
+	// prepare reads the refusal marker the guard leaves behind and, when
+	// every commit the rewrite dropped is a chore(agent) checkpoint the
+	// daemon made itself, re-anchors the branch and continues. What used to
+	// be a dead end needing a human is now one automatic attempt. Resume-safe
+	// — the session was never the problem. Written by taskRunFailureReason
+	// in daemon/daemon.go.
+	ReasonDeliveryGuard Reason = "delivery_guard"
+
 	// Agent process side: failure surfaced by the agent CLI / SDK as
 	// an error string. Classify(rawError) is responsible for picking
 	// the right sub-reason from the string. IsAgentError returns true
@@ -251,7 +268,7 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 26 reasons. Order is
+// allReasons is the canonical ordered list of the 27 reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
 // AllReasons) can build deterministic label sets across restarts.
 //
@@ -274,6 +291,7 @@ var allReasons = []Reason{
 	ReasonRuntimeCLITimeout,
 	ReasonEnvironmentPrepareFailed,
 	ReasonInvalidTaskIdentity,
+	ReasonDeliveryGuard,
 
 	// Agent process side: provider errors.
 	ReasonAgentProviderAuthOrAccess,
