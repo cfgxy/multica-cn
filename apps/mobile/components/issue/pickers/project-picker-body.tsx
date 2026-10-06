@@ -93,6 +93,10 @@ export function ProjectPickerBody({ value, query, onChange }: Props) {
       ref={listRef}
       data={rows}
       className="flex-1"
+      // RUYI-476: Android 默认不派发嵌套滚动，sheet 的 BottomSheetBehavior
+      // 会在列表未到顶时也抢走下滑手势（列表不回滚、弹层跟手收层）。开启后
+      // 列表在最大 detent 下独占纵向滚动，到顶才交还 sheet。
+      nestedScrollEnabled
       keyboardShouldPersistTaps="handled"
       automaticallyAdjustKeyboardInsets
       contentInsetAdjustmentBehavior="automatic"
