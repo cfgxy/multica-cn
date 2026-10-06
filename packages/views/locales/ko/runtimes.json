@@ -455,5 +455,72 @@
     "table_cache_r": "캐시 R",
     "table_cache_w": "캐시 W",
     "no_data": "아직 사용량 데이터가 없습니다"
+  },
+  "voice_instance": {
+    "title": "음성 인스턴스 설정",
+    "name_label": "이름",
+    "type_label": "유형",
+    "key_label": "API Key",
+    "key_placeholder": "새 키를 입력하여 업데이트",
+    "key_update": "키 업데이트",
+    "key_clear": "제거",
+    "key_hint": "키는 암호화되어 저장되며 다시 표시되지 않습니다. 저장 시 가벼운 연결 확인이 실행됩니다.",
+    "key_saved": "키가 저장되었습니다 — 연결 확인 통과",
+    "key_cleared": "키가 제거되었습니다",
+    "key_update_failed": "키 업데이트 실패",
+    "probe_invalid": "키는 저장되었지만 연결 확인에 실패했습니다 (HTTP {{status}})",
+    "model_label": "모델",
+    "model_placeholder": "gemini-3.8-live",
+    "advanced_label": "고급 매개변수 (JSON)",
+    "advanced_placeholder": "{ \"temperature\": 0.7 }",
+    "advanced_invalid": "고급 매개변수는 JSON 객체여야 합니다",
+    "advanced_saved": "고급 매개변수가 저장되었습니다",
+    "registration_label": "등록 방식",
+    "registration_manual": "수동 등록",
+    "registration_daemon": "데몬 등록",
+    "enabled_label": "사용",
+    "enabled_desc": "비활성화된 인스턴스는 설정을 유지하지만 새 에이전트 바인딩에서 제외됩니다",
+    "visibility_label": "공개 범위",
+    "visibility_workspace": "전체 워크스페이스 (고정)",
+    "save": "저장",
+    "save_failed": "저장 실패",
+    "name_saved": "이름이 업데이트되었습니다",
+    "model_saved": "모델이 업데이트되었습니다",
+    "badge_configured": "구성됨 ✓",
+    "badge_invalid": "키 무효",
+    "badge_not_configured": "미구성"
+  },
+  "voice_instance_create": {
+    "action": "음성 인스턴스 추가",
+    "title": "음성 인스턴스 등록",
+    "description": "이 워크스페이스에 Gemini Live 인스턴스를 수동으로 등록합니다. 이름은 중복될 수 있으며, API 키는 암호화되어 저장되고 다시 표시되지 않습니다.",
+    "name_placeholder": "예: Gemini Live (개인)",
+    "no_profiles": "이 워크스페이스에는 아직 음성 프로필이 없습니다.",
+    "create_default_profile": "Gemini Live 프로필 만들기",
+    "key_placeholder": "Gemini API 키 붙여넣기",
+    "submit": "등록",
+    "creating": "등록 중…",
+    "created": "음성 인스턴스가 등록되었습니다",
+    "created_probe_invalid": "등록되었지만 연결 확인에 실패했습니다. API 키를 확인하세요",
+    "create_failed": "음성 인스턴스 등록 실패",
+    "key_save_failed": "등록되었지만 API 키 저장에 실패했습니다. 인스턴스 설정에서 추가하세요"
+  },
+  "mobile": {
+    "list_loading": "불러오는 중…",
+    "empty": {
+      "title": "아직 음성 인스턴스가 없습니다"
+    },
+    "detail": {
+      "not_found": "이 인스턴스는 더 이상 존재하지 않습니다."
+    },
+    "status": {
+      "online": "온라인",
+      "offline": "오프라인",
+      "disabled": "중지됨"
+    },
+    "advanced": {
+      "expand": "보기",
+      "collapse": "숨기기"
+    }
   }
 }

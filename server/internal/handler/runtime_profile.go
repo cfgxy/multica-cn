@@ -464,6 +464,25 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-425 §4.5 删除: voice-slot references block the profile delete the
+	// same way — CountAgentsByProfile joins on agent.runtime_id only, so a
+	// voice-only binding is invisible to it and would otherwise be silently
+	// unbound by the teardown. The structured 409 carries the referencing
+	// agents (distinct code, so it can never feed the text-slot snapshot
+	// comparison).
+	voiceAgents, err := qtx.ListActiveAgentsByVoiceRuntimeProfile(r.Context(), db.ListActiveAgentsByVoiceRuntimeProfileParams{
+		ProfileID:   profileUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check profile usage")
+		return
+	}
+	if len(voiceAgents) > 0 {
+		writeJSON(w, http.StatusConflict, h.runtimeHasVoiceBindingsResponse(voiceAgents))
+		return
+	}
+
 	// App-layer cascade, per runtime, mirroring DeleteAgentRuntime: unbind the
 	// remaining (archived) agents and their task history, cancel anything still
 	// in flight, and hard-delete only the system agents, so removing the runtime

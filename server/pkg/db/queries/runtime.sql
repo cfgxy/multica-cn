@@ -632,3 +632,28 @@ SELECT EXISTS (
 -- Final fail-closed assertion after UnbindTasksFromRuntime. A non-zero result
 -- aborts the transaction instead of relying on the legacy ON DELETE CASCADE.
 SELECT count(*) FROM agent_task_queue WHERE runtime_id = $1;
+
+-- name: SetAgentRuntimeMetadata :exec
+-- RUYI-425 stage 2: writes the whole metadata bag back for manually
+-- registered instances (voice settings §4.3, credential probe outcome §4.5).
+-- Manual instances are never daemon-registered, so nothing else owns this
+-- bag; the caller does a read-modify-write to merge keys without clobbering.
+UPDATE agent_runtime
+SET metadata = @metadata, updated_at = now()
+WHERE id = @id;
+
+-- name: CreateManualAgentRuntime :one
+-- Manual instance registration (RUYI-425 §4.3, stage 3): the ONLY insert
+-- path that does not come from a daemon probe. API-backed voice instances
+-- have no local binary and no heartbeat, so they are born 'online' (nothing
+-- ever flips them offline — setRuntimeOffline is daemon-report-driven) and
+-- carry daemon_id NULL, which structurally excludes them from every daemon
+-- upsert conflict target ((workspace_id, daemon_id, provider) predicates —
+-- NULL never matches). Names deliberately carry no uniqueness constraint:
+-- §4.3 allows duplicates (Owner decision 2). visibility is 'public' — §4.3
+-- v1 fixes instance visibility to the whole workspace.
+INSERT INTO agent_runtime (
+    workspace_id, name, runtime_mode, provider, status,
+    device_info, metadata, owner_id, profile_id, visibility, registration_source
+) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
+RETURNING *;

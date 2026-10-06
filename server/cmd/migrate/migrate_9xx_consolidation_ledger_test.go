@@ -129,6 +129,8 @@ var postConsolidationStems = []string{
 	"928_agent_execution_profile_revision", // RUYI-433
 	"929_quick_replies",                    // RUYI-435 (renumbered from 926: yielded to RUYI-355's 926_activity_audit on main)
 	"930_agent_context_dual_slot",          // RUYI-425
+	"931_live_session",                     // RUYI-425 stage 3
+	"932_voice_fact_event",                 // RUYI-425 stage 4
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
