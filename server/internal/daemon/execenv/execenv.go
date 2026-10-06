@@ -159,14 +159,14 @@ type TaskContextForEnv struct {
 	// AllowSubagents mirrors runtime_config.allow_subagents on the agent row:
 	// false (absent or malformed config included) makes prepareClaudeSkillSettings
 	// deny the provider's task-delegation tools for this task's process.
-	AllowSubagents bool
-	Repos                         []RepoContextForEnv     // workspace repos available for checkout
-	ProjectID                     string                  // active project for this task, when present
-	ProjectTitle                  string                  // human-readable project title
-	ProjectDescription            string                  // durable project-level context, rendered into the brief's Project Context section
-	ProjectInstructions           string                  // per-project agent instructions, rendered into the brief's Project Instructions section right after Workspace Context (RUYI-46)
-	ProjectResources              []ProjectResourceForEnv // resources attached to the project
-	ChatSessionID                 string                  // non-empty for chat tasks
+	AllowSubagents      bool
+	Repos               []RepoContextForEnv     // workspace repos available for checkout
+	ProjectID           string                  // active project for this task, when present
+	ProjectTitle        string                  // human-readable project title
+	ProjectDescription  string                  // durable project-level context, rendered into the brief's Project Context section
+	ProjectInstructions string                  // per-project agent instructions, rendered into the brief's Project Instructions section right after Workspace Context (RUYI-46)
+	ProjectResources    []ProjectResourceForEnv // resources attached to the project
+	ChatSessionID       string                  // non-empty for chat tasks
 	// ChatChannelType is the IM platform behind a chat session ("slack",
 	// "feishu", "wecom"); empty for a web/mobile chat. It names the surface in
 	// the brief's copy; what that surface can DELIVER is the separate field
