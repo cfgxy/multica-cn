@@ -723,6 +723,16 @@ DELETE FROM agent WHERE agent.workspace_id = $1;
 
 -- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+-- runtime_credential has no FK to agent_runtime (house rule), so the sweep
+-- owns it: matched through the runtime set rather than a workspace column
+-- (same construction as execution_profile_entry below). The encrypted
+-- payloads are destroyed with the workspace; nothing plaintext ever existed.
+deleted_runtime_credentials AS (
+    DELETE FROM runtime_credential
+    WHERE runtime_instance_id IN (
+        SELECT id FROM agent_runtime WHERE agent_runtime.workspace_id = $1
+    )
+),
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),

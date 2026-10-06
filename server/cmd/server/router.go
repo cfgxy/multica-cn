@@ -1260,6 +1260,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("vcs integration disabled (MULTICA_VCS_SECRET_KEY not set)")
 	}
 
+	// Runtime instance credentials (RUYI-425 §4.5): the box behind the
+	// runtime_credential secret store (agent_runtime.credential_ref points
+	// into it). Dedicated deployment key, same isolation reasoning as the VCS
+	// and plugin boxes. Without it the credential PUT/DELETE handlers return
+	// 503 so a misconfigured self-host fails closed rather than storing
+	// plaintext.
+	if rtCredKey, err := secretbox.LoadKey("MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(rtCredKey)
+		if err != nil {
+			slog.Error("runtime credentials: secretbox.New failed; credential storage disabled", "error", err)
+		} else {
+			h.RuntimeCredentialBox = box
+			slog.Info("runtime credential encryption enabled")
+		}
+	} else {
+		slog.Info("runtime credential encryption disabled (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY not set)")
+	}
+
 	// Plugin secrets use a dedicated deployment key. Keeping this separate from
 	// VCS and channel secrets gives operators an isolated rotation and blast
 	// radius; without it, saving a `secret` config field fails closed rather
@@ -2708,6 +2726,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// archive-and-delete contract (MUL-5559 renamed the
 					// behaviour, not just the route). Same handler.
 					r.Post("/archive-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
+					// Runtime instance credentials (RUYI-425 §4.5): values are
+					// stored encrypted and never read back over this API; the
+					// instance payload only carries the credential_status badge.
+					r.Put("/credentials/{credentialKey}", h.PutRuntimeCredential)
+					r.Delete("/credentials/{credentialKey}", h.DeleteRuntimeCredential)
 				})
 			})
 
