@@ -1080,6 +1080,7 @@
       "outcome_files_other": "파일 {{count}}개",
       "outcome_commands_other": "명령 {{count}}개",
       "result_label": "결과",
+      "group_calls_other": "호출 {{count}}회",
       "truncated": "…(잘림)",
       "empty": "이 실행에 기록된 이벤트가 없습니다.",
       "empty_queued": "아직 시작하지 않은 실행입니다."
