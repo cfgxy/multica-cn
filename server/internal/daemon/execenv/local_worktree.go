@@ -840,20 +840,27 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	return outcome, nil
 }
 
-// moveExcludedAside moves the staging budget's excluded top-level entries out
-// of the worktree into asideDir, before the worktree directory itself is
-// removed. Same-filesystem renames, so multi-GB entries move instantly. Each
-// entry's AsidePath is filled as it moves, so a mid-way failure still reports
-// where the entries that did move ended up.
+// moveExcludedAside moves the staging budget's excluded entries out of the
+// worktree into asideDir, before the worktree directory itself is removed.
+// Same-filesystem renames, so multi-GB entries move instantly. Each entry's
+// AsidePath is filled as it moves, so a mid-way failure still reports where
+// the entries that did move ended up. Names are worktree-relative paths —
+// top-level for budget exclusions, arbitrarily nested for build-artifact
+// units — so the aside parent is created per entry and the relative layout is
+// preserved inside asideDir.
 func moveExcludedAside(worktreePath, asideDir string, excluded []StagedExclusion) error {
 	if err := os.MkdirAll(asideDir, 0o755); err != nil {
 		return fmt.Errorf("create exclusion aside dir %q: %w", asideDir, err)
 	}
 	for i := range excluded {
-		if err := os.Rename(filepath.Join(worktreePath, excluded[i].Name), filepath.Join(asideDir, excluded[i].Name)); err != nil {
+		dest := filepath.Join(asideDir, excluded[i].Name)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return fmt.Errorf("create exclusion aside parent for %q: %w", excluded[i].Name, err)
+		}
+		if err := os.Rename(filepath.Join(worktreePath, excluded[i].Name), dest); err != nil {
 			return fmt.Errorf("preserve excluded entry %q: %w", excluded[i].Name, err)
 		}
-		excluded[i].AsidePath = filepath.Join(asideDir, excluded[i].Name)
+		excluded[i].AsidePath = dest
 	}
 	return nil
 }
@@ -968,17 +975,21 @@ func (w *LocalWorktree) commitAll(logger *slog.Logger) (bool, []StagedExclusion,
 
 // planUntrackedStaging meters the untracked content a staging `git add -A`
 // would pick up — the same --exclude-standard view git itself uses, so
-// .gitignore is honoured by construction — and, when it exceeds
-// untrackedStageBudget, picks whole top-level entries to exclude, largest
-// first, until the remainder fits. Excluding largest-first is what rescues
-// small real deliverables: a research run's multi-GB caches go, its few-MB
-// results stay. A stat-level walk only; no file content is read.
+// .gitignore is honoured by construction — and excludes two kinds of content
+// unconditionally: build artifacts (buildArtifactUnit), whose presence in a
+// chore(agent) checkpoint is what drives sessions to rewrite the branch
+// history afterwards (RUYI-479), and, when the remainder exceeds
+// untrackedStageBudget, whole top-level entries, largest first, until it fits.
+// Excluding largest-first is what rescues small real deliverables: a research
+// run's multi-GB caches go, its few-MB results stay. A stat-level walk only;
+// no file content is read.
 func planUntrackedStaging(worktreePath string) ([]StagedExclusion, error) {
 	out, err := runGitStdout(worktreePath, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("execenv: could not meter the untracked content in %q: %w", worktreePath, err)
 	}
 	tops := map[string]*StagedExclusion{}
+	artifacts := map[string]*StagedExclusion{}
 	var totalFiles int
 	var totalBytes int64
 	for _, rel := range strings.Split(out, "\x00") {
@@ -998,6 +1009,19 @@ func planUntrackedStaging(worktreePath string) ([]StagedExclusion, error) {
 			// sockets, FIFOs or devices, so none of them costs memory.
 			continue
 		}
+		// Artifacts stage never, budget or no budget, and their bytes stay out
+		// of the budget accounting: a large .apk must not push the run's real
+		// deliverables out of the add.
+		if unit, isArtifact := buildArtifactUnit(rel); isArtifact {
+			e := artifacts[unit]
+			if e == nil {
+				e = &StagedExclusion{Name: unit, dir: unit != rel}
+				artifacts[unit] = e
+			}
+			e.Files++
+			e.Bytes += info.Size()
+			continue
+		}
 		top, isDir := rel, false
 		if i := strings.IndexByte(rel, '/'); i >= 0 {
 			top, isDir = rel[:i], true
@@ -1012,15 +1036,23 @@ func planUntrackedStaging(worktreePath string) ([]StagedExclusion, error) {
 		totalFiles++
 		totalBytes += info.Size()
 	}
+	excluded := make([]StagedExclusion, 0, len(artifacts))
+	artifactNames := make([]string, 0, len(artifacts))
+	for name := range artifacts {
+		artifactNames = append(artifactNames, name)
+	}
+	sort.Strings(artifactNames)
+	for _, name := range artifactNames {
+		excluded = append(excluded, *artifacts[name])
+	}
 	if totalFiles <= untrackedStageBudget.files && totalBytes <= untrackedStageBudget.bytes {
-		return nil, nil
+		return excluded, nil
 	}
 	names := make([]string, 0, len(tops))
 	for name := range tops {
 		names = append(names, name)
 	}
 	sort.Slice(names, func(i, j int) bool { return tops[names[i]].Bytes > tops[names[j]].Bytes })
-	excluded := make([]StagedExclusion, 0, len(names))
 	for _, name := range names {
 		if totalFiles <= untrackedStageBudget.files && totalBytes <= untrackedStageBudget.bytes {
 			break
@@ -1029,6 +1061,74 @@ func planUntrackedStaging(worktreePath string) ([]StagedExclusion, error) {
 		excluded = append(excluded, *e)
 		totalFiles -= e.Files
 		totalBytes -= e.Bytes
+	}
+	return excluded, nil
+}
+
+// buildArtifactDirNames are the untracked directories that are build or QA
+// output by convention strong enough that nothing source-shaped lives in them
+// untracked. dist is the near-universal bundler output directory; qa-artifacts
+// is this platform's own QA delivery convention. Build-artifact matching is an
+// untracked-staging rule only — tracked files under these directories are repo
+// content and ride the `add -u` step like any other tracked edit.
+var buildArtifactDirNames = []string{
+	"dist",
+	"qa-artifacts",
+}
+
+// buildArtifactUnit reports the staging exclusion unit for an untracked path
+// that is a build artifact: the matched file itself for installer formats and
+// their split parts (RUYI-471's apk-parts shreds), or the matched directory's
+// path when an artifact directory name appears at any depth. Empty and false
+// when the path is not an artifact.
+func buildArtifactUnit(rel string) (string, bool) {
+	segs := strings.Split(filepath.ToSlash(rel), "/")
+	for i, seg := range segs {
+		for _, name := range buildArtifactDirNames {
+			if seg == name {
+				return strings.Join(segs[:i+1], "/"), true
+			}
+		}
+	}
+	base := strings.ToLower(segs[len(segs)-1])
+	if strings.HasSuffix(base, ".apk") || strings.HasSuffix(base, ".aab") ||
+		strings.HasSuffix(base, ".ipa") || strings.Contains(base, ".apk.part-") {
+		return rel, true
+	}
+	return "", false
+}
+
+// sweepStagedArtifacts drops artifact-shaped paths out of the index before the
+// checkpoint commit. Only new introductions are swept — a path already in
+// HEAD is tracked repo content, and its staged edit rides the commit like any
+// other tracked edit, the same rule the untracked metering follows. Unstaging
+// is per path so a tracked neighbour under the same dist/ directory keeps its
+// staged edit; the recorded exclusion is still the whole unit, which is what
+// finalize's aside preserves. `rm --cached` leaves the file on disk, so a
+// baseline sweep leaves the artifact in the worktree for the agent and a
+// finalize sweep hands it to the caller's aside.
+func sweepStagedArtifacts(worktreePath string, excluded []StagedExclusion) ([]StagedExclusion, error) {
+	out, err := runGitStdout(worktreePath, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("execenv: could not list the staged content in %q: %w", worktreePath, err)
+	}
+	recorded := map[string]bool{}
+	for _, path := range strings.Split(out, "\x00") {
+		unit, isArtifact := buildArtifactUnit(path)
+		if !isArtifact {
+			continue
+		}
+		if inHead, err := runGit(worktreePath, "ls-tree", "HEAD", "--", path); err == nil && strings.TrimSpace(inHead) != "" {
+			continue
+		}
+		if rmOut, err := runGit(worktreePath, "rm", "--cached", "-q", "--", path); err != nil {
+			return nil, fmt.Errorf("execenv: could not keep build artifact %q out of the checkpoint: %s: %w",
+				path, strings.TrimSpace(rmOut), err)
+		}
+		if !recorded[unit] {
+			recorded[unit] = true
+			excluded = append(excluded, StagedExclusion{Name: unit, dir: unit != path})
+		}
 	}
 	return excluded, nil
 }
@@ -1082,6 +1182,16 @@ func commitEverything(worktreePath, message string) (bool, []StagedExclusion, er
 	addArgs = append(addArgs, exclusionSpecs(excluded)...)
 	if out, err := runGit(worktreePath, addArgs...); err != nil {
 		return false, nil, fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
+	}
+	// Content can reach the index without passing the add's pathspec gate: the
+	// user-state replay stages its cherry-pick before this function runs, and
+	// a file created between the meter and the add slips past the meter (this
+	// bounds the common case, it is not a lock — RUYI-337). Sweep the staged
+	// set once for artifact-shaped paths; what the meter already excluded
+	// never got staged, so the two lists do not overlap.
+	excluded, err = sweepStagedArtifacts(worktreePath, excluded)
+	if err != nil {
+		return false, nil, err
 	}
 	// Nothing staged means nothing to record. Asking the index directly rather
 	// than parsing git's wording: with the runtime directories excluded, the
