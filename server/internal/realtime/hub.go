@@ -675,6 +675,15 @@ func (h *Hub) Snapshot() map[string]any {
 	}
 }
 
+// ResolveUserToken validates a JWT or PAT session token and returns the
+// user ID. It shares authenticateToken with the hub's first-frame path so
+// the voice gateway (RUYI-449) and realtime hub never drift on token
+// semantics. A non-empty errMsg is the client-safe rejection payload; an
+// empty errMsg means success.
+func ResolveUserToken(ctx context.Context, tokenStr string, pr PATResolver, disabled auth.DisabledLookup) (userID, errMsg string) {
+	return authenticateToken(tokenStr, pr, disabled, ctx)
+}
+
 // authenticateToken validates a JWT or PAT string and returns the user ID.
 // disabled is the persisted account-state gate (RUYI-47); nil skips the
 // check, preserving the old in-memory-map-free shape for tests.

@@ -26,7 +26,7 @@
  * Previously a hand-written 400-LOC twin of inline-comment-composer.tsx;
  * now ~50 LOC plus the StopButton subcomponent.
  */
-import { useCallback } from "react";
+import { useCallback, type ReactNode } from "react";
 import { Pressable, View } from "react-native";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
@@ -64,6 +64,11 @@ interface Props {
    *  同名 prop）。chat.tsx 从 shared-intent-store take 后传入。 */
   incomingSharedFiles?: SharedFile[];
   onIncomingSharedFilesConsumed?: () => void;
+
+  /** RUYI-449 三态入口：草稿为空且未禁用时替换发送按钮位（语义见
+   *  `MessageComposer.renderVoiceWhenEmpty`）。chat.tsx 在 runtime 已绑定
+   *  且有可用 agent 时传入；置灰/无 agent 时仍显示发送箭头。 */
+  renderVoiceWhenEmpty?: () => ReactNode;
 }
 
 const IS_IOS = process.env.EXPO_OS === "ios";
@@ -79,6 +84,7 @@ export function ChatComposer({
   disabledReason,
   incomingSharedFiles,
   onIncomingSharedFilesConsumed,
+  renderVoiceWhenEmpty,
 }: Props) {
   const { t } = useT("chat");
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -140,6 +146,7 @@ export function ChatComposer({
       manageKeyboard={false}
       incomingSharedFiles={incomingSharedFiles}
       onIncomingSharedFilesConsumed={onIncomingSharedFilesConsumed}
+      renderVoiceWhenEmpty={renderVoiceWhenEmpty}
     />
   );
 }
