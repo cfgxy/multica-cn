@@ -1287,6 +1287,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProbeBaseURL = v
 	}
 
+	// Voice gateway provider websocket origin (RUYI-425 §3.5 stage 3).
+	// MULTICA_GEMINI_WS_BASE_URL lets air-gapped deployments and tests aim the
+	// relay at a proxy or stub; empty env keeps the public default.
+	h.VoiceProviderWSBaseURL = handler.DefaultVoiceProviderWSBaseURL
+	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_WS_BASE_URL")); v != "" {
+		h.VoiceProviderWSBaseURL = v
+	}
+
 	// Plugin secrets use a dedicated deployment key. Keeping this separate from
 	// VCS and channel secrets gives operators an isolated rotation and blast
 	// radius; without it, saving a `secret` config field fails closed rather
@@ -2551,6 +2559,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
+					// Voice session initiation (RUYI-425 §4.4 rule 3): the
+					// gate runs before the websocket upgrade, so every
+					// rejection is a plain 409 VOICE_UNAVAILABLE:<reason>.
+					r.Get("/voice-session", h.StartVoiceSession)
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)
@@ -2708,6 +2720,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
+				// Manual instance registration (RUYI-425 §4.3): voice-protocol
+				// instances are born here, not from a daemon probe.
+				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
 					r.Get("/usage", h.GetRuntimeUsage)

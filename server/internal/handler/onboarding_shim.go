@@ -195,6 +195,12 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
 		return
 	}
+	// RUYI-425 §4.4 rule 2: the shim creates a text assistant, so the bound
+	// runtime must declare the text capability — a voice-only instance cannot
+	// carry onboarding chats.
+	if !h.validateAgentTextBinding(w, r, runtime) {
+		return
+	}
 
 	agents, err := qtx.ListAgents(r.Context(), wsUUID)
 	if err != nil {

@@ -429,6 +429,11 @@ type Handler struct {
 	// default; empty disables probing (badges stay "configured"). Tests
 	// inject a stub server URL here.
 	VoiceProbeBaseURL string
+	// VoiceProviderWSBaseURL is the voice gateway's provider websocket origin
+	// (RUYI-425 §3.5 stage 3). Wired from MULTICA_GEMINI_WS_BASE_URL with the
+	// public Gemini endpoint as the default; tests inject a stub provider URL
+	// so the relay is exercised end-to-end without touching the real service.
+	VoiceProviderWSBaseURL string
 	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
 	// tight transports). Nil means a 5s-timeout default client.
 	VoiceProbeHTTPClient *http.Client
