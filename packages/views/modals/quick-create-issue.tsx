@@ -85,6 +85,7 @@ import { useT } from "../i18n";
 import { matchesPinyin } from "../editor/extensions/pinyin-match";
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
 import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
+import { useVoiceSession, VoiceButton, VoiceOverlay } from "../voice";
 
 type ActorSelection =
   | { type: "agent"; id: string }
@@ -376,6 +377,19 @@ export function AgentCreatePanel({
     onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
   });
 
+  // Voice entry (RUYI-449): speak the task to the selected agent through the
+  // shared voice-session chain; each finalized spoken turn is appended to the
+  // prompt, and the user still confirms with Create — nothing is sent from
+  // the voice session itself. Squad actors route to a leader on the backend
+  // with no agent the client can target, so voice is agent-only here. The
+  // session's intent/facts are persisted server-side regardless of submit.
+  const voice = useVoiceSession({
+    agentId: actor?.type === "agent" ? actor.id : null,
+    onUserTurn: (text) => {
+      editorRef.current?.insertMarkdownAtEnd(text);
+    },
+  });
+
   useEffect(() => {
     // Defer focus so it lands after the dialog's focus trap has settled —
     // otherwise the trap can bounce focus back to the first focusable header
@@ -602,6 +616,14 @@ export function AgentCreatePanel({
   return (
     <>
         <DialogTitle className="sr-only">{t(($) => $.create_issue.sr_agent)}</DialogTitle>
+        <VoiceOverlay
+          phase={voice.phase}
+          failure={voice.failure}
+          liveUserText={voice.liveUserText}
+          liveAssistantText={voice.liveAssistantText}
+          onEnd={voice.end}
+          onDismiss={voice.dismiss}
+        />
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 pt-3 pb-2 shrink-0">
@@ -853,6 +875,10 @@ export function AgentCreatePanel({
               size="sm"
               multiple
               onSelect={(file) => editorRef.current?.uploadFile(file)}
+            />
+            <VoiceButton
+              onStart={voice.start}
+              disabled={submitting || gate.uploading}
             />
             {keepOpen && sentCount > 0 && (
               <span className="text-caption text-emerald-600 dark:text-emerald-400">

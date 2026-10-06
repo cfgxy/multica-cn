@@ -157,6 +157,7 @@
     "./feedback": "./feedback/index.ts",
     "./feedback/mutations": "./feedback/mutations.ts",
     "./realtime": "./realtime/index.ts",
+    "./voice": "./voice/index.ts",
     "./navigation": "./navigation/index.ts",
     "./modals": "./modals/index.ts",
     "./onboarding": "./onboarding/index.ts",

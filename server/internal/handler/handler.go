@@ -267,6 +267,16 @@ type Handler struct {
 	// Invalidate on the write paths so a revoke is effective immediately
 	// rather than at the gate TTL. Nil disables gate checks entirely.
 	OAuthGate                    *auth.OAuthGate
+	// Voice-session dual auth (RUYI-449). The voice route sits outside the
+	// Auth middleware group so the mobile websocket upgrade — which cannot
+	// set headers and carries no cookie jar — can authenticate via the
+	// first frame (the RUYI-429 realtime pattern). These carry the same PAT
+	// resolver and disabled lookup the middleware and realtime hub share.
+	// A nil PATResolver only fails `mul_` tokens (JWT-only fallback); a nil
+	// disabled lookup skips the account-state check — the same nil contracts
+	// as realtime.HandleWebSocket.
+	VoicePATResolver             realtime.PATResolver
+	VoiceDisabledLookup          auth.DisabledLookup
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
