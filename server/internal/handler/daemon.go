@@ -982,9 +982,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 }
 
 type DaemonHeartbeatRequest struct {
-	RuntimeID           string                                `json:"runtime_id"`
-	SupportsBatchImport bool                                  `json:"supports_batch_import,omitempty"`
-	Backpressure        *protocol.DaemonBackpressureReport    `json:"backpressure,omitempty"`
+	RuntimeID           string                             `json:"runtime_id"`
+	SupportsBatchImport bool                               `json:"supports_batch_import,omitempty"`
+	Backpressure        *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -1643,10 +1643,10 @@ const claimBatchMaxTasksCap = 32
 func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		DaemonID      string                              `json:"daemon_id"`
-		RuntimeIDs    []string                            `json:"runtime_ids"`
-		MaxTasks      int                                 `json:"max_tasks"`
-		Backpressure  *protocol.DaemonBackpressureReport  `json:"backpressure,omitempty"`
+		DaemonID     string                             `json:"daemon_id"`
+		RuntimeIDs   []string                           `json:"runtime_ids"`
+		MaxTasks     int                                `json:"max_tasks"`
+		Backpressure *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1937,6 +1937,56 @@ func (h *Handler) rejectClaimSkillLoad(task *db.AgentTaskQueue, err error) *clai
 // the workspace that OWNS the task's context (issue / chat session / autopilot
 // / quick-create), which is the only authority for MULTICA_WORKSPACE_ID in the
 // agent env. An empty value would make the CLI silently fall back to the
+// quickCreateAttachmentMetas loads the attachment rows behind a quick-create
+// context's attachment ids so the delegated create-run can inline pasted
+// images into the new issue's description (RUYI-478). MarkdownURL follows
+// the same buildMarkdownURL contract as the attachment API responses —
+// durable, no TTL — because quick-create runs cannot call
+// `multica attachment download`. Strictly additive: an id that no longer
+// resolves, a workspace parse failure, or a query error degrades to omitting
+// the meta (binding via the raw ids is unaffected), never to a failed claim.
+func (h *Handler) quickCreateAttachmentMetas(ctx context.Context, ids []string, workspaceID string) []QuickCreateAttachmentMeta {
+	if len(ids) == 0 {
+		return nil
+	}
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		slog.Warn("quick-create attachment metas: workspace id parse failed; skipping", "error", err)
+		return nil
+	}
+	attUUIDs := make([]pgtype.UUID, 0, len(ids))
+	for _, id := range ids {
+		u, err := util.ParseUUID(id)
+		if err != nil {
+			slog.Warn("quick-create attachment metas: skipping unparseable id", "error", err)
+			continue
+		}
+		attUUIDs = append(attUUIDs, u)
+	}
+	if len(attUUIDs) == 0 {
+		return nil
+	}
+	rows, err := h.Queries.ListAttachmentsByIDs(ctx, db.ListAttachmentsByIDsParams{
+		AttachmentIds: attUUIDs,
+		WorkspaceID:   wsUUID,
+	})
+	if err != nil {
+		slog.Warn("quick-create attachment metas: load failed; continuing without meta", "error", err)
+		return nil
+	}
+	metas := make([]QuickCreateAttachmentMeta, 0, len(rows))
+	for _, a := range rows {
+		id := uuidToString(a.ID)
+		metas = append(metas, QuickCreateAttachmentMeta{
+			ID:          id,
+			Filename:    a.Filename,
+			ContentType: a.ContentType,
+			MarkdownURL: h.buildMarkdownURL(a, id),
+		})
+	}
+	return metas
+}
+
 // user-global config and talk to whatever workspace the user happened to last
 // configure; a value that doesn't match the runtime's workspace means upstream
 // routed a foreign-workspace task here. Both cases hard-fail AND cancel the
@@ -3062,6 +3112,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.QuickCreatePriority = qc.Priority
 			resp.QuickCreateDueDate = qc.DueDate
 			resp.QuickCreateAttachmentIDs = append([]string(nil), qc.AttachmentIDs...)
+			// RUYI-478: surface the full attachment rows (filename + durable
+			// markdown URL) so the delegated create-run can inline pasted
+			// images into the description instead of leaving them invisible
+			// outside the attachment area. Degradation only: a lookup
+			// failure keeps the ids (binding never regresses), the meta is
+			// simply absent.
+			resp.QuickCreateAttachments = h.quickCreateAttachmentMetas(r.Context(), qc.AttachmentIDs, qc.WorkspaceID)
 			resp.ThreadName = qc.Prompt
 			resp.WorkspaceID = qc.WorkspaceID
 			if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, true); failure != nil {

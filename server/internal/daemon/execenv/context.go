@@ -1073,6 +1073,25 @@ func renderQuickCreateContext(ctx TaskContextForEnv) string {
 	b.WriteString("> ")
 	b.WriteString(ctx.QuickCreatePrompt)
 	b.WriteString("\n\n")
+
+	// Files the user uploaded in the modal are bound to the created issue
+	// server-side (via MULTICA_QUICK_CREATE_ATTACHMENT_IDS), but without
+	// this section the delegated run never learns they exist and pasted
+	// images never reach the body (RUYI-478). Each row carries its own
+	// durable markdown URL — quick-create forbids non-create CLI calls, so
+	// there is no download path here.
+	if len(ctx.QuickCreateAttachments) > 0 {
+		b.WriteString("## Attachments\n\n")
+		b.WriteString("Files the user uploaded in the quick-create modal, already bound to the created issue automatically (pass no extra flags for them):\n\n")
+		for _, a := range ctx.QuickCreateAttachments {
+			if strings.HasPrefix(a.ContentType, "image/") {
+				fmt.Fprintf(&b, "- `%s` — %s (%s) — image: embed it inline in the description as `![%s](%s)` so it renders in the issue body\n", a.ID, a.Filename, a.ContentType, a.Filename, a.MarkdownURL)
+			} else {
+				fmt.Fprintf(&b, "- `%s` — %s (%s) — file: mention the filename in the description where relevant\n", a.ID, a.Filename, a.ContentType)
+			}
+		}
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 

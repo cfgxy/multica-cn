@@ -618,12 +618,12 @@ type Daemon struct {
 	// bpState is nil until the watcher's first sample lands (gate fails
 	// open); bpWakeup points at the batch poller's wakeup channel so a
 	// recovery can nudge it instead of waiting out a backoff interval.
-	bpMachine   *backpressureMachine
-	bpSource    memSampleSource
-	bpState     atomic.Pointer[backpressureObservation]
-	bpDeferred  atomic.Int64
-	bpWakeup    atomic.Pointer[chan struct{}]
-	bpLastWarn  atomic.Int64
+	bpMachine  *backpressureMachine
+	bpSource   memSampleSource
+	bpState    atomic.Pointer[backpressureObservation]
+	bpDeferred atomic.Int64
+	bpWakeup   atomic.Pointer[chan struct{}]
+	bpLastWarn atomic.Int64
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -7370,6 +7370,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		QuickCreateAttachments:           convertQuickCreateAttachmentsForEnv(task.QuickCreateAttachments),
 		HandoffNote:                      task.HandoffNote,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
@@ -9404,6 +9405,22 @@ func convertReposForEnv(repos []RepoData) []execenv.RepoContextForEnv {
 	result := make([]execenv.RepoContextForEnv, len(repos))
 	for i, r := range repos {
 		result[i] = execenv.RepoContextForEnv{URL: r.URL, Description: r.Description, Ref: r.Ref}
+	}
+	return result
+}
+
+func convertQuickCreateAttachmentsForEnv(atts []QuickCreateAttachmentMeta) []execenv.QuickCreateAttachmentForEnv {
+	if len(atts) == 0 {
+		return nil
+	}
+	result := make([]execenv.QuickCreateAttachmentForEnv, len(atts))
+	for i, a := range atts {
+		result[i] = execenv.QuickCreateAttachmentForEnv{
+			ID:          a.ID,
+			Filename:    a.Filename,
+			ContentType: a.ContentType,
+			MarkdownURL: a.MarkdownURL,
+		}
 	}
 	return result
 }
