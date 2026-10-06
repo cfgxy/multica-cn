@@ -85,6 +85,8 @@ import type {
   UpdateSquadRequest,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  BatchDecisionAnswerResult,
+  BatchIssueDecisionAnswer,
   TaskMessagePayload,
   UpdateAgentEnvRequest,
   UpdateAgentRequest,
@@ -145,6 +147,7 @@ import {
 } from "@multica/core/api/schemas";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
+  BatchDecisionAnswersSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
 } from "@multica/core/api/schemas";
@@ -1849,6 +1852,21 @@ class ApiClient {
     });
     if (!decision) throw new Error("Invalid decision answer response");
     return decision;
+  }
+
+  // Batch answer (RUYI-471): mirrors core's answerIssueDecisionsBatch.
+  // Per-card outcomes never roll the batch back — callers inspect `results`.
+  async answerIssueDecisionsBatch(
+    issueId: string,
+    answers: BatchIssueDecisionAnswer[],
+  ): Promise<BatchDecisionAnswerResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/decisions/answer-batch`,
+      { method: "POST", body: JSON.stringify({ answers }) },
+    );
+    return parseWithFallback(raw, BatchDecisionAnswersSchema, { results: [] }, {
+      endpoint: "POST /api/issues/:id/decisions/answer-batch",
+    });
   }
 
   async cancelIssueDecision(

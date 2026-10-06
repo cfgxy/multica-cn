@@ -2333,9 +2333,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Decision cards (RUYI-345): agents raise structured
 					// questions from runs; members answer (echo comment wakes
 					// the creating agent) or cancel. Answer/cancel are
-					// member-enforced inside the handlers.
+					// member-enforced inside the handlers. RUYI-471 adds the
+					// batch endpoint (one shared echo, one trigger pass); it
+					// also backs the "1A 2B" text-answer hook on POST
+					// /comments.
 					r.Post("/decisions", h.CreateIssueDecision)
 					r.Get("/decisions", h.ListIssueDecisions)
+					r.Post("/decisions/answer-batch", h.AnswerIssueDecisionsBatch)
 					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
 					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
 					r.Get("/timeline", h.ListTimeline)

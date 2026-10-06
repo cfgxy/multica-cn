@@ -1055,6 +1055,22 @@ export const IssueDecisionSchema = z.object({
 
 export const IssueDecisionsListSchema = z.array(IssueDecisionSchema);
 
+// Batch answer (RUYI-471). Mirrors handler.BatchAnswerIssueDecisionsResponse:
+// per-card outcomes never roll the batch back, so `results` is the only
+// load-bearing field.
+export const BatchDecisionAnswerOutcomeSchema = z.object({
+  decision_id: z.string(),
+  status: z.enum(["answered", "conflict", "invalid", "not_found"]),
+  error: z.string().optional(),
+  decision: IssueDecisionSchema.nullable().optional(),
+}).loose();
+
+export const BatchDecisionAnswersSchema = z.object({
+  results: z.array(BatchDecisionAnswerOutcomeSchema),
+  echo_comment_id: z.string().optional(),
+  trigger_outcomes: z.array(z.record(z.string(), z.unknown())).optional(),
+}).loose();
+
 export const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
 
 const OptionalStringSchema = z.preprocess(
