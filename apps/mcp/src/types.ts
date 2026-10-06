@@ -74,6 +74,64 @@ export interface UpdateProjectBody {
   due_date?: string | null;
 }
 
+// ---- project resource bindings (RUYI-458) ---------------------------------
+// Mirrors packages/core/types/project.ts and the Go handler
+// (server/internal/handler/project_resource.go). resource_type is immutable
+// server-side; only the shapes below exist today.
+
+export type ProjectResourceType = "github_repo" | "local_directory";
+
+export interface GithubRepoResourceRef {
+  url: string;
+  ref?: string;
+  default_branch_hint?: string;
+}
+
+export interface LocalDirectoryResourceRef {
+  local_path: string;
+  daemon_id: string;
+  label?: string;
+  execution_mode?: "in_place" | "worktree";
+}
+
+export type ProjectResourceRef =
+  | GithubRepoResourceRef
+  | LocalDirectoryResourceRef
+  | Record<string, unknown>;
+
+export interface ProjectResourceInfo {
+  id: string;
+  project_id: string;
+  workspace_id: string;
+  resource_type: ProjectResourceType;
+  resource_ref: ProjectResourceRef;
+  label: string | null;
+  position: number;
+  created_at: string;
+  created_by: string | null;
+}
+
+export interface CreateProjectResourceBody {
+  resource_type: ProjectResourceType;
+  resource_ref: ProjectResourceRef;
+  label?: string;
+  position?: number;
+}
+
+// Partial-update body: omitted keys keep the current value, an explicit null
+// label clears it. resource_type is deliberately absent — the server rejects
+// it and the tool schema never declares it.
+export interface UpdateProjectResourceBody {
+  resource_ref?: ProjectResourceRef;
+  label?: string | null;
+  position?: number;
+}
+
+export interface ProjectResourceListResult {
+  resources: ProjectResourceInfo[];
+  total: number;
+}
+
 export interface IssueInfo {
   id: string;
   workspace_id?: string;

@@ -31,6 +31,7 @@ import type {
   CreateExecutionProfileBody,
   CreateIssueBody,
   CreateProjectBody,
+  CreateProjectResourceBody,
   CreateSquadBody,
   ExecutionProfileActivationInfo,
   ExecutionProfileEntryInfo,
@@ -42,6 +43,8 @@ import type {
   IssueRelationsInfo,
   ModelListRequestInfo,
   ProjectInfo,
+  ProjectResourceInfo,
+  ProjectResourceListResult,
   QuickCreateBody,
   QuickReplyInfo,
   RemoveIssueRelationResult,
@@ -57,6 +60,7 @@ import type {
   UpdateExecutionProfileBody,
   UpdateIssueBody,
   UpdateProjectBody,
+  UpdateProjectResourceBody,
   UpdateSquadBody,
   UpsertExecutionProfileEntryBody,
   WorkspaceInfo,
@@ -166,6 +170,60 @@ export class MulticaClient {
       "PUT",
       `/api/projects/${encodeURIComponent(projectId)}`,
       { workspace, body },
+    );
+  }
+
+  // Project resource bindings (RUYI-458). Same surface the web project page
+  // drives; create/update/delete answer 409/404/422 bodies the tool layer
+  // maps to structured results.
+
+  async listProjectResources(
+    workspace: string,
+    projectId: string,
+  ): Promise<ProjectResourceListResult> {
+    return this.request(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/resources`,
+      { workspace },
+    );
+  }
+
+  async createProjectResource(
+    workspace: string,
+    projectId: string,
+    body: CreateProjectResourceBody,
+  ): Promise<ProjectResourceInfo> {
+    return this.request<ProjectResourceInfo>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/resources`,
+      { workspace, body },
+    );
+  }
+
+  async updateProjectResource(
+    workspace: string,
+    projectId: string,
+    resourceId: string,
+    body: UpdateProjectResourceBody,
+  ): Promise<ProjectResourceInfo> {
+    return this.request<ProjectResourceInfo>(
+      "PUT",
+      `/api/projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resourceId)}`,
+      { workspace, body },
+    );
+  }
+
+  /** 204 on success — resolves undefined. */
+  async deleteProjectResource(
+    workspace: string,
+    projectId: string,
+    resourceId: string,
+  ): Promise<void> {
+    // The handler answers 204 with an empty body; request() resolves undefined.
+    await this.request(
+      "DELETE",
+      `/api/projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resourceId)}`,
+      { workspace },
     );
   }
 
