@@ -14,10 +14,22 @@ import * as ImagePicker from "expo-image-picker";
 import i18n from "i18next";
 import { useActionSheet } from "@/components/ui/action-sheet";
 import { api } from "@/data/api";
-import type { FileAsset } from "@/data/api";
+import { assetFromImagePicker } from "@/lib/picked-asset";
 import { useT } from "@/lib/use-t";
 
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024; // 5 MB — matches the profile screen.
+
+// RUYI-477: expo-image-picker ~55 在 iOS 上默认
+// preferredAssetRepresentationMode=.current，选 HEIC（实况照片静态帧、
+// 高效格式拍摄）时原样透出 HEIC 容器，渲染端无法解码。compatible 让
+// PHPicker 直接给出 JPEG 兼容表示，从选择段根修。
+const AVATAR_PICKER_OPTIONS = {
+  mediaTypes: ["images"] as ["images"],
+  aspect: [1, 1] as [number, number],
+  quality: 0.8,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+};
 
 export function useAvatarUploader() {
   const sheet = useActionSheet();
@@ -34,13 +46,7 @@ export function useAvatarUploader() {
       );
       return null;
     }
-    const fileAsset: FileAsset = {
-      uri: asset.uri,
-      // expo-image-picker doesn't always supply a fileName (camera captures);
-      // fabricate one from the URI so the multipart upload has a stable name.
-      name: asset.fileName ?? `avatar-${Date.now()}.jpg`,
-      type: asset.mimeType ?? "image/jpeg",
-    };
+    const fileAsset = assetFromImagePicker(asset);
     setUploading(true);
     try {
       const attachment = await api.uploadFile(fileAsset);
@@ -70,11 +76,7 @@ export function useAvatarUploader() {
       );
       return null;
     }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+    const result = await ImagePicker.launchCameraAsync(AVATAR_PICKER_OPTIONS);
     if (result.canceled) return null;
     return uploadAsset(result.assets[0]);
   };
@@ -91,11 +93,9 @@ export function useAvatarUploader() {
       );
       return null;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync(
+      AVATAR_PICKER_OPTIONS,
+    );
     if (result.canceled) return null;
     return uploadAsset(result.assets[0]);
   };

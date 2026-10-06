@@ -29,11 +29,24 @@ import { Separator } from "@/components/ui/separator";
 import { useActionSheet, ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAuthStore } from "@/data/auth-store";
 import { api } from "@/data/api";
-import type { FileAsset } from "@/data/api";
+import { assetFromImagePicker } from "@/lib/picked-asset";
 import i18n from "i18next";
 import { useT } from "@/lib/use-t";
 
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024; // 5 MB — matches what's reasonable on cellular.
+
+// RUYI-477: expo-image-picker ~55 在 iOS 上默认
+// preferredAssetRepresentationMode=.current，选 HEIC（实况照片静态帧、
+// 高效格式拍摄）时原样透出 HEIC 容器，渲染端无法解码。compatible 让
+// PHPicker 直接给出 JPEG 兼容表示，从选择段根修。
+const AVATAR_PICKER_OPTIONS = {
+  mediaTypes: ["images"] as ["images"],
+  allowsEditing: true,
+  aspect: [1, 1] as [number, number],
+  quality: 0.8,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+};
 
 function initialsOf(name: string | undefined): string {
   if (!name) return "?";
@@ -104,22 +117,14 @@ export default function ProfileSettingsScreen() {
       );
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+    const result = await ImagePicker.launchCameraAsync(AVATAR_PICKER_OPTIONS);
     if (!result.canceled) await uploadAvatar(result.assets[0]);
   };
 
   const pickFromLibrary = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
+    const result = await ImagePicker.launchImageLibraryAsync(
+      AVATAR_PICKER_OPTIONS,
+    );
     if (!result.canceled) await uploadAvatar(result.assets[0]);
   };
 
@@ -131,13 +136,7 @@ export default function ProfileSettingsScreen() {
       );
       return;
     }
-    const fileAsset: FileAsset = {
-      uri: asset.uri,
-      // expo-image-picker doesn't always supply a fileName (camera captures);
-      // fabricate one from the URI so the multipart upload has a stable name.
-      name: asset.fileName ?? `avatar-${Date.now()}.jpg`,
-      type: asset.mimeType ?? "image/jpeg",
-    };
+    const fileAsset = assetFromImagePicker(asset);
 
     setUploading(true);
     try {

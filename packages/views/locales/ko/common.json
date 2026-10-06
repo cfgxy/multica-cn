@@ -153,7 +153,12 @@
     "file_too_large_message": "파일은 {{size}} MB 미만이어야 합니다.",
     "upload_failed_title": "업로드 실패",
     "quick_replies_title": "빠른 답장",
-    "quick_reply_hint": "빠른 답장 삽입"
+    "quick_reply_hint": "빠른 답장 삽입",
+    "camera_permission_title": "카메라 권한 필요",
+    "camera_permission_message": "Multica가 첨부 사진을 촬영하려면 카메라 접근 권한이 필요합니다. 시스템 설정에서 허용해 주세요.",
+    "image_source_camera": "사진 촬영",
+    "image_source_library": "라이브러리에서 선택",
+    "cancel": "취소"
   },
   "mobile": {
     "share": {
