@@ -10,6 +10,8 @@
  * environment (see vitest.config.ts — mobile tests are pure-logic only).
  */
 
+import type { SharedFile } from "./share-payload";
+
 export interface PickedAsset {
   uri: string;
   name: string;
@@ -54,6 +56,18 @@ export function assetFromDocumentPicker(
     name: a.name,
     type: a.mimeType ?? "application/octet-stream",
     size: a.size ?? undefined,
+  };
+}
+
+/** Map one share-intent file (already normalized + copied to our cache by
+ *  the native side, RUYI-463) onto the same upload-payload shape the pickers
+ *  produce, so the shared upload channel needs no per-entry-point branch. */
+export function assetFromSharedFile(f: SharedFile): PickedAsset {
+  return {
+    uri: f.uri,
+    name: f.name,
+    type: f.mimeType,
+    size: f.size,
   };
 }
 
