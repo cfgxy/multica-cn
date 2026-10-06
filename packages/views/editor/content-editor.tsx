@@ -63,6 +63,7 @@ import {
   uploadAndInsertFile,
   insertUploadPlaceholder,
   settleUploadNode,
+  findImagePosBySrc,
 } from "./extensions/file-upload";
 import { configStore } from "@multica/core/config";
 import { preprocessMarkdown } from "./utils/preprocess";
@@ -318,6 +319,16 @@ interface ContentEditorRef {
    * appending the link.
    */
   settleUploadPlaceholder: (uploadId: string, result: UploadResult) => boolean;
+  /**
+   * True when the document already shows an image with this exact `src`.
+   *
+   * Document-level truth for the upload write-back: the inline blob→URL swap
+   * serializes into the draft only through the debounced `onUpdate`, so a
+   * body check races the debounce window and would double-append on hosts
+   * with a long debounce. Asking the document is timing-free — the swap
+   * either put the image there or it didn't (RUYI-478).
+   */
+  hasImageWithSrc: (src: string) => boolean;
   /**
    * Cancel the pending debounced `onUpdate` and hand its markdown back to the
    * caller instead of firing it. Returns null when nothing is pending.
@@ -951,6 +962,10 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       settleUploadPlaceholder: (uploadId, result) => {
         if (!editor || editor.isDestroyed) return false;
         return settleUploadNode(editor, uploadId, result);
+      },
+      hasImageWithSrc: (src: string) => {
+        if (!editor || editor.isDestroyed) return false;
+        return findImagePosBySrc(editor, src) !== null;
       },
       insertMarkdownAtEnd: (markdown: string) => {
         if (!editor || editor.isDestroyed) return false;
