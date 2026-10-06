@@ -16,7 +16,7 @@ const createLiveSession = `-- name: CreateLiveSession :one
 INSERT INTO live_session (
     workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot
 ) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at
+RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary
 `
 
 type CreateLiveSessionParams struct {
@@ -58,6 +58,7 @@ func (q *Queries) CreateLiveSession(ctx context.Context, arg CreateLiveSessionPa
 		&i.EndedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Summary,
 	)
 	return i, err
 }
@@ -66,7 +67,7 @@ const endLiveSession = `-- name: EndLiveSession :one
 UPDATE live_session
 SET status = 'ended', ended_at = now(), transcript = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at
+RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary
 `
 
 type EndLiveSessionParams struct {
@@ -95,12 +96,13 @@ func (q *Queries) EndLiveSession(ctx context.Context, arg EndLiveSessionParams) 
 		&i.EndedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Summary,
 	)
 	return i, err
 }
 
 const getLiveSession = `-- name: GetLiveSession :one
-SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at FROM live_session WHERE id = $1
+SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary FROM live_session WHERE id = $1
 `
 
 func (q *Queries) GetLiveSession(ctx context.Context, id pgtype.UUID) (LiveSession, error) {
@@ -121,8 +123,60 @@ func (q *Queries) GetLiveSession(ctx context.Context, id pgtype.UUID) (LiveSessi
 		&i.EndedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Summary,
 	)
 	return i, err
+}
+
+const listLatestEndedLiveSessions = `-- name: ListLatestEndedLiveSessions :many
+SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary FROM live_session
+WHERE workspace_id = $1 AND agent_id = $2 AND status = 'ended'
+ORDER BY ended_at DESC
+LIMIT 1
+`
+
+type ListLatestEndedLiveSessionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Brief assembly (RUYI-425 stage 4, design §3.5): the most recent closed
+// voice conversation of an agent. LIMIT 1 by the caller's contract, :many so
+// "no voice session yet" is an empty result instead of a row error.
+func (q *Queries) ListLatestEndedLiveSessions(ctx context.Context, arg ListLatestEndedLiveSessionsParams) ([]LiveSession, error) {
+	rows, err := q.db.Query(ctx, listLatestEndedLiveSessions, arg.WorkspaceID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LiveSession{}
+	for rows.Next() {
+		var i LiveSession
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.RuntimeInstanceID,
+			&i.UserID,
+			&i.Status,
+			&i.Model,
+			&i.ContextSnapshot,
+			&i.SessionHandle,
+			&i.Transcript,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Summary,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setLiveSessionHandle = `-- name: SetLiveSessionHandle :exec
@@ -140,6 +194,24 @@ type SetLiveSessionHandleParams struct {
 // a no-op caller-side, never written.
 func (q *Queries) SetLiveSessionHandle(ctx context.Context, arg SetLiveSessionHandleParams) error {
 	_, err := q.db.Exec(ctx, setLiveSessionHandle, arg.ID, arg.SessionHandle)
+	return err
+}
+
+const setLiveSessionSummary = `-- name: SetLiveSessionSummary :exec
+UPDATE live_session SET summary = $2, updated_at = now()
+WHERE id = $1
+`
+
+type SetLiveSessionSummaryParams struct {
+	ID      pgtype.UUID `json:"id"`
+	Summary string      `json:"summary"`
+}
+
+// RUYI-425 stage 4: write-back projection (design §3.6-3). The summary is a
+// template rebuild of the agent_fact_event rows for this session — never
+// authoritative, always safe to overwrite from facts.
+func (q *Queries) SetLiveSessionSummary(ctx context.Context, arg SetLiveSessionSummaryParams) error {
+	_, err := q.db.Exec(ctx, setLiveSessionSummary, arg.ID, arg.Summary)
 	return err
 }
 

@@ -44,6 +44,10 @@ const (
 	// relevant rows rather than a window over the newest ones.
 	priorContextBriefUnresolved = 8
 	priorContextBriefRecent     = 8
+	// priorContextBriefVoiceFacts bounds the fact-event anchors of the voice
+	// section (RUYI-425 stage 4): the summary carries whole-session context,
+	// these are the individually citable authoritative events.
+	priorContextBriefVoiceFacts = 5
 )
 
 // sessionGateOutcome is what applySessionContextGate decided, for logging.
@@ -152,7 +156,7 @@ func (h *Handler) applySessionContextGate(ctx context.Context, resp *AgentTaskRe
 	resp.PriorSessionID = ""
 	brief := ""
 	if task.IssueID.Valid {
-		brief = h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(resp.WorkspaceID), inputs)
+		brief = h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(resp.WorkspaceID), task.AgentID, inputs)
 	}
 	if brief == "" {
 		resp.PriorSessionResumeUnavailable = true
@@ -276,7 +280,7 @@ func (a briefAnchor) render() string {
 //
 // Returns "" when there is nothing worth handing over, which the caller treats
 // as a failed assembly and degrades accordingly.
-func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspaceID pgtype.UUID, inputs sessionBriefInputs) string {
+func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspaceID, agentID pgtype.UUID, inputs sessionBriefInputs) string {
 	var b strings.Builder
 	b.WriteString("## Prior Session Context\n\n")
 	b.WriteString("Your earlier session on this issue grew close to its context limit, so this run starts on a fresh one. " +
@@ -295,6 +299,16 @@ func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspace
 		b.WriteString("### What your previous run reported\n\n")
 		b.WriteString(clipForBrief(result, priorContextBriefResultBytes))
 		b.WriteString("\n\n")
+	}
+
+	// Voice continuity (RUYI-425 stage 4, design §3.5): the agent's most
+	// recent closed live session, summary projection plus citable fact
+	// events. Skipped entirely when there is no voice session — a text-only
+	// agent's brief must not invent voice content (§3.6 negative test).
+	voiceSection := h.loadVoiceSessionSection(ctx, workspaceID, agentID)
+	if voiceSection != "" {
+		b.WriteString(voiceSection)
+		b.WriteString("\n")
 	}
 
 	// One name lookup per distinct author rather than per row: a busy issue is
@@ -389,11 +403,74 @@ func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspace
 	// Nothing but the boilerplate header means we have no hand-off to give.
 	// Reporting that honestly lets the caller fall back to the plain continuity
 	// notice, which at least tells the agent its memory is gone.
-	if len(unresolved) == 0 && len(recent) == 0 && priorRunResultText(inputs.priorResult) == "" {
+	if len(unresolved) == 0 && len(recent) == 0 && priorRunResultText(inputs.priorResult) == "" && voiceSection == "" {
 		return ""
 	}
 
 	b.WriteString("Read the issue and the threads above with `multica issue comment list` before acting on any of this.\n\n")
 
 	return clipForBrief(b.String(), priorContextBriefMaxBytes)
+}
+
+// loadVoiceSessionSection queries the agent's most recent closed live session
+// and renders its continuity section; "" means "no voice session to hand
+// over", the only state in which the brief stays silent about voice (§3.6:
+// the brief never invents voice content).
+func (h *Handler) loadVoiceSessionSection(ctx context.Context, workspaceID, agentID pgtype.UUID) string {
+	sessions, err := h.Queries.ListLatestEndedLiveSessions(ctx, db.ListLatestEndedLiveSessionsParams{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+	})
+	if err != nil {
+		slog.Warn("session context gate: load latest live session for brief failed",
+			"agent_id", uuidToString(agentID), "error", err)
+		return ""
+	}
+	if len(sessions) == 0 {
+		return ""
+	}
+	latest := sessions[0]
+	facts, err := h.Queries.ListRecentVoiceFactsForBrief(ctx, db.ListRecentVoiceFactsForBriefParams{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+		Limit:       priorContextBriefVoiceFacts,
+	})
+	if err != nil {
+		slog.Warn("session context gate: load voice facts for brief failed",
+			"agent_id", uuidToString(agentID), "error", err)
+		facts = nil
+	}
+	if latest.Summary == "" && len(facts) == 0 {
+		// A session that closed before its write-back landed has nothing
+		// rebuilt yet; rendering an empty section would invent voice content.
+		return ""
+	}
+	return renderVoiceSessionSection(latest, facts)
+}
+
+// renderVoiceSessionSection is the pure renderer (unit-tested in
+// session_gate_test.go): the summary projection for whole-session context,
+// the authoritative fact events underneath as citable anchors. §3.6-3 is
+// baked into the wording — when projection and facts disagree, the facts win.
+func renderVoiceSessionSection(latest db.LiveSession, facts []db.AgentFactEvent) string {
+	var b strings.Builder
+	b.WriteString("### Recent voice session\n\n")
+	ended := "recently"
+	if latest.EndedAt.Valid {
+		ended = timestampToString(latest.EndedAt)
+	}
+	b.WriteString("The agent's most recent voice conversation (ended " + ended + ") produced the summary below. " +
+		"The summary is a projection rebuilt from the fact layer; the fact events under it are the authoritative record — " +
+		"when they disagree, trust the facts and cite the event id.\n\n")
+	if latest.Summary != "" {
+		b.WriteString(clipForBrief(latest.Summary, priorContextBriefResultBytes))
+		b.WriteString("\n\n")
+	}
+	if len(facts) > 0 {
+		b.WriteString("Fact events (cite by id):\n")
+		for _, f := range facts {
+			b.WriteString(fmt.Sprintf("- `%s` [%s] evidence=%s\n", f.EventID, f.Kind, f.EvidenceRef))
+		}
+	}
+	return b.String()
 }

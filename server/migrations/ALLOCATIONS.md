@@ -31,6 +31,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 929 | 929_quick_replies | RUYI-435 | agent/agent-f70e39b85abd/ruyi-435 (PR #237) | reserved |
 | 930 | 930_agent_context_dual_slot | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-agent-context | reserved |
 | 931 | 931_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
+| 932 | 932_voice_fact_event | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-writeback | reserved |
 
 Notes:
 
