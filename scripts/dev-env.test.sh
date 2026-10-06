@@ -439,6 +439,15 @@ require_contains "$out" "still in_progress"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "lock-release --force must succeed"
 [ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "lock-release --force must clear the lease file"
 
+# And the tenancy with it: the manifest's ISSUE is the fallback every gate,
+# takeover and display reads once the lease file is gone, so a release that
+# leaves it behind keeps the slot "held by issue" for everyone else
+# (RUYI-479/RUYI-477 residue).
+[ -z "$(bash -c 'source "$1"; printf %s "$ISSUE"' _ "$manifest")" ] || fail "lock-release must clear the manifest lease issue"
+dev_env dev1 lock-status > "$out" 2>&1 || fail "lock-status must work after release"
+require_contains "$out" "free (no lease, not registered)"
+require_absent "$out" "$issue_a"
+
 # Once the issue left in_progress, the next claimant may take over — and the
 # takeover rewrites the manifest's issue too, so the original claimant is now
 # the foreign one.
@@ -453,6 +462,26 @@ MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-recover > "$out" 2>&1 || status=
 printf 'done' > "$state/issue-$issue_b"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-recover > "$out" 2>&1 || fail "taking the slot back must succeed once the foreign issue closed"
 grep -q "^ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/manifest.env" || fail "the manifest must record the current claimant"
+
+# ---------------------------------------------------------------------------
+# The normal release path (no --force) on a qa-phase lease: a closed issue
+# releasing its verification window must leave nothing behind. The qa handoff
+# armed PHASE/TTL/EXPIRES_AT in the manifest, and with the lease file gone
+# that manifest is the only identity left — the half-way release that kept it
+# stranded RUYI-479 and RUYI-477.
+# ---------------------------------------------------------------------------
+MULTICA_CALLER_OWNER=$issue_b dev_env dev2 use > "$out" 2>&1 || fail "setup: bind dev2 for the release path"
+MULTICA_CALLER_OWNER=$issue_b dev_env dev2 handoff --to qa > "$out" 2>&1 || fail "setup: arm the qa phase on dev2"
+d2="$MULTICA_SLOTS_HOME/dev2/manifest.env"
+grep -q '^PHASE=qa' "$d2" || fail "setup: the qa phase must be armed before release"
+MULTICA_CALLER_OWNER=$issue_b dev_env dev2 lock-release > "$out" 2>&1 || fail "a closed issue must release its qa lease without --force"
+[ -z "$(bash -c 'source "$1"; printf %s "$ISSUE"' _ "$d2")" ] || fail "lock-release must clear the manifest lease issue"
+[ "$(bash -c 'source "$1"; printf %s "$PHASE"' _ "$d2")" = dev ] || fail "lock-release must return the manifest phase to dev"
+[ -z "$(bash -c 'source "$1"; printf %s "$EXPIRES_AT"' _ "$d2")" ] || fail "lock-release must clear the armed expiry"
+[ "$(bash -c 'source "$1"; printf %s "$TTL_HOURS"' _ "$d2")" = 0 ] || fail "lock-release must clear the qa TTL"
+dev_env dev2 lock-status > "$out" 2>&1 || fail "lock-status must work after release"
+require_contains "$out" "free (no lease, not registered)"
+require_absent "$out" "$issue_b"
 
 # ---------------------------------------------------------------------------
 # Role handover: the lease phase moves dev -> qa -> dev atomically inside one
