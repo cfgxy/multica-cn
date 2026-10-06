@@ -1215,6 +1215,8 @@
     "submitting": "Submitting…",
     "cancel_card": "Cancel card",
     "answer_failed": "Failed to submit answer",
-    "cancel_failed": "Failed to cancel card"
+    "cancel_failed": "Failed to cancel card",
+    "batch_title": "Batch answer",
+    "batch_submit": "Submit all"
   }
 }

@@ -1175,6 +1175,8 @@
     "submitting": "제출 중…",
     "cancel_card": "카드 취소",
     "answer_failed": "답변 제출 실패",
-    "cancel_failed": "카드 취소 실패"
+    "cancel_failed": "카드 취소 실패",
+    "batch_title": "일괄 답변",
+    "batch_submit": "모두 제출"
   }
 }

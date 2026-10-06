@@ -2029,6 +2029,20 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	originatorUserID := h.invokeOriginatorFromRequest(r, authorType, authorID)
+
+	// Text decision answers (RUYI-471): a member comment whose ENTIRE content
+	// is a compact "1A 2B" sequence answers the issue's open cards. When the
+	// hook consumes the comment, the echo's own trigger pass is the single
+	// wake — the member comment must not ALSO wake the assignee/thread
+	// routing on top of it.
+	if authorType == "member" && req.Type == "comment" {
+		if outcomes, handled := h.maybeAnswerDecisionsFromComment(r, issue, req.Content, authorID); handled {
+			resp.TriggerOutcomes = outcomes
+			writeJSON(w, http.StatusCreated, resp)
+			return
+		}
+	}
+
 	// The comment is already saved; a blocked mention must not fail the whole
 	// request. Surface the per-target outcomes so the client can show partial
 	// success instead of a silent no-op (MUL-4525 §2).
