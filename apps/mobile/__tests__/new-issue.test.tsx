@@ -48,6 +48,16 @@ const mockFirstAgentActor = { type: "agent" as const, id: mockFirstAgent.id };
 const mockSecondAgentActor = { type: "agent" as const, id: mockSecondAgent.id };
 const mockSquadActor = { type: "squad" as const, id: mockSquad.id };
 
+// RUYI-477: quick-create-panel 挂载「拍照/相册」ActionSheetModal，弹层需要
+// 安全区与配色上下文（同 avatar-uploader.test.tsx 的 mock 模式）。
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
+jest.mock("@/lib/use-color-scheme", () => ({
+  useColorScheme: () => ({ colorScheme: "light" }),
+}));
+
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,
   default: {

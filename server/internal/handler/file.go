@@ -24,6 +24,9 @@ import (
 
 // extContentTypes overrides http.DetectContentType for extensions it gets wrong.
 // Go's sniffer returns text/xml for SVG, text/plain for CSS/JS, etc.
+// .heic/.heif: the sniffer has no ftyp brand entry for HEIF containers and
+// reports application/octet-stream (RUYI-477 — Live-Photo stills arriving as
+// HEIC were stored untyped and failed to render as images).
 var extContentTypes = map[string]string{
 	".svg":  "image/svg+xml",
 	".css":  "text/css",
@@ -31,6 +34,8 @@ var extContentTypes = map[string]string{
 	".mjs":  "application/javascript",
 	".json": "application/json",
 	".wasm": "application/wasm",
+	".heic": "image/heic",
+	".heif": "image/heif",
 }
 
 const maxUploadSize = 100 << 20 // 100 MB
