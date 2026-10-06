@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 )
@@ -188,15 +190,50 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	}
 
 	// Phase 1 — fetch every set of messages we may render. Each is
-	// best-effort; its error is handled where the block is rendered. We
-	// fetch up front (rather than fetch-and-render per block) so Phase 2
-	// can resolve display names for EVERY speaker across ALL blocks in a
+	// best-effort; its error is handled where the block is rendered. The
+	// fetches are independent reads, so they run CONCURRENTLY (RUYI-448:
+	// serial list → get → BatchGetUsers made the name resolution the
+	// third sequential round-trip inside the ~2s EnrichTimeout — exactly
+	// the call that starved first, degrading every speaker to "User N").
+	// Running list ∥ get keeps the Contact batch at the second serial
+	// step. Hint observations and the media-descriptor harvest stay on
+	// this goroutine, after the wait, so ordering there is deterministic.
+	// We fetch up front (rather than fetch-and-render per block) so Phase
+	// 2 can resolve display names for EVERY speaker across ALL blocks in a
 	// single Contact batch — otherwise a quoted/forwarded sender that
 	// isn't in the recent window would fall back to "User N".
 	var recentItems []LarkMessage
 	var recentErr error
+	var quotedItems []LarkMessage
+	var quotedErr error
+	var forwardItems []LarkMessage
+	var forwardErr error
+
+	var fetches sync.WaitGroup
 	if wantRecent {
-		recentItems, recentErr = e.fetchRecentItems(ctx, creds, msg)
+		fetches.Add(1)
+		go func() {
+			defer fetches.Done()
+			recentItems, recentErr = e.fetchRecentItems(ctx, creds, msg)
+		}()
+	}
+	if msg.ParentID != "" {
+		fetches.Add(1)
+		go func() {
+			defer fetches.Done()
+			quotedItems, quotedErr = e.client.GetMessage(ctx, creds, msg.ParentID)
+		}()
+	}
+	if isForward {
+		fetches.Add(1)
+		go func() {
+			defer fetches.Done()
+			forwardItems, forwardErr = e.client.GetMessage(ctx, creds, msg.MessageID)
+		}()
+	}
+	fetches.Wait()
+
+	if wantRecent {
 		if recentErr != nil {
 			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, recentErr)
 		} else {
@@ -218,10 +255,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			}
 		}
 	}
-	var quotedItems []LarkMessage
-	var quotedErr error
 	if msg.ParentID != "" {
-		quotedItems, quotedErr = e.client.GetMessage(ctx, creds, msg.ParentID)
 		if quotedErr != nil {
 			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, quotedErr)
 		} else {
@@ -246,10 +280,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			}
 		}
 	}
-	var forwardItems []LarkMessage
-	var forwardErr error
 	if isForward {
-		forwardItems, forwardErr = e.client.GetMessage(ctx, creds, msg.MessageID)
 		if forwardErr != nil {
 			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, forwardErr)
 		} else {
@@ -641,7 +672,47 @@ func (e *inboundEnricher) renderQuotedBlock(parentID string, items []LarkMessage
 	if text == "" {
 		text = "[empty message]"
 	}
+	if note := feishuFileLinkNote(text); note != "" {
+		text += "\n" + note
+	}
 	return wrapQuoted(parentID, sender, parent.MessageType, text)
+}
+
+// feishuFileLinkNote returns the degradation note for a quoted TEXT parent
+// whose entire content is one bare Feishu file-share URL (RUYI-448: the
+// HCM xlsx incident — Lark renders such a message as a file card in the
+// UI, but over the API it is msg_type=text with a URL, so there is no
+// file_key for the quoted-media pipeline to capture and no attachment ever
+// reaches the agent). The bot cannot fetch that URL server-side with its
+// existing credentials — it 302s to the login page — yet agents reliably
+// burn tool calls trying. The note says so up front; the URL itself is
+// kept verbatim. Empty for anything that is not a bare Feishu file link,
+// so ordinary text and non-Feishu URLs never see it.
+func feishuFileLinkNote(text string) string {
+	if !isBareFeishuFileLink(text) {
+		return ""
+	}
+	return "[Note: the quoted message is a Feishu file-share link, not an " +
+		"attachment. Its content cannot be downloaded with the bot's current " +
+		"permissions — ask the sender to send the file directly as an " +
+		"attachment instead of fetching the link.]"
+}
+
+func isBareFeishuFileLink(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, " \n\t\r") {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	if host != "feishu.cn" && !strings.HasSuffix(host, ".feishu.cn") &&
+		host != "larksuite.com" && !strings.HasSuffix(host, ".larksuite.com") {
+		return false
+	}
+	return strings.HasPrefix(u.Path, "/file/")
 }
 
 // renderForwardedItems renders the children of a forward whose own
@@ -716,6 +787,9 @@ func (e *inboundEnricher) flattenMessage(m LarkMessage) string {
 	raw := flattenContent(m.MessageType, m.Content)
 	if raw == "" {
 		return ""
+	}
+	if named := mediaPlaceholderWithFilename(m.MessageType, m.Content); named != "" {
+		raw = named
 	}
 	return resolveMentions(raw, restMentionsToEvent(m.Mentions), "", "")
 }

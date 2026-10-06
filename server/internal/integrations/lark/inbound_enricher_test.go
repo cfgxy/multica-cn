@@ -36,6 +36,13 @@ type enricherFakeClient struct {
 	// per-attempt failure sequence.
 	cardSends  []SendCardParams
 	cardErrSeq []error
+
+	// getEnter / listEnter, when set, run at the top of GetMessage /
+	// ListChatMessages. The RUYI-448 concurrency test uses them to make
+	// one fetch block until the other has entered: a serial Enrich
+	// deadlocks (watchdog fails the test), a concurrent one proceeds.
+	getEnter  func()
+	listEnter func()
 }
 
 func newEnricherFake() *enricherFakeClient {
@@ -51,6 +58,9 @@ func newEnricherFake() *enricherFakeClient {
 
 func (f *enricherFakeClient) IsConfigured() bool { return f.configured }
 func (f *enricherFakeClient) GetMessage(ctx context.Context, creds InstallationCredentials, id string) ([]LarkMessage, error) {
+	if f.getEnter != nil {
+		f.getEnter()
+	}
 	f.calls = append(f.calls, id)
 	if e, ok := f.errByID[id]; ok {
 		return nil, e
@@ -58,6 +68,9 @@ func (f *enricherFakeClient) GetMessage(ctx context.Context, creds InstallationC
 	return f.byID[id], nil
 }
 func (f *enricherFakeClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
+	if f.listEnter != nil {
+		f.listEnter()
+	}
 	f.listCalls = append(f.listCalls, p.ChatID)
 	f.listParams = append(f.listParams, p)
 	if seq := f.errSeqChat[p.ChatID]; len(seq) > 0 {
