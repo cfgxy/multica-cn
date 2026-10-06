@@ -1,6 +1,7 @@
 package lark
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -384,4 +385,57 @@ func NewAckFrame(inbound *Frame, codeOK bool) *Frame {
 		Headers: inbound.Headers,
 		Payload: []byte(payload),
 	}
+}
+
+// larkWSResponse mirrors the official SDK's ws.Response JSON, which the
+// client sends as the ACK payload for every data frame: code + headers +
+// data, where Data is a []byte and therefore base64-encoded by
+// encoding/json. NewCardActionAckFrame leans on the same marshal path as the
+// SDK's writeEventResponse so the payload shape stays byte-identical by
+// construction.
+type larkWSResponse struct {
+	Code    int    `json:"code"`
+	Headers any    `json:"headers"`
+	Data    []byte `json:"data"`
+}
+
+// NewCardActionAckFrame builds the ACK for a card.action.trigger data frame
+// (RUYI-461). Unlike a plain event ACK, the payload embeds a
+// CardActionTriggerResponse JSON (toast / card instructions) in the Response
+// Data field: the official SDK marshals the handler's response struct to
+// JSON into Response.Data, and encoding/json renders the []byte as base64 —
+// Lark's client decodes the base64 and surfaces the toast on the click.
+// The frame envelope (Method / Service / Headers) is reused verbatim like
+// NewAckFrame so the server can correlate by message_id.
+func NewCardActionAckFrame(inbound *Frame, respJSON []byte) *Frame {
+	payload, err := json.Marshal(larkWSResponse{Code: 200, Data: respJSON})
+	if err != nil {
+		// Unreachable for this struct; fall back to a bare ACK rather than
+		// dropping the response.
+		return NewAckFrame(inbound, true)
+	}
+	return &Frame{
+		Method:  inbound.Method,
+		Service: inbound.Service,
+		Headers: inbound.Headers,
+		Payload: payload,
+	}
+}
+
+// CardActionToastJSON renders the toast variant of the SDK's
+// CardActionTriggerResponse — the JSON Lark's client expects inside the
+// card.action ACK's base64 Data field. toastType is "success" or "error";
+// content is plain text surfaced on the click. Marshalling a flat string
+// map cannot fail, so the error path is unreachable by construction.
+func CardActionToastJSON(toastType, content string) []byte {
+	b, err := json.Marshal(map[string]any{
+		"toast": map[string]any{
+			"type":    toastType,
+			"content": content,
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	return b
 }

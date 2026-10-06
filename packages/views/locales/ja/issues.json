@@ -551,7 +551,12 @@
       "unresolve_failed": "スレッドの解決を取り消せませんでした"
     },
     "anchor_unavailable": "引用されたコメントは利用できないか削除されています",
-    "anchor_aria": "{{author}} の {{when}} のコメントへ移動：{{excerpt}}"
+    "anchor_aria": "{{author}} の {{when}} のコメントへ移動：{{excerpt}}",
+    "quick_replies": {
+      "menu_label": "クイック返信",
+      "menu_empty": "ワークスペース管理者によってクイック返信はまだ設定されていません",
+      "insert_aria": "クイック返信「{{name}}」を挿入"
+    }
   },
   "reply": {
     "placeholder": "返信を残す..."
@@ -578,6 +583,7 @@
   "agent_live": {
     "is_working": "{{name}} が作業中",
     "is_queued": "{{name}} が待機中",
+    "past_runs": "実行履歴 · {{count}}件",
     "is_waiting_local_directory": "{{name}} がローカルディレクトリを待機中",
     "queued_elapsed_prefix": "{{elapsed}} 待機中",
     "fallback_name": "エージェント",
@@ -609,6 +615,8 @@
     "trigger_handoff_prefix": "引き継ぎ：",
     "included_comments_other": "{{count}} 件のコメントを含む",
     "status_queued": "待機中",
+    "status_queued_backpressure": "キュー内・ホストメモリ逼迫中",
+    "queued_backpressure_hint": "ホストがメモリバックプレッシャーを報告しており、回復まで新しい実行は待機します。",
     "status_dispatched": "開始中",
     "status_waiting_local_directory": "ローカルディレクトリ待機中",
     "status_running": "作業中",
@@ -917,6 +925,15 @@
       "pill_label": "コメントを追加、@ でメンション"
     },
     "comment": {
+      "menu_copy": "コピー",
+      "menu_copy_link": "リンクをコピー",
+      "menu_edit": "編集",
+      "menu_more_reactions": "その他のリアクション…",
+      "menu_react": "リアクション…",
+      "menu_reply": "返信",
+      "menu_resolve": "スレッドを解決",
+      "menu_select_text": "テキストを選択",
+      "menu_unresolve": "スレッドの解決を取り消す",
       "resolved_bar_other": "解決済み · メッセージ {{count}} 件（{{authors}}）",
       "resolved_bar_a11y_other": "解決済みスレッド、メッセージ {{count}} 件（{{authors}}）。タップして展開します。",
       "resolved_by": "解決者",
@@ -1063,6 +1080,7 @@
       "outcome_files_other": "{{count}} ファイル",
       "outcome_commands_other": "{{count}} コマンド",
       "result_label": "結果",
+      "group_calls_other": "{{count}} 回の呼び出し",
       "truncated": "…（切り捨て）",
       "empty": "この実行で記録されたイベントはありません。",
       "empty_queued": "この実行はまだ開始していません。"
@@ -1076,6 +1094,7 @@
     "agent_activity": {
       "runs_count": "実行 · {{count}}件",
       "badge_a11y": "エージェントが実行中 — 実行履歴を開く",
+      "badge_idle_a11y": "実行履歴を見る",
       "row_running_a11y": "エージェントがこのタスクを処理中",
       "row_queued_a11y": "エージェントのタスクが待機中"
     },
@@ -1156,6 +1175,8 @@
     "submitting": "送信中…",
     "cancel_card": "カードをキャンセル",
     "answer_failed": "回答の送信に失敗しました",
-    "cancel_failed": "カードのキャンセルに失敗しました"
+    "cancel_failed": "カードのキャンセルに失敗しました",
+    "batch_title": "一括回答",
+    "batch_submit": "すべて送信"
   }
 }

@@ -23,14 +23,57 @@ import (
 // default under ~/.multica, which survives daemon restarts by construction.
 const supervisedRunsDirEnv = "MULTICA_SUPERVISOR_RUNS_DIR"
 
-// supervisedProviders is the Phase 1 runtime whitelist: providers whose
-// worker protocol tolerates a mid-run daemon restart on reattach. The
-// bidirectional ACP family (hermes/kimi/kiro/mcode/zcode/qoder/dim/…, codex
-// app-server) owns an RPC session state machine that cannot re-enter a turn
-// without protocol-level state recovery — Phase 2. The code layer routes
-// every provider through agent's workerSession either way; this whitelist
-// only decides where the daemon injects Supervision.
-var supervisedProviders = map[string]bool{"claude": true}
+// supervisedProviders is the runtime whitelist whose workers tolerate a
+// mid-run daemon restart on reattach. Phase 1 carried claude only; RUYI-390
+// adds the ACP family plus zcode and deerflow: their bidirectional sessions
+// rebuild daemon-side state from the wire instead of replaying it — session
+// ids arrive on every session/update notification, responses to requests the
+// dead daemon sent are tolerated as orphans, and a reattached client skips
+// the handshake and prompt because the worker already consumed them.
+// "cloud" needs no entry: it is not a provider key but the cloud-mode
+// deployment of this same daemon, whose tasks still carry a concrete
+// provider and therefore inherit this decision.
+//
+// The code layer routes every provider through agent's workerSession either
+// way; this whitelist only decides where the daemon injects Supervision.
+//
+// Lifecycle note (updated 2026-10-05, RUYI-390): these entries rode Phase
+// 1's terminal-collection and reattach judgment while the stuck-running
+// root cause was open (provisional then). The lifecycle has since
+// converged: stdin EOF reaches the worker (RUYI-424), a finishing worker
+// gets a bounded natural-exit window with cancel as the fallback
+// (finishWorkerStdin), and the final→completed convergence is pinned end
+// to end by the ruyi349e2e lifecycle scenarios. New runtimes still enter
+// through this whitelist plus the supervisedTargets registration, under
+// RUYI-349's unified lifecycle plan.
+var supervisedProviders = map[string]bool{
+	"claude": true,
+	// ACP family + zcode + deerflow (RUYI-390 phase 2).
+	"hermes": true, "kimi": true, "kiro": true, "qoder": true,
+	"qoderclicn": true, "traecli": true, "grok": true, "qwenpaw": true,
+	"mcode": true, "dim": true, "zeroclaw": true, "deerflow": true,
+	"reasonix": true, "zcode": true,
+}
+
+// supervisedTargets enumerates the phase 2 additions for tests: each entry
+// must plan a supervised run, pinning its launch path.
+var supervisedTargets = []string{
+	"hermes", "kimi", "kiro", "qoder", "qoderclicn", "traecli", "grok",
+	"qwenpaw", "mcode", "dim", "zeroclaw", "deerflow", "reasonix", "zcode",
+}
+
+// supervisedProviderFamily resolves a task provider to the protocol family
+// the supervision decision applies to. Builtin runtime identities (e.g.
+// "omp") are not protocol families; they dispatch to one via
+// agent.BuiltinRuntimes, and the whitelist must follow that family so a
+// future ACP-family builtin runtime inherits supervision without a
+// whitelist edit. Non-runtime ids pass through unchanged.
+func supervisedProviderFamily(provider string) string {
+	if desc, ok := agent.BuiltinRuntimeByID(provider); ok {
+		return desc.ProtocolFamily
+	}
+	return provider
+}
 
 // setupSupervisor builds the daemon's WorkerSupervisor when this host can
 // run transient user units. Leaves d.supervisor nil (and logs why) when any
@@ -75,9 +118,9 @@ func (d *Daemon) setupSupervisor() {
 // StopOrphan kills provably unclaimed units, Quarantine records unknown
 // evidence. Resume runs are left untouched — their workers keep running and
 // the next claim of their task reenters them via the reattach probe in
-// planSupervisedRun. ConvergeExit runs are marked consumed; their task-level
-// fate stays with the server's own recovery paths, which already own the
-// in-flight row.
+// planSupervisedRun. ConvergeExit runs are converged for real (RUYI-464):
+// their proven exit and drained output are reported to the server as the
+// task's terminal state, then the run is marked consumed.
 //
 // The server in-flight set is best effort: on a listing failure every active
 // unit is treated as in-flight (Resume), because the one irreversible action
@@ -128,16 +171,41 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 			d.logger.Info("supervisor reconcile: run resumed for reattach on next claim",
 				"run_id", res.RunID, "task_id", res.TaskID)
 		case supervisor.DecisionConvergeExit:
-			// Mark consumed so later passes skip it; the run's exit evidence
-			// stays in the manifest for the audit trail.
-			if err := d.supervisor.Manager().MarkConverged(res.RunID); err != nil {
-				d.logger.Warn("supervisor reconcile: mark converged failed", "run_id", res.RunID, "error", err)
+			// RUYI-464: report the finished run's proven exit and drained
+			// output to the server as the task's terminal state (previously
+			// local-only), then mark consumed so later passes skip it. A
+			// none outcome (consumed by a racing pass) falls back to the
+			// plain local mark; a superseded run stays on disk for the audit
+			// trail — its fate was decided by the newer generation.
+			out := d.convergeFinishedSupervisedRun(ctx, res.TaskID)
+			if out == convergeNone {
+				if err := d.supervisor.Manager().MarkConverged(res.RunID); err != nil {
+					d.logger.Warn("supervisor reconcile: mark converged failed", "run_id", res.RunID, "error", err)
+				}
 			}
-			d.logger.Info("supervisor reconcile: finished run converged", "run_id", res.RunID, "task_id", res.TaskID)
+			d.logger.Info("supervisor reconcile: finished run converge pass done",
+				"run_id", res.RunID, "task_id", res.TaskID, "outcome", out.String())
 		default:
 			d.logger.Info("supervisor reconcile", "run_id", res.RunID, "task_id", res.TaskID,
 				"decision", res.Decision.String(), "reason", res.Reason)
 		}
+	}
+
+	// After the pass settles the classifications, reclaim spent evidence:
+	// runs consumed past the retention window. Runs converged by THIS pass
+	// are inside the window and survive until a later pass.
+	gc := &supervisor.RetentionGC{
+		Mgr:   d.supervisor.Manager(),
+		Units: d.supervisor.Systemd(),
+		Log:   d.logger,
+	}
+	summary, err := gc.Run(ctx)
+	if err != nil {
+		d.logger.Warn("supervisor retention GC failed", "error", err)
+		return
+	}
+	if summary.Removed > 0 {
+		d.logger.Info("supervisor retention GC", "removed", summary.Removed, "run_ids", summary.RemovedRunIDs)
 	}
 }
 
@@ -160,12 +228,38 @@ func sanitizeRunID(taskID string) string {
 	return s
 }
 
+// supervisedUnitAlive cross-checks the systemd unit recorded in a run
+// manifest against the user manager itself. Manifests are written once at
+// launch and only gain an exit record on a proven exit, so a host reboot or
+// user-manager restart strands them claiming a worker whose unit no longer
+// exists — the reconcile matrix's Lost corner. An inactive unit proves the
+// recorded worker is gone; a nil systemd (supervision disabled, test
+// supervisors) or a probe error fails open and keeps the
+// manifest-trusting answer, so no reattach-or-abandon decision ever rides on
+// a probe failure.
+func (d *Daemon) supervisedUnitAlive(man *supervisor.Manifest) bool {
+	if d.supervisor == nil || d.supervisor.Systemd() == nil {
+		return true
+	}
+	active, err := d.supervisor.Systemd().UnitActive(context.Background(), man.Unit)
+	if err != nil {
+		d.logger.Warn("supervised liveness: unit probe failed; assuming alive",
+			"run_id", man.RunID, "unit", man.Unit, "error", err)
+		return true
+	}
+	return active
+}
+
 // planSupervisedRun decides how (and whether) one backend Execute is
 // supervised. It is the claim-side reattach probe: a manifest that exists
 // without an exit record means a previous daemon launched this task's worker
 // and died before consuming it — the Execute must REENTER that worker (no
 // prompt rewrite, logs resume from the persisted offset) instead of launching
-// a second one on top of it.
+// a second one on top of it. The reattach trusts the manifest only as far as
+// systemd corroborates it: a manifest whose unit the user manager reports
+// gone is a stranded record (host reboot, manager restart), not a live
+// worker, and the plan steps to a fresh generation instead of reattaching a
+// corpse.
 //
 // Runs are one Execute each: a task's segmented-continuation retry is a new
 // worker and takes the next attempt slot. Attempt generations (`-2`, `-3`)
@@ -177,7 +271,7 @@ func sanitizeRunID(taskID string) string {
 // from (hex digits and dashes only); a task id outside that grammar after
 // sanitizing falls back to the legacy path rather than guessing.
 func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.Supervision {
-	if d.supervisor == nil || !supervisedProviders[provider] || attempt < 1 {
+	if d.supervisor == nil || attempt < 1 || !supervisedProviders[supervisedProviderFamily(provider)] {
 		return nil
 	}
 	base := fmt.Sprintf("%s-%d", sanitizeRunID(taskID), attempt)
@@ -191,9 +285,17 @@ func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.
 		if err != nil || man == nil {
 			break // no manifest: fresh launch under this id
 		}
-		if man.Exit == nil {
+		if man.Exit == nil && d.supervisedUnitAlive(man) {
 			reattach = true // live worker from a previous daemon
 			break
+		}
+		if man.Exit == nil {
+			// The manifest claims a running worker but its unit is gone:
+			// the worker cannot come back, so step past the stale record to
+			// a fresh generation instead of reattaching a corpse. The
+			// manifest stays on disk as audit trail.
+			d.logger.Info("supervised run plan: manifest claims running but unit is gone; stepping to a fresh generation",
+				"run_id", runID, "task_id", taskID, "unit", man.Unit)
 		}
 		if gen > 64 {
 			// Absurd attempt count: fall back to legacy rather than loop.
@@ -219,7 +321,11 @@ func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.
 // taskID records a worker that launched and never exited. This is the
 // daemon-side liveness signal that survives daemon death — unlike the
 // env-root lock, which the daemon process holds and therefore releases on
-// exactly the crash this package exists to survive.
+// exactly the crash this package exists to survive. The manifest is only
+// corroborated as far as systemd agrees: a running-shaped manifest whose
+// unit the user manager reports gone is a stranded record (host reboot,
+// manager restart), not a live worker, and must not veto the in-flight
+// recovery forever.
 func (d *Daemon) supervisedWorkerAlive(taskID string) bool {
 	if d.supervisor == nil {
 		return false
@@ -233,7 +339,7 @@ func (d *Daemon) supervisedWorkerAlive(taskID string) bool {
 		if err != nil || man == nil || man.TaskID != taskID {
 			continue
 		}
-		if man.Exit == nil && man.State == supervisor.StateRunning {
+		if man.Exit == nil && man.State == supervisor.StateRunning && d.supervisedUnitAlive(man) {
 			return true
 		}
 	}

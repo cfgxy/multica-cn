@@ -32,6 +32,11 @@ import type { Attachment, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { ClearablePillButton } from "../../common/pill-button";
 import { useT } from "../../i18n";
+import {
+  useVoiceSession,
+  VoiceButton,
+  VoiceOverlay,
+} from "../../voice";
 
 const logger = createLogger("chat.ui");
 const EMPTY_UPLOADS: DraftUpload[] = [];
@@ -121,6 +126,12 @@ interface ChatInputProps {
   agentRuntimeRequired?: boolean;
   /** Name of the currently selected agent, used in the placeholder. */
   agentName?: string;
+  /**
+   * UUID of the currently bound agent — the target of the voice entry
+   * (RUYI-449). Omitted on surfaces without a real agent binding: the
+   * composer then always shows the send button and never offers voice.
+   */
+  agentId?: string | null;
   /** Rendered at the bottom-left of the input bar — typically the agent picker. */
   leftAdornment?: ReactNode;
   /** Chat @ suggestions: current/recent issue/project entries. */
@@ -165,6 +176,7 @@ export function ChatInput({
   agentAccessRevoked,
   agentRuntimeRequired,
   agentName,
+  agentId,
   leftAdornment,
   contextItems,
   projects = [],
@@ -586,6 +598,22 @@ export function ChatInput({
     },
   });
 
+  // Voice entry (RUYI-449): while the composer holds nothing to send, the
+  // send-button slot becomes a mic. Any typed content (or a run to stop, an
+  // in-flight upload, a locked composer) swaps it back to the send arrow, so
+  // voice never displaces text — ChatGPT-style three-state input. The session
+  // targets the bound agent through the shared 425 chain; failures surface in
+  // the overlay below and never touch drafts or `submit`.
+  const voice = useVoiceSession({ agentId: agentId ?? null });
+  const voiceEligible =
+    !!agentId &&
+    hasNothingToSend &&
+    !isRunning &&
+    !submitting &&
+    !gate.uploading &&
+    !disabled &&
+    !noAgent;
+
   const placeholder = agentAccessRevoked
     ? t(($) => $.input.placeholder_access_revoked)
     : noAgent
@@ -740,6 +768,9 @@ export function ChatInput({
           </div>
         )}
         <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
+          {voiceEligible ? (
+            <VoiceButton onStart={voice.start} />
+          ) : (
           <SubmitButton
             onClick={submit}
             disabled={hasNothingToSend || submitting || !!disabled || !!noAgent}
@@ -771,8 +802,17 @@ export function ChatInput({
             stopTooltip={t(($) => $.input.stop_tooltip)}
             stopAriaLabel={t(($) => $.input.stop_tooltip)}
           />
+          )}
         </div>
         {uploadEnabled && isDragOver && <FileDropOverlay />}
+        <VoiceOverlay
+          phase={voice.phase}
+          failure={voice.failure}
+          liveUserText={voice.liveUserText}
+          liveAssistantText={voice.liveAssistantText}
+          onEnd={voice.end}
+          onDismiss={voice.dismiss}
+        />
       </div>
     </div>
   );

@@ -114,7 +114,8 @@
     "backpressure_hint": "ホストメモリのバックプレッシャー（{{reason}}）：空きメモリ {{mem}}%、スワップ使用 {{swap}}%。ホストが回復するまで新しいタスクの取得は一時停止中（これまでに {{count}} 回の取得を延期）。",
     "bp_reason_mem": "空きメモリ不足",
     "bp_reason_swap": "スワップ圧迫",
-    "bp_reason_mem_swap": "メモリ不足 + スワップ圧迫",
+    "bp_reason_psi": "メモリストール圧迫",
+    "backpressure_psi_hint": "メモリストール率（PSI）：{{psi}}%。",
     "fact_owner": "所有者",
     "fact_device": "デバイス",
     "fact_runtime": "ランタイム",
@@ -454,5 +455,72 @@
     "table_cache_r": "キャッシュ R",
     "table_cache_w": "キャッシュ W",
     "no_data": "まだ使用量データがありません"
+  },
+  "voice_instance": {
+    "title": "音声インスタンス設定",
+    "name_label": "名前",
+    "type_label": "タイプ",
+    "key_label": "API Key",
+    "key_placeholder": "新しいキーを入力して更新",
+    "key_update": "キーを更新",
+    "key_clear": "削除",
+    "key_hint": "キーは暗号化して保存され、再度表示されることはありません。保存時に軽量な接続確認を行います。",
+    "key_saved": "キーを保存しました — 接続確認に成功",
+    "key_cleared": "キーを削除しました",
+    "key_update_failed": "キーの更新に失敗しました",
+    "probe_invalid": "キーは保存されましたが、接続確認に失敗しました（HTTP {{status}}）",
+    "model_label": "モデル",
+    "model_placeholder": "gemini-3.8-live",
+    "advanced_label": "詳細パラメータ（JSON）",
+    "advanced_placeholder": "{ \"temperature\": 0.7 }",
+    "advanced_invalid": "詳細パラメータは JSON オブジェクトである必要があります",
+    "advanced_saved": "詳細パラメータを保存しました",
+    "registration_label": "登録方法",
+    "registration_manual": "手動登録",
+    "registration_daemon": "デーモン登録",
+    "enabled_label": "有効",
+    "enabled_desc": "無効化されたインスタンスは設定を保持しますが、新しいエージェントのバインド対象外になります",
+    "visibility_label": "公開範囲",
+    "visibility_workspace": "ワークスペース全体（固定）",
+    "save": "保存",
+    "save_failed": "保存に失敗しました",
+    "name_saved": "名前を更新しました",
+    "model_saved": "モデルを更新しました",
+    "badge_configured": "設定済み ✓",
+    "badge_invalid": "キー無効",
+    "badge_not_configured": "未設定"
+  },
+  "voice_instance_create": {
+    "action": "音声インスタンスを追加",
+    "title": "音声インスタンスを登録",
+    "description": "このワークスペースに Gemini Live インスタンスを手動で登録します。名前は重複できます。API キーは暗号化して保存され、再表示されません。",
+    "name_placeholder": "例：Gemini Live（個人）",
+    "no_profiles": "このワークスペースにはまだ音声プロファイルがありません。",
+    "create_default_profile": "Gemini Live プロファイルを作成",
+    "key_placeholder": "Gemini API キーを貼り付け",
+    "submit": "登録",
+    "creating": "登録中…",
+    "created": "音声インスタンスを登録しました",
+    "created_probe_invalid": "登録されましたが、接続確認に失敗しました。API キーを確認してください",
+    "create_failed": "音声インスタンスの登録に失敗しました",
+    "key_save_failed": "登録されましたが、API キーの保存に失敗しました。インスタンス設定から追加してください"
+  },
+  "mobile": {
+    "list_loading": "読み込み中…",
+    "empty": {
+      "title": "音声インスタンスはまだありません"
+    },
+    "detail": {
+      "not_found": "このインスタンスは存在しません。"
+    },
+    "status": {
+      "online": "オンライン",
+      "offline": "オフライン",
+      "disabled": "無効"
+    },
+    "advanced": {
+      "expand": "表示",
+      "collapse": "閉じる"
+    }
   }
 }

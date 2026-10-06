@@ -23,6 +23,7 @@ import type {
   DiffLineView,
   RunCallStepView,
   RunDetailBody,
+  RunGroupStepView,
   RunStepView,
 } from "@/lib/run-detail";
 import { Text } from "@/components/ui/text";
@@ -51,6 +52,8 @@ function StepRow({ view }: { view: RunStepView }) {
   switch (view.kind) {
     case "call":
       return <CallRow view={view} />;
+    case "group":
+      return <GroupRow view={view} />;
     case "thinking":
       return <MessageRow view={view} italic />;
     case "error":
@@ -60,7 +63,7 @@ function StepRow({ view }: { view: RunStepView }) {
   }
 }
 
-/** Row header shared by every kind: icon + label + summary + clock. */
+/** Row header shared by every kind: icon + label + summary + meta + clock. */
 function RowHeader({
   icon,
   iconColor,
@@ -68,7 +71,9 @@ function RowHeader({
   labelMono,
   summary,
   summaryMono,
+  meta,
   clockLabel,
+  durationLabel,
   error,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
@@ -77,7 +82,11 @@ function RowHeader({
   labelMono?: boolean;
   summary: string;
   summaryMono?: boolean;
+  /** Small trailing tag between the summary and the clock (group call count). */
+  meta?: string;
   clockLabel?: string;
+  /** Rightmost tail tag (group whole-run duration, mirroring PC's DurationCell). */
+  durationLabel?: string;
   error?: boolean;
 }) {
   return (
@@ -102,9 +111,19 @@ function RowHeader({
       ) : (
         <View className="flex-1" />
       )}
+      {meta ? (
+        <Text className="ml-1 shrink-0 text-[10px] text-muted-foreground/70">
+          {meta}
+        </Text>
+      ) : null}
       {clockLabel ? (
         <Text className="ml-1 text-[10px] tabular-nums text-muted-foreground/70">
           {clockLabel}
+        </Text>
+      ) : null}
+      {durationLabel ? (
+        <Text className="ml-1 text-[10px] tabular-nums text-muted-foreground/70">
+          {durationLabel}
         </Text>
       ) : null}
     </>
@@ -161,6 +180,41 @@ function CallRow({ view }: { view: RunStepView & RunCallStepView }) {
               {result.truncated ? <TruncatedNote /> : null}
             </View>
           ) : null}
+        </View>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/**
+ * Folded run of consecutive same-tool calls (≥3, shell excluded) — mobile
+ * counterpart of web's GroupRow: one line naming the first thing it touched,
+ * expandable to the member call rows.
+ */
+function GroupRow({ view }: { view: RunGroupStepView }) {
+  const { t } = useT("issues");
+  return (
+    <Collapsible>
+      <CollapsibleTrigger asChild>
+        <View className="py-0.5 flex-row items-start gap-1.5 active:opacity-70">
+          <RowHeader
+            icon="layers-outline"
+            iconColor={MUTED_ICON}
+            label={view.label}
+            labelMono
+            summary={view.summary}
+            summaryMono
+            meta={t("mobile.run_detail.group_calls", { count: view.steps.length })}
+            clockLabel={view.clockLabel}
+            durationLabel={view.durationLabel}
+          />
+        </View>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <View className="ml-4 mt-1 gap-0.5">
+          {view.steps.map((step) => (
+            <CallRow key={step.key} view={step} />
+          ))}
         </View>
       </CollapsibleContent>
     </Collapsible>

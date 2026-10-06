@@ -9,7 +9,10 @@ import {
   Lock,
   Monitor,
 } from "lucide-react";
-import { isRuntimeUsableForUser } from "@multica/core/runtimes";
+import {
+  isRuntimeUsableForUser,
+  runtimeOfferableForBinding,
+} from "@multica/core/runtimes";
 import type { AgentRuntime, MemberWithUser } from "@multica/core/types";
 import { ActorAvatar } from "../../../common/actor-avatar";
 import {
@@ -76,22 +79,32 @@ export function RuntimePicker({
   const isDisabled = (r: AgentRuntime): boolean =>
     !isRuntimeUsableForUser(r, currentUserId);
 
-  // Machine grouping over the unfiltered list — resolves the selected
-  // runtime's machine for the trigger label regardless of the Mine/All
-  // scope, and is reused as-is for the list whenever the scope is "all".
+  // §4.5: disabled instances offer no new bindings, so they drop out of the
+  // option domain — machine lists and the open-time landing below. The
+  // current binding (value) always survives, keepRuntimeId semantics shared
+  // with agentSlotChoices via runtimeOfferableForBinding, so the form never
+  // renders a stored binding as "none".
+  const offerable = useMemo(
+    () => runtimes.filter((r) => runtimeOfferableForBinding(r, value)),
+    [runtimes, value],
+  );
+
+  // Machine grouping over the offerable list — resolves the selected
+  // runtime's machine for the trigger label (kept even when disabled) and is
+  // reused as-is for the list whenever the scope is "all".
   const allMachines = useMemo(
-    () => buildRuntimeMachines(runtimes, { now: Date.now(), currentUserId }),
-    [runtimes, currentUserId],
+    () => buildRuntimeMachines(offerable, { now: Date.now(), currentUserId }),
+    [offerable, currentUserId],
   );
   const machines = useMemo(
     () =>
       filter === "mine" && currentUserId
         ? buildRuntimeMachines(
-            runtimes.filter((r) => r.owner_id === currentUserId),
+            offerable.filter((r) => r.owner_id === currentUserId),
             { now: Date.now(), currentUserId },
           )
         : allMachines,
-    [runtimes, filter, currentUserId, allMachines],
+    [offerable, filter, currentUserId, allMachines],
   );
 
   const machineOf = (machineList: RuntimeMachine[], runtimeId: string) =>
@@ -206,7 +219,7 @@ export function RuntimePicker({
       const visible =
         nextFilter === "mine" && currentUserId
           ? buildRuntimeMachines(
-              runtimes.filter((r) => r.owner_id === currentUserId),
+              offerable.filter((r) => r.owner_id === currentUserId),
               { now: Date.now(), currentUserId },
             )
           : allMachines;

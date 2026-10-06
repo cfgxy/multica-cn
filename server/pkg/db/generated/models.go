@@ -68,7 +68,10 @@ type Agent struct {
 	SessionMaxContextTokens int64       `json:"session_max_context_tokens"`
 	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
-	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	MarketplacePromptState []byte      `json:"marketplace_prompt_state"`
+	ResourceWeight         int32       `json:"resource_weight"`
+	Revision               int64       `json:"revision"`
+	VoiceRuntimeID         pgtype.UUID `json:"voice_runtime_id"`
 }
 
 type AgentBuilderDraft struct {
@@ -76,6 +79,21 @@ type AgentBuilderDraft struct {
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
 	Draft         []byte             `json:"draft"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type AgentFactEvent struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	LiveSessionID pgtype.UUID        `json:"live_session_id"`
+	EventID       string             `json:"event_id"`
+	Seq           int64              `json:"seq"`
+	SourceRuntime string             `json:"source_runtime"`
+	Kind          string             `json:"kind"`
+	Payload       []byte             `json:"payload"`
+	EvidenceRef   string             `json:"evidence_ref"`
+	RecordedAt    pgtype.Timestamptz `json:"recorded_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 // Allow-list of who may invoke a public_to agent (MUL-3963). One row per (agent, target_type, target); targets stack and canInvokeAgent OR-matches. workspace rows store the agent workspace_id in target_id; member rows store the user id; team rows are reserved and inert in V1. Rows only matter when agent.permission_mode = public_to. No DB foreign keys: agent_id / created_by / member target_id relationships are maintained in the application layer (see migration comment).
@@ -96,23 +114,25 @@ type AgentMcpServer struct {
 }
 
 type AgentRuntime struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	DaemonID       pgtype.Text        `json:"daemon_id"`
-	Name           string             `json:"name"`
-	RuntimeMode    string             `json:"runtime_mode"`
-	Provider       string             `json:"provider"`
-	Status         string             `json:"status"`
-	DeviceInfo     string             `json:"device_info"`
-	Metadata       []byte             `json:"metadata"`
-	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
-	OwnerID        pgtype.UUID        `json:"owner_id"`
-	LegacyDaemonID pgtype.Text        `json:"legacy_daemon_id"`
-	Visibility     string             `json:"visibility"`
-	ProfileID      pgtype.UUID        `json:"profile_id"`
-	CustomName     pgtype.Text        `json:"custom_name"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	DaemonID           pgtype.Text        `json:"daemon_id"`
+	Name               string             `json:"name"`
+	RuntimeMode        string             `json:"runtime_mode"`
+	Provider           string             `json:"provider"`
+	Status             string             `json:"status"`
+	DeviceInfo         string             `json:"device_info"`
+	Metadata           []byte             `json:"metadata"`
+	LastSeenAt         pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	OwnerID            pgtype.UUID        `json:"owner_id"`
+	LegacyDaemonID     pgtype.Text        `json:"legacy_daemon_id"`
+	Visibility         string             `json:"visibility"`
+	ProfileID          pgtype.UUID        `json:"profile_id"`
+	CustomName         pgtype.Text        `json:"custom_name"`
+	RegistrationSource string             `json:"registration_source"`
+	CredentialRef      pgtype.Text        `json:"credential_ref"`
 }
 
 type AgentSkill struct {
@@ -192,6 +212,9 @@ type AgentTaskQueue struct {
 	PromptVersions          []byte             `json:"prompt_versions"`
 	CancelRequestedByUserID pgtype.UUID        `json:"cancel_requested_by_user_id"`
 	CancelRequestedAt       pgtype.Timestamptz `json:"cancel_requested_at"`
+	CancelReason            pgtype.Text        `json:"cancel_reason"`
+	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
+	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 }
 
 type AgentToLabel struct {
@@ -229,6 +252,24 @@ type Attachment struct {
 	ChatMessageID   pgtype.UUID        `json:"chat_message_id"`
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
+}
+
+type AuditEvent struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Domain      string             `json:"domain"`
+	EventType   string             `json:"event_type"`
+	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
+	ActorType   string             `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	TriggerKind pgtype.Text        `json:"trigger_kind"`
+	TriggerRef  pgtype.Text        `json:"trigger_ref"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	Reason      pgtype.Text        `json:"reason"`
+	Details     []byte             `json:"details"`
 }
 
 type Autopilot struct {
@@ -714,6 +755,7 @@ type ExecutionProfile struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	LastActivatedAt pgtype.Timestamptz `json:"last_activated_at"`
+	Revision        int64              `json:"revision"`
 }
 
 type ExecutionProfileEntry struct {
@@ -1178,6 +1220,24 @@ type LarkUserBinding struct {
 	BoundAt        pgtype.Timestamptz `json:"bound_at"`
 }
 
+type LiveSession struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	RuntimeInstanceID pgtype.UUID        `json:"runtime_instance_id"`
+	UserID            pgtype.UUID        `json:"user_id"`
+	Status            string             `json:"status"`
+	Model             string             `json:"model"`
+	ContextSnapshot   []byte             `json:"context_snapshot"`
+	SessionHandle     string             `json:"session_handle"`
+	Transcript        []byte             `json:"transcript"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	EndedAt           pgtype.Timestamptz `json:"ended_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Summary           string             `json:"summary"`
+}
+
 // One workspace-published skill or MCP marketplace listing (RUYI-99). Merged with the embedded static catalog at read time. A withdrawn row is a tombstone that keeps its (kind, name_key) reserved; only source_workspace_id may republish it. source_workspace_id is authority only and must not be returned by any API.
 type MarketplaceListing struct {
 	ID                   pgtype.UUID `json:"id"`
@@ -1267,6 +1327,24 @@ type OauthClient struct {
 	CreatedBy        pgtype.UUID        `json:"created_by"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	// Soft-disable timestamp. NULL = enabled. A disabled client cannot mint new tokens and its existing tokens fail the grant gate within the cache window.
+	DisabledAt pgtype.Timestamptz `json:"disabled_at"`
+	// User who set disabled_at. No DB foreign key, resolved in application code.
+	DisabledBy pgtype.UUID `json:"disabled_by"`
+	// When the current client_secret_hash was written. NULL = original create-time secret. Shown as "rotated at"; never the hash itself.
+	SecretUpdatedAt pgtype.Timestamptz `json:"secret_updated_at"`
+}
+
+// One row per (client, user) OAuth authorization (RUYI-420). Access tokens carry the grant id; middleware.Auth checks revoked_at/client state after signature verification, making revocation effective within the gate cache TTL. scope stores the consented scope string; the legacy value "mcp" means full MCP access.
+type OauthGrant struct {
+	ID        pgtype.UUID        `json:"id"`
+	ClientID  string             `json:"client_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	Scope     string             `json:"scope"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	// Refreshed at most once per gate-cache TTL window per grant, mirroring the PAT last_used_at throttle.
+	LastUsedAt pgtype.Timestamptz `json:"last_used_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
 }
 
 type PersonalAccessToken struct {
@@ -1618,6 +1696,18 @@ type QuickAction struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Workspace-level quick reply templates for the issue comment composer (RUYI-435). Managed by workspace owner/admin via the Web settings tab or the MCP quick-reply tools; read by every member. Selecting one fills the composer without sending. Seeded per workspace by server/internal/quickreply.Ensure.
+type QuickReply struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Name        string      `json:"name"`
+	Content     string      `json:"content"`
+	// Display order, ascending. Fractional values let a new entry slot between neighbours without rewriting them.
+	Position  float64            `json:"position"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 // Daily retrospective config per workspace (RUYI-305 E3): enabled flag, done/in_review scan scope, window days. Owner-writable.
 type RetrospectiveConfig struct {
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -1655,6 +1745,14 @@ type RetrospectiveRun struct {
 	FinishedAt        pgtype.Timestamptz `json:"finished_at"`
 }
 
+type RuntimeCredential struct {
+	RuntimeInstanceID pgtype.UUID        `json:"runtime_instance_id"`
+	CredentialKey     string             `json:"credential_key"`
+	SecretEncrypted   []byte             `json:"secret_encrypted"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RuntimeProfile struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1668,6 +1766,7 @@ type RuntimeProfile struct {
 	Enabled        bool               `json:"enabled"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+	Capabilities   []byte             `json:"capabilities"`
 }
 
 type RuntimeSkillDiscovery struct {

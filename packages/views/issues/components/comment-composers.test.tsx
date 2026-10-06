@@ -1,11 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import type { Attachment } from "@multica/core/types";
 import { useCommentComposerStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import { renderWithI18n } from "../../test/i18n";
 import { CommentInput } from "./comment-input";
 import { ReplyInput } from "./reply-input";
@@ -24,6 +25,9 @@ type QuickActionMenuProp = {
 const apiUploadFile = vi.hoisted(() => vi.fn());
 const apiListWorkspaces = vi.hoisted(() => vi.fn());
 const apiListQuickActions = vi.hoisted(() => vi.fn());
+const apiListQuickReplies = vi.hoisted(() =>
+  vi.fn().mockResolvedValue({ quick_replies: [], total: 0 }),
+);
 const apiListSkills = vi.hoisted(() => vi.fn().mockResolvedValue([]));
 const insertSlashSpy = vi.hoisted(() => vi.fn().mockReturnValue(true));
 const apiRenderQuickAction = vi.hoisted(() => vi.fn());
@@ -61,6 +65,7 @@ vi.mock("@multica/core/api", () => ({
     uploadFile: apiUploadFile,
     listWorkspaces: apiListWorkspaces,
     listQuickActions: apiListQuickActions,
+    listQuickReplies: apiListQuickReplies,
     listSkills: apiListSkills,
     renderQuickAction: apiRenderQuickAction,
   },
@@ -267,6 +272,7 @@ beforeEach(() => {
   apiUploadFile.mockReset();
   apiListWorkspaces.mockReset();
   apiListQuickActions.mockReset();
+  apiListQuickReplies.mockResolvedValue({ quick_replies: [], total: 0 });
   apiListSkills.mockResolvedValue([]);
   insertSlashSpy.mockClear();
   apiRenderQuickAction.mockReset();
@@ -286,6 +292,13 @@ beforeEach(() => {
   editorQuickActionMenu.last = undefined;
   focusCalls.focused = 0;
   focusCalls.blurred = 0;
+});
+
+// `setCurrentWorkspace` mutates workspace-storage module state; the default is
+// "no current workspace", which keeps workspace-scoped queries disabled in the
+// tests that never opt in.
+afterEach(() => {
+  setCurrentWorkspace(null, null);
 });
 
 // ---------------------------------------------------------------------------
@@ -372,6 +385,39 @@ describe("comment composers", () => {
     await waitFor(() => expect(insertSlashSpy).toHaveBeenCalledOnce());
     expect(editorQuickActionMenu.last?.getAssignedAgentId?.()).toBe("agent-1");
   });
+  it("quick-reply pick fills the draft and never submits (RUYI-435)", async () => {
+    // The quick-replies query gates on `getCurrentWsId()`; without a current
+    // workspace the menu opens into its empty state and no items exist.
+    setCurrentWorkspace("acme", "ws-1");
+    apiListQuickReplies.mockResolvedValue({
+      total: 2,
+      quick_replies: [
+        { id: "qr-1", workspace_id: "ws-1", name: "Resolve PR conflicts", content: "I'll take the PR conflicts.", position: 0, created_at: "", updated_at: "" },
+        { id: "qr-2", workspace_id: "ws-1", name: "Add tests", content: "I'll add the tests.", position: 1, created_at: "", updated_at: "" },
+      ],
+    });
+    const onSubmit = vi.fn().mockResolvedValue(true);
+    renderCommentInput(onSubmit);
+    activateComposer("comment-composer-shell");
+    await screen.findByTestId("editor");
+
+    fireEvent.click(screen.getByRole("button", { name: "Quick Replies" }));
+    const item = await screen.findByRole("menuitem", { name: /Add tests/ });
+    fireEvent.click(item);
+
+    // The template BODY lands in the draft through the editor's normal insert
+    // path; the submit handler stays untouched — insertion never auto-sends.
+    await waitFor(() =>
+      expect(insertMarkdownSpy).toHaveBeenCalledWith("I'll add the tests."),
+    );
+    await waitFor(() =>
+      expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toContain(
+        "I'll add the tests.",
+      ),
+    );
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("renders the main comment composer without a manual expand control", () => {
     const { container } = renderCommentInput();
 
@@ -381,8 +427,9 @@ describe("comment composers", () => {
     activateComposer("comment-composer-shell");
     expect(screen.getByPlaceholderText("Leave a comment...")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Quick Replies" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Attach file" })).toBeInTheDocument();
-    expect(container.querySelectorAll("button")).toHaveLength(3);
+    expect(container.querySelectorAll("button")).toHaveLength(4);
 
     const shell = screen.getByTestId("drop-zone");
     expect(shell.className).not.toMatch(/max-h-/);

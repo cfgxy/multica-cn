@@ -6,6 +6,8 @@ import { useAuthStore } from "@multica/core/auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { AdminUsersPage } from "./admin-users-page";
 import { AdminWorkspacesPage } from "./admin-workspaces-page";
+import { AdminMCPServerPage } from "./admin-mcp-server-page";
+import { AdminOAuthClientsPage } from "./admin-oauth-clients-page";
 
 /**
  * Top-level /admin shell shared by web and desktop. Guarded here AND by
@@ -15,7 +17,7 @@ import { AdminWorkspacesPage } from "./admin-workspaces-page";
 export function AdminArea() {
   const { t } = useTranslation("admin");
   const user = useAuthStore((s) => s.user);
-  const [tab, setTab] = useState<"users" | "workspaces">("users");
+  const [tab, setTab] = useState<"users" | "workspaces" | "mcp" | "oauth">("users");
 
   if (user === null) return null;
   // Explicit boolean check per API-compat rules.
@@ -36,19 +38,27 @@ export function AdminArea() {
       <Tabs
         value={tab}
         onValueChange={(v) => {
-          if (v === "users" || v === "workspaces") setTab(v);
+          if (v === "users" || v === "workspaces" || v === "mcp" || v === "oauth") setTab(v);
         }}
         className="flex min-h-0 flex-1 flex-col"
       >
         <TabsList className="mx-4 mt-3 w-fit">
           <TabsTrigger value="users">{t(($) => $.tabs.users)}</TabsTrigger>
           <TabsTrigger value="workspaces">{t(($) => $.tabs.workspaces)}</TabsTrigger>
+          <TabsTrigger value="mcp">{t(($) => $.tabs.mcp)}</TabsTrigger>
+          <TabsTrigger value="oauth">{t(($) => $.tabs.oauth)}</TabsTrigger>
         </TabsList>
         <TabsContent value="users" className="min-h-0 flex-1 overflow-hidden">
           <AdminUsersPage />
         </TabsContent>
         <TabsContent value="workspaces" className="min-h-0 flex-1 overflow-hidden">
           <AdminWorkspacesPage />
+        </TabsContent>
+        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto">
+          <AdminMCPServerPage />
+        </TabsContent>
+        <TabsContent value="oauth" className="min-h-0 flex-1 overflow-y-auto">
+          <AdminOAuthClientsPage />
         </TabsContent>
       </Tabs>
     </div>

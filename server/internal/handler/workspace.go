@@ -17,8 +17,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/quickreply"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -290,6 +292,24 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// be created before its status can be resolved. (MUL-6243)
 	if err := issuestatus.Ensure(r.Context(), qtx, ws.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to seed issue statuses: "+err.Error())
+		return
+	}
+
+	// RUYI-355 P2-3: anchor the ops trail at birth. ops.server_started only
+	// reaches workspaces that existed at boot, so without this row a
+	// workspace created mid-flight has no ops-domain audit coverage until the
+	// next restart. Same transaction: the anchor commits with the workspace
+	// or not at all.
+	if err := service.AppendAuditEvents(r.Context(), qtx,
+		service.OpsWorkspaceCreatedEvent(ws.ID, parseUUID(userID), ws.Name, ws.Slug)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create workspace: "+err.Error())
+		return
+	}
+
+	// Seed the 5 default quick replies in the same transaction (RUYI-435), so
+	// a new workspace's composer menu is never empty on first open.
+	if err := quickreply.Ensure(r.Context(), qtx, ws.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to seed quick replies: "+err.Error())
 		return
 	}
 
@@ -1264,6 +1284,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run: func() error {
 				return qtx.DeleteIssueStatusEntriesForWorkspace(ctx, requester.WorkspaceID)
 			},
+		},
+		{
+			// quick_reply likewise carries no foreign key (RUYI-435); sweep it
+			// alongside the other per-workspace catalogs.
+			name: "delete quick replies",
+			run:  func() error { return qtx.DeleteQuickRepliesForWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete autopilot children",

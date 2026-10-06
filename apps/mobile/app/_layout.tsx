@@ -19,6 +19,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { shouldHandleUnauthorized } from "@/lib/auth-route";
 import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
 import { NotificationResponseNavigator } from "@/components/notifications/notification-response-navigator";
+import { ShareIntentNavigator } from "@/components/share/share-intent-navigator";
 import { NAV_THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { initI18n } from "@/lib/i18n";
@@ -112,6 +113,9 @@ export default function RootLayout() {
                     <Stack.Screen name="index" />
                     <Stack.Screen name="(auth)" />
                     <Stack.Screen name="(app)" />
+                    {/* RUYI-463: Android 分享落地页 —— 只由 ShareIntentNavigator
+                        在鉴权与导航树就绪后 push，不进常规导航路径。 */}
+                    <Stack.Screen name="share-target" />
                     {/* 登录前后都可达 —— 未登录用户连自建后端是核心场景。 */}
                     <Stack.Screen name="server-settings" />
                     {/* app/servers/ 无 _layout.tsx，路由被扁平化为 "servers/select"；
@@ -121,6 +125,8 @@ export default function RootLayout() {
                   </Stack>
                   {/* RUYI-37: 系统通知点击 → 对应 Issue（冷启动与运行时两条入口）。 */}
                   {phase === "ready" && !isAuthLoading && <NotificationResponseNavigator />}
+                  {/* RUYI-463: 系统分享 → 落地页（冷启动与运行时两条入口）。 */}
+                  {phase === "ready" && !isAuthLoading && <ShareIntentNavigator />}
                   <PortalHost />
                 </LightboxProvider>
               </AuthInitializer>

@@ -114,7 +114,8 @@
     "backpressure_hint": "主机内存背压（{{reason}}）：可用内存 {{mem}}%，swap 已用 {{swap}}%。主机水位恢复前新任务领取暂停，已累计延迟 {{count}} 次领取轮询。",
     "bp_reason_mem": "可用内存不足",
     "bp_reason_swap": "swap 压力过高",
-    "bp_reason_mem_swap": "内存不足 + swap 压力",
+    "bp_reason_psi": "内存停顿压力",
+    "backpressure_psi_hint": "内存停顿率（PSI）：{{psi}}%。",
     "fact_owner": "所有者",
     "fact_device": "设备",
     "fact_runtime": "运行时",
@@ -454,5 +455,72 @@
     "table_cache_r": "缓存读",
     "table_cache_w": "缓存写",
     "no_data": "还没有使用数据"
+  },
+  "voice_instance": {
+    "title": "语音实例设置",
+    "name_label": "名称",
+    "type_label": "类型",
+    "key_label": "API Key",
+    "key_placeholder": "输入新 Key 以更新",
+    "key_update": "更新 Key",
+    "key_clear": "清除",
+    "key_hint": "Key 加密存储，保存后不再回显；保存时会自动做一次轻量连通性检查。",
+    "key_saved": "Key 已保存，连通性检查通过",
+    "key_cleared": "Key 已清除",
+    "key_update_failed": "更新 Key 失败",
+    "probe_invalid": "Key 已保存，但连通性检查未通过（HTTP {{status}}）",
+    "model_label": "模型",
+    "model_placeholder": "gemini-3.8-live",
+    "advanced_label": "高级参数（JSON）",
+    "advanced_placeholder": "{ \"temperature\": 0.7 }",
+    "advanced_invalid": "高级参数必须是 JSON 对象",
+    "advanced_saved": "高级参数已保存",
+    "registration_label": "注册方式",
+    "registration_manual": "手动注册",
+    "registration_daemon": "守护进程注册",
+    "enabled_label": "启用",
+    "enabled_desc": "禁用后的实例保留配置，但不再出现在新的 Agent 绑定可选范围内",
+    "visibility_label": "可见性",
+    "visibility_workspace": "整个工作区（固定）",
+    "save": "保存",
+    "save_failed": "保存失败",
+    "name_saved": "名称已更新",
+    "model_saved": "模型已更新",
+    "badge_configured": "已配置 ✓",
+    "badge_invalid": "凭据失效",
+    "badge_not_configured": "未配置"
+  },
+  "voice_instance_create": {
+    "action": "添加语音实例",
+    "title": "注册语音实例",
+    "description": "手动注册一个 Gemini Live 实例供本工作区使用。名称允许重复；API Key 加密存储，保存后不再显示。",
+    "name_placeholder": "例如：Gemini Live（个人）",
+    "no_profiles": "本工作区还没有语音协议 Profile。",
+    "create_default_profile": "创建 Gemini Live Profile",
+    "key_placeholder": "粘贴 Gemini API Key",
+    "submit": "注册",
+    "creating": "注册中…",
+    "created": "语音实例已注册",
+    "created_probe_invalid": "已注册，但连通性检查失败——请检查 API Key",
+    "create_failed": "注册语音实例失败",
+    "key_save_failed": "已注册，但保存 API Key 失败——请在实例设置中补填"
+  },
+  "mobile": {
+    "list_loading": "加载中…",
+    "empty": {
+      "title": "暂无语音实例"
+    },
+    "detail": {
+      "not_found": "该实例已不存在。"
+    },
+    "status": {
+      "online": "在线",
+      "offline": "离线",
+      "disabled": "已停用"
+    },
+    "advanced": {
+      "expand": "展开",
+      "collapse": "收起"
+    }
   }
 }

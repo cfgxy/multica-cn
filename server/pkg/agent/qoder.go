@@ -158,6 +158,13 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	// for Result.Output while retaining the full text for error detection.
 	var deliverable acpDeliverableTracker
 	var streamingCurrentTurn atomic.Bool
+	// RUYI-390: a reattached Execute opens the turn gate immediately —
+	// the in-flight turn may deliver its turn_end on the very first
+	// frames the stdout reader sees, before the lifecycle goroutine
+	// would have opened it, and a dropped turn_end hangs the reattach.
+	if opts.Supervision != nil && opts.Supervision.Reattach {
+		streamingCurrentTurn.Store(true)
+	}
 
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
@@ -229,131 +236,147 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		// resume. Only that is curable by starting a fresh session, so
 		// handshake/network failures below must leave it false.
 		var resumeRejected bool
-		effectiveModel := strings.TrimSpace(opts.Model)
 
-		initResult, err := c.request(runCtx, "initialize", map[string]any{
-			"protocolVersion": 1,
-			"clientInfo": map[string]any{
-				"name":    "multica-agent-sdk",
-				"version": "0.2.0",
-			},
-			"clientCapabilities": map[string]any{},
-		})
-		if err != nil {
-			finalStatus = "failed"
-			finalError = fmt.Sprintf("qoder initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-			return
-		}
-
-		// Drop MCP entries whose remote transport the runtime didn't
-		// advertise. See the matching comment in hermes.go for why
-		// unconditionally sending http/sse to a stdio-only ACP runtime
-		// tanks the whole session/new.
-		mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "qoder", b.cfg)
-
-		cwd := opts.Cwd
-		if cwd == "" {
-			cwd = "."
-		}
-
-		if opts.ResumeSessionID != "" {
-			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"cwd":        cwd,
-				"sessionId":  opts.ResumeSessionID,
-				"mcpServers": mcpServers,
-			})
-			if err != nil {
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("qoder session/resume failed: %v", err)
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			var changed bool
-			sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
-			if changed {
-				b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
-					"backend", "qoder",
-					"requested", opts.ResumeSessionID,
-					"actual", sessionID,
-				)
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
+		// RUYI-390 reattach: the worker consumed its prompt under the
+		// previous daemon and its turn is still running. No handshake and
+		// no prompt — both would hit a mid-turn session — and the session
+		// id rebuilds from the session/update stream. The shared result
+		// path below picks the turn tail up from promptDone as usual.
+		var effectiveModel string
+		var promptErr error
+		if sess.Reattaching() {
+			streamingCurrentTurn.Store(true)
+			c.seedReattachIDSpace()
+			b.cfg.Logger.Info("qoder reattach: riding the in-flight turn launched by the previous daemon", "pid", sess.PID())
+			promptErr = c.waitReattachedTurn(runCtx, "qoder")
+			sessionID = c.observedSessionID()
 		} else {
-			result, err := c.request(runCtx, "session/new", map[string]any{
-				"cwd":        cwd,
-				"mcpServers": mcpServers,
+			effectiveModel = strings.TrimSpace(opts.Model)
+
+			initResult, err := c.request(runCtx, "initialize", map[string]any{
+				"protocolVersion": 1,
+				"clientInfo": map[string]any{
+					"name":    "multica-agent-sdk",
+					"version": "0.2.0",
+				},
+				"clientCapabilities": map[string]any{},
 			})
 			if err != nil {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("qoder session/new failed: %v", err)
+				finalError = fmt.Sprintf("qoder initialize failed: %v", err)
 				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 				return
 			}
-			sessionID = extractACPSessionID(result)
-			if sessionID == "" {
-				finalStatus = "failed"
-				finalError = "qoder session/new returned no session ID"
-				resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
-				return
-			}
-			if effectiveModel == "" {
-				effectiveModel = extractACPCurrentModelID(result)
-			}
-		}
 
-		c.sessionID = sessionID
-		b.cfg.Logger.Info("qoder session created", "session_id", sessionID)
+			// Drop MCP entries whose remote transport the runtime didn't
+			// advertise. See the matching comment in hermes.go for why
+			// unconditionally sending http/sse to a stdio-only ACP runtime
+			// tanks the whole session/new.
+			mcpServers = filterACPMcpServersByCapability(mcpServers, extractACPMcpCapabilities(initResult), "qoder", b.cfg)
 
-		if opts.Model != "" {
-			if _, err := c.request(runCtx, "session/set_model", map[string]any{
-				"sessionId": sessionID,
-				"modelId":   opts.Model,
-			}); err != nil {
-				b.cfg.Logger.Warn("qoder set_session_model failed", "error", err, "requested_model", opts.Model)
-				finalStatus = "failed"
-				finalError = fmt.Sprintf("qoder could not switch to model %q: %v", opts.Model, err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
-					// On a resumed session with a model override, the dead
-					// session surfaces here instead of at session/prompt.
-					// Clear the id so the daemon's resume-failure fallback
-					// retries fresh and stores the replacement session.
-					b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+			cwd := opts.Cwd
+			if cwd == "" {
+				cwd = "."
+			}
+
+			if opts.ResumeSessionID != "" {
+				result, err := c.request(runCtx, "session/resume", map[string]any{
+					"cwd":        cwd,
+					"sessionId":  opts.ResumeSessionID,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("qoder session/resume failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				var changed bool
+				sessionID, changed = resolveResumedSessionID(opts.ResumeSessionID, result)
+				if changed {
+					b.cfg.Logger.Warn("agent returned a different session id on resume — original was likely lost; continuing with the new id",
 						"backend", "qoder",
-						"session_id", sessionID,
+						"requested", opts.ResumeSessionID,
+						"actual", sessionID,
 					)
-					sessionID = ""
-					resumeRejected = true
 				}
-				resCh <- Result{
-					Status:         finalStatus,
-					Error:          finalError,
-					DurationMs:     time.Since(startTime).Milliseconds(),
-					SessionID:      sessionID,
-					ResumeRejected: resumeRejected,
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
 				}
-				return
+			} else {
+				result, err := c.request(runCtx, "session/new", map[string]any{
+					"cwd":        cwd,
+					"mcpServers": mcpServers,
+				})
+				if err != nil {
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("qoder session/new failed: %v", err)
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				sessionID = extractACPSessionID(result)
+				if sessionID == "" {
+					finalStatus = "failed"
+					finalError = "qoder session/new returned no session ID"
+					resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+					return
+				}
+				if effectiveModel == "" {
+					effectiveModel = extractACPCurrentModelID(result)
+				}
 			}
-			b.cfg.Logger.Info("qoder session model set", "model", opts.Model)
-		}
 
-		userText := prompt
-		if opts.SystemPrompt != "" {
-			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
-		}
+			c.sessionID = sessionID
+			b.cfg.Logger.Info("qoder session created", "session_id", sessionID)
 
-		// Flip just before session/prompt so history replay flushed during setup
-		// is dropped; every notification for this turn is processed afterward.
-		streamingCurrentTurn.Store(true)
-		_, err = c.request(runCtx, "session/prompt", map[string]any{
-			"sessionId": sessionID,
-			"prompt": []map[string]any{
-				{"type": "text", "text": userText},
-			},
-		})
-		if err != nil {
+			if opts.Model != "" {
+				if _, err := c.request(runCtx, "session/set_model", map[string]any{
+					"sessionId": sessionID,
+					"modelId":   opts.Model,
+				}); err != nil {
+					b.cfg.Logger.Warn("qoder set_session_model failed", "error", err, "requested_model", opts.Model)
+					finalStatus = "failed"
+					finalError = fmt.Sprintf("qoder could not switch to model %q: %v", opts.Model, err)
+					if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+						// On a resumed session with a model override, the dead
+						// session surfaces here instead of at session/prompt.
+						// Clear the id so the daemon's resume-failure fallback
+						// retries fresh and stores the replacement session.
+						b.cfg.Logger.Warn("resumed session not found at set_model time; clearing session id so the daemon retries fresh",
+							"backend", "qoder",
+							"session_id", sessionID,
+						)
+						sessionID = ""
+						resumeRejected = true
+					}
+					resCh <- Result{
+						Status:         finalStatus,
+						Error:          finalError,
+						DurationMs:     time.Since(startTime).Milliseconds(),
+						SessionID:      sessionID,
+						ResumeRejected: resumeRejected,
+					}
+					return
+				}
+				b.cfg.Logger.Info("qoder session model set", "model", opts.Model)
+			}
+
+			userText := prompt
+			if opts.SystemPrompt != "" {
+				userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
+			}
+
+			// Flip just before session/prompt so history replay flushed during setup
+			// is dropped; every notification for this turn is processed afterward.
+			streamingCurrentTurn.Store(true)
+			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
+				"sessionId": sessionID,
+				"prompt": []map[string]any{
+					{"type": "text", "text": userText},
+				},
+			})
+		}
+		if promptErr != nil {
 			if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("qoder timed out after %s", timeout)
@@ -362,8 +385,8 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 				finalError = "execution cancelled"
 			} else {
 				finalStatus = "failed"
-				finalError = fmt.Sprintf("qoder session/prompt failed: %v", err)
-				if opts.ResumeSessionID != "" && isACPSessionNotFound(err) {
+				finalError = fmt.Sprintf("qoder session/prompt failed: %v", promptErr)
+				if opts.ResumeSessionID != "" && isACPSessionNotFound(promptErr) {
 					// The runtime may echo the requested id from
 					// session/resume and only reject it at prompt time.
 					// Empty SessionID lets the daemon retry with a fresh
@@ -392,8 +415,7 @@ func (b *qoderBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		duration := time.Since(startTime)
 		b.cfg.Logger.Info("qoder finished", "pid", sess.PID(), "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		stdin.Close()
-		cancel()
+		finishWorkerStdin(sess, stdin, runCtx, cancel, b.cfg.Logger, "qoder")
 
 		// Qoder ACP may keep the process — and the stdout/stderr pipes — open
 		// after session/prompt returns (it can leave a child holding the

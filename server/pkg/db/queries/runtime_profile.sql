@@ -3,6 +3,11 @@
 -- created_by) is enforced in the application layer — there are no DB FKs.
 
 -- name: CreateRuntimeProfile :one
+-- capabilities (RUYI-425) is derived server-side from the protocol family's
+-- baseline (agent.ResolveCapabilities over agent.CapabilitiesForFamily) and
+-- marshalled by the caller; the API accepts no client-supplied capability
+-- field at this stage. It is intentionally absent from UpdateRuntimeProfile:
+-- the family is immutable on a profile, so its capability declaration is too.
 INSERT INTO runtime_profile (
     workspace_id,
     display_name,
@@ -12,8 +17,9 @@ INSERT INTO runtime_profile (
     fixed_args,
     visibility,
     created_by,
-    enabled
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    enabled,
+    capabilities
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 RETURNING *;
 
 -- name: GetRuntimeProfile :one

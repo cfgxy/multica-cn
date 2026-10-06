@@ -361,7 +361,8 @@ RETURNING id, workspace_id, owner_id, daemon_id, provider;
 -- rejects an active row without a runtime — so a missed status now surfaces as
 -- a failed delete (runtime_delete_not_drained) instead of silent data loss.
 UPDATE agent_task_queue
-SET status = 'cancelled', completed_at = now()
+SET status = 'cancelled', completed_at = now(),
+    cancel_reason = 'runtime_teardown', cancel_actor_type = 'system'
 WHERE (runtime_id = ANY(@runtime_ids::uuid[]) OR agent_id = ANY(@agent_ids::uuid[]))
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
@@ -408,6 +409,17 @@ SET runtime_id = NULL, updated_at = now()
 WHERE runtime_id = $1 AND kind = 'user'
 RETURNING *;
 
+-- name: UnbindUserAgentsFromVoiceRuntime :many
+-- RUYI-425: voice-slot counterpart of UnbindUserAgentsFromRuntime. Runs in
+-- the voice-instance delete transaction BEFORE DeleteAgentRuntime — the
+-- voice_runtime_id RESTRICT foreign key (migration 925) refuses to delete a
+-- referenced instance. kind = 'user' mirrors the text-slot detach: system
+-- carriers never bind the voice slot at this stage.
+UPDATE agent
+SET voice_runtime_id = NULL, updated_at = now()
+WHERE voice_runtime_id = $1 AND kind = 'user'
+RETURNING *;
+
 -- name: DeleteAgentRuntime :exec
 DELETE FROM agent_runtime WHERE id = $1;
 
@@ -416,6 +428,56 @@ DELETE FROM agent_runtime WHERE id = $1;
 -- Builder). Remove them before deleting their runtime so the RESTRICT runtime
 -- FK cannot block an otherwise dependency-free delete.
 DELETE FROM agent WHERE runtime_id = $1 AND kind = 'system';
+
+-- name: UpsertRuntimeCredential :one
+-- RUYI-425 §4.5: stores a runtime instance credential in the server-side
+-- secret store. secret_encrypted is sealed by the caller with the
+-- MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY box (secretbox AES-256-GCM, the same
+-- at-rest construction as the Lark/VCS/plugin boxes); plaintext never reaches
+-- this query. The instance row's credential_ref pointer is written by the
+-- handler in the same transaction, not here.
+INSERT INTO runtime_credential (runtime_instance_id, credential_key, secret_encrypted)
+VALUES ($1, $2, $3)
+ON CONFLICT (runtime_instance_id, credential_key)
+DO UPDATE SET
+    secret_encrypted = EXCLUDED.secret_encrypted,
+    updated_at = now()
+RETURNING *;
+
+-- name: GetRuntimeCredential :one
+SELECT * FROM runtime_credential
+WHERE runtime_instance_id = $1 AND credential_key = $2;
+
+-- name: DeleteRuntimeCredential :execrows
+DELETE FROM runtime_credential
+WHERE runtime_instance_id = $1 AND credential_key = $2;
+
+-- name: DeleteRuntimeCredentialsByInstance :execrows
+-- Application-layer cascade for instance deletion (runtime_credential has no
+-- DB FK, migration 925): the runtime-delete path removes every stored
+-- credential of the instance before deleting the agent_runtime row.
+DELETE FROM runtime_credential
+WHERE runtime_instance_id = $1;
+
+-- name: SetAgentRuntimeCredentialRef :one
+-- RUYI-425 §4.5: points the instance row at a stored credential. The ref is
+-- the ONLY credential-derived data on the DB row — shape
+-- '<instance-uuid>:<credential-key>' — and is what the Agent Context
+-- secrets_refs layer references. Rotation rewrites the secret behind the
+-- same ref, so callers pass the same ref they read.
+UPDATE agent_runtime
+SET credential_ref = $2, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentRuntimeCredentialRef :one
+-- Unsets the instance's credential pointer. Runs in the same transaction as
+-- DeleteRuntimeCredential so a credential can never be deleted while its ref
+-- still names it.
+UPDATE agent_runtime
+SET credential_ref = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
 
 -- name: CountActiveAgentsByRuntime :one
 SELECT count(*) FROM agent WHERE runtime_id = $1 AND archived_at IS NULL;
@@ -570,3 +632,28 @@ SELECT EXISTS (
 -- Final fail-closed assertion after UnbindTasksFromRuntime. A non-zero result
 -- aborts the transaction instead of relying on the legacy ON DELETE CASCADE.
 SELECT count(*) FROM agent_task_queue WHERE runtime_id = $1;
+
+-- name: SetAgentRuntimeMetadata :exec
+-- RUYI-425 stage 2: writes the whole metadata bag back for manually
+-- registered instances (voice settings §4.3, credential probe outcome §4.5).
+-- Manual instances are never daemon-registered, so nothing else owns this
+-- bag; the caller does a read-modify-write to merge keys without clobbering.
+UPDATE agent_runtime
+SET metadata = @metadata, updated_at = now()
+WHERE id = @id;
+
+-- name: CreateManualAgentRuntime :one
+-- Manual instance registration (RUYI-425 §4.3, stage 3): the ONLY insert
+-- path that does not come from a daemon probe. API-backed voice instances
+-- have no local binary and no heartbeat, so they are born 'online' (nothing
+-- ever flips them offline — setRuntimeOffline is daemon-report-driven) and
+-- carry daemon_id NULL, which structurally excludes them from every daemon
+-- upsert conflict target ((workspace_id, daemon_id, provider) predicates —
+-- NULL never matches). Names deliberately carry no uniqueness constraint:
+-- §4.3 allows duplicates (Owner decision 2). visibility is 'public' — §4.3
+-- v1 fixes instance visibility to the whole workspace.
+INSERT INTO agent_runtime (
+    workspace_id, name, runtime_mode, provider, status,
+    device_info, metadata, owner_id, profile_id, visibility, registration_source
+) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
+RETURNING *;

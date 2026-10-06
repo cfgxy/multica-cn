@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   assetFromDocumentPicker,
   assetFromImagePicker,
+  assetFromSharedFile,
   partitionOversize,
 } from "./picked-asset";
+import type { SharedFile } from "./share-payload";
 
 const MB = 1024 * 1024;
 
@@ -61,6 +63,34 @@ describe("assetFromDocumentPicker", () => {
     });
     expect(asset.type).toBe("application/octet-stream");
     expect(asset.size).toBeUndefined();
+  });
+});
+
+describe("assetFromSharedFile", () => {
+  // RUYI-463: 系统分享进来的文件已经过 normalizeSharePayload 清洗，
+  // 这里只验证与既有上传通道入参（PickedAsset）的对齐。
+  it("maps a shared file to the upload payload shape", () => {
+    const shared: SharedFile = {
+      uri: "file:///cache/share-intent/report.pdf",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+      size: 2048,
+    };
+    expect(assetFromSharedFile(shared)).toEqual({
+      uri: shared.uri,
+      name: "report.pdf",
+      type: "application/pdf",
+      size: 2048,
+    });
+  });
+
+  it("keeps an unknown size as undefined so partitionOversize defers to the server", () => {
+    const shared: SharedFile = {
+      uri: "file:///cache/x.bin",
+      name: "x.bin",
+      mimeType: "application/octet-stream",
+    };
+    expect(assetFromSharedFile(shared).size).toBeUndefined();
   });
 });
 
