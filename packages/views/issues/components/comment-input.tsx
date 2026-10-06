@@ -21,6 +21,7 @@ import { contentReferencesAttachment } from "@multica/core/types";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { useT } from "../../i18n";
+import { useVoiceSession, VoiceButton, VoiceOverlay } from "../../voice";
 import { CommentTriggerChips } from "./comment-trigger-chips";
 import { useCommentTriggerPreview } from "../hooks/use-comment-trigger-preview";
 import { useCommentUploads } from "./use-comment-uploads";
@@ -104,6 +105,36 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
     if (!pendingQuickReply || !lazy.ready) return;
     if (editorRef.current?.insertMarkdownAtEnd(pendingQuickReply)) setPendingQuickReply(null);
   }, [pendingQuickReply, lazy.ready]);
+
+  // Voice entry (RUYI-474): the issue's assigned agent is the session target —
+  // the same binding the comment itself is addressed to (unassigned/human/
+  // squad issues keep the pure-text composer). Each finalized spoken turn is
+  // appended to the comment editor and nothing auto-publishes; failures
+  // degrade in the overlay below and never touch the draft or `submit`.
+  // The composer is readonly-first, so a turn spoken before the editor
+  // activated queues here (same posture as pendingQuickReply) and flushes on
+  // the first ready frame.
+  const [pendingVoiceTurns, setPendingVoiceTurns] = useState<string[] | null>(null);
+  const voice = useVoiceSession({
+    agentId: assignedAgentId ?? null,
+    onUserTurn: (text) => {
+      if (lazy.ready && editorRef.current?.insertMarkdownAtEnd(text)) return;
+      lazy.activate();
+      setPendingVoiceTurns((prev) => [...(prev ?? []), text]);
+    },
+  });
+  useEffect(() => {
+    if (!pendingVoiceTurns?.length || !lazy.ready) return;
+    const rest: string[] = [];
+    for (const turn of pendingVoiceTurns) {
+      if (!editorRef.current?.insertMarkdownAtEnd(turn)) rest.push(turn);
+    }
+    // Only rewrite state when something landed — a fully-failing flush (a
+    // destroyed editor) would otherwise loop on the same queue forever.
+    if (rest.length !== pendingVoiceTurns.length) {
+      setPendingVoiceTurns(rest.length > 0 ? rest : null);
+    }
+  }, [pendingVoiceTurns, lazy.ready]);
 
   const insertQuickReply = useCallback(
     (content: string) => {
@@ -237,6 +268,15 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
       if (acceptedCommentIdRef.current) onAccepted?.(acceptedCommentIdRef.current);
     },
   });
+
+  // Voice occupies the send slot only when there is nothing to send and the
+  // composer is not busy — the chat composer's eligibility set (RUYI-449)
+  // minus the chat-only run/agent states an issue comment doesn't have.
+  const voiceEligible =
+    !!assignedAgentId &&
+    isEmpty &&
+    !submitting &&
+    !gate.uploading;
 
   return (
     <div
@@ -377,22 +417,39 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
           multiple
           onSelect={(file) => lazy.uploadOrQueue([file])}
         />
-        <SubmitButton
-          onClick={submit}
-          disabled={isEmpty}
-          loading={submitting}
-          busy={gate.uploading}
-          tooltip={gate.uploading
-            ? tEditor(($) => $.upload.in_progress)
-            : sendShortcut
-              ? `${t(($) => $.comment.send_tooltip)} · ${formatShortcut(sendShortcut)}`
+        {/* Voice entry (RUYI-474): while the draft holds nothing to send, the
+            send-button slot becomes a mic — same three-state contract as the
+            chat composer (RUYI-449). Text, an in-flight upload, or a
+            submitting composer swap it back to the send arrow, so voice never
+            displaces text. Issues without an assigned agent never see it. */}
+        {voiceEligible ? (
+          <VoiceButton onStart={voice.start} />
+        ) : (
+          <SubmitButton
+            onClick={submit}
+            disabled={isEmpty}
+            loading={submitting}
+            busy={gate.uploading}
+            tooltip={gate.uploading
+              ? tEditor(($) => $.upload.in_progress)
+              : sendShortcut
+                ? `${t(($) => $.comment.send_tooltip)} · ${formatShortcut(sendShortcut)}`
+                : t(($) => $.comment.send_tooltip)}
+            ariaLabel={gate.uploading
+              ? tEditor(($) => $.upload.in_progress)
               : t(($) => $.comment.send_tooltip)}
-          ariaLabel={gate.uploading
-            ? tEditor(($) => $.upload.in_progress)
-            : t(($) => $.comment.send_tooltip)}
-        />
+          />
+        )}
       </div>
       {isDragOver && <FileDropOverlay />}
+      <VoiceOverlay
+        phase={voice.phase}
+        failure={voice.failure}
+        liveUserText={voice.liveUserText}
+        liveAssistantText={voice.liveAssistantText}
+        onEnd={voice.end}
+        onDismiss={voice.dismiss}
+      />
     </div>
   );
 }

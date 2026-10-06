@@ -55,6 +55,17 @@ const editorUploadSignal = vi.hoisted(
   () => ({ notify: undefined as ((uploading: boolean) => void) | undefined }),
 );
 
+// RUYI-474 voice harness: the real voice chain (WS, audio capture) is out of
+// scope here — the comment composer only consumes the hook's public surface.
+// The mock captures `onUserTurn` so tests can play finalized spoken turns.
+const voiceHarness = vi.hoisted(() => ({
+  onUserTurn: null as ((text: string) => void) | null,
+  phase: "idle" as "idle" | "connecting" | "live" | "failed" | "ended",
+  start: vi.fn(),
+  end: vi.fn(),
+  dismiss: vi.fn(),
+}));
+
 // The real handle mints an id when it inserts the placeholder and hands it to
 // the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
 // the same or the two records drift apart only in tests.
@@ -69,7 +80,34 @@ vi.mock("@multica/core/api", () => ({
     listSkills: apiListSkills,
     renderQuickAction: apiRenderQuickAction,
   },
+  getApi: () => ({ getBaseUrl: () => "http://localhost:3000" }),
+  setApiInstance: vi.fn(),
 }));
+
+// RUYI-474: keep the real VoiceButton/VoiceOverlay (slot swap + overlay copy
+// render through the production components) and stub only the session hook.
+vi.mock("../../voice", async () => {
+  const actual = await vi.importActual<typeof import("../../voice")>("../../voice");
+  return {
+    ...actual,
+    useVoiceSession: (options: {
+      agentId: string | null;
+      onUserTurn?: (text: string) => void;
+    }) => {
+      voiceHarness.onUserTurn = options.onUserTurn ?? null;
+      return {
+        phase: voiceHarness.phase,
+        failure: null,
+        userTurns: [],
+        liveUserText: "",
+        liveAssistantText: "",
+        start: voiceHarness.start,
+        end: voiceHarness.end,
+        dismiss: voiceHarness.dismiss,
+      };
+    },
+  };
+});
 
 vi.mock("@multica/core/hooks/use-file-upload", async () => ({
   ...(await vi.importActual<typeof import("@multica/core/hooks/use-file-upload")>(
@@ -1187,5 +1225,181 @@ describe("sticky composer preference", () => {
 
     activateComposer("comment-composer-shell");
     expect(screen.getByTestId("editor").parentElement?.className).not.toContain("max-h-[40vh]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CommentInput voice three-state slot (RUYI-474)
+// ---------------------------------------------------------------------------
+
+// Same three-state contract the chat composer shipped in RUYI-449, bound to
+// the issue's assigned agent: empty draft → mic in the send slot, typed
+// content → send arrow, cleared → mic again. Dictated turns land in the
+// editor and NEVER submit — the user still presses Send.
+describe("CommentInput voice three-state slot", () => {
+  function renderVoiceCommentInput(
+    onSubmit = vi.fn().mockResolvedValue("comment-1"),
+  ) {
+    const view = renderWithProviders(
+      <CommentInput issueId="issue-1" assignedAgentId="agent-1" onSubmit={onSubmit} />,
+    );
+    return { ...view, onSubmit };
+  }
+
+  function startPendingUpload(container: HTMLElement) {
+    let resolveUpload!: (att: Attachment) => void;
+    let rejectUpload!: (err: Error) => void;
+    apiUploadFile.mockImplementationOnce(
+      () =>
+        new Promise<Attachment>((resolve, reject) => {
+          resolveUpload = resolve;
+          rejectUpload = reject;
+        }),
+    );
+    const input = container.querySelector('input[type="file"]');
+    if (!input) throw new Error("Expected a file input to render");
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "slow.png", { type: "image/png" })] },
+    });
+    return {
+      resolve: (att: Attachment) => resolveUpload(att),
+      fail: () => rejectUpload(new Error("upload failed")),
+    };
+  }
+
+  beforeEach(() => {
+    voiceHarness.onUserTurn = null;
+    voiceHarness.phase = "idle";
+    voiceHarness.start.mockReset();
+    voiceHarness.end.mockReset();
+    voiceHarness.dismiss.mockReset();
+  });
+
+  it("shows the mic in the send slot when the draft is empty and the issue has an assigned agent", () => {
+    renderVoiceCommentInput();
+
+    expect(
+      screen.getByRole("button", { name: "Start voice conversation" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+  });
+
+  it("swaps the mic for the send arrow as soon as the draft has text", () => {
+    renderVoiceCommentInput();
+
+    activateComposer("comment-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "typed first" } });
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start voice conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("restores the mic when the composer is cleared", () => {
+    renderVoiceCommentInput();
+    activateComposer("comment-composer-shell");
+    const editor = screen.getByTestId("editor");
+
+    fireEvent.change(editor, { target: { value: "typed first" } });
+    expect(
+      screen.queryByRole("button", { name: "Start voice conversation" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: "" } });
+    expect(
+      screen.getByRole("button", { name: "Start voice conversation" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the send arrow when the issue has no assigned agent", () => {
+    renderWithProviders(<CommentInput issueId="issue-1" onSubmit={vi.fn().mockResolvedValue("comment-1")} />);
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Start voice conversation" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the mic while an upload is in flight, restoring it once settled", async () => {
+    const { container } = renderVoiceCommentInput();
+    activateComposer("comment-composer-shell");
+    const pending = startPendingUpload(container);
+
+    // While the upload is in flight the slot hands back to the submit button
+    // (which reads "Uploading…" while busy) — the mic never overlaps an
+    // in-flight attachment.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Start voice conversation" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "Uploading…" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      // Settle as a FAILURE: a successful upload would append its URL to the
+      // draft (content → send slot), which would say nothing about the
+      // upload-busy gate. A failed upload leaves the draft empty, so the mic
+      // returns exactly when the gate clears.
+      pending.fail();
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Start voice conversation" }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("starts the session on mic click and surfaces the overlay without touching the draft", async () => {
+    const onSubmit = vi.fn().mockResolvedValue("comment-1");
+    const { rerender } = renderVoiceCommentInput(onSubmit);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start voice conversation" }));
+    expect(voiceHarness.start).toHaveBeenCalledTimes(1);
+
+    // Flip the mocked session phase and rerender with the same props — the
+    // overlay surface is the production VoiceOverlay's, so this exercises the
+    // real portal + copy.
+    voiceHarness.phase = "connecting";
+    rerender(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <CommentInput issueId="issue-1" assignedAgentId="agent-1" onSubmit={onSubmit} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole("dialog", { name: "Voice conversation" })).toBeInTheDocument();
+  });
+
+  it("backfills a finalized spoken turn into the editor without submitting", async () => {
+    const { onSubmit } = renderVoiceCommentInput();
+    activateComposer("comment-composer-shell");
+
+    await act(async () => {
+      voiceHarness.onUserTurn?.("spoken turn one");
+    });
+
+    expect(insertMarkdownSpy).toHaveBeenCalledWith("spoken turn one");
+    expect(onSubmit).not.toHaveBeenCalled();
+    // Text arrived, so the slot swaps to send — the user confirms the comment.
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+  });
+
+  it("queues a spoken turn taken before the editor was activated and flushes it once mounted", async () => {
+    const { onSubmit } = renderVoiceCommentInput();
+    // No activateComposer: the readonly shell is showing and insertMarkdownAtEnd
+    // has no live editor to land in yet.
+    expect(insertMarkdownSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      voiceHarness.onUserTurn?.("early turn");
+    });
+
+    // Activation happened for the backfill; the queued turn flushes on ready.
+    await waitFor(() => expect(insertMarkdownSpy).toHaveBeenCalledWith("early turn"));
+    expect(screen.getByTestId("editor")).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });
