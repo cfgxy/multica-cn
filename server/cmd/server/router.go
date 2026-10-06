@@ -1278,6 +1278,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("runtime credential encryption disabled (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY not set)")
 	}
 
+	// Voice credential connectivity probe (RUYI-425 §4.3/§4.5): where the
+	// lightweight models.list probe is pointed after a credential save.
+	// MULTICA_GEMINI_PROBE_BASE_URL exists so air-gapped deployments and
+	// tests can aim the probe at a stub; empty env keeps the public default.
+	h.VoiceProbeBaseURL = handler.DefaultVoiceProbeBaseURL
+	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_PROBE_BASE_URL")); v != "" {
+		h.VoiceProbeBaseURL = v
+	}
+
 	// Plugin secrets use a dedicated deployment key. Keeping this separate from
 	// VCS and channel secrets gives operators an isolated rotation and blast
 	// radius; without it, saving a `secret` config field fails closed rather

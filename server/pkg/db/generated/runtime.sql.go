@@ -1379,6 +1379,26 @@ func (q *Queries) SetAgentRuntimeCredentialRef(ctx context.Context, arg SetAgent
 	return i, err
 }
 
+const setAgentRuntimeMetadata = `-- name: SetAgentRuntimeMetadata :exec
+UPDATE agent_runtime
+SET metadata = $1, updated_at = now()
+WHERE id = $2
+`
+
+type SetAgentRuntimeMetadataParams struct {
+	Metadata []byte      `json:"metadata"`
+	ID       pgtype.UUID `json:"id"`
+}
+
+// RUYI-425 stage 2: writes the whole metadata bag back for manually
+// registered instances (voice settings §4.3, credential probe outcome §4.5).
+// Manual instances are never daemon-registered, so nothing else owns this
+// bag; the caller does a read-modify-write to merge keys without clobbering.
+func (q *Queries) SetAgentRuntimeMetadata(ctx context.Context, arg SetAgentRuntimeMetadataParams) error {
+	_, err := q.db.Exec(ctx, setAgentRuntimeMetadata, arg.Metadata, arg.ID)
+	return err
+}
+
 const setAgentRuntimeOffline = `-- name: SetAgentRuntimeOffline :exec
 UPDATE agent_runtime
 SET status = 'offline', updated_at = now()

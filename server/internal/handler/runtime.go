@@ -53,19 +53,45 @@ type AgentRuntimeResponse struct {
 	// without a daemon).
 	RegistrationSource string `json:"registration_source"`
 	// CredentialStatus is the §4.5 badge: "not_configured" (no credential
-	// pointer on the row) or "configured" (a credential_ref exists). The
-	// credential VALUE itself never crosses this API — reading and writing
-	// values happens only on the audited /credentials endpoints.
+	// pointer on the row), "configured" (a credential_ref exists and the last
+	// connectivity probe did not fail) or "invalid" (a credential_ref exists
+	// and the last probe failed). The credential VALUE itself never crosses
+	// this API — reading and writing values happens only on the audited
+	// /credentials endpoints.
 	CredentialStatus string `json:"credential_status"`
+	// ProtocolFamily and Capabilities are the Type-layer declaration the
+	// instance inherits through its profile (RUYI-425 §4.2/§4.4): clients
+	// filter the §4.2 slot pickers on them. Built-in instances (no profile
+	// row) resolve family and capabilities from their provider.
+	ProtocolFamily string             `json:"protocol_family"`
+	Capabilities   agent.Capabilities `json:"capabilities"`
 }
 
+// credentialProbeMetadataKey is the agent_runtime.metadata bag key holding
+// the last credential connectivity probe outcome (§4.5: a failed probe puts
+// the badge into the "invalid" state). Manual instances own this bag — the
+// daemon never registers them, so nothing else writes here.
+const credentialProbeMetadataKey = "credential_probe"
+
 // runtimeCredentialStatus derives the §4.5 badge from the credential_ref
-// pointer alone. It intentionally does NOT consult the secret store: the
-// response stays cheap and pointer presence is the contract — a ref whose
-// secret row was removed out-of-band is repaired by a plain re-PUT.
-func runtimeCredentialStatus(ref pgtype.Text) string {
+// pointer plus the last probe outcome recorded in metadata. It intentionally
+// does NOT consult the secret store: the response stays cheap and pointer
+// presence is the contract — a ref whose secret row was removed out-of-band
+// is repaired by a plain re-PUT.
+func runtimeCredentialStatus(ref pgtype.Text, metadata []byte) string {
 	if !ref.Valid || ref.String == "" {
 		return "not_configured"
+	}
+	var bag map[string]json.RawMessage
+	if len(metadata) > 0 && json.Unmarshal(metadata, &bag) == nil {
+		var probe struct {
+			Status string `json:"status"`
+		}
+		if raw, ok := bag[credentialProbeMetadataKey]; ok && json.Unmarshal(raw, &probe) == nil {
+			if probe.Status == "invalid" {
+				return "invalid"
+			}
+		}
 	}
 	return "configured"
 }
@@ -98,8 +124,52 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 		CreatedAt:          timestampToString(rt.CreatedAt),
 		UpdatedAt:          timestampToString(rt.UpdatedAt),
 		RegistrationSource: rt.RegistrationSource,
-		CredentialStatus:   runtimeCredentialStatus(rt.CredentialRef),
+		CredentialStatus:   runtimeCredentialStatus(rt.CredentialRef, rt.Metadata),
 	}
+}
+
+// runtimeProfileIndex loads every profile of the workspace once so instance
+// lists can resolve each row's Type-layer family/capabilities without a
+// per-row query. Workspaces hold a handful of profiles.
+func (h *Handler) runtimeProfileIndex(ctx context.Context, workspaceID pgtype.UUID) map[string]db.RuntimeProfile {
+	profiles, err := h.Queries.ListRuntimeProfiles(ctx, workspaceID)
+	if err != nil {
+		// A failed side read degrades the response (families fall back to the
+		// provider string) rather than failing the whole list.
+		return map[string]db.RuntimeProfile{}
+	}
+	index := make(map[string]db.RuntimeProfile, len(profiles))
+	for _, p := range profiles {
+		index[uuidToString(p.ID)] = p
+	}
+	return index
+}
+
+// instanceTypeDeclaration resolves the family and capability declaration an
+// instance exposes for §4.2 slot filtering: profile rows carry both from the
+// Type layer; built-in instances derive them from the provider family.
+func instanceTypeDeclaration(rt db.AgentRuntime, profiles map[string]db.RuntimeProfile) (string, agent.Capabilities) {
+	if rt.ProfileID.Valid {
+		if p, ok := profiles[uuidToString(rt.ProfileID)]; ok {
+			caps, err := agent.ResolveCapabilities(p.ProtocolFamily, p.Capabilities)
+			if err != nil {
+				// Malformed stored capabilities fail closed to the family
+				// baseline rather than surfacing an unparseable declaration.
+				caps = agent.CapabilitiesForFamily(p.ProtocolFamily)
+			}
+			return p.ProtocolFamily, caps
+		}
+	}
+	return rt.Provider, agent.CapabilitiesForFamily(rt.Provider)
+}
+
+// runtimeToResponseWithProfiles enriches the plain row response with the
+// Type-layer declaration and the probe-aware credential badge — the shape
+// the §4.2 slot pickers and the §4.3 instance form consume.
+func runtimeToResponseWithProfiles(rt db.AgentRuntime, profiles map[string]db.RuntimeProfile) AgentRuntimeResponse {
+	resp := runtimeToResponse(rt)
+	resp.ProtocolFamily, resp.Capabilities = instanceTypeDeclaration(rt, profiles)
+	return resp
 }
 
 // ---------------------------------------------------------------------------
@@ -496,7 +566,24 @@ type UpdateAgentRuntimeRequest struct {
 	// runtime per provider) instead of just this one. Ignored when the
 	// runtime has no daemon_id.
 	ApplyToMachine bool `json:"apply_to_machine,omitempty"`
+	// Model / Advanced / Disabled are the §4.3 voice instance settings
+	// (RUYI-425 stage 2). They are only accepted on manually registered
+	// instances — daemon-registered instances get their metadata wholesale
+	// from registration, so user writes there would be clobbered and are
+	// rejected. Model "" clears; Advanced null clears; all three merge into
+	// the metadata bag without disturbing other keys.
+	Model    *string         `json:"model,omitempty"`
+	Advanced *map[string]any `json:"advanced,omitempty"`
+	Disabled *bool           `json:"disabled,omitempty"`
 }
+
+// maxRuntimeModelLen and maxRuntimeAdvancedLen bound the §4.3 metadata
+// fields: model ids are short, and the advanced-JSON blob is config, not a
+// data store.
+const (
+	maxRuntimeModelLen    = 200
+	maxRuntimeAdvancedLen = 4096
+)
 
 // maxRuntimeCustomNameLen caps a runtime's custom name. Default names are
 // short (e.g. "Claude (host.local)"); 100 chars is generous headroom while
@@ -570,6 +657,69 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// §4.3 voice settings: validate every field before any mutation (same
+	// all-or-nothing PATCH discipline as above).
+	voiceSettings := req.Model != nil || req.Advanced != nil || req.Disabled != nil
+	if voiceSettings && rt.RegistrationSource != "manual" {
+		writeError(w, http.StatusBadRequest, "model, advanced and disabled are only editable on manually registered runtimes")
+		return
+	}
+	var mergedMetadata []byte
+	if voiceSettings {
+		if req.Model != nil && len([]rune(strings.TrimSpace(*req.Model))) > maxRuntimeModelLen {
+			writeError(w, http.StatusBadRequest, "model is too long")
+			return
+		}
+		if req.Advanced != nil {
+			encoded, err := json.Marshal(*req.Advanced)
+			if err != nil || len(encoded) > maxRuntimeAdvancedLen {
+				writeError(w, http.StatusBadRequest, "advanced must be a JSON object of at most 4096 bytes")
+				return
+			}
+		}
+		var bag map[string]json.RawMessage
+		if len(rt.Metadata) > 0 {
+			if err := json.Unmarshal(rt.Metadata, &bag); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to update runtime")
+				return
+			}
+		}
+		if bag == nil {
+			bag = map[string]json.RawMessage{}
+		}
+		if req.Model != nil {
+			if trimmed := strings.TrimSpace(*req.Model); trimmed != "" {
+				encoded, _ := json.Marshal(trimmed)
+				bag["model"] = encoded
+			} else {
+				delete(bag, "model")
+			}
+		}
+		if req.Advanced != nil {
+			if len(*req.Advanced) == 0 {
+				delete(bag, "advanced")
+			} else {
+				encoded, _ := json.Marshal(*req.Advanced)
+				bag["advanced"] = encoded
+			}
+		}
+		// Disabled is optional: absent leaves any stored key alone (partial
+		// PATCH), explicit true writes the flag, explicit false removes it.
+		if req.Disabled != nil {
+			if *req.Disabled {
+				bag["disabled"] = json.RawMessage("true")
+			} else {
+				delete(bag, "disabled")
+			}
+		}
+		encoded, err := json.Marshal(bag)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		mergedMetadata = encoded
+	}
+
 	changed := false
 
 	if needVisibility {
@@ -633,6 +783,19 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			rt = updated
 			changed = true
 		}
+	}
+
+	if voiceSettings {
+		if err := h.Queries.SetAgentRuntimeMetadata(r.Context(), db.SetAgentRuntimeMetadataParams{
+			ID:       runtimeUUID,
+			Metadata: mergedMetadata,
+		}); err != nil {
+			slog.Error("SetAgentRuntimeMetadata failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		rt.Metadata = mergedMetadata
+		changed = true
 	}
 
 	if changed {
@@ -794,9 +957,13 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One profile read per list, not per row: each instance's Type-layer
+	// family/capabilities come from the workspace profile index (RUYI-425).
+	profiles := h.runtimeProfileIndex(r.Context(), parseUUID(workspaceID))
+
 	resp := make([]AgentRuntimeResponse, len(runtimes))
 	for i, rt := range runtimes {
-		resp[i] = runtimeToResponse(rt)
+		resp[i] = runtimeToResponseWithProfiles(rt, profiles)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
