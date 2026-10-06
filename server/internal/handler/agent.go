@@ -465,7 +465,7 @@ type AgentTaskResponse struct {
 	// verbatim: it is a ref inside the user's own repo, not a filesystem path.
 	// Populated on both terminal paths — a failed run can still have committed
 	// partial work, and that is when the pointer matters most.
-	BranchName               string `json:"branch_name,omitempty"`
+	BranchName string `json:"branch_name,omitempty"`
 	// RUYI-292: who asked to stop this run and when the stop was accepted
 	// (status → cancel_requested). The run detail surfaces show the canceller;
 	// clients compute the unconfirmed-stop warning by comparing
@@ -477,44 +477,45 @@ type AgentTaskResponse struct {
 	// RUYI-292: which earlier run this one re-attempts, through either lineage
 	// column (manual rerun vs system retry). One or the other is set on retry
 	// children; the full chain itself lives on the run-detail payload.
-	RerunOfTaskID *string `json:"rerun_of_task_id,omitempty"`
-	RetryOfTaskID *string `json:"retry_of_task_id,omitempty"`
-	TriggerCommentID         *string                `json:"trigger_comment_id,omitempty"`          // comment that triggered this task
-	CoalescedCommentIDs      []string               `json:"coalesced_comment_ids,omitempty"`       // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
-	CoalescedComments        []CoalescedCommentData `json:"coalesced_comments,omitempty"`          // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
-	DeliveredCommentIDs      []string               `json:"delivered_comment_ids"`                 // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
-	TriggerThreadID          string                 `json:"trigger_thread_id,omitempty"`           // root comment ID for the triggering thread
-	TriggerCommentContent    string                 `json:"trigger_comment_content,omitempty"`     // content of the triggering comment
-	TriggerSummary           *string                `json:"trigger_summary,omitempty"`             // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
-	TriggerAuthorType        string                 `json:"trigger_author_type,omitempty"`         // "agent" or "member" — author kind of the triggering comment
-	TriggerAuthorName        string                 `json:"trigger_author_name,omitempty"`         // display name of the triggering comment author
-	NewCommentCount          int                    `json:"new_comment_count,omitempty"`           // trigger-thread comments since last run; excludes injected trigger + own comments; omitempty so old daemons ignore it
-	NewCommentsSince         string                 `json:"new_comments_since,omitempty"`          // RFC3339 anchor (last run's started_at) the count is measured from; omitempty so old daemons ignore it
-	ChatSessionID            string                 `json:"chat_session_id,omitempty"`             // non-empty for chat tasks
-	ChatChannelType          string                 `json:"chat_channel_type,omitempty"`           // "slack" when the chat session is backed by an IM channel; empty for a web-only chat. Makes the agent channel-aware (read history from the channel, not Multica)
-	ChatChannelDeliversFiles bool                   `json:"chat_channel_delivers_files,omitempty"` // server capability: THIS deployment can put a file the agent produced into THIS conversation — the adapter goes back for the bound attachment AND object storage exists to go back to. Absent/false on a server predating it, which is the safe reading: the agent is told to describe its file in words. Never inferred daemon-side from chat_channel_type; see handler.Handler.channelDeliversFiles
-	ChatType                 string                 `json:"chat_type,omitempty"`                   // channel_chat_session_binding.chat_type — "group" for a shared room, "p2p" for a 1:1 with the bot. Lets the per-turn prompt tell the agent who else can read its replies; empty for a web-only chat
-	ChatInThread             bool                   `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
-	ChatMessage              string                 `json:"chat_message,omitempty"`                // user message for chat tasks
-	ChatMessageAttachments   []ChatAttachmentMeta   `json:"chat_message_attachments,omitempty"`    // attachments on the user message — agent calls `multica attachment download <id>` per entry
-	ChatIntro                bool                   `json:"chat_intro,omitempty"`                  // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
-	AutopilotRunID           string                 `json:"autopilot_run_id,omitempty"`            // non-empty for autopilot-spawned tasks
-	AutopilotID              string                 `json:"autopilot_id,omitempty"`                // autopilot that spawned this task
-	AutopilotTitle           string                 `json:"autopilot_title,omitempty"`             // autopilot title used as task context
-	AutopilotDescription     string                 `json:"autopilot_description,omitempty"`       // autopilot description used as task prompt
-	AutopilotSource          string                 `json:"autopilot_source,omitempty"`            // manual, schedule, webhook, or api
-	AutopilotTriggerPayload  json.RawMessage        `json:"autopilot_trigger_payload,omitempty"`   // optional trigger payload for webhook/api runs
-	QuickCreatePrompt        string                 `json:"quick_create_prompt,omitempty"`         // user's natural-language input for quick-create tasks
-	QuickCreatePriority      string                 `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
-	QuickCreateDueDate       string                 `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
-	QuickCreateAttachmentIDs []string               `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
-	QuickCreateSourceContext json.RawMessage        `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
-	QuizPrompt               string                 `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
-	HandoffNote              string                 `json:"handoff_note,omitempty"`                // assignment handoff instruction; rendered into the run's opening prompt + issue_context.md (omitempty so old daemons ignore it)
-	SquadID                  string                 `json:"squad_id,omitempty"`                    // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
-	SquadName                string                 `json:"squad_name,omitempty"`                  // display name for the picker squad
-	ParentIssueID            string                 `json:"parent_issue_id,omitempty"`             // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
-	ParentIssueIdentifier    string                 `json:"parent_issue_identifier,omitempty"`     // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	RerunOfTaskID            *string                     `json:"rerun_of_task_id,omitempty"`
+	RetryOfTaskID            *string                     `json:"retry_of_task_id,omitempty"`
+	TriggerCommentID         *string                     `json:"trigger_comment_id,omitempty"`          // comment that triggered this task
+	CoalescedCommentIDs      []string                    `json:"coalesced_comment_ids,omitempty"`       // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
+	CoalescedComments        []CoalescedCommentData      `json:"coalesced_comments,omitempty"`          // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
+	DeliveredCommentIDs      []string                    `json:"delivered_comment_ids"`                 // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
+	TriggerThreadID          string                      `json:"trigger_thread_id,omitempty"`           // root comment ID for the triggering thread
+	TriggerCommentContent    string                      `json:"trigger_comment_content,omitempty"`     // content of the triggering comment
+	TriggerSummary           *string                     `json:"trigger_summary,omitempty"`             // canonical short description snapshot — comment text / autopilot title — taken at task creation; survives source edits/deletes
+	TriggerAuthorType        string                      `json:"trigger_author_type,omitempty"`         // "agent" or "member" — author kind of the triggering comment
+	TriggerAuthorName        string                      `json:"trigger_author_name,omitempty"`         // display name of the triggering comment author
+	NewCommentCount          int                         `json:"new_comment_count,omitempty"`           // trigger-thread comments since last run; excludes injected trigger + own comments; omitempty so old daemons ignore it
+	NewCommentsSince         string                      `json:"new_comments_since,omitempty"`          // RFC3339 anchor (last run's started_at) the count is measured from; omitempty so old daemons ignore it
+	ChatSessionID            string                      `json:"chat_session_id,omitempty"`             // non-empty for chat tasks
+	ChatChannelType          string                      `json:"chat_channel_type,omitempty"`           // "slack" when the chat session is backed by an IM channel; empty for a web-only chat. Makes the agent channel-aware (read history from the channel, not Multica)
+	ChatChannelDeliversFiles bool                        `json:"chat_channel_delivers_files,omitempty"` // server capability: THIS deployment can put a file the agent produced into THIS conversation — the adapter goes back for the bound attachment AND object storage exists to go back to. Absent/false on a server predating it, which is the safe reading: the agent is told to describe its file in words. Never inferred daemon-side from chat_channel_type; see handler.Handler.channelDeliversFiles
+	ChatType                 string                      `json:"chat_type,omitempty"`                   // channel_chat_session_binding.chat_type — "group" for a shared room, "p2p" for a 1:1 with the bot. Lets the per-turn prompt tell the agent who else can read its replies; empty for a web-only chat
+	ChatInThread             bool                        `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
+	ChatMessage              string                      `json:"chat_message,omitempty"`                // user message for chat tasks
+	ChatMessageAttachments   []ChatAttachmentMeta        `json:"chat_message_attachments,omitempty"`    // attachments on the user message — agent calls `multica attachment download <id>` per entry
+	ChatIntro                bool                        `json:"chat_intro,omitempty"`                  // legacy compatibility for historical is_agent_intro sessions; new agent creation no longer creates these chats
+	AutopilotRunID           string                      `json:"autopilot_run_id,omitempty"`            // non-empty for autopilot-spawned tasks
+	AutopilotID              string                      `json:"autopilot_id,omitempty"`                // autopilot that spawned this task
+	AutopilotTitle           string                      `json:"autopilot_title,omitempty"`             // autopilot title used as task context
+	AutopilotDescription     string                      `json:"autopilot_description,omitempty"`       // autopilot description used as task prompt
+	AutopilotSource          string                      `json:"autopilot_source,omitempty"`            // manual, schedule, webhook, or api
+	AutopilotTriggerPayload  json.RawMessage             `json:"autopilot_trigger_payload,omitempty"`   // optional trigger payload for webhook/api runs
+	QuickCreatePrompt        string                      `json:"quick_create_prompt,omitempty"`         // user's natural-language input for quick-create tasks
+	QuickCreatePriority      string                      `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
+	QuickCreateDueDate       string                      `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
+	QuickCreateAttachmentIDs []string                    `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
+	QuickCreateAttachments   []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`    // full rows behind the ids above — filenames + durable markdown URLs so the create-run can inline images into the description (RUYI-478)
+	QuickCreateSourceContext json.RawMessage             `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
+	QuizPrompt               string                      `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
+	HandoffNote              string                      `json:"handoff_note,omitempty"`                // assignment handoff instruction; rendered into the run's opening prompt + issue_context.md (omitempty so old daemons ignore it)
+	SquadID                  string                      `json:"squad_id,omitempty"`                    // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
+	SquadName                string                      `json:"squad_name,omitempty"`                  // display name for the picker squad
+	ParentIssueID            string                      `json:"parent_issue_id,omitempty"`             // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier    string                      `json:"parent_issue_identifier,omitempty"`     // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
@@ -731,6 +732,21 @@ type ChatAttachmentMeta struct {
 	ContentType string `json:"content_type,omitempty"`
 }
 
+// QuickCreateAttachmentMeta is the full attachment row behind a
+// quick-create context's attachment id (RUYI-478). MarkdownURL follows the
+// same buildMarkdownURL contract as the attachment API responses — durable,
+// persistable, no TTL — because quick-create runs cannot call
+// `multica attachment download` (only `issue create` is permitted there):
+// inlining this URL into the new issue's description is the only way a
+// pasted image reaches the body. The mirror struct on the daemon side lives
+// in internal/daemon/types.go and uses the same JSON field names.
+type QuickCreateAttachmentMeta struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type,omitempty"`
+	MarkdownURL string `json:"markdown_url,omitempty"`
+}
+
 // CoalescedCommentData carries the full detail of a comment that was folded
 // into a not-yet-started run (MUL-4195) so the daemon can embed it directly in
 // the prompt. The earlier merge path only shipped comment IDs plus a
@@ -830,38 +846,38 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		branchName = t.BranchName.String
 	}
 	return AgentTaskResponse{
-		ID:                     uuidToString(t.ID),
-		AgentID:                uuidToString(t.AgentID),
-		RuntimeID:              uuidToString(t.RuntimeID),
-		IssueID:                uuidToString(t.IssueID),
-		WorkspaceID:            workspaceID,
-		Status:                 t.Status,
-		Priority:               t.Priority,
-		DispatchedAt:           timestampToPtr(t.DispatchedAt),
-		StartedAt:              timestampToPtr(t.StartedAt),
-		CompletedAt:            timestampToPtr(t.CompletedAt),
-		Result:                 result,
-		Error:                  textToPtr(t.Error),
-		FailureReason:          failureReason,
-		BranchName:             branchName,
-		CancelRequestedAt:      timestampToPtr(t.CancelRequestedAt),
+		ID:                      uuidToString(t.ID),
+		AgentID:                 uuidToString(t.AgentID),
+		RuntimeID:               uuidToString(t.RuntimeID),
+		IssueID:                 uuidToString(t.IssueID),
+		WorkspaceID:             workspaceID,
+		Status:                  t.Status,
+		Priority:                t.Priority,
+		DispatchedAt:            timestampToPtr(t.DispatchedAt),
+		StartedAt:               timestampToPtr(t.StartedAt),
+		CompletedAt:             timestampToPtr(t.CompletedAt),
+		Result:                  result,
+		Error:                   textToPtr(t.Error),
+		FailureReason:           failureReason,
+		BranchName:              branchName,
+		CancelRequestedAt:       timestampToPtr(t.CancelRequestedAt),
 		CancelRequestedByUserID: uuidToString(t.CancelRequestedByUserID),
-		RerunOfTaskID:          uuidToPtr(t.RerunOfTaskID),
-		RetryOfTaskID:          uuidToPtr(t.RetryOfTaskID),
-		Attempt:                t.Attempt,
-		MaxAttempts:            t.MaxAttempts,
-		ParentTaskID:           uuidToPtr(t.ParentTaskID),
-		IsLeaderTask:           t.IsLeaderTask,
-		CreatedAt:              timestampToString(t.CreatedAt),
-		TriggerCommentID:       uuidToPtr(t.TriggerCommentID),
-		CoalescedCommentIDs:    uuidsToStrings(t.CoalescedCommentIds),
-		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
-		TriggerSummary:         textToPtr(t.TriggerSummary),
-		HandoffNote:            handoffNote,
-		WorkDir:                workDir,
-		RelativeWorkDir:        relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
-		DurableWorkDir:         durableWorkDir,
-		RelativeDurableWorkDir: relativeWorkDir(durableWorkDir, "", ""),
+		RerunOfTaskID:           uuidToPtr(t.RerunOfTaskID),
+		RetryOfTaskID:           uuidToPtr(t.RetryOfTaskID),
+		Attempt:                 t.Attempt,
+		MaxAttempts:             t.MaxAttempts,
+		ParentTaskID:            uuidToPtr(t.ParentTaskID),
+		IsLeaderTask:            t.IsLeaderTask,
+		CreatedAt:               timestampToString(t.CreatedAt),
+		TriggerCommentID:        uuidToPtr(t.TriggerCommentID),
+		CoalescedCommentIDs:     uuidsToStrings(t.CoalescedCommentIds),
+		DeliveredCommentIDs:     uuidStringsOrEmpty(t.DeliveredCommentIds),
+		TriggerSummary:          textToPtr(t.TriggerSummary),
+		HandoffNote:             handoffNote,
+		WorkDir:                 workDir,
+		RelativeWorkDir:         relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
+		DurableWorkDir:          durableWorkDir,
+		RelativeDurableWorkDir:  relativeWorkDir(durableWorkDir, "", ""),
 		// Surface task source so the UI can distinguish issue-linked tasks
 		// from chat-spawned or autopilot-spawned ones; all three may arrive
 		// with issue_id = "" once a task has no linked issue.
