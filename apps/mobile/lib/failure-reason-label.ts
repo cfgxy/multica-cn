@@ -33,6 +33,7 @@ const LABELS: Record<string, string> = {
   skill_bundle_unavailable: "Couldn't download the agent's skills",
   runtime_cli_timeout: "Local runtime CLI timed out",
   environment_prepare_failed: "Couldn't prepare the execution environment",
+  delivery_guard: "Delivery guard refused the branch",
 
   // Agent process side — provider.
   "agent_error.provider_auth_or_access": "Provider auth failed",

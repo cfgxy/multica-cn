@@ -510,3 +510,25 @@ func TestContextOverflowFromLegacyDaemonRetiresSession(t *testing.T) {
 func (m *mockDBTX) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
 	return 0, errors.New("CopyFrom not supported by mockDBTX")
 }
+
+// TestDeliveryGuardFailureRetries pins the retry posture for RUYI-479 A2. A
+// delivery-guard refusal means the run's worktree no longer proves the branch
+// it delivered onto; the fix is a retry, whose prepare reads the refusal
+// marker the guard left and heals the branch when only daemon checkpoints
+// were lost. Without the reason on the allowlist the refusal fell into
+// agent_error.unknown and every retry needed a human.
+//
+// Resume stays safe: the session itself is fine, and the retry reuses it.
+func TestDeliveryGuardFailureRetries(t *testing.T) {
+	const reason = "delivery_guard"
+
+	if !retryableReasons[reason] {
+		t.Errorf("retryableReasons[%q] = false, want true: the retry is the recovery path", reason)
+	}
+	if resumeUnsafeFailureReason(reason) {
+		t.Errorf("resumeUnsafeFailureReason(%q) = true, want false: the session was never the problem", reason)
+	}
+	if taskfailure.Reason(reason).IsAgentError() {
+		t.Error("a refusal the daemon itself produced must not be filed under agent_error.*")
+	}
+}

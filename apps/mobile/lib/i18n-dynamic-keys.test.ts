@@ -128,6 +128,7 @@ const FAILURE_REASONS = [
   "skill_bundle_unavailable",
   "runtime_cli_timeout",
   "environment_prepare_failed",
+  "delivery_guard",
   "agent_error__provider_auth_or_access",
   "agent_error__provider_quota_limit",
   "agent_error__provider_capacity_or_rate_limit",
