@@ -3049,3 +3049,107 @@ func TestCommitEverythingExcludesOversizedUntracked(t *testing.T) {
 		t.Error("commit carries the oversized untracked entry blob_dir")
 	}
 }
+
+// Build artifacts are regenerable by definition and historically the single
+// biggest reason a session later reset the daemon's own checkpoints off the
+// conversation branch (RUYI-475 class A): commitBaseline / commitAll swept
+// untracked .apk/.ipa output and QA artifact dirs into the chore(agent)
+// history, the session stripped them back out per the build-artifact red line,
+// and the delivery guard then refused the rewritten branch. The artifacts must
+// stay out of every checkpoint commit — baseline and finalize alike — and be
+// preserved aside at finalize like the budget exclusions they now ride with.
+func TestFinalizeKeepsBuildArtifactsOutOfTheDeliveredBranch(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeFile(t, filepath.Join(wt.Path, "app-release.apk"), "fake apk\n")
+	writeFile(t, filepath.Join(wt.Path, "app-store.ipa"), "fake ipa\n")
+	writeFile(t, filepath.Join(wt.Path, "play.aab"), "fake aab\n")
+	writeFile(t, filepath.Join(wt.Path, "apk-parts", "app-debug.apk.part-00"), "part\n")
+	writeFile(t, filepath.Join(wt.Path, "apps", "mobile", "dist", "bundle.js"), "bundled\n")
+	writeFile(t, filepath.Join(wt.Path, "qa-artifacts", "run.json"), "{}\n")
+	writeFile(t, filepath.Join(wt.Path, "agent-output.txt"), "work product\n")
+
+	outcome := finalizeOK(t, wt)
+
+	if got := gitRun(t, repo, "show", wt.Branch+":agent-output.txt"); got != "work product" {
+		t.Errorf("branch does not carry agent output, got %q", got)
+	}
+	// The whole delivered history, not just the tip: a leaked artifact must
+	// not survive in the baseline commit either.
+	history := gitRun(t, repo, "log", "--name-only", "--format=", wt.Branch)
+	for _, banned := range []string{
+		"app-release.apk",
+		"app-store.ipa",
+		"play.aab",
+		"apk-parts/app-debug.apk.part-00",
+		"apps/mobile/dist/bundle.js",
+		"qa-artifacts/run.json",
+	} {
+		if strings.Contains(history, banned) {
+			t.Errorf("delivered branch history carries build artifact %s", banned)
+		}
+	}
+	// Preserved aside, never silently deleted: each artifact unit stays
+	// recoverable until the env root is reclaimed.
+	if len(outcome.Excluded) != 6 {
+		t.Fatalf("Excluded = %+v, want the 6 artifact units", outcome.Excluded)
+	}
+	for _, excl := range outcome.Excluded {
+		if excl.AsidePath == "" {
+			t.Errorf("exclusion %s has no AsidePath; artifact content was not preserved", excl.Name)
+		}
+		if _, err := os.Lstat(excl.AsidePath); err != nil {
+			t.Errorf("exclusion %s not preserved at %s: %v", excl.Name, excl.AsidePath, err)
+		}
+	}
+}
+
+// The baseline commit runs at prepare, before the agent does anything; an
+// artifact the user (or a previous QA run) left in their tree must not enter
+// it either, while still being replayed into the worktree for the agent.
+func TestCommitBaselineKeepsBuildArtifactsUntracked(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "user-build.apk"), "apk\n")
+	writeFile(t, filepath.Join(repo, "notes.txt"), "untracked notes\n")
+
+	wt := prepareForTest(t, repo)
+
+	if wt.BaseCommit == "" {
+		t.Fatal("BaseCommit is empty; the dirty worktree got no baseline")
+	}
+	names := gitRun(t, repo, "show", "--name-only", "--format=", wt.BaseCommit)
+	if strings.Contains(names, "user-build.apk") {
+		t.Error("baseline commit carries the user's build artifact")
+	}
+	if !strings.Contains(names, "notes.txt") {
+		t.Error("baseline commit lost the user's regular untracked file")
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "user-build.apk")); err != nil {
+		t.Errorf("artifact not replayed into the worktree for the agent: %v", err)
+	}
+}
+
+// The exclusion is an untracked-staging rule, not a content judgement:
+// a dist/ path the repo itself tracks is repo content, and `add -u` still
+// delivers edits to it exactly as it does for the runtime state dirs.
+func TestTrackedFilesUnderArtifactDirsStillCommit(t *testing.T) {
+	repo := newTestRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "dist"), 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	writeFile(t, filepath.Join(repo, "dist", "manifest.txt"), "v1\n")
+	gitRun(t, repo, "add", ".")
+	gitRun(t, repo, "commit", "-m", "track dist manifest")
+
+	wt := prepareForTest(t, repo)
+	writeFile(t, filepath.Join(wt.Path, "dist", "manifest.txt"), "v2\n")
+
+	outcome := finalizeOK(t, wt)
+	if got := gitRun(t, repo, "show", wt.Branch+":dist/manifest.txt"); got != "v2" {
+		t.Errorf("tracked edit under dist/ did not land, got %q", got)
+	}
+	if len(outcome.Excluded) != 0 {
+		t.Errorf("Excluded = %+v, want empty: tracked content is not an artifact exclusion", outcome.Excluded)
+	}
+}
