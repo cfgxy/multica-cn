@@ -1175,6 +1175,8 @@
     "submitting": "提交中…",
     "cancel_card": "取消卡片",
     "answer_failed": "提交答案失败",
-    "cancel_failed": "取消卡片失败"
+    "cancel_failed": "取消卡片失败",
+    "batch_title": "批量作答",
+    "batch_submit": "全部提交"
   }
 }

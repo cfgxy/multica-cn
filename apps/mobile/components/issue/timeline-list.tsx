@@ -121,6 +121,7 @@ import {
 } from "@/lib/timeline-decisions";
 import { issueDecisionsOptions } from "@/data/queries/decisions";
 import { DecisionCard } from "./decision-card";
+import { DecisionBatchBar } from "./decision-batch-bar";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -631,6 +632,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           const idx = dataRef.current.findIndex(
             (r) =>
               !("decision" in r) &&
+              !("batchBar" in r) &&
               r.entry.type === "comment" &&
               r.entry.id === rootId,
           );
@@ -671,6 +673,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
               const idx = dataRef.current.findIndex(
                 (r) =>
                   !("decision" in r) &&
+                  !("batchBar" in r) &&
                   r.entry.type === "comment" &&
                   r.entry.id === rootId,
               );
@@ -1114,6 +1117,11 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           if ("decision" in item) {
             return <DecisionCard decision={item.decision} />;
           }
+          if ("batchBar" in item) {
+            return (
+              <DecisionBatchBar issueId={issue.id} open={item.batchBar.open} />
+            );
+          }
           return item.entry.type === "comment" ? (
             <CommentCard
               entry={item.entry}
@@ -1135,6 +1143,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
         getItemType={(item): string => {
           if (item.entry.id === DIVIDER_ID) return "divider";
           if ("decision" in item) return "decision";
+          if ("batchBar" in item) return "decision-batch-bar";
           return item.entry.type;
         }}
         onScroll={handleScroll}
