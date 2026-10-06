@@ -226,8 +226,10 @@ export function MessageComposer({
   }, []);
   const {
     attachments,
-    pickAndUploadImages,
     pickAndUploadFiles,
+    // RUYI-477: 贴图按钮改为「拍照 / 相册」源选择弹层入口。
+    chooseImageSource,
+    imageSourceModalProps,
     removeAttachment,
     retryAttachment,
     clearAttachments,
@@ -675,7 +677,7 @@ export function MessageComposer({
           <IconButton
             name="image-outline"
             iconSize={20}
-            onPress={pickAndUploadImages}
+            onPress={chooseImageSource}
             disabled={toolsDisabled}
             accessibilityLabel={t("composer.upload_image", "Upload image")}
             className="h-8 w-8"
@@ -717,6 +719,8 @@ export function MessageComposer({
   // Android presents the quick-reply sheet through this in-tree modal; iOS
   // uses ActionSheetIOS from show() and ignores it.
   const quickReplyModal = <ActionSheetModal {...quickReplySheet.modalProps} />;
+  // RUYI-477: 贴图「拍照/相册」源选择弹层，同 quickReplyModal 挂载模式。
+  const imageSourceModal = <ActionSheetModal {...imageSourceModalProps} />;
 
   // When the parent owns keyboard handling (chat.tsx wraps in
   // KeyboardAvoidingView + SafeAreaView), skip the KeyboardStickyView —
@@ -726,6 +730,7 @@ export function MessageComposer({
       <>
         {body}
         {quickReplyModal}
+        {imageSourceModal}
       </>
     );
 
@@ -733,6 +738,7 @@ export function MessageComposer({
     <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
       {body}
       {quickReplyModal}
+      {imageSourceModal}
     </KeyboardStickyView>
   );
 }

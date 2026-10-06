@@ -37,6 +37,7 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
 import { buildManualCreateContentFields } from "@/lib/attachment-zone";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/use-t";
 
@@ -61,8 +62,10 @@ export function ManualCreatePanel() {
   // (api.uploadFile docstring, same flow as web).
   const {
     attachments,
-    pickAndUploadImages,
     pickAndUploadFiles,
+    // RUYI-477: 贴图按钮改为「拍照 / 相册」源选择弹层入口。
+    chooseImageSource,
+    imageSourceModalProps,
     removeAttachment,
     retryAttachment,
     enqueueAssets,
@@ -222,7 +225,7 @@ export function ManualCreatePanel() {
           />
           <MarkdownToolbar
             onAt={description.handlers.onAtButtonPress}
-            onImage={pickAndUploadImages}
+            onImage={chooseImageSource}
             onFile={pickAndUploadFiles}
             disabled={isSubmitting || uploading}
           />
@@ -233,6 +236,8 @@ export function ManualCreatePanel() {
             types `@`. Self-hides via `if (!visible) return null` so it
             doesn't take space at rest. */}
         <MentionSuggestionBar {...description.suggestionBar} />
+        {/* RUYI-477: Android 侧「拍照/相册」弹层为 RN Modal，必须显式挂载。 */}
+        <ActionSheetModal {...imageSourceModalProps} />
       </KeyboardAvoidingView>
     </>
   );
