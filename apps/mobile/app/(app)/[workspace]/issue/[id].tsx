@@ -225,6 +225,18 @@ export default function IssueDetail() {
           // 若留英文硬编码，加载期非英文用户会先闪一下 "Issue" 再变。
           // `Stack.Screen` 在组件 return 内，求值时机晚于 initI18n()。
           title: issue?.identifier ?? i18n.t("layout:tab.issue", "Issue"),
+          // 原生标题在窄屏或大系统字号下会被省略号截断（RUYI-468 截图：
+          // 只剩 "RUYI-..."），标识符是详情页唯一稳定锚点，必须恒定完整
+          // 可读——自绘标题锁定字号且不随系统字号放大。
+          headerTitle: () => (
+            <Text
+              numberOfLines={1}
+              maxFontSizeMultiplier={1}
+              className="text-base font-semibold text-foreground"
+            >
+              {issue?.identifier ?? i18n.t("layout:tab.issue", "Issue")}
+            </Text>
+          ),
           headerBackTitle: "Back",
           headerRight: issue
             ? () => (

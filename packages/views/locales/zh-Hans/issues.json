@@ -1092,7 +1092,7 @@
       "empty_agents": "没有指派给 Agent 或小队的任务。"
     },
     "agent_activity": {
-      "runs_count": "运行 · {{count}} 次",
+      "runs_count": "{{count}} 次",
       "badge_a11y": "Agent 运行中 —— 查看运行记录",
       "badge_idle_a11y": "查看运行记录",
       "row_running_a11y": "智能体正在处理此任务",
