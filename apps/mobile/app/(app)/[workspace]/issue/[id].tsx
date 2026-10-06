@@ -372,6 +372,7 @@ export default function IssueDetail() {
           />
           <InlineCommentComposer
             issueId={id}
+            voiceAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null}
             onPublished={onCommentPublished}
           />
         </View>
