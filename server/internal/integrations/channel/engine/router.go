@@ -40,6 +40,7 @@ type Router struct {
 	tasks     TaskEnqueuer
 	reader    SessionReader
 	lifecycle ChannelChatLifecycle
+	commands  *CommandRegistry
 
 	batcher *pendingBatcher
 
@@ -75,8 +76,13 @@ type RouterConfig struct {
 	// the 100 MiB resource cap each) and platform download pressure.
 	// Per-session ordering is unaffected. Defaults to 8.
 	MediaConcurrency int
-	Logger           *slog.Logger
-	Lifecycle        ChannelChatLifecycle
+	// CommandRegistry is the slash-command table backing the /help card and
+	// the unknown-command classification for platforms that opted in via
+	// ResolverSet.SlashCommandFeedback. Nil defaults to
+	// DefaultCommandRegistry.
+	CommandRegistry *CommandRegistry
+	Logger          *slog.Logger
+	Lifecycle       ChannelChatLifecycle
 }
 
 // NewRouter builds a Router around the shared (platform-agnostic) services:
@@ -93,6 +99,9 @@ func NewRouter(issues IssueCreator, tasks TaskEnqueuer, reader SessionReader, cf
 	if cfg.MediaConcurrency == 0 {
 		cfg.MediaConcurrency = 8
 	}
+	if cfg.CommandRegistry == nil {
+		cfg.CommandRegistry = DefaultCommandRegistry()
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -103,6 +112,7 @@ func NewRouter(issues IssueCreator, tasks TaskEnqueuer, reader SessionReader, cf
 		tasks:        tasks,
 		reader:       reader,
 		lifecycle:    cfg.Lifecycle,
+		commands:     cfg.CommandRegistry,
 		replyTimeout: cfg.ReplyTimeout,
 		mediaTimeout: cfg.MediaTimeout,
 		mediaCtx:     mediaCtx,
@@ -186,6 +196,71 @@ func (r *Router) Drain(ctx context.Context) bool {
 // dropping.
 var ErrNoResolverSet = errors.New("channel router: no resolver set for channel type")
 
+// commandVerdict is the shared first-line command classification for one
+// inbound message, computed once in Handle and threaded through the pipeline
+// so each command meaning forks the flow in exactly one place. startChat /
+// bareFresh are the pre-existing /new and /clear control semantics; help /
+// unknown are the RUYI-461 registry classifications, gated per platform by
+// ResolverSet.SlashCommandFeedback.
+type commandVerdict struct {
+	startChat bool
+	bareFresh bool
+	help      bool
+	// unknown carries the unregistered leading slash token; empty means the
+	// body did not open with an unknown command.
+	unknown string
+}
+
+// classifyCommands parses the shared control directives off msg.CommandText,
+// rewrites the message the way the /new and /clear pipelines expect, and —
+// only for platforms whose ResolverSet opted into slash-command feedback —
+// classifies the leading token against the command registry. A registered
+// non-help token (today /issue) falls through to its existing pipeline
+// handling; the registry, not this switch, stays the single source of truth
+// for what a command is.
+func (r *Router) classifyCommands(msg *channel.InboundMessage, set ResolverSet) commandVerdict {
+	v := commandVerdict{}
+	control, hasControl := ParseControlCommand(msg.CommandText)
+	if hasControl && control.Kind == ControlCommandNewChat {
+		v.startChat = true
+		if parsedText, textOK := ParseControlCommand(msg.Text); textOK && parsedText.Kind == ControlCommandNewChat {
+			msg.Text = parsedText.Body
+		} else if msg.Text == msg.CommandText {
+			msg.Text = control.Body
+		}
+		// The consumed /new source must not be reinterpreted as /issue by a
+		// downstream classifier.
+		msg.CommandText = control.Body
+		return v
+	}
+	if hasControl && control.Kind == ControlCommandFreshSession {
+		// Parse the original command source even when an adapter already set
+		// ForceFresh. Only rewrite Text when the adapter has not already stripped
+		// the directive; Feishu and rich-media adapters may have enriched or
+		// reconstructed that visible body before it reaches Router.
+		adapterAlreadyStripped := msg.ForceFresh
+		msg.ForceFresh = true
+		v.bareFresh = control.Body == ""
+		if !adapterAlreadyStripped {
+			msg.Text = control.Body
+		}
+		return v
+	}
+	if !set.SlashCommandFeedback {
+		return v
+	}
+	token, ok := LeadingSlashToken(msg.CommandText)
+	if !ok {
+		return v
+	}
+	if _, known := r.commands.Lookup(token); !known {
+		v.unknown = token
+		return v
+	}
+	v.help = token == helpCommandName
+	return v
+}
+
 // Handle is the shared channel.InboundHandler. It runs the pipeline and then
 // drives the detached outbound side; it returns a non-nil error only for
 // infrastructure failures (the adapter reconnects). Product outcomes (dropped,
@@ -198,34 +273,6 @@ func (r *Router) Handle(ctx context.Context, msg channel.InboundMessage) error {
 		msg.CommandText = msg.Text
 	}
 
-	// /new and /clear share one channel-wide parser. Adapters only normalize
-	// transport details; the semantic fork lives here so one inbound message has
-	// exactly one control-plane meaning.
-	control, hasControl := ParseControlCommand(msg.CommandText)
-	startChat := hasControl && control.Kind == ControlCommandNewChat
-	bareFresh := false
-	if startChat {
-		if parsedText, textOK := ParseControlCommand(msg.Text); textOK && parsedText.Kind == ControlCommandNewChat {
-			msg.Text = parsedText.Body
-		} else if msg.Text == msg.CommandText {
-			msg.Text = control.Body
-		}
-		// The consumed /new source must not be reinterpreted as /issue by a
-		// downstream classifier.
-		msg.CommandText = control.Body
-	} else if hasControl && control.Kind == ControlCommandFreshSession {
-		// Parse the original command source even when an adapter already set
-		// ForceFresh. Only rewrite Text when the adapter has not already stripped
-		// the directive; Feishu and rich-media adapters may have enriched or
-		// reconstructed that visible body before it reaches Router.
-		adapterAlreadyStripped := msg.ForceFresh
-		msg.ForceFresh = true
-		bareFresh = control.Body == ""
-		if !adapterAlreadyStripped {
-			msg.Text = control.Body
-		}
-	}
-
 	r.mu.RLock()
 	set, ok := r.sets[msg.Source.ChannelType]
 	r.mu.RUnlock()
@@ -234,10 +281,15 @@ func (r *Router) Handle(ctx context.Context, msg channel.InboundMessage) error {
 		return ErrNoResolverSet
 	}
 
-	res, inst, err := r.dispatch(ctx, set, msg, bareFresh, startChat)
+	// /new and /clear share one channel-wide parser. Adapters only normalize
+	// transport details; the semantic fork lives here so one inbound message has
+	// exactly one control-plane meaning.
+	verdict := r.classifyCommands(&msg, set)
+
+	res, inst, err := r.dispatch(ctx, set, msg, verdict)
 	if err != nil {
 		outcome := "dispatch_failed"
-		if startChat {
+		if verdict.startChat {
 			outcome = "chat_start_failed"
 		}
 		r.logger.Error("channel router: dispatch error",
@@ -270,7 +322,7 @@ func (r *Router) Handle(ctx context.Context, msg channel.InboundMessage) error {
 
 // dispatch runs the pipeline and returns the typed result plus the resolved
 // installation (needed by the outbound side). Mirrors lark.Dispatcher.Handle.
-func (r *Router) dispatch(ctx context.Context, set ResolverSet, msg channel.InboundMessage, bareFresh, startChat bool) (Result, ResolvedInstallation, error) {
+func (r *Router) dispatch(ctx context.Context, set ResolverSet, msg channel.InboundMessage, verdict commandVerdict) (Result, ResolvedInstallation, error) {
 	// 1. Route to installation. The adapter maps the platform routing key
 	//    (carried on the message) to its installation row. These drop
 	//    branches run BEFORE the dedup claim because they have no valid
@@ -305,7 +357,7 @@ func (r *Router) dispatch(ctx context.Context, set ResolverSet, msg channel.Inbo
 		claimed = true
 	}
 
-	res, finalize, err := r.processClaimed(ctx, set, msg, inst, claimToken, bareFresh, startChat)
+	res, finalize, err := r.processClaimed(ctx, set, msg, inst, claimToken, verdict)
 
 	if claimed && finalize != finalizeNone {
 		finalizeCtx, finalizeCancel := context.WithTimeout(context.WithoutCancel(ctx), dedupFinalizeTimeout)
@@ -331,7 +383,7 @@ const (
 
 // processClaimed runs the post-dedup pipeline. Mirrors
 // lark.Dispatcher.processClaimed; see its boundary contract per step.
-func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channel.InboundMessage, inst ResolvedInstallation, claimToken pgtype.UUID, bareFresh, startChat bool) (Result, dedupFinalize, error) {
+func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channel.InboundMessage, inst ResolvedInstallation, claimToken pgtype.UUID, verdict commandVerdict) (Result, dedupFinalize, error) {
 	// 3. Group-mention filter (group chats only), before identity so an
 	//    unbound user's idle group chatter never spams a binding card.
 	if msg.Source.ChatType == channel.ChatTypeGroup && !msg.AddressedToBot {
@@ -358,6 +410,31 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		}
 	}
 
+	// 4.5 Slash-command interception (RUYI-461): /help and unknown leading
+	//    commands answer without touching the session. They run after
+	//    identity (an unbound sender gets the binding prompt first, since
+	//    no command is usable without one) and after the group filter (only
+	//    addressed input reaches here), and before any session write, so a
+	//    help request never appends to or rotates a chat. The claim is
+	//    marked processed — these are terminal product outcomes, and a Lark
+	//    event redelivery (same event_id as the dedup key) must not re-fire.
+	if verdict.help {
+		return Result{
+			Outcome:        OutcomeHelp,
+			InstallationID: inst.ID,
+			Sender:         msg.Source.SenderID,
+			HelpCommands:   r.commands.ListedCommands(),
+		}, finalizeMark, nil
+	}
+	if verdict.unknown != "" {
+		return Result{
+			Outcome:        OutcomeUnknownCommand,
+			InstallationID: inst.ID,
+			Sender:         msg.Source.SenderID,
+			CommandToken:   verdict.unknown,
+		}, finalizeMark, nil
+	}
+
 	// 5-6. Resolve the current Chat route, then either append normally or
 	// atomically create the next Chat route with its optional first turn.
 	sessionCreator := identity.UserID
@@ -367,7 +444,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 
 	mediaPendingSeconds := 0.0
 	var parsedCommand *IssueCommand
-	if !startChat {
+	if !verdict.startChat {
 		parsedCommand, _ = ParseIssueCommand(msg.CommandText)
 	}
 	issueNeedsUsage := parsedCommand != nil && parsedCommand.Title == ""
@@ -389,7 +466,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 			return Result{}, finalizeRelease, ctxErr
 		}
 
-		if startChat {
+		if verdict.startChat {
 			startedTask = db.AgentTaskQueue{}
 			persistMessage := msg.CommandText != "" || hasMedia
 			var beforeCommit func(context.Context, pgx.Tx, db.ChatSession) error
@@ -441,7 +518,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 			return Result{}, finalizeRelease, fmt.Errorf("persist channel chat message: %w", err)
 		}
 
-		if startChat {
+		if verdict.startChat {
 			if startedTask.ID.Valid {
 				r.tasks.FinalizeChatTaskEnqueue(ctx, startedTask)
 				startTaskCommitted = true
@@ -461,7 +538,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 			break
 		}
 
-		if bareFresh {
+		if verdict.bareFresh {
 			err = set.Session.MarkPendingFresh(ctx, sessionID, msg.MessageID)
 			if errors.Is(err, ErrRouteChanged) {
 				routeChangeRetries++
@@ -535,7 +612,7 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 		ChannelRouteRevision: appendRes.RouteRevision,
 		Sender:               msg.Source.SenderID,
 	}
-	if startChat {
+	if verdict.startChat {
 		res.ChannelBindingID = started.BindingID
 		res.ChannelRouteRevision = started.RouteRevision
 	}
@@ -654,18 +731,18 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 			}
 		}
 	}
-	res.runScheduled = !msg.SkipAgentRun && (startTaskCommitted || !startChat)
+	res.runScheduled = !msg.SkipAgentRun && (startTaskCommitted || !verdict.startChat)
 	if resolveMedia {
 		r.enqueueMedia(set, inst, identity, appendRes.MessageID, msg, sessionID, mediaIssue, pgtype.Text{}, "", deferredIssueTaskID, localMediaDeadline)
 	}
-	if appendRes.BecameVisible && !startChat {
+	if appendRes.BecameVisible && !verdict.startChat {
 		r.notifyChatCreated(
 			inst, sessionCreator, msg.Source.ChannelType, sessionID,
 			appendRes.RouteRevision, appendRes.InitialTitle,
 		)
 	}
 	if appendRes.InitialTitle != "" && r.lifecycle != nil {
-		if !startChat && !appendRes.BecameVisible {
+		if !verdict.startChat && !appendRes.BecameVisible {
 			r.lifecycle.ChannelChatTitleInitialized(inst.WorkspaceID, sessionCreator, sessionID, appendRes.InitialTitle)
 		}
 		r.lifecycle.GenerateChannelChatTitle(inst.WorkspaceID, sessionCreator, sessionID, appendRes.InitialTitle, msg.Text)
