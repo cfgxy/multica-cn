@@ -1982,6 +1982,41 @@ func (h *Handler) rejectClaimSkillLoad(task *db.AgentTaskQueue, err error) *clai
 // the workspace that OWNS the task's context (issue / chat session / autopilot
 // / quick-create), which is the only authority for MULTICA_WORKSPACE_ID in the
 // agent env. An empty value would make the CLI silently fall back to the
+// user-global config and talk to whatever workspace the user happened to last
+// configure; a value that doesn't match the runtime's workspace means upstream
+// routed a foreign-workspace task here. Both cases hard-fail AND cancel the
+// just-dispatched task so the queue / agent status don't sit stuck until the
+// stale-task sweeper fires minutes later.
+//
+// Every branch calls this as soon as it knows its authoritative workspace and
+// BEFORE it hydrates project context, so "prove ownership, then load" is a
+// property of the structure rather than a check each branch remembers to
+// repeat. Returns nil when the claim may proceed.
+func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.AgentTaskQueue, resolvedWorkspaceID, runtimeID, runtimeWorkspaceID string, hasQuickCreate bool) *claimBuildFailure {
+	if resolvedWorkspaceID != "" && resolvedWorkspaceID == runtimeWorkspaceID {
+		return nil
+	}
+	slog.Error("task claim: workspace isolation check failed, cancelling task",
+		"task_id", uuidToString(task.ID),
+		"runtime_id", runtimeID,
+		"runtime_workspace", runtimeWorkspaceID,
+		"resolved_workspace", resolvedWorkspaceID,
+		"has_issue", task.IssueID.Valid,
+		"has_chat", task.ChatSessionID.Valid,
+		"has_autopilot_run", task.AutopilotRunID.Valid,
+		"has_quick_create", hasQuickCreate,
+	)
+	if _, cerr := h.TaskService.CancelTask(ctx, task.ID); cerr != nil {
+		slog.Error("task claim: cancel after workspace check failed",
+			"task_id", uuidToString(task.ID), "error", cerr)
+	}
+	return &claimBuildFailure{
+		outcome: "error_workspace",
+		status:  http.StatusInternalServerError,
+		message: "task workspace isolation check failed",
+	}
+}
+
 // quickCreateAttachmentMetas loads the attachment rows behind a quick-create
 // context's attachment ids so the delegated create-run can inline pasted
 // images into the new issue's description (RUYI-478). MarkdownURL follows
@@ -2030,41 +2065,6 @@ func (h *Handler) quickCreateAttachmentMetas(ctx context.Context, ids []string, 
 		})
 	}
 	return metas
-}
-
-// user-global config and talk to whatever workspace the user happened to last
-// configure; a value that doesn't match the runtime's workspace means upstream
-// routed a foreign-workspace task here. Both cases hard-fail AND cancel the
-// just-dispatched task so the queue / agent status don't sit stuck until the
-// stale-task sweeper fires minutes later.
-//
-// Every branch calls this as soon as it knows its authoritative workspace and
-// BEFORE it hydrates project context, so "prove ownership, then load" is a
-// property of the structure rather than a check each branch remembers to
-// repeat. Returns nil when the claim may proceed.
-func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.AgentTaskQueue, resolvedWorkspaceID, runtimeID, runtimeWorkspaceID string, hasQuickCreate bool) *claimBuildFailure {
-	if resolvedWorkspaceID != "" && resolvedWorkspaceID == runtimeWorkspaceID {
-		return nil
-	}
-	slog.Error("task claim: workspace isolation check failed, cancelling task",
-		"task_id", uuidToString(task.ID),
-		"runtime_id", runtimeID,
-		"runtime_workspace", runtimeWorkspaceID,
-		"resolved_workspace", resolvedWorkspaceID,
-		"has_issue", task.IssueID.Valid,
-		"has_chat", task.ChatSessionID.Valid,
-		"has_autopilot_run", task.AutopilotRunID.Valid,
-		"has_quick_create", hasQuickCreate,
-	)
-	if _, cerr := h.TaskService.CancelTask(ctx, task.ID); cerr != nil {
-		slog.Error("task claim: cancel after workspace check failed",
-			"task_id", uuidToString(task.ID), "error", cerr)
-	}
-	return &claimBuildFailure{
-		outcome: "error_workspace",
-		status:  http.StatusInternalServerError,
-		message: "task workspace isolation check failed",
-	}
 }
 
 // quizPromptFromContext reports whether the task's context JSONB is a
