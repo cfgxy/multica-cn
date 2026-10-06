@@ -312,6 +312,100 @@ describe("buildRunStepViews — redaction on every view field", () => {
   });
 });
 
+describe("buildRunStepViews — 连续同工具调用归组（RUYI-446，对齐 PC groupSteps）", () => {
+  const START = Date.parse("2026-08-30T10:00:00Z");
+
+  /** 一对 tool_use/tool_result（Read，input 无 command → 非 shell）。 */
+  function readPair(seq: number, i: number): TimelineItem[] {
+    return [
+      item({
+        seq,
+        type: "tool_use",
+        tool: "Read",
+        created_at: new Date(START + i * 1000).toISOString(),
+        input: { file_path: `/repo/src/file${i}.ts` },
+      }),
+      item({
+        seq: seq + 1,
+        type: "tool_result",
+        tool: "Read",
+        created_at: new Date(START + i * 1000 + 100).toISOString(),
+        output: `"ok"`,
+      }),
+    ];
+  }
+
+  function readRun(startSeq: number, count: number): TimelineItem[] {
+    return Array.from({ length: count }, (_, i) => readPair(startSeq + i * 2, i)).flat();
+  }
+
+  it("≥3 条连续同工具非 shell 调用折叠为一行 group，成员视图完整", () => {
+    const views = buildRunStepViews(readRun(1, 3));
+    expect(views).toHaveLength(1);
+    const group = views[0]!;
+    if (group.kind !== "group") throw new Error("expected a group row");
+    expect(group.key).toBe("1");
+    expect(group.label).toBe("Read");
+    expect(group.summary).toContain("file0");
+    expect(group.steps.map((s) => s.kind)).toEqual(["call", "call", "call"]);
+    expect(group.steps.map((s) => s.key)).toEqual(["1", "3", "5"]);
+    // 首成员 10:00:00.000 → 末成员 10:00:02.100
+    expect(group.durationLabel).toBe("2.1s");
+  });
+
+  it("shell 调用永不折叠（input.command 例外，与 PC isShellCall 同口径）", () => {
+    const bashPair = (seq: number, i: number): TimelineItem[] => [
+      item({
+        seq,
+        type: "tool_use",
+        tool: "Bash",
+        created_at: new Date(START + i * 1000).toISOString(),
+        input: { command: `pnpm test ${i}` },
+      }),
+      item({
+        seq: seq + 1,
+        type: "tool_result",
+        tool: "Bash",
+        created_at: new Date(START + i * 1000 + 100).toISOString(),
+        output: `"ok"`,
+      }),
+    ];
+    const views = buildRunStepViews(
+      [bashPair(1, 0), bashPair(3, 1), bashPair(5, 2)].flat(),
+    );
+    expect(views).toHaveLength(3);
+    expect(views.every((v) => v.kind === "call")).toBe(true);
+  });
+
+  it("不足 3 条连续同工具调用保持平铺", () => {
+    const views = buildRunStepViews(readRun(1, 2));
+    expect(views).toHaveLength(2);
+    expect(views.every((v) => v.kind === "call")).toBe(true);
+  });
+
+  it("归组被 message 行打断时两侧各自独立成段（邻接语义与 PC 一致）", () => {
+    const views = buildRunStepViews([
+      ...readRun(1, 2),
+      item({ seq: 5, type: "text", content: "mid", created_at: new Date(START + 2500).toISOString() }),
+      ...readRun(6, 2),
+    ]);
+    // 两侧各只有 2 条，都不足 3 条 → 全平铺
+    expect(views.filter((v) => v.kind === "call")).toHaveLength(4);
+    expect(views.some((v) => v.kind === "group")).toBe(false);
+  });
+
+  it("group 行视图字段全部经脱敏（含成员展开视图）", () => {
+    const views = buildRunStepViews(
+      readRun(1, 3).map((ev) =>
+        ev.type === "tool_use"
+          ? item({ ...ev, input: { file_path: `/repo/${SECRET}/f.ts` } })
+          : ev,
+      ),
+    );
+    expect(JSON.stringify(views)).not.toContain(SECRET);
+  });
+});
+
 describe("copy exits", () => {
   it("per-step copy embeds full input JSON but redacts secrets", () => {
     const text = runStepCopyText(
