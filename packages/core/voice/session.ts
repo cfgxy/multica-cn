@@ -15,7 +15,11 @@
  * the trailing overlap of two speakers.
  */
 
-import { parseVoiceRejectionCode, type VoiceRejection } from "./degrade";
+import {
+  parseVoiceRejectionCode,
+  rejectionFromError,
+  type VoiceRejection,
+} from "./degrade";
 import { parseVoiceServerFrame, voiceAudioInputFrame } from "./protocol";
 
 export type VoiceSessionState = "idle" | "connecting" | "live" | "ended" | "failed";
@@ -94,8 +98,10 @@ export class VoiceSessionController {
     this.setState("connecting");
     try {
       await this.transport.connect(this.url);
-    } catch {
-      this.fail(null);
+    } catch (error) {
+      // A transport that recovered the gateway's code (mobile HTTP probe)
+      // reports it via VoiceRejectionError; anything else stays generic.
+      this.fail(rejectionFromError(error));
       return;
     }
     // First-frame auth (RUYI-429 pattern): the token rides the first

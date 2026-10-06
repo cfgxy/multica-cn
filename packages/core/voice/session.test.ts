@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseVoiceRejectionCode } from "./degrade";
+import { parseVoiceRejectionCode, VoiceRejectionError } from "./degrade";
 import {
   VoiceSessionController,
   type VoiceSessionCallbacks,
@@ -120,6 +120,32 @@ describe("VoiceSessionController", () => {
     io.drop();
     expect(c.getState()).toBe("failed");
     expect(events.degraded).toEqual([null]);
+  });
+
+  it("degrades with the precise reason when the transport fails with a typed rejection", async () => {
+    const io = fakeTransport();
+    // Mobile probes the handshake's HTTP 409 body and reports what it finds;
+    // the controller must surface that instead of the generic message.
+    (io.transport.connect as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new VoiceRejectionError({ kind: "voice_unavailable", reason: "no_voice_runtime" }),
+    );
+    const { c, events } = controller(io);
+    await c.start();
+    expect(c.getState()).toBe("failed");
+    expect(events.degraded).toEqual([{ kind: "voice_unavailable", reason: "no_voice_runtime" }]);
+    expect(events.ended).toBe(1);
+  });
+
+  it("keeps the generic degrade when connect fails with a plain error", async () => {
+    const io = fakeTransport();
+    (io.transport.connect as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("voice websocket closed (1006)"),
+    );
+    const { c, events } = controller(io);
+    await c.start();
+    expect(c.getState()).toBe("failed");
+    expect(events.degraded).toEqual([null]);
+    expect(events.ended).toBe(1);
   });
 
   it("flushes the pending user turn when the model starts answering", async () => {

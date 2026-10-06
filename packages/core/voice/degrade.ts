@@ -58,6 +58,29 @@ function isVoiceDegradeReason(value: string): value is VoiceDegradeReason {
 }
 
 /**
+ * A connect() failure whose rejection the transport already knows. The
+ * header-auth upgrade path fails as a plain HTTP status whose body the
+ * WebSocket API cannot read; a transport that recovers the code over plain
+ * HTTP (RUYI-449 mobile) throws this so the controller degrades with the
+ * precise reason instead of the generic message. Null means the failure
+ * stays generic.
+ */
+export class VoiceRejectionError extends Error {
+  readonly rejection: VoiceRejection | null;
+
+  constructor(rejection: VoiceRejection | null) {
+    super("voice session start rejected");
+    this.name = "VoiceRejectionError";
+    this.rejection = rejection;
+  }
+}
+
+/** Unwraps a typed rejection; every other thrown value maps to null. */
+export function rejectionFromError(error: unknown): VoiceRejection | null {
+  return error instanceof VoiceRejectionError ? error.rejection : null;
+}
+
+/**
  * The i18n key for a session-start failure. Auth internals never surface as
  * copy — a bad token reads the same as any other "cannot start" so the UI
  * never leaks authentication detail.
