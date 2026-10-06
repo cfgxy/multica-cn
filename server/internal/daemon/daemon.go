@@ -5789,6 +5789,18 @@ func taskRunFailureReason(err error) string {
 	if errors.Is(err, execenv.ErrOpenclawCLITimeout) {
 		return taskfailure.ReasonRuntimeCLITimeout.String()
 	}
+	// The finalize guard's refusal (RUYI-479): the run delivered onto a branch
+	// that no longer proves where the turn started. Its own reason, and the
+	// retry allowlist acts on it — the next attempt's prepare reads the
+	// refusal marker and heals a checkpoint-only reset by itself. Left to
+	// Classify this lands in agent_error.unknown, which reads like the agent
+	// misbehaved and buys no retry, turning a self-healing condition into a
+	// human one. Found through the worktreePreservedError wrapper the finalize
+	// path adds, which is why errors.As and not errors.Is.
+	var guardErr *execenv.DeliveryGuardError
+	if errors.As(err, &guardErr) {
+		return taskfailure.ReasonDeliveryGuard.String()
+	}
 	// Everything else that failed while building or re-opening the execution
 	// environment. Last of the structural branches: the four sentinels above
 	// each name a cause the daemon already recognises on its own (task

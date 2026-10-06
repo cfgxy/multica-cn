@@ -94,6 +94,15 @@ const (
 	// repo cannot reclaim a snapshot between two turns.
 	localStateRefPrefix = "refs/multica/local-state/"
 
+	// guardRefusalRefPrefix namespaces the delivery guard's refusal markers:
+	// one ref per branch, pointing at the tip the guard refused to record
+	// (RUYI-479). The next prepare on that branch reads it to tell a refusal
+	// it can heal — a reset whose only dropped commits are chore(agent)
+	// checkpoints — from any other divergence, which stays refused. Same
+	// ref-not-object reasoning as the state records: `git gc` must not eat
+	// the handshake between two runs.
+	guardRefusalRefPrefix = "refs/multica/guard-refusal/"
+
 	// gitlinkEmbedRefPrefix namespaces the momentary ref a gitlink child's
 	// snapshot is fetched through (see embedGitlinkChild). Created and deleted
 	// inside one embed; the name carries the creation time so a crashed embed's
@@ -757,6 +766,15 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		if verifyErr := w.verifyDeliveryPoint(tip); verifyErr != nil {
 			outcome.Branch = ""
 			outcome.PreservedPath = w.Path
+			// Pin the refused tip for the retry: its prepare reads this
+			// marker to heal a reset whose only dropped commits are the
+			// daemon's own checkpoints (healGuardRefusal). Best-effort —
+			// without it the retry forks a fresh branch, which is exactly
+			// what it did before the marker existed.
+			if _, mErr := runGit(w.GitRoot, "update-ref", guardRefusalRef(w.Branch), tip); mErr != nil && logger != nil {
+				logger.Warn("execenv: could not record the delivery-guard refusal marker (non-fatal; the retry will fork a fresh branch)",
+					"branch", w.Branch, "tip", tip, "error", mErr)
+			}
 			if logger != nil {
 				logger.Error("execenv: the run's delivery point cannot be recorded as this conversation's; nothing recorded, worktree kept",
 					"path", w.Path, "branch", w.Branch, "git_root", w.GitRoot, "tip", tip, "base", w.BaseCommit, "error", verifyErr)
@@ -764,7 +782,7 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 			return outcome, fmt.Errorf(
 				"refusing to record branch %s: %w; the task worktree is preserved at %s (listed by `git worktree list` in %s) — "+
 					"recover the work from there, and let the run keep the commit the worktree started from instead of resetting past it",
-				w.Branch, verifyErr, w.Path, w.GitRoot)
+				w.Branch, &DeliveryGuardError{Err: verifyErr}, w.Path, w.GitRoot)
 		}
 		if recErr := w.recordState(tip, logger); recErr != nil {
 			outcome.PreservedPath = w.Path
@@ -777,6 +795,12 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 					"task worktree is preserved at %s (listed by `git worktree list` in %s) — a follow-up run will start "+
 					"a new branch instead of continuing this one",
 				w.Branch, recErr, w.Path, w.GitRoot)
+		}
+		// A real delivery retires any refusal this branch still carries: the
+		// handshake is done, and a stale marker must not authorise a later
+		// prepare to rewrite the branch.
+		if _, err := runGit(w.GitRoot, "update-ref", "-d", guardRefusalRef(w.Branch)); err != nil && logger != nil {
+			logger.Debug("execenv: no delivery-guard refusal marker to clear", "branch", w.Branch)
 		}
 	}
 
@@ -1975,12 +1999,27 @@ func planForExistingBranch(gitRoot, name, headSHA string, owner branchOwner, con
 	}
 	record, owned := branchOwnedBy(gitRoot, name, owner, logger)
 	if !owned {
+		// The record's checkpoint may be gone because a session reset the
+		// branch's history away mid-run — the shape the delivery guard then
+		// refuses at finalize (RUYI-479). The refusal marker decides: with
+		// one, and only checkpoints were dropped, the retry re-anchors this
+		// branch instead of forking the conversation onto a fresh name.
+		if plan, healed := healGuardRefusal(gitRoot, name, owner, conversational, logger); healed {
+			return plan, true
+		}
 		return taskBranchPlan{}, false
 	}
 	// The user merged it: the branch tip carries nothing HEAD does not, so
 	// continuing from it would strand this task behind their own commits.
 	if _, mergedErr := runGit(gitRoot, "merge-base", "--is-ancestor", name, "HEAD"); mergedErr == nil {
 		plan.reset = true
+		return plan, true
+	}
+	// Owned and unmerged, but a refusal marker may still pin a delivered tip
+	// the branch never took (a run that ended detached from its branch). When
+	// the marker's tip carries only daemon checkpoints beyond this one,
+	// adopting it is what the retry is for.
+	if plan, healed := healGuardRefusal(gitRoot, name, owner, conversational, logger); healed {
 		return plan, true
 	}
 	plan.base = tip
@@ -2023,6 +2062,220 @@ func branchOwnedBy(gitRoot, branch string, owner branchOwner, logger *slog.Logge
 		return branchRecord{}, false
 	}
 	return record, true
+}
+
+// healGuardRefusal repairs a branch the delivery guard refused one run ago,
+// when the damage is the daemon's own (RUYI-479).
+//
+// A refusal means the run's worktree no longer proved its branch — almost
+// always a session rewriting the branch's history mid-run, dropping the
+// checkpoint commits the daemon made. Before this heal, every retry of that
+// task forked a fresh branch: the ownership proof (the recorded checkpoint is
+// still an ancestor of the tip) was broken, and the conversation's work sat
+// orphaned on a branch nothing would continue. The refusal marker the guard
+// writes turns that fork into a decision:
+//
+//   - No marker: this divergence never came from a refusal — a foreign reset,
+//     a user rewrite. Stay refused; the fork is the safe answer it always was.
+//   - Marker present, and the refused tip carries the branch's history forward
+//     (fast-forward), and every commit the tip has that the branch lacks —
+//     plus everything reachable from the record's dropped checkpoint — is a
+//     chore(agent) checkpoint the daemon wrote itself: the damage is
+//     self-inflicted, so the branch moves to the refused tip and the plan
+//     continues from there. The next commitBaseline and recordState re-anchor
+//     the record at the healed tip.
+//   - Anything else in the dropped set — a session commit, a user commit — is
+//     work the daemon has no authority to rewrite away. Stay refused; the
+//     preserved worktree and the marker both stay for a human.
+//
+// The branch's holder worktree (the refused run's preserved worktree) is
+// released first: it holds the branch checked out, and git grants one
+// worktree per branch. Its committed work is the refused tip itself; its
+// untracked content — the staging exclusions the refusal stopped short of
+// preserving — is moved aside before removal, same as finalize's.
+//
+// Every failure mode returns false, and the caller behaves exactly as before
+// the heal existed. Best-effort by construction.
+func healGuardRefusal(gitRoot, name string, owner branchOwner, conversational bool, logger *slog.Logger) (taskBranchPlan, bool) {
+	refusedTip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", guardRefusalRef(name))
+	if err != nil || refusedTip == "" {
+		return taskBranchPlan{}, false
+	}
+	ref, err := readUserStateRef(gitRoot, name)
+	if err != nil || ref == "" {
+		return taskBranchPlan{}, false
+	}
+	record, err := readBranchRecord(gitRoot, ref)
+	if err != nil || record.owner != owner || record.checkpoint == "" {
+		return taskBranchPlan{}, false
+	}
+	branchTip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
+	if err != nil || branchTip == "" {
+		return taskBranchPlan{}, false
+	}
+	if branchTip != refusedTip {
+		if _, ffErr := runGit(gitRoot, "merge-base", "--is-ancestor", branchTip, refusedTip); ffErr != nil {
+			if logger != nil {
+				logger.Info("execenv: not healing a refused branch whose history diverged from the refused tip",
+					"git_root", gitRoot, "branch", name, "tip", branchTip, "refused_tip", refusedTip)
+			}
+			return taskBranchPlan{}, false
+		}
+	}
+	// Everything the branch is missing, from both the refused tip and the
+	// record's checkpoint, must be a checkpoint this codebase wrote. One
+	// session or user commit in the set and the rewrite stays the user's
+	// problem, not ours to rubber-stamp.
+	out, err := runGitStdout(gitRoot, "rev-list", "--format=%s", record.checkpoint, refusedTip, "--not", "refs/heads/"+name)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("execenv: could not enumerate the commits a refused branch lost (non-fatal; not healing)",
+				"git_root", gitRoot, "branch", name, "error", err)
+		}
+		return taskBranchPlan{}, false
+	}
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "commit ") {
+			continue
+		}
+		if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], "chore(agent):") {
+			if logger != nil {
+				logger.Info("execenv: not healing a refused branch whose dropped commits include non-checkpoint work",
+					"git_root", gitRoot, "branch", name, "subject", strings.TrimSpace(strings.TrimPrefix(line, "commit ")))
+			}
+			return taskBranchPlan{}, false
+		}
+	}
+	if branchTip != refusedTip {
+		if out, err := runGit(gitRoot, "update-ref", "refs/heads/"+name, refusedTip, branchTip); err != nil {
+			if logger != nil {
+				logger.Warn("execenv: could not move a refused branch to its refused tip (non-fatal; not healing)",
+					"branch", name, "output", strings.TrimSpace(out), "error", err)
+			}
+			return taskBranchPlan{}, false
+		}
+	}
+	releaseGuardHolder(gitRoot, name, refusedTip, logger)
+	if _, err := runGit(gitRoot, "update-ref", "-d", guardRefusalRef(name)); err != nil && logger != nil {
+		logger.Debug("execenv: no refusal marker to clear after healing", "branch", name)
+	}
+	if logger != nil {
+		logger.Info("execenv: healed a delivery-guard refusal; the branch continues from its refused tip",
+			"git_root", gitRoot, "branch", name, "refused_tip", refusedTip)
+	}
+	// Replay posture follows what the branch still proves. A refusal that
+	// left the record's checkpoint an ancestor of the tip — a delivery that
+	// landed off-branch — keeps the continue-style replay: the checkout
+	// carries the recorded edits, and the healed tip only adds checkpoints
+	// on top of them. When the checkpoint is gone from the branch — the
+	// reset case — its content may hold user work that exists nowhere else,
+	// so the turn must not trust the branch to carry it: priorState stays
+	// empty and the replay proposes the user's whole current edit set over
+	// the healed tip, exactly the way a fresh fork's does. That is what
+	// puts the dropped edits back instead of silently skipping them.
+	priorState := ""
+	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", record.checkpoint, "refs/heads/"+name); err == nil {
+		priorState = record.state
+	}
+	return taskBranchPlan{
+		name:            name,
+		base:            refusedTip,
+		continues:       true,
+		priorState:      priorState,
+		priorCheckpoint: refusedTip,
+		conversational:  conversational,
+		tracksState:     true,
+		owner:           owner,
+	}, true
+}
+
+// releaseGuardHolder removes the preserved worktree a refusal left holding
+// the branch, so the healed turn can check it out again. The holder's
+// committed work IS the refused tip — nothing is deleted that git does not
+// still have — but its untracked content (the staging exclusions a refused
+// finalize never got to preserve) is moved aside first, into a sibling
+// directory that outlives the removal. Best-effort throughout: a holder that
+// survives here just sends addLocalWorktree down its existing fork fallback.
+func releaseGuardHolder(gitRoot, branch, refusedTip string, logger *slog.Logger) {
+	out, err := runGitStdout(gitRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return
+	}
+	for _, block := range strings.Split(out, "\n\n") {
+		var path, head, branchRef string
+		for _, line := range strings.Split(block, "\n") {
+			switch {
+			case strings.HasPrefix(line, "worktree "):
+				path = strings.TrimPrefix(line, "worktree ")
+			case strings.HasPrefix(line, "HEAD "):
+				head = strings.TrimPrefix(line, "HEAD ")
+			case strings.HasPrefix(line, "branch "):
+				branchRef = strings.TrimPrefix(line, "branch ")
+			}
+		}
+		if path == "" || path == gitRoot {
+			continue
+		}
+		if branchRef != "refs/heads/"+branch && head != refusedTip {
+			continue
+		}
+		salvageHolderUntracked(path, logger)
+		if err := removeLocalWorktreeDir(gitRoot, path, logger); err != nil && logger != nil {
+			logger.Warn("execenv: could not release the preserved worktree holding a healed branch (non-fatal; the retry will fork)",
+				"path", path, "error", err)
+		} else if logger != nil {
+			logger.Info("execenv: released the preserved worktree of a healed refusal",
+				"git_root", gitRoot, "path", path, "branch", branch)
+		}
+	}
+}
+
+// salvageHolderUntracked moves the holder's untracked, non-regenerable
+// entries into a sibling directory before its removal. Runtime state and
+// replayable caches stay behind — they are excluded from snapshots for the
+// same reason. Unlike finalize's aside this has no budget: the holder's
+// content is bounded by the replay check that admitted it.
+func salvageHolderUntracked(holderPath string, logger *slog.Logger) {
+	out, err := runGitStdout(holderPath, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		if logger != nil {
+			logger.Warn("execenv: could not enumerate a holder's untracked content before removal (non-fatal)",
+				"path", holderPath, "error", err)
+		}
+		return
+	}
+	tops := map[string]bool{}
+	for _, rel := range strings.Split(out, "\x00") {
+		if rel == "" || isMulticaSidecarPath(rel) || isRuntimeStatePath(rel) || isReplayableCachePath(rel) {
+			continue
+		}
+		if i := strings.IndexByte(rel, '/'); i >= 0 {
+			rel = rel[:i]
+		}
+		tops[rel] = true
+	}
+	if len(tops) == 0 {
+		return
+	}
+	aside := holderPath + "-guard-aside"
+	if err := os.MkdirAll(aside, 0o755); err != nil {
+		if logger != nil {
+			logger.Warn("execenv: could not create the aside directory for a holder's untracked content (non-fatal)",
+				"aside", aside, "error", err)
+		}
+		return
+	}
+	for name := range tops {
+		if err := os.Rename(filepath.Join(holderPath, name), filepath.Join(aside, name)); err != nil && logger != nil {
+			logger.Warn("execenv: could not preserve a holder's untracked entry (non-fatal)",
+				"entry", name, "error", err)
+		}
+	}
+	if logger != nil {
+		logger.Info("execenv: preserved a holder's untracked content aside before its removal",
+			"holder", holderPath, "aside", aside, "entries", len(tops))
+	}
 }
 
 // addLocalWorktree materialises the planned branch as a worktree and reports
@@ -2115,8 +2368,16 @@ type replayResult struct {
 // once from this turn's tree, and again from every later turn, because the
 // snapshot would advance past a change the branch never took.
 func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, logger *slog.Logger) (replayResult, error) {
+	// A continued branch normally replays against the snapshot it already
+	// carries (plan.priorState). A healed refusal keeps continues — the turn
+	// still checks the branch out in place — but when the record's checkpoint
+	// no longer proves the checkout carries that snapshot, healGuardRefusal
+	// leaves priorState empty. For that case carried stays the healed tip and
+	// only feeds the nothing-to-do check below; the merge base itself is
+	// picked in the switch underneath, and picking the healed tip there would
+	// propose deleting the branch's task work.
 	carried := plan.base
-	if plan.continues {
+	if plan.continues && plan.priorState != "" {
 		carried = plan.priorState
 	}
 	if carried == "" {
@@ -2136,7 +2397,25 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 	// uses as the merge base, and that is the entire point: it is not reachable
 	// any other way.
 	base := carried
-	if plan.continues {
+	switch {
+	case !plan.continues:
+		// A fresh fork: carried is the checkout the snapshot was captured
+		// against, so the increment is the snapshot's own delta.
+	case plan.priorState == "":
+		// A healed refusal (healGuardRefusal leaves priorState empty). The
+		// healed tip carries the branch's task work that the user's directory
+		// does not, so the tip itself must not be the merge base — a diff
+		// against it would propose deleting that work. The snapshot's own
+		// parent is the honest base: only the user's edits since their HEAD
+		// are proposed, onto whatever the branch now holds. The user's
+		// dropped WIP rides in with the snapshot, which is the point.
+		if _, err := runGit(worktreePath, "diff", "--quiet", snapshot+"^", snapshot); err == nil {
+			// The user has no edits of their own; the tip-vs-snapshot
+			// difference above is all task work. Nothing to replay.
+			return replayResult{}, nil
+		}
+		base = snapshot + "^"
+	default:
 		commit, err := replayBaseCommit(worktreePath, carried, snapshot)
 		if err != nil {
 			return replayResult{}, err
@@ -2286,6 +2565,25 @@ func quotedPaths(paths []string) string {
 // the checkpoint is what makes a branch they later recreate there look like
 // ours, and a tip without this turn's starting point no longer carries the
 // snapshot about to be recorded as delivered (MUL-6881 review).
+// DeliveryGuardError marks a Finalize refusal from verifyDeliveryPoint: the
+// run delivered onto a branch that no longer proves where the turn started,
+// so the daemon declined to stamp its record over it. The wrapper exists to
+// be read structurally — taskRunFailureReason maps it to the dedicated,
+// retryable delivery_guard reason instead of letting the prose fall into
+// taskfailure.Classify's agent_error.unknown, which is off the retry
+// allowlist and would leave every refused task to a human (RUYI-479).
+type DeliveryGuardError struct{ Err error }
+
+func (e *DeliveryGuardError) Error() string { return e.Err.Error() }
+func (e *DeliveryGuardError) Unwrap() error { return e.Err }
+
+// guardRefusalRef is where a branch's refusal marker lives: the tip the guard
+// refused to record. Cleared when a later delivery succeeds, dropped with the
+// branch, pruned when the branch is gone.
+func guardRefusalRef(branch string) string {
+	return guardRefusalRefPrefix + branch
+}
+
 func (w *LocalWorktree) verifyDeliveryPoint(tip string) error {
 	if !w.tracksState {
 		// Nothing will be recorded for this branch, so there is nothing to prove.
@@ -2389,6 +2687,13 @@ func dropBranch(gitRoot, branch string, logger *slog.Logger) {
 		logger.Debug("execenv: no local-directory snapshot to drop for task branch",
 			"branch", branch, "output", strings.TrimSpace(out))
 	}
+	// Same for a refusal marker: without the branch there is nothing for a
+	// retry's prepare to heal, and a leftover ref would pin the refused tip
+	// against `git gc` forever.
+	if out, err := runGit(gitRoot, "update-ref", "-d", guardRefusalRef(branch)); err != nil && logger != nil {
+		logger.Debug("execenv: no delivery-guard refusal marker to drop for task branch",
+			"branch", branch, "output", strings.TrimSpace(out))
+	}
 }
 
 // pruneOrphanedStateRefs drops the snapshot of any branch that is no longer
@@ -2399,10 +2704,15 @@ func dropBranch(gitRoot, branch string, logger *slog.Logger) {
 // Best-effort and non-fatal: this is housekeeping in the user's repository, not
 // a precondition for the task.
 func pruneOrphanedStateRefs(gitRoot string, logger *slog.Logger) {
-	out, err := runGitTrimmed(gitRoot, "for-each-ref", "--format=%(refname)", localStateRefPrefix)
+	pruneOrphanedRefs(gitRoot, localStateRefPrefix, "local-directory snapshot", logger)
+	pruneOrphanedRefs(gitRoot, guardRefusalRefPrefix, "delivery-guard refusal marker", logger)
+}
+
+func pruneOrphanedRefs(gitRoot, refPrefix, what string, logger *slog.Logger) {
+	out, err := runGitTrimmed(gitRoot, "for-each-ref", "--format=%(refname)", refPrefix)
 	if err != nil {
 		if logger != nil {
-			logger.Debug("execenv: could not list local-directory snapshots", "git_root", gitRoot, "error", err)
+			logger.Debug("execenv: could not list per-branch refs", "git_root", gitRoot, "error", err)
 		}
 		return
 	}
@@ -2411,7 +2721,7 @@ func pruneOrphanedStateRefs(gitRoot string, logger *slog.Logger) {
 		if ref == "" {
 			continue
 		}
-		branch := strings.TrimPrefix(ref, localStateRefPrefix)
+		branch := strings.TrimPrefix(ref, refPrefix)
 		if branch == ref {
 			continue
 		}
@@ -2420,14 +2730,14 @@ func pruneOrphanedStateRefs(gitRoot string, logger *slog.Logger) {
 		}
 		if out, delErr := runGit(gitRoot, "update-ref", "-d", ref); delErr != nil {
 			if logger != nil {
-				logger.Warn("execenv: could not drop the snapshot of a deleted task branch (non-fatal)",
+				logger.Warn("execenv: could not drop a deleted task branch's ref (non-fatal)",
 					"ref", ref, "output", strings.TrimSpace(out), "error", delErr)
 			}
 			continue
 		}
 		if logger != nil {
-			logger.Info("execenv: dropped the local-directory snapshot of a branch that no longer exists",
-				"git_root", gitRoot, "branch", branch)
+			logger.Info("execenv: dropped the ref of a branch that no longer exists",
+				"git_root", gitRoot, "branch", branch, "what", what)
 		}
 	}
 }

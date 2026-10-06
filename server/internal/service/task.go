@@ -5521,6 +5521,14 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // never started, so there is nothing to be idempotent about, and every bundle
 // that did download is already cached on disk — a retry resumes from there
 // instead of re-fetching the whole set (MUL-5370).
+//
+// delivery_guard is the one post-run reason on the list (RUYI-479): the run
+// finished, but its worktree no longer proved the branch it delivered onto. A
+// retry is the recovery path — its prepare reads the refusal marker the guard
+// left and heals the branch when only daemon checkpoints were lost — while
+// without the reason the refusal landed in agent_error.unknown and every
+// occurrence waited for a human. Resume-safe, so the retry inherits the
+// session; the session was never the problem.
 var retryableReasons = map[string]bool{
 	string(taskfailure.ReasonRuntimeOffline):         true,
 	string(taskfailure.ReasonRuntimeRecovery):        true,
@@ -5528,6 +5536,7 @@ var retryableReasons = map[string]bool{
 	"codex_semantic_inactivity":                      true,
 	string(taskfailure.ReasonAgentProviderNetwork):   true,
 	string(taskfailure.ReasonSkillBundleUnavailable): true,
+	string(taskfailure.ReasonDeliveryGuard):          true,
 }
 
 // runtime_offline retries start deferred, not queued: their positive fire_at
