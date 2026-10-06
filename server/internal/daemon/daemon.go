@@ -618,12 +618,12 @@ type Daemon struct {
 	// bpState is nil until the watcher's first sample lands (gate fails
 	// open); bpWakeup points at the batch poller's wakeup channel so a
 	// recovery can nudge it instead of waiting out a backoff interval.
-	bpMachine   *backpressureMachine
-	bpSource    memSampleSource
-	bpState     atomic.Pointer[backpressureObservation]
-	bpDeferred  atomic.Int64
-	bpWakeup    atomic.Pointer[chan struct{}]
-	bpLastWarn  atomic.Int64
+	bpMachine  *backpressureMachine
+	bpSource   memSampleSource
+	bpState    atomic.Pointer[backpressureObservation]
+	bpDeferred atomic.Int64
+	bpWakeup   atomic.Pointer[chan struct{}]
+	bpLastWarn atomic.Int64
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
