@@ -199,6 +199,16 @@ export default function WorkspaceLayout() {
           }}
         />
         <Stack.Screen name="inbox/[id]" options={SHEET_OPTIONS} />
+        {/* Archived inbox sub-view (RUYI-532) — pushed from the entry at the
+            bottom of the main list, native header like issue/[id]. Title uses
+            the shared `list.archived_title` key web's archived view renders. */}
+        <Stack.Screen
+          name="inbox/archived"
+          options={{
+            title: i18n.t("inbox:list.archived_title", "Archived"),
+            headerBackTitle: "Back",
+          }}
+        />
         {/* Issue-detail formSheet pickers. All share the same sheet config:
             explicit numeric detents to dodge expo/expo#42904+#42965 (the
             `fitToContents` zero-size / padding bugs on iOS 26 + Expo 55),
