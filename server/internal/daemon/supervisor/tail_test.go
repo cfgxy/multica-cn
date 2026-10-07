@@ -88,8 +88,8 @@ func TestTailResumeDedupStraddledLines(t *testing.T) {
 
 	// Crash model: line-1 was handed out, only its offset+hash persisted.
 	handed := len("line-1\n")
-	rs := readState{StdoutOffset: int64(handed), StdoutHashes: []uint64{hashLine([]byte("line-1"))}}
-	if err := mgr.StoreReadState(id, rs); err != nil {
+	rs := streamReadState{Offset: int64(handed), Hashes: []uint64{hashLine([]byte("line-1"))}}
+	if err := mgr.StoreStreamReadState(id, "stdout", rs); err != nil {
 		t.Fatal(err)
 	}
 

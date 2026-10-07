@@ -89,25 +89,34 @@ func TestListRunIDsFiltersByPattern(t *testing.T) {
 	}
 }
 
-func TestReadStateRoundTrip(t *testing.T) {
+func TestStreamReadStateRoundTrip(t *testing.T) {
 	mgr, _ := NewManager(t.TempDir())
 	id := "0123abcd-1234-5678-9abc-def012345678"
-	rs := readState{StdoutOffset: 12, StderrOffset: 34, StdoutHashes: []uint64{1, 2}, StderrHashes: []uint64{3}}
-	if err := mgr.StoreReadState(id, rs); err != nil {
+	rs := streamReadState{Offset: 12, Hashes: []uint64{1, 2}}
+	if err := mgr.StoreStreamReadState(id, "stdout", rs); err != nil {
 		t.Fatal(err)
 	}
-	got, err := mgr.LoadReadState(id)
+	got, err := mgr.LoadStreamReadState(id, "stdout")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.StdoutOffset != 12 || got.StderrOffset != 34 || len(got.StdoutHashes) != 2 {
+	if got.Offset != 12 || len(got.Hashes) != 2 {
 		t.Fatalf("read state mismatch: %+v", got)
 	}
-	empty, err := mgr.LoadReadState("ffffffff-1234-5678-9abc-def012345678")
+	// Streams are independent files: stderr starts at zero even though
+	// stdout has advanced.
+	other, err := mgr.LoadStreamReadState(id, "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Offset != 0 {
+		t.Fatalf("stderr cursor not independent: %+v", other)
+	}
+	empty, err := mgr.LoadStreamReadState("ffffffff-1234-5678-9abc-def012345678", "stdout")
 	if err != nil {
 		t.Fatalf("missing read state should default: %v", err)
 	}
-	if empty.StdoutOffset != 0 {
+	if empty.Offset != 0 {
 		t.Fatalf("default read state not zero: %+v", empty)
 	}
 }
