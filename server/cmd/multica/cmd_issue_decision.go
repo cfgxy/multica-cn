@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -50,9 +52,27 @@ func init() {
 	issueDecisionAddCmd.Flags().Bool("multi", false, "Allow selecting multiple options (default single-select)")
 	issueDecisionAddCmd.Flags().IntSlice("recommended", nil, "0-based indices of recommended options (repeatable)")
 	issueDecisionAddCmd.Flags().String("source-comment", "", "Comment ID the card originates from (typically the current task's trigger comment)")
+	// RUYI-514: retries must not mint duplicate cards. Inside a run
+	// (MULTICA_TASK_ID set) a stable key is derived automatically; these two
+	// flags are the explicit overrides.
+	issueDecisionAddCmd.Flags().String("idempotency-key", "", "Explicit idempotency key: same key on retry returns the original card instead of creating a second one")
+	issueDecisionAddCmd.Flags().Bool("force-new", false, "Deliberately re-raise: skip the auto-derived retry key so a genuinely new card is created")
 	issueDecisionAddCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueDecisionListCmd.Flags().String("output", "json", "Output format: table or json")
+}
+
+// deriveDecisionIdempotencyKey builds the run-scoped retry key (RUYI-514).
+// Same run + same decision (issue + question) derives the same key across
+// retries even when the retry rewrites flags like --recommended — that exact
+// rewrite is how RUYI-495 duplicated a card. Task, issue, and question anchor
+// the identity; options and recommendations are deliberately excluded because
+// retries routinely tweak them. This is key derivation only: the server never
+// compares question text, so legitimate same-question re-asks stay legal in a
+// later run (new task id) or via --force-new.
+func deriveDecisionIdempotencyKey(taskID, issueID, question string) string {
+	sum := sha256.Sum256([]byte("issue-decision\x00" + taskID + "\x00" + issueID + "\x00" + strings.TrimSpace(question)))
+	return fmt.Sprintf("task-%s-%x", taskID, sum[:8])
 }
 
 // validateDecisionOptions mirrors the server-side create validation so the
@@ -107,6 +127,21 @@ func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
 
+	forceNew, _ := cmd.Flags().GetBool("force-new")
+	idemKey, _ := cmd.Flags().GetString("idempotency-key")
+	if forceNew && idemKey != "" {
+		return fmt.Errorf("--force-new and --idempotency-key are mutually exclusive")
+	}
+	if idemKey == "" && !forceNew {
+		// Inside a run the daemon exports MULTICA_TASK_ID; derive a stable
+		// key so a result-uncertain retry reuses the original card instead
+		// of minting a duplicate (RUYI-495's failure mode). Outside a run
+		// there is no stable identity, so behavior stays as before.
+		if taskID := os.Getenv("MULTICA_TASK_ID"); taskID != "" {
+			idemKey = deriveDecisionIdempotencyKey(taskID, issueRef.ID, question)
+		}
+	}
+
 	body := map[string]any{
 		"question": question,
 		"options":  options,
@@ -120,13 +155,20 @@ func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 	if sourceComment, _ := cmd.Flags().GetString("source-comment"); sourceComment != "" {
 		body["source_comment_id"] = sourceComment
 	}
+	if idemKey != "" {
+		body["client_request_id"] = idemKey
+	}
 
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/decisions", body, &result); err != nil {
 		return fmt.Errorf("add decision card: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Decision card created on issue %s.\n", issueRef.Display)
+	if replay, _ := result["idempotent_replay"].(bool); replay {
+		fmt.Fprintf(os.Stderr, "Decision card already exists on issue %s (idempotent replay returned the original card).\n", issueRef.Display)
+	} else {
+		fmt.Fprintf(os.Stderr, "Decision card created on issue %s.\n", issueRef.Display)
+	}
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
