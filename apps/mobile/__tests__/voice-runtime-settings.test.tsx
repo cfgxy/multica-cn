@@ -248,6 +248,40 @@ describe("VoiceRuntimeSettingsScreen", () => {
     alertSpy.mockRestore();
   });
 
+  it("seeds the name field with the display name when no alias is set (RUYI-540)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    // Instances created from the register form only set `name` (the server
+    // create endpoint does not write custom_name), so the edit input must
+    // fall back to it — seeding only from custom_name left the field blank.
+    mockRuntimes = [{ ...voiceRuntime, custom_name: undefined }] as unknown as RuntimeDevice[];
+    await render(<VoiceRuntimeSettingsScreen />);
+
+    expect(screen.getByDisplayValue("runtime-raw-name")).toBeOnTheScreen();
+    alertSpy.mockRestore();
+  });
+
+  it("surfaces the server's readable message when the key update fails (RUYI-540)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    const serverMessage =
+      "runtime credential encryption is not configured on this server (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY missing)";
+    mockPutMutate.mockImplementation(
+      (_action: unknown, opts?: { onError?: (err: unknown) => void }) =>
+        opts?.onError?.(new Error(serverMessage)),
+    );
+    await render(<VoiceRuntimeSettingsScreen />);
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Enter a new key to update"),
+      "qaFAKE-key",
+    );
+    await fireEvent.press(screen.getByLabelText("Update key"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(serverMessage);
+    });
+    alertSpy.mockRestore();
+  });
+
   it("clears the stored credential from the Remove action", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     await render(<VoiceRuntimeSettingsScreen />);
