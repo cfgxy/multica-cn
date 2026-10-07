@@ -273,4 +273,95 @@ describe("quick-create pasted image round-trip (RUYI-478)", () => {
 
     view.unmount();
   });
+
+  it("delivers a settled image whose editor dies inside the debounce window (RUYI-493)", async () => {
+    // The residual window from RUYI-478: the settle swap lands in a LIVE
+    // editor's document, so no "editor lost" flag is set and the debounced
+    // onUpdate becomes the only writer of the body. Destroying the editor
+    // inside that window drops the pending update with the instance — the
+    // image sits in a dead document while the draft body never learns of it.
+    mockUploadSucceeds(20);
+    const editorRef: React.RefObject<ContentEditorRef | null> = { current: null };
+    const view = render(<Host editorRef={editorRef} remountKey="v1" />);
+
+    await vi.waitFor(() => {
+      expect(editorRef.current?.getMarkdown()).toBeDefined();
+    });
+
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "image.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      editorRef.current?.uploadFile(file);
+    });
+
+    // Settle while the editor is alive: the inline swap lands here.
+    await vi.waitFor(() => {
+      expect(editorRef.current?.hasActiveUploads()).toBe(false);
+    });
+
+    // Destroy the instance inside the 150ms debounce window (remount, same
+    // host — the coordinated-upload hook survives, its recheck must too).
+    await act(async () => {
+      view.rerender(<Host editorRef={editorRef} remountKey="v2" />);
+    });
+    await vi.waitFor(() => {
+      expect(editorRef.current?.getMarkdown()).toBeDefined();
+    });
+
+    // The image must still reach the persisted draft body — the submit-time
+    // reference filter binds against it — and the replacement editor's
+    // document, exactly once each.
+    await vi.waitFor(
+      () => {
+        expect(useIssueDraftStore.getState().draft.agent.prompt).toContain(FINAL_URL);
+      },
+      { timeout: 3000 },
+    );
+    const stored = useIssueDraftStore.getState().draft.agent.prompt;
+    expect(stored.split(FINAL_URL).length - 1).toBe(1);
+    const md = editorRef.current?.getMarkdown() ?? "";
+    expect(md).toContain(`![image.png](${FINAL_URL})`);
+    expect(md.split(`![image.png](${FINAL_URL})`).length - 1).toBe(1);
+
+    view.unmount();
+  });
+
+  it("does not backfill an upload whose placeholder the user deleted on the live editor", async () => {
+    // MUL-5181 guard for the delivery confirmation: a placeholder the user
+    // deleted mid-upload must stay deleted even once the upload settles.
+    // clearContent is coarser than a Backspace but leaves the engine in the
+    // same observable state — a live document with no node carrying the
+    // upload's uploadId.
+    mockUploadSucceeds(20);
+    const editorRef: React.RefObject<ContentEditorRef | null> = { current: null };
+    const view = render(<Host editorRef={editorRef} />);
+
+    await vi.waitFor(() => {
+      expect(editorRef.current?.getMarkdown()).toBeDefined();
+    });
+
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "image.png", {
+      type: "image/png",
+    });
+    await act(async () => {
+      editorRef.current?.uploadFile(file);
+    });
+    expect(editorRef.current?.hasActiveUploads()).toBe(true);
+
+    // User deletes the placeholder mid-upload, before the settle.
+    await act(async () => {
+      editorRef.current?.clearContent();
+    });
+
+    // Settle arrives on the still-alive editor; nothing may write the image
+    // back, now or after the debounce window has fully passed.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+    });
+    expect(editorRef.current?.getMarkdown() ?? "").not.toContain(FINAL_URL);
+    expect(useIssueDraftStore.getState().draft.agent.prompt).not.toContain(FINAL_URL);
+
+    view.unmount();
+  });
 });
