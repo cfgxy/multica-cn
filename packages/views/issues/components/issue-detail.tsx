@@ -1033,6 +1033,13 @@ interface IssueDetailProps {
   /** When set, the issue detail will auto-scroll to this comment and briefly highlight it. */
   highlightCommentId?: string;
   /**
+   * When set, auto-scroll to this decision card and briefly highlight it —
+   * the `#decision-<id>` deep link from the Decision Center (RUYI-494).
+   * Unlike the comment landing there is no thread-folding to undo and no
+   * memento: a card is always a top-level timeline item.
+   */
+  highlightDecisionId?: string;
+  /**
    * Bump to replay the `highlightCommentId` landing on an already-mounted
    * detail. A remount replays it by itself (fresh mount, cleared memento
    * entry); this token is for the one path with neither remount nor
@@ -1170,7 +1177,7 @@ export function IssueDetailSkeleton({ leading }: { leading?: ReactNode } = {}) {
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId: highlightCommentIdProp, highlightRequestToken: highlightRequestTokenProp, leadingAction }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId: highlightCommentIdProp, highlightDecisionId: highlightDecisionIdProp, highlightRequestToken: highlightRequestTokenProp, leadingAction }: IssueDetailProps) {
   const { t } = useT("issues");
   const locale = useLocale();
   const timeAgo = useTimeAgo();
@@ -1729,7 +1736,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // When the timeline renders flat (deep-link or in-page find), there is no
   // Virtuoso instance — minimap jumps drive the scroll container directly.
-  const isFlatTimeline = !!highlightCommentId || find.open;
+  const isFlatTimeline = !!highlightCommentId || !!highlightDecisionIdProp || find.open;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   // Scroll a freshly posted comment into view, aligned so its bottom sits just
   // above the sticky composer (never behind it). A reply lives inside its root
@@ -2107,6 +2114,51 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       clearTimeout(fade);
     };
   }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand]);
+
+  // Decision-card deep link (Decision Center rows carry `#decision-<id>`).
+  // A card is always a top-level timeline row — no thread-folding to undo and
+  // no memento — so this is the comment landing minus those concerns: same
+  // landing guard, same container-scoped centering, same shared hold/fade.
+  const decisionHighlightTintClass =
+    "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+  const didHighlightDecisionRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightDecisionIdProp || items.length === 0) return;
+    if (didHighlightDecisionRef.current === highlightDecisionIdProp) return;
+    const el = document.getElementById(`decision-${highlightDecisionIdProp}`);
+    const container = scrollContainerEl;
+    if (!el || !container) return;
+
+    didHighlightDecisionRef.current = highlightDecisionIdProp;
+
+    let rafId = 0;
+    let frames = 0;
+    let last = -1;
+    const center = () => {
+      const c = container.getBoundingClientRect();
+      const e = el.getBoundingClientRect();
+      const target = Math.max(
+        0,
+        container.scrollTop + (e.top - c.top) - (container.clientHeight - e.height) / 2,
+      );
+      container.scrollTop = target;
+      if (Math.abs(target - last) > 1 && ++frames < 30) {
+        last = target;
+        rafId = requestAnimationFrame(center);
+      }
+    };
+    rafId = requestAnimationFrame(center);
+
+    setHighlightedId(highlightDecisionIdProp);
+    const fade = window.setTimeout(
+      () => setHighlightedId(null),
+      COMMENT_HIGHLIGHT_HOLD_MS,
+    );
+    return () => {
+      cancelAnimationFrame(rafId);
+      clearTimeout(fade);
+    };
+  }, [highlightDecisionIdProp, items, scrollContainerEl]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -2827,7 +2879,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     if (item.kind === "decision") {
       return (
-        <div className="pb-3" id={`decision-${item.id}`}>
+        <div
+          className={cn(
+            "pb-3 transition-colors duration-700",
+            highlightedId === item.id && decisionHighlightTintClass,
+          )}
+          id={`decision-${item.id}`}
+        >
           <DecisionCard decision={item.decision} />
         </div>
       );
