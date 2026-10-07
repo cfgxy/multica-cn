@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -32,6 +33,9 @@ const (
 	decisionMaxOptions        = 4
 	decisionMaxQuestionLen    = 500
 	decisionMaxOptionLabelLen = 200
+	// RUYI-514: caller-supplied idempotency keys are opaque strings; 255
+	// chars is the same ceiling cloud_billing puts on Idempotency-Key.
+	decisionMaxClientRequestIDLen = 255
 )
 
 type DecisionOption struct {
@@ -57,6 +61,10 @@ type IssueDecisionResponse struct {
 	CreatedAt          time.Time               `json:"created_at"`
 	UpdatedAt          time.Time               `json:"updated_at"`
 	TriggerOutcomes    []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	// IdempotentReplay (RUYI-514) marks a 200 response that returned the
+	// original card because the create was a same-key retry; fresh creates
+	// are 201 with the field omitted.
+	IdempotentReplay bool `json:"idempotent_replay,omitempty"`
 }
 
 type CreateIssueDecisionRequest struct {
@@ -65,6 +73,12 @@ type CreateIssueDecisionRequest struct {
 	MultiSelect        bool     `json:"multi_select"`
 	RecommendedIndices []int    `json:"recommended_indices"`
 	SourceCommentID    *string  `json:"source_comment_id"`
+	// ClientRequestID is the optional idempotency key. Absent/empty keeps
+	// the legacy behavior: every call creates a new card. There is
+	// deliberately no question-text dedup (RUYI-514 验收 5) — legitimate
+	// same-question re-asks must keep working; only the explicit key
+	// collapses retries.
+	ClientRequestID string `json:"client_request_id,omitempty"`
 }
 
 type AnswerIssueDecisionRequest struct {
@@ -256,6 +270,21 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+
+	// RUYI-514: the optional idempotency key is scoped to (workspace, creator
+	// type, creator id) by the unique index, so an empty key (the default)
+	// keeps the legacy create-always behavior and a key is only ever compared
+	// against the same actor's own cards.
+	clientRequestID := strings.TrimSpace(sanitizeNullBytes(req.ClientRequestID))
+	if len(clientRequestID) > decisionMaxClientRequestIDLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("client_request_id must be at most %d characters", decisionMaxClientRequestIDLen))
+		return
+	}
+	var keyParam pgtype.Text
+	if clientRequestID != "" {
+		keyParam = pgtype.Text{String: clientRequestID, Valid: true}
+	}
+
 	optionsJSON, err := json.Marshal(options)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to encode options")
@@ -278,8 +307,34 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		RecommendedIndices: recommendedJSON,
 		CreatedByType:      authorType,
 		CreatedByID:        parseUUID(authorID),
+		ClientRequestID:    keyParam,
 	})
 	if err != nil {
+		// Same-key retry: the insert lost the race against the original
+		// create, which by then must be committed (READ COMMITTED waits on
+		// the conflicting index entry before reporting 23505), so the
+		// replay lookup sees it. Return the original card with 200 — the
+		// retry was not a new decision, and the caller gets the same ID the
+		// first call produced. No WS publish: replay adds no state.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uidx_issue_decisions_client_request" {
+			existing, replayErr := h.Queries.GetIssueDecisionByIdempotencyKey(r.Context(), db.GetIssueDecisionByIdempotencyKeyParams{
+				WorkspaceID:     issue.WorkspaceID,
+				CreatedByType:   authorType,
+				CreatedByID:     parseUUID(authorID),
+				ClientRequestID: keyParam,
+			})
+			if replayErr == nil {
+				resp := decisionToResponse(existing)
+				resp.IdempotentReplay = true
+				slog.Info("issue decision idempotent replay", append(logger.RequestAttrs(r),
+					"decision_id", resp.ID, "issue_id", resp.IssueID, "created_by", authorType)...)
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			slog.Warn("issue decision replay lookup failed", append(logger.RequestAttrs(r),
+				"error", replayErr, "issue_id", uuidToString(issue.ID))...)
+		}
 		slog.Warn("create issue decision failed", append(logger.RequestAttrs(r), "error", err, "issue_id", uuidToString(issue.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to create decision card")
 		return

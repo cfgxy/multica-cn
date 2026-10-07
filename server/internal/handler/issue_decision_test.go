@@ -389,3 +389,184 @@ func TestAnswerEchoForMemberCardHasNoMention(t *testing.T) {
 		t.Fatalf("member-card echo must not mention an agent: %q", content)
 	}
 }
+
+// --- idempotent create (RUYI-514) -------------------------------------------
+
+// decisionCardBody builds a create payload; key=="" omits client_request_id.
+func decisionCardBody(question, key string) map[string]any {
+	body := map[string]any{
+		"question": question,
+		"options":  []string{"Now", "Later"},
+	}
+	if key != "" {
+		body["client_request_id"] = key
+	}
+	return body
+}
+
+func decisionCardCount(t *testing.T, issueID string) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT count(*) FROM issue_decisions WHERE issue_id = $1`, parseUUID(issueID)).Scan(&n); err != nil {
+		t.Fatalf("count cards: %v", err)
+	}
+	return n
+}
+
+func TestIssueDecisionIdempotentReplay(t *testing.T) {
+	t.Run("same-key retry returns the original card with 200", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, true, decisionCardBody("Which plan ships?", "retry-key-1"))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("first create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		first := decodeDecision(t, w)
+		if first.IdempotentReplay {
+			t.Fatal("fresh create must not be flagged idempotent_replay")
+		}
+
+		// The RUYI-495 retry rewrote flags (added --recommended): a same-key
+		// retry with a different payload still collapses onto the original
+		// card — the key owner vouches for the retry.
+		retryBody := decisionCardBody("Which plan ships?", "retry-key-1")
+		retryBody["recommended_indices"] = []int{0}
+		w = createDecisionCard(t, f, true, retryBody)
+		if w.Code != http.StatusOK {
+			t.Fatalf("same-key retry: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		replay := decodeDecision(t, w)
+		if replay.ID != first.ID {
+			t.Fatalf("replay ID = %s, want original %s", replay.ID, first.ID)
+		}
+		if !replay.IdempotentReplay {
+			t.Fatal("replay response must set idempotent_replay")
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 1 {
+			t.Fatalf("same-key retry left %d cards, want 1", n)
+		}
+	})
+
+	t.Run("different key creates a second card", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		if w := createDecisionCard(t, f, true, decisionCardBody("Same question?", "key-a")); w.Code != http.StatusCreated {
+			t.Fatalf("key-a create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		w := createDecisionCard(t, f, true, decisionCardBody("Same question?", "key-b"))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("key-b create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		second := decodeDecision(t, w)
+		if second.IdempotentReplay {
+			t.Fatal("new-key create must not be flagged idempotent_replay")
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 2 {
+			t.Fatalf("distinct keys produced %d cards, want 2", n)
+		}
+	})
+
+	t.Run("no key keeps the legacy create-always behavior", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, true, decisionCardBody("Legacy path", ""))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("first keyless create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		first := decodeDecision(t, w)
+		w = createDecisionCard(t, f, true, decisionCardBody("Legacy path", ""))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("second keyless create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		second := decodeDecision(t, w)
+		if first.ID == second.ID {
+			t.Fatal("keyless creates must produce distinct cards")
+		}
+		if second.IdempotentReplay {
+			t.Fatal("keyless create must not be flagged idempotent_replay")
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 2 {
+			t.Fatalf("keyless retries produced %d cards, want 2", n)
+		}
+	})
+
+	t.Run("key scope is per creator", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		// A second agent on the same issue.
+		agent2 := createHandlerTestAgent(t, "decision-card-agent-b", nil)
+		task2 := createHandlerTestTaskForAgentOnIssue(t, agent2, f.IssueID)
+		f2 := decisionFixture{IssueID: f.IssueID, AgentID: agent2, TaskID: task2}
+
+		if w := createDecisionCard(t, f, true, decisionCardBody("Shared key string", "cross-actor-key")); w.Code != http.StatusCreated {
+			t.Fatalf("agent A create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		// Same key string from agent B: independent scope, new card.
+		if w := createDecisionCard(t, f2, true, decisionCardBody("Shared key string", "cross-actor-key")); w.Code != http.StatusCreated {
+			t.Fatalf("agent B create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		// Same key string from the member actor: also independent.
+		if w := createDecisionCard(t, f, false, decisionCardBody("Shared key string", "cross-actor-key")); w.Code != http.StatusCreated {
+			t.Fatalf("member create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 3 {
+			t.Fatalf("cross-actor same-key created %d cards, want 3", n)
+		}
+	})
+
+	t.Run("oversized key is rejected", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		long := strings.Repeat("k", 256)
+		w := createDecisionCard(t, f, true, decisionCardBody("Too long key", long))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("oversized key: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestIssueDecisionConcurrentCreate(t *testing.T) {
+	f := newDecisionFixture(t)
+	const racers = 8
+	start := make(chan struct{})
+	results := make(chan *httptest.ResponseRecorder, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			<-start
+			w := httptest.NewRecorder()
+			req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions", decisionCardBody("Concurrent card", "double-click-key"))
+			req = withURLParam(req, "id", f.IssueID)
+			req = agentIdentityHeaders(req, f)
+			testHandler.CreateIssueDecision(w, req)
+			results <- w
+		}()
+	}
+	close(start)
+
+	created, replayed := 0, 0
+	ids := map[string]bool{}
+	for i := 0; i < racers; i++ {
+		w := <-results
+		if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+			t.Fatalf("racer: unexpected status %d: %s", w.Code, w.Body.String())
+		}
+		resp := decodeDecision(t, w)
+		ids[resp.ID] = true
+		if w.Code == http.StatusCreated {
+			created++
+			if resp.IdempotentReplay {
+				t.Fatal("the single 201 must not be flagged idempotent_replay")
+			}
+		} else {
+			replayed++
+			if !resp.IdempotentReplay {
+				t.Fatal("every replayed racer must be flagged idempotent_replay and share the winner's ID")
+			}
+		}
+	}
+	if created != 1 || replayed != racers-1 {
+		t.Fatalf("created=%d replayed=%d, want 1/%d", created, replayed, racers-1)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("racers saw %d distinct card IDs, want 1", len(ids))
+	}
+	if n := decisionCardCount(t, f.IssueID); n != 1 {
+		t.Fatalf("double-click left %d cards, want 1", n)
+	}
+}
