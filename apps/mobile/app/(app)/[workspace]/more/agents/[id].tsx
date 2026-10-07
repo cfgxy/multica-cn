@@ -41,6 +41,7 @@ import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import type { Agent } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { InstructionsPreview } from "@/components/ui/instructions-preview";
 import { ActionSheetModal, useActionSheet } from "@/components/ui/action-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentPresenceLine } from "@/components/agents/agent-presence-line";
@@ -538,6 +539,34 @@ export default function AgentDetailPage() {
                   <AccessScopeBadge agent={a} />
                 </View>
               </View>
+            </View>
+
+            {/* RUYI-541: instructions 缩略预览——详情页此前完全不展示
+                instructions（只在 edit-profile 窗口可编辑）。读者可见性与
+                web instructions-tab 对齐（读者可读）， managers 点按进
+                edit-profile 完整查看与编辑（独立窗口，同 RUYI-541 模式）。 */}
+            <View className="mx-4 mb-3 gap-1.5">
+              <Text className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                {t("tabs.instructions", "Instructions")}
+              </Text>
+              <InstructionsPreview
+                text={a.instructions}
+                emptyHint={t("mobile.detail.instructions_empty", "No instructions yet")}
+                numberOfLines={4}
+                onTap={
+                  canManage && !isArchived
+                    ? () => {
+                        if (!wsSlug) return;
+                        router.push({
+                          pathname: "/[workspace]/more/agents/[id]/edit-profile",
+                          params: { workspace: wsSlug, id: a.id },
+                        });
+                      }
+                    : undefined
+                }
+                canEdit={canManage && !isArchived}
+                accessibilityLabel={t("mobile.detail.edit_profile", "Edit Profile")}
+              />
             </View>
 
             {/* A7：DM / Assign Work —— web 详情头同一对动作。chat 共享
