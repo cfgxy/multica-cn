@@ -101,6 +101,7 @@ const PAGE_KEYWORDS: Record<WorkspacePageKey, string[]> = {
   selfEvolution: ["self-evolution", "prompt", "evolution", "自进化", "提示词"],
   runtimes: ["runtimes", "environments", "machines", "运行时"],
   skills: ["skills", "library", "技能"],
+  decisions: ["decisions", "decision inbox", "decision cards", "决策", "决策中心", "决策卡"],
   settings: ["settings", "config", "preferences", "设置", "配置"],
   admin: ["admin", "super admin", "manage users", "管理", "超级管理员"],
 };

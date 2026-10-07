@@ -31,6 +31,7 @@ import type billing from "../locales/en/billing.json";
 import type promptMarket from "../locales/en/prompt-market.json";
 import type selfEvolution from "../locales/en/self-evolution.json";
 import type voice from "../locales/en/voice.json";
+import type decisions from "../locales/en/decisions.json";
 
 // Module augmentation enables i18next v26 selector API across the monorepo:
 // `t($ => $.signin.title)` resolves to the value in en/auth.json.
@@ -76,6 +77,7 @@ declare global {
     "prompt-market": typeof promptMarket;
     "self-evolution": typeof selfEvolution;
     voice: typeof voice;
+    decisions: typeof decisions;
   }
 }
 

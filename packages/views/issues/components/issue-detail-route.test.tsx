@@ -9,6 +9,7 @@ import type { NavigationAdapter } from "../../navigation";
 import {
   IssueDetailRoute,
   parseCommentHighlightHash,
+  parseDecisionHighlightHash,
   useCanonicalIssueUrl,
 } from "./issue-detail-route";
 
@@ -112,6 +113,20 @@ describe("parseCommentHighlightHash", () => {
     ["#comment-unsafe/value", undefined],
   ])("maps %s to %s", (hash, expected) => {
     expect(parseCommentHighlightHash(hash)).toBe(expected);
+  });
+});
+
+// Decision Center rows deep-link `#decision-<cardId>` (RUYI-494); the parse
+// must stay disjoint from the comment prefix so one hash can never land both.
+describe("parseDecisionHighlightHash", () => {
+  it.each([
+    ["#decision-01a113d4-0000-0000-0000-000000000000", "01a113d4-0000-0000-0000-000000000000"],
+    ["#decision-card_1", "card_1"],
+    ["#comment-01a02814", undefined],
+    ["#decision-", undefined],
+    ["#decision-unsafe/value", undefined],
+  ])("maps %s to %s", (hash, expected) => {
+    expect(parseDecisionHighlightHash(hash)).toBe(expected);
   });
 });
 
