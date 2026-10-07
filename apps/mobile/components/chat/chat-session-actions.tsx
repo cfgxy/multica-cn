@@ -29,6 +29,8 @@ import { Text } from "@/components/ui/text";
 import { useT } from "@/lib/use-t";
 
 interface Props {
+  /** Hide the "+" new-chat button (RUYI-496 detail screen: the list owns it). */
+  showNew?: boolean;
   showMore: boolean;
   isArchived: boolean;
   isPinned: boolean;
@@ -40,6 +42,7 @@ interface Props {
 }
 
 export function ChatSessionActions({
+  showNew = true,
   showMore,
   isArchived,
   isPinned,
@@ -52,12 +55,14 @@ export function ChatSessionActions({
   const { t } = useT("chat");
   return (
     <>
-      <IconButton
-        name="add"
-        iconSize={24}
-        onPress={onNewPress}
-        accessibilityLabel={t("window.new_chat_tooltip", "New chat")}
-      />
+      {showNew ? (
+        <IconButton
+          name="add"
+          iconSize={24}
+          onPress={onNewPress}
+          accessibilityLabel={t("window.new_chat_tooltip", "New chat")}
+        />
+      ) : null}
       {showMore ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

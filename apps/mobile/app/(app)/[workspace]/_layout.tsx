@@ -23,7 +23,6 @@ import { shouldResolveWorkspaceMembership } from "@/lib/workspace-route";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
-import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 import { useChatAgentRequestResetOnWorkspaceChange } from "@/data/stores/chat-agent-request-store";
 
 /**
@@ -138,7 +137,6 @@ export default function WorkspaceLayout() {
   // session id, etc.) is invalid in workspace B and must not leak.
   useNewIssueDraftResetOnWorkspaceChange(matched?.id ?? null);
   useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
-  useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
   useChatAgentRequestResetOnWorkspaceChange(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
@@ -406,8 +404,13 @@ export default function WorkspaceLayout() {
         {/* Shared filter sheet for My Issues and the workspace Issues page —
             chooses the right view-store via `?scope=my|all` URL param. */}
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
-        {/* Chat session-switch sheet. */}
-        <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
+        {/* RUYI-496: chat detail screen — the whole chat surface, pushed on
+            top of the tabs. Draws its own Header (back + title + session
+            actions), so the native stack header stays off. */}
+        <Stack.Screen
+          name="chat/[sessionId]"
+          options={{ headerShown: false }}
+        />
         {/* Chat session rename sheet (RUYI-51) — reached from the chat
             header's ⋯ menu. Isolated sheet (no chip-row neighbours), so it
             may override the detents with fitToContents; see the SHEET_OPTIONS
