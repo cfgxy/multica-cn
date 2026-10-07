@@ -14,7 +14,7 @@
  * read-only server-side — rename/pin are pointless there; delete needs the
  * same confirm as the main list).
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { Alert, FlatList, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";

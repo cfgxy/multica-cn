@@ -117,12 +117,13 @@ jest.mock("@/data/queries/members", () => ({
 }));
 
 const mockDeleteMutate = jest.fn();
+const mockSetArchivedMutate = jest.fn();
 
 jest.mock("@/data/mutations/chat", () => ({
   useCreateChatSession: () => ({ mutateAsync: jest.fn() }),
   useDeleteChatSession: () => ({ mutate: mockDeleteMutate }),
   useMarkChatSessionRead: () => ({ mutate: jest.fn() }),
-  useSetChatSessionArchived: () => ({ mutate: jest.fn() }),
+  useSetChatSessionArchived: () => ({ mutate: mockSetArchivedMutate }),
   useSetChatSessionPinned: () => ({ mutate: jest.fn() }),
 }));
 
@@ -200,8 +201,10 @@ jest.mock("@/components/ui/icon-button", () => {
   };
 });
 
+const mockSheetShow = jest.fn();
+
 jest.mock("@/components/ui/action-sheet", () => ({
-  useActionSheet: () => ({ show: jest.fn() }),
+  useActionSheet: () => ({ show: mockSheetShow }),
   ActionSheetModal: () => null,
 }));
 
@@ -302,6 +305,24 @@ describe("ChatListScreen (chat tab root, RUYI-496)", () => {
         params: expect.objectContaining({ workspace: "acme" }),
       }),
     );
+  });
+
+  // RUYI-533: the archive action itself — long-press an active session and
+  // pick "Archive chat"; the optimistic patch flips `status` in the one flat
+  // cache, so the row leaves this list for the Archived sub-view.
+  it("RUYI-533: long-press archives an active session via the action sheet", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    fireEvent(await screen.findByTestId("chat-row-sb"), "longPress");
+    expect(mockSheetShow).toHaveBeenCalledTimes(1);
+    const sheetConfig = mockSheetShow.mock.calls[0][0];
+    const archiveIndex = sheetConfig.options.indexOf("Archive chat");
+    expect(archiveIndex).toBeGreaterThanOrEqual(0);
+    sheetConfig.onSelect(archiveIndex);
+    expect(mockSetArchivedMutate).toHaveBeenCalledWith({
+      sessionId: "sb",
+      archived: true,
+    });
   });
 
   it("RUYI-533: hides the archived entry when nothing is archived", async () => {

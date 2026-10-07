@@ -79,7 +79,6 @@ export default function ChatTab() {
     isError,
     error,
     refetch,
-    isRefetching,
   } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -253,7 +252,7 @@ export default function ChatTab() {
         },
       });
     },
-    [confirmDelete, sheet, t, untitled, wsSlug],
+    [confirmDelete, setArchived, setPinned, sheet, t, untitled, wsSlug],
   );
 
   // ── Render ─────────────────────────────────────────────────────────────
@@ -334,8 +333,6 @@ export default function ChatTab() {
             ) : null
           }
           contentContainerClassName="pb-6"
-          refreshing={isRefetching}
-          onRefresh={refetch}
           renderItem={({ item: session }) => (
             <ChatSessionRow
               session={session}
