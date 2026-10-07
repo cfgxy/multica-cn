@@ -21,7 +21,7 @@ UPDATE issue_decisions SET
     answer_comment_id = $4,
     updated_at = now()
 WHERE id = $5 AND workspace_id = $6 AND status = 'open'
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
 `
 
 type AnswerIssueDecisionParams struct {
@@ -65,6 +65,7 @@ func (q *Queries) AnswerIssueDecision(ctx context.Context, arg AnswerIssueDecisi
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientRequestID,
 	)
 	return i, err
 }
@@ -74,7 +75,7 @@ UPDATE issue_decisions SET
     status = 'cancelled',
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND status = 'open'
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
 `
 
 type CancelIssueDecisionParams struct {
@@ -106,6 +107,7 @@ func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisi
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientRequestID,
 	)
 	return i, err
 }
@@ -139,13 +141,13 @@ const createIssueDecision = `-- name: CreateIssueDecision :one
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
     question, options, multi_select, recommended_indices,
-    created_by_type, created_by_id
+    created_by_type, created_by_id, client_request_id
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6::jsonb, $7, $8::jsonb,
-    $9, $10
+    $9, $10, $11
 )
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
 `
 
 type CreateIssueDecisionParams struct {
@@ -159,6 +161,7 @@ type CreateIssueDecisionParams struct {
 	RecommendedIndices []byte      `json:"recommended_indices"`
 	CreatedByType      string      `json:"created_by_type"`
 	CreatedByID        pgtype.UUID `json:"created_by_id"`
+	ClientRequestID    pgtype.Text `json:"client_request_id"`
 }
 
 func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisionParams) (IssueDecision, error) {
@@ -173,6 +176,7 @@ func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisi
 		arg.RecommendedIndices,
 		arg.CreatedByType,
 		arg.CreatedByID,
+		arg.ClientRequestID,
 	)
 	var i IssueDecision
 	err := row.Scan(
@@ -194,12 +198,13 @@ func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisi
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientRequestID,
 	)
 	return i, err
 }
 
 const getIssueDecision = `-- name: GetIssueDecision :one
-SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at FROM issue_decisions
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id FROM issue_decisions
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -230,12 +235,62 @@ func (q *Queries) GetIssueDecision(ctx context.Context, arg GetIssueDecisionPara
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientRequestID,
+	)
+	return i, err
+}
+
+const getIssueDecisionByIdempotencyKey = `-- name: GetIssueDecisionByIdempotencyKey :one
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id FROM issue_decisions
+WHERE workspace_id = $1 AND created_by_type = $2 AND created_by_id = $3
+  AND client_request_id = $4
+`
+
+type GetIssueDecisionByIdempotencyKeyParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	CreatedByType   string      `json:"created_by_type"`
+	CreatedByID     pgtype.UUID `json:"created_by_id"`
+	ClientRequestID pgtype.Text `json:"client_request_id"`
+}
+
+// Replay lookup for RUYI-514: fires only after the unique index
+// uidx_issue_decisions_client_request rejected a duplicate insert, so the
+// winning row is already committed and visible (READ COMMITTED). Key scope
+// mirrors the index: workspace + creator type + creator id.
+func (q *Queries) GetIssueDecisionByIdempotencyKey(ctx context.Context, arg GetIssueDecisionByIdempotencyKeyParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, getIssueDecisionByIdempotencyKey,
+		arg.WorkspaceID,
+		arg.CreatedByType,
+		arg.CreatedByID,
+		arg.ClientRequestID,
+	)
+	var i IssueDecision
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.SourceCommentID,
+		&i.Question,
+		&i.Options,
+		&i.MultiSelect,
+		&i.RecommendedIndices,
+		&i.Status,
+		&i.SelectedIndices,
+		&i.AnsweredByType,
+		&i.AnsweredByID,
+		&i.AnsweredAt,
+		&i.AnswerCommentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClientRequestID,
 	)
 	return i, err
 }
 
 const listIssueDecisionsForIssue = `-- name: ListIssueDecisionsForIssue :many
-SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at FROM issue_decisions
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id FROM issue_decisions
 WHERE issue_id = $1 AND workspace_id = $2
 ORDER BY created_at ASC, id ASC
 `
@@ -273,6 +328,7 @@ func (q *Queries) ListIssueDecisionsForIssue(ctx context.Context, arg ListIssueD
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ClientRequestID,
 		); err != nil {
 			return nil, err
 		}
@@ -381,7 +437,7 @@ UPDATE issue_decisions SET
     answer_comment_id = $1,
     updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
 `
 
 type SetIssueDecisionAnswerCommentParams struct {
@@ -415,6 +471,7 @@ func (q *Queries) SetIssueDecisionAnswerComment(ctx context.Context, arg SetIssu
 		&i.CreatedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientRequestID,
 	)
 	return i, err
 }
