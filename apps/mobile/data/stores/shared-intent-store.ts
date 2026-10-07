@@ -1,9 +1,9 @@
 /**
  * Cross-screen channel for the Android share-intent flow (RUYI-463), same
- * one-shot handoff shape as chat-session-picker-store / chat-agent-request-
- * store — but the counterpart screens here can't be enumerated by one store
- * consumer: the share landing page (`app/share-target.tsx`) WRITES, and the
- * destination screen (chat tab / new-issue panels) TAKEs, one-shot.
+ * one-shot handoff shape as chat-agent-request-store — but the counterpart
+ * screens here can't be enumerated by one store consumer: the share landing
+ * page (`app/share-target.tsx`) WRITES, and the
+ * destination screen (chat detail / new-issue panels) TAKEs, one-shot.
  *
  * Lifecycle:
  *   1. `ShareIntentNavigator` (root layout) receives the payload from the
