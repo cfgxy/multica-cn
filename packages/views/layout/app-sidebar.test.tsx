@@ -142,6 +142,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme", slug: "acme" }),
   useWorkspacePaths: () => ({
     inbox: () => "/acme/inbox",
+    decisions: () => "/acme/decisions",
     chat: () => "/acme/chat",
     myIssues: () => "/acme/my-issues",
     issues: () => "/acme/issues",
@@ -180,7 +181,12 @@ vi.mock("@multica/core/inbox/queries", () => ({
   unreadWorkspaceIds: (entries: { workspace_id: string; count: number }[]) =>
     new Set(entries.filter((s) => s.count > 0).map((s) => s.workspace_id)),
 }));
-vi.mock("@multica/core/issues/queries", () => ({ issueDetailOptions: () => ({ queryKey: ["issue"] }) }));
+// Spread the real module: the sidebar's decision badge (RUYI-494) renders
+// decisionInboxKeys, which reads issueKeys.decisionsAll() at import time.
+vi.mock("@multica/core/issues/queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/issues/queries")>()),
+  issueDetailOptions: () => ({ queryKey: ["issue"] }),
+}));
 vi.mock("@multica/core/issues/stores/create-mode-store", () => ({
   useCreateModeStore: { getState: () => ({ lastMode: "agent" }) },
   openCreateIssueWithPreference: vi.fn(),
