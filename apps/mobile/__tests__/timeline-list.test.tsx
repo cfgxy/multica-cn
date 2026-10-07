@@ -3,7 +3,7 @@
 import React, { useSyncExternalStore } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import { Platform, Pressable, Text, View } from "react-native";
-import type { Issue, TimelineEntry } from "@multica/core/types";
+import type { Issue, IssueDecision, TimelineEntry } from "@multica/core/types";
 import type { TimelineSortMode } from "@multica/core/issues/timeline-sort";
 
 const mockReact = React;
@@ -113,8 +113,26 @@ jest.mock("expo-haptics", () => ({
   impactAsync: jest.fn(),
 }));
 
+jest.mock("@/components/issue/decision-card", () => ({
+  DecisionCard: ({ decision }: { decision: { id: string } }) =>
+    mockReact.createElement(mockText, null, `decision-card:${decision.id}`),
+}));
+
+jest.mock("@/components/issue/decision-batch-bar", () => ({
+  DecisionBatchBar: ({ open }: { open: Array<{ id: string }> }) =>
+    mockReact.createElement(
+      mockText,
+      null,
+      `decision-batch-bar:${open.map((card) => card.id).join(",")}`,
+    ),
+}));
+
+// Decision cards reach the list through the component's own useQuery; tests
+// swap this bag to control what interleaveDecisions merges into the rows.
+const mockDecisionsData: { data: IssueDecision[] } = { data: [] };
+
 jest.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: [] }),
+  useQuery: () => ({ data: mockDecisionsData.data }),
   // passthrough: the decisions options builder (RUYI-345) just labels an
   // options object; the stubbed useQuery above never runs its queryFn.
   queryOptions: (opts: unknown) => opts,
@@ -405,5 +423,70 @@ describe("selection-mode dismiss layer (RUYI-416)", () => {
     } finally {
       mockCommentSelectState.selectingId = null;
     }
+  });
+});
+
+describe("decision batch bar placement (RUYI-534)", () => {
+  function decisionCard(id: string, createdAt: string): IssueDecision {
+    return {
+      id,
+      issue_id: issue.id,
+      source_comment_id: null,
+      question: "q",
+      options: [{ label: "A" }, { label: "B" }],
+      multi_select: false,
+      recommended_indices: [],
+      status: "open",
+      selected_indices: [],
+      answered_by_type: null,
+      answered_by_id: null,
+      answered_at: null,
+      answer_comment_id: null,
+      created_by_type: "agent",
+      created_by_id: "a-1",
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+  }
+
+  afterEach(() => {
+    mockDecisionsData.data = [];
+  });
+
+  it("appends the batch bar after all comments and cards when two or more are open", async () => {
+    mockDecisionsData.data = [
+      decisionCard("d-2", "2026-09-05T12:00:00Z"),
+      decisionCard("d-1", "2026-09-05T08:00:00Z"),
+    ];
+
+    await renderTimeline([
+      comment("root-a", "2026-09-05T09:00:00Z"),
+      comment("root-b", "2026-09-05T10:00:00Z"),
+    ]);
+
+    expect(
+      screen.getAllByTestId(/timeline-row-/).map((node) => node.props.testID),
+    ).toEqual([
+      "timeline-row-root-a",
+      "timeline-row-d-1",
+      "timeline-row-root-b",
+      "timeline-row-d-2",
+      "timeline-row-decision-batch-bar",
+    ]);
+    // Server numbering order (created_at ASC over open cards) survives the
+    // position move.
+    expect(screen.getByText("decision-batch-bar:d-1,d-2")).toBeTruthy();
+  });
+
+  it("renders no batch bar for a single open card", async () => {
+    mockDecisionsData.data = [decisionCard("d-1", "2026-09-05T08:00:00Z")];
+
+    await renderTimeline([
+      comment("root-a", "2026-09-05T09:00:00Z"),
+      comment("root-b", "2026-09-05T10:00:00Z"),
+    ]);
+
+    expect(screen.queryByTestId("timeline-row-decision-batch-bar")).toBeNull();
+    expect(screen.getByText("decision-card:d-1")).toBeTruthy();
   });
 });

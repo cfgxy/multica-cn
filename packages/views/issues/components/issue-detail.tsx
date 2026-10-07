@@ -1624,22 +1624,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     keyed.sort((a, b) => a.key - b.key);
     const out: TimelineRow[] = keyed.map((k) => k.item);
-    // Batch answer bar (RUYI-471): with two or more open cards, one row sits
-    // right before the first open card so all picks go out in a single
-    // submit. Spliced after the sort so placement never depends on
-    // timestamp ties.
+    // Batch answer bar (RUYI-471, RUYI-534): with two or more open cards,
+    // one aggregate row sits at the very end of the timeline so all picks
+    // go out in a single submit. Appended after the sort so placement never
+    // depends on timestamp ties; the cards themselves stay ordered by
+    // created_at, which is what the server's "1A 2B" numbering reads.
     const openDecisions = issueDecisions.filter((d) => d.status === "open");
     if (openDecisions.length >= 2) {
-      const firstOpenIdx = out.findIndex(
-        (i) => i.kind === "decision" && i.decision.id === openDecisions[0]!.id,
-      );
-      if (firstOpenIdx !== -1) {
-        out.splice(firstOpenIdx, 0, {
-          kind: "decision-batch-bar",
-          id: "decision-batch-bar",
-          open: openDecisions,
-        });
-      }
+      out.push({
+        kind: "decision-batch-bar",
+        id: "decision-batch-bar",
+        open: openDecisions,
+      });
     }
     return out;
   }, [timelineView.groups, expandedResolved, issueDecisions]);
