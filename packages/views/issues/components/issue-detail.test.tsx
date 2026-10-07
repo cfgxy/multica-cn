@@ -2176,6 +2176,105 @@ describe("IssueDetail (shared)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Decision batch bar placement (RUYI-534). The bar aggregates every open
+  // card into one batch answer row; it must render at the very END of the
+  // timeline (after all comments, activities and cards), not spliced before
+  // the first open card, and disappear entirely when fewer than two cards
+  // are open. The deep-link prop keeps the timeline flat so every row is in
+  // the DOM for order assertions.
+  // -------------------------------------------------------------------------
+  describe("decision batch bar placement (RUYI-534)", () => {
+    function decision(id: string, createdAt: string, status = "open") {
+      return {
+        id,
+        issue_id: "issue-1",
+        source_comment_id: null,
+        question: "Which path do we take?",
+        options: [{ label: "A" }, { label: "B" }],
+        multi_select: false,
+        recommended_indices: [0],
+        status,
+        selected_indices: [],
+        answered_by_type: null,
+        answered_by_id: null,
+        answered_at: null,
+        answer_comment_id: null,
+        created_by_type: "agent",
+        created_by_id: "agent-1",
+        created_at: createdAt,
+        updated_at: createdAt,
+      };
+    }
+
+    function renderWithDecisions(
+      decisions: ReturnType<typeof decision>,
+      decisionId?: string,
+    ) {
+      mockApiObj.listIssueDecisions.mockResolvedValue(decisions);
+      const queryClient = createTestQueryClient();
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" highlightDecisionId={decisionId} />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+    }
+
+    it("appends the batch bar after every comment, activity and card", async () => {
+      renderWithDecisions(
+        [
+          decision("decision-1", "2026-01-19T00:00:00Z"),
+          decision("decision-2", "2026-01-20T00:00:00Z"),
+        ],
+        "decision-1",
+      );
+
+      const bar = await waitFor(() => {
+        const el = document.getElementById("decision-batch-bar");
+        expect(el).not.toBeNull();
+        return el!;
+      });
+
+      // Every comment and decision row precedes the bar — it is the last
+      // timeline row, not a splice before the first open card.
+      const rows = document.querySelectorAll(
+        "[id^='comment-'], [id^='decision-decision-']",
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(
+          bar.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_PRECEDING,
+        ).toBeTruthy();
+      }
+    });
+
+    it("renders no batch bar when only one card is open", async () => {
+      renderWithDecisions([decision("decision-1", "2026-01-19T00:00:00Z")], "decision-1");
+
+      await waitFor(() => {
+        expect(document.getElementById("decision-decision-1")).not.toBeNull();
+      });
+      expect(document.getElementById("decision-batch-bar")).toBeNull();
+    });
+
+    it("renders no batch bar when every card is answered", async () => {
+      renderWithDecisions(
+        [
+          decision("decision-1", "2026-01-19T00:00:00Z", "answered"),
+          decision("decision-2", "2026-01-20T00:00:00Z", "answered"),
+        ],
+        "decision-1",
+      );
+
+      await waitFor(() => {
+        expect(document.getElementById("decision-decision-1")).not.toBeNull();
+      });
+      expect(document.getElementById("decision-batch-bar")).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Comment anchors (RUYI-108) — the in-page half of the feature. Chip
   // rendering and its degraded state live in
   // rich-content/comment-anchor-rendering.test.tsx; what is canonical HERE is
