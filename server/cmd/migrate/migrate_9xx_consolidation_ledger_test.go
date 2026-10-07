@@ -126,6 +126,7 @@ var postConsolidationStems = []string{
 	"924_agent_resource_weight",            // RUYI-397
 	"925_oauth_management",                 // RUYI-420
 	"926_activity_audit",                   // RUYI-355
+	"927_issue_decision_workspace_inbox",   // RUYI-494
 	"928_agent_execution_profile_revision", // RUYI-433
 	"929_quick_replies",                    // RUYI-435 (renumbered from 926: yielded to RUYI-355's 926_activity_audit on main)
 	"930_agent_context_dual_slot",          // RUYI-425
