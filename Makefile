@@ -261,6 +261,11 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
 	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)（daemon-update 重渲染时自动读回）"
+	# linger（RUYI-529）：supervised 启动经 systemd-run 依赖用户管理器总线常驻；
+	# Linger=no 时会话注销即回收总线，全部启动集中失败。幂等开启，失败不阻断安装但显式告警。
+	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
+		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
+	@loginctl show-user $(USER) -p Linger || true
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
 	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
 	sudo systemctl daemon-reload
@@ -293,6 +298,10 @@ daemon-update: daemon-build ## Re-render and converge multica-daemon@.service fr
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
 	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)"
+	# linger（RUYI-529）：同 daemon-install——安装/更新任一路径都收敛 linger 为开启
+	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
+		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
+	@loginctl show-user $(USER) -p Linger || true
 	sudo systemctl daemon-reload
 	@if [ "$(origin PROFILE)" = "command line" ]; then \
 		units="multica-daemon@$(PROFILE).service"; \
