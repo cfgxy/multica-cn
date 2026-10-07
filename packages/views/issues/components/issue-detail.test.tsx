@@ -340,6 +340,7 @@ const mockApiObj = vi.hoisted(() => ({
   getProject: vi.fn(),
   listIssuePullRequests: vi.fn().mockResolvedValue({ pull_requests: [] }),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
+  listIssueDecisions: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -2098,6 +2099,79 @@ describe("IssueDetail (shared)", () => {
           document.getElementById("comment-reply-1")?.className,
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Decision-card deep link (RUYI-494). The Decision Center rows carry
+  // `#decision-<id>`; the landing contract mirrors the comment deep link
+  // above: the timeline renders FLAT (every row mounted) so the landing
+  // effect can find the target, then centers and flashes it.
+  // -------------------------------------------------------------------------
+  describe("highlightDecisionId decision-card deep link", () => {
+    const mockDecision = {
+      id: "decision-1",
+      issue_id: "issue-1",
+      source_comment_id: null,
+      question: "Which path do we take?",
+      options: [{ label: "A" }, { label: "B" }],
+      multi_select: false,
+      recommended_indices: [0],
+      status: "open",
+      selected_indices: [],
+      answered_by_type: null,
+      answered_by_id: null,
+      answered_at: null,
+      answer_comment_id: null,
+      created_by_type: "agent",
+      created_by_id: "agent-1",
+      created_at: "2026-01-19T00:00:00Z",
+      updated_at: "2026-01-19T00:00:00Z",
+    };
+
+    function renderIssueDetailWithDecisionHighlight(decisionId: string) {
+      mockApiObj.listIssueDecisions.mockResolvedValue([mockDecision]);
+      const queryClient = createTestQueryClient();
+      return render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" highlightDecisionId={decisionId} />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+    }
+
+    // D1 regression (RUYI-494): the deep link must render the timeline flat.
+    // Left virtualized, Virtuoso only mounts the viewport window, the target
+    // row never enters the DOM, and the landing effect's getElementById can
+    // never hit — no scroll, no highlight, on either entry path.
+    it("renders the timeline flat so the deep-linked decision card mounts", async () => {
+      renderIssueDetailWithDecisionHighlight("decision-1");
+
+      await waitFor(() => {
+        expect(document.getElementById("decision-decision-1")).not.toBeNull();
+      });
+      expect(screen.queryByTestId("virtuoso-mock")).toBeNull();
+    });
+
+    it("lands on and highlights the deep-linked decision card", async () => {
+      renderIssueDetailWithDecisionHighlight("decision-1");
+
+      await waitFor(() => {
+        expect(document.getElementById("decision-decision-1")).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("decision-decision-1")),
+        ).toBe(true);
+      });
+    });
+
+    it("keeps the timeline virtualized when browsing without a deep link", async () => {
+      renderIssueDetail();
+
+      await screen.findByText("Started working on this");
+      expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument();
     });
   });
 

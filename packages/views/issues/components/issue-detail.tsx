@@ -3651,6 +3651,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               //     proportional to items.length (markdown + lowlight per
               //     comment), which is acceptable in the deep-link case —
               //     the user has explicit intent to land on a specific item.
+              //   - `highlightDecisionId` set (Decision Center deep-link,
+              //     RUYI-494) → flat for the same reason. Left virtualized,
+              //     the target row sits below the mounted window, never
+              //     enters the DOM, and the landing effect's getElementById
+              //     can never hit — the deep link silently does nothing (D1).
               //   - `find.open` (in-page Cmd/Ctrl+F) → also render flat, so
               //     every comment is in the DOM for the find walk to match
               //     and highlight. Same explicit-intent cold-mount trade-off.
@@ -3661,7 +3666,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               // on a target" have fundamentally opposed contracts (estimated
               // heights vs real heights). Trying to satisfy both in one
               // path is what produced the bug history this PR closes.
-              !highlightCommentId && !find.open ? (
+              !highlightCommentId && !highlightDecisionIdProp && !find.open ? (
                 !scrollContainerEl ? (
                   // Skeleton while the callback ref populates so the gap
                   // between IssueDetail mount and Virtuoso mount doesn't
