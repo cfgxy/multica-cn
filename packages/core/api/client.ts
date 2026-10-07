@@ -5,6 +5,7 @@ import type {
   IssueDecision,
   BatchDecisionAnswerResult,
   BatchIssueDecisionAnswer,
+  WorkspaceDecisionInbox,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -336,6 +337,7 @@ import {
   CommentsListSchema,
   IssueDecisionsListSchema,
   IssueDecisionSchema,
+  WorkspaceDecisionInboxSchema,
   BatchDecisionAnswersSchema,
   CommentTriggerPreviewSchema,
   IssueTriggerPreviewSchema,
@@ -1702,6 +1704,25 @@ export class ApiClient {
     });
     if (!decision) throw new Error("Invalid decision cancel response");
     return decision;
+  }
+
+  // Workspace decision inbox (RUYI-494): the Decision Center's aggregation —
+  // every card in the workspace, one row per card, with issue context. Read
+  // only; answering/cancelling stays on the issue-scoped endpoints above.
+  async listWorkspaceDecisionInbox(
+    workspaceId: string,
+    params?: { status?: IssueDecision["status"]; limit?: number },
+  ): Promise<WorkspaceDecisionInbox> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-inbox${query}`);
+    const inbox = parseWithFallback(raw, WorkspaceDecisionInboxSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-inbox",
+    });
+    if (!inbox) throw new Error("Invalid decision inbox response");
+    return inbox;
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {

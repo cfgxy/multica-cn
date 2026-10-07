@@ -178,6 +178,11 @@ interface Props {
    *  `highlightCommentId` but a fresh nonce, which re-triggers the
    *  scroll-and-flash effect (without this, identical props short-circuit). */
   highlightNonce?: string;
+  /** 决策中心 deep-link target (RUYI-494): a decision card id. A card is
+   *  always a top-level timeline row — no thread-folding — so this reuses
+   *  the bounded-locate controller with a decision-aware `findIndex` and
+   *  flashes the card wrapper on `located`. Shares `highlightNonce`. */
+  highlightDecisionId?: string;
   /** RUYI-28 shared publish channel: called with the SERVER comment id
    *  whenever THIS user publishes a comment — composer success OR failed-
    *  comment Retry success. The timeline maps it to the owning root and
@@ -238,6 +243,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       refreshing,
       onRefresh,
       highlightCommentId,
+      highlightDecisionId,
       highlightNonce,
       onCommentPublished,
     },
@@ -627,14 +633,16 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       {
         findIndex: (rootId) => {
           // Indexes must match the RENDERED list — `dataRef.current` holds
-          // the merged rows+decisions array, so decision items are skipped
-          // here rather than filtered out upstream.
+          // the merged rows+decisions array. Comment targets match comment
+          // rows; decision targets (RUYI-494 deep link) match card rows —
+          // ids never collide (different tables), so one pass serves both.
           const idx = dataRef.current.findIndex(
             (r) =>
-              !("decision" in r) &&
-              !("batchBar" in r) &&
-              r.entry.type === "comment" &&
-              r.entry.id === rootId,
+              ("decision" in r && r.decision.id === rootId) ||
+              (!("decision" in r) &&
+                !("batchBar" in r) &&
+                r.entry.type === "comment" &&
+                r.entry.id === rootId),
           );
           return idx;
         },
@@ -670,12 +678,15 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           geometryRef.current.resolve(
             targetId,
             (rootId) => {
+              // Same dual-target match as `findIndex` above — decision ids
+              // resolve to their card row, comment ids to comment rows.
               const idx = dataRef.current.findIndex(
                 (r) =>
-                  !("decision" in r) &&
-                  !("batchBar" in r) &&
-                  r.entry.type === "comment" &&
-                  r.entry.id === rootId,
+                  ("decision" in r && r.decision.id === rootId) ||
+                  (!("decision" in r) &&
+                    !("batchBar" in r) &&
+                    r.entry.type === "comment" &&
+                    r.entry.id === rootId),
               );
               if (idx < 0) return null;
               const layout = listRef.current?.getLayout(idx);
@@ -756,6 +767,44 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     dataWithDivider.length,
     issue.id,
     expandRoot,
+    locateController,
+  ]);
+
+  // ── 决策中心 deep link (RUYI-494) ──────────────────────────────────────
+  // A card is always a top-level row, so unlike the inbox comment link there
+  // is no land-at-bottom dance: run the bounded-locate controller straight
+  // at the card (same sequencing as the comments directory — layout probe,
+  // animated scroll, viewability proof), and arm the shared highlight gate
+  // so the flash starts when the card is actually on screen. The nonce is a
+  // local counter keyed on the (decisionId, h) stamp — re-tapping the same
+  // row re-fires exactly like the inbox `h` idiom. Waits for the card to be
+  // present in `merged` (decisions query may resolve after the timeline);
+  // the stamp ref is only consumed once present, so the effect re-runs on
+  // the next data change and starts then.
+  const lastDecisionStampRef = useRef<string | null>(null);
+  const decisionNonceRef = useRef(0);
+  useEffect(() => {
+    if (!highlightDecisionId || merged.length === 0) return;
+    const stamp = `${highlightDecisionId}:${highlightNonce ?? ""}`;
+    if (lastDecisionStampRef.current === stamp) return;
+    const present = merged.some(
+      (item) => "decision" in item && item.decision.id === highlightDecisionId,
+    );
+    if (!present) return;
+    lastDecisionStampRef.current = stamp;
+    const nonce = ++decisionNonceRef.current;
+    setHighlightedId(null);
+    highlightGateRef.current.arm(highlightDecisionId, nonce);
+    locateController.start({
+      issueId: issue.id,
+      rootId: highlightDecisionId,
+      nonce,
+    });
+  }, [
+    highlightDecisionId,
+    highlightNonce,
+    merged,
+    issue.id,
     locateController,
   ]);
 
@@ -896,11 +945,16 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       viewableIdsRef.current = new Set(
         viewableItems
           .map((v) => v.item)
-          .filter(
-            (row): row is TimelineRow =>
-              !!row && (row as TimelineRow).entry?.type === "comment",
-          )
-          .map((row) => row.entry.id),
+          .filter((row): row is NonNullable<typeof row> => !!row)
+          .flatMap((row) =>
+            "decision" in row
+              ? // 决策卡目标（RUYI-494 深链）也以 entry.id（= decision.id）
+                // 进入快照，控制器的 viewability 确认才能覆盖卡片行。
+                [row.entry.id]
+              : (row as TimelineRow).entry?.type === "comment"
+                ? [(row as TimelineRow).entry.id]
+                : [],
+          ),
       );
       handleLocateViewable();
       if (!dividerAnchorId) return;
@@ -1115,7 +1169,21 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             return <UnreadDivider />;
           }
           if ("decision" in item) {
-            return <DecisionCard decision={item.decision} />;
+            // 决策中心深链落地闪现（RUYI-494）：着色与 CommentCard 的
+            // RootHighlightOverlay 同款（border-brand/50 + bg-brand/5，
+            // 对应 web 的 ring-2 ring-brand/50 bg-brand/5）。
+            const highlighted = highlightedId === item.decision.id;
+            return (
+              <View
+                className={
+                  highlighted
+                    ? "rounded-2xl border-2 border-brand/50 bg-brand/5"
+                    : undefined
+                }
+              >
+                <DecisionCard decision={item.decision} />
+              </View>
+            );
           }
           if ("batchBar" in item) {
             return (
