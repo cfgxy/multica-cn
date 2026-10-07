@@ -2207,7 +2207,7 @@ describe("IssueDetail (shared)", () => {
     }
 
     function renderWithDecisions(
-      decisions: ReturnType<typeof decision>,
+      decisions: ReturnType<typeof decision>[],
       decisionId?: string,
     ) {
       mockApiObj.listIssueDecisions.mockResolvedValue(decisions);
