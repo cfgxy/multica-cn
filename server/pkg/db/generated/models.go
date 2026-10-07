@@ -936,6 +936,7 @@ type IssueDecision struct {
 	CreatedByID        pgtype.UUID        `json:"created_by_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ClientRequestID    pgtype.Text        `json:"client_request_id"`
 }
 
 type IssueDependency struct {
