@@ -2060,3 +2060,68 @@ func TestWorktreeReplayConflictBlock(t *testing.T) {
 		}
 	})
 }
+
+// RUYI-478: attachments uploaded in the quick-create modal must reach the
+// delegated create-run. Previously only the raw ids were injected (via env,
+// for server-side binding) and nothing told the agent the files existed, so
+// pasted images landed in the issue's attachment area but never in the body.
+func TestBuildQuickCreatePromptAttachmentMetas(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{
+		QuickCreatePrompt: "创建这个 Issue 时我贴了图片",
+		QuickCreateAttachments: []QuickCreateAttachmentMeta{
+			{
+				ID:          "019aff3c-1111-7000-8000-000000000001",
+				Filename:    "1000013602.jpg",
+				ContentType: "image/jpeg",
+				MarkdownURL: "https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000001/download",
+			},
+			{
+				ID:          "019aff3c-1111-7000-8000-000000000002",
+				Filename:    "spec.pdf",
+				ContentType: "application/pdf",
+				MarkdownURL: "https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000002/download",
+			},
+		},
+	})
+
+	mustContain := []string{
+		// every attachment's id and filename reach the agent
+		"019aff3c-1111-7000-8000-000000000001",
+		"1000013602.jpg",
+		"019aff3c-1111-7000-8000-000000000002",
+		"spec.pdf",
+		// the image is inlined via its durable markdown URL so it renders
+		// in the created issue's body
+		"![1000013602.jpg](https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000001/download)",
+		// binding already happens server-side via MULTICA_QUICK_CREATE_ATTACHMENT_IDS
+		"automatically",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(out, s) {
+			t.Errorf("buildQuickCreatePrompt with attachments missing %q\n--- output ---\n%s", s, out)
+		}
+	}
+
+	// the image/file split must be content-type driven, and only images get
+	// an embed directive
+	if !strings.Contains(out, "image/jpeg") {
+		t.Errorf("buildQuickCreatePrompt does not carry the image content type\n--- output ---\n%s", out)
+	}
+	if strings.Contains(out, "![spec.pdf]") {
+		t.Errorf("non-image attachment was given an image embed directive\n--- output ---\n%s", out)
+	}
+
+	// quick-create forbids CLI calls other than `issue create`; the
+	// attachment section must not route the agent into
+	// `multica attachment download`
+	if strings.Contains(out, "attachment download") {
+		t.Errorf("quick-create prompt routes the agent into `multica attachment download`\n--- output ---\n%s", out)
+	}
+}
+
+func TestBuildQuickCreatePromptNoAttachmentSectionWithoutAttachments(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{QuickCreatePrompt: "plain single-line input"})
+	if strings.Contains(out, "Attachments uploaded in the quick-create modal") {
+		t.Errorf("no-attachment quick-create prompt grew an attachment section\n--- output ---\n%s", out)
+	}
+}
