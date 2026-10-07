@@ -1042,9 +1042,14 @@
       "fact_runtime_unbound": "未绑定运行时",
       "bind_runtime": "绑定运行时",
       "fact_concurrency": "并发上限",
+      "fact_thinking": "思考强度",
       "forbidden_title": "无权访问此智能体",
       "runtime_unbound_banner": "该智能体尚未绑定运行时——绑定后才能运行。",
       "forbidden_body": "你没有查看此智能体的权限，请其所有者与你共享后再试。"
+    },
+    "run_history": {
+      "load_more": "加载更多",
+      "empty": "暂无运行记录。"
     },
     "edit": {
       "model_placeholder": "留空则使用运行时默认值",
