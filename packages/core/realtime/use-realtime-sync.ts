@@ -10,7 +10,7 @@ import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
-import { upsertDecisionInCache } from "../issues/decisions";
+import { upsertDecisionInCache, decisionInboxKeys } from "../issues/decisions";
 import { projectKeys } from "../projects/queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
@@ -1151,6 +1151,10 @@ export function useRealtimeSync(
       const { decision, issue_id: issueId } = p as DecisionUpdatedPayload;
       if (!decision?.id || !issueId) return;
       upsertDecisionInCache(qc, issueId, decision);
+      // The workspace aggregation (Decision Center, RUYI-494) re-buckets by
+      // status on every lifecycle transition; a full window refetch is the
+      // whole strategy there (the list is small).
+      qc.invalidateQueries({ queryKey: decisionInboxKeys.all() });
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
