@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceDecisionInbox } from "@multica/core/types";
+import { decisionCenterPrefsStore } from "@multica/core/issues/stores/decision-center-prefs-store";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 
@@ -86,9 +87,17 @@ beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  // The display-prefs store is a module singleton with persistence; every
+  // test starts from the shipped defaults.
+  decisionCenterPrefsStore.setState({ viewMode: "list", hiddenStatuses: [] });
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Base UI portals menus onto document.body; leftovers would duplicate
+  // labels across tests.
+  document.body.innerHTML = "";
+});
 
 function renderPage() {
   return renderWithI18n(
@@ -206,5 +215,133 @@ describe("DecisionCenterPage", () => {
       expect(screen.getByTestId("decision-center-empty")).toBeInTheDocument(),
     );
     expect(screen.queryByTestId("decision-inbox-row")).toBeNull();
+  });
+});
+
+// RUYI-547: the Decision Center gains the issues surface's display model —
+// a persisted list/board toggle and a status filter, both rendered with the
+// same control shapes as the issues header. The data unit stays the CARD.
+
+const MIXED_INBOX = {
+  items: [
+    makeItem({ id: "o1", question: "still open" }),
+    makeItem({ id: "a1", status: "answered" as const, selected_indices: [0], question: "done deal" }),
+    makeItem({ id: "x1", status: "cancelled" as const, question: "voided" }),
+  ],
+  counts: { open: 5, answered: 1, cancelled: 1 },
+};
+
+async function openViewMenu() {
+  fireEvent.click(screen.getByTestId("decision-center-view-trigger"));
+  await waitFor(() =>
+    expect(screen.getByRole("menuitemradio", { name: "Board" })).toBeInTheDocument(),
+  );
+}
+
+async function switchToBoard() {
+  await openViewMenu();
+  fireEvent.click(screen.getByRole("menuitemradio", { name: "Board" }));
+}
+
+async function openFilterMenu() {
+  fireEvent.click(screen.getByTestId("decision-center-filter-trigger"));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("menuitemcheckbox", { name: "Decided" }),
+    ).toBeInTheDocument(),
+  );
+}
+
+describe("DecisionCenterPage view modes (RUYI-547)", () => {
+  it("renders the list view by default, then the board with one column per status after switching", async () => {
+    inboxRef.current = MIXED_INBOX;
+    renderPage();
+
+    expect(await rowAnchors()).toHaveLength(3);
+    expect(screen.queryByTestId("decision-board-view")).toBeNull();
+
+    await switchToBoard();
+
+    expect(screen.getByTestId("decision-board-view")).toBeInTheDocument();
+    expect(screen.queryByTestId("decision-inbox-row")).toBeNull();
+    // One column per decision status, in canonical order — empty columns
+    // included, like the issues board keeps its status columns.
+    const open = screen.getByTestId("decision-board-column-open");
+    const answered = screen.getByTestId("decision-board-column-answered");
+    const cancelled = screen.getByTestId("decision-board-column-cancelled");
+    expect(open.compareDocumentPosition(answered) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(answered.compareDocumentPosition(cancelled) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Column headers show the workspace totals, same source as the list
+    // section headers.
+    expect(open.textContent).toContain("5");
+  });
+
+  it("keeps every card field on board cards: identifier, title, question, recommendation, deep link", async () => {
+    inboxRef.current = {
+      items: [makeItem({ id: "d1", recommended_indices: [0] })],
+      counts: { open: 1, answered: 0, cancelled: 0 },
+    };
+    renderPage();
+
+    await switchToBoard();
+
+    const card = await screen.findByTestId("decision-board-card");
+    expect(card.textContent).toContain("RUYI-494");
+    expect(card.textContent).toContain("Decision Inbox");
+    expect(card.textContent).toContain("Choose an option");
+    expect(card.getAttribute("href")).toBe("/acme/issues/issue-1#decision-d1");
+    expect(card.querySelector('[data-testid="decision-inbox-recommended"]')).not.toBeNull();
+  });
+
+  it("switching back to list restores the rows", async () => {
+    inboxRef.current = MIXED_INBOX;
+    renderPage();
+    await rowAnchors();
+
+    await switchToBoard();
+    expect(screen.getByTestId("decision-board-view")).toBeInTheDocument();
+
+    await openViewMenu();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "List" }));
+    expect(await rowAnchors()).toHaveLength(3);
+  });
+
+  it("hides an unchecked status from both list and board, and marks the filter active", async () => {
+    inboxRef.current = MIXED_INBOX;
+    renderPage();
+    await rowAnchors();
+
+    await openFilterMenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Decided" }));
+
+    expect(screen.queryByTestId("decision-section-answered")).toBeNull();
+    expect(screen.getByTestId("decision-section-open")).toBeInTheDocument();
+    expect(screen.getByTestId("decision-section-cancelled")).toBeInTheDocument();
+    // The filter trigger reads as active with one filter applied.
+    expect(screen.getByTestId("decision-center-filter-trigger").textContent).toMatch(/1/);
+
+    await switchToBoard();
+    expect(screen.queryByTestId("decision-board-column-answered")).toBeNull();
+    expect(screen.getByTestId("decision-board-column-open")).toBeInTheDocument();
+  });
+
+  it("shows the filtered-empty state when every status is hidden, and clear restores", async () => {
+    inboxRef.current = MIXED_INBOX;
+    renderPage();
+    await rowAnchors();
+
+    // The filter menu stays open across toggles (closeOnClick=false), so all
+    // three statuses uncheck inside one opening — like a user would.
+    await openFilterMenu();
+    for (const name of ["Pending decisions", "Decided", "Voided"]) {
+      fireEvent.click(screen.getByRole("menuitemcheckbox", { name }));
+    }
+
+    expect(screen.getByTestId("decision-filtered-empty")).toBeInTheDocument();
+    expect(screen.queryByTestId("decision-inbox-row")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("decision-filter-clear"));
+    expect(screen.getByTestId("decision-section-open")).toBeInTheDocument();
+    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual([]);
   });
 });
