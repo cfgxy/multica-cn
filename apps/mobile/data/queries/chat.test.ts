@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatSession } from "@multica/core/types";
 
-import { chatSessionsOptions, sortChatSessions } from "./chat";
+import { chatSessionsOptions, sortChatSessions, splitChatSessions } from "./chat";
 
 // data/queries/chat transitively imports the native fetch client via api.ts.
 // Mock it so the Node test never loads RN modules — sortChatSessions itself
@@ -84,6 +84,61 @@ describe("sortChatSessions", () => {
     const snapshot = [...input];
 
     sortChatSessions(input);
+
+    expect(input.map((s) => s.id)).toEqual(snapshot.map((s) => s.id));
+  });
+});
+
+// RUYI-533: the tab list and the Archived sub-view split the one flat
+// `status=all` cache locally — same design as web's chat-thread-list.tsx.
+describe("splitChatSessions", () => {
+  it("splits the flat cache into active and archived views", () => {
+    const { active, archived } = splitChatSessions([
+      session({ id: "live", status: "active" }),
+      session({ id: "filed", status: "archived" }),
+    ]);
+
+    expect(active.map((s) => s.id)).toEqual(["live"]);
+    expect(archived.map((s) => s.id)).toEqual(["filed"]);
+  });
+
+  it("sorts each view pinned-first, then by most-recent activity", () => {
+    const { active, archived } = splitChatSessions([
+      session({ id: "new", status: "active", updated_at: "2026-08-03T00:00:00Z" }),
+      session({
+        id: "pin",
+        status: "active",
+        pinned: true,
+        updated_at: "2026-08-01T00:00:00Z",
+      }),
+      session({
+        id: "old-filed",
+        status: "archived",
+        updated_at: "2026-08-01T00:00:00Z",
+      }),
+      session({
+        id: "new-filed",
+        status: "archived",
+        updated_at: "2026-08-04T00:00:00Z",
+      }),
+    ]);
+
+    expect(active.map((s) => s.id)).toEqual(["pin", "new"]);
+    expect(archived.map((s) => s.id)).toEqual(["new-filed", "old-filed"]);
+  });
+
+  it("returns two empty arrays for an empty cache", () => {
+    expect(splitChatSessions([])).toEqual({ active: [], archived: [] });
+  });
+
+  it("does not mutate the input array", () => {
+    const input = [
+      session({ id: "live", status: "active" }),
+      session({ id: "filed", status: "archived" }),
+    ];
+    const snapshot = [...input];
+
+    splitChatSessions(input);
 
     expect(input.map((s) => s.id)).toEqual(snapshot.map((s) => s.id));
   });
