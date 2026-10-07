@@ -220,6 +220,11 @@ vi.mock("../../editor", async () => ({
         return true;
       },
       settleUploadPlaceholder: () => false,
+      // Required handle member since RUYI-478. Must exist even with no
+      // document: deliverFinishedUpload calls it through a plain (non-optional)
+      // call after the nullish short-circuit, so a missing member throws and
+      // aborts the whole delivery before insertMarkdownAtEnd ever runs.
+      hasImageWithSrc: () => false,
       insertMarkdownAtEnd: (md: string) => {
         insertMarkdownSpy(md);
         if (destroyedRef.current || !insertMarkdownBehavior.succeed) return false;
