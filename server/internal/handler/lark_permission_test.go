@@ -99,8 +99,8 @@ func (s *recheckStubClient) SendTextMessage(context.Context, lark.SendTextParams
 func (s *recheckStubClient) DownloadMessageResource(context.Context, lark.InstallationCredentials, lark.DownloadResourceParams) (lark.DownloadedResource, error) {
 	return lark.DownloadedResource{}, nil
 }
-func (s *recheckStubClient) BatchGetUsers(context.Context, lark.InstallationCredentials, []string) (map[string]string, error) {
-	return map[string]string{}, nil
+func (s *recheckStubClient) GetUserName(context.Context, lark.InstallationCredentials, string) (string, error) {
+	return "", nil
 }
 
 // wireRecheckStub attaches a programmable APIClient to the shared test

@@ -1064,7 +1064,7 @@
     "permission_status_unknown": "未判定",
     "capability_receive_messages": "メッセージの受信（@メンションなど）",
     "capability_send_messages": "メッセージの送信",
-    "capability_read_history": "メッセージ履歴の読み取り（引用返信）",
+    "capability_read_history": "メッセージ履歴の読み取り（引用返信・転送展開・最近のグループコンテキスト）",
     "capability_download_media": "メッセージ内ファイルのダウンロード",
     "capability_lookup_contacts": "送信者情報の取得",
     "install_permissions_title": "このボットに必要な権限",
