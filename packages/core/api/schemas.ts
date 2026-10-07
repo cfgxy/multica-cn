@@ -4854,11 +4854,38 @@ export const PromptProposalBatchOutcomeSchema = z.object({
   body: z.string(),
 });
 
-export const RetrospectiveConfigSchema = z.object({
-  enabled: z.boolean(),
-  include_in_review: z.boolean(),
-  window_days: z.number(),
+// RUYI-552: the config response carries the saved workspace LLM fields plus
+// the effective per-field resolution. Loose like RetrospectiveRunSchema — the
+// server keeps adding status detail here.
+export const RetrospectiveLLMStoredSchema = z.object({
+  base_url: z.string(),
+  model: z.string(),
+  api_key_set: z.boolean(),
+  api_key_hint: z.string(),
 });
+
+export const RetrospectiveLLMEffectiveSchema = z.object({
+  source: z.string(),
+  base_url: z.string(),
+  base_url_source: z.string(),
+  model: z.string(),
+  model_source: z.string(),
+  api_key_source: z.string(),
+  api_key_hint: z.string(),
+  issue: z.string(),
+});
+
+export const RetrospectiveConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    include_in_review: z.boolean(),
+    window_days: z.number(),
+    llm: z.object({
+      stored: RetrospectiveLLMStoredSchema,
+      effective: RetrospectiveLLMEffectiveSchema,
+    }),
+  })
+  .loose();
 
 export const RetrospectiveRunSchema = z.object({
   id: z.string(),
@@ -4872,6 +4899,9 @@ export const RetrospectiveRunSchema = z.object({
   proposals_merged: z.number(),
   duplicates_skipped: z.number(),
   error: z.string(),
+  // Raw JSONB passthrough (server sends an object; only llm_configured is
+  // typed on the client). Null-safe: rows predating the column serialize null.
+  detail: z.unknown().nullable().optional(),
   created_at: z.string(),
 }).loose();
 

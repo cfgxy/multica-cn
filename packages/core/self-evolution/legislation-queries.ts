@@ -1,6 +1,6 @@
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import type { PromptProposalDraftRequest, RetrospectiveConfig } from "../types";
+import type { PromptProposalDraftRequest, RetrospectiveConfigPatch } from "../types";
 
 /**
  * Prompt legislation pool keys (RUYI-305 E2). The status filter lives in the
@@ -133,7 +133,7 @@ export function retrospectiveRunsOptions(wsId: string) {
 export function useUpdateRetrospectiveConfig(wsId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (patch: Partial<RetrospectiveConfig>) => api.updateRetrospectiveConfig(patch),
+    mutationFn: (patch: RetrospectiveConfigPatch) => api.updateRetrospectiveConfig(patch),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: retrospectiveKeys.config(wsId) });
     },

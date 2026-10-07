@@ -16,7 +16,7 @@ import {
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { clientErrorMessage } from "@multica/core/api";
+import { ApiError, clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
 import {
   retrospectiveConfigOptions,
@@ -24,7 +24,11 @@ import {
   useTriggerRetrospectiveRun,
   useUpdateRetrospectiveConfig,
 } from "@multica/core/self-evolution";
-import type { RetrospectiveRun } from "@multica/core/types";
+import type {
+  RetrospectiveLLMPatch,
+  RetrospectiveLLMSource,
+  RetrospectiveRun,
+} from "@multica/core/types";
 import { useT } from "../../i18n";
 
 /**
@@ -37,6 +41,11 @@ import { useT } from "../../i18n";
  * only visible traces are the config, the run records below (failures name
  * the reason, e.g. a missing LLM configuration) and, on success, new
  * proposals in the legislation tab.
+ *
+ * The LLM section (RUYI-552) makes that configuration a product config: the
+ * workspace saves base URL / model / API key here, runs resolve it first and
+ * fall back to deployment defaults per field. The key itself never comes
+ * back — the server returns only whether one is saved plus a masked hint.
  */
 export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
@@ -51,6 +60,10 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const [enabled, setEnabled] = useState(false);
   const [includeInReview, setIncludeInReview] = useState(false);
   const [windowDays, setWindowDays] = useState(7);
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [llmModel, setLlmModel] = useState("");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [clearApiKey, setClearApiKey] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -58,12 +71,25 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
       setEnabled(config.data.enabled);
       setIncludeInReview(config.data.include_in_review);
       setWindowDays(config.data.window_days);
+      setLlmBaseUrl(config.data.llm?.stored.base_url ?? "");
+      setLlmModel(config.data.llm?.stored.model ?? "");
       setLoaded(true);
     }
   }, [config.data, loaded]);
 
   const mutationError = (e: unknown) =>
     toast.error(clientErrorMessage(e) ?? t(($) => $.retrospective.errorLabel));
+
+  // The server's 409 on "run now" is the no-configured-LLM state; the UI
+  // renders its own localized copy with the fix in view (the section above),
+  // not the server's sentence.
+  const triggerError = (e: unknown) => {
+    if (e instanceof ApiError && e.status === 409) {
+      toast.error(t(($) => $.retrospective.llmTriggerBlocked));
+      return;
+    }
+    mutationError(e);
+  };
 
   const runsList: RetrospectiveRun[] = runs.data ?? [];
 
@@ -75,6 +101,32 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
       default: return s;
     }
   };
+
+  const llmSourceLabel = (s: RetrospectiveLLMSource | string) => {
+    switch (s) {
+      case "workspace": return t(($) => $.retrospective.llmSourceWorkspace);
+      case "deployment": return t(($) => $.retrospective.llmSourceDeployment);
+      default: return t(($) => $.retrospective.llmSourceNone);
+    }
+  };
+
+  const llm = config.data?.llm;
+
+  const saveLlmPatch = (): RetrospectiveLLMPatch => {
+    const patch: RetrospectiveLLMPatch = {
+      base_url: llmBaseUrl.trim(),
+      model: llmModel.trim(),
+    };
+    if (llmApiKey.trim()) {
+      patch.api_key = llmApiKey.trim();
+    } else if (clearApiKey) {
+      patch.api_key = "";
+    }
+    return patch;
+  };
+
+  const scrollToLlmConfig = () =>
+    document.getElementById("retrospective-llm-config")?.scrollIntoView({ behavior: "smooth", block: "center" });
 
   return (
     <div className="flex flex-col gap-6" data-testid="retrospective-tab">
@@ -118,6 +170,93 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                 }}
               />
             </div>
+
+            <div className="mt-2 flex flex-col gap-3 border-t pt-3" data-testid="retrospective-llm-config" id="retrospective-llm-config">
+              <div className="flex flex-col gap-1">
+                <div className="text-body font-medium">{t(($) => $.retrospective.llmTitle)}</div>
+                <p className="text-muted-foreground text-caption">{t(($) => $.retrospective.llmDescription)}</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="retro-llm-base-url">{t(($) => $.retrospective.llmBaseUrl)}</Label>
+                <Input
+                  id="retro-llm-base-url"
+                  value={llmBaseUrl}
+                  placeholder={t(($) => $.retrospective.llmBaseUrlPlaceholder)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={!canManage}
+                  onChange={(e) => setLlmBaseUrl(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="retro-llm-model">{t(($) => $.retrospective.llmModel)}</Label>
+                <Input
+                  id="retro-llm-model"
+                  value={llmModel}
+                  placeholder={t(($) => $.retrospective.llmModelPlaceholder)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  disabled={!canManage}
+                  onChange={(e) => setLlmModel(e.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="retro-llm-api-key">{t(($) => $.retrospective.llmApiKey)}</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="retro-llm-api-key"
+                    type="password"
+                    value={llmApiKey}
+                    placeholder={
+                      llmApiKey.trim() || clearApiKey
+                        ? t(($) => $.retrospective.llmApiKeyPlaceholderNew)
+                        : llm?.stored.api_key_set && llm.stored.api_key_hint
+                          ? t(($) => $.retrospective.llmApiKeySavedHint, { hint: llm.stored.api_key_hint })
+                          : t(($) => $.retrospective.llmApiKeyPlaceholderNew)
+                    }
+                    autoComplete="new-password"
+                    disabled={!canManage}
+                    onChange={(e) => {
+                      setLlmApiKey(e.target.value);
+                      if (e.target.value) setClearApiKey(false);
+                    }}
+                  />
+                  {canManage && llm?.stored.api_key_set ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={clearApiKey}
+                      onClick={() => {
+                        setLlmApiKey("");
+                        setClearApiKey(true);
+                      }}
+                    >
+                      {t(($) => $.retrospective.llmApiKeyClear)}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              {llm ? (
+                <div className="flex flex-col gap-1 text-caption" data-testid="retrospective-llm-effective">
+                  <span className="font-medium">{t(($) => $.retrospective.llmEffective)}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={llm.effective.issue ? "destructive" : llm.effective.source === "none" ? "secondary" : "default"}>
+                      {llmSourceLabel(llm.effective.source)}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {llm.effective.base_url || "—"} · {llm.effective.model || "—"}
+                      {llm.effective.api_key_hint ? ` · ${llm.effective.api_key_hint}` : ""}
+                    </span>
+                  </div>
+                  {llm.effective.issue ? (
+                    <span className="text-destructive" data-testid="retrospective-llm-issue">
+                      {t(($) => $.retrospective.llmIssue)}: {llm.effective.issue}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
             {canManage ? (
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -125,10 +264,19 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   disabled={saveConfig.isPending}
                   onClick={() =>
                     saveConfig.mutate(
-                      { enabled, include_in_review: includeInReview, window_days: windowDays },
+                      {
+                        enabled,
+                        include_in_review: includeInReview,
+                        window_days: windowDays,
+                        llm: saveLlmPatch(),
+                      },
                       {
                         onError: mutationError,
-                        onSuccess: () => toast.success(t(($) => $.retrospective.saveOk)),
+                        onSuccess: () => {
+                          setLlmApiKey("");
+                          setClearApiKey(false);
+                          toast.success(t(($) => $.retrospective.saveOk));
+                        },
                       },
                     )
                   }
@@ -141,7 +289,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   disabled={trigger.isPending}
                   onClick={() =>
                     trigger.mutate(undefined, {
-                      onError: mutationError,
+                      onError: triggerError,
                       onSuccess: () => toast.success(t(($) => $.retrospective.triggerOk)),
                     })
                   }
@@ -192,6 +340,16 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                 {run.error ? (
                   <div className="text-destructive mt-1 text-caption" data-testid="retrospective-run-error">
                     {t(($) => $.retrospective.errorLabel)}: {run.error}
+                    {run.detail?.llm_configured === false ? (
+                      <Button
+                        size="sm"
+                        variant="link"
+                        className="h-auto p-0 pl-2 align-baseline"
+                        onClick={scrollToLlmConfig}
+                      >
+                        {t(($) => $.retrospective.llmConfigEntry)}
+                      </Button>
+                    ) : null}
                   </div>
                 ) : null}
               </li>

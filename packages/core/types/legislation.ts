@@ -121,6 +121,64 @@ export interface RetrospectiveConfig {
   enabled: boolean;
   include_in_review: boolean;
   window_days: number;
+  llm: RetrospectiveLLMConfigView;
+}
+
+/**
+ * Where a resolved LLM field came from (RUYI-552). "workspace" beats
+ * "deployment" beats "default" (a built-in); "none" means nothing anywhere.
+ */
+export type RetrospectiveLLMSource = "workspace" | "deployment" | "default" | "none";
+
+/** What the workspace itself has saved. The key is only ever a masked hint. */
+export interface RetrospectiveLLMStored {
+  base_url: string;
+  model: string;
+  api_key_set: boolean;
+  api_key_hint: string;
+}
+
+/** The effective resolution after per-field fallback, as the server sees it. */
+export interface RetrospectiveLLMEffective {
+  source: RetrospectiveLLMSource;
+  base_url: string;
+  base_url_source: RetrospectiveLLMSource;
+  model: string;
+  model_source: RetrospectiveLLMSource;
+  api_key_source: RetrospectiveLLMSource;
+  api_key_hint: string;
+  /** Non-empty: the saved config exists but cannot be used, and this says why. */
+  issue: string;
+}
+
+export interface RetrospectiveLLMConfigView {
+  stored: RetrospectiveLLMStored;
+  effective: RetrospectiveLLMEffective;
+}
+
+/**
+ * PATCH body for the retrospective config. Field semantics (RUYI-552):
+ * omit = keep the saved value; `api_key: ""` clears the saved key; a
+ * non-empty `api_key` replaces it. base_url/model follow the same
+ * omit-vs-set rule, with "" meaning "fall back to the deployment default".
+ */
+export interface RetrospectiveLLMPatch {
+  base_url?: string;
+  model?: string;
+  api_key?: string;
+}
+
+export interface RetrospectiveConfigPatch {
+  enabled?: boolean;
+  include_in_review?: boolean;
+  window_days?: number;
+  llm?: RetrospectiveLLMPatch;
+}
+
+export interface RetrospectiveRunDetail {
+  /** False on a failed run that never had an effective LLM (RUYI-552). */
+  llm_configured?: boolean;
+  [key: string]: unknown;
 }
 
 export interface RetrospectiveRun {
@@ -135,5 +193,7 @@ export interface RetrospectiveRun {
   proposals_merged: number;
   duplicates_skipped: number;
   error: string;
+  /** Raw server JSONB — its only typed consumer is llm_configured above. */
+  detail?: RetrospectiveRunDetail | null;
   created_at: string;
 }

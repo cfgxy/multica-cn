@@ -105,6 +105,7 @@ import type {
   PromptProposalPreview,
   PromptProposalBatchOutcome,
   RetrospectiveConfig,
+  RetrospectiveConfigPatch,
   RetrospectiveRun,
   KnowledgeScanBatch,
   KnowledgeDir,
@@ -4591,7 +4592,7 @@ export class ApiClient {
     });
   }
 
-  async updateRetrospectiveConfig(patch: Partial<RetrospectiveConfig>): Promise<RetrospectiveConfig> {
+  async updateRetrospectiveConfig(patch: RetrospectiveConfigPatch): Promise<RetrospectiveConfig> {
     const raw = await this.fetch<unknown>("/api/retrospective/config", {
       method: "PUT",
       body: JSON.stringify(patch),
