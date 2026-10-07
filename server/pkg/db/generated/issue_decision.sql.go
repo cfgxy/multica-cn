@@ -110,6 +110,31 @@ func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisi
 	return i, err
 }
 
+const countWorkspaceIssueDecisionsByStatus = `-- name: CountWorkspaceIssueDecisionsByStatus :one
+SELECT
+    count(*) FILTER (WHERE status = 'open')::int AS open_count,
+    count(*) FILTER (WHERE status = 'answered')::int AS answered_count,
+    count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
+FROM issue_decisions
+WHERE workspace_id = $1
+`
+
+type CountWorkspaceIssueDecisionsByStatusRow struct {
+	OpenCount      int32 `json:"open_count"`
+	AnsweredCount  int32 `json:"answered_count"`
+	CancelledCount int32 `json:"cancelled_count"`
+}
+
+// Section counts for the workspace decision inbox (RUYI-494). One scan
+// serves all three counts; the caller scopes by workspace_id, which the
+// member middleware has already authorized.
+func (q *Queries) CountWorkspaceIssueDecisionsByStatus(ctx context.Context, workspaceID pgtype.UUID) (CountWorkspaceIssueDecisionsByStatusRow, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceIssueDecisionsByStatus, workspaceID)
+	var i CountWorkspaceIssueDecisionsByStatusRow
+	err := row.Scan(&i.OpenCount, &i.AnsweredCount, &i.CancelledCount)
+	return i, err
+}
+
 const createIssueDecision = `-- name: CreateIssueDecision :one
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
@@ -248,6 +273,98 @@ func (q *Queries) ListIssueDecisionsForIssue(ctx context.Context, arg ListIssueD
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaceIssueDecisions = `-- name: ListWorkspaceIssueDecisions :many
+SELECT d.id, d.workspace_id, d.issue_id, d.source_comment_id, d.question, d.options, d.multi_select, d.recommended_indices, d.status, d.selected_indices, d.answered_by_type, d.answered_by_id, d.answered_at, d.answer_comment_id, d.created_by_type, d.created_by_id, d.created_at, d.updated_at,
+       i.number AS issue_number,
+       i.title AS issue_title,
+       COALESCE(ws.issue_prefix || '-' || i.number::text, '')::text AS issue_identifier
+FROM issue_decisions d
+JOIN issue i ON i.id = d.issue_id
+LEFT JOIN workspace ws ON ws.id = d.workspace_id
+WHERE d.workspace_id = $1
+  AND ($3::text IS NULL OR d.status = $3::text)
+ORDER BY d.created_at DESC, d.id DESC
+LIMIT $2
+`
+
+type ListWorkspaceIssueDecisionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Limit       int32       `json:"limit"`
+	Status      pgtype.Text `json:"status"`
+}
+
+type ListWorkspaceIssueDecisionsRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
+	Question           string             `json:"question"`
+	Options            []byte             `json:"options"`
+	MultiSelect        bool               `json:"multi_select"`
+	RecommendedIndices []byte             `json:"recommended_indices"`
+	Status             string             `json:"status"`
+	SelectedIndices    []byte             `json:"selected_indices"`
+	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
+	AnswerCommentID    pgtype.UUID        `json:"answer_comment_id"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	IssueNumber        int32              `json:"issue_number"`
+	IssueTitle         string             `json:"issue_title"`
+	IssueIdentifier    string             `json:"issue_identifier"`
+}
+
+// Workspace decision inbox rows (RUYI-494). One row PER CARD — issues are
+// context (identifier + title for the list's first line), never a
+// grouping/dedup unit: an issue with three cards yields three rows so old
+// open cards can't be hidden by a newer one. NULL status lists every
+// status; a set status filters to it. Ordered newest-first; the client
+// groups by status with open first.
+func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorkspaceIssueDecisionsParams) ([]ListWorkspaceIssueDecisionsRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceIssueDecisions, arg.WorkspaceID, arg.Limit, arg.Status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceIssueDecisionsRow{}
+	for rows.Next() {
+		var i ListWorkspaceIssueDecisionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.IssueIdentifier,
 		); err != nil {
 			return nil, err
 		}
