@@ -133,6 +133,7 @@ var postConsolidationStems = []string{
 	"931_live_session",                     // RUYI-425 stage 3
 	"932_voice_fact_event",                 // RUYI-425 stage 4
 	"933_issue_decision_client_request_id", // RUYI-514
+	"934_retrospective_llm_config",         // RUYI-552
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
