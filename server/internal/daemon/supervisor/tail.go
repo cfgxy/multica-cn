@@ -29,14 +29,23 @@ type resumableTail struct {
 
 	mu       sync.Mutex
 	stopOnce sync.Once
-	stop     chan struct{} // closed without mu — a parked Read HOLDS mu while polling
-	pending  bytes.Buffer  // decoded-but-not-yet-handed-out data
-	staged   readState     // cursor+ring to persist once pending is handed out
+	stop     chan struct{}   // closed without mu — a parked Read HOLDS mu while polling
+	pending  bytes.Buffer    // decoded-but-not-yet-handed-out data
+	staged   streamReadState // cursor+ring to persist once pending is handed out
 	stagedOK bool
 }
 
 func newResumableTail(mgr *Manager, runID, path string, isStdout bool, exit func() *WorkerExit) *resumableTail {
 	return &resumableTail{mgr: mgr, runID: runID, path: path, isStdout: isStdout, exit: exit, poll: 50 * time.Millisecond, stop: make(chan struct{})}
+}
+
+// stream names this tail's cursor file after its log stream: each pump owns
+// one cursor file (RUYI-529).
+func (t *resumableTail) stream() string {
+	if t.isStdout {
+		return "stdout"
+	}
+	return "stderr"
 }
 
 // Close stops the poll loop; a blocked Read unblocks within one poll interval.
@@ -80,7 +89,7 @@ func (t *resumableTail) Read(p []byte) (int, error) {
 			// Hand-out completed: persist the cursor. A crash before this
 			// point re-delivers the same lines, and the persisted hash ring
 			// skips them on the next open — the dedup contract.
-			if err := t.mgr.StoreReadState(t.runID, t.staged); err != nil {
+			if err := t.mgr.StoreStreamReadState(t.runID, t.stream(), t.staged); err != nil {
 				return n, err
 			}
 			t.stagedOK = false
@@ -101,16 +110,12 @@ func (t *resumableTail) exitProven() bool {
 // will be persisted once it is handed out. It returns only when pending holds
 // data or the stream is over (proven EOF / closed / hard error).
 func (t *resumableTail) fill() error {
-	rs, err := t.mgr.LoadReadState(t.runID)
+	rs, err := t.mgr.LoadStreamReadState(t.runID, t.stream())
 	if err != nil {
 		return err
 	}
-	offset := rs.StdoutOffset
-	ring := append([]uint64(nil), rs.StdoutHashes...)
-	if !t.isStdout {
-		offset = rs.StderrOffset
-		ring = append([]uint64(nil), rs.StderrHashes...)
-	}
+	offset := rs.Offset
+	ring := append([]uint64(nil), rs.Hashes...)
 
 	for {
 		if t.stopped() {
@@ -149,13 +154,13 @@ func (t *resumableTail) fill() error {
 		}
 
 		if t.pending.Len() > 0 {
-			t.staged = t.stagedState(rs, offset, ring)
+			t.staged = streamReadState{Offset: offset, Hashes: ring}
 			t.stagedOK = true
 			return nil
 		}
 		if len(partial) == 0 && t.exitProven() {
 			// Drained and proven over.
-			t.staged = t.stagedState(rs, offset, ring)
+			t.staged = streamReadState{Offset: offset, Hashes: ring}
 			t.stagedOK = true
 			return nil
 		}
@@ -165,17 +170,6 @@ func (t *resumableTail) fill() error {
 		case <-time.After(t.poll):
 		}
 	}
-}
-
-// stagedState merges this stream's advanced cursor with the OTHER stream's
-// cursor as of this fill's load. Persisting the whole readState per hand-out
-// means the two streams share one file: writing this stream's offset over
-// both fields would rewind (or skip) the sibling stream on its next open.
-func (t *resumableTail) stagedState(rs readState, offset int64, ring []uint64) readState {
-	if t.isStdout {
-		return readState{StdoutOffset: offset, StdoutHashes: ring, StderrOffset: rs.StderrOffset, StderrHashes: rs.StderrHashes}
-	}
-	return readState{StdoutOffset: rs.StdoutOffset, StdoutHashes: rs.StdoutHashes, StderrOffset: offset, StderrHashes: ring}
 }
 
 // readFrom reads the file from offset. nil data with nil error means "nothing
