@@ -99,15 +99,22 @@ type launchSpec struct {
 	Manifest  string   `json:"manifest"`
 }
 
-// readState is the daemon's per-run read cursor for the resumable tail:
-// how much of each log has already been consumed, plus a ring of recent line
-// hashes so a crash between delivering a line to the consumer and persisting
-// the offset does not re-deliver it after restart (line-level dedup).
-type readState struct {
-	StdoutOffset int64    `json:"stdout_offset"`
-	StderrOffset int64    `json:"stderr_offset"`
-	StdoutHashes []uint64 `json:"stdout_hashes,omitempty"`
-	StderrHashes []uint64 `json:"stderr_hashes,omitempty"`
+// streamReadState is the daemon's per-stream read cursor for the resumable
+// tail: how much of the stream's log has already been consumed, plus a ring
+// of recent line hashes so a crash between delivering a line to the consumer
+// and persisting the offset does not re-deliver it after restart (line-level
+// dedup).
+//
+// One cursor file per stream (RUYI-529): the two tail pumps run
+// concurrently, and a single shared file turned every persist into a
+// load-merge-store over the sibling stream's fields — concurrent persists
+// lost updates, and the shared fixed-name temp file tore under interleaved
+// writes, so a corrupt file could kill a pump on its next load. Separate
+// files give each pump a single-writer file; the race is gone by
+// construction.
+type streamReadState struct {
+	Offset int64    `json:"offset"`
+	Hashes []uint64 `json:"hashes,omitempty"`
 }
 
 // maxDedupRing bounds the hash ring. Lines older than this that were delivered
@@ -208,22 +215,70 @@ func ReadSpec(path string) (*launchSpec, error) {
 	return &spec, nil
 }
 
-// readStatePath is the daemon-owned read cursor file.
-func (m *Manager) readStatePath(runID string) string {
-	return filepath.Join(m.Dir(runID), "read.json")
-}
-
-func (m *Manager) LoadReadState(runID string) (readState, error) {
-	var rs readState
-	err := readJSONFile(m.readStatePath(runID), &rs)
-	if errors.Is(err, os.ErrNotExist) {
-		return readState{}, nil
+// stream names double as filename fragments, so they are validated as
+// strictly as run IDs.
+func validateStream(stream string) error {
+	if stream != "stdout" && stream != "stderr" {
+		return fmt.Errorf("supervisor: invalid stream %q", stream)
 	}
-	return rs, err
+	return nil
 }
 
-func (m *Manager) StoreReadState(runID string, rs readState) error {
-	return writeJSONFile(m.readStatePath(runID), &rs, 0o600)
+// readStatePath is the daemon-owned per-stream read cursor file.
+func (m *Manager) readStatePath(runID, stream string) string {
+	return filepath.Join(m.Dir(runID), "read-"+stream+".json")
+}
+
+// legacyReadStateName was the pre-RUYI-529 combined cursor file. It is only
+// ever read, to seed a stream's cursor on first load after the upgrade.
+const legacyReadStateName = "read.json"
+
+// LoadStreamReadState loads the stream's persisted cursor. A missing file is
+// a zero cursor; runs last cursored by the legacy combined file keep
+// resuming from it, and the per-stream file becomes authoritative once this
+// stream first persists. A corrupt legacy file — only possible from the old
+// code's concurrent writes — degrades to a zero cursor instead of killing
+// the pump.
+func (m *Manager) LoadStreamReadState(runID, stream string) (streamReadState, error) {
+	if err := ValidateRunID(runID); err != nil {
+		return streamReadState{}, err
+	}
+	if err := validateStream(stream); err != nil {
+		return streamReadState{}, err
+	}
+	var rs streamReadState
+	err := readJSONFile(m.readStatePath(runID, stream), &rs)
+	if err == nil {
+		return rs, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return rs, err
+	}
+	var legacy struct {
+		StdoutOffset int64    `json:"stdout_offset"`
+		StdoutHashes []uint64 `json:"stdout_hashes"`
+		StderrOffset int64    `json:"stderr_offset"`
+		StderrHashes []uint64 `json:"stderr_hashes"`
+	}
+	if err := readJSONFile(filepath.Join(m.Dir(runID), legacyReadStateName), &legacy); err != nil {
+		return streamReadState{}, nil
+	}
+	if stream == "stdout" {
+		return streamReadState{Offset: legacy.StdoutOffset, Hashes: legacy.StdoutHashes}, nil
+	}
+	return streamReadState{Offset: legacy.StderrOffset, Hashes: legacy.StderrHashes}, nil
+}
+
+// StoreStreamReadState persists the stream's cursor atomically. Each stream
+// owns its file exclusively — the two tail pumps never write the same path.
+func (m *Manager) StoreStreamReadState(runID, stream string, rs streamReadState) error {
+	if err := ValidateRunID(runID); err != nil {
+		return err
+	}
+	if err := validateStream(stream); err != nil {
+		return err
+	}
+	return writeJSONFile(m.readStatePath(runID, stream), &rs, 0o600)
 }
 
 // QuarantineRecord marks a run the reconcile matrix could not classify — the
@@ -279,26 +334,33 @@ func hashLine(line []byte) uint64 {
 }
 
 func writeJSONFile(path string, v any, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	// Unique temp name: two writers targeting the same file (RUYI-529) must
+	// never share one — interleaved truncation could rename a torn file into
+	// place.
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below has succeeded
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
 		return err
 	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
 		f.Close()
-		os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	return os.Rename(tmpPath, path)
 }
 
 func readJSONFile(path string, v any) error {
