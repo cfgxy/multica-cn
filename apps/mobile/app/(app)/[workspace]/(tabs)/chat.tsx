@@ -1,180 +1,92 @@
 /**
- * Chat tab — single-screen IA.
+ * Chat tab root — the session list (RUYI-496 two-level IA).
  *
  * Layout:
- *   View ─ Header(center: ChatTitleButton, right: ChatSessionActions)
- *        ─ (NoAgentBanner?)
- *        ─ KeyboardAvoidingView ─ ChatMessageList (includes live status
- *                                                  + timeline in its
- *                                                  ListFooterComponent)
- *                                ─ OfflineBanner
- *                                ─ ChatComposer
+ *   View ─ Header(title: "Chats", right: new-chat +)
+ *        ─ loading skeleton / error+retry / empty state / session rows
  *
- * Session switching, agent selection, and session deletion all happen
- * inside this screen via Modal sheets — there is no `/chat/[id]` sub-route.
+ * Previously this tab WAS the chat screen (single-screen IA, auto-hydrated
+ * to the most recent session on entry); the chat surface now lives at
+ * `app/(app)/[workspace]/chat/[sessionId].tsx` and is reached from here —
+ * tap a row for its session, `+` for a blank new chat (multi-agent picks
+ * the agent first via AgentPickerSheet, same as the old header flow). The
+ * `chat-sessions` formSheet + its picker store retired with the old IA —
+ * this list is the session switcher now, and Back from a detail screen
+ * lands here with scroll position intact (tab screens stay mounted).
  *
- * State (all local, none in Zustand):
- *   - activeSessionId   — which session is being viewed (null = new chat blank)
- *   - selectedAgentId   — overrides currentSession.agent_id when set (used
- *                         when starting a new chat with a freshly-picked agent)
- *   - sessionSheetOpen  — bottom modal visibility
- *   - agentPickerOpen   — bottom modal visibility
+ * Data: `chatSessionsOptions` — the same server-side per-user-filtered
+ * session query web/desktop use (AC7: no local assembly, no cross-user
+ * cache) — re-sorted by `sortChatSessions` so optimistic pin/archive
+ * patches keep the server order. The second preview line mirrors web's
+ * session row via `chatSessionPreview` (no "typing" state — the list
+ * doesn't subscribe to the pending-task snapshot). Live updates ride the
+ * workspace-level `useChatSessionsRealtime` subscription in the workspace
+ * layout; nothing list-specific to clean up here.
  *
- * Side effects:
- *   - useChatSessionRealtime(activeSessionId) for per-record WS events
- *   - auto markRead when entering a session with has_unread
- *   - ensureSession dedupe ref for concurrent first-message sends
- *
- * Optimistic send burst mirrors web's chat-window.tsx send sequence
- * (packages/views/chat/components/chat-window.tsx ~262-345):
- *   seed messages → seed pendingTask → flip activeSessionId → POST →
- *   patch pendingTask with server task_id + created_at.
+ * Long-press row actions (rename / pin / archive / delete) reuse the
+ * action-sheet pattern from the retired chat-sessions sheet (RUYI-51).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, View } from "react-native";
-// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
-// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useCallback, useMemo, useState } from "react";
+import { Alert, FlatList, Pressable, View } from "react-native";
 import { router } from "expo-router";
-import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, ChatMessage, ChatPendingTask } from "@multica/core/types";
-import {
-  enqueuePendingChatTask,
-  hideQueuedChatMessages,
-  removePendingChatTask,
-} from "@multica/core/chat/pending";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { useQuery } from "@tanstack/react-query";
+import type { ChatSession } from "@multica/core/types";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
-import { api } from "@/data/api";
-import { useAuthStore } from "@/data/auth-store";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { agentListOptions } from "@/data/queries/agents";
-import { memberListOptions } from "@/data/queries/members";
+import { Text } from "@/components/ui/text";
+import { Button } from "@/components/ui/button";
+import { Header } from "@/components/ui/header";
+import { IconButton } from "@/components/ui/icon-button";
+import { ActorAvatar } from "@/components/ui/actor-avatar";
 import {
-  chatKeys,
-  chatMessagesOptions,
   chatSessionsOptions,
-  pendingChatTaskOptions,
-  taskMessagesOptions,
+  sortChatSessions,
 } from "@/data/queries/chat";
 import {
-  useCreateChatSession,
   useDeleteChatSession,
-  useMarkChatSessionRead,
   useSetChatSessionArchived,
   useSetChatSessionPinned,
 } from "@/data/mutations/chat";
+import { agentListOptions } from "@/data/queries/agents";
+import { memberListOptions } from "@/data/queries/members";
+import { useAuthStore } from "@/data/auth-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import {
-  DRAFT_NEW_SESSION,
-  useChatDraftsStore,
-} from "@/data/stores/chat-drafts-store";
-import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
-import { useChatAgentRequestStore } from "@/data/stores/chat-agent-request-store";
-import { useSharedIntentStore } from "@/data/stores/shared-intent-store";
-import type { SharedFile } from "@/lib/share-payload";
-import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
-import {
-  invalidatePendingTask,
-  seedAcceptedPendingTask,
-} from "@/data/realtime/chat-ws-updaters";
-import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
-import { sendFailureMessage } from "@/lib/dispatch-reason";
-import { useAgentPresence } from "@/lib/use-agent-presence";
-import { Header } from "@/components/ui/header";
-import { ChatTitleButton } from "@/components/chat/chat-title-button";
-import { ChatSessionActions } from "@/components/chat/chat-session-actions";
-import { ChatMessageList } from "@/components/chat/chat-message-list";
-import { ChatComposer } from "@/components/chat/chat-composer";
+  useActionSheet,
+  ActionSheetModal,
+} from "@/components/ui/action-sheet";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
-import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
-import { NoAgentBanner } from "@/components/chat/no-agent-banner";
-import { OfflineBanner } from "@/components/chat/offline-banner";
-import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner";
-import { useChatSelectStore } from "@/data/chat-select-store";
-import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
-import { useT } from "@/lib/use-t";
-import { useColorScheme } from "@/lib/use-color-scheme";
-import { THEME } from "@/lib/theme";
-import { IconButton } from "@/components/ui/icon-button";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+import { chatSessionPreview } from "@/lib/chat-session-preview";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useT } from "@/lib/use-t";
+import { cn } from "@/lib/utils";
 
 export default function ChatTab() {
-  const qc = useQueryClient();
-  const { t } = useT("chat");
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
-
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
-  // RUYI-449: 非空时经 VoiceSessionOverlay 对当前 agent 发起语音会话
-  // （425 链路）；关闭即结束，不影响文本发送。
-  const [voiceOpen, setVoiceOpen] = useState(false);
-
-  // Bridge to the chat-sessions formSheet route. Mirror local
-  // activeSessionId into the store so the picker can render the current
-  // selection's check mark; consume the picker's one-shot select request
-  // via useEffect.
-  const setStoreActiveSessionId = useChatSessionPickerStore(
-    (s) => s.setActiveSessionId,
-  );
-  const selectRequest = useChatSessionPickerStore((s) => s.selectRequest);
-  const consumeSelect = useChatSessionPickerStore((s) => s.consumeSelect);
-  useEffect(() => {
-    setStoreActiveSessionId(activeSessionId);
-  }, [activeSessionId, setStoreActiveSessionId]);
+  const { t } = useT("chat");
 
   // ── Server state ───────────────────────────────────────────────────────
-  const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
+  const {
+    data: rawSessions = [],
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
-  // ── Auto-hydrate active session on first Chat tab entry ────────────────
-  // Mobile-only deviation from web: web's chat-window opens to an empty
-  // state when no `activeSessionId` is persisted; on a phone, picking
-  // a session is 4 taps, so jump straight to the most recent session.
-  // Hydration is one-shot per workspace.
-  const hydratedWsRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!wsId) return;
-    if (hydratedWsRef.current === wsId) return;
-    if (sessions.length === 0) {
-      hydratedWsRef.current = wsId;
-      return;
-    }
-    hydratedWsRef.current = wsId;
-    setActiveSessionId(sessions[0].id);
-  }, [wsId, sessions]);
-  const { data: messages = [], isLoading: messagesLoading } = useQuery(
-    chatMessagesOptions(activeSessionId),
-  );
-  const { data: pendingTask } = useQuery(
-    pendingChatTaskOptions(activeSessionId),
-  );
-  const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
-  // Live execution trace for the in-flight task. `task:message` WS events
-  // append rows to this same cache key via `appendTaskMessage`, so the
-  // list/pill stay in sync without a polling fetch. `enabled` is gated by
-  // `isTaskMessageTaskId` inside taskMessagesOptions — optimistic ids
-  // never hit the network.
-  const { data: liveTaskMessages = [] } = useQuery(
-    taskMessagesOptions(pendingTask?.task_id),
-  );
+  const sessions = useMemo(() => sortChatSessions(rawSessions), [rawSessions]);
 
-  // ── Derived ────────────────────────────────────────────────────────────
+  // ── Derived: which agents can this user actually start a chat with? ────
   const memberRole = useMemo(
     () => members.find((m) => m.user_id === userId)?.role ?? null,
     [members, userId],
   );
-
-  // The picker must list only agents this user can actually TRIGGER — sending
-  // a message enqueues a run, so it clears the server's invoke gate
-  // (`canInvokeAgent`), which has no admin bypass. Shared rule, not a mobile
-  // copy: a local mirror drifted from it and let admins pick a teammate's
-  // personal agent only to be 403'd on send (MUL-6380 / GH #7180).
   const availableAgents = useMemo(
     () =>
       agents.filter(
@@ -186,519 +98,272 @@ export default function ChatTab() {
     [agents, userId, memberRole],
   );
 
-  const activeSession = useMemo(
-    () => sessions.find((s) => s.id === activeSessionId) ?? null,
-    [sessions, activeSessionId],
-  );
-
-  // Active agent: explicit selection wins; otherwise inherit from the
-  // active session; otherwise pick the first available agent.
-  const currentAgent: Agent | null = useMemo(() => {
-    if (selectedAgentId) {
-      return availableAgents.find((a) => a.id === selectedAgentId) ?? null;
-    }
-    if (activeSession) {
-      return agents.find((a) => a.id === activeSession.agent_id) ?? null;
-    }
-    return availableAgents[0] ?? null;
-  }, [selectedAgentId, availableAgents, activeSession, agents]);
-
-  // A session outlives the permission that created it: the agent can be flipped
-  // to personal, change owner, or drop this member from its allow-list, and the
-  // server then refuses every send with `invocation_not_allowed` while still
-  // serving the transcript (MUL-4525 — read uses the view gate, send re-runs the
-  // invoke gate). `currentAgent` deliberately resolves an open session's agent
-  // from the FULL list so the header stays honest, which means the picker filter
-  // above cannot cover this case — judge the bound agent too (MUL-6380).
-  const accessRevoked =
-    currentAgent !== null &&
-    !canAssignAgentToIssue(currentAgent, {
-      userId: userId ?? null,
-      role: memberRole,
-    }).allowed;
-
-  const availability = useWorkspaceAgentAvailability();
-  const presenceDetail = useAgentPresence(wsId, currentAgent?.id);
-  const presenceAvailability =
-    presenceDetail === "loading" ? undefined : presenceDetail.availability;
-  const isArchived = activeSession?.status === "archived";
-  const runtimeBound =
-    currentAgent !== null && isAgentRuntimeBound(currentAgent);
-  const sending = !!pendingTask?.task_id;
-
-  // ── Drafts ─────────────────────────────────────────────────────────────
-  const draftKey = activeSessionId ?? DRAFT_NEW_SESSION;
-  const draft = useChatDraftsStore((s) => s.drafts[draftKey] ?? "");
-  const setDraft = useChatDraftsStore((s) => s.setDraft);
-  const clearDraft = useChatDraftsStore((s) => s.clearDraft);
-  const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
-
-  // ── Realtime ───────────────────────────────────────────────────────────
-  useChatSessionRealtime(activeSessionId, () => {
-    setActiveSessionId(null);
-  });
-
-  // Exit text-selection mode whenever the chat tab loses focus. Expo
-  // Router bottom tabs stay mounted across tab switches, so a plain
-  // useEffect cleanup wouldn't fire — useFocusEffect is the navigation-
-  // aware equivalent.
-  useFocusEffect(
-    useCallback(() => () => useChatSelectStore.getState().clear(), []),
-  );
-
-  // ── Auto markRead while viewing a session with unread state ──────────
-  const isFocused = useIsFocused();
-  const markRead = useMarkChatSessionRead();
-  useEffect(() => {
-    if (!isFocused) return;
-    if (!activeSessionId) return;
-    if (!activeSession?.has_unread) return;
-    markRead.mutate(activeSessionId);
-  }, [isFocused, activeSessionId, activeSession?.has_unread, markRead]);
-
-  // ── Mutations ──────────────────────────────────────────────────────────
-  const createSession = useCreateChatSession();
-  const deleteSession = useDeleteChatSession();
-  const setSessionPinned = useSetChatSessionPinned();
-  const setSessionArchived = useSetChatSessionArchived();
-
-  // ── Send burst ─────────────────────────────────────────────────────────
-  const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
-
-  const ensureSession = useCallback(
-    async (titleSeed: string): Promise<string | null> => {
-      if (activeSessionId) return activeSessionId;
-      if (!currentAgent) return null;
-      if (sessionPromiseRef.current) return sessionPromiseRef.current;
-
-      const promise = (async () => {
-        try {
-          const session = await createSession.mutateAsync({
-            agent_id: currentAgent.id,
-            title: titleSeed.slice(0, 50),
-          });
-          return session.id;
-        } finally {
-          sessionPromiseRef.current = null;
-        }
-      })();
-      sessionPromiseRef.current = promise;
-      return promise;
+  // ── Navigation ─────────────────────────────────────────────────────────
+  const openSession = useCallback(
+    (sessionId: string) => {
+      if (!wsSlug) return;
+      router.push({
+        pathname: "/[workspace]/chat/[sessionId]",
+        params: { workspace: wsSlug, sessionId },
+      });
     },
-    [activeSessionId, currentAgent, createSession],
+    [wsSlug],
   );
 
-  const handleSend = useCallback(
-    async (
-      content: string,
-      attachmentIds: string[] = [],
-      options: { clearDraft?: boolean } = {},
-    ) => {
-      if (!currentAgent) return;
-      // Invoke permission was revoked while this session was open — the server
-      // would refuse before persisting anything. The composer is disabled in
-      // this state; this is the belt-and-braces guard.
-      if (accessRevoked) {
-        Alert.alert(
-          t(
-            "mobile.send_blocked.no_permission_title",
-            "No permission to run this agent",
-          ),
-          t(
-            "mobile.send_blocked.no_permission_message",
-            "You no longer have permission to run this agent, so the message was not sent. Ask its owner for access.",
-          ),
-        );
-        return;
-      }
-      if (!runtimeBound) {
-        Alert.alert(
-          t("mobile.send_blocked.runtime_required_title", "Runtime required"),
-          t(
-            "mobile.send_blocked.runtime_required_message",
-            "Bind a runtime to this agent on web or desktop before sending a message.",
-          ),
-        );
-        return;
-      }
-
-      const isNewSession = !activeSessionId;
-      let sessionId: string | null;
-      try {
-        sessionId = await ensureSession(content);
-      } catch (err) {
-        // Session create runs the same invoke gate as a send, so a permission
-        // change refuses here too — and this is the only layer that sees the
-        // reason code (MUL-6380).
-        Alert.alert(
-          t("mobile.send_blocked.failed_title", "Message not sent"),
-          sendFailureMessage(err),
-        );
-        throw err;
-      }
-      if (!sessionId) return;
-
-      const sentAt = new Date().toISOString();
-      const optimistic: ChatMessage = {
-        id: `optimistic-${Date.now()}`,
-        chat_session_id: sessionId,
-        role: "user",
-        content,
-        task_id: null,
-        created_at: sentAt,
-      };
-      const optimisticTaskId = `optimistic-${optimistic.id}`;
-      qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
-        old ? [...old, optimistic] : [optimistic],
-      );
-      qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), (old) =>
-        enqueuePendingChatTask(
-          old,
-          {
-            task_id: optimisticTaskId,
-            status: "queued",
-            created_at: sentAt,
-            message_id: optimistic.id,
-            content,
-          },
-          Boolean(old?.task_id),
-        ),
-      );
-      if (isNewSession) {
-        promoteNewDraft(sessionId);
-        setActiveSessionId(sessionId);
-      }
-
-      try {
-        const result = await api.sendChatMessage(sessionId, content, {
-          attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-        });
-        // Replace the local bubble before reconciling pending state. When the
-        // server says this is a follow-up, its real message id lets the shared
-        // queue filter hide it immediately instead of waiting for the refetch.
-        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
-          old?.map((message) =>
-            message.id === optimistic.id
-              ? {
-                  ...message,
-                  id: result.message_id,
-                  task_id: result.task_id,
-                  created_at: result.created_at,
-                }
-              : message,
-          ),
-        );
-        seedAcceptedPendingTask(qc, {
-          chat_session_id: sessionId,
-          task_id: result.task_id,
-          created_at: result.created_at,
-          message_id: result.message_id,
-          content,
-          optimistic_task_id: optimisticTaskId,
-          supports_queue: result.supports_queue,
-          queued: result.queued,
-        });
-        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
-        if (options.clearDraft !== false) {
-          clearDraft(sessionId);
-        }
-      } catch (err) {
-        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
-          old ? old.filter((m) => m.id !== optimistic.id) : old,
-        );
-        qc.setQueryData<ChatPendingTask>(
-          chatKeys.pendingTask(sessionId),
-          (old) => removePendingChatTask(old, optimisticTaskId),
-        );
-        // The composer restores the draft on a thrown rejection but says nothing
-        // about it, so a revoked-permission 403 used to read as a silent no-op
-        // (MUL-6380). Name the cause here: only this layer sees the error body.
-        Alert.alert(
-          t("mobile.send_blocked.failed_title", "Message not sent"),
-          sendFailureMessage(err),
-        );
-        throw err;
-      }
+  const openNewChat = useCallback(
+    (agentId?: string) => {
+      if (!wsSlug) return;
+      router.push({
+        pathname: "/[workspace]/chat/[sessionId]",
+        params: agentId
+          ? { workspace: wsSlug, sessionId: "new", agentId }
+          : { workspace: wsSlug, sessionId: "new" },
+      });
     },
-    [
-      activeSessionId,
-      currentAgent,
-      accessRevoked,
-      runtimeBound,
-      ensureSession,
-      qc,
-      promoteNewDraft,
-      clearDraft,
-      t,
-    ],
+    [wsSlug],
   );
 
-  // ── Cancel in-flight ───────────────────────────────────────────────────
-  const handleStop = useCallback(() => {
-    if (!pendingTask?.task_id || !activeSessionId) return;
-    if (pendingTask.status === "queued") return;
-    const taskId = pendingTask.task_id;
-    const sessionId = activeSessionId;
-    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), (old) =>
-      removePendingChatTask(old, taskId),
-    );
-    void api
-      .cancelTaskById(taskId)
-      .catch(() => {
-        // Silent — task may have already terminated server-side.
-      })
-      .finally(() => invalidatePendingTask(qc, sessionId));
-  }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
-
-  // ── Header / sheet actions ─────────────────────────────────────────────
+  const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const handleNewChat = useCallback(() => {
     if (availableAgents.length > 1) {
       setAgentPickerOpen(true);
       return;
     }
-    setSelectedAgentId(null);
-    setActiveSessionId(null);
-  }, [availableAgents.length]);
+    openNewChat();
+  }, [availableAgents.length, openNewChat]);
 
-  const handlePickAgent = useCallback((agent: Agent) => {
-    setSelectedAgentId(agent.id);
-    setActiveSessionId(null);
-  }, []);
-
-  // Apply the user's pick from the chat-sessions route (or "no session"
-  // when they delete the active one in the sheet).
-  useEffect(() => {
-    if (!selectRequest) return;
-    setSelectedAgentId(null);
-    setActiveSessionId(selectRequest.id);
-    consumeSelect();
-  }, [selectRequest, consumeSelect]);
-
-  // Same channel, agent detail screen side (RUYI-418 A7): "DM this agent"
-  // opens a fresh session with the requested agent. The sender gates the
-  // invocation permission, so the request is applied as-is; if the agent
-  // isn't invocable the composer falls back to the no-agent banner.
-  const agentRequest = useChatAgentRequestStore((s) => s.agentRequest);
-  const consumeAgent = useChatAgentRequestStore((s) => s.consumeAgent);
-  useEffect(() => {
-    if (!agentRequest) return;
-    setSelectedAgentId(agentRequest.id);
-    setActiveSessionId(null);
-    consumeAgent();
-  }, [agentRequest, consumeAgent]);
-
-  // RUYI-463: 系统分享 → Chat。落地页已选好 agent 并把
-  // {files, destination} 写进 shared-intent-store；这里 one-shot take
-  // 后切到该 agent 的新会话并把文件交给 composer 入队。用户即便仍停
-  // 在会话列表（composer 已挂载），注入同样生效。
-  //
-  // 必须用 useFocusEffect 而非订阅 effect：落地页是 router.replace
-  // 进来的，根栈上可能同时存在新旧两个 chat 屏实例（旧的被压在栈
-  // 下但仍然 mounted、仍然订阅着 store）。订阅 effect 会让旧实例抢
-  // 走 one-shot payload，文件注入进用户看不见的那个实例；焦点语义
-  // 保证只有用户看得见的屏执行 take。takeFor 本身幂等（take 后置
-  // 空），重复 focus 不会重复注入。
-  const [incomingSharedFiles, setIncomingSharedFiles] = useState<SharedFile[]>(
-    [],
-  );
-  useFocusEffect(
-    useCallback(() => {
-      const taken = useSharedIntentStore.getState().takeFor("chat");
-      if (!taken) return;
-      setSelectedAgentId(taken.destination.agentId);
-      setActiveSessionId(null);
-      setIncomingSharedFiles(taken.files);
-    }, []),
+  const handlePickAgent = useCallback(
+    (agent: { id: string }) => {
+      setAgentPickerOpen(false);
+      openNewChat(agent.id);
+    },
+    [openNewChat],
   );
 
-  const handleDeleteActive = useCallback(() => {
-    if (!activeSession) return;
-    Alert.alert(
-      t("session_history.delete_dialog.title", "Delete chat session"),
-      chatSessionDisplayTitle(
-        activeSession.title,
-        t("session_history.untitled", "Untitled"),
-      ),
-      [
-        {
-          text: t("session_history.delete_dialog.cancel", "Cancel"),
-          style: "cancel",
-        },
-        {
-          text: t("session_history.delete_dialog.confirm", "Delete"),
-          style: "destructive",
-          onPress: () => {
-            const id = activeSession.id;
-            setActiveSessionId(null);
-            deleteSession.mutate(id);
+  // ── Row actions (long-press) ───────────────────────────────────────────
+  const deleteSession = useDeleteChatSession();
+  const setPinned = useSetChatSessionPinned();
+  const setArchived = useSetChatSessionArchived();
+  const sheet = useActionSheet();
+
+  // 不能复用 chat:window.untitled —— 那条 en 是 "New chat"（web 侧指「新建
+  // 会话」入口），与这里「无标题会话」的语义不同。
+  const untitled = t("mobile.sessions.untitled", "Untitled chat");
+
+  const confirmDelete = useCallback(
+    (session: ChatSession) => {
+      Alert.alert(
+        t("mobile.sessions.delete_title", "Delete this chat?"),
+        chatSessionDisplayTitle(session.title, untitled),
+        [
+          { text: t("common:cancel", "Cancel"), style: "cancel" },
+          {
+            text: t("common:delete", "Delete"),
+            style: "destructive",
+            onPress: () => deleteSession.mutate(session.id),
           },
+        ],
+        { cancelable: true },
+      );
+    },
+    [deleteSession, t, untitled],
+  );
+
+  const showSessionActions = useCallback(
+    (session: ChatSession) => {
+      const archived = session.status === "archived";
+      Haptics.selectionAsync().catch(() => {});
+
+      const actions: (
+        | { kind: "rename" }
+        | { kind: "pin" }
+        | { kind: "archive" }
+        | { kind: "delete" }
+        | { kind: "cancel" }
+      )[] = [];
+      const options: string[] = [];
+      const push = (label: string, action: (typeof actions)[number]) => {
+        options.push(label);
+        actions.push(action);
+      };
+
+      push(t("header.rename", "Rename chat"), { kind: "rename" });
+      push(session.pinned ? t("list.unpin", "Unpin") : t("list.pin", "Pin"), {
+        kind: "pin",
+      });
+      push(
+        archived
+          ? t("header.unarchive", "Unarchive chat")
+          : t("header.archive", "Archive chat"),
+        { kind: "archive" },
+      );
+      push(t("header.delete", "Delete chat"), { kind: "delete" });
+      push(t("common:cancel", "Cancel"), { kind: "cancel" });
+
+      sheet.show({
+        options,
+        cancelButtonIndex: options.length - 1,
+        destructiveButtonIndex: options.length - 2,
+        title: chatSessionDisplayTitle(session.title, untitled),
+        onSelect: (i) => {
+          const action = actions[i];
+          if (!action || action.kind === "cancel") return;
+          switch (action.kind) {
+            case "rename":
+              if (wsSlug) {
+                router.push({
+                  pathname: "/[workspace]/chat-rename",
+                  params: { workspace: wsSlug, sessionId: session.id },
+                });
+              }
+              return;
+            case "pin":
+              setPinned.mutate({
+                sessionId: session.id,
+                pinned: !session.pinned,
+              });
+              return;
+            case "archive":
+              setArchived.mutate({
+                sessionId: session.id,
+                archived: !archived,
+              });
+              return;
+            case "delete":
+              confirmDelete(session);
+              return;
+          }
         },
-      ],
-      { cancelable: true },
-    );
-  }, [activeSession, deleteSession, t]);
+      });
+    },
+    [confirmDelete, sheet, t, untitled, wsSlug],
+  );
 
-  // ── Session-menu actions (RUYI-51) ─────────────────────────────────────
-  // Rename opens a self-contained formSheet route (text input → form sheet
-  // per apps/mobile CLAUDE.md Lesson 5); pin/archive mutate optimistically
-  // and stay on the open session. Mobile divergence from web, documented:
-  // web's header menu links to an agent profile page — mobile has no agent
-  // detail screen yet (more/agents.tsx is a placeholder), so no "view
-  // profile" item.
-  const handleRenameActive = useCallback(() => {
-    if (!activeSession || !wsSlug) return;
-    router.push({
-      pathname: "/[workspace]/chat-rename",
-      params: { workspace: wsSlug, sessionId: activeSession.id },
-    });
-  }, [activeSession, wsSlug]);
-
-  const handleTogglePinActive = useCallback(() => {
-    if (!activeSession) return;
-    setSessionPinned.mutate({
-      sessionId: activeSession.id,
-      pinned: !activeSession.pinned,
-    });
-  }, [activeSession, setSessionPinned]);
-
-  const handleToggleArchiveActive = useCallback(() => {
-    if (!activeSession) return;
-    // Keep the archived session open: the composer already renders its
-    // archived disabled state (isArchived → disabledReason), so the user
-    // sees the result in place and can switch via the title button.
-    setSessionArchived.mutate({
-      sessionId: activeSession.id,
-      archived: !isArchived,
-    });
-  }, [activeSession, isArchived, setSessionArchived]);
-
-  // ── Composer disabled-state ────────────────────────────────────────────
-  const disabled =
-    !currentAgent ||
-    accessRevoked ||
-    availability === "none" ||
-    isArchived === true ||
-    !runtimeBound;
-  // 与上面 `disabled` 同集合、同顺序、同判据，无 undefined 出口：
-  // `disabled === true` ⟺ `disabledReason !== undefined`。这五条是禁用态
-  // 下 composer pill 上唯一实际可见的文案（覆盖掉 pillLabel）。
-  const disabledReason = !currentAgent
-    ? t("mobile.disabled_reason.no_agent", "No agent selected")
-    : accessRevoked
-      ? t(
-          "mobile.disabled_reason.access_revoked",
-          "You can no longer run this agent",
-        )
-      : availability === "none"
-        ? t(
-            "mobile.disabled_reason.no_agents_in_workspace",
-            "No agents in this workspace",
-          )
-        : isArchived
-          ? t("mobile.disabled_reason.archived", "This chat is archived")
-          : !runtimeBound
-            ? t(
-                "mobile.disabled_reason.runtime_missing",
-                "Agent needs a runtime",
-              )
-            : undefined;
+  // ── Render ─────────────────────────────────────────────────────────────
+  const untitledFallback = untitled;
 
   return (
     <View className="flex-1 bg-background">
       <Header
-        center={
-          <ChatTitleButton
-            currentSession={activeSession}
-            currentAgent={currentAgent}
-            onPress={() => {
-              if (!wsSlug) return;
-              router.push({
-                pathname: "/[workspace]/chat-sessions",
-                params: { workspace: wsSlug },
-              });
-            }}
-          />
-        }
+        title={t("mobile.sessions.title", "Chats")}
         right={
-          <ChatSessionActions
-            showMore={!!activeSession}
-            isArchived={isArchived}
-            isPinned={activeSession?.pinned === true}
-            onRename={handleRenameActive}
-            onTogglePin={handleTogglePinActive}
-            onToggleArchive={handleToggleArchiveActive}
-            onDelete={handleDeleteActive}
-            onNewPress={handleNewChat}
+          <IconButton
+            name="add"
+            iconSize={24}
+            onPress={handleNewChat}
+            accessibilityLabel={t("window.new_chat_tooltip", "New chat")}
           />
         }
       />
-      {availability === "none" ? <NoAgentBanner /> : null}
-      <KeyboardAvoidingView behavior="padding" className="flex-1">
-        <ChatMessageList
-          messages={visibleMessages}
-          loading={messagesLoading}
-          hasSessions={sessions.length > 0}
-          agent={currentAgent}
-          onPickPrompt={(text) => setDraft(draftKey, text)}
-          onQuickAction={(action) =>
-            handleSend(action.prompt, [], { clearDraft: false })
-          }
-          quickActionsDisabled={sending || disabled}
-          pendingTask={pendingTask}
-          liveTaskMessages={liveTaskMessages}
-          availability={presenceAvailability}
-        />
-        {runtimeBound ? (
-          <OfflineBanner
-            agentName={currentAgent?.name}
-            availability={presenceAvailability}
-          />
-        ) : currentAgent ? (
-          <RuntimeRequiredBanner agentName={currentAgent.name} />
-        ) : null}
-        <ChatComposer
-          value={draft}
-          onChangeText={(next) => setDraft(draftKey, next)}
-          onSend={handleSend}
-          onStop={handleStop}
-          sending={sending}
-          allowStop={pendingTask?.status !== "queued"}
-          disabled={disabled}
-          disabledReason={disabledReason}
-          incomingSharedFiles={incomingSharedFiles}
-          onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
-          renderVoiceWhenEmpty={
-            runtimeBound && currentAgent !== null && !voiceOpen
-              ? () => (
-                  <IconButton
-                    name="mic-outline"
-                    iconSize={18}
-                    color={theme.primaryForeground}
-                    variant="default"
-                    onPress={() => setVoiceOpen(true)}
-                    hitSlop={12}
-                    className="h-8 w-8 rounded-full"
-                    accessibilityLabel={t("voice:button.start", "Start voice conversation")}
+      {isLoading ? (
+        <View testID="chat-list-loading" className="pt-2">
+          {Array.from({ length: 6 }).map((_, row) => (
+            <View
+              key={row}
+              className="flex-row items-center gap-3 px-4 py-3"
+            >
+              <Skeleton className="size-8 rounded-full" />
+              <View className="flex-1 gap-1.5">
+                <Skeleton className="h-3.5 w-2/5" />
+                <Skeleton className="h-3 w-3/5" />
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : isError ? (
+        <View className="flex-1 items-center justify-center gap-3 px-6">
+          <Text className="text-sm text-muted-foreground text-center">
+            {error instanceof Error
+              ? error.message
+              : t("common:mobile.common.unknown_error", "unknown error")}
+          </Text>
+          <Button variant="outline" onPress={() => refetch()}>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
+          </Button>
+        </View>
+      ) : sessions.length === 0 ? (
+        <View className="flex-1 items-center justify-center gap-3 px-6">
+          <Text className="text-sm text-muted-foreground text-center">
+            {t("mobile.sessions.empty", "No chats yet.")}
+          </Text>
+          <Button variant="outline" onPress={handleNewChat}>
+            <Text>{t("window.new_chat_tooltip", "New chat")}</Text>
+          </Button>
+        </View>
+      ) : (
+        <FlatList
+          data={sessions}
+          keyExtractor={(session) => session.id}
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item: session }) => {
+            const archived = session.status === "archived";
+            const preview = chatSessionPreview(session, t);
+            return (
+              <Pressable
+                testID={`chat-row-${session.id}`}
+                onPress={() => openSession(session.id)}
+                onLongPress={() => showSessionActions(session)}
+                className="flex-row items-center gap-3 px-4 py-3 active:bg-secondary"
+              >
+                <View
+                  className={cn(
+                    "h-2 w-2 rounded-full",
+                    session.has_unread ? "bg-primary" : "bg-transparent",
+                  )}
+                />
+                <ActorAvatar
+                  type="agent"
+                  id={session.agent_id}
+                  size={32}
+                  showPresence
+                />
+                <View className="flex-1">
+                  <Text
+                    className={cn(
+                      "text-sm text-foreground",
+                      session.has_unread && "font-semibold",
+                    )}
+                    numberOfLines={1}
+                  >
+                    {chatSessionDisplayTitle(session.title, untitledFallback)}
+                  </Text>
+                  <Text
+                    className={cn(
+                      "text-xs mt-0.5",
+                      preview.kind === "failed"
+                        ? "text-destructive"
+                        : preview.kind === "preview" && session.has_unread
+                          ? "text-foreground"
+                          : "text-muted-foreground",
+                      preview.kind === "no_response" && "italic",
+                    )}
+                    numberOfLines={1}
+                  >
+                    {preview.text}
+                  </Text>
+                </View>
+                {session.pinned ? (
+                  <Ionicons
+                    name="pin"
+                    size={14}
+                    className="text-muted-foreground"
                   />
-                )
-              : undefined
-          }
+                ) : null}
+              </Pressable>
+            );
+          }}
         />
-      </KeyboardAvoidingView>
+      )}
 
       <AgentPickerSheet
         visible={agentPickerOpen}
         agents={availableAgents}
-        currentAgentId={currentAgent?.id ?? null}
+        currentAgentId={null}
         onPick={handlePickAgent}
         onClose={() => setAgentPickerOpen(false)}
       />
 
-      <VoiceSessionOverlay
-        agentId={voiceOpen && currentAgent !== null ? currentAgent.id : null}
-        workspaceSlug={wsSlug ?? ""}
-        onClose={() => setVoiceOpen(false)}
-      />
+      <ActionSheetModal {...sheet.modalProps} />
     </View>
   );
 }
