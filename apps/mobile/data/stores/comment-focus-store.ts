@@ -7,7 +7,7 @@
  *     different screens; Expo Router routes can't share state with the
  *     screen that opened them (same constraint documented for the
  *     new-issue draft flow). A tiny store is the established pattern
- *     (`reply-target-store`, `chat-session-picker-store`).
+ *     (`reply-target-store`, `chat-agent-request-store`).
  *   - The timeline's root-collapse state must survive the FlashList's cell
  *     recycling (rows unmount when scrolled out of view) — per-row
  *     `useState` resets on recycle. Lifting to a per-issue set keeps the
