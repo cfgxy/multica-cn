@@ -78,6 +78,7 @@ import { useConfigStore } from "@multica/core/config";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import { issueDetailOptions } from "@multica/core/issues/queries";
+import { useOpenDecisionCount } from "@multica/core/issues/decisions";
 import { projectDetailOptions } from "@multica/core/projects/queries";
 import type { PinnedItem } from "@multica/core/types";
 import { useLogout } from "../auth";
@@ -125,7 +126,8 @@ type NavKey =
   | "selfEvolution"
   | "runtimes"
   | "skills"
-  | "settings";
+  | "settings"
+  | "decisions";
 
 // Static schema (key only) — labels resolved at render via useT("layout"),
 // icons derived from the destination path via routeIconForPath.
@@ -134,6 +136,7 @@ type NavLabelKey =
   | "chat"
   | "my_issues"
   | "issues"
+  | "decisions"
   | "projects"
   | "autopilots"
   | "agents"
@@ -155,6 +158,8 @@ const personalNav: { key: NavKey; labelKey: NavLabelKey }[] = [
 
 const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
   { key: "issues", labelKey: "issues" },
+  // RUYI-494: Decision Center — aggregates decision cards across issues.
+  { key: "decisions", labelKey: "decisions" },
   { key: "projects", labelKey: "projects" },
   { key: "autopilots", labelKey: "autopilots" },
   { key: "agents", labelKey: "agents" },
@@ -474,6 +479,10 @@ export function AppSidebar({ topSlot, searchSlot, serversSlot, headerClassName, 
     () => deduplicateInboxItems(inboxItems).filter((i) => !i.read).length,
     [inboxItems],
   );
+  // Decision Center badge (RUYI-494): count of still-open cards in this
+  // workspace — the "something is waiting for you to decide" signal. Derived
+  // from the same shared query the decisions page renders.
+  const { data: openDecisionCount = 0 } = useOpenDecisionCount(wsId);
   // Chat tab unread badge: IM-style total of unread *messages* across chat
   // threads (countUnreadChatMessages is the shared definition — mobile's tab
   // badge derives from the same function, keeping the platforms in agreement).
@@ -891,6 +900,13 @@ export function AppSidebar({ topSlot, searchSlot, serversSlot, headerClassName, 
                       >
                         <Icon />
                         <span>{t(($) => $.nav[item.labelKey])}</span>
+                        {item.key === "decisions" && openDecisionCount > 0 && (
+                          <CappedNumberFlow
+                            value={openDecisionCount}
+                            animated={false}
+                            className="ml-auto text-caption"
+                          />
+                        )}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   );

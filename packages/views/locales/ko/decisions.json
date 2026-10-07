@@ -1,0 +1,25 @@
+{
+  "page": {
+    "breadcrumb": "결정 센터",
+    "empty_title": "아직 결정 카드가 없습니다",
+    "empty_description": "에이전트나 멤버가 만든 결정 카드가 여기에 모여, 결정할 항목을 놓치지 않습니다.",
+    "load_failed": "결정 카드를 불러오지 못했습니다"
+  },
+  "section": {
+    "open": "결정 대기",
+    "answered": "결정됨",
+    "cancelled": "무효"
+  },
+  "badge": {
+    "recommended": "추천 있음"
+  },
+  "mobile": {
+    "tab": {
+      "title": "결정"
+    },
+    "page": {
+      "title": "결정 센터",
+      "load_failed": "결정 카드를 불러오지 못했습니다: {{reason}}"
+    }
+  }
+}

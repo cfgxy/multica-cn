@@ -50,7 +50,12 @@ export function parseCommentHighlightHash(hash: string): string | undefined {
   return match?.[1];
 }
 
-function useCommentHighlightHash(): { hash: string; commentId?: string } {
+export function parseDecisionHighlightHash(hash: string): string | undefined {
+  const match = /^#decision-([A-Za-z0-9_-]+)$/.exec(hash);
+  return match?.[1];
+}
+
+function useHighlightHash(): { hash: string; commentId?: string; decisionId?: string } {
   const read = () => typeof window === "undefined" ? "" : window.location.hash;
   const [hash, setHash] = useState(read);
 
@@ -60,7 +65,11 @@ function useCommentHighlightHash(): { hash: string; commentId?: string } {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  return { hash, commentId: parseCommentHighlightHash(hash) };
+  return {
+    hash,
+    commentId: parseCommentHighlightHash(hash),
+    decisionId: parseDecisionHighlightHash(hash),
+  };
 }
 
 /**
@@ -77,7 +86,7 @@ function useCommentHighlightHash(): { hash: string; commentId?: string } {
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
   const { canonicalId, issue, isResolving, notFound } = useCanonicalIssue(wsId, routeId);
-  const highlight = useCommentHighlightHash();
+  const highlight = useHighlightHash();
 
   useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash);
 
@@ -94,6 +103,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
       issueId={canonicalId}
       onDelete={onDelete}
       highlightCommentId={highlight.commentId}
+      highlightDecisionId={highlight.decisionId}
     />
   );
 }
