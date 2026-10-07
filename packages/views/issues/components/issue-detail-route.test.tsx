@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
@@ -11,6 +11,7 @@ import {
   parseCommentHighlightHash,
   parseDecisionHighlightHash,
   useCanonicalIssueUrl,
+  useHighlightHash,
 } from "./issue-detail-route";
 
 vi.mock("@multica/core/hooks", () => ({
@@ -101,6 +102,52 @@ describe("useCanonicalIssueUrl", () => {
       { wrapper },
     );
     expect(replace).toHaveBeenCalledWith("/acme/issues/TRS-134#comment-comment-7");
+  });
+});
+
+// The Decision Center / inbox deep links (RUYI-494) arrive on the web as an
+// App Router navigation whose URL — fragment included — is applied by
+// history.pushState during the commit phase, i.e. AFTER this route's first
+// render, and pushState never fires `hashchange`. A fragment that lands that
+// way must still reach the highlight machinery on a later commit.
+describe("useHighlightHash", () => {
+  beforeEach(() => {
+    window.history.replaceState({}, "", "/acme/issues/x");
+  });
+
+  it("reads the fragment present at first render (full-page load)", () => {
+    window.history.replaceState({}, "", "/acme/issues/TRS-134#decision-card-9");
+    const { result } = renderHook(() => useHighlightHash(), { wrapper });
+    expect(result.current.hash).toBe("#decision-card-9");
+    expect(result.current.decisionId).toBe("card-9");
+    expect(result.current.commentId).toBeUndefined();
+  });
+
+  it("tracks a later hashchange", async () => {
+    const { result } = renderHook(() => useHighlightHash(), { wrapper });
+    expect(result.current.hash).toBe("");
+    act(() => {
+      window.location.hash = "#comment-comment-7";
+    });
+    // jsdom dispatches hashchange as a task, not synchronously.
+    await waitFor(() => {
+      expect(result.current.hash).toBe("#comment-comment-7");
+    });
+    expect(result.current.commentId).toBe("comment-7");
+  });
+
+  it("picks up a fragment that commits after mount via pushState (SPA navigation)", () => {
+    const { result, rerender } = renderHook(() => useHighlightHash(), { wrapper });
+    expect(result.current.hash).toBe("");
+    act(() => {
+      // pushState updates the URL without any hashchange event — the web SPA
+      // shape. The hook can only converge by re-reading on a later commit.
+      window.history.pushState({}, "", "/acme/issues/cb240efb#decision-card-9");
+    });
+    expect(result.current.hash).toBe("");
+    rerender();
+    expect(result.current.hash).toBe("#decision-card-9");
+    expect(result.current.decisionId).toBe("card-9");
   });
 });
 
