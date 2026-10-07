@@ -109,12 +109,16 @@ func TestConvergeFinishedSupervisedRun_DrainAdvancesCursor(t *testing.T) {
 	if out := fx.daemon.convergeFinishedSupervisedRun(context.Background(), testTaskID); out != convergeReported {
 		t.Fatalf("outcome = %v, want reported", out)
 	}
-	rs, err := mgr.LoadReadState(runID)
+	so, err := mgr.LoadStreamReadState(runID, "stdout")
 	if err != nil {
-		t.Fatalf("load read state: %v", err)
+		t.Fatalf("load stdout read state: %v", err)
 	}
-	if rs.StdoutOffset != int64(len(stdout)) || rs.StderrOffset != int64(len("boom\n")) {
-		t.Fatalf("read state = %+v, want offsets %d/%d", rs, len(stdout), len("boom\n"))
+	se, err := mgr.LoadStreamReadState(runID, "stderr")
+	if err != nil {
+		t.Fatalf("load stderr read state: %v", err)
+	}
+	if so.Offset != int64(len(stdout)) || se.Offset != int64(len("boom\n")) {
+		t.Fatalf("read state = stdout %+v stderr %+v, want offsets %d/%d", so, se, len(stdout), len("boom\n"))
 	}
 }
 
