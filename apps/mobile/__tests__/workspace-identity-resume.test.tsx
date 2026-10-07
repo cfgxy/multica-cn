@@ -78,9 +78,11 @@ jest.mock("@/data/secure-storage", () => ({
   },
 }));
 
+const mockServerRef = { activeServerId: "server-1" };
+
 jest.mock("@/data/server-store", () => ({
   useServerStore: {
-    getState: () => ({ activeServerId: "server-1" }),
+    getState: () => ({ activeServerId: mockServerRef.activeServerId }),
   },
 }));
 
@@ -189,12 +191,14 @@ async function seedWorkspaceIdentity() {
   });
 }
 
-function renderInbox() {
+// RNTL v14 的 render() 是 async：screen 绑定发生在内部 await act() 之后，
+// 不 await 就查询 screen 必抛 "render function has not been called"。
+async function renderInbox() {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   mockListInbox.mockResolvedValue(ITEMS);
-  render(
+  await render(
     <QueryClientProvider client={qc}>
       <InboxScreen />
     </QueryClientProvider>,
@@ -205,23 +209,28 @@ function renderInbox() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockSecureSlugs.clear();
+  mockServerRef.activeServerId = "server-1";
   useWorkspaceStore.setState({
     currentWorkspaceId: null,
     currentWorkspaceSlug: null,
+    currentWorkspaceServerId: null,
   });
 });
 
+// 收件箱查询 enabled: !!wsId —— id 为 null 时禁用并渲染空态，这是生产契约。
+// 所以每个用例先 seed 工作区身份（id 已确认）再挂载，模拟「用户正在用列表」。
 it("初始加载后收件箱渲染两条数据", async () => {
-  renderInbox();
+  await seedWorkspaceIdentity();
+  await renderInbox();
   expect(await screen.findByTestId("inbox-row-inbox-1")).toBeTruthy();
   expect(screen.getByTestId("inbox-row-inbox-2")).toBeTruthy();
 });
 
 it("mid-session 恢复（持久化 slug 未变）不得清掉已确认的工作区 id——列表保持可见", async () => {
-  renderInbox();
+  await seedWorkspaceIdentity();
+  await renderInbox();
   expect(await screen.findByTestId("inbox-row-inbox-1")).toBeTruthy();
 
-  await seedWorkspaceIdentity();
   await act(async () => {
     await useWorkspaceStore.getState().restoreSlug();
   });
@@ -234,10 +243,10 @@ it("mid-session 恢复（持久化 slug 未变）不得清掉已确认的工作�
 });
 
 it("持久化 slug 变化（切服务器）时维持既有语义：id 与 slug 一起切换为新值", async () => {
-  renderInbox();
+  await seedWorkspaceIdentity();
+  await renderInbox();
   expect(await screen.findByTestId("inbox-row-inbox-1")).toBeTruthy();
 
-  await seedWorkspaceIdentity();
   mockSecureSlugs.set("server-1", "other-ws");
   await act(async () => {
     await useWorkspaceStore.getState().restoreSlug();
@@ -245,4 +254,19 @@ it("持久化 slug 变化（切服务器）时维持既有语义：id 与 slug �
 
   expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
   expect(useWorkspaceStore.getState().currentWorkspaceSlug).toBe("other-ws");
+});
+
+it("跨服务器同名 slug（slug 未变、服务器已变）：id 必须清空，防旧服务器工作区泄漏", async () => {
+  await seedWorkspaceIdentity();
+  await renderInbox();
+  expect(await screen.findByTestId("inbox-row-inbox-1")).toBeTruthy();
+
+  mockServerRef.activeServerId = "server-2";
+  mockSecureSlugs.set("server-2", "repro543");
+  await act(async () => {
+    await useWorkspaceStore.getState().restoreSlug();
+  });
+
+  expect(useWorkspaceStore.getState().currentWorkspaceId).toBeNull();
+  expect(useWorkspaceStore.getState().currentWorkspaceSlug).toBe("repro543");
 });
