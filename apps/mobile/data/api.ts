@@ -52,6 +52,7 @@ import type {
   InboxWorkspaceUnread,
   Issue,
   IssueDecision,
+  WorkspaceDecisionInbox,
   IssueLabelsResponse,
   IssuePriority,
   Label,
@@ -150,6 +151,7 @@ import {
   BatchDecisionAnswersSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
+  WorkspaceDecisionInboxSchema,
 } from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
@@ -1882,6 +1884,27 @@ class ApiClient {
     });
     if (!decision) throw new Error("Invalid decision cancel response");
     return decision;
+  }
+
+  // Workspace-level decision inbox aggregation (RUYI-494). Mirrors
+  // packages/core/api/client.ts listWorkspaceDecisionInbox — mobile-owned
+  // fetch wrapper, shared zod schema, same query-string contract.
+  async listWorkspaceDecisionInbox(
+    workspaceId: string,
+    params?: { status?: IssueDecision["status"]; limit?: number },
+  ): Promise<WorkspaceDecisionInbox> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-inbox${query}`,
+    );
+    const inbox = parseWithFallback(raw, WorkspaceDecisionInboxSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-inbox",
+    });
+    if (!inbox) throw new Error("Invalid decision inbox response");
+    return inbox;
   }
 
   // --- Labels ---

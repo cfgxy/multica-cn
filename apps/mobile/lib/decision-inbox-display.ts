@@ -1,0 +1,83 @@
+/**
+ * Decision Center list shaping (RUYI-494) — the mobile mirror of
+ * packages/views/decisions/components/decision-center-page.tsx's section
+ * grouping. Pure and node-testable; the screen only wires the result into
+ * SectionList.
+ *
+ * Behavioral parity (apps/mobile/CLAUDE.md "Counts and visibility must
+ * agree"):
+ *   - One row per CARD — never folded by issue. The IA is fixed by Owner
+ *     correction on RUYI-494: same Issue with N cards renders N rows, line 1
+ *     = identifier + title, line 2 = that card's question. The server
+ *     returns one item per card; nothing here merges them.
+ *   - Section order is open → answered → cancelled (待决策 first); within a
+ *     section the server's newest-first order passes through untouched.
+ *   - Zero-row sections are dropped from the rendered list, but a section's
+ *     `count` is the server's workspace total (data.counts), not rows.length
+ *     — the server list endpoint carries no pagination today, and keeping
+ *     the server number as the single source means the badge, the section
+ *     header and web can never disagree.
+ */
+import type {
+  IssueDecision,
+  WorkspaceDecisionInbox,
+  WorkspaceDecisionInboxItem,
+} from "@multica/core/types";
+
+export type DecisionInboxSectionKey = IssueDecision["status"];
+
+export const DECISION_SECTION_ORDER = [
+  "open",
+  "answered",
+  "cancelled",
+] as const satisfies readonly DecisionInboxSectionKey[];
+
+/** Render-ready row: fixed two lines (identifier+title / question). */
+export interface DecisionInboxRow {
+  id: string;
+  issueId: string;
+  /** `RUYI-494` — always visible per the IA; `#<number>` fallback when the
+   *  server row predates the identifier join (defensive; falls in the same
+   *  slot web's decision-inbox-row renders). */
+  identifier: string;
+  issueTitle: string;
+  /** The card's own question — line 2. Two cards on one issue differ here. */
+  question: string;
+  /** Card carries a recommendation → 「有推荐」 badge (AC10). */
+  recommended: boolean;
+  status: DecisionInboxSectionKey;
+  createdAt: string;
+}
+
+export interface DecisionInboxSection {
+  key: DecisionInboxSectionKey;
+  rows: DecisionInboxRow[];
+  /** Workspace total from the server counts, not rows.length. */
+  count: number;
+}
+
+export function toDecisionInboxRow(
+  item: WorkspaceDecisionInboxItem,
+): DecisionInboxRow {
+  return {
+    id: item.id,
+    issueId: item.issue_id,
+    identifier: item.issue_identifier || `#${item.issue_number}`,
+    issueTitle: item.issue_title,
+    question: item.question,
+    recommended: item.recommended_indices.length > 0,
+    status: item.status,
+    createdAt: item.created_at,
+  };
+}
+
+export function groupDecisionInboxSections(
+  inbox: WorkspaceDecisionInbox,
+): DecisionInboxSection[] {
+  const rows = inbox.items.map(toDecisionInboxRow);
+  return DECISION_SECTION_ORDER.map((key) => ({
+    key,
+    rows: rows.filter((row) => row.status === key),
+    count: inbox.counts[key],
+  })).filter((section) => section.rows.length > 0);
+}

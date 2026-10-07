@@ -18,6 +18,7 @@ import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useSquadsRealtime } from "@/data/realtime/use-squads-realtime";
+import { useDecisionInboxRealtime } from "@/data/realtime/use-decision-inbox-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { shouldResolveWorkspaceMembership } from "@/lib/workspace-route";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
@@ -92,6 +93,9 @@ function RealtimeSubscriptions() {
   // RUYI-346: squad:created/updated/deleted → squad 缓存前缀整体失效
   // （管理侧订阅，低频名册变更；详见 use-squads-realtime.ts）。
   useSquadsRealtime();
+  // RUYI-494: decision:updated → 决策中心聚合（含 Tab 角标）失效；
+  // 单卡缓存补丁仍在 use-issue-realtime.ts，见 use-decision-inbox-realtime.ts。
+  useDecisionInboxRealtime();
   // Presence: warm the three queries up front so avatars don't flash a
   // dotless first render, and listen for daemon/agent/task events to keep
   // the runtime + snapshot caches fresh. See use-presence-realtime.ts for
