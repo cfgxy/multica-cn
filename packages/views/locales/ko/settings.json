@@ -1323,7 +1323,7 @@
     "permission_status_unknown": "미판정",
     "capability_receive_messages": "메시지 수신(@멘션 등)",
     "capability_send_messages": "메시지 전송",
-    "capability_read_history": "메시지 기록 조회(답글 인용)",
+    "capability_read_history": "메시지 기록 조회(답글 인용, 전달 확장 및 최근 그룹 컨텍스트)",
     "capability_download_media": "메시지 파일 다운로드",
     "capability_lookup_contacts": "발신자 정보 조회",
     "install_permissions_title": "이 봇에 필요한 권한",

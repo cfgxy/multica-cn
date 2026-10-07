@@ -1066,7 +1066,7 @@
     "permission_status_unknown": "Undetermined",
     "capability_receive_messages": "Receive messages (@mentions etc.)",
     "capability_send_messages": "Send messages",
-    "capability_read_history": "Read message history (quoted replies)",
+    "capability_read_history": "Read message history (quoted replies, forwards, and recent group context)",
     "capability_download_media": "Download message files",
     "capability_lookup_contacts": "Look up sender info",
     "install_permissions_title": "Permissions this bot needs",
