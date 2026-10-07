@@ -341,7 +341,7 @@ func (q *Queries) ListIssueDecisionsForIssue(ctx context.Context, arg ListIssueD
 }
 
 const listWorkspaceIssueDecisions = `-- name: ListWorkspaceIssueDecisions :many
-SELECT d.id, d.workspace_id, d.issue_id, d.source_comment_id, d.question, d.options, d.multi_select, d.recommended_indices, d.status, d.selected_indices, d.answered_by_type, d.answered_by_id, d.answered_at, d.answer_comment_id, d.created_by_type, d.created_by_id, d.created_at, d.updated_at,
+SELECT d.id, d.workspace_id, d.issue_id, d.source_comment_id, d.question, d.options, d.multi_select, d.recommended_indices, d.status, d.selected_indices, d.answered_by_type, d.answered_by_id, d.answered_at, d.answer_comment_id, d.created_by_type, d.created_by_id, d.created_at, d.updated_at, d.client_request_id,
        i.number AS issue_number,
        i.title AS issue_title,
        COALESCE(ws.issue_prefix || '-' || i.number::text, '')::text AS issue_identifier
@@ -379,6 +379,7 @@ type ListWorkspaceIssueDecisionsRow struct {
 	CreatedByID        pgtype.UUID        `json:"created_by_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	ClientRequestID    pgtype.Text        `json:"client_request_id"`
 	IssueNumber        int32              `json:"issue_number"`
 	IssueTitle         string             `json:"issue_title"`
 	IssueIdentifier    string             `json:"issue_identifier"`
@@ -418,6 +419,7 @@ func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorks
 			&i.CreatedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ClientRequestID,
 			&i.IssueNumber,
 			&i.IssueTitle,
 			&i.IssueIdentifier,
