@@ -53,7 +53,9 @@ import {
 import { Text } from "@/components/ui/text";
 import { WorkspaceAvatar } from "@/components/workspace/workspace-avatar";
 import { workspaceListOptions } from "@/data/queries/workspaces";
+import { pickActiveServer, type ServerEntry } from "@/data/server-config";
 import { useAuthStore } from "@/data/auth-store";
+import { useServerStore } from "@/data/server-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useAppUpdate } from "@/lib/use-check-app-update";
 import { useColorScheme } from "@/lib/use-color-scheme";
@@ -112,6 +114,9 @@ export function MoreTabDropdownAnchor({
   const t = THEME[colorScheme];
   const currentWorkspace = useCurrentWorkspace(slug);
   const { currentVersion, checkForUpdates } = useAppUpdate();
+  const servers = useServerStore((s) => s.servers);
+  const activeServerId = useServerStore((s) => s.activeServerId);
+  const activeServer = pickActiveServer(servers, activeServerId);
 
   const isActive = (path: string) => {
     if (!slug) return false;
@@ -153,6 +158,15 @@ export function MoreTabDropdownAnchor({
           <UserCard
             user={user}
             onPress={() => slug && router.push(`/${slug}/more/settings`)}
+            chevronTint={t.mutedForeground}
+          />
+
+          <DropdownMenuSeparator />
+
+          <ServerCard
+            server={activeServer}
+            onPress={() => router.push("/server-settings")}
+            iconTint={t.foreground}
             chevronTint={t.mutedForeground}
           />
 
@@ -282,6 +296,74 @@ function UserCard({
             {user.email}
           </Text>
         ) : null}
+      </View>
+      {Platform.OS === "ios" ? (
+        <ExpoImage
+          source="sf:chevron.right"
+          tintColor={chevronTint}
+          style={{ width: 12, height: 12 }}
+        />
+      ) : (
+        <Ionicons name="chevron-forward" size={12} color={chevronTint} />
+      )}
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * Active-server disclosure row (RUYI-542). Two-line shape mirrors
+ * `UserCard` (title + muted URL subtitle); the 18pt leading glyph follows
+ * the `navItems` convention so the row reads as a sibling of both groups.
+ *
+ * Pushes `/server-settings`, not `/servers/select`: the picker is the
+ * pre-auth startup gate — its 5s countdown auto-reconnects `previousId`
+ * and `connect()` routes through `/`, both wrong for an in-app entry.
+ * The management screen already owns selection semantics for a signed-in
+ * user (confirm alert → `switchServer` with session restore, add/edit/
+ * delete), and is where the settings page's Server group points too.
+ */
+function ServerCard({
+  server,
+  onPress,
+  iconTint,
+  chevronTint,
+}: {
+  server: ServerEntry;
+  onPress: () => void;
+  iconTint: string;
+  chevronTint: string;
+}) {
+  return (
+    <DropdownMenuItem
+      onPress={onPress}
+      className="h-12 gap-3"
+      accessibilityLabel={i18n.t(
+        "settings:mobile.page.server_section",
+        "Server",
+      )}
+    >
+      {Platform.OS === "ios" ? (
+        <ExpoImage
+          source="sf:server.rack"
+          tintColor={iconTint}
+          style={{ width: 18, height: 18 }}
+        />
+      ) : (
+        <Ionicons name="server-outline" size={18} color={iconTint} />
+      )}
+      <View className="flex-1 min-w-0">
+        <Text
+          className="text-sm font-medium text-foreground"
+          numberOfLines={1}
+        >
+          {server.name || server.apiUrl}
+        </Text>
+        <Text
+          className="text-xs text-muted-foreground"
+          numberOfLines={1}
+        >
+          {server.apiUrl}
+        </Text>
       </View>
       {Platform.OS === "ios" ? (
         <ExpoImage
