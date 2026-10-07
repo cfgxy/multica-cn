@@ -219,6 +219,36 @@ export function consumeUploadEditorLost(uploadId: string): boolean {
 }
 
 /**
+ * Uploads whose settled swap DID land in a live editor's document.
+ *
+ * Marked when {@link uploadAndInsertFile}'s swap succeeds: the finished image
+ * or link is now in the document, but the draft body does not have it yet —
+ * the editor's debounced `onUpdate` is the only remaining writer. If that
+ * editor is destroyed inside the debounce window, the pending update dies
+ * with the instance and nobody else would ever write the body (the RUYI-478
+ * residual window). The coordinated uploads hook watches this flag until the
+ * body confirms the emit or no live document holds the image, then backfills
+ * through `deliverFinishedUpload` when needed. Cleared on confirmation or
+ * delivery, so it never grows on the happy path.
+ */
+const swapLandedUploadIds = new Set<string>();
+
+/** Hook API: record that this upload's settled swap landed in a live document. */
+export function markUploadSwapLanded(uploadId: string): void {
+  swapLandedUploadIds.add(uploadId);
+}
+
+/** Hook API: did this upload's settled swap land (its emit is still owed)? */
+export function hasUploadSwapLanded(uploadId: string): boolean {
+  return swapLandedUploadIds.has(uploadId);
+}
+
+/** Hook API: release the watch (confirmed in the body, delivered, or moot). */
+export function clearUploadSwapLanded(uploadId: string): void {
+  swapLandedUploadIds.delete(uploadId);
+}
+
+/**
  * Shared upload flow: insert blob preview → upload → replace with real URL.
  * Used by both paste/drop (at cursor) and button upload (at end of doc).
  */
@@ -263,8 +293,14 @@ export async function uploadAndInsertFile(
         if (result) markUploadEditorLost(uploadId);
         return;
       }
-      if (result) settleUploadNode(editor, uploadId, result);
-      else removeUploadNode(editor, uploadId);
+      if (result) {
+        // The swap landed: the document holds the finished attachment while
+        // the body waits on the debounced emit — the hook watches for a
+        // destroy inside that window (see swapLandedUploadIds).
+        if (settleUploadNode(editor, uploadId, result)) markUploadSwapLanded(uploadId);
+      } else {
+        removeUploadNode(editor, uploadId);
+      }
     } catch {
       if (!editor.isDestroyed) removeUploadNode(editor, uploadId);
     } finally {
@@ -283,13 +319,17 @@ export async function uploadAndInsertFile(
     try {
       const result = await handler(file, uploadId);
       // See the image branch: a settle after this editor's destroy must not
-      // dispatch against the dead EditorView.
+      // dispatch against the dead EditorView. Same swap-landed marking: a
+      // fileCard's href update serializes through the same debounced emit.
       if (editor.isDestroyed) {
         if (result) markUploadEditorLost(uploadId);
         return;
       }
-      if (result) settleUploadNode(editor, uploadId, result);
-      else removeUploadNode(editor, uploadId);
+      if (result) {
+        if (settleUploadNode(editor, uploadId, result)) markUploadSwapLanded(uploadId);
+      } else {
+        removeUploadNode(editor, uploadId);
+      }
     } catch {
       if (!editor.isDestroyed) removeUploadNode(editor, uploadId);
     }
