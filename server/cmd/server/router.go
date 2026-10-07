@@ -40,6 +40,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
@@ -479,6 +480,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:            normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	// RUYI-552: the retrospective's per-workspace LLM resolution falls back
+	// to these deployment defaults per field, and per-workspace clients carry
+	// the same transport retry budget as the deployment-level one.
+	h.DeploymentLLM = retrospective.DeploymentLLM{
+		APIKey:       signupConfig.LLMAPIKey,
+		BaseURL:      signupConfig.LLMBaseURL,
+		DefaultModel: signupConfig.LLMDefaultModel,
+	}
+	h.LLMMaxRetries = signupConfig.LLMMaxRetries
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)

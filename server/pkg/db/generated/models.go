@@ -1716,6 +1716,14 @@ type RetrospectiveConfig struct {
 	IncludeInReview bool               `json:"include_in_review"`
 	WindowDays      int32              `json:"window_days"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	// Workspace LLM base URL saved from the self-evolution UI (RUYI-552); '' = fall back to MULTICA_LLM_BASE_URL.
+	LlmBaseUrl string `json:"llm_base_url"`
+	// Workspace LLM model saved from the self-evolution UI (RUYI-552); '' = fall back to MULTICA_LLM_DEFAULT_MODEL.
+	LlmModel string `json:"llm_model"`
+	// Workspace LLM API key, AES-256-GCM sealed with the server secret box (RUYI-552); NULL = fall back to MULTICA_LLM_API_KEY. Never leaves the server.
+	LlmApiKeyEncrypted []byte `json:"llm_api_key_encrypted"`
+	// Last 4 characters of the workspace LLM API key for masked display (RUYI-552); the only key surface the API ever returns.
+	LlmApiKeyHint string `json:"llm_api_key_hint"`
 }
 
 // Per-issue retrospective idempotency watermark (RUYI-305 E3): an analyzed issue is never analyzed again, window overlap cannot duplicate drafts.

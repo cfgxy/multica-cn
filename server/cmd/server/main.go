@@ -757,8 +757,10 @@ func main() {
 	// RUYI-305 E3: the daily retrospective distills completed issues into
 	// Prompt legislation drafts. It writes only to the proposal pool and its
 	// own run records — never to issues — and is inert until a workspace
-	// owner enables it (retrospective_config).
-	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(pool, h.LLM, "")); err != nil {
+	// owner enables it (retrospective_config). RUYI-552: each workspace's
+	// pass resolves its own LLM config (UI-saved first, deployment defaults
+	// as fallback) instead of the deployment-level client.
+	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(pool, h.RetrospectiveLLMResolver())); err != nil {
 		slog.Warn("scheduler: failed to register prompt_retrospective job", "error", err)
 	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed

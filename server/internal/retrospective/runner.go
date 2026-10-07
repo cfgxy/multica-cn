@@ -74,6 +74,10 @@ type Runner struct {
 	Queries *db.Queries
 	LLM     LLMClient
 	Model   string
+	// Redact carries the resolved LLM API key (RUYI-552): every error string
+	// landing in the run record passes through it, so an upstream failure
+	// that echoes the key back still stores nothing sensitive.
+	Redact []string
 	// Now is overridable for tests.
 	Now func() time.Time
 }
@@ -122,7 +126,10 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 	stats := &RunStats{WorkspaceID: workspaceID, RunID: runID, WindowDays: cfg.WindowDays}
 
 	finish := func(status, errMsg string) error {
-		detail, _ := json.Marshal(map[string]any{"sanitized_skipped": stats.SanitizedSkipped})
+		detail, _ := json.Marshal(map[string]any{
+			"sanitized_skipped": stats.SanitizedSkipped,
+			"llm_configured":    r.LLM != nil && r.LLM.Enabled(),
+		})
 		_, ferr := r.Queries.FinishRetrospectiveRun(ctx, db.FinishRetrospectiveRunParams{
 			ID:                run.ID,
 			WorkspaceID:       run.WorkspaceID,
@@ -132,7 +139,7 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 			ProposalsCreated:  int32(stats.ProposalsCreated),
 			ProposalsMerged:   int32(stats.ProposalsMerged),
 			DuplicatesSkipped: int32(stats.DuplicatesSkipped),
-			Error:             errMsg,
+			Error:             r.redact(errMsg),
 			Detail:            detail,
 		})
 		if ferr != nil {
@@ -143,7 +150,7 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 
 	if r.LLM == nil || !r.LLM.Enabled() {
 		stats.IssuesScanned = r.countCandidates(ctx, workspaceID, cfg.IncludeInReview, windowStart, windowEnd)
-		if err := finish("failed", "LLM 未配置（MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL 为空），复盘无法提炼草案"); err != nil {
+		if err := finish("failed", "LLM 未配置：请在自进化 → 每日总复盘 → LLM 配置中保存配置后重试"); err != nil {
 			return stats, err
 		}
 		return stats, nil
@@ -200,6 +207,18 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 		return stats, err
 	}
 	return stats, nil
+}
+
+// redact replaces every occurrence of a resolved secret in msg (RUYI-552).
+// Every error string that reaches the run record goes through this, so an
+// upstream failure echoing the API key back still stores nothing sensitive.
+func (r *Runner) redact(msg string) string {
+	for _, s := range r.Redact {
+		if s != "" {
+			msg = strings.ReplaceAll(msg, s, "[redacted]")
+		}
+	}
+	return msg
 }
 
 // analyzeIssue runs one issue through the pipeline: gather content →

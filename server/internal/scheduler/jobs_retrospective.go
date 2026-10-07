@@ -18,9 +18,10 @@ import (
 // (RUYI-305 E3). Stable across releases — do not rename without a migration.
 const JobNamePromptRetrospective = "prompt_retrospective"
 
-// RetrospectiveJob returns the JobSpec for the daily retrospective. client
-// is the workspace's single LLM entry point (pkg/llm) — the retrospective
-// defines the interface it needs, so the scheduler never imports pkg/llm.
+// RetrospectiveJob returns the JobSpec for the daily retrospective. resolve
+// is the per-workspace LLM resolver (RUYI-552): the UI-saved workspace
+// config first, the deployment env defaults as fallback — built by the API
+// server, so the scheduler never imports pkg/llm.
 //
 // The cadence is a day because the product's own concept is 每日总复盘 —
 // one pass per workspace per day over the completed-issue window. A missed
@@ -30,14 +31,10 @@ const JobNamePromptRetrospective = "prompt_retrospective"
 //
 // RunTimeout is generous because one tick can analyze up to
 // retrospective.IssuesPerRun issues, each bounded by a per-issue LLM call.
-func RetrospectiveJob(pool *pgxpool.Pool, client retrospective.LLMClient, model string) JobSpec {
+func RetrospectiveJob(pool *pgxpool.Pool, resolve retrospective.LLMResolver) JobSpec {
 	runner := &retrospective.Runner{
 		DB:      pool,
 		Queries: db.New(pool),
-		Model:   model,
-	}
-	if client != nil {
-		runner.LLM = client
 	}
 	return JobSpec{
 		Name:              JobNamePromptRetrospective,
@@ -54,7 +51,7 @@ func RetrospectiveJob(pool *pgxpool.Pool, client retrospective.LLMClient, model 
 			30 * time.Minute,
 		},
 		Scopes:  StaticScopes(ScopeGlobal),
-		Handler: makeRetrospectiveHandler(runner),
+		Handler: makeRetrospectiveHandler(runner, resolve),
 	}
 }
 
@@ -62,7 +59,7 @@ func RetrospectiveJob(pool *pgxpool.Pool, client retrospective.LLMClient, model 
 // runs one pass per workspace. A workspace without a config (or with the
 // feature off) is a silent skip: ErrNoConfig is the disabled state, not a
 // failure.
-func makeRetrospectiveHandler(runner *retrospective.Runner) Handler {
+func makeRetrospectiveHandler(runner *retrospective.Runner, resolve retrospective.LLMResolver) Handler {
 	return func(ctx context.Context, in HandlerInput) (HandlerResult, error) {
 		configs, err := runner.Queries.ListEnabledRetrospectiveConfigs(ctx)
 		if err != nil {
@@ -73,6 +70,13 @@ func makeRetrospectiveHandler(runner *retrospective.Runner) Handler {
 		var rows int64
 		for _, cfg := range configs {
 			wsID := util.UUIDToString(cfg.WorkspaceID)
+			// Per-workspace resolution (RUYI-552): the workspace's UI-saved
+			// LLM config or the deployment fallback; nil client = the run
+			// records the disabled state. The loop is sequential, so reusing
+			// the one runner is safe.
+			client, redact := resolve(ctx, wsID)
+			runner.LLM = client
+			runner.Redact = redact
 			stats, err := runner.RunWorkspace(ctx, wsID, "schedule")
 			if err != nil {
 				if errors.Is(err, retrospective.ErrNoConfig) {

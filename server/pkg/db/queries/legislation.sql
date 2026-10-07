@@ -206,12 +206,18 @@ RETURNING *;
 SELECT * FROM retrospective_config WHERE retrospective_config.workspace_id = @workspace_id;
 
 -- name: UpsertRetrospectiveConfig :one
-INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, updated_at)
-VALUES (@workspace_id, @enabled, @include_in_review, @window_days, now())
+-- Full-row upsert: the handler reads current, merges the patch (LLM fields
+-- included, RUYI-552) and writes everything back in one statement.
+INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, llm_base_url, llm_model, llm_api_key_encrypted, llm_api_key_hint, updated_at)
+VALUES (@workspace_id, @enabled, @include_in_review, @window_days, @llm_base_url, @llm_model, @llm_api_key_encrypted, @llm_api_key_hint, now())
 ON CONFLICT (workspace_id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     include_in_review = EXCLUDED.include_in_review,
     window_days = EXCLUDED.window_days,
+    llm_base_url = EXCLUDED.llm_base_url,
+    llm_model = EXCLUDED.llm_model,
+    llm_api_key_encrypted = EXCLUDED.llm_api_key_encrypted,
+    llm_api_key_hint = EXCLUDED.llm_api_key_hint,
     updated_at = now()
 RETURNING *;
 

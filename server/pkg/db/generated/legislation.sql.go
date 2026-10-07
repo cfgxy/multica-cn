@@ -556,7 +556,7 @@ func (q *Queries) GetPromptStructureBaseline(ctx context.Context, arg GetPromptS
 
 const getRetrospectiveConfig = `-- name: GetRetrospectiveConfig :one
 
-SELECT workspace_id, enabled, include_in_review, window_days, updated_at FROM retrospective_config WHERE retrospective_config.workspace_id = $1
+SELECT workspace_id, enabled, include_in_review, window_days, updated_at, llm_base_url, llm_model, llm_api_key_encrypted, llm_api_key_hint FROM retrospective_config WHERE retrospective_config.workspace_id = $1
 `
 
 // --- Retrospective (E3) ---
@@ -569,6 +569,10 @@ func (q *Queries) GetRetrospectiveConfig(ctx context.Context, workspaceID pgtype
 		&i.IncludeInReview,
 		&i.WindowDays,
 		&i.UpdatedAt,
+		&i.LlmBaseUrl,
+		&i.LlmModel,
+		&i.LlmApiKeyEncrypted,
+		&i.LlmApiKeyHint,
 	)
 	return i, err
 }
@@ -688,7 +692,7 @@ func (q *Queries) InsertRetrospectiveWatermark(ctx context.Context, arg InsertRe
 }
 
 const listEnabledRetrospectiveConfigs = `-- name: ListEnabledRetrospectiveConfigs :many
-SELECT workspace_id, enabled, include_in_review, window_days, updated_at FROM retrospective_config WHERE retrospective_config.enabled = true
+SELECT workspace_id, enabled, include_in_review, window_days, updated_at, llm_base_url, llm_model, llm_api_key_encrypted, llm_api_key_hint FROM retrospective_config WHERE retrospective_config.enabled = true
 `
 
 func (q *Queries) ListEnabledRetrospectiveConfigs(ctx context.Context) ([]RetrospectiveConfig, error) {
@@ -706,6 +710,10 @@ func (q *Queries) ListEnabledRetrospectiveConfigs(ctx context.Context) ([]Retros
 			&i.IncludeInReview,
 			&i.WindowDays,
 			&i.UpdatedAt,
+			&i.LlmBaseUrl,
+			&i.LlmModel,
+			&i.LlmApiKeyEncrypted,
+			&i.LlmApiKeyHint,
 		); err != nil {
 			return nil, err
 		}
@@ -1392,29 +1400,43 @@ func (q *Queries) UpsertPromptStructureBaseline(ctx context.Context, arg UpsertP
 }
 
 const upsertRetrospectiveConfig = `-- name: UpsertRetrospectiveConfig :one
-INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, updated_at)
-VALUES ($1, $2, $3, $4, now())
+INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, llm_base_url, llm_model, llm_api_key_encrypted, llm_api_key_hint, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
 ON CONFLICT (workspace_id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     include_in_review = EXCLUDED.include_in_review,
     window_days = EXCLUDED.window_days,
+    llm_base_url = EXCLUDED.llm_base_url,
+    llm_model = EXCLUDED.llm_model,
+    llm_api_key_encrypted = EXCLUDED.llm_api_key_encrypted,
+    llm_api_key_hint = EXCLUDED.llm_api_key_hint,
     updated_at = now()
-RETURNING workspace_id, enabled, include_in_review, window_days, updated_at
+RETURNING workspace_id, enabled, include_in_review, window_days, updated_at, llm_base_url, llm_model, llm_api_key_encrypted, llm_api_key_hint
 `
 
 type UpsertRetrospectiveConfigParams struct {
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	Enabled         bool        `json:"enabled"`
-	IncludeInReview bool        `json:"include_in_review"`
-	WindowDays      int32       `json:"window_days"`
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	Enabled            bool        `json:"enabled"`
+	IncludeInReview    bool        `json:"include_in_review"`
+	WindowDays         int32       `json:"window_days"`
+	LlmBaseUrl         string      `json:"llm_base_url"`
+	LlmModel           string      `json:"llm_model"`
+	LlmApiKeyEncrypted []byte      `json:"llm_api_key_encrypted"`
+	LlmApiKeyHint      string      `json:"llm_api_key_hint"`
 }
 
+// Full-row upsert: the handler reads current, merges the patch (LLM fields
+// included, RUYI-552) and writes everything back in one statement.
 func (q *Queries) UpsertRetrospectiveConfig(ctx context.Context, arg UpsertRetrospectiveConfigParams) (RetrospectiveConfig, error) {
 	row := q.db.QueryRow(ctx, upsertRetrospectiveConfig,
 		arg.WorkspaceID,
 		arg.Enabled,
 		arg.IncludeInReview,
 		arg.WindowDays,
+		arg.LlmBaseUrl,
+		arg.LlmModel,
+		arg.LlmApiKeyEncrypted,
+		arg.LlmApiKeyHint,
 	)
 	var i RetrospectiveConfig
 	err := row.Scan(
@@ -1423,6 +1445,10 @@ func (q *Queries) UpsertRetrospectiveConfig(ctx context.Context, arg UpsertRetro
 		&i.IncludeInReview,
 		&i.WindowDays,
 		&i.UpdatedAt,
+		&i.LlmBaseUrl,
+		&i.LlmModel,
+		&i.LlmApiKeyEncrypted,
+		&i.LlmApiKeyHint,
 	)
 	return i, err
 }

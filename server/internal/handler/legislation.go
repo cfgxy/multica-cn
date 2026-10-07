@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,6 +45,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
+	"github.com/multica-ai/multica/server/pkg/llm"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -939,22 +942,96 @@ func (h *Handler) GetPromptStructureBaselineHandler(w http.ResponseWriter, r *ht
 
 // GetRetrospectiveConfig — GET /api/retrospective/config
 func (h *Handler) GetRetrospectiveConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := h.Queries.GetRetrospectiveConfig(r.Context(), parseUUID(h.resolveWorkspaceID(r)))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"enabled": false, "include_in_review": false, "window_days": 1,
-			})
-			return
-		}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	cfg, err := h.Queries.GetRetrospectiveConfig(r.Context(), workspaceID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to read retrospective config")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":           cfg.Enabled,
-		"include_in_review": cfg.IncludeInReview,
-		"window_days":       cfg.WindowDays,
+	var cfgPtr *db.RetrospectiveConfig
+	if err == nil {
+		cfgPtr = &cfg
+	}
+	resolved := h.retrospectiveLLMResolved(r.Context(), workspaceID)
+	writeJSON(w, http.StatusOK, retrospectiveConfigResponse(cfgPtr, resolved))
+}
+
+// retrospectiveLLMResolved resolves the workspace LLM config for the status
+// view; the only caller-side value is the workspace UUID.
+func (h *Handler) retrospectiveLLMResolved(ctx context.Context, workspaceID pgtype.UUID) retrospective.ResolvedLLM {
+	return retrospective.ResolveWorkspaceLLM(ctx, h.Queries, h.RuntimeCredentialBox, uuidToString(workspaceID), h.DeploymentLLM)
+}
+
+// RetrospectiveLLM resolves the workspace's effective LLM config (RUYI-552):
+// UI-saved fields first, deployment env defaults as per-field fallback. It
+// returns a non-nil client only when the resolution is effective; the nil
+// client is the disabled state the run records, not an error.
+func (h *Handler) RetrospectiveLLM(ctx context.Context, workspaceID string) (retrospective.LLMClient, retrospective.ResolvedLLM) {
+	resolved := retrospective.ResolveWorkspaceLLM(ctx, h.Queries, h.RuntimeCredentialBox, workspaceID, h.DeploymentLLM)
+	if !resolved.Effective {
+		return nil, resolved
+	}
+	client := llm.New(llm.Config{
+		APIKey:       resolved.APIKey,
+		BaseURL:      resolved.BaseURL,
+		DefaultModel: resolved.Model,
+		MaxRetries:   h.LLMMaxRetries,
 	})
+	return client, resolved
+}
+
+// RetrospectiveLLMResolver adapts RetrospectiveLLM for the scheduler job:
+// the per-workspace client (nil when the workspace has no effective config)
+// plus the secrets to redact from stored run errors.
+func (h *Handler) RetrospectiveLLMResolver() retrospective.LLMResolver {
+	return func(ctx context.Context, workspaceID string) (retrospective.LLMClient, []string) {
+		client, resolved := h.RetrospectiveLLM(ctx, workspaceID)
+		if resolved.APIKey == "" {
+			return client, nil
+		}
+		return client, []string{resolved.APIKey}
+	}
+}
+
+// retrospectiveConfigResponse projects the saved config plus the effective
+// LLM resolution (RUYI-552). Only masked key hints and sanitized URLs cross
+// the wire — the plaintext key exists server-side for one resolution.
+func retrospectiveConfigResponse(cfg *db.RetrospectiveConfig, resolved retrospective.ResolvedLLM) map[string]any {
+	enabled, include, days := false, false, int32(1)
+	var storedBase, storedModel, storedHint string
+	var keySet bool
+	if cfg != nil {
+		enabled, include, days = cfg.Enabled, cfg.IncludeInReview, cfg.WindowDays
+		storedBase, storedModel, storedHint = cfg.LlmBaseUrl, cfg.LlmModel, cfg.LlmApiKeyHint
+		keySet = len(cfg.LlmApiKeyEncrypted) > 0
+	}
+	effectiveKeyHint := ""
+	if resolved.Issue == "" && resolved.APIKey != "" {
+		effectiveKeyHint = retrospective.APIKeyHint(resolved.APIKey)
+	}
+	return map[string]any{
+		"enabled":           enabled,
+		"include_in_review": include,
+		"window_days":       days,
+		"llm": map[string]any{
+			"stored": map[string]any{
+				"base_url":     storedBase,
+				"model":        storedModel,
+				"api_key_set":  keySet,
+				"api_key_hint": storedHint,
+			},
+			"effective": map[string]any{
+				"source":          resolved.Source,
+				"base_url":        sanitizeBaseURLDisplay(resolved.BaseURL),
+				"base_url_source": resolved.URLSource,
+				"model":           resolved.Model,
+				"model_source":    resolved.ModelSource,
+				"api_key_source":  resolved.KeySource,
+				"api_key_hint":    effectiveKeyHint,
+				"issue":           resolved.Issue,
+			},
+		},
+	}
 }
 
 // UpdateRetrospectiveConfig — PUT /api/retrospective/config (owner-only)
@@ -963,6 +1040,14 @@ func (h *Handler) UpdateRetrospectiveConfig(w http.ResponseWriter, r *http.Reque
 		Enabled         *bool `json:"enabled"`
 		IncludeInReview *bool `json:"include_in_review"`
 		WindowDays      *int  `json:"window_days"`
+		LLM             *struct {
+			BaseURL *string `json:"base_url"`
+			Model   *string `json:"model"`
+			// APIKey: nil keeps the saved key, "" clears it, non-empty
+			// replaces it — sealed with the server secret box, never echoed
+			// back (RUYI-552, same fail-closed store as runtime credentials).
+			APIKey *string `json:"api_key"`
+		} `json:"llm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -971,8 +1056,12 @@ func (h *Handler) UpdateRetrospectiveConfig(w http.ResponseWriter, r *http.Reque
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	current, err := h.Queries.GetRetrospectiveConfig(r.Context(), workspaceID)
 	enabled, include, days := false, false, 1
+	baseURL, model, keyHint := "", "", ""
+	var keyEnc []byte
 	if err == nil {
 		enabled, include, days = current.Enabled, current.IncludeInReview, int(current.WindowDays)
+		baseURL, model, keyHint = current.LlmBaseUrl, current.LlmModel, current.LlmApiKeyHint
+		keyEnc = current.LlmApiKeyEncrypted
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to read retrospective config")
 		return
@@ -990,21 +1079,100 @@ func (h *Handler) UpdateRetrospectiveConfig(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "window_days must be between 1 and 30")
 		return
 	}
+	if req.LLM != nil {
+		if req.LLM.BaseURL != nil {
+			baseURL = strings.TrimSpace(*req.LLM.BaseURL)
+		}
+		if req.LLM.Model != nil {
+			model = strings.TrimSpace(*req.LLM.Model)
+		}
+		if req.LLM.APIKey != nil {
+			key := *req.LLM.APIKey
+			switch {
+			case key == "":
+				keyEnc, keyHint = nil, ""
+			case len(key) > maxRuntimeCredentialLen:
+				writeError(w, http.StatusBadRequest, "api_key exceeds the maximum credential length")
+				return
+			case h.RuntimeCredentialBox == nil:
+				// Fail closed exactly like the runtime credential store: a
+				// deployment without MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY
+				// must never fall back to storing plaintext.
+				writeError(w, http.StatusServiceUnavailable, "credential encryption is not configured on this server (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY missing)")
+				return
+			default:
+				sealed, sealErr := h.RuntimeCredentialBox.Seal([]byte(key))
+				if sealErr != nil {
+					slog.Error("seal retrospective llm key failed", "workspace_id", uuidToString(workspaceID), "error", sealErr)
+					writeError(w, http.StatusInternalServerError, "failed to store LLM config")
+					return
+				}
+				keyEnc, keyHint = sealed, retrospective.APIKeyHint(key)
+			}
+		}
+	}
+	if baseURL != "" {
+		if reason := validateLLMBaseURL(baseURL); reason != "" {
+			writeError(w, http.StatusBadRequest, reason)
+			return
+		}
+	}
+	if len(model) > 256 {
+		writeError(w, http.StatusBadRequest, "model must be at most 256 characters")
+		return
+	}
 	cfg, err := h.Queries.UpsertRetrospectiveConfig(r.Context(), db.UpsertRetrospectiveConfigParams{
-		WorkspaceID:     workspaceID,
-		Enabled:         enabled,
-		IncludeInReview: include,
-		WindowDays:      int32(days),
+		WorkspaceID:        workspaceID,
+		Enabled:            enabled,
+		IncludeInReview:    include,
+		WindowDays:         int32(days),
+		LlmBaseUrl:         baseURL,
+		LlmModel:           model,
+		LlmApiKeyEncrypted: keyEnc,
+		LlmApiKeyHint:      keyHint,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save retrospective config")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":           cfg.Enabled,
-		"include_in_review": cfg.IncludeInReview,
-		"window_days":       cfg.WindowDays,
-	})
+	resolved := h.retrospectiveLLMResolved(r.Context(), workspaceID)
+	writeJSON(w, http.StatusOK, retrospectiveConfigResponse(&cfg, resolved))
+}
+
+// validateLLMBaseURL refuses anything that is not a clean absolute http(s)
+// URL: no other schemes, no embedded credentials, no query or fragment — the
+// API key belongs in its own field, never in the URL. Returns "" when valid.
+func validateLLMBaseURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "base_url must be an absolute http(s) URL"
+	}
+	if u.User != nil {
+		return "base_url must not embed credentials; save them in the API key field"
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "base_url must not carry a query string or fragment"
+	}
+	return ""
+}
+
+// sanitizeBaseURLDisplay strips credentials, query and fragment from a base
+// URL before it reaches a response — a self-hosted gateway URL routinely
+// embeds a token (the same rule the boot log follows), so display only ever
+// sees scheme://host/path.
+func sanitizeBaseURLDisplay(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 // ListRetrospectiveRuns — GET /api/retrospective/runs
@@ -1034,7 +1202,10 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 		"proposals_merged":   run.ProposalsMerged,
 		"duplicates_skipped": run.DuplicatesSkipped,
 		"error":              run.Error,
-		"created_at":         run.CreatedAt.Time.UTC().Format(httpTimeFormat),
+		// Raw JSONB (carries llm_configured for the UI's 配置 LLM entry,
+		// RUYI-552); json.RawMessage so it embeds as an object, not base64.
+		"detail":    json.RawMessage(run.Detail),
+		"created_at": run.CreatedAt.Time.UTC().Format(httpTimeFormat),
 	}
 	if run.FinishedAt.Valid {
 		resp["finished_at"] = run.FinishedAt.Time.UTC().Format(httpTimeFormat)
@@ -1045,15 +1216,25 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 // TriggerRetrospectiveRun — POST /api/retrospective/run (owner-only, manual)
 // Runs one workspace pass synchronously; the run record carries the outcome.
 func (h *Handler) TriggerRetrospectiveRun(w http.ResponseWriter, r *http.Request) {
-	if h.LLM == nil || !h.LLM.Enabled() {
-		writeError(w, http.StatusConflict, "LLM 未配置，无法运行复盘")
+	workspaceID := h.resolveWorkspaceID(r)
+	client, resolved := h.RetrospectiveLLM(r.Context(), workspaceID)
+	if !resolved.Effective {
+		// RUYI-552: the code lets the UI render its own localized copy with
+		// a direct 配置 LLM entry; the sentence is the fallback text.
+		msg := "LLM 未配置，无法运行复盘：请先在 LLM 配置中保存配置后再运行"
+		if resolved.Issue != "" {
+			msg = "LLM 配置无效：" + resolved.Issue
+		}
+		writeErrorCode(w, http.StatusConflict, "llm_not_configured", msg)
 		return
 	}
-	workspaceID := h.resolveWorkspaceID(r)
 	runner := &retrospective.Runner{
 		DB:      h.TxStarter,
 		Queries: h.Queries,
-		LLM:     h.LLM,
+		LLM:     client,
+	}
+	if resolved.APIKey != "" {
+		runner.Redact = []string{resolved.APIKey}
 	}
 	stats, err := runner.RunWorkspace(r.Context(), workspaceID, "manual")
 	if err != nil {

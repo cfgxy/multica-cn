@@ -38,6 +38,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
@@ -430,8 +431,19 @@ type Handler struct {
 	// .credential_ref). Nil when MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY is
 	// unset; the credential PUT/DELETE handlers return 503 in that case so a
 	// misconfigured self-host deployment fails closed rather than storing
-	// plaintext. Wired in cmd/server/router.go after New.
+	// plaintext. Wired in cmd/server/router.go after New. The retrospective
+	// LLM config (RUYI-552) reuses this same box for its workspace-saved API
+	// key, so one missing key disables both stores — see
+	// RetrospectiveLLM in legislation.go.
 	RuntimeCredentialBox *secretbox.Box
+	// DeploymentLLM carries the boot-time MULTICA_LLM_* defaults (RUYI-552):
+	// the per-field fallback behind a workspace's UI-saved retrospective LLM
+	// config. Wired in cmd/server/router.go after New.
+	DeploymentLLM retrospective.DeploymentLLM
+	// LLMMaxRetries mirrors Config.LLMMaxRetries so per-workspace
+	// retrospective LLM clients (RUYI-552) carry the same transport retry
+	// budget the deployment-level client was built with.
+	LLMMaxRetries *llm.RetryOverride
 	// VoiceProbeBaseURL is the connectivity-probe target for voice instance
 	// credentials (RUYI-425 §4.3/§4.5 stage 2): a lightweight models.list
 	// against the provider right after a credential save. Wired from
