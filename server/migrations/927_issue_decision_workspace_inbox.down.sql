@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_issue_decisions_workspace_status;

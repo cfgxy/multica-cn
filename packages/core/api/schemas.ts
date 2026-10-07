@@ -1055,6 +1055,27 @@ export const IssueDecisionSchema = z.object({
 
 export const IssueDecisionsListSchema = z.array(IssueDecisionSchema);
 
+// Workspace decision inbox (RUYI-494). Mirrors
+// handler.WorkspaceDecisionInboxResponse: one row per card with issue context
+// riding along, plus workspace-wide totals that ignore any status filter.
+export const WorkspaceDecisionInboxItemSchema = IssueDecisionSchema.extend({
+  workspace_id: z.string(),
+  issue_number: z.number().int(),
+  issue_identifier: z.string(),
+  issue_title: z.string(),
+});
+
+export const DecisionInboxCountsSchema = z.object({
+  open: z.number().int(),
+  answered: z.number().int(),
+  cancelled: z.number().int(),
+});
+
+export const WorkspaceDecisionInboxSchema = z.object({
+  items: z.array(WorkspaceDecisionInboxItemSchema),
+  counts: DecisionInboxCountsSchema,
+});
+
 // Batch answer (RUYI-471). Mirrors handler.BatchAnswerIssueDecisionsResponse:
 // per-card outcomes never roll the batch back, so `results` is the only
 // load-bearing field.

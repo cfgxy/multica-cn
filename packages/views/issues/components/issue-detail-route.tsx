@@ -50,9 +50,26 @@ export function parseCommentHighlightHash(hash: string): string | undefined {
   return match?.[1];
 }
 
-function useCommentHighlightHash(): { hash: string; commentId?: string } {
+export function parseDecisionHighlightHash(hash: string): string | undefined {
+  const match = /^#decision-([A-Za-z0-9_-]+)$/.exec(hash);
+  return match?.[1];
+}
+
+export function useHighlightHash(): { hash: string; commentId?: string; decisionId?: string } {
   const read = () => typeof window === "undefined" ? "" : window.location.hash;
   const [hash, setHash] = useState(read);
+
+  // Re-read after every commit. The web App Router applies an incoming SPA
+  // URL — fragment included — via history.pushState during the commit phase,
+  // AFTER this component's first render, and pushState never fires
+  // `hashchange`: a `#decision-…`/`#comment-…` fragment arriving on a soft
+  // navigation is invisible to the initial read above and to the listener
+  // below. The next commit (typically the render where the issue resolve
+  // settles) picks it up here; when the values already agree this is a no-op.
+  useEffect(() => {
+    const current = read();
+    if (current !== hash) setHash(current);
+  });
 
   useEffect(() => {
     const onHashChange = () => setHash(read());
@@ -60,7 +77,11 @@ function useCommentHighlightHash(): { hash: string; commentId?: string } {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  return { hash, commentId: parseCommentHighlightHash(hash) };
+  return {
+    hash,
+    commentId: parseCommentHighlightHash(hash),
+    decisionId: parseDecisionHighlightHash(hash),
+  };
 }
 
 /**
@@ -77,7 +98,7 @@ function useCommentHighlightHash(): { hash: string; commentId?: string } {
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
   const { canonicalId, issue, isResolving, notFound } = useCanonicalIssue(wsId, routeId);
-  const highlight = useCommentHighlightHash();
+  const highlight = useHighlightHash();
 
   useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash);
 
@@ -94,6 +115,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
       issueId={canonicalId}
       onDelete={onDelete}
       highlightCommentId={highlight.commentId}
+      highlightDecisionId={highlight.decisionId}
     />
   );
 }

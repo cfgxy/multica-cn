@@ -1,0 +1,25 @@
+{
+  "page": {
+    "breadcrumb": "Decision Inbox",
+    "empty_title": "No decision cards yet",
+    "empty_description": "Decision cards raised by agents or members will be aggregated here, so nothing waiting on you slips through.",
+    "load_failed": "Failed to load decision cards"
+  },
+  "section": {
+    "open": "Pending decisions",
+    "answered": "Decided",
+    "cancelled": "Voided"
+  },
+  "badge": {
+    "recommended": "Has recommendation"
+  },
+  "mobile": {
+    "tab": {
+      "title": "Decisions"
+    },
+    "page": {
+      "title": "Decisions",
+      "load_failed": "Failed to load decision cards: {{reason}}"
+    }
+  }
+}
