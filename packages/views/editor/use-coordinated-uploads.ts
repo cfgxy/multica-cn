@@ -19,7 +19,8 @@
  * resurrect a placeholder into a wiped draft.
  *
  * The SOURCE OF TRUTH for what a submit binds is the draft BODY
- * (reference-filtered): an upload that settles after its mount died gets its
+ * (reference-filtered): an upload that settles after its mount died — or whose
+ * editor died before the body caught up with the settled swap — gets its
  * markdown link delivered back into the body — into the reopened composer's
  * live editor when one exists (confirmed, with retry while the Tiptap instance
  * is still warming up), else appended to the persisted draft — so the file is
@@ -59,7 +60,7 @@ import { MAX_FILE_SIZE } from "@multica/core/constants/upload";
 import { useT } from "../i18n";
 import type { UploadGate } from "./use-upload-gate";
 import type { ContentEditorRef } from "./content-editor";
-import { pastedTextSource, consumeUploadEditorLost } from "./extensions/file-upload";
+import { pastedTextSource, consumeUploadEditorLost, hasUploadSwapLanded, clearUploadSwapLanded } from "./extensions/file-upload";
 
 const EMPTY_ATTACHMENTS: Attachment[] = [];
 
@@ -173,6 +174,72 @@ function deliverFinishedUpload(
     () => deliverFinishedUpload(binding, clientUploadId, attachment, tries + 1),
     DELIVER_RETRY_MS,
   );
+}
+
+/**
+ * Watch a settled upload until its markdown is CONFIRMED in the draft body,
+ * and backfill the moment nothing live can still produce it.
+ *
+ * After a settle on a LIVE editor, the inline swap owns the document while
+ * the debounced `onUpdate` is the only writer of the body — a window in which
+ * the document shows the image and the body does not yet. If that editor is
+ * destroyed inside the window, the pending update is dropped with the
+ * instance and nobody would ever write the body (the RUYI-478 residual
+ * window, RUYI-493). Poll until the outcome is decided:
+ *
+ *  - the body references the attachment → the emit fired; confirmed, done.
+ *  - the extension flagged a destroyed editor (swap skipped) → deliver.
+ *  - the swap landed but no live document holds the image anymore → its emit
+ *    was dropped; deliver.
+ *  - the swap landed and a live document still shows the image → its debounce
+ *    is still armed; keep watching.
+ *  - neither flag holds (the user deleted the placeholder mid-upload) → stop;
+ *    deleted means deleted (MUL-5181).
+ *
+ * Watching is what makes the window airtight: a destroy ANYWHERE inside the
+ * debounce (however long the host's `debounceMs` is, within the retry budget)
+ * is caught by the next tick, not just destroys that precede the first one.
+ */
+function confirmSettledUploadDelivery(
+  binding: UploadDraftBinding,
+  clientUploadId: string,
+  attachment: Attachment,
+  uploadId: string,
+  tries = 0,
+): void {
+  if (
+    !binding.getUploads().some((u) => u.clientUploadId === clientUploadId) ||
+    contentReferencesAttachment(binding.getBody(), attachment)
+  ) {
+    // Confirmed in the body — or moot, the draft moved on either way.
+    clearUploadSwapLanded(uploadId);
+    return;
+  }
+  if (consumeUploadEditorLost(uploadId)) {
+    deliverFinishedUpload(binding, clientUploadId, attachment);
+    return;
+  }
+  if (!hasUploadSwapLanded(uploadId)) return;
+  if (
+    liveEditors.get(binding.registryKey)?.current?.hasImageWithSrc(
+      toUploadResult(attachment).markdownLink,
+    ) === true
+  ) {
+    if (tries >= DELIVER_MAX_TRIES) {
+      clearUploadSwapLanded(uploadId);
+      return;
+    }
+    setTimeout(
+      () =>
+        confirmSettledUploadDelivery(binding, clientUploadId, attachment, uploadId, tries + 1),
+      DELIVER_RETRY_MS,
+    );
+    return;
+  }
+  // Nothing live holds the image anymore: the editor that received the swap
+  // died before its debounced emit, so the body will never get it unprompted.
+  clearUploadSwapLanded(uploadId);
+  deliverFinishedUpload(binding, clientUploadId, attachment);
 }
 
 /**
@@ -446,18 +513,21 @@ export function useCoordinatedUploads(
                     // can die on its own — any conditional remount of the
                     // shared editor (quick-create mode switch, chat agent
                     // swap) destroys the Tiptap instance while this hook lives
-                    // on, and the inline swap silently no-ops on a destroyed
-                    // editor: the attachment ends up "uploaded" with nothing
-                    // in the document or body (RUYI-478). Recheck shortly
-                    // after the swap would have committed; the extension
-                    // flags exactly the destroyed-editor case, so a swap that
-                    // landed and a placeholder the user deleted are both left
-                    // alone. Harmless on the happy path: delivery is guarded
-                    // by the body reference and the document image checks.
-                    setTimeout(() => {
-                      if (!consumeUploadEditorLost(uploadId)) return;
-                      deliverFinishedUpload(target, clientUploadId, outcome.attachment);
-                    }, DELIVER_RETRY_MS);
+                    // on. Two ways to lose the image live in that gap: the
+                    // swap skipped on a destroyed editor (flagged by the
+                    // extension, RUYI-478), or the swap landed and a destroy
+                    // inside the debounce window dropped the pending body
+                    // emit with the instance (RUYI-493). Watch the settle
+                    // until the body confirms; the guards make this a no-op
+                    // on the happy path.
+                    // First tick is delayed, not synchronous: the swap and
+                    // its markers commit a microtask after this handler
+                    // resolves, and the tick must observe the settled world.
+                    setTimeout(
+                      () =>
+                        confirmSettledUploadDelivery(target, clientUploadId, outcome.attachment, uploadId),
+                      DELIVER_RETRY_MS,
+                    );
                   }
                 }
               } else {

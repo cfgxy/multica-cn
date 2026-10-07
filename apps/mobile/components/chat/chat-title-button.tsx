@@ -1,8 +1,11 @@
 /**
- * Centred, tappable title region for the Chat tab's native Stack header.
- * Rendered as `headerTitle: () => <ChatTitleButton ... />` so iOS positions
- * it where it expects the screen title, but the whole region is a Pressable
- * — tap opens the sessions + agent picker sheet.
+ * Centred title region for the chat screen header.
+ *
+ * With `onPress` (legacy tab-screen usage): the whole region is a tappable
+ * Pressable rendered as `headerTitle: () => ...`, opening the sessions
+ * sheet. Without it (RUYI-496 detail screen): display-only identity — the
+ * list is the session switcher now, so no ▼ affordance and no button
+ * semantics.
  */
 import { Pressable, View } from "react-native";
 import type { Agent, ChatSession } from "@multica/core/types";
@@ -14,7 +17,7 @@ import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 interface Props {
   currentSession: ChatSession | null;
   currentAgent: Agent | null;
-  onPress: () => void;
+  onPress?: () => void;
 }
 
 export function ChatTitleButton({
@@ -29,17 +32,8 @@ export function ChatTitleButton({
     t("mobile.sessions.untitled", "Untitled chat"),
   );
 
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={4}
-      className="flex-row items-center gap-2 px-2 py-1 rounded-lg active:bg-secondary"
-      accessibilityRole="button"
-      accessibilityLabel={t(
-        "mobile.sessions.title_button_a11y",
-        "Sessions and agent picker",
-      )}
-    >
+  const identity = (
+    <>
       <ActorAvatar
         type={currentAgent ? "agent" : null}
         id={currentAgent?.id ?? null}
@@ -54,7 +48,9 @@ export function ChatTitleButton({
           >
             {agentName}
           </Text>
-          <Text className="text-xs text-muted-foreground">▼</Text>
+          {onPress ? (
+            <Text className="text-xs text-muted-foreground">▼</Text>
+          ) : null}
         </View>
         <Text
           className="text-xs text-muted-foreground"
@@ -63,6 +59,27 @@ export function ChatTitleButton({
           {subtitle}
         </Text>
       </View>
+    </>
+  );
+
+  if (!onPress) {
+    return (
+      <View className="flex-row items-center gap-2 px-2 py-1">{identity}</View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={4}
+      className="flex-row items-center gap-2 px-2 py-1 rounded-lg active:bg-secondary"
+      accessibilityRole="button"
+      accessibilityLabel={t(
+        "mobile.sessions.title_button_a11y",
+        "Sessions and agent picker",
+      )}
+    >
+      {identity}
     </Pressable>
   );
 }

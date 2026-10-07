@@ -2,17 +2,26 @@
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
     question, options, multi_select, recommended_indices,
-    created_by_type, created_by_id
+    created_by_type, created_by_id, client_request_id
 ) VALUES (
     @id, @workspace_id, @issue_id, @source_comment_id,
     @question, @options::jsonb, @multi_select, @recommended_indices::jsonb,
-    @created_by_type, @created_by_id
+    @created_by_type, @created_by_id, @client_request_id
 )
 RETURNING *;
 
 -- name: GetIssueDecision :one
 SELECT * FROM issue_decisions
 WHERE id = $1 AND workspace_id = $2;
+
+-- name: GetIssueDecisionByIdempotencyKey :one
+-- Replay lookup for RUYI-514: fires only after the unique index
+-- uidx_issue_decisions_client_request rejected a duplicate insert, so the
+-- winning row is already committed and visible (READ COMMITTED). Key scope
+-- mirrors the index: workspace + creator type + creator id.
+SELECT * FROM issue_decisions
+WHERE workspace_id = $1 AND created_by_type = $2 AND created_by_id = $3
+  AND client_request_id = $4;
 
 -- name: ListIssueDecisionsForIssue :many
 SELECT * FROM issue_decisions
