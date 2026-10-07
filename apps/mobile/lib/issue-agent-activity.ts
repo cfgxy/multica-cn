@@ -40,6 +40,17 @@ export function isActiveTaskStatus(status: AgentTask["status"]): boolean {
   return status === "running" || isQueuedTaskStatus(status);
 }
 
+/**
+ * Per-task cancel affordance (RUYI-538 ③): everything isActiveTaskStatus
+ * covers, plus the two-phase `cancel_requested` hold — the daemon hasn't
+ * confirmed the interrupt yet and a repeat cancel re-broadcasts the nudge
+ * (AgentTask.status type doc; mobile RunRow's CancelButton follows the same
+ * set). Terminal rows (completed / failed / cancelled) never offer cancel.
+ */
+export function canCancelAgentTask(task: AgentTask): boolean {
+  return isActiveTaskStatus(task.status) || task.status === "cancel_requested";
+}
+
 export interface IssueActivity {
   running: AgentTask[];
   queued: AgentTask[];
