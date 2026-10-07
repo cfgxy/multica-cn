@@ -134,7 +134,7 @@ export default function ShareTargetScreen() {
     if (!workspace || submitting) return;
     setSubmitting(true);
     navigatedRef.current = true;
-    // Destination first: the chat tab consumes it reactively even while this
+    // Destination first: the chat detail screen consumes it reactively even while this
     // screen is still on top; the store survives the workspace transition.
     useSharedIntentStore.getState().setDestination(destination);
     try {
@@ -146,7 +146,7 @@ export default function ShareTargetScreen() {
   };
 
   const confirmChat = (agentId: string) =>
-    navigateTo({ kind: "chat", agentId }, (slug) => `/${slug}/chat`);
+    navigateTo({ kind: "chat", agentId }, (slug) => `/${slug}/chat/new`);
   const confirmIssue = () =>
     navigateTo({ kind: "issue" }, (slug) => `/${slug}/new-issue`);
 

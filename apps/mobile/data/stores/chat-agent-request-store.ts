@@ -1,14 +1,13 @@
 /**
  * Cross-screen channel for "DM this agent" (RUYI-418 A7): the agent detail
  * screen requests the chat tab to open a fresh session with a given agent.
- * Same shape as chat-session-picker-store — the chat tab is a different
- * Stack screen, so the handoff rides a small Zustand store with a one-shot,
+ * The chat tab is a different Stack screen from the agent detail screen, so
+ * the handoff rides a small Zustand store with a one-shot,
  * nonce-stamped request consumed by the chat tab's effect.
  *
  * Permission gating happens at the sender (detail screen alerts on a denied
- * invocation); this store carries no decision of its own. Workspace
- * lifecycle mirrors the picker store: reset on workspace change, wired from
- * `app/(app)/[workspace]/_layout.tsx`.
+ * invocation); this store carries no decision of its own. Reset on
+ * workspace change, wired from `app/(app)/[workspace]/_layout.tsx`.
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";

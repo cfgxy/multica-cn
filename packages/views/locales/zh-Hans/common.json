@@ -184,6 +184,7 @@
     },
     "common": {
       "no_matches": "没有匹配项。",
+      "back": "返回",
       "retry": "重试",
       "unknown_error": "未知错误",
       "search": "搜索",

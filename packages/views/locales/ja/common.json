@@ -184,6 +184,7 @@
     },
     "common": {
       "no_matches": "一致する項目がありません。",
+      "back": "戻る",
       "retry": "再試行",
       "unknown_error": "不明なエラー",
       "search": "検索",
