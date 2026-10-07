@@ -34,6 +34,7 @@ import { THEME } from "@/lib/theme";
 import {
   useInboxUnreadCount,
   useChatUnreadMessageCount,
+  useOpenDecisionCount,
 } from "@/lib/unread-counts";
 import { MoreTabDropdownAnchor } from "@/components/nav/more-tab-dropdown";
 
@@ -53,6 +54,9 @@ export default function TabsLayout() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const inboxUnread = useInboxUnreadCount(wsId);
   const chatUnread = useChatUnreadMessageCount(wsId);
+  // RUYI-494: open decision cards — same server `counts.open` web's sidebar
+  // badge shows (see useOpenDecisionCount for the parity contract).
+  const openDecisions = useOpenDecisionCount(wsId);
 
   // Truncation aligned with web's sidebar badges: 99+ for both. `undefined`
   // makes React Navigation hide the badge, so zero-count is a free no-op.
@@ -60,6 +64,12 @@ export default function TabsLayout() {
     inboxUnread > 0 ? (inboxUnread > 99 ? "99+" : String(inboxUnread)) : undefined;
   const chatBadge =
     chatUnread > 0 ? (chatUnread > 99 ? "99+" : String(chatUnread)) : undefined;
+  const decisionBadge =
+    openDecisions > 0
+      ? openDecisions > 99
+        ? "99+"
+        : String(openDecisions)
+      : undefined;
 
   // Imperative handle into the More tab's dropdown — listeners.tabPress
   // calls .open(); the @rn-primitives Trigger measures itself inside
@@ -118,6 +128,34 @@ export default function TabsLayout() {
               : ({ color, size, focused }) => (
                   <Ionicons
                     name={focused ? "checkbox" : "square-outline"}
+                    size={size}
+                    color={color}
+                  />
+                ),
+          }}
+        />
+        <Tabs.Screen
+          name="decisions"
+          options={{
+            // RUYI-494: 决策中心 — workspace-level decision card inbox,
+            // mobile's 5th tab. Badge counts the server's `counts.open`,
+            // mirroring web's sidebar badge.
+            title: i18n.t("decisions:mobile.tab.title", "Decisions"),
+            tabBarBadge: decisionBadge,
+            tabBarBadgeStyle: BADGE_STYLE,
+            tabBarIcon: Platform.OS === "ios"
+              ? ({ color, size, focused }) => (
+                  <Image
+                    source={focused ? "sf:checkmark.seal.fill" : "sf:checkmark.seal"}
+                    tintColor={color}
+                    style={{ width: size, height: size }}
+                  />
+                )
+              : ({ color, size, focused }) => (
+                  <Ionicons
+                    name={focused
+                      ? "checkmark-done-circle"
+                      : "checkmark-done-circle-outline"}
                     size={size}
                     color={color}
                   />

@@ -25,6 +25,7 @@ import {
   inboxUnreadSummaryOptions,
 } from "@/data/queries/inbox";
 import { chatSessionsOptions } from "@/data/queries/chat";
+import { workspaceDecisionInboxOptions } from "@/data/queries/decisions";
 import { deduplicateInboxItems } from "@/lib/inbox-display";
 
 /**
@@ -84,4 +85,25 @@ export function useWorkspaceUnreadIds(
     inboxUnreadSummaryOptions(wsId ?? null),
   );
   return useMemo(() => unreadWorkspaceIds(unreadSummary), [unreadSummary]);
+}
+
+/**
+ * Open decision cards in the current workspace (RUYI-494) — the 「决策」tab
+ * badge. Same number web/desktop's sidebar badge shows: the count comes from
+ * the same aggregation endpoint (`GET /api/workspaces/:id/decision-inbox`)
+ * and is the server-computed `counts.open`, NOT a client-side row count, so
+ * a `limit`-clipped list can never make the badge disagree across clients.
+ *
+ * Kept fresh by the workspace-layout decision realtime hook
+ * (`decision:updated` → invalidate `decisionInboxKeys`), same arrangement
+ * as the inbox/chat badges above.
+ */
+export function useOpenDecisionCount(
+  wsId: string | null | undefined,
+): number {
+  const { data } = useQuery({
+    ...workspaceDecisionInboxOptions(wsId ?? null),
+    select: (inbox) => inbox.counts.open,
+  });
+  return data ?? 0;
 }

@@ -71,11 +71,13 @@ export default function IssueDetail() {
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
   // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
   // `h` is a per-tap nonce so re-tapping the same row re-fires the
-  // scroll-and-flash effect.
-  const { id, workspace: wsSlug, highlight, h } = useLocalSearchParams<{
+  // scroll-and-flash effect. `decision` comes from the 决策中心 tab
+  // (RUYI-494) — same `h` nonce idiom, target is a decision card id.
+  const { id, workspace: wsSlug, highlight, decision: decisionParam, h } = useLocalSearchParams<{
     id: string;
     workspace: string;
     highlight?: string;
+    decision?: string;
     h?: string;
   }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -367,6 +369,7 @@ export default function IssueDetail() {
             refreshing={detail.isRefetching || timeline.isRefetching}
             onRefresh={onRefresh}
             highlightCommentId={highlight}
+            highlightDecisionId={decisionParam}
             highlightNonce={h}
             onCommentPublished={onCommentPublished}
           />
