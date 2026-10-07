@@ -52,3 +52,30 @@ export interface BatchIssueDecisionAnswer {
   decision_id: string;
   selected_indices: number[];
 }
+
+/**
+ * Workspace decision inbox (RUYI-494): the cross-issue aggregation behind the
+ * Decision Center. One row PER CARD — an issue with three cards yields three
+ * items so an older still-open card is never hidden by a newer answered one.
+ * Mirrors handler.WorkspaceDecisionInboxItem.
+ */
+export interface WorkspaceDecisionInboxItem extends IssueDecision {
+  workspace_id: string;
+  issue_number: number;
+  /** Human-readable identifier, e.g. "RUYI-494" (empty when the workspace has no issue_prefix). */
+  issue_identifier: string;
+  issue_title: string;
+}
+
+/** Workspace totals, independent of any status filter on the list window. */
+export interface DecisionInboxCounts {
+  open: number;
+  answered: number;
+  cancelled: number;
+}
+
+/** Mirrors handler.WorkspaceDecisionInboxResponse. */
+export interface WorkspaceDecisionInbox {
+  items: WorkspaceDecisionInboxItem[];
+  counts: DecisionInboxCounts;
+}
