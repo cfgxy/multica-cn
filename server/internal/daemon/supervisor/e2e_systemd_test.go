@@ -177,7 +177,7 @@ func e2eDumpRunFiles(t *testing.T, sup *Supervisor, runID string) string {
 			fmt.Fprintf(&b, "  %s size=%d\n", e.Name(), info.Size())
 		}
 	}
-	for _, name := range []string{"manifest.json", "read.json"} {
+	for _, name := range []string{"manifest.json", "read-stdout.json", "read-stderr.json"} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err == nil {
 			fmt.Fprintf(&b, "  %s: %s\n", name, strings.TrimSpace(string(data)))
