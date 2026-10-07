@@ -88,8 +88,11 @@ export default function VoiceRuntimeSettingsScreen() {
     return advanced ? JSON.stringify(advanced, null, 2) : "";
   }, [runtime?.metadata]);
   useEffect(() => {
-    setName(runtime?.custom_name ?? "");
-  }, [runtime?.id, runtime?.custom_name]);
+    // RUYI-540: seed with the display name (custom_name first, else name —
+    // runtimeDisplayName, desktop parity). Create-only instances carry no
+    // custom_name; seeding only from it left the field blank.
+    setName(runtime ? runtimeDisplayName(runtime) : "");
+  }, [runtime?.id, runtime?.custom_name, runtime?.name]);
   useEffect(() => {
     setModel(settings.model);
   }, [runtime?.id, settings.model]);

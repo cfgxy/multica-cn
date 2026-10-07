@@ -3,6 +3,7 @@ import type { AgentRuntime, RuntimeProfile } from "@multica/core/types";
 
 import {
   VOICE_INSTANCE_CREDENTIAL_KEY,
+  credentialSaveFailureDetail,
   isVoiceProfile,
   isVoiceProtocolRuntime,
   parseAdvancedParams,
@@ -187,5 +188,33 @@ describe("VOICE_INSTANCE_CREDENTIAL_KEY", () => {
   // stores the key under the wrong slot.
   it("stays api_key", () => {
     expect(VOICE_INSTANCE_CREDENTIAL_KEY).toBe("api_key");
+  });
+});
+
+describe("credentialSaveFailureDetail", () => {
+  const SERVER_503_MESSAGE =
+    "runtime credential encryption is not configured on this server (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY missing)";
+
+  it("surfaces the server's readable message (never a bare status code)", () => {
+    expect(credentialSaveFailureDetail(new Error(SERVER_503_MESSAGE))).toBe(
+      SERVER_503_MESSAGE,
+    );
+  });
+
+  it("trims surrounding whitespace but keeps the message intact", () => {
+    expect(credentialSaveFailureDetail(new Error("  502 Bad Gateway  "))).toBe(
+      "502 Bad Gateway",
+    );
+  });
+
+  it("returns null for non-errors so callers fall back to localized copy", () => {
+    expect(credentialSaveFailureDetail(null)).toBeNull();
+    expect(credentialSaveFailureDetail(undefined)).toBeNull();
+    expect(credentialSaveFailureDetail("503")).toBeNull();
+    expect(credentialSaveFailureDetail({ status: 503 })).toBeNull();
+  });
+
+  it("returns null for blank-message errors", () => {
+    expect(credentialSaveFailureDetail(new Error("   "))).toBeNull();
   });
 });
