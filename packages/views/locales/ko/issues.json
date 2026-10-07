@@ -989,6 +989,7 @@
       "leader_needs_runtime": "리더에게 런타임 필요",
       "everyone_all": "모든 사람(@all)",
       "done": "완료",
+      "change_date": "날짜 변경",
       "create_label": "'{{name}}' 만들기",
       "no_labels": "이 워크스페이스에는 아직 라벨이 없습니다.",
       "no_members_or_agents": "이 워크스페이스에는 아직 멤버나 에이전트가 없습니다."

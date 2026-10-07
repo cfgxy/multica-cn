@@ -989,6 +989,7 @@
       "leader_needs_runtime": "リーダーにランタイムが必要",
       "everyone_all": "全員（@all）",
       "done": "完了",
+      "change_date": "日付を変更",
       "create_label": "「{{name}}」を作成",
       "no_labels": "このワークスペースにはまだラベルがありません。",
       "no_members_or_agents": "このワークスペースにはまだメンバーもエージェントもいません。"
