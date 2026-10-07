@@ -84,6 +84,13 @@ jest.mock("@/data/queries/chat", () => ({
     queryFn: jest.fn(),
   }),
   sortChatSessions: (arr) => arr,
+  // RUYI-533: the screen splits the flat cache locally; mirror the real
+  // helper's split so the render conditions under test stay honest (the
+  // helper itself is unit-tested on the vitest lane).
+  splitChatSessions: (arr) => ({
+    active: arr.filter((s) => s.status !== "archived"),
+    archived: arr.filter((s) => s.status === "archived"),
+  }),
   chatMessagesOptions: (id) => ({
     queryKey: ["chat", "messages", id ?? ""],
     queryFn: jest.fn(),
@@ -263,7 +270,74 @@ describe("ChatListScreen (chat tab root, RUYI-496)", () => {
     await render(<ChatListScreen />);
     expect(await screen.findByText("Pinned chat")).toBeTruthy();
     expect(screen.getByText("Regular chat")).toBeTruthy();
-    expect(screen.getByText("Old chat")).toBeTruthy();
+  });
+
+  // RUYI-533: archived chats leave the tab list — they live in the Archived
+  // sub-view reachable from the footer entry, never inline (web parity with
+  // chat-thread-list.tsx's local split).
+  it("RUYI-533: excludes archived sessions from the tab list", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    expect(await screen.findByTestId("chat-row-sa")).toBeTruthy();
+    expect(screen.queryByText("Old chat")).toBeNull();
+    expect(screen.queryByTestId("chat-row-sc")).toBeNull();
+  });
+
+  it("RUYI-533: shows the archived entry with a count when archived chats exist", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    const entry = await screen.findByTestId("chat-archived-entry");
+    expect(entry).toBeTruthy();
+    expect(screen.getByText("Archived")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+  });
+
+  it("RUYI-533: the archived entry pushes the archived sub-view", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    fireEvent.press(await screen.findByTestId("chat-archived-entry"));
+    expect(mockRouterPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/[workspace]/chat/archived",
+        params: expect.objectContaining({ workspace: "acme" }),
+      }),
+    );
+  });
+
+  it("RUYI-533: hides the archived entry when nothing is archived", async () => {
+    mockSessions.push(
+      {
+        id: "sa",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        creator_id: "user-1",
+        title: "Pinned chat",
+        status: "active",
+        has_unread: true,
+        pinned: true,
+        updated_at: "2026-10-07T08:00:00Z",
+        last_message: { content: "hello there", role: "user", created_at: "" },
+      },
+    );
+    await render(<ChatListScreen />);
+    expect(await screen.findByTestId("chat-row-sa")).toBeTruthy();
+    expect(screen.queryByTestId("chat-archived-entry")).toBeNull();
+  });
+
+  it("RUYI-533: keeps the archived entry reachable from the empty state", async () => {
+    mockSessions.push({
+      id: "sc",
+      workspace_id: "ws-1",
+      agent_id: "agent-1",
+      creator_id: "user-1",
+      title: "Old chat",
+      status: "archived",
+      has_unread: false,
+      updated_at: "2026-10-06T07:00:00Z",
+    });
+    await render(<ChatListScreen />);
+    expect(await screen.findByText("No chats yet.")).toBeTruthy();
+    expect(screen.getByTestId("chat-archived-entry")).toBeTruthy();
   });
 
   it("AC2: tapping a row pushes the strictly matching detail route", async () => {

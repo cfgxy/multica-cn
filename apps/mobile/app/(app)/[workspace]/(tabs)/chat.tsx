@@ -4,6 +4,7 @@
  * Layout:
  *   View ─ Header(title: "Chats", right: new-chat +)
  *        ─ loading skeleton / error+retry / empty state / session rows
+ *        ─ Archived entry footer (below the last row, or the empty state)
  *
  * Previously this tab WAS the chat screen (single-screen IA, auto-hydrated
  * to the most recent session on entry); the chat surface now lives at
@@ -16,10 +17,12 @@
  *
  * Data: `chatSessionsOptions` — the same server-side per-user-filtered
  * session query web/desktop use (AC7: no local assembly, no cross-user
- * cache) — re-sorted by `sortChatSessions` so optimistic pin/archive
- * patches keep the server order. The second preview line mirrors web's
- * session row via `chatSessionPreview` (no "typing" state — the list
- * doesn't subscribe to the pending-task snapshot). Live updates ride the
+ * cache) — split locally via `splitChatSessions` into the active list and
+ * the archived pool (RUYI-533, mirroring web's chat-thread-list.tsx): only
+ * active sessions render here, archived ones live in the Archived sub-view
+ * pushed from the footer entry, so the two views are exclusive by
+ * construction. Rows keep the inbox list's visual anatomy
+ * (components/chat/chat-session-row.tsx). Live updates ride the
  * workspace-level `useChatSessionsRealtime` subscription in the workspace
  * layout; nothing list-specific to clean up here.
  *
@@ -38,10 +41,9 @@ import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/ui/header";
 import { IconButton } from "@/components/ui/icon-button";
-import { ActorAvatar } from "@/components/ui/actor-avatar";
 import {
   chatSessionsOptions,
-  sortChatSessions,
+  splitChatSessions,
 } from "@/data/queries/chat";
 import {
   useDeleteChatSession,
@@ -57,11 +59,12 @@ import {
   ActionSheetModal,
 } from "@/components/ui/action-sheet";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
+import { ChatSessionRow } from "@/components/chat/chat-session-row";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
-import { chatSessionPreview } from "@/lib/chat-session-preview";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useT } from "@/lib/use-t";
-import { cn } from "@/lib/utils";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
 
 export default function ChatTab() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -76,11 +79,17 @@ export default function ChatTab() {
     isError,
     error,
     refetch,
+    isRefetching,
   } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
-  const sessions = useMemo(() => sortChatSessions(rawSessions), [rawSessions]);
+  // RUYI-533: one flat cache, two views — active rows here, archived rows
+  // in the sub-view behind the footer entry.
+  const { active: sessions, archived: archivedSessions } = useMemo(
+    () => splitChatSessions(rawSessions),
+    [rawSessions],
+  );
 
   // ── Derived: which agents can this user actually start a chat with? ────
   const memberRole = useMemo(
@@ -109,6 +118,14 @@ export default function ChatTab() {
     },
     [wsSlug],
   );
+
+  const openArchived = useCallback(() => {
+    if (!wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/chat/archived",
+      params: { workspace: wsSlug },
+    });
+  }, [wsSlug]);
 
   const openNewChat = useCallback(
     (agentId?: string) => {
@@ -256,16 +273,15 @@ export default function ChatTab() {
         }
       />
       {isLoading ? (
-        <View testID="chat-list-loading" className="pt-2">
+        // Skeleton rows mirror ChatSessionRow's anatomy (36px avatar + two
+        // text lines), same layout the inbox loading state uses.
+        <View testID="chat-list-loading" className="px-4 pt-4 gap-4">
           {Array.from({ length: 6 }).map((_, row) => (
-            <View
-              key={row}
-              className="flex-row items-center gap-3 px-4 py-3"
-            >
-              <Skeleton className="size-8 rounded-full" />
-              <View className="flex-1 gap-1.5">
-                <Skeleton className="h-3.5 w-2/5" />
-                <Skeleton className="h-3 w-3/5" />
+            <View key={row} className="flex-row gap-3">
+              <Skeleton className="size-9 rounded-full" />
+              <View className="flex-1 gap-2 pt-1">
+                <Skeleton className="h-3.5 w-3/4" />
+                <Skeleton className="h-3 w-1/2" />
               </View>
             </View>
           ))}
@@ -282,76 +298,52 @@ export default function ChatTab() {
           </Button>
         </View>
       ) : sessions.length === 0 ? (
-        <View className="flex-1 items-center justify-center gap-3 px-6">
-          <Text className="text-sm text-muted-foreground text-center">
-            {t("mobile.sessions.empty", "No chats yet.")}
-          </Text>
-          <Button variant="outline" onPress={handleNewChat}>
-            <Text>{t("window.new_chat_tooltip", "New chat")}</Text>
-          </Button>
+        // RUYI-533: the Archived entry stays reachable from the empty state —
+        // exactly when a user goes looking for what they filed away (same
+        // reasoning as the inbox entry, RUYI-532).
+        <View className="flex-1">
+          <View className="flex-1 items-center justify-center gap-3 px-6">
+            <Text className="text-sm text-muted-foreground text-center">
+              {t("mobile.sessions.empty", "No chats yet.")}
+            </Text>
+            <Button variant="outline" onPress={handleNewChat}>
+              <Text>{t("window.new_chat_tooltip", "New chat")}</Text>
+            </Button>
+          </View>
+          {archivedSessions.length > 0 ? (
+            <ArchivedEntry
+              count={archivedSessions.length}
+              onPress={openArchived}
+            />
+          ) : null}
         </View>
       ) : (
         <FlatList
           data={sessions}
           keyExtractor={(session) => session.id}
           showsVerticalScrollIndicator={false}
-          renderItem={({ item: session }) => {
-            const archived = session.status === "archived";
-            const preview = chatSessionPreview(session, t);
-            return (
-              <Pressable
-                testID={`chat-row-${session.id}`}
-                onPress={() => openSession(session.id)}
-                onLongPress={() => showSessionActions(session)}
-                className="flex-row items-center gap-3 px-4 py-3 active:bg-secondary"
-              >
-                <View
-                  className={cn(
-                    "h-2 w-2 rounded-full",
-                    session.has_unread ? "bg-primary" : "bg-transparent",
-                  )}
-                />
-                <ActorAvatar
-                  type="agent"
-                  id={session.agent_id}
-                  size={32}
-                  showPresence
-                />
-                <View className="flex-1">
-                  <Text
-                    className={cn(
-                      "text-sm text-foreground",
-                      session.has_unread && "font-semibold",
-                    )}
-                    numberOfLines={1}
-                  >
-                    {chatSessionDisplayTitle(session.title, untitledFallback)}
-                  </Text>
-                  <Text
-                    className={cn(
-                      "text-xs mt-0.5",
-                      preview.kind === "failed"
-                        ? "text-destructive"
-                        : preview.kind === "preview" && session.has_unread
-                          ? "text-foreground"
-                          : "text-muted-foreground",
-                      preview.kind === "no_response" && "italic",
-                    )}
-                    numberOfLines={1}
-                  >
-                    {preview.text}
-                  </Text>
-                </View>
-                {session.pinned ? (
-                  <Ionicons
-                    name="pin"
-                    size={14}
-                    className="text-muted-foreground"
-                  />
-                ) : null}
-              </Pressable>
-            );
-          }}
+          ItemSeparatorComponent={() => (
+            <View className="h-px bg-border ml-16" />
+          )}
+          ListFooterComponent={
+            archivedSessions.length > 0 ? (
+              <ArchivedEntry
+                count={archivedSessions.length}
+                onPress={openArchived}
+              />
+            ) : null
+          }
+          contentContainerClassName="pb-6"
+          refreshing={isRefetching}
+          onRefresh={refetch}
+          renderItem={({ item: session }) => (
+            <ChatSessionRow
+              session={session}
+              untitled={untitledFallback}
+              onPress={() => openSession(session.id)}
+              onLongPress={() => showSessionActions(session)}
+            />
+          )}
         />
       )}
 
@@ -365,5 +357,39 @@ export default function ChatTab() {
 
       <ActionSheetModal {...sheet.modalProps} />
     </View>
+  );
+}
+
+// The entry into the Archived chats sub-view (RUYI-533) — same footer
+// pattern as the archived-inbox entry (RUYI-532), which mirrors web's
+// footer in inbox-list.tsx / chat-thread-list.tsx: archive glyph,
+// localized title, count, chevron.
+function ArchivedEntry({
+  count,
+  onPress,
+}: {
+  count: number;
+  onPress: () => void;
+}) {
+  const { t } = useT("chat");
+  const { colorScheme } = useColorScheme();
+  const muted = THEME[colorScheme].mutedForeground;
+  return (
+    <Pressable
+      testID="chat-archived-entry"
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={t("list.archived_title", "Archived")}
+      className="flex-row items-center gap-3 px-4 py-3 border-t border-border active:bg-secondary"
+    >
+      <Ionicons name="archive-outline" size={20} color={muted} />
+      <Text className="flex-1 text-sm font-medium text-muted-foreground">
+        {t("list.archived_title", "Archived")}
+      </Text>
+      <Text className="text-sm text-muted-foreground tabular-nums">
+        {count}
+      </Text>
+      <Ionicons name="chevron-forward" size={16} color={muted} />
+    </Pressable>
   );
 }
