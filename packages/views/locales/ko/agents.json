@@ -1044,7 +1044,8 @@
       "fact_concurrency": "동시 실행 한도",
       "forbidden_title": "이 에이전트에 대한 접근 권한이 없습니다",
       "runtime_unbound_banner": "이 에이전트에 런타임이 연결되지 않았습니다 — 실행하려면 런타임을 연결하세요.",
-      "forbidden_body": "이 에이전트를 볼 권한이 없습니다. 소유자에게 공유를 요청하세요."
+      "forbidden_body": "이 에이전트를 볼 권한이 없습니다. 소유자에게 공유를 요청하세요.",
+      "instructions_empty": "아직 지침이 없습니다"
     },
     "edit": {
       "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다",
