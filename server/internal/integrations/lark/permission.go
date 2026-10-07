@@ -29,17 +29,31 @@ const (
 	// /im/v1/messages/:message_id/resources/:file_key.
 	CapabilityMediaResources CapabilityID = "media_resources"
 	// CapabilityContactLookup — resolving open_ids to display names via
-	// /contact/v3/users/batch for speaker labels in enriched context.
+	// /contact/v3/users/{open_id} (the CC Connect single-user lookup)
+	// for speaker labels in enriched context.
 	CapabilityContactLookup CapabilityID = "contact_lookup"
 )
 
 // CapabilitySpec maps one capability onto the scopes that grant it.
 //
 // Scopes is AND-of-OR: every inner group must be satisfied by at least
-// one of its members. Feishu expresses exactly this shape — e.g. group
-// history reads need any of the im:message read scopes AND the
-// im:message.group_msg scope. Scope lists verified against the Feishu
-// OpenAPI permission tables (open.feishu.cn, 2026-10).
+// one of its members. Feishu expresses exactly this shape on its API
+// pages ("开启其中任意一项权限即可调用" per requirement row). Every entry
+// below is anchored to the Feishu OpenAPI doc page of the endpoint the
+// capability actually calls (open.feishu.cn, fetched 2026-10-08; full
+// audit in docs/adr/004-feishu-capability-scope-mapping.md):
+//
+//   - receive_messages → im.message.receive_v1 event doc (its 权限要求
+//     row lists nine subscription scopes; Multica needs one GROUP-side
+//     scope AND one P2P-side scope to cover both delivery paths)
+//   - send_messages → POST /im/v1/messages doc
+//   - read_history → GET /im/v1/messages/{id} (quoted/forwarded) AND
+//     GET /im/v1/messages (recent context) docs; the required set is
+//     their intersection — see the catalog entry
+//   - media_resources → GET /im/v1/messages/{id}/resources/{file_key} doc
+//   - contact_lookup → GET /contact/v3/users/{open_id} doc (the
+//     endpoint migrated from CC Connect; two requirement levels: the
+//     API gate row AND the name field's grant row)
 type CapabilitySpec struct {
 	ID     CapabilityID
 	Scopes [][]string
@@ -55,23 +69,54 @@ type CapabilitySpec struct {
 const ProbeCapabilityBudget = 10 * time.Second
 
 // capabilityCatalog is the verified mapping, in display order.
+//
+// RUYI-546 calibration against the per-endpoint Feishu doc pages:
+//
+//   - receive_messages gains the full nine-scope subscription set from
+//     the receive-event page, partitioned into GROUP-side and P2P-side
+//     delivery: a bot granted only im:message.group_msg (a common
+//     CC Connect-shaped install) subscribes the event and receives
+//     group @-mentions, so the old group-side pair falsely read as
+//     missing for it.
+//   - read_history drops im:message.history:readonly from the base
+//     group: that scope grants the conversation LIST but not the
+//     single-message GET the quoted/forwarded enrichment needs, so an
+//     install holding only it would pass the scope diff yet fail every
+//     quoted reply. The required set is the two endpoints'
+//     intersection; the list-only alternative stays documented here and
+//     in the audit.
+//   - media_resources: the message-resource page grants the endpoint to
+//     im:message OR im:message:readonly OR im:message.history:readonly
+//     — there is no "im:resource" requirement (that scope is not in the
+//     page's 权限要求 row), so installs following the old catalog chased
+//     a scope the Feishu console does not offer for this API.
+//   - contact_lookup: migrated to the single-user endpoint (CC Connect
+//     parity). Its doc expresses a two-level model: an API gate row
+//     (contact:contact.base:readonly / access_as_app / readonly /
+//     readonly_as_app) AND a name-field row (contact:user.base:readonly
+//     plus the same three contact:contact grants). The old catalog
+//     merged the levels into one OR group — an install holding only
+//     the field-level scope would pass the diff yet fail the call.
 var capabilityCatalog = []CapabilitySpec{
 	{CapabilityReceiveMessages, [][]string{
-		{"im:message.group_at_msg", "im:message.group_at_msg:readonly"},
+		{"im:message.group_at_msg", "im:message.group_at_msg:readonly", "im:message.group_msg",
+			"im:message.group_at_msg.include_bot:readonly", "im:message.group_msg.include_bot:read",
+			"im:message.group_bot_msg:readonly", "im:message.group_msg:readonly"},
 		{"im:message.p2p_msg", "im:message.p2p_msg:readonly"},
 	}, false},
 	{CapabilitySendMessages, [][]string{
 		{"im:message", "im:message:send_as_bot"},
 	}, true},
 	{CapabilityReadHistory, [][]string{
-		{"im:message", "im:message:readonly", "im:message.history:readonly"},
+		{"im:message", "im:message:readonly"},
 		{"im:message.group_msg"},
 	}, true},
 	{CapabilityMediaResources, [][]string{
-		{"im:resource"},
+		{"im:message", "im:message:readonly", "im:message.history:readonly"},
 	}, true},
 	{CapabilityContactLookup, [][]string{
-		{"contact:user.base:readonly"},
+		{"contact:contact.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app"},
+		{"contact:user.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app"},
 	}, true},
 }
 
@@ -233,7 +278,7 @@ func ProbeCapability(ctx context.Context, client APIClient, creds InstallationCr
 		})
 		return probeOutcome(err)
 	case CapabilityContactLookup:
-		_, err := client.BatchGetUsers(ctx, creds, []string{probeOpenID})
+		_, err := client.GetUserName(ctx, creds, probeOpenID)
 		return probeOutcome(err)
 	default:
 		// receive_messages (and any future non-probeable entry): event
