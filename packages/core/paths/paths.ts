@@ -22,6 +22,14 @@ const encode = (id: string) => encodeURIComponent(id);
  */
 export const AGENT_FOCUS_CONVERSATION_STARTERS = "conversation_starters";
 
+/**
+ * URL-hash anchor prefix for a decision card on the issue detail page
+ * (RUYI-494): `#decision-<cardId>` scrolls the timeline to the card and
+ * flashes it, the same contract as `#comment-<id>`. Written by the Decision
+ * Center's row click, read by the issue detail route.
+ */
+export const DECISION_ANCHOR_PREFIX = "decision-";
+
 function workspaceScoped(slug: string) {
   const ws = `/${encode(slug)}`;
   return {
@@ -55,6 +63,8 @@ function workspaceScoped(slug: string) {
     squads: () => `${ws}/squads`,
     squadDetail: (id: string) => `${ws}/squads/${encode(id)}`,
     inbox: () => `${ws}/inbox`,
+    // Decision Center (RUYI-494): workspace-wide decision-card aggregation.
+    decisions: () => `${ws}/decisions`,
     chat: () => `${ws}/chat`,
     chatWithAgent: (agentId: string) =>
       `${ws}/chat?agent=${encode(agentId)}`,

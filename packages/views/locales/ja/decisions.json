@@ -1,0 +1,25 @@
+{
+  "page": {
+    "breadcrumb": "ディシジョンセンター",
+    "empty_title": "意思決定カードはまだありません",
+    "empty_description": "エージェントやメンバーが作成した意思決定カードがここに集約され、判断待ちの項目を見逃しません。",
+    "load_failed": "意思決定カードの読み込みに失敗しました"
+  },
+  "section": {
+    "open": "未決定",
+    "answered": "決定済み",
+    "cancelled": "無効"
+  },
+  "badge": {
+    "recommended": "推奨あり"
+  },
+  "mobile": {
+    "tab": {
+      "title": "決定"
+    },
+    "page": {
+      "title": "決定センター",
+      "load_failed": "意思決定カードの読み込みに失敗しました: {{reason}}"
+    }
+  }
+}

@@ -321,6 +321,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"915_channel_chat_run_intent":                               {"channel_chat_run_intent_id_uidx", "channel_chat_run_intent_pending_uidx", "idx_channel_chat_run_intent_claim"},
 	"918_issue_decisions":                                       {"idx_issue_decisions_issue"},
 	"919_issue_dependency_relationships":                        {"uq_issue_dependency_edge"},
+	"927_issue_decision_workspace_inbox":                        {"idx_issue_decisions_workspace_status"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

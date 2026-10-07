@@ -1,10 +1,11 @@
 import {
   queryOptions,
+  useQuery,
   type MutationFunction,
   type QueryClient,
 } from "@tanstack/react-query";
 import { api } from "../api";
-import type { IssueDecision } from "../types";
+import type { IssueDecision, WorkspaceDecisionInbox } from "../types";
 import { issueKeys } from "./queries";
 
 // Decision cards (RUYI-345): server state owned by React Query like every
@@ -16,6 +17,42 @@ export function issueDecisionsQueryOptions(issueId: string) {
     queryKey: issueKeys.decisions(issueId),
     queryFn: () => api.listIssueDecisions(issueId),
     enabled: !!issueId,
+  });
+}
+
+/**
+ * Workspace decision inbox (RUYI-494). Keys are nested under
+ * issueKeys.decisionsAll() so the reconnect invalidation of that prefix
+ * (use-realtime-sync.ts) reaches the aggregation for free — a reconnect may
+ * have missed decision:updated events from any workspace. Lifecycle events
+ * invalidate this subtree explicitly (same file, decision:updated handler).
+ */
+export const decisionInboxKeys = {
+  all: () => [...issueKeys.decisionsAll(), "workspace-inbox"] as const,
+  workspace: (workspaceId: string | null | undefined) =>
+    [...decisionInboxKeys.all(), workspaceId ?? "none"] as const,
+};
+
+export function workspaceDecisionInboxQueryOptions(workspaceId: string | null | undefined) {
+  return queryOptions({
+    queryKey: decisionInboxKeys.workspace(workspaceId),
+    queryFn: async (): Promise<WorkspaceDecisionInbox> => {
+      if (!workspaceId) return { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+      return api.listWorkspaceDecisionInbox(workspaceId);
+    },
+    enabled: !!workspaceId,
+  });
+}
+
+/**
+ * Open-card badge count (nav tabs, RUYI-494): a scalar derived from the same
+ * shared query the Decision Center page renders from — one fetch backs both
+ * the badge and the list, mirroring the inbox unread pattern.
+ */
+export function useOpenDecisionCount(workspaceId: string | null | undefined) {
+  return useQuery({
+    ...workspaceDecisionInboxQueryOptions(workspaceId),
+    select: (data) => data.counts.open,
   });
 }
 

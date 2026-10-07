@@ -1824,6 +1824,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
+					// RUYI-494: the workspace decision inbox — every card in
+					// the workspace, one row per card, membership-scoped by
+					// this middleware. Read-only; answering stays on the
+					// issue-scoped endpoints.
+					r.Get("/decision-inbox", h.ListWorkspaceDecisionInbox)
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the

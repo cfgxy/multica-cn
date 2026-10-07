@@ -1,0 +1,25 @@
+{
+  "page": {
+    "breadcrumb": "决策中心",
+    "empty_title": "暂无决策卡",
+    "empty_description": "智能体或成员发起的决策卡会聚合在这里，待你决策的事项不再被遗漏。",
+    "load_failed": "决策卡加载失败"
+  },
+  "section": {
+    "open": "待决策",
+    "answered": "已决策",
+    "cancelled": "已失效"
+  },
+  "badge": {
+    "recommended": "有推荐"
+  },
+  "mobile": {
+    "tab": {
+      "title": "决策"
+    },
+    "page": {
+      "title": "决策中心",
+      "load_failed": "决策卡加载失败：{{reason}}"
+    }
+  }
+}

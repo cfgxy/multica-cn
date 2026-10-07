@@ -230,9 +230,12 @@ export type {
   BatchDecisionAnswerResult,
   BatchDecisionAnswerStatus,
   BatchIssueDecisionAnswer,
+  DecisionInboxCounts,
   DecisionOption,
   IssueDecision,
   IssueDecisionStatus,
+  WorkspaceDecisionInbox,
+  WorkspaceDecisionInboxItem,
 } from "./decision";
 export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
