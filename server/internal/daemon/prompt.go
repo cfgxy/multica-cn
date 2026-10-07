@@ -404,6 +404,25 @@ func buildQuickCreatePrompt(task Task) string {
 	b.WriteString("- **status**: omit (defaults to `todo`).\n")
 	b.WriteString("- **attachments**: `--attachment` takes LOCAL file paths, never URLs. Image URLs in the user input are already markdown — keep them inline. Files you produced: see `## Output`.\n\n")
 
+	// Files the user pasted/uploaded in the quick-create modal arrive as
+	// bound attachments, not as markdown in the input text — the input-only
+	// rule above therefore does not cover them (RUYI-478). Surface each row
+	// with its durable markdown URL so images can be inlined into the
+	// description. Binding is already server-side (MULTICA_QUICK_CREATE_ATTACHMENT_IDS),
+	// and quick-create forbids non-create CLI calls, so no download or
+	// --attachment-id instruction belongs here.
+	if len(task.QuickCreateAttachments) > 0 {
+		b.WriteString("Attachments uploaded in the quick-create modal (bound to the new issue automatically — pass no extra flags for them and do not download them):\n")
+		for _, a := range task.QuickCreateAttachments {
+			if strings.HasPrefix(a.ContentType, "image/") {
+				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — IMAGE: embed this markdown image inline in the description so it renders in the issue body: `![%s](%s)`\n", a.ID, a.Filename, a.ContentType, a.Filename, a.MarkdownURL)
+			} else {
+				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — FILE: mention the filename in the description where relevant; the file itself lands in the issue's attachment area\n", a.ID, a.Filename, a.ContentType)
+			}
+		}
+		b.WriteString("\n")
+	}
+
 	// output format
 	b.WriteString("Output format:\n")
 	b.WriteString("- Run exactly one `multica issue create --output json` invocation. Do not retry for any reason — even on non-zero exit. The issue may already exist; another attempt would create a duplicate.\n")

@@ -2668,21 +2668,27 @@ func TestClaimResponseAgentIdentityMatches(t *testing.T) {
 }
 
 type claimRuntimeGuardTask struct {
-	PriorSessionID                string          `json:"prior_session_id"`
-	PriorWorkDir                  string          `json:"prior_work_dir"`
-	PriorSessionResumeUnavailable bool            `json:"prior_session_resume_unavailable"`
-	PriorContextBrief             string          `json:"prior_context_brief"`
-	ChatMessage                   string          `json:"chat_message"`
-	ThreadName                    string          `json:"thread_name"`
-	QuizPrompt                    string          `json:"quiz_prompt"`
-	QuickCreatePrompt             string          `json:"quick_create_prompt"`
-	QuickCreateAttachmentIDs      []string        `json:"quick_create_attachment_ids"`
-	QuickCreatePriority           string          `json:"quick_create_priority"`
-	QuickCreateDueDate            string          `json:"quick_create_due_date"`
-	ProjectID                     string          `json:"project_id"`
-	ProjectDescription            string          `json:"project_description"`
-	ParentIssueID                 string          `json:"parent_issue_id"`
-	QuickCreateSourceContext      json.RawMessage `json:"quick_create_source_context"`
+	PriorSessionID                string   `json:"prior_session_id"`
+	PriorWorkDir                  string   `json:"prior_work_dir"`
+	PriorSessionResumeUnavailable bool     `json:"prior_session_resume_unavailable"`
+	PriorContextBrief             string   `json:"prior_context_brief"`
+	ChatMessage                   string   `json:"chat_message"`
+	ThreadName                    string   `json:"thread_name"`
+	QuizPrompt                    string   `json:"quiz_prompt"`
+	QuickCreatePrompt             string   `json:"quick_create_prompt"`
+	QuickCreateAttachmentIDs      []string `json:"quick_create_attachment_ids"`
+	QuickCreateAttachments        []struct {
+		ID          string `json:"id"`
+		Filename    string `json:"filename"`
+		ContentType string `json:"content_type"`
+		MarkdownURL string `json:"markdown_url"`
+	} `json:"quick_create_attachments"`
+	QuickCreatePriority      string          `json:"quick_create_priority"`
+	QuickCreateDueDate       string          `json:"quick_create_due_date"`
+	ProjectID                string          `json:"project_id"`
+	ProjectDescription       string          `json:"project_description"`
+	ParentIssueID            string          `json:"parent_issue_id"`
+	QuickCreateSourceContext json.RawMessage `json:"quick_create_source_context"`
 }
 
 func claimTaskForRuntimeGuard(t *testing.T, runtimeID, daemonID string) *claimRuntimeGuardTask {
@@ -4436,5 +4442,73 @@ func TestBatchIssueGCCheckReadsNoCatalogForBuiltInStatuses(t *testing.T) {
 	if counter.entryReads != 0 || counter.keyReads != 0 {
 		t.Fatalf("built-in batch read the catalog (%d entry, %d key), want 0 — a built-in key IS its own category",
 			counter.entryReads, counter.keyReads)
+	}
+}
+
+// RUYI-478: the claim must carry the full attachment rows (filename + durable
+// markdown URL) behind a quick-create context's attachment ids, so the
+// delegated create-run can inline pasted images into the description. A
+// dangling id degrades to omission — the raw ids (server-side binding) never
+// regress.
+func TestClaimTask_QuickCreateAttachmentMetas(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
+
+	var attachmentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO attachment (workspace_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
+		VALUES ($1, 'member', $2, 'screenshot.png', '/uploads/ws/screenshot.png', 'image/png', 10)
+		RETURNING id`, testWorkspaceID, testUserID).Scan(&attachmentID); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID)
+	})
+
+	danglingID := uuid.NewString()
+	quickContext, _ := json.Marshal(map[string]any{
+		"type":           "quick_create",
+		"prompt":         "创建这个 Issue 时我贴了图片",
+		"requester_id":   testUserID,
+		"workspace_id":   testWorkspaceID,
+		"attachment_ids": []string{attachmentID, danglingID},
+	})
+
+	var taskID string
+	dbfx.QueryRow(t, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, context)
+		VALUES ($1, $2, 'queued', 2, $3)
+		RETURNING id
+	`, agentID, runtimeID, quickContext).Scan(&taskID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+
+	task := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
+
+	// raw ids unchanged: binding behavior does not regress
+	if len(task.QuickCreateAttachmentIDs) != 2 {
+		t.Fatalf("quick-create attachment ids = %#v, want 2 entries (binding ids must not regress)", task.QuickCreateAttachmentIDs)
+	}
+	// only the row that exists in the workspace resolves to a meta
+	if len(task.QuickCreateAttachments) != 1 {
+		t.Fatalf("quick-create attachment metas = %#v, want 1 entry (dangling id omitted)", task.QuickCreateAttachments)
+	}
+	meta := task.QuickCreateAttachments[0]
+	if meta.ID != attachmentID {
+		t.Fatalf("meta id = %q, want %q", meta.ID, attachmentID)
+	}
+	if meta.Filename != "screenshot.png" || meta.ContentType != "image/png" {
+		t.Fatalf("meta = {%q, %q}, want {screenshot.png, image/png}", meta.Filename, meta.ContentType)
+	}
+	// durable markdown URL: same buildMarkdownURL contract as the attachment
+	// API — with no MULTICA_PUBLIC_URL configured it is the site-relative
+	// stable endpoint; either way it must carry the attachment id
+	if !strings.Contains(meta.MarkdownURL, attachmentID) || !strings.Contains(meta.MarkdownURL, "/api/attachments/") {
+		t.Fatalf("meta markdown_url = %q, want the stable /api/attachments/<id>/download form", meta.MarkdownURL)
 	}
 }

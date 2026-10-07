@@ -2017,6 +2017,56 @@ func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.A
 	}
 }
 
+// quickCreateAttachmentMetas loads the attachment rows behind a quick-create
+// context's attachment ids so the delegated create-run can inline pasted
+// images into the new issue's description (RUYI-478). MarkdownURL follows
+// the same buildMarkdownURL contract as the attachment API responses —
+// durable, no TTL — because quick-create runs cannot call
+// `multica attachment download`. Strictly additive: an id that no longer
+// resolves, a workspace parse failure, or a query error degrades to omitting
+// the meta (binding via the raw ids is unaffected), never to a failed claim.
+func (h *Handler) quickCreateAttachmentMetas(ctx context.Context, ids []string, workspaceID string) []QuickCreateAttachmentMeta {
+	if len(ids) == 0 {
+		return nil
+	}
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		slog.Warn("quick-create attachment metas: workspace id parse failed; skipping", "error", err)
+		return nil
+	}
+	attUUIDs := make([]pgtype.UUID, 0, len(ids))
+	for _, id := range ids {
+		u, err := util.ParseUUID(id)
+		if err != nil {
+			slog.Warn("quick-create attachment metas: skipping unparseable id", "error", err)
+			continue
+		}
+		attUUIDs = append(attUUIDs, u)
+	}
+	if len(attUUIDs) == 0 {
+		return nil
+	}
+	rows, err := h.Queries.ListAttachmentsByIDs(ctx, db.ListAttachmentsByIDsParams{
+		AttachmentIds: attUUIDs,
+		WorkspaceID:   wsUUID,
+	})
+	if err != nil {
+		slog.Warn("quick-create attachment metas: load failed; continuing without meta", "error", err)
+		return nil
+	}
+	metas := make([]QuickCreateAttachmentMeta, 0, len(rows))
+	for _, a := range rows {
+		id := uuidToString(a.ID)
+		metas = append(metas, QuickCreateAttachmentMeta{
+			ID:          id,
+			Filename:    a.Filename,
+			ContentType: a.ContentType,
+			MarkdownURL: h.buildMarkdownURL(a, id),
+		})
+	}
+	return metas
+}
+
 // quizPromptFromContext reports whether the task's context JSONB is a
 // prompt-quiz payload (kind=="quiz", RUYI-286) and returns the item under
 // test. Every other context — quick_create or an unknown shape — returns
@@ -3107,6 +3157,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.QuickCreatePriority = qc.Priority
 			resp.QuickCreateDueDate = qc.DueDate
 			resp.QuickCreateAttachmentIDs = append([]string(nil), qc.AttachmentIDs...)
+			// RUYI-478: surface the full attachment rows (filename + durable
+			// markdown URL) so the delegated create-run can inline pasted
+			// images into the description instead of leaving them invisible
+			// outside the attachment area. Degradation only: a lookup
+			// failure keeps the ids (binding never regresses), the meta is
+			// simply absent.
+			resp.QuickCreateAttachments = h.quickCreateAttachmentMetas(r.Context(), qc.AttachmentIDs, qc.WorkspaceID)
 			resp.ThreadName = qc.Prompt
 			resp.WorkspaceID = qc.WorkspaceID
 			if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, true); failure != nil {

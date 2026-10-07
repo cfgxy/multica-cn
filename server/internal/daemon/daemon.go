@@ -7390,6 +7390,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		QuickCreateAttachments:           convertQuickCreateAttachmentsForEnv(task.QuickCreateAttachments),
 		HandoffNote:                      task.HandoffNote,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
@@ -9424,6 +9425,22 @@ func convertReposForEnv(repos []RepoData) []execenv.RepoContextForEnv {
 	result := make([]execenv.RepoContextForEnv, len(repos))
 	for i, r := range repos {
 		result[i] = execenv.RepoContextForEnv{URL: r.URL, Description: r.Description, Ref: r.Ref}
+	}
+	return result
+}
+
+func convertQuickCreateAttachmentsForEnv(atts []QuickCreateAttachmentMeta) []execenv.QuickCreateAttachmentForEnv {
+	if len(atts) == 0 {
+		return nil
+	}
+	result := make([]execenv.QuickCreateAttachmentForEnv, len(atts))
+	for i, a := range atts {
+		result[i] = execenv.QuickCreateAttachmentForEnv{
+			ID:          a.ID,
+			Filename:    a.Filename,
+			ContentType: a.ContentType,
+			MarkdownURL: a.MarkdownURL,
+		}
 	}
 	return result
 }
