@@ -467,8 +467,10 @@ describe("decision batch bar placement (RUYI-534)", () => {
     expect(
       screen.getAllByTestId(/timeline-row-/).map((node) => node.props.testID),
     ).toEqual([
-      "timeline-row-root-a",
+      // created_at interleave: d-1 (08:00) precedes root-a (09:00); the bar
+      // is the last row regardless.
       "timeline-row-d-1",
+      "timeline-row-root-a",
       "timeline-row-root-b",
       "timeline-row-d-2",
       "timeline-row-decision-batch-bar",
