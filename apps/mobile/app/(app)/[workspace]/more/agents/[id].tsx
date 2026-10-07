@@ -229,7 +229,7 @@ export default function AgentDetailPage() {
       return;
     }
     requestAgent(agent.id);
-    router.push(`/${wsSlug}/chat`);
+    router.push(`/${wsSlug}/chat/new`);
   }, [agent, wsSlug, canInvoke, runtime, requestAgent, t]);
 
   const handleAssign = useCallback(() => {

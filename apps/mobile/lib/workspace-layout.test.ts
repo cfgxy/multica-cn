@@ -44,7 +44,6 @@ vi.mock("@/lib/use-workspace-presence-prefetch", () => ({ useWorkspacePresencePr
 vi.mock("@/components/ui/modal-close-button", () => ({ ModalCloseButton: () => null }));
 vi.mock("@/data/stores/new-issue-draft-store", () => ({ useNewIssueDraftResetOnWorkspaceChange: vi.fn() }));
 vi.mock("@/data/stores/new-project-draft-store", () => ({ useNewProjectDraftResetOnWorkspaceChange: vi.fn() }));
-vi.mock("@/data/stores/chat-session-picker-store", () => ({ useChatSessionPickerResetOnWorkspaceChange: vi.fn() }));
 vi.mock("@/data/stores/chat-agent-request-store", () => ({ useChatAgentRequestResetOnWorkspaceChange: vi.fn() }));
 
 import WorkspaceLayout from "../app/(app)/[workspace]/_layout";
