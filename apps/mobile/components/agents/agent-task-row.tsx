@@ -40,7 +40,13 @@ export function AgentTaskRow({ task, issueTitle, wsSlug }: Props) {
   const timestamp = task.started_at ?? task.created_at;
 
   const title = hasIssue
-    ? (issueTitle ?? t("mobile.tasks.issue_unavailable", "Issue unavailable"))
+    ? (issueTitle ??
+      // Unresolved title (issue beyond a list window, or still fetching) —
+      // mirror web's activity tab: short-id fallback, never a "task
+      // invisible" placeholder (RUYI-538 ④).
+      t("agents:tab_body.activity.issue_short_fallback", "Task {{prefix}}...", {
+        prefix: task.issue_id.slice(0, 8),
+      }))
     : sourceLabel(task, t);
 
   const body = (
@@ -79,8 +85,10 @@ export function AgentTaskRow({ task, issueTitle, wsSlug }: Props) {
 }
 
 /** Same wording as RunRow's run-summary fallbacks so a task reads the same
- *  in both surfaces (shared issues-ns locale keys, no new copies). */
-function sourceLabel(task: AgentTask, t: ReturnType<typeof useT>["t"]) {
+ *  in both surfaces (shared issues-ns locale keys, no new copies). Exported
+ *  for the run-history row (RUYI-538 ②), which shares the issue-less
+ *  fallback vocabulary. */
+export function sourceLabel(task: AgentTask, t: ReturnType<typeof useT>["t"]) {
   if (task.chat_session_id) {
     return t("mobile.run_summary.chat", "Chat task");
   }

@@ -1107,7 +1107,6 @@
       "submit_a11y": "태스크 만들기"
     },
     "tasks": {
-      "issue_unavailable": "작업을 볼 수 없음",
       "page": {
         "title": "작업"
       },
