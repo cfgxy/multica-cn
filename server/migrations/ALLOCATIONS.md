@@ -27,6 +27,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 924 | 924_agent_resource_weight | RUYI-397 | merged to main via PR #209 | applied |
 | 925 | 925_oauth_management | RUYI-420 | merged to main via PR #223 | applied |
 | 926 | 926_activity_audit | RUYI-355 | merged to main via PR #214 | applied |
+| 927 | 927_issue_decision_workspace_inbox | RUYI-494 | agent/agent-f70e39b85abd/ruyi-494 | reserved |
 | 928 | 928_agent_execution_profile_revision | RUYI-433 | merged to main via PR #231 | applied |
 | 929 | 929_quick_replies | RUYI-435 | agent/agent-f70e39b85abd/ruyi-435 (PR #237) | reserved |
 | 930 | 930_agent_context_dual_slot | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-agent-context | reserved |
