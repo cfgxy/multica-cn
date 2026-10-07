@@ -162,6 +162,11 @@ vi.mock("../../editor", async () => ({
       // Mocks track ids only — no document to draw into.
       insertUploadPlaceholder: () => true,
       settleUploadPlaceholder: () => false,
+      // Required handle member since RUYI-478. Must exist even with no
+      // document: deliverFinishedUpload calls it through a plain (non-optional)
+      // call after the nullish short-circuit, so a missing member throws and
+      // aborts the whole delivery before insertMarkdownAtEnd ever runs.
+      hasImageWithSrc: () => false,
       insertMarkdownAtEnd: (md: string) => {
         insertMarkdownSpy(md);
         valueRef.current = `${valueRef.current}\n\n${md}`.trim();
