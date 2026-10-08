@@ -39,6 +39,10 @@ jest.mock("react-native-keyboard-controller", () => {
   };
 });
 
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
+
 jest.mock("@/components/ui/text", () => {
   const { Text } = jest.requireActual<typeof import("react-native")>(
     "react-native",
@@ -253,8 +257,10 @@ describe("NewVoiceRuntimeScreen", () => {
       value: "qaFAKE-key",
     });
     await waitFor(() => {
+      // No server error in this path — the optional detail line stays unset.
       expect(alertSpy).toHaveBeenCalledWith(
         "Registered, but the connectivity check failed — check the API key",
+        undefined,
       );
     });
     // Success still lands on the new instance's settings page — the
@@ -266,10 +272,15 @@ describe("NewVoiceRuntimeScreen", () => {
     alertSpy.mockRestore();
   });
 
-  it("keeps the instance when the credential PUT fails (key_save_failed)", async () => {
+  it("keeps the instance when the credential PUT fails and surfaces the server message (RUYI-540)", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     mockCreateRuntimeAsync.mockResolvedValue(createdRuntime);
-    mockPutCredentialAsync.mockRejectedValue(new Error("503"));
+    // The fail-closed 503 a server without MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY
+    // returns — the alert must carry the server's readable message, not just
+    // the generic localized copy (the reported bug showed a bare "503").
+    const serverMessage =
+      "runtime credential encryption is not configured on this server (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY missing)";
+    mockPutCredentialAsync.mockRejectedValue(new Error(serverMessage));
     await render(<NewVoiceRuntimeScreen />);
 
     await fireEvent.changeText(
@@ -285,6 +296,7 @@ describe("NewVoiceRuntimeScreen", () => {
     await waitFor(() => {
       expect(alertSpy).toHaveBeenCalledWith(
         "Registered, but saving the API key failed — add it from the instance settings",
+        serverMessage,
       );
     });
     // A failed key save never deletes the instance — navigation proceeds.

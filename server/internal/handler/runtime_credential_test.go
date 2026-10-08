@@ -248,6 +248,11 @@ func TestPutRuntimeCredential_FailsClosedWithoutBox(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
 	}
+	// RUYI-540: the fail-closed body must name the missing variable so the
+	// client alert (and the operator reading it) can act on it directly.
+	if body := w.Body.String(); !strings.Contains(body, "MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY") {
+		t.Errorf("503 body must name MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY, got: %s", body)
+	}
 
 	var stored int
 	if err := testPool.QueryRow(ctx,

@@ -58,6 +58,19 @@ export function parseAdvancedParams(text: string): AdvancedParamsResult {
 }
 
 /**
+ * Detail line for a failed credential save (RUYI-540): the server's readable
+ * error message when the error carries one (e.g. the fail-closed 503 text
+ * naming MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY), so alerts never degrade to
+ * a bare status code. Null when nothing readable — callers keep the
+ * localized generic copy as the alert title.
+ */
+export function credentialSaveFailureDetail(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+  const message = err.message.trim();
+  return message === "" ? null : message;
+}
+
+/**
  * Whether the runtime is a voice-protocol instance (§4.2): the server derives
  * `capabilities` from the protocol-family baseline; a missing block (older
  * backend / CLI instance) means "not voice".
