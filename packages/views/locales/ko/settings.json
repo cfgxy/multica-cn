@@ -1079,6 +1079,8 @@
     "gitlab_choose": "GitLab에서 선택",
     "gitlab_picker_title": "GitLab 저장소 선택",
     "gitlab_connection": "GitLab 연결",
+    "gitlab_no_connections": "아직 연결된 GitLab 인스턴스가 없습니다.",
+    "gitlab_connect_new_instance": "새 인스턴스 연결",
     "gitlab_load_failed": "GitLab 저장소를 불러오지 못했습니다. 연결을 확인한 후 다시 시도해 주세요.",
     "gitlab_authorization_expired": "GitLab 인증이 만료되었습니다. 연동 설정에서 다시 연결해 주세요.",
     "gitlab_rate_limited": "GitLab 요청이 제한되었습니다. 나중에 다시 시도해 주세요.",
