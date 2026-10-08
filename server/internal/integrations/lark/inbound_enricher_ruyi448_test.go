@@ -13,7 +13,7 @@ import (
 // ② 被引用文本消息只是裸飞书文件分享链接时，显式降级注记（服务端凭
 //    现有凭据无法取回链接内容，注记阻止 agent 徒劳抓取外链）；
 // ③ 近期上下文与引用父消息两次 fetch 并行执行——串行时第三次串行
-//    RTT（BatchGetUsers 名字解析）最容易耗尽 2s EnrichTimeout，导致
+//    RTT（发言人名字解析）最容易耗尽 2s EnrichTimeout，导致
 //    全体发言人回退 "User N" 占位（RUYI-448 截图故障形态）。
 
 // TestEnrichQuotedFileBlockShowsFilename：引用 file 父消息，引用块正文

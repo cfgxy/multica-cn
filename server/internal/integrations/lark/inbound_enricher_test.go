@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -26,11 +27,14 @@ type enricherFakeClient struct {
 	listCalls  []ChatID
 	listParams []ListMessagesParams
 
-	// BatchGetUsers canned open_id -> name map + recorder. Empty by
-	// default, so speakers fall back to positional "User N".
-	userNames map[string]string
-	usersErr  error
-	userCalls [][]string
+	// GetUserName canned open_id -> name map + recorder. Empty by
+	// default, so speakers fall back to positional "User N". Calls run
+	// concurrently inside resolveNames, so the recorder takes a lock.
+	userNames   map[string]string
+	usersErr    error
+	userErrByID map[string]error
+	userMu      sync.Mutex
+	userCalls   []string
 
 	// SendInteractiveCard recorder (permission-hint tests) + optional
 	// per-attempt failure sequence.
@@ -85,18 +89,24 @@ func (f *enricherFakeClient) ListChatMessages(ctx context.Context, creds Install
 	}
 	return f.byChat[p.ChatID], nil
 }
-func (f *enricherFakeClient) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
-	f.userCalls = append(f.userCalls, openIDs)
+func (f *enricherFakeClient) GetUserName(ctx context.Context, creds InstallationCredentials, openID string) (string, error) {
+	f.userMu.Lock()
+	f.userCalls = append(f.userCalls, openID)
+	f.userMu.Unlock()
+	if e, ok := f.userErrByID[openID]; ok {
+		return "", e
+	}
 	if f.usersErr != nil {
-		return nil, f.usersErr
+		return "", f.usersErr
 	}
-	out := map[string]string{}
-	for _, id := range openIDs {
-		if name := f.userNames[id]; name != "" {
-			out[id] = name
-		}
-	}
-	return out, nil
+	return f.userNames[openID], nil
+}
+
+// userNameCallCount snapshots how many GetUserName calls the fake saw.
+func (f *enricherFakeClient) userNameCallCount() int {
+	f.userMu.Lock()
+	defer f.userMu.Unlock()
+	return len(f.userCalls)
 }
 func (f *enricherFakeClient) DownloadMessageResource(context.Context, InstallationCredentials, DownloadResourceParams) (DownloadedResource, error) {
 	return DownloadedResource{}, nil
@@ -540,5 +550,84 @@ func TestEnrichResolvesMentionsInChildren(t *testing.T) {
 	out := enrich(t, fake, InboundMessage{MessageType: "merge_forward", MessageID: "om_f"}, InboundEnricherConfig{})
 	if !strings.Contains(out.Body, "@Alice 看一下") {
 		t.Errorf("child mention not resolved: %q", out.Body)
+	}
+}
+
+// groupWindowTrigger builds a group @-mention with a recent-context
+// window served from fake.byChat — the shared fixture for the
+// name-resolution cache / degradation tests below.
+func groupWindowTrigger() InboundMessage {
+	return InboundMessage{
+		MessageType:    "text",
+		MessageID:      "om_t",
+		ChatID:         "oc_g",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: true,
+		SenderOpenID:   "ou_alice",
+		CreateTime:     "3000",
+		Body:           "总结一下",
+	}
+}
+
+// TestResolveNamesCachesAcrossEnriches pins the CC Connect-parity name
+// cache: the first enrich performs one single-user lookup per cold
+// speaker, and the second enrich of the same installation reuses the
+// cached names without any new call.
+func TestResolveNamesCachesAcrossEnriches(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	fake.userNames = map[string]string{"ou_alice": "Alice", "ou_bob": "Bob"}
+	fake.byChat["oc_g"] = []LarkMessage{
+		textMsg("m1", "ou_alice", "我改完了登录页", "1000"),
+		textMsg("m2", "ou_bob", "明天发布", "2000"),
+	}
+	e := NewInboundEnricher(fake, InboundEnricherConfig{RecentContextSize: 5})
+	creds := InstallationCredentials{AppID: "a", AppSecret: "s"}
+
+	first := e.Enrich(context.Background(), groupWindowTrigger(), creds)
+	if !strings.Contains(first.Body, "[Alice]:") || !strings.Contains(first.Body, "[Bob]:") {
+		t.Fatalf("first enrich must resolve both speakers, body: %q", first.Body)
+	}
+	if got := fake.userNameCallCount(); got != 2 {
+		t.Fatalf("expected one cold lookup per unique speaker, got %d", got)
+	}
+
+	second := e.Enrich(context.Background(), groupWindowTrigger(), creds)
+	if !strings.Contains(second.Body, "[Alice]:") || !strings.Contains(second.Body, "[Bob]:") {
+		t.Fatalf("second enrich must resolve both speakers, body: %q", second.Body)
+	}
+	if got := fake.userNameCallCount(); got != 2 {
+		t.Errorf("cache must serve the second enrich without new lookups, got %d calls", got)
+	}
+}
+
+// TestResolveNamesPartialFailureDegradesToOneSpeaker: a non-permission
+// failure on one user (invisible / deactivated) degrades only that
+// speaker to a positional label, keeps the others' real names, and must
+// NOT fire the contact_lookup authorization hint.
+func TestResolveNamesPartialFailureDegradesToOneSpeaker(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	fake.userNames = map[string]string{"ou_alice": "Alice"}
+	fake.userErrByID = map[string]error{"ou_bob": errors.New("ou_bob: not in contact visible range")}
+	fake.byChat["oc_g"] = []LarkMessage{
+		textMsg("m1", "ou_alice", "我改完了登录页", "1000"),
+		textMsg("m2", "ou_bob", "明天发布", "2000"),
+	}
+	e := NewInboundEnricher(fake, InboundEnricherConfig{
+		RecentContextSize: 5,
+		Hints:             NewPermissionHintSender(fake, nil),
+	})
+
+	out := e.Enrich(context.Background(), groupWindowTrigger(), InstallationCredentials{AppID: "a", AppSecret: "s"})
+
+	if !strings.Contains(out.Body, "[Alice]:") {
+		t.Errorf("resolved speaker must keep the real name, body: %q", out.Body)
+	}
+	if !strings.Contains(out.Body, "User ") {
+		t.Errorf("failed speaker must degrade to a positional label, body: %q", out.Body)
+	}
+	if len(fake.cardSends) != 0 {
+		t.Errorf("non-permission failure must not send hint cards, got %d", len(fake.cardSends))
 	}
 }
