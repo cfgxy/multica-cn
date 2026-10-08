@@ -274,6 +274,13 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024;
  *  reasonable Multica payload size on cellular. */
 const FETCH_TIMEOUT_MS = 30_000;
 
+/** RUYI-568: login-chain deadline. Measured single-request overhead on the
+ *  slow (frpc relay) entry is 0.85–2.1s (RUYI-565 scope 2), so 10s bounds
+ *  the user's blind wait to ~5× the worst observed case instead of 30s.
+ *  Applies only to sendCode / verifyCode / getMe; every other request keeps
+ *  the 30s FETCH_TIMEOUT_MS ceiling. */
+const LOGIN_TIMEOUT_MS = 10_000;
+
 export class ApiError extends Error {
   readonly status: number;
   readonly body?: unknown;
@@ -314,7 +321,7 @@ class ApiClient {
 
   private async fetchRaw(
     path: string,
-    init: RequestInit & { signal?: AbortSignal } = {},
+    init: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<Response> {
     const rid = createRequestId();
     const start = Date.now();
@@ -343,13 +350,17 @@ class ApiClient {
     // Hermes does NOT support AbortSignal.timeout() or AbortSignal.any() —
     // see facebook/react-native#42042 and livekit#4014. So we manually
     // compose a single controller that aborts on:
-    //   (a) caller-side signal (TQ cancelling a stale/inactive query, etc),
-    //   (b) 30s timeout (defends against iOS suspending the network task
-    //       silently during background — fetch() then never resolves;
-    //       facebook/react-native#35384). Without this, a refetch
+    //   (a) caller-side signal (TQ cancelling a stale/inactive query, the
+    //       login screens cancelling an abandoned send-code, etc),
+    //   (b) per-request deadline — FETCH_TIMEOUT_MS by default, tightened
+    //       to LOGIN_TIMEOUT_MS on the login chain (RUYI-568). This defends
+    //       against iOS suspending the network task silently during
+    //       background — fetch() then never resolves;
+    //       facebook/react-native#35384. Without this, a refetch
     //       triggered by WS reconnect can leave the FlatList pull-to-refresh
     //       spinner stuck on the screen indefinitely.
     const controller = new AbortController();
+    const timeoutMs = init.timeoutMs ?? FETCH_TIMEOUT_MS;
     // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
     // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
     // 不是内部日志串。
@@ -358,19 +369,19 @@ class ApiClient {
         i18n.t(
           "common:mobile.common.request_timeout",
           "Request timed out after {{seconds}}s",
-          { seconds: Math.round(FETCH_TIMEOUT_MS / 1000) },
+          { seconds: Math.round(timeoutMs / 1000) },
         ),
       );
     const timeoutId = setTimeout(() => {
       controller.abort(timeoutError());
-    }, FETCH_TIMEOUT_MS);
+    }, timeoutMs);
     // RUYI-567: the timer above is blind while the app is backgrounded
     // (paused JS timers), so a request that outlives its deadline in the
     // background must be re-judged on foreground entry — otherwise the
     // caller keeps waiting past the hard ceiling with no error. The
     // listener is scoped to this request and removed on settle.
     const onForeground = (state: string) => {
-      if (state === "active" && Date.now() - start >= FETCH_TIMEOUT_MS) {
+      if (state === "active" && Date.now() - start >= timeoutMs) {
         controller.abort(timeoutError());
       }
     };
@@ -408,7 +419,7 @@ class ApiClient {
           duration: `${duration}ms`,
         });
         throw new ApiError(
-          `Request timed out after ${FETCH_TIMEOUT_MS}ms`,
+          `Request timed out after ${timeoutMs}ms`,
           0,
           undefined,
         );
@@ -459,7 +470,7 @@ class ApiClient {
 
   private async fetch<T>(
     path: string,
-    init: RequestInit & { signal?: AbortSignal } = {},
+    init: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<T> {
     const response = await this.fetchRaw(path, init);
     if (response.status === 204) return undefined as T;
@@ -485,9 +496,12 @@ class ApiClient {
     path: string,
     schema: ZodType,
     fallback: T,
-    opts?: { signal?: AbortSignal; endpoint?: string },
+    opts?: { signal?: AbortSignal; endpoint?: string; timeoutMs?: number },
   ): Promise<T> {
-    const raw = await this.fetch<unknown>(path, { signal: opts?.signal });
+    const raw = await this.fetch<unknown>(path, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return parseWithFallback(raw, schema, fallback, {
       endpoint: opts?.endpoint ?? path,
     });
@@ -502,7 +516,7 @@ class ApiClient {
     schema: ZodType,
     fallback: T,
     init: RequestInit,
-    opts?: { signal?: AbortSignal; endpoint?: string },
+    opts?: { signal?: AbortSignal; endpoint?: string; timeoutMs?: number },
   ): Promise<T> {
     // `opts.signal` wins if both are passed, but absent opts.signal does
     // NOT clear init.signal — important because forgetting `?? init.signal`
@@ -511,6 +525,7 @@ class ApiClient {
     const raw = await this.fetch<unknown>(path, {
       ...init,
       signal: opts?.signal ?? init.signal ?? undefined,
+      timeoutMs: opts?.timeoutMs,
     });
     return parseWithFallback(raw, schema, fallback, {
       endpoint: opts?.endpoint ?? `${init.method ?? "GET"} ${path}`,
@@ -518,17 +533,27 @@ class ApiClient {
   }
 
   // --- Auth ---
-  async sendCode(email: string): Promise<void> {
+  // 登录三链路（RUYI-568）：10s deadline + 可选调用方取消通道。超时收紧
+  // 只作用于这三处；通用 API 保持 FETCH_TIMEOUT_MS 天花板。
+  async sendCode(email: string, opts?: { signal?: AbortSignal }): Promise<void> {
     await this.fetch<void>("/auth/send-code", {
       method: "POST",
       body: JSON.stringify({ email }),
+      signal: opts?.signal,
+      timeoutMs: LOGIN_TIMEOUT_MS,
     });
   }
 
-  async verifyCode(email: string, code: string): Promise<LoginResponse> {
+  async verifyCode(
+    email: string,
+    code: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<LoginResponse> {
     return this.fetch<LoginResponse>("/auth/verify-code", {
       method: "POST",
       body: JSON.stringify({ email, code }),
+      signal: opts?.signal,
+      timeoutMs: LOGIN_TIMEOUT_MS,
     });
   }
 
@@ -537,7 +562,7 @@ class ApiClient {
       "/api/me",
       UserSchema,
       EMPTY_USER,
-      { ...opts, endpoint: "getMe" },
+      { ...opts, endpoint: "getMe", timeoutMs: LOGIN_TIMEOUT_MS },
     );
   }
 

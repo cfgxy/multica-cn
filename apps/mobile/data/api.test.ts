@@ -253,7 +253,9 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
 
   it("does not abort when returning to foreground before the deadline", async () => {
     const pending = api.sendCode("user@test.local");
-    vi.setSystemTime(Date.now() + 10_000);
+    // RUYI-568：send-code 的 deadline 已收紧到 10s，回前台重判沿用同一
+    // per-request 值——这里停在 deadline 之前（5s）以验证"未超期不中止"。
+    vi.setSystemTime(Date.now() + 5_000);
     dispatchAppState("active");
 
     resolveWithOk();
@@ -266,8 +268,10 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
     expect(() => dispatchAppState("active")).not.toThrow();
   });
 
-  it("foreground timer still aborts at the 30s deadline (existing semantics)", async () => {
-    const pending = api.sendCode("user@test.local");
+  it("generic endpoints still abort at the 30s ceiling (existing semantics)", async () => {
+    // RUYI-568：登录三链路收紧到 10s 后，通用 API 必须维持 30s 天花板——
+    // 这里用 listAgents（非登录链路）锁住该语义，防止收紧被无意扩散。
+    const pending = api.listAgents();
     // 中止拒绝可能在断言挂接前 flush（fake timer 的 await 会冲微任务），
     // 先同步挂一个空 handler 防 unhandled rejection。
     const observed = pending.catch(() => {});
@@ -291,5 +295,116 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
     );
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(0);
+  });
+});
+
+describe("login chain 10s deadline (RUYI-568)", () => {
+  // 与 RUYI-567 块同一 whatwg-fetch 语义桩：signal abort → AbortError 拒绝，
+  // 否则永久挂起直到测试手动结算。本地独立一份，保持 567 块不动。
+  let resolveFetch: ((response: unknown) => void) | null = null;
+  const pendingFetch = vi.fn((_url: string, init: RequestInit = {}) => {
+    const signal = init.signal as AbortSignal;
+    const promise = new Promise<unknown>((resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("Aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+      resolveFetch = resolve;
+    });
+    promise.catch(() => {});
+    return promise;
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", pendingFetch);
+    api.setOptions({ subscribeAppState });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    resolveFetch = null;
+    appStateListeners.clear();
+    api.setOptions({ subscribeAppState: undefined });
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function resolveWithOk() {
+    resolveFetch?.({ ok: true, status: 200, json: async () => ({}) });
+  }
+
+  it("sendCode aborts at the 10s login deadline with a per-call timeout message", async () => {
+    const pending = api.sendCode("user@test.local");
+    const observed = pending.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000);
+    const error = await pending.then(
+      () => null,
+      (err: unknown) => err,
+    );
+    void observed;
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(0);
+    expect((error as ApiError).message).toContain("10000ms");
+    expect(appStateListeners.size).toBe(0);
+  });
+
+  it("verifyCode aborts at the 10s login deadline", async () => {
+    const pending = api.verifyCode("user@test.local", "123456");
+    const observed = pending.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    void observed;
+    expect(appStateListeners.size).toBe(0);
+  });
+
+  it("getMe aborts at the 10s login deadline", async () => {
+    const pending = api.getMe();
+    const observed = pending.catch(() => {});
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    void observed;
+    expect(appStateListeners.size).toBe(0);
+  });
+
+  it("generic endpoints are not tightened — listAgents survives past 10s", async () => {
+    const pending = api.listAgents();
+    // 10s 处通用链路必须仍然在途（未收紧扩散到非登录请求）。
+    await vi.advanceTimersByTimeAsync(10_000);
+    resolveWithOk();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(pending).resolves.toEqual([]);
+  });
+
+  it("caller signal cancels sendCode and cleans up the AppState listener", async () => {
+    const controller = new AbortController();
+    const pending = api.sendCode("user@test.local", {
+      signal: controller.signal,
+    });
+    expect(appStateListeners.size).toBe(1);
+    controller.abort();
+    // 调用方取消透传原始 AbortError（区别于超时的 ApiError），登录屏以此
+    // 区分「用户改邮箱主动取消」与「超时失败」。
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(appStateListeners.size).toBe(0);
+  });
+
+  it("caller signal cancels verifyCode", async () => {
+    const controller = new AbortController();
+    const pending = api.verifyCode("user@test.local", "123456", {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(appStateListeners.size).toBe(0);
   });
 });
