@@ -189,6 +189,48 @@ describe("CallbackPage", () => {
     });
   });
 
+  // RUYI-526: a next= that targets the backend authorize endpoint resumes an
+  // OAuth redirect chain. The chain must be followed by the browser itself —
+  // a client-side router transition would fetch the URL as an RSC payload,
+  // its fetch would consume the 302, and the user would be stranded on the
+  // callback screen. Backend auth targets therefore full-page navigate.
+  it("full-page navigates when next= is the OAuth authorize endpoint", async () => {
+    mockLoginWithGoogle.mockResolvedValue(
+      makeUser({ onboarded_at: "2026-01-01T00:00:00Z" }),
+    );
+    mockListWorkspaces.mockResolvedValue([]);
+    const authorizeUrl =
+      "/auth/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.example%2Fconnector%2Foauth%2Ftest123&scope=mcp&code_challenge=WpErBVM92yLTRPFWrJz9LYfTmo-_ZdmSwKVsklZr6oQ&code_challenge_method=S256&state=chatgpt_scheme__oauth_s_synthetic";
+    mockSearchParams.set("state", `next:${authorizeUrl}`);
+
+    const hrefSetter = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...originalLocation,
+        set href(value: string) {
+          hrefSetter(value);
+        },
+      },
+    });
+
+    try {
+      render(<CallbackPage />);
+
+      await waitFor(() => {
+        expect(hrefSetter).toHaveBeenCalledWith(authorizeUrl);
+      });
+      expect(mockPush).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
+
   it("falls through to /onboarding when listMyInvitations errors", async () => {
     mockListMyInvitations.mockRejectedValue(new Error("network"));
     render(<CallbackPage />);
