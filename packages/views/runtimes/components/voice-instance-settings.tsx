@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { AgentRuntime } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { runtimeDisplayName } from "@multica/core/runtimes";
 import {
   usePutRuntimeCredential,
   useDeleteRuntimeCredential,
@@ -111,7 +112,7 @@ export function VoiceInstanceSettingsCard({
 
   const settings = readVoiceInstanceSettings(runtime.metadata);
 
-  const [name, setName] = useState(runtime.custom_name ?? "");
+  const [name, setName] = useState(() => runtimeDisplayName(runtime));
   const [model, setModel] = useState(settings.model);
   const [advancedText, setAdvancedText] = useState(() =>
     settings.advanced ? JSON.stringify(settings.advanced, null, 2) : "",
@@ -128,8 +129,11 @@ export function VoiceInstanceSettingsCard({
     return advanced ? JSON.stringify(advanced, null, 2) : "";
   }, [runtime.metadata]);
   useEffect(() => {
-    setName(runtime.custom_name ?? "");
-  }, [runtime.id, runtime.custom_name]);
+    // RUYI-564: seed with the display name (custom_name first, else name —
+    // runtimeDisplayName, mobile RUYI-540 parity). Create-only instances
+    // carry no custom_name; seeding only from it left the field blank.
+    setName(runtimeDisplayName(runtime));
+  }, [runtime.id, runtime.custom_name, runtime.name]);
   useEffect(() => {
     setModel(settings.model);
   }, [runtime.id, settings.model]);
@@ -288,7 +292,7 @@ export function VoiceInstanceSettingsCard({
               </Button>
             </div>
           ) : (
-            <ReadonlyValue value={runtime.custom_name || runtime.name} />
+            <ReadonlyValue value={runtimeDisplayName(runtime)} />
           )}
         </div>
 
