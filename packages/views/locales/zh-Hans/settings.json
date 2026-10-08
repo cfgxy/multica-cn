@@ -1054,6 +1054,7 @@
     "permissions_recheck": "重新检测",
     "permissions_checking": "检测中…",
     "permissions_recheck_failed": "权限检测失败",
+    "permissions_read_failed": "权限检测结果读取失败，请点击「重新检测」重试。",
     "permissions_all_granted": "全部权限已开通。",
     "permissions_missing_title": "部分权限缺失，对应功能暂不可用",
     "permissions_missing_hint": "请在飞书开放平台为该应用补充以下权限；涉及审批的权限需企业管理员批准后才会生效，批准后回到此处重新检测即可恢复，无需重新创建机器人。",

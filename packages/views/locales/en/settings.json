@@ -1056,6 +1056,7 @@
     "permissions_recheck": "Check now",
     "permissions_checking": "Checking…",
     "permissions_recheck_failed": "Permission check failed",
+    "permissions_read_failed": "Couldn’t load the saved permission status. Run “Check now” to retry.",
     "permissions_all_granted": "All permissions are granted.",
     "permissions_missing_title": "Some permissions are missing — related features are unavailable",
     "permissions_missing_hint": "Grant the scopes below to this app on the Feishu/Lark Open Platform. Approval-required scopes only take effect after an enterprise admin approves; once approved, run \"Check now\" here to restore — no need to re-create the bot.",

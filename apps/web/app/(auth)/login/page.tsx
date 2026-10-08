@@ -26,6 +26,7 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { setLoggedInCookie } from "@/features/auth/auth-cookie";
+import { navigateToNextUrl } from "@/lib/auth-resume-navigation";
 import Link from "next/link";
 import { LoginPage, validateCliCallback } from "@multica/views/auth";
 import { useT } from "@multica/views/i18n";
@@ -121,7 +122,7 @@ function LoginPageContent() {
     // this effect only serves visitors who arrived already authenticated.
     if (settledLoggedOutRef.current) return;
     if (nextUrl) {
-      router.replace(nextUrl);
+      navigateToNextUrl(nextUrl, router, "replace");
       return;
     }
     // Fetch instead of reading the cache: on a fresh page load the cache is
@@ -142,7 +143,7 @@ function LoginPageContent() {
     const currentUser = useAuthStore.getState().user;
     const onboarded = currentUser?.onboarded_at != null;
     if (nextUrl) {
-      router.push(nextUrl);
+      navigateToNextUrl(nextUrl, router, "push");
       return;
     }
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
