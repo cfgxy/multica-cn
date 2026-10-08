@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -58,15 +59,22 @@ func TestGetLarkPermissionCatalog_ServesVerifiedCatalog(t *testing.T) {
 	if !byID["read_history"].probeable {
 		t.Error("read_history must be probeable")
 	}
-	// The AND-of-OR shape must survive serialization: read_history needs
-	// any base read scope AND im:message.group_msg.
+	// The AND-of-OR shape must survive serialization, group-exact:
+	// read_history needs any base read scope AND im:message.group_msg.
+	// im:message.history:readonly grants the conversation LIST but not
+	// the single-message GET, so it must NOT satisfy group 1 (RUYI-546).
 	want := [][]string{
-		{"im:message", "im:message:readonly", "im:message.history:readonly"},
+		{"im:message", "im:message:readonly"},
 		{"im:message.group_msg"},
 	}
 	got := byID["read_history"].scopes
-	if len(got) != len(want) || got[1][0] != "im:message.group_msg" {
+	if len(got) != len(want) {
 		t.Fatalf("read_history scopes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Fatalf("read_history group %d = %v, want %v", i, got[i], want[i])
+		}
 	}
 }
 
