@@ -5658,10 +5658,20 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		// classifier so the failure_reason column reflects the actual
 		// shape of the failure (provider 5xx, network, process crash,
 		// …) rather than the coarse legacy "agent_error" bucket.
+		// RUYI-579 W3: a delivery_guard refusal rides a machine-readable
+		// trailer naming its shape and self-heal outcome, so the server can
+		// put structured fields on the task:failed event instead of leaving
+		// the user one prose paragraph. The server strips the trailer before
+		// persisting; an unclassified refusal gets no trailer at all.
+		errorMessage := err.Error()
+		var refused *execenv.DeliveryGuardError
+		if errors.As(err, &refused) {
+			errorMessage = taskfailure.AppendGuardMeta(errorMessage, refused.Kind, refused.HealAttempted)
+		}
 		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
 			kind:           terminalTaskReportFail,
 			taskID:         task.ID,
-			errorMessage:   err.Error(),
+			errorMessage:   errorMessage,
 			branchName:     result.BranchName,
 			workDir:        result.WorkDir,
 			durableWorkDir: result.DurableWorkDir,

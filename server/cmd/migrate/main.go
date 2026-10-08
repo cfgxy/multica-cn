@@ -322,6 +322,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"918_issue_decisions":                                       {"idx_issue_decisions_issue"},
 	"919_issue_dependency_relationships":                        {"uq_issue_dependency_edge"},
 	"927_issue_decision_workspace_inbox":                        {"idx_issue_decisions_workspace_status"},
+	"934_agent_task_queue_failed_retry_reeval_index":            {"idx_agent_task_queue_failed_retry_reeval"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

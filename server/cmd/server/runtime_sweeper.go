@@ -175,6 +175,7 @@ func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handle
 		sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
 		sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 		sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
+		sweepFailedTaskRetryReevaluations(ctx, taskSvc)
 		sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 	})
 }
@@ -728,6 +729,27 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 	slog.Info("task sweeper: expired stale queued tasks", "count", len(failedTasks))
 	taskSvc.CaptureQueuedExpiredTasks(ctx, failedTasks)
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
+	return
+}
+
+// sweepFailedTaskRetryReevaluations rebuilds the retries that could not be
+// created at fail time because a successor held the pending slot
+// (RUYI-579 W3). The armed markers (a failed task's future fire_at) expire
+// after a short backoff; this stage re-runs the per-row retry decision —
+// which by then usually finds the successor terminal — and retires the
+// markers of rows that can never be retried, so nothing occupies the sweep
+// forever. Where the previous behaviour silently stranded the issue until a
+// human noticed (RUYI-564: 9.5 hours), the retry now appears on the next
+// tick after the successor settles.
+func sweepFailedTaskRetryReevaluations(ctx context.Context, taskSvc *service.TaskService) (stats runtimeSweepStageStats) {
+	startedAt := time.Now()
+	defer func() {
+		observeRuntimeSweepStage(taskServiceMetrics(taskSvc), obsmetrics.RuntimeSweepStageRetryReevaluation, startedAt, stats)
+	}()
+
+	examined, created := taskSvc.ReevaluateFailedTaskRetries(ctx)
+	stats.candidates = examined
+	stats.changed = created
 	return
 }
 

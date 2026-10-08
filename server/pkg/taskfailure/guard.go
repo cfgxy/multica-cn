@@ -100,6 +100,14 @@ func ParseGuardMeta(message string) (kind string, healAttempted bool, remainder 
 	return kind, healAttempted, remainder, true
 }
 
+// StripGuardMeta returns the message with the trailer removed — the text a
+// user should see and the text that gets persisted. A message without the
+// trailer comes back unchanged.
+func StripGuardMeta(message string) string {
+	_, _, remainder, _ := ParseGuardMeta(message)
+	return remainder
+}
+
 func isGuardKind(kind string) bool {
 	switch kind {
 	case GuardKindAncestorBreak, GuardKindBranchMismatch, GuardKindUnmergedEdits:
