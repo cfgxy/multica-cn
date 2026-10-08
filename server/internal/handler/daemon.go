@@ -26,6 +26,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -3311,6 +3312,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// path, no project hydration. Workspace resolution below is the
 			// same catch-all every other kind already passes.
 			resp.QuizPrompt = quizPrompt
+		} else if retroPrompt, ok := retrospective.PromptFromContext(task.Context); ok {
+			// Daily-retrospective agent run (RUYI-552 direction 3): the
+			// rendered window prompt is the whole assignment. Like quiz —
+			// no issue fields, no origin stamping, no project hydration;
+			// the run must not create issues or comments, which the prompt
+			// states as a hard boundary and the completion hook enforces.
+			resp.RetrospectivePrompt = retroPrompt
 		}
 	}
 
