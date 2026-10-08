@@ -32,6 +32,59 @@ export const DECISION_SECTION_ORDER = [
   "cancelled",
 ] as const satisfies readonly DecisionInboxSectionKey[];
 
+/**
+ * TAB dimension of the Decisions tab (RUYI-530) — mirrors the Tasks tab's
+ * "全部 + one pill per window" shape; each non-all pill maps 1:1 to a card
+ * status (待决策/已决策/已失效, same labels as the section headers).
+ */
+export const DECISION_TAB_ORDER = [
+  "all",
+  "open",
+  "answered",
+  "cancelled",
+] as const;
+
+export type DecisionTab = (typeof DECISION_TAB_ORDER)[number];
+
+/**
+ * Filter toggle dimensions (RUYI-530). Status belongs to the TAB itself
+ * (same division as Tasks: the tab owns the status window), so the sheet
+ * only carries the two card-owned dimensions:
+ *   - recommendedOnly → the 「有推荐」 badge flag
+ *   - agentCreatedOnly → the card was raised by an agent, not a member
+ */
+export interface DecisionViewFilter {
+  tab: DecisionTab;
+  recommendedOnly: boolean;
+  agentCreatedOnly: boolean;
+}
+
+/**
+ * Actor type for the row avatar (RUYI-530). The card's `created_by_type`
+ * is a free string server-side; anything but the known polymorphs resolves
+ * to `system` so ActorAvatar always renders a real glyph (initials/icon
+ * fallback) instead of a blank slot.
+ */
+export type DecisionActorType = "member" | "agent" | "system";
+
+export function resolveDecisionActorType(
+  rawType: string | null | undefined,
+): DecisionActorType {
+  if (rawType === "member" || rawType === "agent") return rawType;
+  return "system";
+}
+
+/**
+ * Graying predicate (RUYI-530): answered/cancelled rows render the inbox's
+ * read style; open rows keep full contrast (待决策不灰化 — negative-
+ * asserted in tests).
+ */
+export function isDecidedDecisionRow(
+  status: DecisionInboxSectionKey,
+): boolean {
+  return status !== "open";
+}
+
 /** Render-ready row: fixed two lines (identifier+title / question). */
 export interface DecisionInboxRow {
   id: string;
@@ -47,6 +100,9 @@ export interface DecisionInboxRow {
   recommended: boolean;
   status: DecisionInboxSectionKey;
   createdAt: string;
+  /** Card creator identity — the row avatar's data (RUYI-530). */
+  createdByType: string;
+  createdById: string;
 }
 
 export interface DecisionInboxSection {
@@ -68,7 +124,28 @@ export function toDecisionInboxRow(
     recommended: item.recommended_indices.length > 0,
     status: item.status,
     createdAt: item.created_at,
+    createdByType: item.created_by_type,
+    createdById: item.created_by_id,
   };
+}
+
+/**
+ * TAB + filter narrowing (RUYI-530). The TAB owns the status window (all →
+ * no status filter; otherwise exactly one card status); the two sheet
+ * toggles compose with it as AND. Server order passes through untouched —
+ * this only drops rows, never reorders.
+ */
+export function filterDecisionRows(
+  rows: DecisionInboxRow[],
+  view: DecisionViewFilter,
+): DecisionInboxRow[] {
+  return rows.filter(
+    (row) =>
+      (view.tab === "all" || row.status === view.tab) &&
+      (!view.recommendedOnly || row.recommended) &&
+      (!view.agentCreatedOnly ||
+        resolveDecisionActorType(row.createdByType) === "agent"),
+  );
 }
 
 export function groupDecisionInboxSections(
