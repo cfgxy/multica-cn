@@ -302,6 +302,14 @@ export interface ApiClientOptions {
    *  to clear the token + navigate to /login so a stale token doesn't keep
    *  every subsequent request looping on 401. */
   onUnauthorized?: () => void;
+  /** RUYI-567: Android RN pauses JS timers while the app is backgrounded
+   *  (Timing module on host pause), so the 30s timer below cannot fire
+   *  until — sometimes long after — the deadline. The platform layer
+   *  (data/api-app-state.ts, wired in app/_layout.tsx) subscribes the real
+   *  AppState and forwards foreground entries here; fetchRaw re-checks the
+   *  deadline on each entry and aborts a request that is still pending.
+   *  Optional: absent in node tests, where the timer path is covered. */
+  subscribeAppState?: (listener: (state: string) => void) => () => void;
 }
 
 class ApiClient {
@@ -354,20 +362,32 @@ class ApiClient {
     //       triggered by WS reconnect can leave the FlatList pull-to-refresh
     //       spinner stuck on the screen indefinitely.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
-      // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
-      // 不是内部日志串。
-      controller.abort(
-        new Error(
-          i18n.t(
-            "common:mobile.common.request_timeout",
-            "Request timed out after {{seconds}}s",
-            { seconds: Math.round(FETCH_TIMEOUT_MS / 1000) },
-          ),
+    // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
+    // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
+    // 不是内部日志串。
+    const timeoutError = () =>
+      new Error(
+        i18n.t(
+          "common:mobile.common.request_timeout",
+          "Request timed out after {{seconds}}s",
+          { seconds: Math.round(FETCH_TIMEOUT_MS / 1000) },
         ),
       );
+    const timeoutId = setTimeout(() => {
+      controller.abort(timeoutError());
     }, FETCH_TIMEOUT_MS);
+    // RUYI-567: the timer above is blind while the app is backgrounded
+    // (paused JS timers), so a request that outlives its deadline in the
+    // background must be re-judged on foreground entry — otherwise the
+    // caller keeps waiting past the hard ceiling with no error. The
+    // listener is scoped to this request and removed on settle.
+    const onForeground = (state: string) => {
+      if (state === "active" && Date.now() - start >= FETCH_TIMEOUT_MS) {
+        controller.abort(timeoutError());
+      }
+    };
+    const unsubscribeAppState =
+      this.options.subscribeAppState?.(onForeground);
     const callerSignal = init.signal;
     const onCallerAbort = () => controller.abort(callerSignal?.reason);
     if (callerSignal) {
@@ -386,6 +406,7 @@ class ApiClient {
       });
     } catch (err) {
       clearTimeout(timeoutId);
+      unsubscribeAppState?.();
       callerSignal?.removeEventListener("abort", onCallerAbort);
       // Re-throw with a clearer message if this was our own timeout abort.
       if (
@@ -407,6 +428,7 @@ class ApiClient {
       throw err;
     }
     clearTimeout(timeoutId);
+    unsubscribeAppState?.();
     callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
