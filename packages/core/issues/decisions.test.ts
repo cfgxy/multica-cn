@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { IssueDecision } from "../types";
-import { patchDecisionInCache, upsertDecisionInCache } from "./decisions";
+import { patchDecisionInCache, stripDecisionOptionLetterPrefix, upsertDecisionInCache } from "./decisions";
 
 function card(id: string, status: IssueDecision["status"] = "open"): IssueDecision {
   return {
@@ -80,5 +80,43 @@ describe("upsertDecisionInCache", () => {
     const qc = new QueryClient();
     upsertDecisionInCache(qc, "i-1", card("d-1"));
     expect(qc.getQueryData(["issues", "decisions", "i-1"])).toBeUndefined();
+  });
+});
+
+// Views that render their own index letter (decision batch bar) must not
+// duplicate a letter the label already carries. The prefix form is one A-Z
+// letter plus one of ： : 、 . — anything else renders untouched.
+describe("stripDecisionOptionLetterPrefix", () => {
+  it("strips one embedded prefix from a real RUYI-572 label (全角冒号)", () => {
+    expect(
+      stripDecisionOptionLetterPrefix("A：仅 /file/ 云盘文件族（drive_file_links），wiki/docx 另立后续单"),
+    ).toBe("仅 /file/ 云盘文件族（drive_file_links），wiki/docx 另立后续单");
+  });
+
+  it("strips 半角冒号 with surrounding space", () => {
+    expect(stripDecisionOptionLetterPrefix("B: note 扩展到 wiki/docx 链接")).toBe("note 扩展到 wiki/docx 链接");
+  });
+
+  it("strips 顿号 and 点号 separators", () => {
+    expect(stripDecisionOptionLetterPrefix("A、方案一")).toBe("方案一");
+    expect(stripDecisionOptionLetterPrefix("B.方案二")).toBe("方案二");
+  });
+
+  it("strips only one layer", () => {
+    expect(stripDecisionOptionLetterPrefix("A：B：仅此一层")).toBe("B：仅此一层");
+  });
+
+  it("keeps the label when nothing non-empty follows the separator", () => {
+    expect(stripDecisionOptionLetterPrefix("A：")).toBe("A：");
+    expect(stripDecisionOptionLetterPrefix("A：  ")).toBe("A：  ");
+  });
+
+  it("keeps non-prefix forms untouched", () => {
+    expect(stripDecisionOptionLetterPrefix("A-type")).toBe("A-type");
+    expect(stripDecisionOptionLetterPrefix("B超 声呐")).toBe("B超 声呐");
+    expect(stripDecisionOptionLetterPrefix("AB：双字母")).toBe("AB：双字母");
+    expect(stripDecisionOptionLetterPrefix("a：小写")).toBe("a：小写");
+    expect(stripDecisionOptionLetterPrefix("方案 A：前缀不在开头")).toBe("方案 A：前缀不在开头");
+    expect(stripDecisionOptionLetterPrefix("")).toBe("");
   });
 });

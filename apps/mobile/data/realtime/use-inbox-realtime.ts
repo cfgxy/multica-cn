@@ -42,7 +42,11 @@ export function useInboxRealtime() {
       // 60s staleTime and would otherwise show a stale dot after a
       // cross-device archive/read until it happens to refetch on its own.
       const invalidate = () => {
-        qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
+        // The `all` family covers BOTH lists (main + archived sub-view,
+        // RUYI-532): every inbox event can move an item across that
+        // boundary and the split is decided server-side, so the two are
+        // always invalidated together.
+        qc.invalidateQueries({ queryKey: inboxKeys.all(wsId) });
         qc.invalidateQueries({ queryKey: inboxKeys.unreadSummary() });
       };
 
@@ -56,9 +60,9 @@ export function useInboxRealtime() {
         // disagree across clients.
         ws.on("inbox:unread", invalidate),
         ws.on("inbox:archived", invalidate),
-        // Mobile has no archived view yet (web/desktop only, MUL-3736), but an
-        // unarchive there restores the item to THIS list — without refetching,
-        // mobile keeps showing the pre-restore list.
+        // An unarchive on web/desktop restores the item to the main list —
+        // and since RUYI-532 mobile has its own archived sub-view, both
+        // caches refetch through the family invalidation.
         ws.on("inbox:unarchived", invalidate),
         ws.on("inbox:batch-read", invalidate),
         ws.on("inbox:batch-archived", invalidate),
