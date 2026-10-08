@@ -229,10 +229,10 @@ export function SkillEvolutionDetailBody({
                     <span className="text-muted-foreground"> · {sourceLabel(event.source)} · {new Date(event.created_at).toLocaleDateString(locale)}</span></p>
                   <p className="text-muted-foreground">{t(($) => $.skills.eventBefore, { count: event.before?.runs ?? 0 })}
                     {event.before?.median_total_tokens != null ? ` · ${t(($) => $.skills.medianTokens, { count: event.before.median_total_tokens })}` : ""}
-                    {` · ${windowLabel(event.before_mode, event.window_days, event.window_uses)}`}</p>
+                    {` · ${windowLabel(event.before_mode, event.window_days, event.window_uses, t)}`}</p>
                   <p className="text-muted-foreground">{t(($) => $.skills.eventAfter, { count: event.after?.runs ?? 0 })}
                     {event.after?.median_total_tokens != null ? ` · ${t(($) => $.skills.medianTokens, { count: event.after.median_total_tokens })}` : ""}
-                    {` · ${windowLabel(event.after_mode, event.window_days, event.window_uses)}`}</p>
+                    {` · ${windowLabel(event.after_mode, event.window_days, event.window_uses, t)}`}</p>
                 </div>
               ))}</div>}
             <h4 className="text-body font-medium">{t(($) => $.skills.recent)}</h4>
@@ -271,8 +271,9 @@ export function SkillEvolutionDetailBody({
   );
 }
 
-function windowLabel(mode: string, days: number, uses: number) {
-  const { t } = useT("self-evolution");
+type SelfEvolutionT = ReturnType<typeof useT<"self-evolution">>["t"];
+
+function windowLabel(mode: string, days: number, uses: number, t: SelfEvolutionT) {
   switch (mode) {
     case "uses": return t(($) => $.skills.windowModeUses, { uses });
     case "none": return t(($) => $.skills.windowModeNone);
