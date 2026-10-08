@@ -179,9 +179,9 @@ export default function AgentDetailPage() {
   const issueIds = useMemo(() => {
     const ids = new Set<string>();
     for (const task of activeTasks) if (task.issue_id) ids.add(task.issue_id);
-    for (const task of runHistory) if (task.issue_id) ids.add(task.issue_id);
+    for (const task of visibleHistory) if (task.issue_id) ids.add(task.issue_id);
     return [...ids];
-  }, [activeTasks, runHistory]);
+  }, [activeTasks, visibleHistory]);
   const issueTitleQueries = useQueries({
     queries: issueIds.map((issueId) => issueDetailOptions(wsId, issueId)),
   });
