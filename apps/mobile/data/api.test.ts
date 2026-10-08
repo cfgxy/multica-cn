@@ -183,6 +183,57 @@ describe("ApiClient.listTimeline", () => {
   });
 });
 
+describe("ApiClient.listArchivedInbox", () => {
+  afterEach(() => {
+    api.setToken(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // RUYI-532: the mobile archived sub-view backs onto the same capped
+  // endpoint web/desktop use (packages/core/api/client.ts listArchivedInbox).
+  const archivedRow = {
+    id: "inbox-archived-1",
+    workspace_id: "workspace-1",
+    recipient_type: "member",
+    recipient_id: "member-1",
+    type: "new_comment",
+    title: "Archived notification",
+    archived: true,
+  };
+
+  it("requests the archived endpoint and returns the parsed rows", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([archivedRow]),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(api.listArchivedInbox()).resolves.toMatchObject([
+      { id: "inbox-archived-1", archived: true },
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/inbox/archived",
+      expect.anything(),
+    );
+  });
+
+  // Same schema-guard contract as listInbox: a contract drift must render an
+  // empty archive, not take the whole screen down with it.
+  it("falls back to an empty list when the response body is malformed", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ items: "not-an-array" }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(api.listArchivedInbox()).resolves.toEqual([]);
+  });
+});
+
 describe("fetchRaw timeout semantics (RUYI-567)", () => {
   // whatwg-fetch 语义的桩：signal 一旦 abort 就以 AbortError 拒绝（RN 的
   // fetch 是 XHR polyfill，abort 会取消底层请求并拒绝 promise）；否则永久
@@ -293,7 +344,6 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
     expect((error as ApiError).status).toBe(0);
   });
 });
-
 
 describe("ApiClient.uploadFile", () => {
   afterEach(() => {
