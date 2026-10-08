@@ -84,12 +84,15 @@ export function WindowFilter({
   onBackToCurrent: () => void;
 }) {
   const { t } = useT("usage");
+  // Controlled so an applied custom range can fold the whole picker away —
+  // the nested popover closes itself, and a menu left open behind it used to
+  // keep its inert overlay over the page, swallowing every later click.
+  const [menuOpen, setMenuOpen] = useState(false);
   const atCurrent = isCurrentWindow(window, today);
-  const label =
-    selection.kind === "quick" && atCurrent
-      ? (TIME_RANGES.find((r) => r.days === selection.days)?.label ??
-        `${selection.days}d`)
-      : `${formatShortDate(window.start)} – ${formatShortDate(window.end)}`;
+  // The trigger states its position in dates at every window — including the
+  // current one, where a bare length label ("30d") left the reader guessing
+  // which days the KPIs actually cover. The length still lives on the tiles.
+  const label = `${formatShortDate(window.start)} – ${formatShortDate(window.end)}`;
 
   return (
     <div
@@ -105,7 +108,7 @@ export function WindowFilter({
       >
         <ChevronLeft />
       </Button>
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger
           render={
             <Button
@@ -138,7 +141,10 @@ export function WindowFilter({
           <CustomRangePicker
             window={window}
             today={today}
-            onApply={onCustomRange}
+            onApply={(w) => {
+              setMenuOpen(false);
+              onCustomRange(w);
+            }}
           />
         </DropdownMenuContent>
       </DropdownMenu>

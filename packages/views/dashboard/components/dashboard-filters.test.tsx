@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { cleanup, fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { renderWithI18n } from "../../test/i18n";
 import { WindowFilter, type WindowSelection } from "./dashboard-filters";
 
@@ -92,9 +93,13 @@ describe("WindowFilter — period navigation", () => {
     expect(historical.onBackToCurrent).toHaveBeenCalledTimes(1);
   });
 
-  it("labels the trigger with the quick range at today and the dates once paged away", () => {
+  it("labels the trigger with the actual dates at the current position too", () => {
     renderFilter(QUICK, { window: { start: "2026-02-09", end: "2026-03-10" } });
-    expect(screen.getByText("30d")).toBeInTheDocument();
+    // The picker states its position in dates everywhere — including "now",
+    // where a bare length label ("30d") left the reader guessing which days
+    // the KPIs actually cover. The length still lives on the KPI tiles.
+    expect(screen.getByText("Feb 9 – Mar 10")).toBeInTheDocument();
+    expect(screen.queryByText("30d")).not.toBeInTheDocument();
 
     cleanup();
     renderFilter(
@@ -103,5 +108,36 @@ describe("WindowFilter — period navigation", () => {
     );
     // Feb 8 – Mar 9 would be "now"; the shifted window spells its position.
     expect(screen.getByText("Jan 10 – Feb 8")).toBeInTheDocument();
+  });
+
+  it("closes the whole menu when a custom range is applied", async () => {
+    const user = userEvent.setup();
+    const { onCustomRange } = renderFilter();
+
+    fireEvent.click(screen.getByRole("button", { name: "Period" }));
+    await waitFor(() =>
+      expect(screen.getByText("Custom range")).toBeInTheDocument(),
+    );
+    await user.click(screen.getByText("Custom range"));
+    // The calendar's range is pre-seeded from the current window, so Apply is
+    // enabled without touching the day grid — the interaction under test is
+    // the close behaviour, not the date picking.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(onCustomRange).toHaveBeenCalledWith({
+      start: "2026-02-09",
+      end: "2026-03-10",
+    });
+    // The menu folds up together with the popover. It used to stay open
+    // behind the closed popover, and its inert overlay swallowed every later
+    // click on the page (QA BUG-2).
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("menuitemradio", { name: "30d" }),
+      ).not.toBeInTheDocument();
+    });
   });
 });

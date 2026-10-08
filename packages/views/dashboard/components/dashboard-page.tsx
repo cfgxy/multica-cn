@@ -517,7 +517,10 @@ export function DashboardPage() {
   const handleShift = (periods: number) =>
     setSelection((s) => {
       if (s.kind === "quick") {
-        const offset = Math.max(0, s.offset + periods);
+        // ‹ (periods = -1) steps into the past, and `offset` counts periods
+        // AWAY from today — so it grows; › walks it back down. 0 is the
+        // floor: the present, where › already renders disabled.
+        const offset = Math.max(0, s.offset - periods);
         return offset === s.offset ? s : { ...s, offset };
       }
       const next = shiftWindow(s.window, periods);
