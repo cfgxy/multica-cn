@@ -1044,16 +1044,24 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 
 // TriggerRetrospectiveRun — POST /api/retrospective/run (owner-only, manual)
 // Runs one workspace pass synchronously; the run record carries the outcome.
+// Model resolution is per workspace (RUYI-551): a saved module config wins
+// over the deploy-wide default, and "nothing configured" fails the run
+// record with a classified error rather than a generic conflict.
 func (h *Handler) TriggerRetrospectiveRun(w http.ResponseWriter, r *http.Request) {
-	if h.LLM == nil || !h.LLM.Enabled() {
-		writeError(w, http.StatusConflict, "LLM 未配置，无法运行复盘")
-		return
-	}
 	workspaceID := h.resolveWorkspaceID(r)
 	runner := &retrospective.Runner{
 		DB:      h.TxStarter,
 		Queries: h.Queries,
-		LLM:     h.LLM,
+		Resolve: RetrospectiveResolve(h.SelfEvolution),
+	}
+	if runner.Resolve == nil {
+		// Legacy static wiring: no per-workspace resolver (deployment key
+		// absent), so the deploy-wide client is all there is.
+		if h.LLM == nil || !h.LLM.Enabled() {
+			writeError(w, http.StatusConflict, "LLM 未配置，无法运行复盘")
+			return
+		}
+		runner.LLM = h.LLM
 	}
 	stats, err := runner.RunWorkspace(r.Context(), workspaceID, "manual")
 	if err != nil {

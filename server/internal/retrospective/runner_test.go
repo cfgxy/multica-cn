@@ -8,8 +8,11 @@ package retrospective
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,11 +47,13 @@ func TestMain(m *testing.M) {
 // fakeLLM replies with a fixed script: one JSON document per GenerateJSON
 // call, in order. It also counts calls so tests can assert model spend.
 type fakeLLM struct {
-	replies []string
-	calls   int
+	replies   []string
+	calls     int
+	lastModel string
 }
 
 func (f *fakeLLM) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error) {
+	f.lastModel = model
 	if f.calls >= len(f.replies) {
 		return `{"drafts":[]}`, nil
 	}
@@ -308,3 +313,126 @@ func TestRunWorkspaceLLMDisabled(t *testing.T) {
 		t.Fatalf("disabled-LLM run created %d proposals", proposals)
 	}
 }
+
+// runDetail reads the latest run's detail JSONB.
+func runDetail(t *testing.T, wsID string) map[string]any {
+	t.Helper()
+	var raw string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT detail::text FROM retrospective_run WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		wsID).Scan(&raw); err != nil {
+		t.Fatalf("read run detail: %v", err)
+	}
+	detail := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &detail); err != nil {
+		t.Fatalf("run detail not JSON: %v", err)
+	}
+	return detail
+}
+
+// TestRunWorkspaceRecordsModelSource (RUYI-551): the run record carries which
+// model service served the run — module config beats the deploy default — and
+// a successful run records no error kind.
+func TestRunWorkspaceRecordsModelSource(t *testing.T) {
+	wsID := retroFixture(t, "# 规范\n")
+	retroIssue(t, wsID, "复盘测试 G", "讨论内容庚")
+
+	llm := &fakeLLM{replies: []string{
+		draftJSON("add_clause", "留证纪律", "- **留证纪律**：结论必须附可复核证据。"),
+	}}
+	runner := newTestRunner(nil)
+	runner.Resolve = func(ctx context.Context, ws string) (ResolvedModel, error) {
+		return ResolvedModel{Client: llm, Source: "module_config", Model: "ui-model"}, nil
+	}
+
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if status, errMsg := runRecord(t, wsID); status != "succeeded" || errMsg != "" {
+		t.Fatalf("run record: %q / %q", status, errMsg)
+	}
+	detail := runDetail(t, wsID)
+	if detail["config_source"] != "module_config" {
+		t.Fatalf("detail config_source = %v, want module_config", detail["config_source"])
+	}
+	if detail["model"] != "ui-model" {
+		t.Fatalf("detail model = %v, want ui-model", detail["model"])
+	}
+	if _, has := detail["error_kind"]; has {
+		t.Fatalf("successful run must not carry error_kind: %v", detail)
+	}
+	if llm.calls == 0 || llm.lastModel != "ui-model" {
+		t.Fatalf("model calls=%d model=%q, want the resolved model used", llm.calls, llm.lastModel)
+	}
+}
+
+// TestRunWorkspaceUnconfiguredKind (RUYI-551): an unconfigured model service
+// fails the run with the not_configured kind and copy that points at the
+// module config card.
+func TestRunWorkspaceUnconfiguredKind(t *testing.T) {
+	wsID := retroFixture(t, "# 规范\n")
+	retroIssue(t, wsID, "复盘测试 H", "讨论内容辛")
+
+	runner := newTestRunner(nil)
+	runner.Resolve = func(ctx context.Context, ws string) (ResolvedModel, error) {
+		return ResolvedModel{Source: "none"}, nil
+	}
+
+	stats, err := runner.RunWorkspace(context.Background(), wsID, "manual")
+	if err != nil {
+		t.Fatalf("unconfigured run must not error: %v", err)
+	}
+	status, errMsg := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run status = %q, want failed", status)
+	}
+	if !strings.Contains(errMsg, "模块配置") {
+		t.Fatalf("error copy must point at the module config card: %q", errMsg)
+	}
+	detail := runDetail(t, wsID)
+	if detail["error_kind"] != "not_configured" {
+		t.Fatalf("detail error_kind = %v, want not_configured", detail["error_kind"])
+	}
+	if detail["config_source"] != "none" {
+		t.Fatalf("detail config_source = %v, want none", detail["config_source"])
+	}
+	if stats.IssuesAnalyzed != 0 {
+		t.Fatalf("analyzed=%d, want 0", stats.IssuesAnalyzed)
+	}
+}
+
+// TestRunWorkspaceClassifiesGenericModelFailure (RUYI-551): a model call that
+// fails mid-run records error_kind "other" (the classification table itself
+// lives in pkg/llm) plus the model/source that failed.
+func TestRunWorkspaceClassifiesGenericModelFailure(t *testing.T) {
+	wsID := retroFixture(t, "# 规范\n")
+	retroIssue(t, wsID, "复盘测试 I", "讨论内容壬")
+
+	runner := newTestRunner(&failingLLM{})
+	runner.Resolve = func(ctx context.Context, ws string) (ResolvedModel, error) {
+		return ResolvedModel{Client: runner.LLM, Source: "deploy_default", Model: "env-model"}, nil
+	}
+
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	status, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run status = %q, want failed", status)
+	}
+	detail := runDetail(t, wsID)
+	if detail["error_kind"] != "other" {
+		t.Fatalf("detail error_kind = %v, want other", detail["error_kind"])
+	}
+	if detail["model"] != "env-model" || detail["config_source"] != "deploy_default" {
+		t.Fatalf("detail = %v, want model/config_source recorded", detail)
+	}
+}
+
+// failingLLM fails every call — the model-path failure a kind is recorded for.
+type failingLLM struct{}
+
+func (*failingLLM) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error) {
+	return "", errors.New("connection refused")
+}
+func (*failingLLM) Enabled() bool { return true }

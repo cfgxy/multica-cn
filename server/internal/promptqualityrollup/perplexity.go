@@ -25,6 +25,22 @@ import (
 type Perplexity struct {
 	Queries   *db.Queries
 	Generator promptperplexity.Generator
+	// GeneratorFor (RUYI-551) resolves a workspace's own generator through
+	// the model-service priority chain (module config > deploy default).
+	// Nil keeps the deploy-wide Generator serving every workspace.
+	GeneratorFor func(ctx context.Context, workspaceID pgtype.UUID) promptperplexity.Generator
+}
+
+// generatorFor picks the generator that serves one workspace: the
+// workspace-resolved override when it yields an enabled generator, else the
+// deploy-wide one.
+func (p Perplexity) generatorFor(ctx context.Context, workspaceID pgtype.UUID) promptperplexity.Generator {
+	if p.GeneratorFor != nil {
+		if g := p.GeneratorFor(ctx, workspaceID); g != nil && g.Enabled() {
+			return g
+		}
+	}
+	return p.Generator
 }
 
 // ProfileOutcome is what happened for one runtime profile. A refusal is
@@ -43,10 +59,6 @@ type ProfileOutcome struct {
 // A profile that cannot be scored does not fail the others: the outcomes are
 // returned per profile, and the caller decides what is worth reporting.
 func (p Perplexity) ScoreAgentVersion(ctx context.Context, agentID pgtype.UUID, version int32) ([]ProfileOutcome, error) {
-	if p.Generator == nil || !p.Generator.Enabled() {
-		return nil, promptperplexity.ErrNotScored
-	}
-
 	agentVersion, err := p.Queries.GetPromptVersionByScopeVersion(ctx, db.GetPromptVersionByScopeVersionParams{
 		Scope:   string(promptVersionScopeAgent),
 		ScopeID: agentID,
@@ -56,6 +68,11 @@ func (p Perplexity) ScoreAgentVersion(ctx context.Context, agentID pgtype.UUID, 
 		return nil, fmt.Errorf("read agent version %d: %w", version, err)
 	}
 
+	generator := p.generatorFor(ctx, agentVersion.WorkspaceID)
+	if generator == nil || !generator.Enabled() {
+		return nil, promptperplexity.ErrNotScored
+	}
+
 	tiers, err := p.assembleTiers(ctx, agentID, agentVersion.Content)
 	if err != nil {
 		return nil, err
@@ -63,7 +80,7 @@ func (p Perplexity) ScoreAgentVersion(ctx context.Context, agentID pgtype.UUID, 
 
 	outcomes := make([]ProfileOutcome, 0, len(promptperplexity.Profiles))
 	for _, profile := range promptperplexity.Profiles {
-		scored, err := promptperplexity.ScoreTiers(ctx, p.Generator, profile, tiers)
+		scored, err := promptperplexity.ScoreTiers(ctx, generator, profile, tiers)
 		if err != nil {
 			outcomes = append(outcomes, ProfileOutcome{Profile: profile, Err: err})
 			continue
@@ -108,12 +125,10 @@ func (p Perplexity) ScoreBacklog(ctx context.Context, workspaceID pgtype.UUID) (
 
 // ScoreBacklogAll drains every workspace's backlog in one pass, sharing
 // ScoreBudget across them so a deployment with many workspaces costs no more
-// per tick than a single-workspace one did.
+// per tick than a single-workspace one did. With a GeneratorFor resolver the
+// gate is per workspace (RUYI-551): a workspace whose resolution yields an
+// enabled generator scores even when the deploy-wide client is off.
 func (p Perplexity) ScoreBacklogAll(ctx context.Context) (BacklogOutcome, error) {
-	if p.Generator == nil || !p.Generator.Enabled() {
-		return BacklogOutcome{}, nil
-	}
-
 	workspaces, err := p.Queries.ListPromptPerplexityBacklogWorkspaces(ctx)
 	if err != nil {
 		return BacklogOutcome{}, fmt.Errorf("list backlog workspaces: %w", err)
@@ -124,6 +139,9 @@ func (p Perplexity) ScoreBacklogAll(ctx context.Context) (BacklogOutcome, error)
 	for _, ws := range workspaces {
 		if budget <= 0 {
 			break
+		}
+		if generator := p.generatorFor(ctx, ws); generator == nil || !generator.Enabled() {
+			continue
 		}
 		part, err := p.scoreWorkspaceBacklog(ctx, ws, int32(budget))
 		if err != nil {
@@ -141,7 +159,7 @@ func (p Perplexity) ScoreBacklogAll(ctx context.Context) (BacklogOutcome, error)
 }
 
 func (p Perplexity) scoreWorkspaceBacklog(ctx context.Context, workspaceID pgtype.UUID, rowLimit int32) (BacklogOutcome, error) {
-	if p.Generator == nil || !p.Generator.Enabled() {
+	if generator := p.generatorFor(ctx, workspaceID); generator == nil || !generator.Enabled() {
 		return BacklogOutcome{}, nil
 	}
 
