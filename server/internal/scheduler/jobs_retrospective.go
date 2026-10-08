@@ -21,6 +21,8 @@ const JobNamePromptRetrospective = "prompt_retrospective"
 // RetrospectiveJob returns the JobSpec for the daily retrospective. client
 // is the workspace's single LLM entry point (pkg/llm) — the retrospective
 // defines the interface it needs, so the scheduler never imports pkg/llm.
+// resolve is the per-workspace model seam (RUYI-551: module config beats the
+// deploy default); nil keeps the legacy static client for every workspace.
 //
 // The cadence is a day because the product's own concept is 每日总复盘 —
 // one pass per workspace per day over the completed-issue window. A missed
@@ -30,11 +32,12 @@ const JobNamePromptRetrospective = "prompt_retrospective"
 //
 // RunTimeout is generous because one tick can analyze up to
 // retrospective.IssuesPerRun issues, each bounded by a per-issue LLM call.
-func RetrospectiveJob(pool *pgxpool.Pool, client retrospective.LLMClient, model string) JobSpec {
+func RetrospectiveJob(pool *pgxpool.Pool, client retrospective.LLMClient, model string, resolve func(context.Context, string) (retrospective.ResolvedModel, error)) JobSpec {
 	runner := &retrospective.Runner{
 		DB:      pool,
 		Queries: db.New(pool),
 		Model:   model,
+		Resolve: resolve,
 	}
 	if client != nil {
 		runner.LLM = client

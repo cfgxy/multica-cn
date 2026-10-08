@@ -48,8 +48,20 @@ type SourceState struct {
 
 	// Degraded marks a source that is off but optional, which is what the
 	// footer renders. A required source is never "degraded" — it is either
-	// there or the request could not have been served.
+	// there or the request could not have been served. An error state
+	// (configured but failing) is NOT degraded: the status card renders the
+	// two differently.
 	Degraded bool `json:"degraded"`
+
+	// RUYI-551 four-state closed loop. Status is the source's health in the
+	// Status* vocabulary; EffectiveSource says who serves it (module_config |
+	// deploy_default | system); the validation fields are only meaningful
+	// for the scoring model, where a module config is validated on save.
+	Status          string `json:"status"`
+	EffectiveSource string `json:"effective_source,omitempty"`
+	Model           string `json:"model,omitempty"`
+	LastValidatedAt string `json:"last_validated_at,omitempty"`
+	ValidationError string `json:"validation_error,omitempty"`
 }
 
 // Sources is the status block the response carries.
@@ -78,16 +90,72 @@ func (s Sources) ByKind(k SourceKind) (SourceState, bool) {
 	return SourceState{}, false
 }
 
-// DescribeSources reports the state of each source. scoringEnabled comes from
-// the LLM client; Langfuse is read from the environment because it has no
-// client in this repository — it is configured, not called.
-func DescribeSources(scoringEnabled bool) Sources {
-	langfuse := LangfuseExportEnabled()
-	return Sources{Items: []SourceState{
-		{Kind: SourcePlatform, Available: true, Required: true},
-		{Kind: SourceScoring, Available: scoringEnabled, Degraded: !scoringEnabled},
-		{Kind: SourceLangfuse, Available: langfuse, Degraded: !langfuse},
-	}}
+// Status vocabulary for the four-state closed loop (RUYI-551 §2.5). The
+// canonical constants live in internal/selfevconfig; these mirror the same
+// wire values, which is what the API carries.
+const (
+	StatusOK           = "ok"
+	StatusUnconfigured = "unconfigured"
+	StatusError        = "error"
+	StatusDisabled     = "disabled"
+
+	// SourceSystem marks a source that is deployment-level, not
+	// workspace-configurable (platform data, Langfuse export).
+	SourceSystem = "system"
+)
+
+// ScoringSource is what the caller resolved for the scoring model in one
+// workspace (RUYI-551): the four-state status, who serves it, and — for a
+// module config — the recorded validation outcome.
+type ScoringSource struct {
+	Status          string
+	EffectiveSource string
+	Model           string
+	LastValidatedAt string
+	ValidationError string
+}
+
+// SourceFacts carries what the caller resolved per workspace. DescribeSources
+// stays the single derivation point: facts in, renderable states out.
+type SourceFacts struct {
+	Scoring ScoringSource
+}
+
+// DescribeSources reports the state of each source. The scoring state comes
+// from the workspace's model-service resolution (RUYI-551); Langfuse is read
+// from the environment because it has no client in this repository — it is
+// configured, not called.
+func DescribeSources(facts SourceFacts) Sources {
+	langfuseOn := LangfuseExportEnabled()
+
+	scoring := facts.Scoring
+	scoringOff := scoring.Status == StatusUnconfigured || scoring.Status == StatusDisabled
+	items := []SourceState{
+		{Kind: SourcePlatform, Available: true, Required: true, Status: StatusOK, EffectiveSource: SourceSystem},
+		{
+			Kind:            SourceScoring,
+			Available:       !scoringOff,
+			Required:        false,
+			Degraded:        scoringOff,
+			Status:          scoring.Status,
+			EffectiveSource: scoring.EffectiveSource,
+			Model:           scoring.Model,
+			LastValidatedAt: scoring.LastValidatedAt,
+			ValidationError: scoring.ValidationError,
+		},
+	}
+	langfuseStatus := StatusUnconfigured
+	if langfuseOn {
+		langfuseStatus = StatusOK
+	}
+	items = append(items, SourceState{
+		Kind:            SourceLangfuse,
+		Available:       langfuseOn,
+		Degraded:        !langfuseOn,
+		Status:          langfuseStatus,
+		EffectiveSource: SourceSystem,
+	})
+	return Sources{Items: items}
 }
 
 // LangfuseExportEnabled reports whether trace export is configured. Export is
