@@ -17,6 +17,7 @@
  */
 import { useCallback, useMemo } from "react";
 import { View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { EmojiKeyboard, type EmojiType } from "rn-emoji-keyboard";
@@ -66,11 +67,13 @@ export default function CommentEmojiPickerRoute() {
     [reactions, userId, toggle, commentId],
   );
 
+  const insets = useSafeAreaInsets();
   const theme = THEME[colorScheme];
 
   return (
     <View className="flex-1">
-      <View className="px-4 pt-3 pb-2">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="px-4 pb-2" style={{ paddingTop: insets.top + 12 }}>
         <Text className="text-lg font-semibold text-foreground">
           {t("mobile.comment.add_reaction", "Add Reaction")}
         </Text>
