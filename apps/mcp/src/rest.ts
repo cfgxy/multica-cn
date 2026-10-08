@@ -1,7 +1,7 @@
 /**
  * Thin typed REST client for the Multica backend API subset.
  *
- * Ground rules (RUYI-82):
+ * Ground rules:
  * - Auth is exclusively the caller's PAT (`mul_…`), forwarded as
  *   `Authorization: Bearer …`. No cookie, no session, no other credential.
  * - Workspace scoping uses the backend's header contract
@@ -173,7 +173,7 @@ export class MulticaClient {
     );
   }
 
-  // Project resource bindings (RUYI-458). Same surface the web project page
+  // Project resource bindings. Same surface the web project page
   // drives; create/update/delete answer 409/404/422 bodies the tool layer
   // maps to structured results.
 
@@ -342,7 +342,7 @@ export class MulticaClient {
     );
   }
 
-  // ---- structured issue relations (RUYI-351) -----------------------------
+  // ---- structured issue relations -----------------------------
   // Pure relationship changes: the server guarantees these never start,
   // wake, or queue an agent run.
 
@@ -396,7 +396,7 @@ export class MulticaClient {
     }
   }
 
-  // ---- run lifecycle (RUYI-292) ------------------------------------------
+  // ---- run lifecycle ------------------------------------------
 
   async listIssueRuns(
     workspace: string,
@@ -440,7 +440,7 @@ export class MulticaClient {
     );
   }
 
-  // ---- execution-config management (RUYI-433) ----------------------------
+  // ---- execution-config management ----------------------------
   // Daemon/runtime/model/thinking-effort/squad-profile discovery and writes.
   // The execution-profile paths carry the workspace UUID in the URL (the
   // middleware parses it as a UUID, slugs are header-only), so those methods
@@ -596,7 +596,7 @@ export class MulticaClient {
     );
   }
 
-  // The workspace audit search (RUYI-355): the same endpoint the web app
+  // The workspace audit search: the same endpoint the web app
   // reads, so the MCP tool and the UI always see the same trail. Issue-level
   // filtering is just issue_id here — the server pins it on the issue route.
   // Unlike every header-scoped route, this one keys the workspace by UUID in
@@ -640,7 +640,7 @@ export class MulticaClient {
     return match.id;
   }
 
-  // ---- workspace management surface (RUYI-419) ----------------------------
+  // ---- workspace management surface ----------------------------
   // Same read/write contract as the run lifecycle: every operation is a REST
   // call scoped by the workspace headers; run side effects are declared in
   // the tool descriptions, never inferred by the client.
@@ -726,7 +726,7 @@ export class MulticaClient {
     await this.request("DELETE", `/api/squads/${encodeURIComponent(squadId)}`, { workspace });
   }
 
-  // Workspace quick replies (RUYI-435). Same REST surface the web settings
+  // Workspace quick replies. Same REST surface the web settings
   // tab drives, so the two management views always see one data source; the
   // backend answers 403 to non-admin PATs on the writes.
   async listQuickReplies(
