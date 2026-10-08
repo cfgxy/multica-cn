@@ -145,7 +145,7 @@ describe("MulticaClient", () => {
     expect(raw).not.toContain('""');
   });
 
-  it("routes project CRUD to the /api/projects surface (RUYI-354)", async () => {
+  it("routes project CRUD to the /api/projects surface", async () => {
     const calls: CapturedCall[] = [];
     const project = {
       id: "p1",
@@ -370,7 +370,7 @@ describe("MulticaClient", () => {
   });
 });
 
-describe("project resource client methods (RUYI-458)", () => {
+describe("project resource client methods", () => {
   const RESOURCE = {
     id: "pr-1",
     project_id: "p1",

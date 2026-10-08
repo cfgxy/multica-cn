@@ -9,6 +9,7 @@
  */
 import { useCallback, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -25,6 +26,7 @@ export default function AddResourceRoute() {
   const createResource = useCreateProjectResource(id);
   const { t } = useT("common");
   const { t: tProjects } = useT("projects");
+  const insets = useSafeAreaInsets();
 
   const [url, setUrl] = useState("");
   const [label, setLabel] = useState("");
@@ -60,7 +62,8 @@ export default function AddResourceRoute() {
   return (
     <KeyboardAvoidingView className="flex-1" behavior="padding">
       <View className="flex-1">
-        <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
+        {/* 顶部让出系统状态栏（RUYI-563）。 */}
+        <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
           <Text className="text-base font-semibold text-foreground">
             {tProjects("mobile.resource.attach_title", "Attach repository")}
           </Text>

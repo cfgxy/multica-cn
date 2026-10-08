@@ -35,15 +35,18 @@ export function SettingsSection({
   action,
   children,
   className,
+  id,
 }: {
   title?: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** Anchor for deep links that scroll to this section (e.g. ?section=vcs). */
+  id?: string;
 }) {
   return (
-    <section className={cn("space-y-3", className)}>
+    <section id={id} className={cn("space-y-3", className)}>
       {title || description || action ? (
         <div className="flex min-w-0 items-end justify-between gap-4 px-0.5">
           <div className="min-w-0">
