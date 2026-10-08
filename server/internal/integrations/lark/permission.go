@@ -29,17 +29,34 @@ const (
 	// /im/v1/messages/:message_id/resources/:file_key.
 	CapabilityMediaResources CapabilityID = "media_resources"
 	// CapabilityContactLookup — resolving open_ids to display names via
-	// /contact/v3/users/batch for speaker labels in enriched context.
+	// /contact/v3/users/{open_id} (the CC Connect single-user lookup)
+	// for speaker labels in enriched context.
 	CapabilityContactLookup CapabilityID = "contact_lookup"
 )
 
 // CapabilitySpec maps one capability onto the scopes that grant it.
 //
 // Scopes is AND-of-OR: every inner group must be satisfied by at least
-// one of its members. Feishu expresses exactly this shape — e.g. group
-// history reads need any of the im:message read scopes AND the
-// im:message.group_msg scope. Scope lists verified against the Feishu
-// OpenAPI permission tables (open.feishu.cn, 2026-10).
+// one of its members. Feishu expresses exactly this shape on its API
+// pages ("开启其中任意一项权限即可调用" per requirement row). Every entry
+// below is anchored to the Feishu OpenAPI doc page of the endpoint the
+// capability actually calls (open.feishu.cn, fetched 2026-10-08; full
+// audit in docs/adr/004-feishu-capability-scope-mapping.md):
+//
+//   - receive_messages → im.message.receive_v1 event doc (its 权限要求
+//     row lists nine subscription scopes; Multica needs one GROUP-side
+//     scope AND one P2P-side scope to cover both delivery paths)
+//   - send_messages → POST /im/v1/messages doc; its grant row is
+//     three-way (im:message / im:message:send_as_bot / im:message:send)
+//     — the third is the closed-to-new-apps historical scope, kept so a
+//     legacy install holding only it does not falsely read as missing
+//   - read_history → GET /im/v1/messages/{id} (quoted/forwarded) AND
+//     GET /im/v1/messages (recent context) docs; the required set is
+//     their intersection — see the catalog entry
+//   - media_resources → GET /im/v1/messages/{id}/resources/{file_key} doc
+//   - contact_lookup → GET /contact/v3/users/{open_id} doc (the
+//     endpoint migrated from CC Connect; two requirement levels: the
+//     API gate row AND the name field's grant row)
 type CapabilitySpec struct {
 	ID     CapabilityID
 	Scopes [][]string
@@ -55,23 +72,54 @@ type CapabilitySpec struct {
 const ProbeCapabilityBudget = 10 * time.Second
 
 // capabilityCatalog is the verified mapping, in display order.
+//
+// RUYI-546 calibration against the per-endpoint Feishu doc pages:
+//
+//   - receive_messages gains the full nine-scope subscription set from
+//     the receive-event page, partitioned into GROUP-side and P2P-side
+//     delivery: a bot granted only im:message.group_msg (a common
+//     CC Connect-shaped install) subscribes the event and receives
+//     group @-mentions, so the old group-side pair falsely read as
+//     missing for it.
+//   - read_history drops im:message.history:readonly from the base
+//     group: that scope grants the conversation LIST but not the
+//     single-message GET the quoted/forwarded enrichment needs, so an
+//     install holding only it would pass the scope diff yet fail every
+//     quoted reply. The required set is the two endpoints'
+//     intersection; the list-only alternative stays documented here and
+//     in the audit.
+//   - media_resources: the message-resource page grants the endpoint to
+//     im:message OR im:message:readonly OR im:message.history:readonly
+//     — there is no "im:resource" requirement (that scope is not in the
+//     page's 权限要求 row), so installs following the old catalog chased
+//     a scope the Feishu console does not offer for this API.
+//   - contact_lookup: migrated to the single-user endpoint (CC Connect
+//     parity). Its doc expresses a two-level model: an API gate row
+//     (contact:contact.base:readonly / access_as_app / readonly /
+//     readonly_as_app) AND a name-field row (contact:user.base:readonly
+//     plus the same three contact:contact grants). The old catalog
+//     merged the levels into one OR group — an install holding only
+//     the field-level scope would pass the diff yet fail the call.
 var capabilityCatalog = []CapabilitySpec{
 	{CapabilityReceiveMessages, [][]string{
-		{"im:message.group_at_msg", "im:message.group_at_msg:readonly"},
+		{"im:message.group_at_msg", "im:message.group_at_msg:readonly", "im:message.group_msg",
+			"im:message.group_at_msg.include_bot:readonly", "im:message.group_msg.include_bot:read",
+			"im:message.group_bot_msg:readonly", "im:message.group_msg:readonly"},
 		{"im:message.p2p_msg", "im:message.p2p_msg:readonly"},
 	}, false},
 	{CapabilitySendMessages, [][]string{
-		{"im:message", "im:message:send_as_bot"},
+		{"im:message", "im:message:send_as_bot", "im:message:send"},
 	}, true},
 	{CapabilityReadHistory, [][]string{
-		{"im:message", "im:message:readonly", "im:message.history:readonly"},
+		{"im:message", "im:message:readonly"},
 		{"im:message.group_msg"},
 	}, true},
 	{CapabilityMediaResources, [][]string{
-		{"im:resource"},
+		{"im:message", "im:message:readonly", "im:message.history:readonly"},
 	}, true},
 	{CapabilityContactLookup, [][]string{
-		{"contact:user.base:readonly"},
+		{"contact:contact.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app"},
+		{"contact:user.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app"},
 	}, true},
 }
 
@@ -152,10 +200,43 @@ const (
 )
 
 // probePermissionCodes are the Lark business codes that mean "the app
-// lacks a scope this endpoint requires". 99991672 is the canonical
-// no-permission code; 99991002/230001/230027 are the permission-denied
-// codes the recent-context enricher already classifies.
+// lacks a scope" in the synthetic-target PROBE context. A probe never
+// carries a real target, so a scope can only fail at the gateway, up
+// front: 99991672 is the canonical no-permission code, 99991002 its
+// access-denied sibling. The real-target business-layer codes (230001,
+// 230027) are deliberately NOT here: QA live evidence 2026-10-08 showed
+// a send-granted install getting 230001 "invalid receive_id" on the
+// send probe — with a synthetic target, parameter validation runs
+// before any business-layer scope check, so those codes prove the
+// gateway passed. See runtimePermissionCodes for where they DO mean
+// permission-denied (enricher/hint, real targets).
 var probePermissionCodes = map[int]struct{}{
+	99991672: {},
+	99991002: {},
+}
+
+// probeTargetRejectedCodes are the not-exist / invalid-parameter family
+// codes QA observed on synthetic-target probes with installs verified
+// granted via the data plane (2026-10-08): 99992351 (contact user
+// lookup) and 99992354 (message GET, resource download). Like the
+// 23xxxx segment below they are target/param rejections — the scope
+// check already passed → granted. An explicit allowlist, not a 99992xxx
+// range rule, so an unseen family member still conservatively reads as
+// unknown instead of silently widening the granted verdict.
+var probeTargetRejectedCodes = map[int]struct{}{
+	99992351: {},
+	99992354: {},
+}
+
+// runtimePermissionCodes are the permission-denied business codes on
+// REAL targets, where a missing scope can also be enforced at the
+// business layer after the gateway: the canonical gateway pair plus
+// 230001 (bot not in the chat / invalid receive_id against a real chat)
+// and 230027 (missing im:message.group_msg on real group reads).
+// Consumed by isRuntimePermissionDenied; identical to the pre-RUYI-546
+// rework set, so real-target classification (enricher/hint) is
+// unchanged — pinned by the enricher suites.
+var runtimePermissionCodes = map[int]struct{}{
 	99991672: {},
 	99991002: {},
 	230001:   {},
@@ -165,9 +246,10 @@ var probePermissionCodes = map[int]struct{}{
 // classifyProbeError turns a probe call's outcome into the tri-state.
 //
 // Probes always target synthetic ids that cannot exist, so any 23xxxx
-// business code other than a known permission code proves the request
-// passed the gateway's scope check and failed later on validation — a
-// granted verdict. No code (transport error) or a token error is
+// business code — or a known target-rejection code like 99992351/99992354
+// — proves the request passed the gateway's scope check and failed later
+// on validation: a granted verdict. The gateway-level permission codes
+// still mean missing; no code (transport error) or a token error is
 // inconclusive: unknown. Unknown never collapses into granted, and an
 // admin-pending scope still reads as missing here.
 func classifyProbeError(err error) ProbeStatus {
@@ -187,6 +269,11 @@ func classifyProbeError(err error) ProbeStatus {
 	if code >= 230000 && code < 240000 {
 		// Business-layer validation (deleted 230110/230011/230050,
 		// not-exist, invalid params, rate limit 230020…): authz passed.
+		return ProbeGranted
+	}
+	if _, rejected := probeTargetRejectedCodes[code]; rejected {
+		// Target/param validation outside the 23xxxx segment (observed
+		// on the contact and media/read surfaces): authz passed.
 		return ProbeGranted
 	}
 	return ProbeUnknown
@@ -233,7 +320,7 @@ func ProbeCapability(ctx context.Context, client APIClient, creds InstallationCr
 		})
 		return probeOutcome(err)
 	case CapabilityContactLookup:
-		_, err := client.BatchGetUsers(ctx, creds, []string{probeOpenID})
+		_, err := client.GetUserName(ctx, creds, probeOpenID)
 		return probeOutcome(err)
 	default:
 		// receive_messages (and any future non-probeable entry): event
