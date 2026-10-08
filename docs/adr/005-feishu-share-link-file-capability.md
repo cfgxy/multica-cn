@@ -1,7 +1,8 @@
 # ADR 005：飞书云文件分享链接读取——独立 capability 设计（RUYI-572）
 
 - 日期：2026年10月08日
-- 状态：proposed（方案段交付；Stage 2 实施以 Leader 对本文档的裁定与 RUYI-546 合入 main 为前提）
+- 状态：accepted（Owner 2026-10-08 18:15 决策卡裁定 Stage 2 按 1B/2B 实施，裁定结果见 §8）
+- 实施偏差：未等 RUYI-546 合入即先行实施 Stage 2——实现零依赖其代码，仅 `permission.go` probe/catalog 相邻区域待 rebase 收敛（合流裁定：RUYI-546 先行）。
 - 范围：`server/internal/integrations/lark/`（permission catalog、media ingest、inbound enricher、http client）、`packages/views/settings/components/lark-tab.tsx` 及四语言 locale。
 - 执行原则（Owner 2026-10-08 指令，沿 RUYI-546）：scope 由实际调用的 endpoint 反推并附官方依据，禁止先拍 scope 再让代码适配；不冒称「cc-connect 已支持」。
 
@@ -77,14 +78,16 @@ flowchart LR
 
 全部分支均不阻塞消息流；引述块/正文中的 URL 原文保持逐字保留。
 
-## 8. 待决点（Stage 2 实施边界，报 Leader 裁定）
+## 8. 已决点（Stage 2 实施边界，Owner 已裁定 2026-10-08 18:15）
 
 - **决策 1：本期 capability 覆盖面**
   - A（推荐）：仅 `/file/` 云盘文件族（`drive_file_links`，§4 全量）——权限行直抓证据完整、probe 语义干净、直击 RUYI-448 事故类（HCM xlsx 即云盘文件链接）；验收标准即为此族。wiki/docx 另立后续单。
   - B：A 之上同期加 `wiki_doc_links`（wiki get_node + docx raw_content，AND 两组）——docx/export 两行 scope 仅有双重印证，实现面与 QA 面翻倍，两级权限降级路径复杂。
+  - **裁定：B**（Owner 2026-10-08 18:15 决策卡）——本期同期实现 `wiki_doc_links`，Stage 2 已按此交付。
 - **决策 2：wiki/docx 链接的降级文案**
   - A（推荐）：维持现状（仅引述块内 bare `/file/` 有 note），wiki/docx 链接不注入提示。
   - B：把 note 扩到 wiki/docx 链接（「请以附件形式发送」类提示）——纯文案低风险，但引述块判定边界需再核一轮。
+  - **裁定：B**——note 扩展到 wiki/docx 链接，已按条件式表述实施（「若链接内容未自动附上，请直接以附件发送」）。
 
 ## 9. 验证边界与 QA live test 复核清单
 
