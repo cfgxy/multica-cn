@@ -521,6 +521,15 @@
     "advanced": {
       "expand": "展开",
       "collapse": "收起"
+    },
+    "delete": {
+      "action": "删除实例",
+      "hint": "将删除该实例、其存储的 API Key 与所属 Profile，操作不可撤销。",
+      "confirm_title": "删除实例？",
+      "confirm_message": "「{{name}}」及其存储的 API Key 将被永久删除，操作不可撤销。",
+      "cancel": "取消",
+      "confirm": "删除",
+      "failed": "删除实例失败"
     }
   }
 }
