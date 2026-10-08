@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError } from "./api";
+import { ApiError, api } from "./api";
 
 const { getCurrentSlug } = vi.hoisted(() => ({
   getCurrentSlug: vi.fn<() => string | null>(() => null),
@@ -291,5 +291,144 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
     );
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).status).toBe(0);
+  });
+});
+
+
+describe("ApiClient.uploadFile", () => {
+  afterEach(() => {
+    api.setToken(null);
+    api.setOptions({ onUnauthorized: undefined });
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const pngAsset = {
+    uri: "file:///tmp/a.png",
+    name: "a.png",
+    type: "image/png",
+  };
+
+  // RN 的 fetch 在 signal 中止时以 name 为 "AbortError" 的错误 reject——
+  // 模拟这种「悬挂到 signal 才 settle」的形状，正是 RUYI-569 修复前
+  // uploadFile 在弱网下的表现。
+  const makeHangingFetch = () =>
+    vi.fn(
+      (_path: string, init: RequestInit): Promise<Response> =>
+        new Promise((_, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("Aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+
+  it("uploads multipart without a preset Content-Type and releases the timeout timer on success", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        id: "att-1",
+        filename: "a.png",
+        url: "https://cdn.example.test/a.png",
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const attachment = await api.uploadFile(pngAsset, { issueId: "issue-1" });
+
+    expect(attachment).toMatchObject({
+      id: "att-1",
+      filename: "a.png",
+      url: "https://cdn.example.test/a.png",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("POST");
+    // multipart 边界必须由 fetch 自己设置，不能预设 Content-Type。
+    expect(init.headers && !("Content-Type" in init.headers)).toBe(true);
+    expect((init.headers as Record<string, string>)["X-Request-ID"]).toBe(
+      "request-1",
+    );
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("fails with a distinguishable status-0 ApiError when the upload exceeds 120s", async () => {
+    vi.useFakeTimers();
+    const fetchMock = makeHangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const pending = api.uploadFile(pngAsset);
+    // 先同步挂上 rejection handler 再推进 fake timers，否则 reject 发生在
+    // advanceTimersByTimeAsync 内部，Node 会记一次 unhandled rejection。
+    const settled = pending.then(
+      () => {
+        throw new Error("upload should have timed out");
+      },
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    const err: unknown = await settled;
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(0);
+    expect((err as Error).message).toContain("timed out");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("propagates caller cancellation as-is instead of classifying it as a timeout", async () => {
+    vi.useFakeTimers();
+    const fetchMock = makeHangingFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    const caller = new AbortController();
+    const pending = api.uploadFile(pngAsset, { signal: caller.signal });
+    const settled = pending.then(
+      () => {
+        throw new Error("upload should have been cancelled");
+      },
+      (e: unknown) => e,
+    );
+    caller.abort();
+
+    const err: unknown = await settled;
+    // 调用方取消原样透传（与 fetchRaw 对 caller abort 的处理一致），
+    // 不得误分类为超时 ApiError。
+    expect(err).not.toBeInstanceOf(ApiError);
+    expect((err as Error).name).toBe("AbortError");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("maps HTTP failures to ApiError and keeps the 401 sign-out hook", async () => {
+    const onUnauthorized = vi.fn();
+    api.setOptions({ onUnauthorized });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ message: "unauthorized" }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const err: unknown = await api.uploadFile(pngAsset).then(
+      () => {
+        throw new Error("upload should have failed");
+      },
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(401);
+    expect((err as ApiError).message).toBe("unauthorized");
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });

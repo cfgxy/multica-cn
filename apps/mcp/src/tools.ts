@@ -1,60 +1,58 @@
 /**
- * The RUYI-82 v1 MCP tool surface.
+ * The Multica MCP tool surface.
+ *
+ * Each tool description carries the caller-facing contract: when to reach
+ * for the tool, which adjacent tool fits better, and the side effects that
+ * matter (runs started, quota spent, destructive outcomes). Parameter-level
+ * constraints live in the input schema, not the description.
  *
  * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
- *       get_issue, search_issues, progress_digest, list_comments, get_comment.
- * Write: create_issue (general — any workspace, any project), add_comment,
- *       update_issue_status, update_issue (edit an existing issue's core
- *       fields in place — pure metadata, never starts a run), assign_issue
- *       (assign/reassign/unassign an existing issue — agent/squad assignment
- *       triggers a real run, the tool description must say so),
- *       bulk_update_issues (per-item results, same write path and run
- *       semantics as the single-issue tools), create_project,
- *       update_project (project metadata; never spawns agent runs),
- *       edit_comment, delete_comment (RUYI-352 comment management: the
- *       product's own author-or-admin gate is enforced server-side;
- *       content-changing edits re-run the comment's trigger computation, so
- *       the edit_comment description must declare the mention side effects,
- *       and defined failures come back as structured results keyed by `code`
- *       — permission_denied, revision_conflict, not_found, invalid_mentions —
- *       never as exception strings), get_issue_relations +
- *       manage_issue_relations (RUYI-351 structured issue relations — pure
- *       relationship changes never trigger a run, and the descriptions must
- *       say so explicitly).
- * Read (RUYI-419 workspace management): list_runs (workspace-wide run view),
- *       get_agent, list_runtimes, list_squads, get_squad.
- * Write (RUYI-419 workspace management): create_agent, update_agent,
- *       archive_agent (SIDE EFFECT: cancels all of the agent's queued and
- *       in-flight runs), restore_agent, create_squad, update_squad,
- *       archive_squad (SIDE EFFECT: reassigns the squad's issues to its
- *       leader; no squad restore exists). These act through the product's own
- *       ownership gates, never start runs, and expose no secret-bearing
- *       agent fields — projections only. Agents/squads carry no revision
- *       field, so these writes have no optimistic locking; the descriptions
- *       say so.
+ *       get_issue, search_issues, progress_digest, list_comments, get_comment,
+ *       get_issue_relations.
+ * Write (issues): create_issue, add_comment, update_issue_status,
+ *       update_issue (pure metadata edits that never start a run),
+ *       assign_issue (agent/squad assignment triggers a real run), assign
+ *       semantics mirrored per-item by bulk_update_issues, edit_comment,
+ *       delete_comment, manage_issue_relations. Comment management is gated
+ *       by the product's own author-or-admin check server-side, carries a
+ *       revision + updated_at audit trail, and content-changing edits re-run
+ *       the comment's trigger computation (mention side effects). Defined
+ *       failures come back as structured results keyed by `code` —
+ *       permission_denied, revision_conflict, not_found, invalid_mentions —
+ *       never as exception strings.
+ * Write (projects): create_project, update_project — project metadata only,
+ *       never spawns agent runs. There is deliberately no delete_project:
+ *       project deletion is a hard delete.
+ * Write (agents/squads): create_agent, update_agent, archive_agent (SIDE
+ *       EFFECT: cancels all of the agent's queued and in-flight runs),
+ *       restore_agent, create_squad, update_squad, archive_squad (SIDE
+ *       EFFECT: reassigns the squad's issues to its leader; no squad restore
+ *       exists). These act through the product's own ownership gates, never
+ *       start runs, and expose no secret-bearing agent fields — projections
+ *       only. Agents/squads carry no revision field, so these writes have no
+ *       optimistic locking; the descriptions say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
- *       real agent run and consumes the token owner's quota; the tool
- *       description must say so).
- * Write (RUYI-458 project resource bindings): list_project_resources,
+ *       real agent run and consumes the token owner's quota).
+ * Write (project resource bindings): list_project_resources,
  *       create_project_resource, update_project_resource,
  *       delete_project_resource — the same REST surface the web project page
- *       drives. Binding/unbinding is metadata-only (a pointer row), never
- *       touches the real repository or directory, and never starts a run;
+ *       drives. A binding is metadata-only (a typed pointer row): it never
+ *       touches the real repository or directory and never starts a run;
  *       resource_type is immutable server-side, so update_project_resource's
  *       schema never declares it. Defined failures (duplicate binding,
  *       unknown ids, the worktree daemon gate) come back as structured
  *       results keyed by `code`.
  *
  * Every tool takes an explicit `workspace` (slug, or UUID). There is no
- * ambient workspace: the Owner decision makes create_issue universal, so
+ * ambient workspace: create_issue is universal across the workspace list, so
  * callers always name their target.
  *
- * The security envelope (Owner-confirmed) still excludes permission/member
- * management and cross-user administration. Project deletion is additionally
- * a hard delete, so there is no delete_project either (RUYI-354 scope
- * decision). Comment edit/delete are exposed with the product's own
- * author-or-admin permission gate and audit trail (revision + updated_at) —
- * no separate MCP-side permission layer.
+ * The security envelope excludes permission/member management and cross-user
+ * administration: no tool reads or writes members, invitations, tokens or
+ * settings, and the server-side scope table rejects OAuth tokens on those
+ * routes regardless of granted scope. Comment edit/delete ride the product's
+ * own author-or-admin permission gate — there is no separate MCP-side
+ * permission layer.
  */
 
 import { DIGEST_TRACKED_STATUSES, buildDigest } from "./digest.js";
@@ -202,7 +200,7 @@ function issueProperty(): JsonSchemaProperty {
   return {
     type: "string",
     description:
-      "Issue identifier (e.g. RUYI-82) or UUID, within the target workspace.",
+      "Issue identifier (e.g. ENG-42) or UUID, within the target workspace.",
   };
 }
 
@@ -329,7 +327,7 @@ function classifyUpdateFailure(error: unknown): BulkUpdateItemError {
   return { code: "error", message: error instanceof Error ? error.message : String(error) };
 }
 
-// ---- structured comment failures (RUYI-352) ------------------------------
+// ---- structured comment failures -----------------------------------------
 //
 // The comment management endpoints define a small outcome matrix — permission
 // denial (403), revision conflict (409), unknown/already-deleted comment (404),
@@ -385,7 +383,7 @@ function structuredCommentFailure(error: unknown): Record<string, unknown> | und
   }
 }
 
-// ---- structured project-resource failures (RUYI-458) ----------------------
+// ---- structured project-resource failures ---------------------------------
 //
 // The project_resource endpoints define a small outcome matrix — bad ref
 // shape (400), permission denial (403), unknown project/resource (404),
@@ -429,7 +427,7 @@ function structuredResourceFailure(error: unknown): Record<string, unknown> | un
   }
 }
 
-// The binding projection the resource tools return (RUYI-458): identity,
+// The binding projection the resource tools return: identity,
 // typed pointer, display metadata and order — the fields a caller needs to
 // re-address the binding (id) or judge what it points at (type + ref).
 function resourceBrief(resource: ProjectResourceInfo): Record<string, unknown> {
@@ -443,7 +441,7 @@ function resourceBrief(resource: ProjectResourceInfo): Record<string, unknown> {
   };
 }
 
-// The full base-field projection the project tools return (RUYI-354). Flat on
+// The full base-field projection the project tools return. Flat on
 // purpose: get_project is the read entry, create/update echo it so the caller
 // always walks away with the revision it needs for the next write.
 function projectFull(project: ProjectInfo): Record<string, unknown> {
@@ -470,12 +468,12 @@ function projectFull(project: ProjectInfo): Record<string, unknown> {
   return out;
 }
 
-// Safe projections for the agent/squad management surface (RUYI-419). The
+// Safe projections for the agent/squad management surface. The
 // Go AgentResponse carries secret-bearing fields (runtime_config, mcp_config,
 // custom_env values, composio allowlist); these helpers re-project onto the
 // metadata subset instead of forwarding the payload, so no secret-bearing
 // value can reach tool output even though the REST response contains it —
-// same envelope the product applies on its own responses (MUL-2600).
+// same envelope the product applies on its own responses.
 function agentBrief(agent: AgentDetailInfo): Record<string, unknown> {
   return {
     id: agent.id,
@@ -563,7 +561,7 @@ function nullableDate(args: Record<string, unknown>, key: string): string | null
   return validateProjectDate(args, key) ?? null;
 }
 
-// ---- execution-config helpers (RUYI-433) ---------------------------------
+// ---- execution-config helpers --------------------------------------------
 //
 // The config faces share one dialect: read revision → write with
 // expected_revision → structured revision_conflict carrying actual_revision;
@@ -571,7 +569,7 @@ function nullableDate(args: Record<string, unknown>, key: string): string | null
 // discovered catalog lists the model as incompatible. All of it lands as
 // structured results keyed by `code`, never exception strings.
 
-/** Tri-state PATCH argument for the agent config faces (MUL-2339): absent →
+/** Tri-state PATCH argument for the agent config faces: absent →
  * keep, "" → explicit clear, value → set. optionalString would collapse ""
  * to "absent", so this reads the raw arg. */
 function triStateString(args: Record<string, unknown>, key: string): string | undefined {
@@ -769,7 +767,7 @@ function runtimeBrief(runtime: RuntimeInfo): Record<string, unknown> {
   };
 }
 
-/** Daemon instance grouping over the workspace's runtimes (RUYI-433
+/** Daemon instance grouping over the workspace's runtimes (config
  * discovery): the backend has no dedicated daemon-list endpoint for member
  * tokens, so instances are derived from the runtimes' daemon_id + status. */
 function groupDaemonInstances(runtimes: RuntimeInfo[]): Array<Record<string, unknown>> {
@@ -844,8 +842,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_workspaces",
     description:
-      "List the Multica workspaces the authenticated user belongs to. " +
-      "Returns id, name, slug and issue prefix for each; use the slug as the `workspace` argument of every other tool.",
+      "List the Multica workspaces the authenticated user belongs to: id, name, slug, description and issue prefix. " +
+      "Entry point for every session — every other tool takes the returned slug as its `workspace` argument. " +
+      "Takes no arguments.",
     inputSchema: { type: "object", properties: {}, required: [] },
     async handler(_args, client) {
       const workspaces = await client.listWorkspaces();
@@ -864,7 +863,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_agents",
     description:
-      "List the agents available in a workspace. Use a returned agent id with dispatch_agent.",
+      "List the dispatchable agents in a workspace: id, name, short description and whether a runtime is bound. " +
+      "Read-only. Start here to pick a target for dispatch_agent; use get_agent for one agent's full profile " +
+      "(instructions, model, status) and list_runtimes for the runtimes themselves.",
     inputSchema: {
       type: "object",
       properties: { workspace: wsProperty() },
@@ -887,7 +888,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_projects",
     description:
-      "List projects in a workspace. Use a returned project id with create_issue or progress_digest.",
+      "List the projects in a workspace with id, title, status and issue counts. " +
+      "Read-only. Use get_project for one project's full metadata and write revision; " +
+      "a project id scopes create_issue, filters list_issues and feeds progress_digest.",
     inputSchema: {
       type: "object",
       properties: {
@@ -917,9 +920,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_project",
     description:
-      "Get ONE project in a workspace with its full metadata and the optimistic-lock revision. " +
-      "Read-only. `instructions` is project-level prompt text injected into every task brief in the project. " +
-      "Use list_projects to find project ids.",
+      "Read one project's full metadata — instructions (project-level prompt text injected into every task brief " +
+      "in the project), lead, dates, issue counts — plus the revision the next optimistic write needs. " +
+      "Read-only. Find ids with list_projects, edit with update_project, and list a project's issues via " +
+      "list_issues filtered by project_id.",
     inputSchema: {
       type: "object",
       properties: {
@@ -938,8 +942,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "create_project",
     description:
-      "Create a project in a workspace. Returns the new project id and its revision (starts at 1) — pass that revision as expected_revision on update_project. " +
-      "Metadata-only: creating a project does not create issues and never triggers agent runs.",
+      "Create a project in a workspace: the container that groups issues and can inject shared `instructions` into every task brief inside it. " +
+      "Returns the new project id and its initial write revision (1) — pass that revision as expected_revision on the first update_project. " +
+      "Metadata-only: creating a project creates no issues and never triggers agent runs. Find it afterwards via list_projects.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1000,9 +1005,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "update_project",
     description:
-      "Update project metadata (PATCH): omitted fields keep their current value, an explicit null clears a nullable field (description, instructions, icon, lead_type/lead_id, start_date, due_date). " +
-      "Pass expected_revision (from a previous read or write) for optimistic locking — a stale value fails with a structured revision_conflict instead of overwriting a concurrent change. " +
-      "Metadata-only: updating a project never triggers agent runs or creates tasks.",
+      "Edit a project's metadata in place (PATCH): omitted fields keep their current value, an explicit null clears a nullable field (description, instructions, icon, lead_type/lead_id, start_date, due_date). " +
+      "Pass expected_revision (from a previous read or write) for optimistic locking — a stale value fails with a structured revision_conflict instead of overwriting a concurrent change; re-read with get_project and retry. " +
+      "Metadata-only: updating a project never triggers agent runs and there is no project deletion on this surface.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1112,8 +1117,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_issues",
     description:
-      "List issues in a workspace with optional filters. Returns brief issue refs plus the total matching count. " +
-      "For keyword search use search_issues; for a status overview use progress_digest.",
+      "List issues in a workspace with optional filters (status, project, assignee, sort, pagination). " +
+      "Read-only; returns brief issue refs plus the total matching count. " +
+      "For keyword search use search_issues, for one issue's full record use get_issue, and for a status overview use progress_digest.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1167,8 +1173,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_issue",
     description:
-      "Get one issue with full title, description and (by default) its comment thread. " +
-      "The issue can be referenced by identifier (RUYI-82) or UUID.",
+      "Read one issue's full record — title, description, status, assignee, relations context — with its comment thread included by default (include_comments=false for a lighter read). " +
+      "Read-only. The issue can be referenced by identifier (e.g. ENG-42) or UUID; find identifiers via list_issues or search_issues, " +
+      "and use list_comments/get_comment for threaded comment access.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1197,8 +1204,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "search_issues",
     description:
-      "Full-text search issues in a workspace by keyword. Matches titles, descriptions and comments; " +
-      "pass include_closed to search done/cancelled issues too.",
+      "Full-text search issues in a workspace by keyword, matching titles, descriptions and comments; closed (done/cancelled) issues are excluded unless include_closed is set. " +
+      "Read-only. Use list_issues instead when you already know the filter (status/project/assignee); use get_issue to expand one hit.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1231,8 +1238,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "progress_digest",
     description:
-      "Progress snapshot for a workspace: open-issue counts per status, overdue and due-soon issues, " +
-      "and the most recently active issues. The main entry point for 'how are we doing' conversations.",
+      "Progress snapshot for a workspace or a single project: open-issue counts per status, overdue and due-soon issues, and the most recently active issues. " +
+      "Read-only. The main entry point for 'how are we doing' conversations; use list_issues when callers need raw issue rows instead of the summary, " +
+      "and list_runs to see agent execution activity.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1283,8 +1291,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "create_issue",
     description:
-      "Create an issue in any workspace the authenticated user belongs to, optionally inside a project. " +
-      "The general capture path for ideas. Returns the server-assigned identifier (e.g. RUYI-83). " +
+      "Create an issue in any workspace the authenticated user belongs to, optionally inside a project — the general capture path for new work. " +
+      "Returns the server-assigned identifier (e.g. ENG-43). Creating an issue never triggers an agent run by itself, " +
+      "but assigning an agent may queue one once the issue leaves backlog; to hand work to an agent immediately use dispatch_agent instead. " +
       "Use list_workspaces to find the workspace slug and list_projects to find a project id.",
     inputSchema: {
       type: "object",
@@ -1382,7 +1391,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_comments",
     description:
-      "List an issue's comments with bounded-read modes for agents (RUYI-352). Read-only. " +
+      "List an issue's comments with bounded-read modes for agents. Read-only. " +
       "Modes: thread=<comment id> returns that thread's root plus every descendant (the server resolves the root from any anchor; add tail=<N> to keep only the N newest replies — the root always comes back); " +
       "recent=<N> returns the N most recently active threads, each as root + all descendants; " +
       "roots_only=true returns top-level comments with reply_count / last_activity_at orientation stats; " +
@@ -1443,7 +1452,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_comment",
     description:
-      "Fetch ONE comment in full: exact body, author, parent, created_at/updated_at and revision (RUYI-352). Read-only. " +
+      "Fetch ONE comment in full: exact body, author, parent, created_at/updated_at and revision. Read-only. " +
       "revision > 1 (or updated_at later than created_at) marks an edited comment; there is no deeper per-edit history. " +
       "Returns found=false with code not_found when the id is unknown, the comment was deleted, or it lives outside the given issue/workspace. " +
       "Also reports thread_root_id so the caller can pull the surrounding thread with list_comments. " +
@@ -1508,7 +1517,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "edit_comment",
     description:
-      "Edit ONE existing comment: replace its content (Markdown supported) (RUYI-352). " +
+      "Edit ONE existing comment: replace its content entirely (Markdown supported). Prefer this over delete_comment whenever the thread should survive. " +
       "Permissions: only the comment's author or a workspace admin can edit; anyone else gets the structured result code permission_denied. " +
       "Concurrency: pass expected_revision (from a previous read of the comment) for optimistic locking — if the comment changed meanwhile, the edit is refused with code revision_conflict carrying actual_revision; re-read and retry. " +
       "WARNING (run side effects): a content-CHANGING edit re-runs the comment's whole trigger computation on the new body, exactly as if it were posted fresh — an explicit @agent/@squad mention kept or added in the new content dispatches that agent (a REAL run consuming the token owner's quota), and a member-edited comment on an agent/squad-assigned issue can also re-reach the assignee. Every dispatch outcome is reported in trigger_outcomes. " +
@@ -1566,7 +1575,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "delete_comment",
     description:
-      "Delete ONE comment permanently (RUYI-352). There is no tombstone: the body becomes unrecoverable, and deleting a parent comment deletes its whole reply subtree with it. " +
+      "Delete ONE comment permanently. Use edit_comment instead when only the content is wrong — deletion is unrecoverable. There is no tombstone: the body becomes unrecoverable, and deleting a parent comment deletes its whole reply subtree with it. " +
       "Permissions: only the comment's author or a workspace admin can delete; anyone else gets the structured result code permission_denied. " +
       "SIDE EFFECTS: agent runs still queued from this comment's mentions are cancelled so no run executes the deleted content; deleting itself starts no run and consumes no quota. " +
       "Audit: the deletion bumps the issue revision and broadcasts a comment_deleted event; the comment body itself is gone. " +
@@ -1596,7 +1605,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "update_issue_status",
     description:
       "Move an issue to another status (backlog | todo | in_progress | in_review | done | blocked | cancelled, or a workspace custom status key). " +
-      "NOTE: if the issue has an agent/squad assignee and leaves the backlog category, this dispatches a run (real quota use); pass suppress_run=true to change the status only.",
+      "NOTE: if the issue has an agent/squad assignee and leaves the backlog category, this dispatches a run (real quota use); pass suppress_run=true to change the status only. " +
+      "For other field edits use update_issue, for assignee changes use assign_issue; to re-check where the issue stands read it back with get_issue.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1875,7 +1885,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_issue_relations",
     description:
-      "Get one issue's structured relations (RUYI-351): parent plus the five edge views — blocks, blocked_by, relates_to, supersedes, superseded_by — each a list of issue briefs (id, identifier, title, status). Read-only. " +
+      "Get one issue's structured relations: parent plus the five edge views — blocks, blocked_by, relates_to, supersedes, superseded_by — each a list of issue briefs (id, identifier, title, status). Read-only. " +
       "Each edge is visible from both endpoints in each side's frame: a blocks edge on one issue reads as blocked_by on the other, a supersedes edge as superseded_by; relates_to reads the same both ways. " +
       "Use manage_issue_relations to change any of these.",
     inputSchema: {
@@ -1906,7 +1916,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "manage_issue_relations",
     description:
-      "Manage one EXISTING issue's structured relations (RUYI-351). Actions: set_parent (target_issue required — re-parents the issue; the server rejects cycles), clear_parent (target_issue must be omitted), add_relation / remove_relation (relation_type plus target_issue required). " +
+      "Manage one EXISTING issue's structured relations. Actions: set_parent (target_issue required — re-parents the issue; the server rejects cycles), clear_parent (target_issue must be omitted), add_relation / remove_relation (relation_type plus target_issue required). " +
       "relation_type is one of blocks, blocked_by, relates_to, supersedes, superseded_by, named from THIS issue's perspective: blocked_by(A→B) stores 'B blocks A', superseded_by(A→B) stores 'B supersedes A', relates_to is symmetric — adding it from either side dedupes to one edge. " +
       "SIDE EFFECTS: NONE on agent runs — establishing, remounting or removing relations NEVER dispatches, wakes, or queues an agent run and consumes no run quota (unlike assign_issue or dispatch_agent, no suppress flag is involved). " +
       "A committed change bumps BOTH endpoints' issue revisions. Pass expected_revision (from a previous read) for optimistic concurrency: a stale value answers the structured revision_conflict error and nothing changes. " +
@@ -2178,7 +2188,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       "Dispatch an agent on a new issue described by `prompt` (issue quick-create): creates the issue and enqueues one agent run. " +
       "WARNING: this triggers a REAL agent run and consumes the token owner's Multica quota — use only when the user explicitly asks an agent to act. " +
-      "Returns the queued task_id; completion is asynchronous (the agent reports back on the issue).",
+      "Pick the agent with list_agents. To hand an existing issue to an agent use assign_issue, and to converse with an agent on an existing thread prefer add_comment with an @mention; " +
+      "to re-run finished work use retry_run. Returns the queued task_id; completion is asynchronous (the agent reports back on the issue).",
     inputSchema: {
       type: "object",
       properties: {
@@ -2218,7 +2229,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_issue_runs",
     description:
-      "List the execution runs of ONE issue (RUYI-292): every run — parallel ones included — with status, agent, trigger source, timing and failure summary. " +
+      "List the execution runs of ONE issue: every run — parallel ones included — with status, agent, trigger source, timing and failure summary. " +
       "Read-only. status filter takes a comma-separated list of raw statuses (queued, dispatched, deferred, waiting_local_directory, running, cancel_requested, completed, failed, cancelled) or the 'pending' alias for the queued-family display bucket (queued+dispatched+deferred+waiting_local_directory); 'cancel_requested' means a stop was accepted and is awaiting runtime confirmation. " +
       "trigger filter buckets: comment (issue-comment triggered), autopilot, rerun (manual), system_retry. " +
       "Unknown filter values match nothing and return an empty list. Use get_run for one run's detail and retry chain.",
@@ -2289,9 +2300,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "search_audit_events",
     description:
-      "Search the workspace audit trail (RUYI-355): the unified append-only record of run lifecycle, cancel attribution, runtime connect/sweep/GC verdicts, agent env/profile security events and deployment anchors — the same trail the web app reads. " +
+      "Search the workspace audit trail: the unified append-only record of run lifecycle, cancel attribution, runtime connect/sweep/GC verdicts, agent env/profile security events and deployment anchors — the same trail the web app reads. " +
       "Newest first, keyset-paginated. domain is one of issue | run | agent | runtime | ops; event_type is '<domain>.<action>' (e.g. run.cancelled, runtime.gc). " +
-      "Use it to answer 'what happened to this run/issue/agent, who did it, and why' without touching activity_log. Read-only.",
+      "Use it to answer 'what happened to this run/issue/agent, who did it, and why' when list_issue_runs and get_run lack the attribution detail. Read-only.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2396,8 +2407,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_run",
     description:
-      "Get ONE run of an issue in detail (RUYI-292): status (including the two-phase 'cancel_requested' stop-in-progress state), timing, failure reason and raw error, cancel attribution (who asked to stop, when), and the full retry chain (ancestors + descendants across both manual-rerun and system-retry lineage). " +
-      "Read-only. Errors: 404 if the run id does not exist or belongs to a different issue; 403 if you lack workspace access.",
+      "Get ONE run of an issue in detail: status (including the two-phase 'cancel_requested' stop-in-progress state), timing, failure reason and raw error, cancel attribution (who asked to stop, when), and the full retry chain (ancestors + descendants across both manual-rerun and system-retry lineage). " +
+      "Read-only. Find run ids with list_issue_runs; stop a run with cancel_run, re-run finished work with retry_run. " +
+      "Errors: 404 if the run id does not exist or belongs to a different issue; 403 if you lack workspace access.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2440,7 +2452,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "cancel_run",
     description:
-      "Stop ONE specific run of an issue by run id (RUYI-292). SIDE EFFECT: requests a real stop — for an in-flight run (running/dispatched/deferred/waiting_local_directory) the status moves to cancel_requested and the runtime interrupts the agent process tree, then confirms; the row only becomes 'cancelled' after that confirmation. A queued run (never started) is cancelled immediately. " +
+      "Stop ONE specific run of an issue by run id. SIDE EFFECT: requests a real stop — for an in-flight run (running/dispatched/deferred/waiting_local_directory) the status moves to cancel_requested and the runtime interrupts the agent process tree, then confirms; the row only becomes 'cancelled' after that confirmation. A queued run (never started) is cancelled immediately. " +
       "Other parallel runs of the same issue are NOT affected. " +
       "Semantics: repeat against cancel_requested → already_cancelling (the interrupt nudge is re-sent); repeat against cancelled → already_cancelled (idempotent); completed/failed runs answer 409 not_cancellable — a finished run cannot be stopped. " +
       "Errors: 403 no workspace access, 404 unknown run, 409 finished run. A stop that stays unconfirmed keeps cancel_requested — retry the cancel after ~30s (the call is safe to repeat).",
@@ -2488,7 +2500,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "retry_run",
     description:
-      "Retry ONE finished run of an issue (RUYI-292): failed and cancelled runs can be retried; retrying creates a NEW run on the SAME agent with the agent's CURRENT configuration (not a snapshot), in a fresh session, linked to the source run so the full retry chain stays traceable. The old run is never modified. " +
+      "Retry ONE finished run of an issue: failed and cancelled runs can be retried; retrying creates a NEW run on the SAME agent with the agent's CURRENT configuration (not a snapshot), in a fresh session, linked to the source run so the full retry chain stays traceable. The old run is never modified. " +
       "SIDE EFFECT: enqueues a real agent run and consumes the token owner's quota — use only when the user explicitly asks to re-run the work. " +
       "Anti-storm rules: if the agent already has an unfinished run on this issue → 409 agent_already_queued; if this source already has an unfinished retry → 409 retry_descendant_active; a repeat within ~5 seconds returns the run the first call created (idempotent, HTTP 200 vs 202 for a fresh enqueue). " +
       "Errors: 403 you may no longer invoke this agent, 404 unknown run, 409 source run has not finished.",
@@ -2520,7 +2532,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 
 
-  // ---- execution-config management (RUYI-433) ----------------------------
+  // ---- execution-config management ---------------------------------------
   // Discovery + read-modify-write over daemon instances, runtimes, model
   // catalogs, per-agent execution config (runtime / model / thinking level)
   // and workspace execution profiles. The write faces follow the same
@@ -3383,7 +3395,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 
-  // ---- workspace-wide run view + agent/squad management (RUYI-419) --------
+  // ---- workspace-wide run view + agent/squad management -------------------
   // Reads never trigger runs or any other side effect. Writes act on agent /
   // squad metadata through the product's own ownership gates (owner-or-admin
   // for agents, creator-or-admin for squads) and never start an agent run;
@@ -3394,7 +3406,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_runs",
     description:
-      "List agent runs across a WHOLE workspace (RUYI-419) — 'what ran, what is running, what failed' without knowing an issue first. " +
+      "List agent runs across a WHOLE workspace — 'what ran, what is running, what failed' without knowing an issue first. " +
       "Read-only. Each row carries the run's issue (identifier + title), agent, status, trigger source, timing and failure summary. " +
       "Filters combine with AND: status (comma-separated raw statuses or the 'pending' alias = queued+dispatched+deferred+waiting_local_directory), agent_id, project_id, issue (UUID or PREFIX-N), trigger (comment/autopilot/rerun/system_retry), created_after/created_before (RFC3339). " +
       "Unknown filter values match nothing (empty result, not an error). Visibility: only runs of agents you may access; paging via limit+offset with exact has_more/next_offset. " +
@@ -3412,7 +3424,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         project_id: { type: "string", description: "Project UUID filter, from list_projects." },
         issue: {
           type: "string",
-          description: "Single-issue filter: issue UUID or PREFIX-N identifier (e.g. MUL-42).",
+          description: "Single-issue filter: issue UUID or PREFIX-N identifier (e.g. ENG-7).",
         },
         trigger: {
           type: "string",
@@ -3485,7 +3497,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_agent",
     description:
-      "Get ONE agent's key runtime configuration (RUYI-419): instructions, model, thinking level, concurrency cap, runtime binding and invocation permission mode. " +
+      "Get ONE agent's key runtime configuration: instructions, model, thinking level, concurrency cap, runtime binding and invocation permission mode. " +
       "Read-only; reading an agent never triggers anything. Secret-bearing values (runtime_config, mcp_config, custom_env) are NOT exposed — only coarse indicators (has_custom_env, custom_env_key_count, mcp_config_redacted); manage secrets in the Multica UI. " +
       "Agents have no revision field (no optimistic locking). Use list_agents for discovery.",
     inputSchema: {
@@ -3505,7 +3517,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "create_agent",
     description:
-      "Create an agent in a workspace (RUYI-419). Any workspace member can create one and becomes its owner. " +
+      "Create an agent in a workspace. Any workspace member can create one and becomes its owner. " +
       "Metadata-only: creating an agent never triggers a run. runtime_id is required (pick one with list_runtimes); an agent without a usable runtime cannot be dispatched. " +
       "Secrets (runtime_config, mcp_config, custom_env) are NOT settable here — configure them in the Multica UI after creation.",
     inputSchema: {
@@ -3550,10 +3562,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "update_agent",
     description:
-      "Update an existing agent's metadata (RUYI-419): name, description, instructions, model, thinking_level, service_tier, max_concurrent_tasks, or rebind runtime_id. " +
+      "Update an existing agent's metadata: name, description, instructions, model, thinking_level, service_tier, max_concurrent_tasks, or rebind runtime_id. " +
       "PATCH semantics: an omitted key keeps the current value. Does NOT trigger runs. " +
       "Gates: only the agent owner or a workspace admin may update; agents have no revision field — concurrent edits are last-write-wins (no expected_revision). " +
-      "Secrets are never editable here (the server rejects custom_env on this path by design, MUL-2600); use the Multica UI.",
+      "Secrets are never editable here (the server rejects custom_env on this path by design); use the Multica UI.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3596,7 +3608,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "archive_agent",
     description:
-      "Archive (soft-disable) an agent (RUYI-419). SIDE EFFECT — this is heavier than it looks: archiving CANCELS every queued or in-flight run of this agent immediately, and the agent disappears from list_agents/dispatch until restored. " +
+      "Archive (soft-disable) an agent. SIDE EFFECT — this is heavier than it looks: archiving CANCELS every queued or in-flight run of this agent immediately, and the agent disappears from list_agents/dispatch until restored. " +
       "The agent row, history and configuration are kept. Gates: agent owner or workspace admin; built-in system agents cannot be archived. " +
       "Repeat on an already-archived agent returns the structured outcome already_archived. Restore with restore_agent.",
     inputSchema: {
@@ -3633,7 +3645,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "restore_agent",
     description:
-      "Restore a previously archived agent (RUYI-419). The agent becomes dispatchable again; past runs stay cancelled — nothing is re-enqueued automatically. " +
+      "Restore a previously archived agent. The agent becomes dispatchable again; past runs stay cancelled — nothing is re-enqueued automatically. " +
       "Gates: agent owner or workspace admin. Restoring a non-archived agent returns the structured outcome not_archived. Read-only for runs: restoring never triggers a run.",
     inputSchema: {
       type: "object",
@@ -3669,7 +3681,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "list_squads",
     description:
-      "List a workspace's squads (RUYI-419): named teams that can be assigned issues and dispatch their leader agent. Read-only. " +
+      "List a workspace's squads: named teams that can be assigned issues and dispatch their leader agent. Read-only. " +
       "Archived squads are not listed (the server lists active squads only). Use get_squad for one squad's instructions and members.",
     inputSchema: {
       type: "object",
@@ -3694,7 +3706,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_squad",
     description:
-      "Get ONE squad's configuration (RUYI-419): description, instructions, leader agent, member preview and archive state. Read-only. Use list_squads for discovery.",
+      "Get ONE squad's configuration: description, instructions, leader agent, member preview and archive state. Read-only. Use list_squads for discovery.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3712,7 +3724,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "create_squad",
     description:
-      "Create a squad (RUYI-419): a named team whose issues are worked by its leader agent with named members. Any workspace member can create one and becomes its creator; the leader_id must be an agent in the same workspace (pick one with list_agents). " +
+      "Create a squad: a named team whose issues are worked by its leader agent with named members. Any workspace member can create one and becomes its creator; the leader_id must be an agent in the same workspace (pick one with list_agents). " +
       "Metadata-only: creating a squad never triggers a run. Dispatch work to it with assign_issue (assignee_type squad).",
     inputSchema: {
       type: "object",
@@ -3741,7 +3753,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "update_squad",
     description:
-      "Update a squad's metadata (RUYI-419): name, description, instructions, or rotate leader_id. " +
+      "Update a squad's metadata: name, description, instructions, or rotate leader_id. " +
       "PATCH semantics: an omitted key keeps the current value. Does NOT trigger runs. " +
       "Gates: the squad creator or a workspace admin; squads have no revision field — concurrent edits are last-write-wins (no expected_revision). " +
       "Note on leader rotation: if the new leader's runtime is unbound, the server pauses autopilots targeting this squad rather than let them dispatch into a dead end.",
@@ -3776,7 +3788,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "archive_squad",
     description:
-      "Archive a squad (RUYI-419). SIDE EFFECTS: the squad stops being assignable, and every issue still assigned to it is REASSIGNED to its leader agent; autopilots targeting the squad are retargeted to the leader. " +
+      "Archive a squad. SIDE EFFECTS: the squad stops being assignable, and every issue still assigned to it is REASSIGNED to its leader agent; autopilots targeting the squad are retargeted to the leader. " +
       "This is a soft archive — the squad row and history are kept, but there is NO restore: re-creating a squad or reassigning issues back is manual. Gates: squad creator or workspace admin. " +
       "Repeat on an already-archived squad returns the structured outcome already_archived.",
     inputSchema: {
@@ -3817,8 +3829,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "list_quick_replies",
     description:
       "List a workspace's quick replies — the shared comment templates its " +
-      "members pick from the issue composer's quick-reply menu. Read-open to " +
-      "every member; ordered by the admin's arrangement.",
+      "members pick from the issue composer's quick-reply menu. Read-only, " +
+      "open to every member; ordered by the admin's arrangement. Feed a row's " +
+      "content into add_comment; manage the templates with create/update/delete_quick_reply.",
     inputSchema: {
       type: "object",
       properties: { workspace: wsProperty() },
@@ -3920,7 +3933,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       return { deleted: true, id };
     },
   },
-  // ---- project resource bindings (RUYI-458) ---------------------------------
+  // ---- project resource bindings ---------------------------------------------
   // The exact REST surface the web project page drives, so MCP callers
   // manage the same rows. Binding and unbinding are metadata-only: they
   // record or remove a pointer, never clone/delete/modify the underlying

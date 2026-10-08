@@ -60,8 +60,8 @@ func (f *fakeTypingAPIClient) ListChatMessages(context.Context, InstallationCred
 func (f *fakeTypingAPIClient) DownloadMessageResource(context.Context, InstallationCredentials, DownloadResourceParams) (DownloadedResource, error) {
 	return DownloadedResource{}, nil
 }
-func (f *fakeTypingAPIClient) BatchGetUsers(context.Context, InstallationCredentials, []string) (map[string]string, error) {
-	return nil, nil
+func (f *fakeTypingAPIClient) GetUserName(context.Context, InstallationCredentials, string) (string, error) {
+	return "", nil
 }
 func (f *fakeTypingAPIClient) AddMessageReaction(_ context.Context, p AddReactionParams) (string, error) {
 	f.addCalled = append(f.addCalled, addReactionCall{p.InstallationID, p.MessageID, p.EmojiType})
