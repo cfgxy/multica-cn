@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
+	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -38,10 +40,18 @@ type LarkInstallationResponse struct {
 	UpdatedAt   string `json:"updated_at"`
 	// Capabilities carries the latest capability-probe verdicts
 	// (RUYI-400): granted / missing / unknown per catalog entry, with
-	// the scopes a missing capability needs. Nil until the first probe
-	// ran (install-time sweep or an explicit recheck) — the UI renders
-	// "not checked yet" rather than guessing.
-	Capabilities []lark.CapabilityStateView `json:"capabilities,omitempty"`
+	// the scopes a missing capability needs. The three wire states mean
+	// distinct things (RUYI-545): absent = the server predates the
+	// field (old deployments — the UI hides the panel); [] = the bot
+	// has never been probed (installed before the feature) — the UI
+	// shows "not checked yet" with the recheck entry; null = the
+	// stored verdicts exist but could not be read right now — the UI
+	// shows a visible error/retry hint instead of a silent blank.
+	// omitempty is deliberately absent: an empty verdict set must
+	// serialize as [] — omitting it collapsed "never probed" into
+	// "old server" and hid the whole panel for pre-feature bots
+	// (RUYI-545).
+	Capabilities []lark.CapabilityStateView `json:"capabilities"`
 }
 
 func larkInstallationToResponse(row lark.Installation) LarkInstallationResponse {
@@ -105,11 +115,19 @@ func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) 
 	out := make([]LarkInstallationResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := larkInstallationToResponse(row)
-		// Attach the stored probe verdicts. Best-effort read: a storage
-		// failure leaves the field nil (UI shows "not checked yet")
-		// rather than failing the whole listing.
+		// Attach the stored probe verdicts. Best-effort read, but no
+		// longer silent (RUYI-545): a storage failure serializes as
+		// capabilities:null — the UI renders a visible retry hint —
+		// while the listing itself still succeeds. The nil field must
+		// stay distinguishable from "field absent" (old server), which
+		// is why the warning is logged instead of the row being skipped.
 		if states, err := lark.ListCapabilityStates(r.Context(), h.Queries, row.ID); err == nil {
 			resp.Capabilities = states
+		} else {
+			slog.Warn("lark capability states read failed; serving null capabilities",
+				append(logger.RequestAttrs(r),
+					"installation_id", uuidToString(row.ID),
+					"error", err)...)
 		}
 		out = append(out, resp)
 	}
