@@ -189,7 +189,8 @@
       "unknown_error": "不明なエラー",
       "search": "検索",
       "close": "閉じる",
-      "request_timeout": "リクエストがタイムアウトしました（{{seconds}} 秒）"
+      "request_timeout": "リクエストがタイムアウトしました（{{seconds}} 秒）",
+      "upload_timeout": "アップロードがタイムアウトしました（{{seconds}} 秒）"
     },
     "create_issue": {
       "mode_smart": "スマート",
