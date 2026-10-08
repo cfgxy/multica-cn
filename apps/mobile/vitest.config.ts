@@ -21,11 +21,13 @@ export default defineConfig({
     environment: "node",
     globals: true,
     // plugins/ 是 Expo config plugin(构建期 Node 代码,纯字符串改写),
-    // 与 lib/ 同属"无 RN 运行时依赖"的可测范围。
+    // 与 lib/ 同属"无 RN 运行时依赖"的可测范围。app.config.ts 同理——
+    // 构建期动态配置（MULTICA_APP_VERSION 注入，RUYI-573）。
     include: [
       "lib/**/*.test.ts",
       "data/**/*.test.ts",
       "plugins/**/*.test.ts",
+      "app.config.test.ts",
     ],
     passWithNoTests: true,
   },
