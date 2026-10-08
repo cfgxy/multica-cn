@@ -1067,6 +1067,8 @@
     "capability_send_messages": "メッセージの送信",
     "capability_read_history": "メッセージ履歴の読み取り（引用返信）",
     "capability_download_media": "メッセージ内ファイルのダウンロード",
+    "capability_drive_file_links": "Feishu共有ファイルのダウンロード（/file/リンク）",
+    "capability_wiki_doc_links": "FeishuのWiki・ドキュメントの読み取り（/wiki/、/docx/リンク）",
     "capability_lookup_contacts": "送信者情報の取得",
     "install_permissions_title": "このボットに必要な権限",
     "install_permissions_hint": "QR スキャンでボットを作成すると、以下のスコープが申請されます。各行はいずれか 1 つでよく、すべての行を満たす必要があります。承認が必要なスコープは企業管理者の承認が必要です。",

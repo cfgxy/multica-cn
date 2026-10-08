@@ -56,15 +56,36 @@ func NewFeishuMediaResolver(api APIClient, creds CredentialsResolver, storage me
 }
 
 // HasMedia reports whether the message carries downloadable Feishu resources
-// (standalone image/video/file/audio or post-embedded img/media spans). Pure
+// (standalone image/video/file/audio, post-embedded img/media spans, or a
+// bare cloud-file/doc/wiki share link in any scanned text — RUYI-572). Pure
 // in-memory decode of the already-received payload — it runs on the connector
-// ACK path.
+// ACK path; the share-link scan is plain string work with no I/O.
 func (r *feishuMediaResolver) HasMedia(msg channel.InboundMessage) bool {
 	lm, err := larkMsgFromRaw(msg)
 	if err != nil {
 		return false
 	}
-	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0 || hasShareLinks(lm)
+}
+
+// hasShareLinks mirrors HasMedia's coverage for links only: the trigger's
+// own text/post body plus the recent/quoted descriptors the enricher
+// harvested.
+func hasShareLinks(lm InboundMessage) bool {
+	if len(shareLinksFromMessage(lm)) > 0 {
+		return true
+	}
+	for _, m := range lm.RecentMedia {
+		if len(shareLinksFromMessage(InboundMessage{MessageID: m.MessageID, MessageType: m.MessageType, Content: m.Content})) > 0 {
+			return true
+		}
+	}
+	for _, m := range lm.QuotedMedia {
+		if len(shareLinksFromMessage(InboundMessage{MessageID: m.MessageID, MessageType: m.MessageType, Content: m.Content})) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.ResolvedInstallation, _ engine.ResolvedIdentity, _ pgtype.UUID, chatMessageID pgtype.UUID, msg channel.InboundMessage) channel.InboundMessage {
@@ -88,7 +109,23 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
 		})...)
 	}
-	if len(resources) == 0 {
+	// Share links ride the same ledger→download→upload→MediaRef chain
+	// (RUYI-572): scanned from the trigger's own text/post body and from
+	// the recent/quoted descriptors. Deduped across sources so a link
+	// surfaced by both the trigger and its quoted parent resolves once.
+	links := shareLinkResources(lm)
+	for _, recent := range lm.RecentMedia {
+		links = append(links, shareLinkResources(InboundMessage{
+			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
+		})...)
+	}
+	for _, quoted := range lm.QuotedMedia {
+		links = append(links, shareLinkResources(InboundMessage{
+			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
+		})...)
+	}
+	links = dedupeLinkResources(links)
+	if len(resources) == 0 && len(links) == 0 {
 		return msg
 	}
 	if r.api == nil || r.creds == nil || r.storage == nil || r.ledger == nil {
@@ -163,6 +200,7 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			SizeBytes:  sizeBytes,
 		})
 	}
+	r.resolveShareLinks(ctx, creds, lm, inst, chatMessageID, links, &msg)
 	return msg
 }
 
@@ -250,6 +288,210 @@ type larkMediaResource struct {
 	mimeType  string
 	sizeBytes int64
 	messageID string
+}
+
+// larkLinkResource is one share link harvested from message text, tagged
+// with the message whose body carried it (the object key's message
+// component, so trigger/quoted/recent copies of one link keep stable,
+// collision-free keys per chat message).
+type larkLinkResource struct {
+	link      shareLink
+	messageID string
+}
+
+// shareLinkResources extracts the share links of one message.
+func shareLinkResources(lm InboundMessage) []larkLinkResource {
+	links := shareLinksFromMessage(lm)
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]larkLinkResource, 0, len(links))
+	for _, l := range links {
+		out = append(out, larkLinkResource{link: l, messageID: lm.MessageID})
+	}
+	return out
+}
+
+// dedupeLinkResources keeps the first occurrence of each family+token —
+// the trigger's own links win over quoted/recent copies of the same URL.
+func dedupeLinkResources(links []larkLinkResource) []larkLinkResource {
+	if len(links) <= 1 {
+		return links
+	}
+	seen := make(map[string]bool, len(links))
+	out := make([]larkLinkResource, 0, len(links))
+	for _, lr := range links {
+		key := string(lr.link.Family) + "\x00" + lr.link.Token
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, lr)
+	}
+	return out
+}
+
+// resolveShareLinks drives the ledger→download→upload→MediaRef chain for
+// every scanned share link. Same contract, same degradation direction as
+// the attachment loop: any failure logs and continues — it never blocks
+// the message flow, and a permission-class failure feeds the link family's
+// capability hint (drive_file_links for /file/, wiki_doc_links for
+// /docx/ and /wiki/).
+func (r *feishuMediaResolver) resolveShareLinks(ctx context.Context, creds InstallationCredentials, lm InboundMessage, inst engine.ResolvedInstallation, chatMessageID pgtype.UUID, links []larkLinkResource, msg *channel.InboundMessage) {
+	if len(links) == 0 {
+		return
+	}
+	slc, ok := r.api.(ShareLinkClient)
+	if !ok {
+		// No Drive/Docs surface (stub client, pre-RUYI-572 fake): the
+		// enricher's share-link note and log-only silence remain the
+		// degradation path.
+		r.logMediaWarn("lark media ingest: share-link client unavailable, links left as text", lm, nil)
+		return
+	}
+	for _, lr := range links {
+		r.resolveOneShareLink(ctx, slc, creds, lm, inst, chatMessageID, lr, msg)
+	}
+}
+
+// resolveOneShareLink resolves one link in two steps. Step 1 fetches the
+// content descriptor — for wiki links the get_node routing — BEFORE the
+// intent record, so a deterministically unsupported wiki target (sheet,
+// bitable, mindnote, legacy doc…) never leaves a pending ledger row for
+// the reconciler to settle. Step 2 records the durable intent and uploads,
+// exactly like the attachment path.
+func (r *feishuMediaResolver) resolveOneShareLink(ctx context.Context, slc ShareLinkClient, creds InstallationCredentials, lm InboundMessage, inst engine.ResolvedInstallation, chatMessageID pgtype.UUID, lr larkLinkResource, msg *channel.InboundMessage) {
+	var (
+		data       []byte
+		contentTyp string
+		filename   string
+		fetchErr   error
+	)
+	// fetchType is fixed by the FAMILY, not by where wiki routing lands,
+	// so the object key is stable across retries regardless of routing.
+	fetchType := "link:" + string(lr.link.Family)
+	capability := CapabilityWikiDocLinks
+	switch lr.link.Family {
+	case shareLinkFile:
+		capability = CapabilityDriveFileLinks
+		got, err := slc.DownloadDriveFile(ctx, creds, lr.link.Token)
+		if err != nil {
+			fetchErr = err
+			break
+		}
+		data = got.Data
+		contentTyp = firstNonEmpty(got.ContentType, "application/octet-stream")
+		filename = firstNonEmpty(cleanFilename(got.Filename), "feishu-file-"+lr.link.Token)
+	case shareLinkDocx:
+		content, err := slc.GetDocxRawContent(ctx, creds, lr.link.Token)
+		if err != nil {
+			fetchErr = err
+			break
+		}
+		data = []byte(content)
+		contentTyp = "text/plain; charset=utf-8"
+		filename = textArtifactFilename("", "feishu-docx-"+lr.link.Token)
+	case shareLinkWiki:
+		node, err := slc.GetWikiNode(ctx, creds, lr.link.Token)
+		if err != nil {
+			fetchErr = err
+			break
+		}
+		switch node.ObjType {
+		case "docx":
+			content, err := slc.GetDocxRawContent(ctx, creds, node.ObjToken)
+			if err != nil {
+				fetchErr = err
+				break
+			}
+			data = []byte(content)
+			contentTyp = "text/plain; charset=utf-8"
+			filename = textArtifactFilename(node.Title, "feishu-wiki-"+lr.link.Token)
+		case "file":
+			got, err := slc.DownloadDriveFile(ctx, creds, node.ObjToken)
+			if err != nil {
+				fetchErr = err
+				break
+			}
+			data = got.Data
+			contentTyp = firstNonEmpty(got.ContentType, "application/octet-stream")
+			filename = firstNonEmpty(cleanFilename(got.Filename),
+				textArtifactFilename(node.Title, "feishu-wiki-"+lr.link.Token))
+		default:
+			// sheet / bitable / mindnote / legacy doc / slides: export
+			// paths are out of scope this iteration (ADR 005 §8 决策 1B).
+			r.logger.Warn("lark media ingest: wiki node routes to an unsupported object type",
+				"message_id", lm.MessageID, "obj_type", node.ObjType)
+			return
+		}
+	}
+	if fetchErr != nil {
+		r.logMediaWarn("lark media ingest: share link fetch failed", lm, fetchErr)
+		r.hints.ObserveDenied(ctx, creds, lm.ChatID, capability, fetchErr)
+		return
+	}
+	r.hints.ObserveSuccess(creds.AppID, lm.ChatID, capability)
+
+	key := mediaObjectKey(inst, chatMessageID, larkMediaResource{
+		messageID: lr.messageID,
+		fetchType: fetchType,
+		key:       lr.link.Token,
+	})
+	linkURL := r.storage.ObjectURL(key)
+	ok, err := r.ledger.RecordPendingMediaObject(ctx, engine.RecordPendingMediaObjectParams{
+		StorageKey:     key,
+		WorkspaceID:    inst.WorkspaceID,
+		ChatMessageID:  chatMessageID,
+		StorageURL:     linkURL,
+		InstallationID: inst.ID,
+	})
+	if err != nil {
+		r.logMediaWarn("lark media ingest skipped: intent record failed", lm, err)
+		return
+	}
+	if !ok {
+		r.logMediaWarn("lark media ingest skipped: key owned by reconciler", lm, nil)
+		return
+	}
+	uploadedBytes, err := r.uploadResource(ctx, key, io.NopCloser(bytes.NewReader(data)), int64(len(data)), contentTyp, filename)
+	if err != nil {
+		r.logMediaWarn("lark media upload failed", lm, err)
+		return
+	}
+	sizeBytes := int64(len(data))
+	if sizeBytes == 0 {
+		sizeBytes = uploadedBytes
+	}
+	msg.MediaRefs = append(msg.MediaRefs, channel.MediaRef{
+		Type:       channel.MsgTypeFile,
+		StorageKey: key,
+		StorageURL: linkURL,
+		Filename:   filename,
+		MimeType:   contentTyp,
+		SizeBytes:  sizeBytes,
+	})
+}
+
+// textArtifactFilename names an uploaded docx/wiki text artifact: the wiki
+// node title when present (sanitized), else the generated fallback; always
+// given a .txt extension.
+func textArtifactFilename(title, fallback string) string {
+	name := cleanFilename(title)
+	if name == "" {
+		name = fallback
+	}
+	if path.Ext(name) == "" {
+		name += ".txt"
+	}
+	return name
+}
+
+// messageCarriesMediaOrLinks is the enricher's harvest predicate: a recent
+// / quoted message is worth capturing when it carries a downloadable
+// attachment OR a Feishu share link (file/docx/wiki) in its text — both
+// resolve into MediaRefs downstream.
+func messageCarriesMediaOrLinks(lm InboundMessage) bool {
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(shareLinksFromMessage(lm)) > 0
 }
 
 func mediaResourcesFromMessage(lm InboundMessage) []larkMediaResource {
