@@ -17,9 +17,23 @@
     "tab": {
       "title": "決定"
     },
+    "tabs": {
+      "all": "すべて",
+      "open": "未決定",
+      "answered": "決定済み",
+      "cancelled": "無効"
+    },
+    "filters": {
+      "title": "フィルター",
+      "reset": "リセット",
+      "a11y": "フィルター",
+      "recommended_only": "推奨ありのみ",
+      "agent_created_only": "エージェント作成のみ"
+    },
     "page": {
       "title": "決定センター",
-      "load_failed": "意思決定カードの読み込みに失敗しました: {{reason}}"
+      "load_failed": "意思決定カードの読み込みに失敗しました: {{reason}}",
+      "empty_filtered": "現在のタブやフィルターに一致する意思決定カードはありません"
     }
   }
 }

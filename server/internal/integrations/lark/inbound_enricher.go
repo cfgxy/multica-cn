@@ -97,6 +97,54 @@ type inboundEnricher struct {
 	recentContextSize  int
 	logger             *slog.Logger
 	hints              *PermissionHintSender
+	names              *userNameCache
+}
+
+// userNameCache memoizes open_id -> display name per app, mirroring
+// CC Connect's user-name sync.Map (entries are never invalidated —
+// display names change rarely and a stale name is cosmetic). The
+// adaptation is the bound: FIFO eviction at userNameCacheMaxEntries so
+// a pathological tenant cannot grow the map forever. Keyed by
+// app_id+open_id because open_ids are app-scoped.
+type userNameCache struct {
+	mu    sync.Mutex
+	max   int
+	byKey map[string]string
+	order []string
+}
+
+// userNameCacheMaxEntries bounds the memoized name entries. A busy
+// 100-person chat resolves ~100 entries per installation; 1024 covers
+// every realistic workspace many times over.
+const userNameCacheMaxEntries = 1024
+
+func newUserNameCache() *userNameCache {
+	return &userNameCache{
+		max:   userNameCacheMaxEntries,
+		byKey: make(map[string]string),
+	}
+}
+
+func (c *userNameCache) get(appID, openID string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	name, ok := c.byKey[appID+"\x00"+openID]
+	return name, ok
+}
+
+func (c *userNameCache) put(appID, openID, name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := appID + "\x00" + openID
+	_, exists := c.byKey[key]
+	if !exists && len(c.order) >= c.max {
+		delete(c.byKey, c.order[0])
+		c.order = c.order[1:]
+	}
+	if !exists {
+		c.order = append(c.order, key)
+	}
+	c.byKey[key] = name
 }
 
 // NewInboundEnricher builds an Enricher backed by the given Lark API
@@ -115,6 +163,7 @@ func NewInboundEnricher(client APIClient, cfg InboundEnricherConfig) Enricher {
 		recentContextSize:  cfg.RecentContextSize,
 		logger:             cfg.Logger,
 		hints:              cfg.Hints,
+		names:              newUserNameCache(),
 	}
 }
 
@@ -191,16 +240,16 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	// Phase 1 — fetch every set of messages we may render. Each is
 	// best-effort; its error is handled where the block is rendered. The
 	// fetches are independent reads, so they run CONCURRENTLY (RUYI-448:
-	// serial list → get → BatchGetUsers made the name resolution the
+	// serial list → get → contact lookup made the name resolution the
 	// third sequential round-trip inside the ~2s EnrichTimeout — exactly
 	// the call that starved first, degrading every speaker to "User N").
-	// Running list ∥ get keeps the Contact batch at the second serial
-	// step. Hint observations and the media-descriptor harvest stay on
-	// this goroutine, after the wait, so ordering there is deterministic.
-	// We fetch up front (rather than fetch-and-render per block) so Phase
-	// 2 can resolve display names for EVERY speaker across ALL blocks in a
-	// single Contact batch — otherwise a quoted/forwarded sender that
-	// isn't in the recent window would fall back to "User N".
+	// Running list ∥ get keeps the Contact lookups off the serial path.
+	// Hint observations and the media-descriptor harvest stay on this
+	// goroutine, after the wait, so ordering there is deterministic. We
+	// fetch up front (rather than fetch-and-render per block) so Phase 2
+	// can resolve display names for EVERY speaker across ALL blocks in
+	// one pass — otherwise a quoted/forwarded sender that isn't in the
+	// recent window would fall back to "User N".
 	var recentItems []LarkMessage
 	var recentErr error
 	var quotedItems []LarkMessage
@@ -361,12 +410,21 @@ func senderOpenIDs(msgs []LarkMessage) []string {
 	return out
 }
 
-// resolveNames batch-resolves open_ids to display names, best-effort: a
-// failure (restricted contact scope, transport error) logs and returns
-// nil so every speaker labeler degrades to positional "User N" rather
-// than blocking ingestion. Duplicate / empty ids are dropped first. A
-// permission-class failure also feeds the contact_lookup hint; a success
-// re-arms it.
+// resolveNamesMaxInFlight bounds the concurrent single-user lookups.
+// uniq speakers per enrich are bounded by the recent-context page size
+// (≤50) plus quote/forward senders; the semaphore keeps a cold-cache
+// burst well under Lark's 50 QPS per-app budget shared with the other
+// enrich fetches.
+const resolveNamesMaxInFlight = 8
+
+// resolveNames resolves open_ids to display names over the single-user
+// Contact lookup (CC Connect parity), best-effort: per-user failures
+// (restricted contact scope, invisible user, transport error) log and
+// leave that speaker to the positional "User N" fallback rather than
+// blocking ingestion. Duplicate / empty ids are dropped first; a small
+// per-app cache absorbs repeat lookups across messages. A
+// permission-class failure feeds the contact_lookup hint; a pass with
+// no permission-class failure re-arms it.
 func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCredentials, chatID ChatID, ids []string) map[string]string {
 	uniq := make([]string, 0, len(ids))
 	seen := make(map[string]bool, len(ids))
@@ -380,14 +438,68 @@ func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCr
 	if len(uniq) == 0 {
 		return nil
 	}
-	names, err := e.client.BatchGetUsers(ctx, creds, uniq)
-	if err != nil {
-		e.logger.Warn("lark enricher: speaker name resolution failed", "ids", len(uniq), "err", err)
-		e.hints.ObserveDenied(ctx, creds, chatID, CapabilityContactLookup, err)
+
+	out := make(map[string]string, len(uniq))
+	var misses []string
+	for _, id := range uniq {
+		if name, ok := e.names.get(creds.AppID, id); ok {
+			out[id] = name
+			continue
+		}
+		misses = append(misses, id)
+	}
+	if len(misses) == 0 {
+		return out
+	}
+
+	var (
+		mu       sync.Mutex
+		denied   error
+		resolved int
+	)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, resolveNamesMaxInFlight)
+	for _, id := range misses {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			name, err := e.client.GetUserName(ctx, creds, id)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err != nil && isRuntimePermissionDenied(err):
+				// Scope gap for the whole installation: surface once via
+				// the hint deduper; keep degrading per-speaker meanwhile.
+				if denied == nil {
+					denied = err
+				}
+				e.logger.Debug("lark enricher: speaker name lookup denied", "open_id", id, "err", err)
+			case err != nil || name == "":
+				// CC Connect's degradation branch: log quietly, skip the
+				// speaker (positional label), cache nothing.
+				e.logger.Debug("lark enricher: speaker name lookup failed", "open_id", id, "err", err)
+			default:
+				e.names.put(creds.AppID, id, name)
+				out[id] = name
+				resolved++
+			}
+		}(id)
+	}
+	wg.Wait()
+
+	if denied != nil {
+		e.logger.Warn("lark enricher: speaker name resolution denied", "ids", len(misses), "err", denied)
+		e.hints.ObserveDenied(ctx, creds, chatID, CapabilityContactLookup, denied)
+	} else if resolved > 0 || len(misses) == 0 {
+		e.hints.ObserveSuccess(creds.AppID, chatID, CapabilityContactLookup)
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	e.hints.ObserveSuccess(creds.AppID, chatID, CapabilityContactLookup)
-	return names
+	return out
 }
 
 // fetchRecentItems pulls the recent group window and returns the
