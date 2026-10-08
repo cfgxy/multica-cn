@@ -68,7 +68,10 @@ func TestScopesForCapability(t *testing.T) {
 			"im:message.group_bot_msg:readonly", "im:message.group_msg", "im:message.group_msg.include_bot:read", "im:message.group_msg:readonly",
 			"im:message.p2p_msg", "im:message.p2p_msg:readonly",
 		}},
-		{CapabilitySendMessages, []string{"im:message", "im:message:send_as_bot"}},
+		// send_messages: the POST /im/v1/messages doc's three-way grant
+		// row — im:message:send is the closed-to-new-apps historical
+		// scope, kept for legacy-install diff correctness.
+		{CapabilitySendMessages, []string{"im:message", "im:message:send", "im:message:send_as_bot"}},
 		// read_history: the intersection of the single-message GET and the
 		// conversation-list requirements — im:message.history:readonly
 		// grants the list but NOT the quoted-message GET, so it must not
@@ -84,7 +87,7 @@ func TestScopesForCapability(t *testing.T) {
 		// rows (API gate AND name-field grants) — ScopesForCapability
 		// flattens groups; dedup collapses the three shared grants.
 		{CapabilityContactLookup, []string{
-			"contact:contact.access_as_app", "contact:contact.base:readonly", "contact:contact:readonly", "contact:contact:readonly_as_app", "contact:user.base:readonly",
+			"contact:contact.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app", "contact:user.base:readonly",
 		}},
 	}
 	for _, tc := range cases {
@@ -138,6 +141,11 @@ func TestCapabilityScopeDiffGroupMsgGap(t *testing.T) {
 			want = []string{"im:message.group_msg", "im:message:readonly"}
 		case CapabilityMediaResources:
 			want = []string{"im:message.history:readonly", "im:message:readonly"}
+		case CapabilitySendMessages:
+			// The flatten-based diff lists every candidate grant, so the
+			// historical im:message:send shows up even though the granted
+			// im:message already satisfies the group.
+			want = []string{"im:message:send"}
 		default:
 			want = nil
 		}

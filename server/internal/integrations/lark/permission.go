@@ -46,7 +46,10 @@ const (
 //   - receive_messages → im.message.receive_v1 event doc (its 权限要求
 //     row lists nine subscription scopes; Multica needs one GROUP-side
 //     scope AND one P2P-side scope to cover both delivery paths)
-//   - send_messages → POST /im/v1/messages doc
+//   - send_messages → POST /im/v1/messages doc; its grant row is
+//     three-way (im:message / im:message:send_as_bot / im:message:send)
+//     — the third is the closed-to-new-apps historical scope, kept so a
+//     legacy install holding only it does not falsely read as missing
 //   - read_history → GET /im/v1/messages/{id} (quoted/forwarded) AND
 //     GET /im/v1/messages (recent context) docs; the required set is
 //     their intersection — see the catalog entry
@@ -105,7 +108,7 @@ var capabilityCatalog = []CapabilitySpec{
 		{"im:message.p2p_msg", "im:message.p2p_msg:readonly"},
 	}, false},
 	{CapabilitySendMessages, [][]string{
-		{"im:message", "im:message:send_as_bot"},
+		{"im:message", "im:message:send_as_bot", "im:message:send"},
 	}, true},
 	{CapabilityReadHistory, [][]string{
 		{"im:message", "im:message:readonly"},
