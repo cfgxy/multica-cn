@@ -1,7 +1,8 @@
 # ADR 004：飞书 capability→OAuth scope 映射审计（RUYI-546）
 
 - 日期：2026年10月08日
-- 状态：accepted（开发阶段自测闭环；真实飞书 live test 归 QA 阶段）
+- 状态：accepted（开发阶段自测闭环；真实飞书 live test 归 QA 阶段。同日 QA 实测后修订 probe 判定分类，见 §8）
+- 修订：2026-10-08 QA 全量实测（评论 `01a11a15`）拦截 probe 判定两个误报缺陷（P1 有权限判 missing、P2 实际 granted 判 unknown），据此拆分 probe 专用码集与真实目标运行时码集，映射总表（§1）不变。
 - 范围：`server/internal/integrations/lark/permission.go` capability catalog、probe、安装面板/补授权文案的权限映射依据；与 `cfgxy/cc-connect` 可用实现的复用/分叉对照。
 - 执行原则（Owner 2026-10-08 指令）：以 CC Connect 当前可工作的 Feishu 实现为事实基线；scope 由实际调用的 endpoint 反推并附官方依据，禁止先拍 scope 再让代码适配。
 
@@ -94,3 +95,32 @@ AND-of-OR 语义：每个内层组满足任一 scope 即该组满足，全部组
 
 - 单元/静态自测本 run 闭环；「同一真实飞书场景 CC Connect 能工作 Multica 也能工作」的验收（真实姓名、引用消息、merge_forward、真实附件、真实 installation token 下 probe）归 QA 阶段，本审计 §2 表即其复核清单。
 - 媒体 endpoint 权限行的直接抓取因官方页 JS 渲染未成，采用双重印证（§2），QA live test 时以安装面板实际映射复核。
+- 无权限安装在合成目标 probe 下的预期返回属推定，待低权限测试 app 复测闭环（§8 待验证项）。
+
+## 8. probe 业务码分类（QA 实测修订，2026-10-08）
+
+QA 全量实测（真实飞书 installation，评论 `01a11a15` 及附件 `ruyi-546-qa-evidence.md`）拦截了初版 probe 判定的两个误报缺陷，本节为修订后的分类语义，代码事实源为 `permission.go` 的三张码表。
+
+### 8.1 分类语义（合成目标语境）
+
+probe 的合成目标（`oc_probe_*` / `om_probe_*`）永不存在，判定按失败发生在哪一层分账：
+
+- **missing**：网关级 scope 检查拒绝——`99991672`（canonical 无权限）与 `99991002`（access denied）。仅这两码进 probe 专用码集。
+- **granted**：请求已过网关 scope 检查、倒在目标/参数校验上，即「有权限但目标不存在」：
+  - `23xxxx` 业务段（230001 invalid receive_id、230002、230011/230020/230050/230110 等）；
+  - `99992351` / `99992354`（not exist/参数族）——QA 实测在三项 capability（contact 查询、消息单条 GET、附件下载）上返回，同 token 数据面直调均 code 0，证实安装实际 granted。该族按显式白名单收录而非 99992xxx 区间放行，未见过的族员仍保守判 unknown。
+- **unknown**：token 错（99991663/99991664 族）、无业务码的传输错、及其余未登记码。保守三态不坍缩——unknown 永不折算为 granted。
+
+### 8.2 QA 拦截的两个缺陷（修订依据）
+
+- **P1**：初版把 230001/230027 沿用自真实目标 enricher 的码表判 missing。实测证明合成目标下参数校验先于业务层权限判定——有权限安装（历史消息含真实 bot 发送记录）的 send probe 同样得到 230001 "invalid receive_id"，即对任何安装都会误判 missing。修订：两码移出 probe 集，落入 23xxxx 业务段判 granted。
+- **P2**：99992351/99992354 不在权限表、不在 23xxxx 段、非 token 错，初版落 unknown，面板常驻「无法确定」。修订：按 §8.1 收录判 granted，与「业务码≠权限码 → granted」的既有设计语义一致。
+
+### 8.3 真实目标运行时分类不变
+
+`230001`（真实语境＝bot not in the chat）与 `230027`（missing `im:message.group_msg`）在**真实目标**上仍是有效权限拒绝信号：enricher/补授权 hint 面的运行时判定（`isRuntimePermissionDenied`）消费独立于 probe 集的 `runtimePermissionCodes`（含上述两码），语义与修订前逐字节一致（`inbound_enricher_recent_test.go` 有钉）。两个消费面各自语义正确：probe 面按 §8.1，真实运行时面不变。
+
+### 8.4 待验证（推定登记）
+
+- **推定**：无权限 app 在合成目标 probe 下的预期返回为网关级 canonical `99991672`（或 `99991002`）——即网关 scope 检查先于参数校验执行。该方向未经真实低权限安装验证（QA 本轮仅有权限高于该形态的 app）。
+- **闭环路径**：与验收 7（仅持 `contact:user.base:readonly` 判 missing）共用低权限测试 app 复测；复测通过后回写本节为「已验证」，若实测返回与推定不符，以实测为准重审 §8.1 的 missing 集。
