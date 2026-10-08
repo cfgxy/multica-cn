@@ -1065,7 +1065,7 @@
     "permission_status_unknown": "未判定",
     "capability_receive_messages": "接收消息（@机器人等）",
     "capability_send_messages": "发送消息",
-    "capability_read_history": "读取历史消息（回复引用）",
+    "capability_read_history": "读取历史消息（引用回复、转发展开与近期群聊上下文）",
     "capability_download_media": "下载消息中的文件",
     "capability_lookup_contacts": "查询发送者信息",
     "install_permissions_title": "机器人所需权限",
