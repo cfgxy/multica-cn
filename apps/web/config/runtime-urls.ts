@@ -202,6 +202,12 @@ function isBackendAuthPath(pathname: string): boolean {
   return pathname === "/auth" || pathname.startsWith("/auth/");
 }
 
+// Exported for the post-auth `next` navigation (lib/auth-resume-navigation.ts):
+// the rewrite table and the browser must agree on which /auth targets are
+// backend endpoints, or a login-page redirect would navigate the client router
+// into a path only the proxy can serve.
+export { isBackendAuthPath };
+
 // `/ws` is appended to the api base's PATH, not to its origin, and that is
 // deliberate: the base is whatever prefix the backend is mounted under, so
 // HTTP (`<base>/api/**`) and realtime (`<base>/ws`) must share it or a

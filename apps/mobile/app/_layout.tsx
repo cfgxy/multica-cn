@@ -12,6 +12,9 @@ import { PortalHost } from "@rn-primitives/portal";
 import { I18nextProvider } from "react-i18next";
 import i18n from "i18next";
 import { api } from "@/data/api";
+// RUYI-567: wire AppState into the API client (foreground deadline
+// re-check). Side-effect import, keep next to the onUnauthorized wiring.
+import "@/data/api-app-state";
 import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
 import { useStartupServerStore } from "@/data/startup-server-store";

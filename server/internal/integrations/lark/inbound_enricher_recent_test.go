@@ -382,17 +382,17 @@ func TestEnrichRecentContextResolvesNames(t *testing.T) {
 	if out.Body != want {
 		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
 	}
-	if len(fake.userCalls) != 1 {
-		t.Fatalf("expected one BatchGetUsers call, got %d", len(fake.userCalls))
-	}
-	// The batch must include the surrounding speakers AND the trigger sender.
+	// One single-user lookup per surrounding speaker AND the trigger sender.
 	got := map[string]bool{}
-	for _, id := range fake.userCalls[0] {
+	for _, id := range fake.userCalls {
 		got[id] = true
+	}
+	if len(fake.userCalls) != len(got) {
+		t.Errorf("expected one GetUserName call per unique id, got %d calls / %d unique", len(fake.userCalls), len(got))
 	}
 	for _, want := range []string{"ou_alice", "ou_bob", "ou_charlie"} {
 		if !got[want] {
-			t.Errorf("BatchGetUsers missing id %q (got %v)", want, fake.userCalls[0])
+			t.Errorf("GetUserName missing id %q (got %v)", want, fake.userCalls)
 		}
 	}
 }
@@ -484,19 +484,20 @@ func TestEnrichRecentContextWithQuotedReply(t *testing.T) {
 	if len(fake.calls) != 1 || fake.calls[0] != "om_parent" {
 		t.Errorf("expected one GetMessage(om_parent), got %v", fake.calls)
 	}
-	// The single name batch must include the quoted parent's sender even
-	// though it is not in the recent window.
-	if len(fake.userCalls) != 1 {
-		t.Fatalf("expected one BatchGetUsers call, got %d", len(fake.userCalls))
+	// The quoted parent's sender must be looked up even though it is not
+	// in the recent window; the window's own speaker (ou_bob) makes the
+	// second lookup.
+	if len(fake.userCalls) != 2 {
+		t.Fatalf("expected one GetUserName per unique speaker, got %v", fake.userCalls)
 	}
 	found := false
-	for _, id := range fake.userCalls[0] {
+	for _, id := range fake.userCalls {
 		if id == "ou_alice" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("BatchGetUsers must include quoted parent sender ou_alice, got %v", fake.userCalls[0])
+		t.Errorf("GetUserName must include quoted parent sender ou_alice, got %v", fake.userCalls)
 	}
 }
 
@@ -532,8 +533,8 @@ func TestEnrichForwardedResolvesNames(t *testing.T) {
 	if out.Body != want {
 		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
 	}
-	if len(fake.userCalls) != 1 {
-		t.Fatalf("expected one BatchGetUsers call, got %d", len(fake.userCalls))
+	if len(fake.userCalls) != 2 {
+		t.Errorf("expected one GetUserName call per forwarded speaker, got %v", fake.userCalls)
 	}
 }
 

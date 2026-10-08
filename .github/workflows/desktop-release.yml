@@ -11,14 +11,16 @@ name: Desktop Release
 #
 # Triggers:
 #   - pushing a `vX.Y.Z` tag  → release named after the tag
-#   - manual dispatch on a commit past a tag → prerelease named after
-#     `git describe` (e.g. `v0.4.41-182-g0a76682d0`), so a build is available
-#     without minting a version tag first.
 #
-# Publishing boundary: only the tag push channel may own a release named after
-# a tag. A manual run whose HEAD sits exactly on a tag is refused, and neither
-# channel writes into an existing release unless that release already points at
-# the commit being built — see scripts/desktop-release-tag.sh.
+# This channel is tag-only (RUYI-573 unified release scheme): formal installs
+# come from a `vX.Y.Z` tag whose version must match the packaged app, and
+# day-to-day Windows builds live in desktop-dev-build.yml instead. The old
+# workflow_dispatch channel (describe-named prereleases, opt-in unsigned mac
+# artifacts) is superseded by that dev workflow and has been removed here.
+#
+# Publishing boundary: the tag push channel owns the release named after the
+# tag; a build refuses to write into an existing release unless that release
+# already points at the commit being built — see scripts/desktop-release-tag.sh.
 
 on:
   push:
@@ -26,15 +28,6 @@ on:
       # Glob, not regex — the strict semver check happens in the `meta` job.
       - "v*.*.*"
       - "!v*-dirty*"
-  workflow_dispatch:
-    inputs:
-      include_mac:
-        description: >-
-          Also build macOS installers. They are ad-hoc signed only (no Developer
-          ID, no notarization), so they are uploaded as workflow artifacts and
-          never attached to the Release.
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -65,23 +58,13 @@ jobs:
       - name: Resolve release tag
         id: resolve
         shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            bash scripts/desktop-release-tag.sh push "${GITHUB_REF_NAME}"
-          else
-            # Manual run: name the release after the same `git describe` value
-            # that scripts/package.mjs bakes into the installers, so the
-            # release tag and the artifact version always match. The second
-            # argument is git's own answer to "is HEAD itself a tag" (empty when
-            # it is not); the script refuses on it, so this channel can never
-            # name the release a tag push owns.
-            bash scripts/desktop-release-tag.sh dispatch \
-              "$(git describe --tags --match 'v[0-9]*' --always --dirty)" \
-              "$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
-          fi
+          # Tag push: name the release after the pushed tag. The second
+          # argument is git's own answer to "is HEAD itself a tag" and is only
+          # informative here; the push mode of the script derives everything
+          # from GITHUB_REF_NAME.
+          bash scripts/desktop-release-tag.sh push "${GITHUB_REF_NAME}"
 
       - name: Create GitHub Release if missing
         env:
@@ -177,54 +160,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}
-          path: apps/desktop/dist
-          if-no-files-found: error
-
-  # macOS is opt-in and never attached to the Release: this repo has no Apple
-  # Developer ID certificate or notarization credentials wired into CI, so the
-  # only thing CI can produce is an ad-hoc signed build that Gatekeeper blocks
-  # on other machines. Wiring CSC_LINK + CSC_KEY_PASSWORD + APPLE_ID +
-  # APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID would let this job publish too.
-  desktop-mac:
-    needs: meta
-    if: github.event_name == 'workflow_dispatch' && inputs.include_mac
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.x"
-          check-latest: true
-          cache-dependency-path: server/go.sum
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Package Desktop installers (mac, unsigned)
-        working-directory: apps/desktop
-        env:
-          # No Developer ID cert available: fall back to an ad-hoc signature.
-          # package.mjs also disables notarization when APPLE_TEAM_ID is unset.
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: node scripts/package.mjs --mac --x64 --arm64 --publish never
-
-      - name: Upload Desktop artifacts (mac, unsigned)
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-mac-unsigned
           path: apps/desktop/dist
           if-no-files-found: error

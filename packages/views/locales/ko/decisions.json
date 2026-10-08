@@ -17,9 +17,43 @@
     "tab": {
       "title": "결정"
     },
+    "tabs": {
+      "all": "전체",
+      "open": "결정 대기",
+      "answered": "결정됨",
+      "cancelled": "무효"
+    },
+    "filters": {
+      "title": "필터",
+      "reset": "재설정",
+      "a11y": "필터",
+      "recommended_only": "추천 있음만",
+      "agent_created_only": "에이전트 생성만"
+    },
     "page": {
       "title": "결정 센터",
-      "load_failed": "결정 카드를 불러오지 못했습니다: {{reason}}"
+      "load_failed": "결정 카드를 불러오지 못했습니다: {{reason}}",
+      "empty_filtered": "현재 탭 또는 필터와 일치하는 결정 카드가 없습니다"
     }
+  },
+  "view": {
+    "section": "보기",
+    "list": "목록",
+    "board": "보드",
+    "tooltip_list": "목록 보기",
+    "tooltip_board": "보드 보기"
+  },
+  "filter": {
+    "tooltip": "필터",
+    "active_count_other": "필터 {{count}}개",
+    "reset": "초기화"
+  },
+  "board": {
+    "empty_column": "카드 없음"
+  },
+  "filtered_empty": {
+    "title": "필터와 일치하는 결정 카드가 없습니다",
+    "hint": "필터를 조정하거나 지워서 이 보기의 카드를 확인하세요.",
+    "clear_button": "필터 지우기"
   }
 }
