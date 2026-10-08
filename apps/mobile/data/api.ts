@@ -219,6 +219,7 @@ import {
   EMPTY_TASK_MESSAGE_LIST,
   UserSchema,
   WorkspaceListSchema,
+  AgentTaskSchema,
 } from "./schemas";
 import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
@@ -274,6 +275,24 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024;
  *  reasonable Multica payload size on cellular. */
 const FETCH_TIMEOUT_MS = 30_000;
 
+/** RUYI-568: login-chain deadline. Measured single-request overhead on the
+ *  slow (frpc relay) entry is 0.85–2.1s (RUYI-565 scope 2), so 10s bounds
+ *  the user's blind wait to ~5× the worst observed case instead of 30s.
+ *  Applies only to sendCode / verifyCode / getMe; every other request keeps
+ *  the 30s FETCH_TIMEOUT_MS ceiling. */
+const LOGIN_TIMEOUT_MS = 10_000;
+
+/** Budget for `/api/upload-file` (RUYI-569). Much larger than
+ *  FETCH_TIMEOUT_MS because the ceiling is MAX_FILE_SIZE (100MB) over a
+ *  weak uplink: at ~1MB/s the wire transfer alone is ~100s, plus TLS
+ *  handshake, server-side write and the response round trip. RN's fetch
+ *  exposes no upload-progress events, so a progress-aware idle timeout is
+ *  not an option without native modules — this is a fixed total budget.
+ *  A link slower than that fails here with a clear, distinguishable error
+ *  and the composer resets for retry; the pre-RUYI-569 alternative was an
+ *  unbounded hang. Tune only with QA weak-network evidence. */
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 export class ApiError extends Error {
   readonly status: number;
   readonly body?: unknown;
@@ -290,6 +309,14 @@ export interface ApiClientOptions {
    *  to clear the token + navigate to /login so a stale token doesn't keep
    *  every subsequent request looping on 401. */
   onUnauthorized?: () => void;
+  /** RUYI-567: Android RN pauses JS timers while the app is backgrounded
+   *  (Timing module on host pause), so the 30s timer below cannot fire
+   *  until — sometimes long after — the deadline. The platform layer
+   *  (data/api-app-state.ts, wired in app/_layout.tsx) subscribes the real
+   *  AppState and forwards foreground entries here; fetchRaw re-checks the
+   *  deadline on each entry and aborts a request that is still pending.
+   *  Optional: absent in node tests, where the timer path is covered. */
+  subscribeAppState?: (listener: (state: string) => void) => () => void;
 }
 
 class ApiClient {
@@ -306,7 +333,7 @@ class ApiClient {
 
   private async fetchRaw(
     path: string,
-    init: RequestInit & { signal?: AbortSignal } = {},
+    init: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<Response> {
     const rid = createRequestId();
     const start = Date.now();
@@ -335,27 +362,43 @@ class ApiClient {
     // Hermes does NOT support AbortSignal.timeout() or AbortSignal.any() —
     // see facebook/react-native#42042 and livekit#4014. So we manually
     // compose a single controller that aborts on:
-    //   (a) caller-side signal (TQ cancelling a stale/inactive query, etc),
-    //   (b) 30s timeout (defends against iOS suspending the network task
-    //       silently during background — fetch() then never resolves;
-    //       facebook/react-native#35384). Without this, a refetch
+    //   (a) caller-side signal (TQ cancelling a stale/inactive query, the
+    //       login screens cancelling an abandoned send-code, etc),
+    //   (b) per-request deadline — FETCH_TIMEOUT_MS by default, tightened
+    //       to LOGIN_TIMEOUT_MS on the login chain (RUYI-568). This defends
+    //       against iOS suspending the network task silently during
+    //       background — fetch() then never resolves;
+    //       facebook/react-native#35384. Without this, a refetch
     //       triggered by WS reconnect can leave the FlatList pull-to-refresh
     //       spinner stuck on the screen indefinitely.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
-      // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
-      // 不是内部日志串。
-      controller.abort(
-        new Error(
-          i18n.t(
-            "common:mobile.common.request_timeout",
-            "Request timed out after {{seconds}}s",
-            { seconds: Math.round(FETCH_TIMEOUT_MS / 1000) },
-          ),
+    const timeoutMs = init.timeoutMs ?? FETCH_TIMEOUT_MS;
+    // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
+    // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
+    // 不是内部日志串。
+    const timeoutError = () =>
+      new Error(
+        i18n.t(
+          "common:mobile.common.request_timeout",
+          "Request timed out after {{seconds}}s",
+          { seconds: Math.round(timeoutMs / 1000) },
         ),
       );
-    }, FETCH_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => {
+      controller.abort(timeoutError());
+    }, timeoutMs);
+    // RUYI-567: the timer above is blind while the app is backgrounded
+    // (paused JS timers), so a request that outlives its deadline in the
+    // background must be re-judged on foreground entry — otherwise the
+    // caller keeps waiting past the hard ceiling with no error. The
+    // listener is scoped to this request and removed on settle.
+    const onForeground = (state: string) => {
+      if (state === "active" && Date.now() - start >= timeoutMs) {
+        controller.abort(timeoutError());
+      }
+    };
+    const unsubscribeAppState =
+      this.options.subscribeAppState?.(onForeground);
     const callerSignal = init.signal;
     const onCallerAbort = () => controller.abort(callerSignal?.reason);
     if (callerSignal) {
@@ -374,6 +417,7 @@ class ApiClient {
       });
     } catch (err) {
       clearTimeout(timeoutId);
+      unsubscribeAppState?.();
       callerSignal?.removeEventListener("abort", onCallerAbort);
       // Re-throw with a clearer message if this was our own timeout abort.
       if (
@@ -387,7 +431,7 @@ class ApiClient {
           duration: `${duration}ms`,
         });
         throw new ApiError(
-          `Request timed out after ${FETCH_TIMEOUT_MS}ms`,
+          `Request timed out after ${timeoutMs}ms`,
           0,
           undefined,
         );
@@ -395,6 +439,7 @@ class ApiClient {
       throw err;
     }
     clearTimeout(timeoutId);
+    unsubscribeAppState?.();
     callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
@@ -437,7 +482,7 @@ class ApiClient {
 
   private async fetch<T>(
     path: string,
-    init: RequestInit & { signal?: AbortSignal } = {},
+    init: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<T> {
     const response = await this.fetchRaw(path, init);
     if (response.status === 204) return undefined as T;
@@ -463,9 +508,12 @@ class ApiClient {
     path: string,
     schema: ZodType,
     fallback: T,
-    opts?: { signal?: AbortSignal; endpoint?: string },
+    opts?: { signal?: AbortSignal; endpoint?: string; timeoutMs?: number },
   ): Promise<T> {
-    const raw = await this.fetch<unknown>(path, { signal: opts?.signal });
+    const raw = await this.fetch<unknown>(path, {
+      signal: opts?.signal,
+      timeoutMs: opts?.timeoutMs,
+    });
     return parseWithFallback(raw, schema, fallback, {
       endpoint: opts?.endpoint ?? path,
     });
@@ -480,7 +528,7 @@ class ApiClient {
     schema: ZodType,
     fallback: T,
     init: RequestInit,
-    opts?: { signal?: AbortSignal; endpoint?: string },
+    opts?: { signal?: AbortSignal; endpoint?: string; timeoutMs?: number },
   ): Promise<T> {
     // `opts.signal` wins if both are passed, but absent opts.signal does
     // NOT clear init.signal — important because forgetting `?? init.signal`
@@ -489,6 +537,7 @@ class ApiClient {
     const raw = await this.fetch<unknown>(path, {
       ...init,
       signal: opts?.signal ?? init.signal ?? undefined,
+      timeoutMs: opts?.timeoutMs,
     });
     return parseWithFallback(raw, schema, fallback, {
       endpoint: opts?.endpoint ?? `${init.method ?? "GET"} ${path}`,
@@ -496,17 +545,27 @@ class ApiClient {
   }
 
   // --- Auth ---
-  async sendCode(email: string): Promise<void> {
+  // 登录三链路（RUYI-568）：10s deadline + 可选调用方取消通道。超时收紧
+  // 只作用于这三处；通用 API 保持 FETCH_TIMEOUT_MS 天花板。
+  async sendCode(email: string, opts?: { signal?: AbortSignal }): Promise<void> {
     await this.fetch<void>("/auth/send-code", {
       method: "POST",
       body: JSON.stringify({ email }),
+      signal: opts?.signal,
+      timeoutMs: LOGIN_TIMEOUT_MS,
     });
   }
 
-  async verifyCode(email: string, code: string): Promise<LoginResponse> {
+  async verifyCode(
+    email: string,
+    code: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<LoginResponse> {
     return this.fetch<LoginResponse>("/auth/verify-code", {
       method: "POST",
       body: JSON.stringify({ email, code }),
+      signal: opts?.signal,
+      timeoutMs: LOGIN_TIMEOUT_MS,
     });
   }
 
@@ -515,7 +574,7 @@ class ApiClient {
       "/api/me",
       UserSchema,
       EMPTY_USER,
-      { ...opts, endpoint: "getMe" },
+      { ...opts, endpoint: "getMe", timeoutMs: LOGIN_TIMEOUT_MS },
     );
   }
 
@@ -604,6 +663,19 @@ class ApiClient {
     });
   }
 
+  // Archived notifications, backing the inbox's "Archived" sub-view (RUYI-532,
+  // same capped endpoint web/desktop use — packages/core/api/client.ts
+  // listArchivedInbox). Schema-guarded like listInbox so a contract drift
+  // renders an empty archive instead of taking the screen down with it.
+  async listArchivedInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/archived", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, InboxListSchema, EMPTY_INBOX_LIST, {
+      endpoint: "listArchivedInbox",
+    });
+  }
+
   // Cross-workspace unread summary: one entry per workspace the user belongs
   // to that has unread inbox items. Backs the switch-workspace sheet's
   // per-workspace blue dot (RUYI-44) — the same endpoint web's sidebar dot
@@ -634,6 +706,12 @@ class ApiClient {
   // rolls back.
   async archiveInbox(id: string): Promise<InboxItem> {
     return this.fetch<InboxItem>(`/api/inbox/${id}/archive`, { method: "POST" });
+  }
+
+  async unarchiveInbox(id: string): Promise<InboxItem> {
+    return this.fetch<InboxItem>(`/api/inbox/${id}/unarchive`, {
+      method: "POST",
+    });
   }
 
   async markAllInboxRead(): Promise<{ count: number }> {
@@ -828,6 +906,32 @@ class ApiClient {
   ): Promise<void> {
     await this.fetch<void>(
       `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // DELETE /api/runtimes/:id — direct instance delete (RUYI-566). The
+  // server refuses with a structured 409
+  // (`runtime_profile_instance_delete_unsupported`) while a live runtime
+  // profile backs the instance; that channel is deleteRuntimeProfile below,
+  // whose cascade removes the instance and its credentials in one
+  // transaction.
+  async deleteRuntime(runtimeId: string): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // DELETE /api/workspaces/:id/runtime-profiles/:profileId — the supported
+  // delete channel for profile-backed (manual voice) instances: the server
+  // tears down bound instances, deletes their credential rows and the
+  // profile in one transaction (RUYI-540 QA-verified cascade, RUYI-566).
+  async deleteRuntimeProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
       { method: "DELETE" },
     );
   }
@@ -1597,6 +1701,32 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  // Manual retry for a failed issue-less quick-create — mirrors web
+  // packages/core/api/client.ts retrySourceContextQuickCreate →
+  // POST /api/tasks/:id/retry-source-context (server/internal/handler/
+  // task_lifecycle.go RetrySourceContextQuickCreate). The server re-enqueues
+  // the creation and transfers the pending source context (original input)
+  // to the new task, so the client only names the failed task. The 202 body
+  // is the new AgentTask — validated, not degraded: a shape-mismatched reply
+  // here must fail loudly rather than hand the UI a fake task. 409 carries
+  // {code: "source_context_retry_unavailable"} through the ApiError body.
+  async retrySourceContextQuickCreate(taskId: string): Promise<AgentTask> {
+    const raw = await this.fetch<unknown>(
+      `/api/tasks/${taskId}/retry-source-context`,
+      { method: "POST" },
+    );
+    const task = parseWithFallback<AgentTask | null>(
+      raw,
+      AgentTaskSchema,
+      null,
+      { endpoint: "POST /api/tasks/:id/retry-source-context" },
+    );
+    if (!task) {
+      throw new ApiError("Invalid source-context retry response", 0, raw);
+    }
+    return task;
   }
 
   // Timeline returns the full ASC entry list in one shot — server-side
@@ -2397,10 +2527,18 @@ class ApiClient {
    *   - `this.fetch` hard-codes `application/json`.
    *
    * So we re-implement the auth + slug + logging shell inline.
+   *
+   * Budgeted at UPLOAD_TIMEOUT_MS (120s — the 100MB ceiling over a weak
+   * uplink) and honouring an optional caller `signal`, using the same
+   * manual AbortController composition as fetchRaw: Hermes has neither
+   * AbortSignal.timeout() nor AbortSignal.any(). Our own timeout abort
+   * surfaces as a status-0 timeout ApiError; a caller abort propagates
+   * as-is so callers can tell "gave up" from "failed" (same contract as
+   * fetchRaw, and as the web coordinator in packages/core).
    */
   async uploadFile(
     asset: FileAsset,
-    opts?: { issueId?: string; commentId?: string },
+    opts?: { issueId?: string; commentId?: string; signal?: AbortSignal },
   ): Promise<Attachment> {
     const rid = createRequestId();
     const start = Date.now();
@@ -2427,13 +2565,65 @@ class ApiClient {
     if (opts?.issueId) formData.append("issue_id", opts.issueId);
     if (opts?.commentId) formData.append("comment_id", opts.commentId);
 
+    // Timeout + caller-signal forwarding — same manual composition as
+    // fetchRaw above (Hermes lacks AbortSignal.timeout()/any()).
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      // 超时后 RN fetch 以 AbortError reject；当调用方未取消时下面的
+      // catch 会把它改写为可区分的超时 ApiError。abort reason 带译文，
+      // 供按 reason 透传的运行时直接展示。
+      controller.abort(
+        new Error(
+          i18n.t(
+            "common:mobile.common.upload_timeout",
+            "Upload timed out after {{seconds}}s",
+            { seconds: Math.round(UPLOAD_TIMEOUT_MS / 1000) },
+          ),
+        ),
+      );
+    }, UPLOAD_TIMEOUT_MS);
+    const callerSignal = opts?.signal;
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort(callerSignal.reason);
+      else callerSignal.addEventListener("abort", onCallerAbort);
+    }
+
     console.log(`[api] → POST ${path}`, { rid, filename: asset.name });
 
-    const res = await fetch(`${getApiUrl()}${path}`, {
-      method: "POST",
-      headers,
-      body: formData,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${getApiUrl()}${path}`, {
+        method: "POST",
+        headers,
+        body: formData,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+      // 与 fetchRaw 相同的分类：我们自己的超时中止 → 状态 0 的超时
+      // ApiError；调用方主动取消 → 原样透传，不误标为超时。
+      if (
+        err instanceof Error &&
+        err.name === "AbortError" &&
+        !callerSignal?.aborted
+      ) {
+        const duration = Date.now() - start;
+        console.warn(`[api] ← UPLOAD TIMEOUT ${path}`, {
+          rid,
+          duration: `${duration}ms`,
+        });
+        throw new ApiError(
+          `Upload timed out after ${UPLOAD_TIMEOUT_MS}ms`,
+          0,
+          undefined,
+        );
+      }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
     if (!res.ok) {

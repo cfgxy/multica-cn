@@ -107,7 +107,7 @@ describe("http transport gate", () => {
     expect(await response.text()).toBe("ok");
   });
 
-  // RUYI-420: the admin status page polls this. It must stay credential-free
+  // The admin status page polls this. It must stay credential-free
   // and static — exactly version plus a name/description catalogue, so the
   // key-shape assertions below are the leak guard, not just shape docs.
   it("serves /diag without auth as a static tool catalogue only", async () => {

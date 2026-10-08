@@ -131,7 +131,8 @@ export function getInboxNavigationTarget(
  * mobile vs web.
  *
  * Steps:
- *   1. Drop archived rows (these never appear in web's inbox view).
+ *   1. Drop archived rows (these never appear in the main inbox view; the
+ *      archived sub-view has its own companion below).
  *   2. Group by `issue_id` (fall back to `id` for items with no issue
  *      attached — e.g. quick_create_failed).
  *   3. In each group, keep the newest by `created_at`.
@@ -140,9 +141,23 @@ export function getInboxNavigationTarget(
  *   5. Sort the result newest-first.
  */
 export function deduplicateInboxItems(items: InboxItem[]): InboxItem[] {
-  const active = items.filter((i) => !i.archived);
+  return groupInboxItemsByIssue(items.filter((i) => !i.archived));
+}
+
+/**
+ * Same grouping for the archived sub-view (RUYI-532), mirroring
+ * packages/core/inbox/queries.ts deduplicateArchivedInboxItems. The
+ * `archived` filter is what makes an optimistic unarchive drop the row out
+ * of the archived list immediately — exactly how `deduplicateInboxItems`'s
+ * filter drops an optimistically archived row out of the main list.
+ */
+export function deduplicateArchivedInboxItems(items: InboxItem[]): InboxItem[] {
+  return groupInboxItemsByIssue(items.filter((i) => i.archived));
+}
+
+function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
   const groups = new Map<string, InboxItem[]>();
-  for (const item of active) {
+  for (const item of items) {
     const key = item.issue_id ?? item.id;
     const group = groups.get(key) ?? [];
     group.push(item);
