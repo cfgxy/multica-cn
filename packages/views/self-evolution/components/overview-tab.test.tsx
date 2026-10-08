@@ -4,6 +4,8 @@ import { it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import type { SelfEvolutionOverview } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
@@ -96,13 +98,32 @@ function overviewFixture(overrides: Partial<SelfEvolutionOverview> = {}): SelfEv
   };
 }
 
+function makeAdapter(
+  overrides: Partial<NavigationAdapter> = {},
+): NavigationAdapter {
+  return {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/test-workspace/self-evolution",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (p) => p,
+    ...overrides,
+  };
+}
+
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <OverviewTab wsId="ws-1" />
-      </I18nProvider>
+      <WorkspaceSlugProvider slug="test-workspace">
+        <NavigationProvider value={makeAdapter()}>
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <OverviewTab wsId="ws-1" />
+          </I18nProvider>
+        </NavigationProvider>
+      </WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
 }

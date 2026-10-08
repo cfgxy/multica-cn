@@ -458,3 +458,12 @@ export type {
   SelfEvolutionOverviewKnowledge,
   SelfEvolutionOverviewSkills,
 } from "./self-evolution-overview";
+export type {
+  SelfEvolutionConfigSource,
+  SelfEvolutionConfigStatus,
+  SelfEvolutionConfigValidation,
+  SelfEvolutionModelConfig,
+  SelfEvolutionModelConfigOverride,
+  SelfEvolutionModelConfigResolved,
+  SelfEvolutionModelConfigSave,
+} from "./self-evolution-model-config";

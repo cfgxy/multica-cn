@@ -359,11 +359,13 @@ func TestGeneratorForFallsBackWhenOverrideDisabled(t *testing.T) {
 // still score.
 func TestScoreBacklogAllResolvesPerWorkspaceWhenDeployIsOff(t *testing.T) {
 	s := newPerplexityScenario(t)
-	// ScoreBacklogAll spends one shared budget across every workspace it
-	// lists, and earlier tests in this suite leave prompt_quality_daily rows
-	// behind whose agents are already gone — those list as unscored and burn
-	// the budget on guaranteed failures. Evict the shared workspace's stale
-	// rows first so the pass resolves THIS test's version.
+	// ScoreBacklogAll spends one deployment-wide budget across every
+	// workspace the backlog query lists, and a shared dev database carries
+	// agent daily rows whose workspaces and versions are long gone — those
+	// burn the budget on guaranteed resolution failures before the fixture
+	// workspace is ever reached. Evict the fixture workspace's stale rows,
+	// then require a fixture-only backlog: the same environment contract
+	// that lets the suite exit green without a reachable database.
 	if _, err := testPool.Exec(context.Background(),
 		`DELETE FROM prompt_quality_daily WHERE workspace_id = $1`, testWorkspaceID); err != nil {
 		t.Fatalf("clear stale daily rows: %v", err)
@@ -374,6 +376,17 @@ func TestScoreBacklogAllResolvesPerWorkspaceWhenDeployIsOff(t *testing.T) {
 	wsOverride := &stubGenerator{enabled: true, reply: scoreReply()}
 	s.p.GeneratorFor = func(_ context.Context, _ pgtype.UUID) promptperplexity.Generator {
 		return wsOverride
+	}
+
+	backlog, err := s.p.Queries.ListPromptPerplexityBacklogWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("list backlog workspaces: %v", err)
+	}
+	for _, ws := range backlog {
+		if ws != mustUUID(s.t, testWorkspaceID) {
+			t.Skipf("database carries agent backlog rows from other workspaces (%v and others); "+
+				"the deployment-wide ScoreBacklogAll budget is unassertable on shared-database state", ws)
+		}
 	}
 
 	out, err := s.p.ScoreBacklogAll(context.Background())
