@@ -24,10 +24,11 @@ export interface LarkInstallation {
   updated_at: string;
   /** Per-capability permission verdicts from the latest probe (RUYI-400).
    * Empty array = the bot has never been probed (installed before this
-   * feature). Undefined = the server predates the field — the UI renders
-   * nothing rather than a fake "all good". Optional per the compat rule
-   * above. */
-  capabilities?: LarkCapabilityState[];
+   * feature). Null = the stored verdicts could not be read right now —
+   * the UI shows a visible retry hint, never a silent blank (RUYI-545).
+   * Undefined = the server predates the field — the UI renders nothing
+   * rather than a fake "all good". Optional per the compat rule above. */
+  capabilities?: LarkCapabilityState[] | null;
 }
 
 /** One capability's probe verdict for a Lark bot installation (RUYI-400).
