@@ -24,11 +24,14 @@ export function patchInboxIssueStatus(
   issueId: string,
   status: IssueStatus,
 ) {
-  qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), (old) =>
+  const project = (old: InboxItem[] | undefined) =>
     old?.map((i) =>
       i.issue_id === issueId ? { ...i, issue_status: status } : i,
-    ),
-  );
+    );
+  // Archived rows expose the same issue fields — keep that cache coherent
+  // too (RUYI-532, mirrors packages/core/inbox/ws-updaters.ts).
+  qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), project);
+  qc.setQueryData<InboxItem[]>(inboxKeys.archived(wsId), project);
 }
 
 export function dropInboxItemsByIssue(
@@ -36,7 +39,10 @@ export function dropInboxItemsByIssue(
   wsId: string,
   issueId: string,
 ) {
-  qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), (old) =>
-    old?.filter((i) => i.issue_id !== issueId),
-  );
+  // The archived list holds rows for the same issues — dropping only from
+  // the main cache would leave a tappable row that 404s (mirrors core).
+  const drop = (old: InboxItem[] | undefined) =>
+    old?.filter((i) => i.issue_id !== issueId);
+  qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), drop);
+  qc.setQueryData<InboxItem[]>(inboxKeys.archived(wsId), drop);
 }

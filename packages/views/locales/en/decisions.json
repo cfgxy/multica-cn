@@ -17,9 +17,44 @@
     "tab": {
       "title": "Decisions"
     },
+    "tabs": {
+      "all": "All",
+      "open": "Pending",
+      "answered": "Decided",
+      "cancelled": "Voided"
+    },
+    "filters": {
+      "title": "Filter",
+      "reset": "Reset",
+      "a11y": "Filter",
+      "recommended_only": "Recommended only",
+      "agent_created_only": "Agent-created only"
+    },
     "page": {
       "title": "Decisions",
-      "load_failed": "Failed to load decision cards: {{reason}}"
+      "load_failed": "Failed to load decision cards: {{reason}}",
+      "empty_filtered": "No decision cards match the current TAB or filters"
     }
+  },
+  "view": {
+    "section": "View",
+    "list": "List",
+    "board": "Board",
+    "tooltip_list": "List view",
+    "tooltip_board": "Board view"
+  },
+  "filter": {
+    "tooltip": "Filter",
+    "active_count_one": "{{count}} filter",
+    "active_count_other": "{{count}} filters",
+    "reset": "Reset"
+  },
+  "board": {
+    "empty_column": "No cards"
+  },
+  "filtered_empty": {
+    "title": "No decision cards match these filters",
+    "hint": "Adjust or clear the filters to see the cards in this view.",
+    "clear_button": "Clear filters"
   }
 }
