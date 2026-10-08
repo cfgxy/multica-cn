@@ -145,7 +145,7 @@ func TestPermissionHintSenderCardBodyIsCatalogSourced(t *testing.T) {
 	if len(fake.cardSends) != 1 {
 		t.Fatalf("card sends = %d, want 1", len(fake.cardSends))
 	}
-	if !strings.Contains(fake.cardSends[0].CardJSON, "im:message.history:readonly") {
+	if !strings.Contains(fake.cardSends[0].CardJSON, "im:message.group_msg") {
 		t.Fatalf("card body must carry the catalog scopes: %s", fake.cardSends[0].CardJSON)
 	}
 }

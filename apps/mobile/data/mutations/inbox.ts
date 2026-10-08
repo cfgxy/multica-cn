@@ -92,6 +92,23 @@ export function useArchiveInbox() {
   });
 }
 
+export function useRetrySourceContextQuickCreate() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  // Mirrors web's packages/core/inbox/mutations.ts useRetrySourceContextQuickCreate:
+  // no optimistic patch — the server re-enqueues the creation and the
+  // follow-up inbox rows (the new task's entry, the failed item's state)
+  // are the server's call, so both surfaces settle via one invalidate.
+  // `.all` prefix-matches the list key AND any future sub-keys.
+  return useMutation({
+    mutationFn: (taskId: string) => api.retrySourceContextQuickCreate(taskId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: inboxKeys.all(wsId) });
+    },
+  });
+}
+
 export function useMarkAllInboxRead() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
