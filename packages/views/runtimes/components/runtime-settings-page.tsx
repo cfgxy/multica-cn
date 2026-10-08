@@ -65,6 +65,7 @@ export function RuntimeSettingsPage({
       runtime={runtime}
       machineHref={paths.runtimeDetail(decodedMachineId)}
       machineLabel={machine.title}
+      machineRuntimeCount={machine.runtimes.length}
       afterDeleteHref={
         machine.runtimes.length > 1
           ? paths.runtimeDetail(decodedMachineId)
