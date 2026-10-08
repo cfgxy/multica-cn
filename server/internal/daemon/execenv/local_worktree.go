@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -768,7 +769,10 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	// as for a commit that could not be made.
 	if !dropped {
 		healAttempted := false
-		if verifyErr := w.verifyDeliveryPoint(tip); verifyErr != nil {
+		// Not an if-scoped short declaration: the self-heal below rewrites
+		// verifyErr, and the refusal after it must see the rewritten value.
+		verifyErr := w.verifyDeliveryPoint(tip)
+		if verifyErr != nil {
 			// Self-heal before refusing (RUYI-579 W2): when the refusal is
 			// only the ancestor break — the tip is the branch's, but a
 			// mid-turn reset/rebase took the base commit out of its ancestry —
@@ -2736,7 +2740,7 @@ func (w *LocalWorktree) verifyDeliveryPoint(tip string) error {
 // base; intermediate commits are not preserved. The delivered branch state is
 // identical, and the original tip and the re-anchor are named in the message.
 func (w *LocalWorktree) reAnchorDelivery(tip string, logger *slog.Logger) (string, error) {
-	if !w.tracksState || tip == "" || w.BaseCommit == "" {
+	if !w.tracksState || tip == "" || w.BaseCommit == "" || w.userState == "" {
 		return "", fmt.Errorf("%w: the refusal shape is not the ancestor break the self-heal owns", errNotHealable)
 	}
 	branchTip, err := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", "refs/heads/"+w.Branch)
@@ -2745,6 +2749,33 @@ func (w *LocalWorktree) reAnchorDelivery(tip string, logger *slog.Logger) (strin
 	}
 	if _, err := runGit(w.GitRoot, "merge-base", "--is-ancestor", w.BaseCommit, tip); err == nil {
 		return "", fmt.Errorf("%w: the delivered tip still contains the turn's base", errNotHealable)
+	}
+	// Content gate (RUYI-579 W2, fail-closed): the snapshot commit's parent is
+	// the HEAD this turn started from, so its diff is the user's uncommitted
+	// edit set. A delivery that touches one of those paths may have reverted
+	// the edits — re-anchoring would launder that into a legal ancestry, and
+	// the next turn's replay, trusting the recorded snapshot, would offer
+	// nothing and silently drop them (MUL-6881). The heal owns only
+	// deliveries that leave the user's edit paths alone; those shapes stay
+	// refused for the retry to replay the edits from the preserved worktree.
+	edits, err := runGitStdout(w.GitRoot, "diff", "--name-only", w.userState+"^", w.userState)
+	if err != nil {
+		return "", fmt.Errorf("execenv: list the user's uncommitted edits of %s: %w", shortID(w.userState), err)
+	}
+	if strings.TrimSpace(edits) != "" {
+		touched, err := runGitStdout(w.GitRoot, "diff", "--name-only", w.userState, tip)
+		if err != nil {
+			return "", fmt.Errorf("execenv: diff the delivery against the user's directory: %w", err)
+		}
+		editPaths := strings.Split(strings.TrimSpace(edits), "\n")
+		for _, path := range strings.Split(strings.TrimSpace(touched), "\n") {
+			if path == "" {
+				continue
+			}
+			if slices.Contains(editPaths, path) {
+				return "", fmt.Errorf("%w: the delivered tip touches %s, a path the user's uncommitted edits live on", errNotHealable, path)
+			}
+		}
 	}
 	tree, err := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", tip+"^{tree}")
 	if err != nil {
