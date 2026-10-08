@@ -130,7 +130,7 @@ export function optionalEnum<T extends string>(
 }
 
 /**
- * PATCH argument that may be explicitly cleared (RUYI-350 update_issue).
+ * PATCH argument that may be explicitly cleared.
  * Absent → undefined (keep: the key stays out of the request body); null or
  * "" → null (clear: the null must survive JSON serialization — the server
  * decides "clear" by rawFields key presence, server/internal/handler/
@@ -163,7 +163,7 @@ export function optionalClearableString(
   return trimmed;
 }
 
-// ---- project resource refs (RUYI-458) ---------------------------------------
+// ---- project resource refs ---------------------------------------
 //
 // resource_ref is a type-discriminated object (packages/core/types/project.ts):
 // github_repo needs url, local_directory needs an absolute local_path and a

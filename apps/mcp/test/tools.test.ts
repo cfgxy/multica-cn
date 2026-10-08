@@ -447,7 +447,7 @@ describe("update_issue_status handler", () => {
   });
 });
 
-describe("update_issue handler (RUYI-350)", () => {
+describe("update_issue handler", () => {
   it("title-only PATCH sends only the title", async () => {
     const client = fakeClient();
     const tool = findTool("update_issue");
@@ -577,7 +577,7 @@ describe("update_issue handler (RUYI-350)", () => {
   });
 });
 
-describe("update_issue schema and serialization contract (RUYI-350)", () => {
+describe("update_issue schema and serialization contract", () => {
   it("documents the no-run guarantee, optimistic locking and clear semantics", () => {
     const tool = findTool("update_issue");
     expect(tool?.description).toMatch(/never triggers an agent run/i);
@@ -643,7 +643,7 @@ describe("dispatch_agent handler", () => {
       {
         workspace: WS,
         agent_id: "a1",
-        prompt: "顾小鱼 please summarize RUYI-82 progress",
+        prompt: "顾小鱼 please summarize ENG-82 progress",
         priority: "medium",
       },
       client,
@@ -651,7 +651,7 @@ describe("dispatch_agent handler", () => {
     const [ws, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
     expect(ws).toBe(WS);
     expect(body.agent_id).toBe("a1");
-    expect(body.prompt).toContain("RUYI-82");
+    expect(body.prompt).toContain("ENG-82");
     expect(result.dispatched).toBe(true);
     expect(result.task_id).toBe("task-1");
   });
@@ -920,7 +920,7 @@ describe("assign_issue handler", () => {
   });
 });
 
-describe("run lifecycle tools (RUYI-292)", () => {
+describe("run lifecycle tools", () => {
   const run = {
     id: "t1",
     status: "running",
@@ -957,10 +957,11 @@ describe("run lifecycle tools (RUYI-292)", () => {
   it("list_issue_runs consumes the server's bare-array task-runs payload (contract drift guard)", async () => {
     // Runs the tool against the REAL MulticaClient over a mocked HTTP layer:
     // GET task-runs answers a bare array (writeJSON of []AgentTaskResponse).
-    // The first QA pass of RUYI-292 crashed real stdio calls because the
-    // client declared a wrapper-object shape and the tool tests mocked the
-    // same wrong shape — unit-green, integration-dead. This fails again if
-    // either side drifts from the bare-array contract.
+    // Guarding a real integration failure mode: if the client declares a
+    // wrapper-object shape while the server answers a bare array, mocked
+    // tool tests stay green while real stdio calls crash — unit-green,
+    // integration-dead. This fails again if either side drifts from the
+    // bare-array contract.
     const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
       new Response(
         JSON.stringify([run, { ...run, id: "t2", status: "queued", rerun_of_task_id: "t0" }]),
@@ -1162,7 +1163,7 @@ describe("run lifecycle tools (RUYI-292)", () => {
   });
 });
 
-describe("issue relation tools (RUYI-351)", () => {
+describe("issue relation tools", () => {
   it("get_issue_relations returns the structured five-view shape", async () => {
     const client = fakeClient({
       getIssueRelations: async () => ({
@@ -1291,7 +1292,7 @@ describe("issue relation tools (RUYI-351)", () => {
   });
 });
 
-describe("bulk_update_issues (RUYI-353)", () => {
+describe("bulk_update_issues", () => {
   function updateIssueCalls(
     client: MulticaClient,
   ): Array<{ id: string; body: Record<string, unknown> }> {
@@ -1604,7 +1605,7 @@ describe("bulk_update_issues (RUYI-353)", () => {
   });
 });
 
-describe("comment management tools (RUYI-352)", () => {
+describe("comment management tools", () => {
   function commentFixture(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
     return {
       id: "c1",
@@ -1941,9 +1942,9 @@ describe("comment management tools (RUYI-352)", () => {
   });
 });
 
-// ---- RUYI-419 workspace run view + agent/squad management ----------------
+// ---- Workspace run view + agent/squad management ----------------
 
-describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
+describe("workspace run view + agent/squad management tools", () => {
   const agentDetail = {
     id: "a1",
     name: "Worker",
@@ -2315,7 +2316,7 @@ describe("workspace run view + agent/squad management tools (RUYI-419)", () => {
   });
 });
 
-describe("quick reply tools (RUYI-435)", () => {
+describe("quick reply tools", () => {
   function qrClient(): MulticaClient {
     const calls: Array<{ method: string; args: unknown[] }> = [];
     const client = {
@@ -2391,7 +2392,7 @@ describe("quick reply tools (RUYI-435)", () => {
   });
 });
 
-describe("project resource tools (RUYI-458)", () => {
+describe("project resource tools", () => {
   function resourceFixture(over: Record<string, unknown> = {}): Record<string, unknown> {
     return {
       id: "pr-1",
