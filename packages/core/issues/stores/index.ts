@@ -35,6 +35,11 @@ export {
   type MyIssuesScope,
 } from "./my-issues-view-store";
 export {
+  decisionCenterPrefsStore,
+  type DecisionCenterPrefsState,
+  type DecisionCenterViewMode,
+} from "./decision-center-prefs-store";
+export {
   actorIssuesViewStore,
   type ActorIssuesViewState,
   type ActorIssuesScope,
