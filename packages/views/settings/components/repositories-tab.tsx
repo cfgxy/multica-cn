@@ -38,6 +38,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
+import { useConfigStore } from "@multica/core/config";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { memberListOptions, workspaceKeys } from "@multica/core/workspace/queries";
@@ -83,6 +84,9 @@ export function RepositoriesTab() {
   const wsId = useWorkspaceId();
   const queryClient = useQueryClient();
   const navigation = useNavigation();
+  // Same gate as the Integrations tab: on managed cloud the whole Git
+  // providers section is hidden, so picker entries must not point at it.
+  const vcsAvailable = useConfigStore((state) => state.vcsIntegrationAvailable);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const [repositories, setRepositories] = useState<WorkspaceRepo[]>(
     workspace?.repos ?? EMPTY_REPOSITORIES,
@@ -319,6 +323,16 @@ export function RepositoriesTab() {
     setGitLabSearch("");
   };
 
+  // Send the user to Integrations → Git providers (self-hosted) to connect
+  // another GitLab instance. Same replace-as-tab-switch convention as the
+  // settings page; `section=vcs` asks IntegrationsTab to scroll there once.
+  const goToVcsConnect = useCallback(() => {
+    const params = new URLSearchParams(navigation.searchParams);
+    params.set("tab", "integrations");
+    params.set("section", "vcs");
+    navigation.replace(`${navigation.pathname}?${params.toString()}`);
+  }, [navigation]);
+
   const importGitLabRepositories = () => {
     if (!allUrlsValid) {
       toast.error(t(($) => $.repositories.complete_manual_entry_first));
@@ -490,9 +504,9 @@ export function RepositoriesTab() {
                     ? t(($) => $.repositories.choose_from_github)
                     : t(($) => $.repositories.connect_github)}
                 </Button>
-                {gitLabConnections.length > 0 && vcsData?.can_manage === true ? (
+                {vcsAvailable && vcsData?.can_manage === true ? (
                   <Button variant="outline" size="sm" onClick={() => {
-                    setSelectedConnectionID(gitLabConnections[0]!.id);
+                    setSelectedConnectionID(gitLabConnections[0]?.id ?? "");
                     setGitLabPickerOpen(true);
                   }}>
                     <GitBranch className="size-3.5" />
@@ -701,86 +715,107 @@ export function RepositoriesTab() {
             <DialogTitle>{t(($) => $.repositories.gitlab_picker_title)}</DialogTitle>
             <DialogDescription>{t(($) => $.repositories.github_picker_description)}</DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 px-6 py-4">
-            <Select
-              items={gitLabConnections.map((connection) => ({ value: connection.id, label: `${connection.account_login} · ${connection.instance_url}` }))}
-              value={selectedConnectionID}
-              onValueChange={(value) => { setSelectedConnectionID(value ?? ""); setSelectedGitLabRepositories(new Map()); }}
-            >
-              <SelectTrigger aria-label={t(($) => $.repositories.gitlab_connection)}><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {gitLabConnections.map((connection) => (
-                  <SelectItem key={connection.id} value={connection.id}>{connection.account_login} · {connection.instance_url}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input value={gitLabSearch} onChange={(event) => setGitLabSearch(event.target.value)}
-                aria-label={t(($) => $.repositories.github_search_placeholder)}
-                placeholder={t(($) => $.repositories.github_search_placeholder)} className="pl-8" />
+          {gitLabConnections.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
+              <GitBranch className="size-6 text-muted-foreground" />
+              <p className="text-body text-muted-foreground">
+                {t(($) => $.repositories.gitlab_no_connections)}
+              </p>
+              <Button size="sm" onClick={goToVcsConnect}>
+                <Plus className="size-3.5" />
+                {t(($) => $.repositories.gitlab_connect_new_instance)}
+              </Button>
             </div>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto border-y">
-            {gitLabRepositoriesQuery.isPending ? (
-              <div className="flex items-center justify-center gap-2 px-6 py-12 text-body text-muted-foreground">
-                <LoaderCircle className="size-4 animate-spin" />{t(($) => $.repositories.github_loading)}
-              </div>
-            ) : gitLabRepositoriesQuery.isError ? (
-              <div className="space-y-3 px-6 py-12 text-center text-body text-muted-foreground">
-                <p>{gitLabErrorStatus === 424
-                  ? t(($) => $.repositories.gitlab_authorization_expired)
-                  : gitLabErrorStatus === 429
-                    ? t(($) => $.repositories.gitlab_rate_limited)
-                    : t(($) => $.repositories.gitlab_load_failed)}</p>
-                <Button variant="outline" size="sm" onClick={() => gitLabRepositoriesQuery.refetch()}>{t(($) => $.repositories.gitlab_retry)}</Button>
-              </div>
-            ) : filteredGitLabRepositories.length === 0 ? (
-              <div className="px-6 py-12 text-center text-body text-muted-foreground">
-                {gitLabSearch ? t(($) => $.repositories.github_no_search_results) : t(($) => $.repositories.gitlab_empty)}
-              </div>
-            ) : (
-              <div className="divide-y">
-                {filteredGitLabRepositories.map((repo) => {
-                  const identity = repositoryIdentity(repo.clone_url);
-                  const alreadyAdded = !!identity && existingRepositoryIdentities.has(identity);
-                  const disabled = !identity || alreadyAdded || repo.archived;
-                  return <label key={repo.id} htmlFor={`gitlab-repository-${repo.id}`} className="flex items-start gap-3 px-6 py-3.5">
-                    <Checkbox id={`gitlab-repository-${repo.id}`} checked={alreadyAdded || selectedGitLabRepositories.has(repo.id)} disabled={disabled}
-                      onCheckedChange={(checked) => setSelectedGitLabRepositories((current) => {
-                        const next = new Map(current);
-                        if (checked === true) next.set(repo.id, repo); else next.delete(repo.id);
-                        return next;
-                      })} className="mt-0.5" />
-                    <span className="min-w-0 flex-1 space-y-1">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-body font-medium">{repo.full_name}</span>
-                        {repo.private ? <Badge variant="secondary">{t(($) => $.repositories.github_private)}</Badge> : null}
-                        {repo.archived ? <Badge variant="outline">{t(($) => $.repositories.github_archived)}</Badge> : null}
-                        {alreadyAdded ? <Badge variant="outline">{t(($) => $.repositories.github_added)}</Badge> : null}
-                      </span>
-                      {repo.description ? <span className="block truncate text-caption text-muted-foreground">{repo.description}</span> : null}
-                    </span>
-                  </label>;
-                })}
-              </div>
-            )}
-            {gitLabRepositoriesQuery.hasNextPage ? (
-              <div className="flex justify-center border-t p-3">
-                <Button variant="ghost" size="sm" onClick={() => gitLabRepositoriesQuery.fetchNextPage()}
-                  disabled={gitLabRepositoriesQuery.isFetchingNextPage}>
-                  {gitLabRepositoriesQuery.isFetchingNextPage ? t(($) => $.repositories.github_loading) : t(($) => $.repositories.gitlab_load_more)}
+          ) : (
+            <>
+            <div className="space-y-3 px-6 py-4">
+              <div className="flex items-center gap-2">
+                <Select
+                  items={gitLabConnections.map((connection) => ({ value: connection.id, label: `${connection.account_login} · ${connection.instance_url}` }))}
+                  value={selectedConnectionID}
+                  onValueChange={(value) => { setSelectedConnectionID(value ?? ""); setSelectedGitLabRepositories(new Map()); }}
+                >
+                  <SelectTrigger aria-label={t(($) => $.repositories.gitlab_connection)}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {gitLabConnections.map((connection) => (
+                      <SelectItem key={connection.id} value={connection.id}>{connection.account_login} · {connection.instance_url}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button variant="outline" size="sm" className="shrink-0" onClick={goToVcsConnect}>
+                  <Plus className="size-3.5" />
+                  {t(($) => $.repositories.gitlab_connect_new_instance)}
                 </Button>
               </div>
-            ) : null}
-          </div>
-          <DialogFooter className="m-0 border-t bg-muted/30 px-6 py-4">
-            <p className="mr-auto text-caption text-muted-foreground">{t(($) => $.repositories.github_selected_count, { count: selectedGitLabRepositories.size })}</p>
-            <Button variant="ghost" onClick={closeGitLabPicker}>{t(($) => $.repositories.github_cancel)}</Button>
-            <Button onClick={importGitLabRepositories} disabled={selectedGitLabRepositories.size === 0 || !allUrlsValid}>
-              {t(($) => $.repositories.gitlab_import)}
-            </Button>
-          </DialogFooter>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input value={gitLabSearch} onChange={(event) => setGitLabSearch(event.target.value)}
+                  aria-label={t(($) => $.repositories.github_search_placeholder)}
+                  placeholder={t(($) => $.repositories.github_search_placeholder)} className="pl-8" />
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto border-y">
+              {gitLabRepositoriesQuery.isPending ? (
+                <div className="flex items-center justify-center gap-2 px-6 py-12 text-body text-muted-foreground">
+                  <LoaderCircle className="size-4 animate-spin" />{t(($) => $.repositories.github_loading)}
+                </div>
+              ) : gitLabRepositoriesQuery.isError ? (
+                <div className="space-y-3 px-6 py-12 text-center text-body text-muted-foreground">
+                  <p>{gitLabErrorStatus === 424
+                    ? t(($) => $.repositories.gitlab_authorization_expired)
+                    : gitLabErrorStatus === 429
+                      ? t(($) => $.repositories.gitlab_rate_limited)
+                      : t(($) => $.repositories.gitlab_load_failed)}</p>
+                  <Button variant="outline" size="sm" onClick={() => gitLabRepositoriesQuery.refetch()}>{t(($) => $.repositories.gitlab_retry)}</Button>
+                </div>
+              ) : filteredGitLabRepositories.length === 0 ? (
+                <div className="px-6 py-12 text-center text-body text-muted-foreground">
+                  {gitLabSearch ? t(($) => $.repositories.github_no_search_results) : t(($) => $.repositories.gitlab_empty)}
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {filteredGitLabRepositories.map((repo) => {
+                    const identity = repositoryIdentity(repo.clone_url);
+                    const alreadyAdded = !!identity && existingRepositoryIdentities.has(identity);
+                    const disabled = !identity || alreadyAdded || repo.archived;
+                    return <label key={repo.id} htmlFor={`gitlab-repository-${repo.id}`} className="flex items-start gap-3 px-6 py-3.5">
+                      <Checkbox id={`gitlab-repository-${repo.id}`} checked={alreadyAdded || selectedGitLabRepositories.has(repo.id)} disabled={disabled}
+                        onCheckedChange={(checked) => setSelectedGitLabRepositories((current) => {
+                          const next = new Map(current);
+                          if (checked === true) next.set(repo.id, repo); else next.delete(repo.id);
+                          return next;
+                        })} className="mt-0.5" />
+                      <span className="min-w-0 flex-1 space-y-1">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="truncate text-body font-medium">{repo.full_name}</span>
+                          {repo.private ? <Badge variant="secondary">{t(($) => $.repositories.github_private)}</Badge> : null}
+                          {repo.archived ? <Badge variant="outline">{t(($) => $.repositories.github_archived)}</Badge> : null}
+                          {alreadyAdded ? <Badge variant="outline">{t(($) => $.repositories.github_added)}</Badge> : null}
+                        </span>
+                        {repo.description ? <span className="block truncate text-caption text-muted-foreground">{repo.description}</span> : null}
+                      </span>
+                    </label>;
+                  })}
+                </div>
+              )}
+              {gitLabRepositoriesQuery.hasNextPage ? (
+                <div className="flex justify-center border-t p-3">
+                  <Button variant="ghost" size="sm" onClick={() => gitLabRepositoriesQuery.fetchNextPage()}
+                    disabled={gitLabRepositoriesQuery.isFetchingNextPage}>
+                    {gitLabRepositoriesQuery.isFetchingNextPage ? t(($) => $.repositories.github_loading) : t(($) => $.repositories.gitlab_load_more)}
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+            <DialogFooter className="m-0 border-t bg-muted/30 px-6 py-4">
+              <p className="mr-auto text-caption text-muted-foreground">{t(($) => $.repositories.github_selected_count, { count: selectedGitLabRepositories.size })}</p>
+              <Button variant="ghost" onClick={closeGitLabPicker}>{t(($) => $.repositories.github_cancel)}</Button>
+              <Button onClick={importGitLabRepositories} disabled={selectedGitLabRepositories.size === 0 || !allUrlsValid}>
+                {t(($) => $.repositories.gitlab_import)}
+              </Button>
+            </DialogFooter>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 
