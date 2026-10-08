@@ -22,6 +22,7 @@
  */
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -54,6 +55,7 @@ function selectedTargetIds(
 }
 
 export default function AgentAccess() {
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const agentId = typeof id === "string" ? id : "";
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -179,8 +181,11 @@ export default function AgentAccess() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false） */}
-      <View className="flex-row items-center px-4 pt-3 pb-2 border-b border-border">
+      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；顶部让出系统状态栏（RUYI-563）。 */}
+      <View
+        className="flex-row items-center px-4 pb-2 border-b border-border"
+        style={{ paddingTop: insets.top + 12 }}
+      >
         <Text className="flex-1 text-lg font-semibold text-foreground">
           {t("access.section_title", "Who can run this agent")}
         </Text>
