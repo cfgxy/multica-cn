@@ -38,7 +38,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/legislation"
+	"github.com/multica-ai/multica/server/internal/selfevconfig"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/llm"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptscan"
 )
@@ -62,6 +64,16 @@ type LLMClient interface {
 	Enabled() bool
 }
 
+// ResolvedModel is the per-workspace model-service resolution (RUYI-551):
+// which client serves this workspace's run, where it came from, and the
+// model to request. Client nil / disabled means unconfigured — the run
+// records that as a failure with error_kind not_configured.
+type ResolvedModel struct {
+	Client LLMClient
+	Source string // selfevconfig.Source* vocabulary: module_config | deploy_default | none
+	Model  string
+}
+
 // Runner executes retrospective runs for one workspace at a time. The
 // scheduler drives RunWorkspace through a global-scope daily job; the
 // handler's manual trigger path calls the same method with trigger=manual.
@@ -72,8 +84,16 @@ type Runner struct {
 		Begin(ctx context.Context) (pgx.Tx, error)
 	}
 	Queries *db.Queries
-	LLM     LLMClient
-	Model   string
+	// LLM is the deploy-wide default client (MULTICA_LLM_*). When Resolve is
+	// nil it serves every workspace; with Resolve set it is only the
+	// priority chain's fallback and the resolution decides per workspace.
+	LLM LLMClient
+	// Model is the deploy-wide default model, paired with LLM.
+	Model string
+	// Resolve (RUYI-551) resolves the workspace's own model service through
+	// the priority chain: module config > deploy default > unconfigured.
+	// Nil keeps the pre-RUYI-551 static wiring working (tests, fallbacks).
+	Resolve func(ctx context.Context, workspaceID string) (ResolvedModel, error)
 	// Now is overridable for tests.
 	Now func() time.Time
 }
@@ -121,8 +141,25 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 	runID := util.UUIDToString(run.ID)
 	stats := &RunStats{WorkspaceID: workspaceID, RunID: runID, WindowDays: cfg.WindowDays}
 
+	// RUYI-551: which model service serves this run, and — when the run
+	// fails — which kind of failure it died of. Both travel in the run
+	// record's detail so the page can name them without parsing error text.
+	resolved, rerr := r.resolveModel(ctx, workspaceID)
+	runModel, runSource, runErrKind := resolved.Model, resolved.Source, ""
+	if rerr != nil {
+		runErrKind = string(llm.ErrorKindOther)
+	}
+
 	finish := func(status, errMsg string) error {
-		detail, _ := json.Marshal(map[string]any{"sanitized_skipped": stats.SanitizedSkipped})
+		detail := map[string]any{
+			"sanitized_skipped": stats.SanitizedSkipped,
+			"model":             runModel,
+			"config_source":     runSource,
+		}
+		if status == "failed" && runErrKind != "" {
+			detail["error_kind"] = runErrKind
+		}
+		raw, _ := json.Marshal(detail)
 		_, ferr := r.Queries.FinishRetrospectiveRun(ctx, db.FinishRetrospectiveRunParams{
 			ID:                run.ID,
 			WorkspaceID:       run.WorkspaceID,
@@ -133,7 +170,7 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 			ProposalsMerged:   int32(stats.ProposalsMerged),
 			DuplicatesSkipped: int32(stats.DuplicatesSkipped),
 			Error:             errMsg,
-			Detail:            detail,
+			Detail:            raw,
 		})
 		if ferr != nil {
 			return fmt.Errorf("finish retrospective run: %w", ferr)
@@ -141,9 +178,13 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 		return nil
 	}
 
-	if r.LLM == nil || !r.LLM.Enabled() {
+	if rerr != nil {
+		return stats, finish("failed", fmt.Sprintf("解析模型服务配置失败: %v", rerr))
+	}
+	if resolved.Client == nil || !resolved.Client.Enabled() {
 		stats.IssuesScanned = r.countCandidates(ctx, workspaceID, cfg.IncludeInReview, windowStart, windowEnd)
-		if err := finish("failed", "LLM 未配置（MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL 为空），复盘无法提炼草案"); err != nil {
+		runErrKind = string(llm.ErrorKindNotConfigured)
+		if err := finish("failed", "模型服务未配置：请在「自进化 → 模块配置」保存模型服务，或联系管理员检查部署默认值（MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL）"); err != nil {
 			return stats, err
 		}
 		return stats, nil
@@ -185,7 +226,8 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 				continue
 			}
 
-			if err := r.analyzeIssue(ctx, workspaceID, runID, issueID, issue.Title, issue.Description, stats); err != nil {
+			if err := r.analyzeIssue(ctx, workspaceID, runID, issueID, issue.Title, issue.Description, resolved, stats); err != nil {
+				runErrKind = string(llm.Classify(err))
 				return stats, finish("failed", fmt.Sprintf("分析 Issue %s 失败: %v", issueID, err))
 			}
 			analyzed++
@@ -202,10 +244,20 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 	return stats, nil
 }
 
+// resolveModel walks the workspace's model-service priority chain
+// (RUYI-551). Without a Resolve the static LLM/Model pair is the deploy
+// default serving every workspace — the pre-RUYI-551 wiring.
+func (r *Runner) resolveModel(ctx context.Context, workspaceID string) (ResolvedModel, error) {
+	if r.Resolve == nil {
+		return ResolvedModel{Client: r.LLM, Source: selfevconfig.SourceDeployDefault, Model: r.Model}, nil
+	}
+	return r.Resolve(ctx, workspaceID)
+}
+
 // analyzeIssue runs one issue through the pipeline: gather content →
 // sanitize → LLM extract → two-layer dedup → pool insert + watermark in one
 // transaction.
-func (r *Runner) analyzeIssue(ctx context.Context, workspaceID, runID, issueID, title string, description pgtype.Text, stats *RunStats) error {
+func (r *Runner) analyzeIssue(ctx context.Context, workspaceID, runID, issueID, title string, description pgtype.Text, resolved ResolvedModel, stats *RunStats) error {
 	input := buildIssueInput(title, description)
 	comments, err := r.Queries.ListIssueCommentsForRetrospective(ctx, util.MustParseUUID(issueID))
 	if err != nil {
@@ -233,7 +285,7 @@ func (r *Runner) analyzeIssue(ctx context.Context, workspaceID, runID, issueID, 
 		return nil
 	}
 
-	drafts, err := r.extractDrafts(ctx, input)
+	drafts, err := r.extractDrafts(ctx, resolved, input)
 	if err != nil {
 		return fmt.Errorf("提炼草案: %w", err)
 	}
@@ -412,10 +464,10 @@ type extractedDraft struct {
 const extractSystem = `你是 Prompt 立法管线的草案提炼器。输入是若干已完成 Issue 的真实执行内容（标题、描述、讨论）。请从中提炼 Prompt 改进草案：条款必须写成可直接落库的最终文本（不带修订痕迹、不用弱表述），每条草案必须给出内容闸五答（层次归属 layer / 去留判据 retention / 代价声明 cost / 同主题冲突裁决 conflict / 重复检查结论 dedup）与证据锚。没有值得提炼的内容就返回空数组。只输出 JSON 对象，形如：
 {"drafts":[{"carrier_scope":"workspace","target_section":"章节名或空串","change_kind":"add_clause|revise_clause|remove_clause","clause_name":"条款名","clause_text":"- **条款名**：条款正文","gate_answers":{"layer":"...","retention":"...","cost":"...","conflict":"...","dedup":"..."},"evidence_ref":"issue 标题或评论摘要","evidence_note":"一句话说明依据"}]}`
 
-func (r *Runner) extractDrafts(ctx context.Context, input string) ([]extractedDraft, error) {
+func (r *Runner) extractDrafts(ctx context.Context, resolved ResolvedModel, input string) ([]extractedDraft, error) {
 	ctx, cancel := context.WithTimeout(ctx, LLMTimeout)
 	defer cancel()
-	raw, err := r.LLM.GenerateJSON(ctx, r.Model, extractSystem, input, 0.2, 4096)
+	raw, err := resolved.Client.GenerateJSON(ctx, resolved.Model, extractSystem, input, 0.2, 4096)
 	if err != nil {
 		return nil, err
 	}
