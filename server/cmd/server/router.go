@@ -1275,7 +1275,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			slog.Info("runtime credential encryption enabled")
 		}
 	} else {
-		slog.Info("runtime credential encryption disabled (MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY not set)")
+		// RUYI-540: a missing deployment key silently degrades voice instance
+		// credentials (every save 503s with "not configured" badges), which
+		// operators only discovered from client-side symptoms. Warn loudly at
+		// startup with the exact fix instead of an easy-to-miss info line.
+		slog.Warn("runtime credential encryption disabled: MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY is not set — saving voice instance API keys will fail (503) and instances stay \"not configured\". Generate a key with `openssl rand -base64 32`, add it to the server environment, and restart to enable credential storage")
 	}
 
 	// Voice credential connectivity probe (RUYI-425 §4.3/§4.5): where the
