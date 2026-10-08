@@ -169,15 +169,15 @@ func (s *PermissionHintSender) sendHintCard(ctx context.Context, creds Installat
 }
 
 // isRuntimePermissionDenied reports whether err is a Lark permission-class
-// failure. Exact business codes first (the probe's set, including the
-// canonical 99991672), then the shared enricher classifier's code/text
-// heuristics as the fallback.
+// failure. Exact business codes first (the real-target runtime set,
+// including the canonical 99991672), then the shared enricher
+// classifier's code/text heuristics as the fallback.
 func isRuntimePermissionDenied(err error) bool {
 	if err == nil {
 		return false
 	}
 	if code, _, ok := larkErrorCodeMsg(err); ok {
-		if _, denied := probePermissionCodes[code]; denied {
+		if _, denied := runtimePermissionCodes[code]; denied {
 			return true
 		}
 	}

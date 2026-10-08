@@ -27,10 +27,12 @@ import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   VOICE_INSTANCE_CREDENTIAL_KEY,
+  credentialSaveFailureDetail,
   isVoiceProfile,
   parseAdvancedParams,
 } from "@/lib/voice-runtime";
@@ -47,6 +49,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/use-t";
 
 export default function NewVoiceRuntimeScreen() {
+  const insets = useSafeAreaInsets();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("runtimes");
@@ -100,6 +103,7 @@ export default function NewVoiceRuntimeScreen() {
       // still proceeds (desktop closes the dialog in this branch too).
       let probeInvalid = false;
       let keySaveFailed = false;
+      let keySaveDetail: string | null = null;
       if (apiKey.trim() !== "") {
         try {
           const result = await putCredential.mutateAsync({
@@ -108,8 +112,12 @@ export default function NewVoiceRuntimeScreen() {
             value: apiKey.trim(),
           });
           probeInvalid = result.probe?.status === "invalid";
-        } catch {
+        } catch (err) {
           keySaveFailed = true;
+          // RUYI-540: surface the server's readable message (e.g. the
+          // fail-closed 503 naming MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY)
+          // instead of leaving a bare status code as the only hint.
+          keySaveDetail = credentialSaveFailureDetail(err);
         }
       }
       Alert.alert(
@@ -118,6 +126,7 @@ export default function NewVoiceRuntimeScreen() {
           : keySaveFailed
             ? t("voice_instance_create.key_save_failed")
             : t("voice_instance_create.created"),
+        keySaveDetail ?? undefined,
       );
       router.replace({
         pathname: "/[workspace]/more/runtimes/[id]",
@@ -150,8 +159,13 @@ export default function NewVoiceRuntimeScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* modal 自绘头部（more/agents/new 同款） */}
-      <View className="flex-row items-center px-4 pt-3 pb-2 border-b border-border">
+      {/* modal 自绘头部（more/agents/new 同款）；顶部让出系统状态栏
+          （RUYI-540）：modal 页没有 Stack 头部的安全区处理，Android
+          edge-to-edge 下 pt-3 会被状态栏图标压住。 */}
+      <View
+        className="flex-row items-center px-4 pb-2 border-b border-border"
+        style={{ paddingTop: insets.top + 12 }}
+      >
         <Pressable
           onPress={() => router.back()}
           hitSlop={8}
