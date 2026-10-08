@@ -1,12 +1,35 @@
 // @vitest-environment node
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 
 const { getCurrentSlug } = vi.hoisted(() => ({
   getCurrentSlug: vi.fn<() => string | null>(() => null),
 }));
+
+// RUYI-567：fetchRaw 回前台超期中止的缝线桩。api.ts 自身不 import
+// react-native（保持 vitest node lane 可加载），平台层经 setOptions 注入。
+const { subscribeAppState, appStateListeners } = vi.hoisted(() => {
+  const listeners = new Set<(state: string) => void>();
+  return {
+    appStateListeners: listeners,
+    subscribeAppState: (listener: (state: string) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+});
+
+vi.mock("i18next", () => ({
+  default: { t: (_key: string, defaultValue?: string) => defaultValue ?? _key },
+}));
+
+function dispatchAppState(state: string) {
+  for (const listener of [...appStateListeners]) listener(state);
+}
 
 vi.mock("@/data/server-store", () => ({
   getApiUrl: () => "https://api.example.test",
@@ -157,5 +180,116 @@ describe("ApiClient.listTimeline", () => {
       entries: [],
       truncatedKinds: ["activity"],
     });
+  });
+});
+
+describe("fetchRaw timeout semantics (RUYI-567)", () => {
+  // whatwg-fetch 语义的桩：signal 一旦 abort 就以 AbortError 拒绝（RN 的
+  // fetch 是 XHR polyfill，abort 会取消底层请求并拒绝 promise）；否则永久
+  // 挂起，直到测试经 resolveWithOk 手动结算。
+  let resolveFetch: ((response: unknown) => void) | null = null;
+  const pendingFetch = vi.fn((_url: string, init: RequestInit = {}) => {
+    const signal = init.signal as AbortSignal;
+    const promise = new Promise<unknown>((resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        const error = new Error("Aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+      resolveFetch = resolve;
+    });
+    promise.catch(() => {});
+    return promise;
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", pendingFetch);
+    api.setOptions({ subscribeAppState });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    resolveFetch = null;
+    appStateListeners.clear();
+    api.setOptions({ subscribeAppState: undefined });
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function resolveWithOk() {
+    resolveFetch?.({ ok: true, status: 200, json: async () => ({}) });
+  }
+
+  it("aborts a still-pending request on return to foreground past the deadline", async () => {
+    const pending = api.sendCode("user@test.local");
+    expect(appStateListeners.size).toBe(1);
+
+    // 后台期间 RN 暂停 JS 定时器（Timing onHostPause）：把墙钟拨过
+    // deadline 但不触发 timer，只有回前台（active 事件）才可能发现超期。
+    vi.setSystemTime(Date.now() + 40_000);
+    dispatchAppState("active");
+
+    let settled = false;
+    const observed = pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(true);
+    await expect(pending).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    void observed;
+    expect(appStateListeners.size).toBe(0);
+  });
+
+  it("does not abort when returning to foreground before the deadline", async () => {
+    const pending = api.sendCode("user@test.local");
+    vi.setSystemTime(Date.now() + 10_000);
+    dispatchAppState("active");
+
+    resolveWithOk();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(pending).resolves.toBeUndefined();
+    expect(appStateListeners.size).toBe(0);
+
+    // 结算后监听已移除，超期后再派发事件必须是 no-op。
+    vi.setSystemTime(Date.now() + 60_000);
+    expect(() => dispatchAppState("active")).not.toThrow();
+  });
+
+  it("foreground timer still aborts at the 30s deadline (existing semantics)", async () => {
+    const pending = api.sendCode("user@test.local");
+    // 中止拒绝可能在断言挂接前 flush（fake timer 的 await 会冲微任务），
+    // 先同步挂一个空 handler 防 unhandled rejection。
+    const observed = pending.catch(() => {});
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(pending).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    void observed;
+    expect(appStateListeners.size).toBe(0);
+  });
+
+  it("surfaces ApiError with status 0 for a foreground-resume timeout abort", async () => {
+    const pending = api.sendCode("user@test.local");
+    pending.catch(() => {});
+    vi.setSystemTime(Date.now() + 40_000);
+    dispatchAppState("active");
+    const error = await pending.then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(0);
   });
 });
