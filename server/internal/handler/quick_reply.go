@@ -126,7 +126,7 @@ func (h *Handler) publishQuickRepliesChanged(workspaceID string, actor db.Member
 }
 
 // ListQuickReplies returns the workspace's quick replies in display order.
-// Any member may read it. Self-heals the 5-default seed for workspaces that
+// Any member may read it. Self-heals the default seed for workspaces that
 // predate the feature — idempotent, a no-op once the rows exist.
 func (h *Handler) ListQuickReplies(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)

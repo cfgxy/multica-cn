@@ -5,12 +5,13 @@
 // surface (web settings tab, MCP tools, the three composers) reads the SAME
 // rows — nothing is hardcoded outside this package's seed.
 //
-// SEEDING. The 5 default templates are seeded when a workspace is created
+// SEEDING. The default templates are seeded when a workspace is created
 // (handler.CreateWorkspace) and self-healed on the first list read for
 // workspaces created before this feature shipped — the same rolling-deploy
 // posture as the issue status catalog. Seeding is idempotent and never
 // overwrites an admin's edits: a conflict on (workspace_id, name) skips the
-// row rather than erroring.
+// row rather than erroring. New defaults appended to the seed appear in
+// existing workspaces on their next list read.
 package quickreply
 
 import (
@@ -25,7 +26,7 @@ type Querier interface {
 	SeedQuickReplies(ctx context.Context, workspaceID pgtype.UUID) error
 }
 
-// Ensure idempotently seeds the 5 default quick replies for a workspace.
+// Ensure idempotently seeds the default quick replies for a workspace.
 // Safe to run inside the CreateWorkspace transaction (new workspace) and on
 // the list read path (self-heal for pre-existing workspaces).
 func Ensure(ctx context.Context, q Querier, workspaceID pgtype.UUID) error {
