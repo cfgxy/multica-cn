@@ -1,1 +1,1 @@
-export { SelfEvolutionPage as default } from "@multica/views/self-evolution";
+export { SelfEvolutionOverviewPage as default } from "@multica/views/self-evolution";

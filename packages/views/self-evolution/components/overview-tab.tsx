@@ -11,7 +11,9 @@ import {
 } from "@multica/core/self-evolution";
 import type { MeasureView } from "@multica/core/self-evolution";
 import { formatMeasureValue } from "./quality-format";
+import { AppLink } from "../../navigation";
 import { useLocale, useT } from "../../i18n";
+import { useWorkspacePaths } from "@multica/core/paths";
 
 /**
  * The self-evolution overview tab (RUYI-284).
@@ -36,6 +38,7 @@ import { useLocale, useT } from "../../i18n";
 export function OverviewTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
   const locale = useLocale();
+  const paths = useWorkspacePaths();
   const overview = useQuery(selfEvolutionOverviewOptions(wsId));
 
   if (overview.isPending) {
@@ -126,7 +129,12 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         aria-label={t(($) => $.overview.versions.title)}
         data-testid="overview-versions"
       >
-        <h3 className="text-title font-medium">{t(($) => $.overview.versions.title)}</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-title font-medium">{t(($) => $.overview.versions.title)}</h3>
+          <AppLink href={paths.selfEvolutionVersions()} className="shrink-0 text-caption text-primary" data-testid="overview-versions-link">
+            {t(($) => $.overview.viewAll)}
+          </AppLink>
+        </div>
         {data.versions.length === 0 ? (
           <p className="text-body text-muted-foreground">{t(($) => $.overview.versions.empty)}</p>
         ) : (
@@ -176,9 +184,14 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         aria-label={t(($) => $.overview.quality.title, { days: data.quality.days })}
         data-testid="overview-quality"
       >
-        <h3 className="text-title font-medium">
-          {t(($) => $.overview.quality.title, { days: data.quality.days })}
-        </h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-title font-medium">
+            {t(($) => $.overview.quality.title, { days: data.quality.days })}
+          </h3>
+          <AppLink href={paths.selfEvolutionQuality()} className="shrink-0 text-caption text-primary" data-testid="overview-quality-link">
+            {t(($) => $.overview.viewAll)}
+          </AppLink>
+        </div>
         {data.quality.subjects_measured === 0 ? (
           <p className="text-body text-muted-foreground">{t(($) => $.overview.quality.empty)}</p>
         ) : (
@@ -204,7 +217,12 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         aria-label={t(($) => $.overview.quiz.title)}
         data-testid="overview-quiz"
       >
-        <h3 className="text-title font-medium">{t(($) => $.overview.quiz.title)}</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-title font-medium">{t(($) => $.overview.quiz.title)}</h3>
+          <AppLink href={paths.selfEvolutionQuiz()} className="shrink-0 text-caption text-primary" data-testid="overview-quiz-link">
+            {t(($) => $.overview.viewAll)}
+          </AppLink>
+        </div>
         {!data.quiz.scope_id ? (
           <p className="text-body text-muted-foreground">{t(($) => $.overview.quiz.empty)}</p>
         ) : (
@@ -260,7 +278,12 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         aria-label={t(($) => $.overview.proposals.title)}
         data-testid="overview-proposals"
       >
-        <h3 className="text-title font-medium">{t(($) => $.overview.proposals.title)}</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-title font-medium">{t(($) => $.overview.proposals.title)}</h3>
+          <AppLink href={paths.selfEvolutionProposals()} className="shrink-0 text-caption text-primary" data-testid="overview-proposals-link">
+            {t(($) => $.overview.viewAll)}
+          </AppLink>
+        </div>
         {/* Deliberately unwired: the pool's model is being replaced by
             RUYI-305, so reading the current behavior-prophecy table here
             would be rework the moment it lands. The section keeps its slot
@@ -275,7 +298,12 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         aria-label={t(($) => $.overview.knowledge.title)}
         data-testid="overview-knowledge"
       >
-        <h3 className="text-title font-medium">{t(($) => $.overview.knowledge.title)}</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-title font-medium">{t(($) => $.overview.knowledge.title)}</h3>
+          <AppLink href={paths.selfEvolutionKnowledge()} className="shrink-0 text-caption text-primary" data-testid="overview-knowledge-link">
+            {t(($) => $.overview.viewAll)}
+          </AppLink>
+        </div>
         {data.knowledge.dirs === 0 && data.knowledge.entries === 0 ? (
           <p className="text-body text-muted-foreground">{t(($) => $.overview.knowledge.empty)}</p>
         ) : (
@@ -305,7 +333,12 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         aria-label={t(($) => $.overview.skills.title)}
         data-testid="overview-skills"
       >
-        <h3 className="text-title font-medium">{t(($) => $.overview.skills.title)}</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-title font-medium">{t(($) => $.overview.skills.title)}</h3>
+          <AppLink href={paths.selfEvolutionSkills()} className="shrink-0 text-caption text-primary" data-testid="overview-skills-link">
+            {t(($) => $.overview.viewAll)}
+          </AppLink>
+        </div>
         {data.skills.count === 0 ? (
           <p className="text-body text-muted-foreground">{t(($) => $.overview.skills.empty)}</p>
         ) : (

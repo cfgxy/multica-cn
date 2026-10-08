@@ -1,5 +1,10 @@
 import { useEffect } from "react";
-import { createMemoryRouter, Outlet, useMatches } from "react-router-dom";
+import {
+  createMemoryRouter,
+  Outlet,
+  useParams,
+  useMatches,
+} from "react-router-dom";
 import type { RouteObject } from "react-router-dom";
 import { IssueDetailPage } from "./pages/issue-detail-page";
 import { ProjectDetailPage } from "./pages/project-detail-page";
@@ -16,7 +21,18 @@ import { AttachmentPreviewRoute } from "./pages/attachment-preview-page";
 import { IssuesPage } from "@multica/views/issues/components";
 import { ProjectsPage } from "@multica/views/projects/components";
 import { DashboardPage } from "@multica/views/dashboard";
-import { SelfEvolutionPage } from "@multica/views/self-evolution";
+import {
+  SelfEvolutionOverviewPage,
+  KnowledgePage,
+  SkillsEvolutionPage,
+  SkillEvolutionDetailPage,
+  QualityPage,
+  QuizPage,
+  ProposalsPage,
+  VersionsPage,
+  RetrospectivePage,
+  SelfEvolutionConfigPage,
+} from "@multica/views/self-evolution";
 import { AutopilotsPage } from "@multica/views/autopilots/components";
 import { MyIssuesPage } from "@multica/views/my-issues";
 import { DecisionCenterPage } from "@multica/views/decisions";
@@ -242,9 +258,24 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: "self-evolution",
-            element: <SelfEvolutionPage />,
+            element: <SelfEvolutionOverviewPage />,
             handle: { title: "Self-Evolution" },
           },
+          { path: "self-evolution/knowledge", element: <KnowledgePage /> },
+          { path: "self-evolution/skills", element: <SkillsEvolutionPage /> },
+          {
+            path: "self-evolution/skills/:id",
+            element: <SelfEvolutionSkillDetailRoute />,
+          },
+          { path: "self-evolution/quality", element: <QualityPage /> },
+          { path: "self-evolution/quiz", element: <QuizPage /> },
+          { path: "self-evolution/proposals", element: <ProposalsPage /> },
+          { path: "self-evolution/versions", element: <VersionsPage /> },
+          {
+            path: "self-evolution/retrospective",
+            element: <RetrospectivePage />,
+          },
+          { path: "self-evolution/config", element: <SelfEvolutionConfigPage /> },
           {
             path: "settings",
             element: <DesktopSettingsRoute />,
@@ -270,4 +301,10 @@ export function createAppRouter() {
   return createMemoryRouter(appRoutes, {
     initialEntries: ["/"],
   });
+}
+
+function SelfEvolutionSkillDetailRoute() {
+  const { id } = useParams<{ id: string }>();
+  if (!id) return null;
+  return <SkillEvolutionDetailPage skillId={id} />;
 }

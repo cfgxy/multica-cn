@@ -327,7 +327,7 @@ describe("QualityTab with a subject", () => {
     expect(screen.queryByTestId("degraded-langfuse")).not.toBeInTheDocument();
   });
 
-  it("labels a disabled Langfuse export without withholding any card (T3)", async () => {
+  it("renders a degraded optional source as a page-banner concern, never as an in-tab footnote (T3, RUYI-551 §2.5)", async () => {
     dashboardRef.current = dashboard({
       data_sources: {
         degraded: true,
@@ -338,11 +338,11 @@ describe("QualityTab with a subject", () => {
       },
     });
     renderWithAgent();
-    expect(await screen.findByTestId("degraded-langfuse")).toHaveTextContent(
-      enSelfEvolution.quality.sources.langfuse,
-    );
-    // The seven cards are unchanged by the optional source being off.
-    expect(screen.getByTestId("quality-card-retry_rate")).toHaveTextContent("20%");
+    // The seven cards are unchanged by the optional source being off...
+    expect(await screen.findByTestId("quality-card-retry_rate")).toHaveTextContent("20%");
+    // ...and the old tooltip footnote is gone — the degraded banner lives on
+    // the quality page above this surface (quality-page.test.tsx).
+    expect(screen.queryByTestId("degraded-langfuse")).toBeNull();
   });
 
   it("states that D3 was never scored instead of showing a neutral band", async () => {
