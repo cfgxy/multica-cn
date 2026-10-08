@@ -1054,6 +1054,7 @@
     "permissions_recheck": "再チェック",
     "permissions_checking": "確認中…",
     "permissions_recheck_failed": "権限の確認に失敗しました",
+    "permissions_read_failed": "保存された権限状態を読み込めませんでした。「再チェック」で再試行してください。",
     "permissions_all_granted": "すべての権限が付与されています。",
     "permissions_missing_title": "一部の権限が不足しており、該当機能は現在利用できません",
     "permissions_missing_hint": "Feishu/Lark オープンプラットフォームで該当アプリに以下のスコープを付与してください。承認が必要なスコープは企業管理者の承認後に有効になります。承認後、ここで「再チェック」すれば復元できます。ボットの再作成は不要です。",
