@@ -200,10 +200,43 @@ const (
 )
 
 // probePermissionCodes are the Lark business codes that mean "the app
-// lacks a scope this endpoint requires". 99991672 is the canonical
-// no-permission code; 99991002/230001/230027 are the permission-denied
-// codes the recent-context enricher already classifies.
+// lacks a scope" in the synthetic-target PROBE context. A probe never
+// carries a real target, so a scope can only fail at the gateway, up
+// front: 99991672 is the canonical no-permission code, 99991002 its
+// access-denied sibling. The real-target business-layer codes (230001,
+// 230027) are deliberately NOT here: QA live evidence 2026-10-08 showed
+// a send-granted install getting 230001 "invalid receive_id" on the
+// send probe — with a synthetic target, parameter validation runs
+// before any business-layer scope check, so those codes prove the
+// gateway passed. See runtimePermissionCodes for where they DO mean
+// permission-denied (enricher/hint, real targets).
 var probePermissionCodes = map[int]struct{}{
+	99991672: {},
+	99991002: {},
+}
+
+// probeTargetRejectedCodes are the not-exist / invalid-parameter family
+// codes QA observed on synthetic-target probes with installs verified
+// granted via the data plane (2026-10-08): 99992351 (contact user
+// lookup) and 99992354 (message GET, resource download). Like the
+// 23xxxx segment below they are target/param rejections — the scope
+// check already passed → granted. An explicit allowlist, not a 99992xxx
+// range rule, so an unseen family member still conservatively reads as
+// unknown instead of silently widening the granted verdict.
+var probeTargetRejectedCodes = map[int]struct{}{
+	99992351: {},
+	99992354: {},
+}
+
+// runtimePermissionCodes are the permission-denied business codes on
+// REAL targets, where a missing scope can also be enforced at the
+// business layer after the gateway: the canonical gateway pair plus
+// 230001 (bot not in the chat / invalid receive_id against a real chat)
+// and 230027 (missing im:message.group_msg on real group reads).
+// Consumed by isRuntimePermissionDenied; identical to the pre-RUYI-546
+// rework set, so real-target classification (enricher/hint) is
+// unchanged — pinned by the enricher suites.
+var runtimePermissionCodes = map[int]struct{}{
 	99991672: {},
 	99991002: {},
 	230001:   {},
@@ -213,9 +246,10 @@ var probePermissionCodes = map[int]struct{}{
 // classifyProbeError turns a probe call's outcome into the tri-state.
 //
 // Probes always target synthetic ids that cannot exist, so any 23xxxx
-// business code other than a known permission code proves the request
-// passed the gateway's scope check and failed later on validation — a
-// granted verdict. No code (transport error) or a token error is
+// business code — or a known target-rejection code like 99992351/99992354
+// — proves the request passed the gateway's scope check and failed later
+// on validation: a granted verdict. The gateway-level permission codes
+// still mean missing; no code (transport error) or a token error is
 // inconclusive: unknown. Unknown never collapses into granted, and an
 // admin-pending scope still reads as missing here.
 func classifyProbeError(err error) ProbeStatus {
@@ -235,6 +269,11 @@ func classifyProbeError(err error) ProbeStatus {
 	if code >= 230000 && code < 240000 {
 		// Business-layer validation (deleted 230110/230011/230050,
 		// not-exist, invalid params, rate limit 230020…): authz passed.
+		return ProbeGranted
+	}
+	if _, rejected := probeTargetRejectedCodes[code]; rejected {
+		// Target/param validation outside the 23xxxx segment (observed
+		// on the contact and media/read surfaces): authz passed.
 		return ProbeGranted
 	}
 	return ProbeUnknown

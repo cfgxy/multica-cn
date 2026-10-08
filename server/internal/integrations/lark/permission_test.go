@@ -165,8 +165,20 @@ func TestClassifyProbeError(t *testing.T) {
 		{"nil", nil, ProbeGranted},
 		{"canonical no-permission 99991672", &APIError{Op: "get message", Code: 99991672}, ProbeMissing},
 		{"no-permission 99991002", &APIError{Op: "list chat messages", Code: 99991002}, ProbeMissing},
-		{"no-permission 230001", &APIError{Op: "get message", Code: 230001}, ProbeMissing},
-		{"group_msg gap 230027", &APIError{Op: "list chat messages", Code: 230027, Msg: "missing im:message.group_msg"}, ProbeMissing},
+		// 230001/230027 are enforced at the business layer against a REAL
+		// target ("bot is not in the chat", missing im:message.group_msg).
+		// A probe carries a synthetic target, so parameter validation runs
+		// before any business-layer scope check — QA live evidence
+		// 2026-10-08: a send-granted install got 230001 "invalid
+		// receive_id" on the send probe. Both mean the gateway's scope
+		// check passed → granted.
+		{"230001 param validation on synthetic target", &APIError{Op: "send message", Code: 230001, Msg: "invalid receive_id"}, ProbeGranted},
+		{"230027 business-layer gap not reachable on synthetic target", &APIError{Op: "list chat messages", Code: 230027, Msg: "missing im:message.group_msg"}, ProbeGranted},
+		// QA-observed not-exist family on synthetic targets (contact
+		// lookup / message GET / resource download), installs verified
+		// granted via the data plane → target validation, gateway passed.
+		{"contact not-exist 99992351", &APIError{Op: "get user", Code: 99992351}, ProbeGranted},
+		{"message id not-exist 99992354", &APIError{Op: "get message", Code: 99992354}, ProbeGranted},
 		{"not-exist business code", &APIError{Op: "get message", Code: 230002}, ProbeGranted},
 		{"deleted 230110", &APIError{Op: "get message", Code: 230110}, ProbeGranted},
 		{"invisible 230050", &APIError{Op: "get message", Code: 230050}, ProbeGranted},
