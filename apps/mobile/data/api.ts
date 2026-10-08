@@ -219,6 +219,7 @@ import {
   EMPTY_TASK_MESSAGE_LIST,
   UserSchema,
   WorkspaceListSchema,
+  AgentTaskSchema,
 } from "./schemas";
 import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
@@ -273,6 +274,17 @@ const MAX_FILE_SIZE = 100 * 1024 * 1024;
  *  pull-to-refresh spinner never going away). 30s is generous for any
  *  reasonable Multica payload size on cellular. */
 const FETCH_TIMEOUT_MS = 30_000;
+
+/** Budget for `/api/upload-file` (RUYI-569). Much larger than
+ *  FETCH_TIMEOUT_MS because the ceiling is MAX_FILE_SIZE (100MB) over a
+ *  weak uplink: at ~1MB/s the wire transfer alone is ~100s, plus TLS
+ *  handshake, server-side write and the response round trip. RN's fetch
+ *  exposes no upload-progress events, so a progress-aware idle timeout is
+ *  not an option without native modules — this is a fixed total budget.
+ *  A link slower than that fails here with a clear, distinguishable error
+ *  and the composer resets for retry; the pre-RUYI-569 alternative was an
+ *  unbounded hang. Tune only with QA weak-network evidence. */
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -1647,6 +1659,32 @@ class ApiClient {
     });
   }
 
+  // Manual retry for a failed issue-less quick-create — mirrors web
+  // packages/core/api/client.ts retrySourceContextQuickCreate →
+  // POST /api/tasks/:id/retry-source-context (server/internal/handler/
+  // task_lifecycle.go RetrySourceContextQuickCreate). The server re-enqueues
+  // the creation and transfers the pending source context (original input)
+  // to the new task, so the client only names the failed task. The 202 body
+  // is the new AgentTask — validated, not degraded: a shape-mismatched reply
+  // here must fail loudly rather than hand the UI a fake task. 409 carries
+  // {code: "source_context_retry_unavailable"} through the ApiError body.
+  async retrySourceContextQuickCreate(taskId: string): Promise<AgentTask> {
+    const raw = await this.fetch<unknown>(
+      `/api/tasks/${taskId}/retry-source-context`,
+      { method: "POST" },
+    );
+    const task = parseWithFallback<AgentTask | null>(
+      raw,
+      AgentTaskSchema,
+      null,
+      { endpoint: "POST /api/tasks/:id/retry-source-context" },
+    );
+    if (!task) {
+      throw new ApiError("Invalid source-context retry response", 0, raw);
+    }
+    return task;
+  }
+
   // Timeline returns the full ASC entry list in one shot — server-side
   // pagination was dropped in #2322 (p99 ~30 entries per issue, cursors
   // were pure overhead and split reply threads at page boundaries).
@@ -2445,10 +2483,18 @@ class ApiClient {
    *   - `this.fetch` hard-codes `application/json`.
    *
    * So we re-implement the auth + slug + logging shell inline.
+   *
+   * Budgeted at UPLOAD_TIMEOUT_MS (120s — the 100MB ceiling over a weak
+   * uplink) and honouring an optional caller `signal`, using the same
+   * manual AbortController composition as fetchRaw: Hermes has neither
+   * AbortSignal.timeout() nor AbortSignal.any(). Our own timeout abort
+   * surfaces as a status-0 timeout ApiError; a caller abort propagates
+   * as-is so callers can tell "gave up" from "failed" (same contract as
+   * fetchRaw, and as the web coordinator in packages/core).
    */
   async uploadFile(
     asset: FileAsset,
-    opts?: { issueId?: string; commentId?: string },
+    opts?: { issueId?: string; commentId?: string; signal?: AbortSignal },
   ): Promise<Attachment> {
     const rid = createRequestId();
     const start = Date.now();
@@ -2475,13 +2521,65 @@ class ApiClient {
     if (opts?.issueId) formData.append("issue_id", opts.issueId);
     if (opts?.commentId) formData.append("comment_id", opts.commentId);
 
+    // Timeout + caller-signal forwarding — same manual composition as
+    // fetchRaw above (Hermes lacks AbortSignal.timeout()/any()).
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      // 超时后 RN fetch 以 AbortError reject；当调用方未取消时下面的
+      // catch 会把它改写为可区分的超时 ApiError。abort reason 带译文，
+      // 供按 reason 透传的运行时直接展示。
+      controller.abort(
+        new Error(
+          i18n.t(
+            "common:mobile.common.upload_timeout",
+            "Upload timed out after {{seconds}}s",
+            { seconds: Math.round(UPLOAD_TIMEOUT_MS / 1000) },
+          ),
+        ),
+      );
+    }, UPLOAD_TIMEOUT_MS);
+    const callerSignal = opts?.signal;
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort(callerSignal.reason);
+      else callerSignal.addEventListener("abort", onCallerAbort);
+    }
+
     console.log(`[api] → POST ${path}`, { rid, filename: asset.name });
 
-    const res = await fetch(`${getApiUrl()}${path}`, {
-      method: "POST",
-      headers,
-      body: formData,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${getApiUrl()}${path}`, {
+        method: "POST",
+        headers,
+        body: formData,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+      // 与 fetchRaw 相同的分类：我们自己的超时中止 → 状态 0 的超时
+      // ApiError；调用方主动取消 → 原样透传，不误标为超时。
+      if (
+        err instanceof Error &&
+        err.name === "AbortError" &&
+        !callerSignal?.aborted
+      ) {
+        const duration = Date.now() - start;
+        console.warn(`[api] ← UPLOAD TIMEOUT ${path}`, {
+          rid,
+          duration: `${duration}ms`,
+        });
+        throw new ApiError(
+          `Upload timed out after ${UPLOAD_TIMEOUT_MS}ms`,
+          0,
+          undefined,
+        );
+      }
+      throw err;
+    }
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
     if (!res.ok) {

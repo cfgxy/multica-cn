@@ -1,24 +1,26 @@
 name: Mobile Android Build
 
-# 在 fork 内的 PR 上自动构建 Android Release APK，也支持合并后手动构建。
-# fork 无需发布签名密钥：Android 签名插件在 MULTICA_RELEASE_* Gradle
-# 属性缺失时回退到 debug keystore，产物仍可直接安装。
+# Android 构建与发布（RUYI-573 触发与版本策略）。
 #
-# `android/` 是被忽略的 Expo prebuild 产物，全新 checkout 中不存在，
-# 因此这里显式执行 prebuild，而不是依赖需要设备或模拟器的 expo run:android。
+# 触发通道——同一变更只构建一次、只发布一个 Release：
+# - push 到 main（路径过滤命中）→ 日常开发构建：版本 `X.Y.Z-dev.YYYYMMDD-N`
+#   （N 为当天序号，由 scripts/dev-version.sh 从既有 Release tag 推算），
+#   发布预发布 Release `mobile-android-dev-v<版本>`。应用内「检查更新」只认
+#   正式 Release（dev 通道全部标记 prerelease，被 /releases/latest 排除）。
+# - 被 mobile-android-release.yml 以 workflow_call 复用 → 正式构建：版本
+#   必须与 tag `mobile-android-vX.Y.Z` 及 app.config.ts 的 version 一致。
+# - workflow_dispatch → 手动补日常包，与 push main 同语义（staging 仅出
+#   artifact，不发布 Release）。
 #
-# 触发通道：
-# - push 到 main（路径过滤与 PR 一致）：构建 production APK，并发布两个
-#   GitHub Release——滚动 Release（tag `mobile-android-latest`，整体替换，
-#   免登录稳定直链）与版本化 Release（tag `mobile-android-v<版本>-b<构建号>`，
-#   tag 携带 APK 版本号，供应用内「检查更新」解析对比）。每次构建在
-#   Release 正文携带 commit / run 标识可追溯来源。
-# - pull_request / workflow_dispatch：行为不变，产物仅上传为 Actions
-#   artifact，不发布 Release。
+# 原 pull_request 通道已移除：PR 期间构建一次、merge 后 push 再构建一次，
+# 正是「同一变更两份产物」的根因之一；PR 质量门禁由 mobile-verify.yml
+# （lint/typecheck/test）承担，本 workflow 不再挂 PR。
 #
-# Release 发布只发生在 push 通道：`publish-release` 以 event/ref 为条件，
-# PR（含 fork）路径既不运行该 job，也不会获得其 job 级 `contents: write`
-# 提升（permissions 声明随被跳过的 job 一起不生效）。
+# fork 无需发布签名密钥：Android 签名插件在 MULTICA_RELEASE_* Gradle 属性
+# 缺失时回退 debug keystore，产物仍可直接安装。`android/` 是被忽略的 Expo
+# prebuild 产物，全新 checkout 中不存在，因此这里显式执行 prebuild。
+#
+# Release 发布只发生在 production 构建之后；staging 手动包仅上传 artifact。
 
 on:
   push:
@@ -31,36 +33,46 @@ on:
       - "pnpm-workspace.yaml"
       - "turbo.json"
       - ".github/workflows/mobile-android-build.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "apps/mobile/**"
-      - "packages/core/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
-      - ".github/workflows/mobile-android-build.yml"
   workflow_dispatch:
     inputs:
       app_env:
-        description: "选择 APP_ENV 构建环境"
+        description: "选择 APP_ENV 构建环境（staging 仅出 artifact，不发布）"
         required: false
         default: production
         type: choice
         options:
           - production
           - staging
+  workflow_call:
+    inputs:
+      release_mode:
+        description: "发布模式：dev（预发布 dev 通道）或 formal（正式 tag Release）"
+        required: true
+        type: string
+      app_version:
+        description: "已解析的版本号（X.Y.Z 或 X.Y.Z-dev.YYYYMMDD-N）"
+        required: true
+        type: string
+      release_tag:
+        description: "Release 使用的 tag（formal 模式必填，如 mobile-android-v0.2.0）"
+        required: false
+        type: string
+      app_env:
+        description: "APP_ENV（默认 production）"
+        required: false
+        default: production
+        type: string
 
 permissions:
   contents: read
 
-# 三个触发通道各自成组：push 与 dispatch 原本都会落到 github.ref 的同组，
-# push 通道引入后会把对方取消；PR 仍按 PR 号成组。组内取消语义不变——
-# 连续 push 到 main 时只有最新一次构建会跑完并发布 Release。
+# dev 通道（push main + dispatch）共用一个串行组：dev-version.sh 的当天序号
+# 推算与发布都要求同一时刻只有一个构建在推号；cancel-in-progress: false 让
+# 连续 merge 排队而非互相取消，保证每次有效变更都留下一个完整 dev Release。
+# 正式通道（workflow_call，ref 为 tag）按 tag 独立成组。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref_type == 'tag' && format('release-{0}', github.ref) || 'dev' }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -68,11 +80,46 @@ jobs:
     env:
       APP_ENV: ${{ inputs.app_env || 'production' }}
     outputs:
-      # APK 实际版本号，供 publish-release 生成带版本的 Release tag。
-      app_version: ${{ steps.version.outputs.version }}
+      # 实际构建版本号，供 publish-release 生成 Release。
+      app_version: ${{ steps.resolve-version.outputs.version }}
+      app_env: ${{ steps.resolve-version.outputs.app_env }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      # 直接运行（push main / dispatch）→ 生成当天开发版本号；被
+      # mobile-android-release.yml 调用（formal）→ 直接使用传入版本。
+      # 开发版本在 prebuild 前生成，经 MULTICA_APP_VERSION 注入 app.config.ts，
+      # 保证 versionName、JS 侧 expo-constants、Release tag 三者同源。
+      - name: Resolve build version
+        id: resolve-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CALLED_VERSION: ${{ inputs.app_version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$CALLED_VERSION" ]]; then
+            version="$CALLED_VERSION"
+            echo "mode=workflow_call" >> "$GITHUB_OUTPUT"
+          else
+            # 取 version 行内最后一个引号串：兼容 `version: "X.Y.Z"` 字面量
+            # 与 dev 通道注入形态 `version: process.env.MULTICA_APP_VERSION || "X.Y.Z"`。
+            base=$(sed -n 's/^ *version:.*"\([^"]*\)",*$/\1/p' apps/mobile/app.config.ts | head -n 1)
+            if [[ -z "$base" ]]; then
+              echo "::error::无法从 apps/mobile/app.config.ts 解析基准版本号"
+              exit 1
+            fi
+            build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
+            kv=$(bash scripts/dev-version.sh next --base "$base" --date "$build_date" --prefix mobile-android-dev-v)
+            version=$(sed -n 's/^version=//p' <<<"$kv")
+            dev_tag=$(sed -n 's/^tag=//p' <<<"$kv")
+            echo "MULTICA_APP_VERSION=$version" >> "$GITHUB_ENV"
+            echo "mode=dev" >> "$GITHUB_OUTPUT"
+            echo "dev_tag=$dev_tag" >> "$GITHUB_OUTPUT"
+            echo "Daily dev version: $version (base $base, date $build_date)"
+          fi
+          echo "app_env=$APP_ENV" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -103,6 +150,26 @@ jobs:
         working-directory: apps/mobile
         run: pnpm exec dotenv -e .env.${{ env.APP_ENV }} -- cross-env APP_ENV=${{ env.APP_ENV }} expo prebuild -p android
 
+      # 版本一致性闸门（fail closed）：
+      # - workflow_call（formal）：tag 版本必须与 app.config.ts 的 version
+      #   一致——发版流程是先改 version 再打 tag，漂移即拒绝；
+      # - dev：确认 MULTICA_APP_VERSION 已如实际烘焙进 versionName。
+      - name: Verify baked versionName
+        working-directory: apps/mobile/android
+        run: |
+          set -euo pipefail
+          expected="${{ steps.resolve-version.outputs.version }}"
+          baked=$(sed -n 's/^ *versionName "\([^"]*\)".*/\1/p' app/build.gradle | head -n 1)
+          if [[ -z "$baked" ]]; then
+            echo "::error::versionName not found in apps/mobile/android/app/build.gradle"
+            exit 1
+          fi
+          if [[ "$baked" != "$expected" ]]; then
+            echo "::error::版本不一致：构建版本 $expected，versionName 实际为 $baked（formal 发版需先更新 app.config.ts 的 version 再打 tag）"
+            exit 1
+          fi
+          echo "versionName OK: $baked"
+
       # Gradle 缓存必须在 prebuild 之后启用：`android/` 是 Expo prebuild
       # 产物且被 .gitignore 排除，全新 checkout 中不存在。setup-java@v4 内置
       # 的 `cache: gradle` 在安装 JDK 时就运行 gradle/actions/setup-gradle，
@@ -123,21 +190,6 @@ jobs:
           EXPO_NO_BUNDLE_SPLITTING: "1"
         run: ./gradlew assembleRelease --no-daemon
 
-      # 版本取自 prebuild 产物 build.gradle 的 versionName（app.config.ts
-      # 的 version 经 Expo 写入），与 APK 内实际版本、应用内「检查更新」
-      # 对比的版本同源；不取 package.json，避免两处漂移时 tag 与安装包
-      # 版本不一致。解析为空直接失败，防止发布无版本的 tag。
-      - name: Resolve app version
-        id: version
-        working-directory: apps/mobile/android
-        run: |
-          version=$(sed -n 's/^ *versionName "\([^"]*\)".*/\1/p' app/build.gradle | head -n 1)
-          if [ -z "$version" ]; then
-            echo "::error::versionName not found in apps/mobile/android/app/build.gradle"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -145,25 +197,41 @@ jobs:
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
-  # 仅 push 到 main 时发布 GitHub Release。本 job 的 permissions 是整个
-  # workflow 唯一的写权限提升点，且随 if 一起只作用于 push 通道。
+  # production 构建后发布 GitHub Release——dev 与 formal 各恰一条：
+  # - dev：`mobile-android-dev-v<版本>`，prerelease，每次构建新增一条（当天
+  #   序号递增，互不覆盖，也绝不写正式版通道）。
+  # - formal：`mobile-android-vX.Y.Z`，正式 Release，与调用方 tag 一一对应。
+  # 本 job 的 permissions 是整个 workflow 唯一的写权限提升点。staging 手动包
+  # 不发布。
   publish-release:
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: needs.build.outputs.app_env == 'production'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      ROLLING_TAG: mobile-android-latest
-      # 版本化 tag 携带 APK 版本号（x.y.z 三段，可被版本解析器提取）；
-      # -b<run_number> 保证每次构建 tag 唯一，rerun 同一 run 时同 tag 重建。
-      APP_VERSION: ${{ needs.build.outputs.app_version }}
-      VERSION_TAG: mobile-android-v${{ needs.build.outputs.app_version }}-b${{ github.run_number }}
-      # 与 build job 上传的 artifact 名对应：push 通道固定 production。
+      RELEASE_MODE: ${{ inputs.release_mode || 'dev' }}
+      VERSION: ${{ needs.build.outputs.app_version }}
+      # 与 build job 上传的 artifact 名对应：production 固定。
       ARTIFACT_NAME: multica-mobile-production-release-apk
       # 资产名固定，直链才稳定；与 gradle 产物名解耦。
       APK_NAME: multica-mobile-production.apk
     steps:
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_MODE" == "formal" ]]; then
+            tag="${{ inputs.release_tag }}"
+            if [[ -z "$tag" ]]; then
+              echo "::error::formal 模式必须传入 release_tag"
+              exit 1
+            fi
+          else
+            tag="mobile-android-dev-v$VERSION"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Download built APK
         uses: actions/download-artifact@v4
         with:
@@ -180,50 +248,52 @@ jobs:
             exit 1
           fi
           mv "apk/$(find apk -maxdepth 1 -name '*.apk' -printf '%f')" "apk/$APK_NAME"
+          sha256sum "apk/$APK_NAME" > "apk/$APK_NAME.sha256"
 
       - name: Write release notes
         run: |
-          cat > release-notes.md <<'EOF'
-          Automated production build of the Multica Android app from `main`.
+          if [[ "$RELEASE_MODE" == "formal" ]]; then
+            kind="Formal release"
+            channel="正式发布：版本与 tag 一致，无开发后缀。"
+          else
+            kind="Automated DEV build"
+            channel="开发测试通道：版本 X.Y.Z-dev.YYYYMMDD-N，同日连续发版序号递增；预发布 Release 不影响应用内「检查更新」（只认正式 Release）。"
+          fi
+          cat > release-notes.md <<EOF
+          $kind of the Multica Android app.
 
           | | |
           |---|---|
-          | Version | v${{ needs.build.outputs.app_version }} |
-          | Commit | `${{ github.sha }}` |
+          | Version | $VERSION |
+          | Commit | \`${{ github.sha }}\` |
           | Workflow run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-          | APP_ENV | production |
+          | Channel | $RELEASE_MODE |
 
-          Install: download `multica-mobile-production.apk` below — no GitHub sign-in required. Each push to `main` replaces this release with the newest build.
+          Install: download \`multica-mobile-production.apk\` below — no GitHub sign-in required. $channel
           EOF
 
-      # 幂等替换：先删旧 Release（连同其 tag），再清掉可能残留的孤儿 tag，
-      # 最后在触发本次构建的 commit 上重建。同一 tag 已存在不会导致失败。
-      # 滚动 Release 维持固定 tag，既有免登录稳定直链不变。
-      - name: Replace rolling release
+      # 发布前防撞：dev tag 已被其他来源占用即失败（正式 tag 由 push 事件
+      # 保证存在，跳过）。之后幂等重建：rerun 同一 run 时同 tag 删除重建。
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.tag.outputs.tag }}
         run: |
-          gh release delete "$ROLLING_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$ROLLING_TAG" || true
-          gh release create "$ROLLING_TAG" "apk/$APK_NAME" \
+          set -euo pipefail
+          prerelease_flag=()
+          if [[ "$RELEASE_MODE" != "formal" ]]; then
+            if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::error::dev tag '$TAG_NAME' 已存在 Release，序号推算与现状冲突，中止发布（请检查并发组或手工清理）"
+              exit 1
+            fi
+            prerelease_flag=(--prerelease)
+          fi
+          gh release delete "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG_NAME" || true
+          gh release create "$TAG_NAME" "apk/$APK_NAME" "apk/$APK_NAME.sha256" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Multica Android (production) — build ${{ github.run_number }}" \
+            --title "Multica Android ($RELEASE_MODE) $VERSION" \
             --notes-file release-notes.md \
-            --latest=false
-
-      # 版本化 Release：tag 携带版本号，供应用内「检查更新」解析对比；
-      # 同样 --latest=false，不抢占仓库级 latest（不影响服务端 release.yml
-      # 的 semver Release）。删除重建仅发生在 rerun 同一 run 时（同 tag）。
-      - name: Publish versioned release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete "$VERSION_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$VERSION_TAG" || true
-          gh release create "$VERSION_TAG" "apk/$APK_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Multica Android (production) v$APP_VERSION — build ${{ github.run_number }}" \
-            --notes-file release-notes.md \
+            "${prerelease_flag[@]}" \
             --latest=false
