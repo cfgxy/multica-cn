@@ -17,9 +17,23 @@
     "tab": {
       "title": "결정"
     },
+    "tabs": {
+      "all": "전체",
+      "open": "결정 대기",
+      "answered": "결정됨",
+      "cancelled": "무효"
+    },
+    "filters": {
+      "title": "필터",
+      "reset": "재설정",
+      "a11y": "필터",
+      "recommended_only": "추천 있음만",
+      "agent_created_only": "에이전트 생성만"
+    },
     "page": {
       "title": "결정 센터",
-      "load_failed": "결정 카드를 불러오지 못했습니다: {{reason}}"
+      "load_failed": "결정 카드를 불러오지 못했습니다: {{reason}}",
+      "empty_filtered": "현재 탭 또는 필터와 일치하는 결정 카드가 없습니다"
     }
   }
 }

@@ -17,9 +17,23 @@
     "tab": {
       "title": "Decisions"
     },
+    "tabs": {
+      "all": "All",
+      "open": "Pending",
+      "answered": "Decided",
+      "cancelled": "Voided"
+    },
+    "filters": {
+      "title": "Filter",
+      "reset": "Reset",
+      "a11y": "Filter",
+      "recommended_only": "Recommended only",
+      "agent_created_only": "Agent-created only"
+    },
     "page": {
       "title": "Decisions",
-      "load_failed": "Failed to load decision cards: {{reason}}"
+      "load_failed": "Failed to load decision cards: {{reason}}",
+      "empty_filtered": "No decision cards match the current TAB or filters"
     }
   }
 }
