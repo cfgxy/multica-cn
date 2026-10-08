@@ -1,5 +1,5 @@
 /**
- * MCP protocol server assembly: registers the RUYI-82 tool surface on a
+ * MCP protocol server assembly: registers the tool surface on a
  * (transport-agnostic) MCP SDK Server instance.
  */
 
@@ -42,7 +42,7 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "get_issue_relations",
   "list_issue_runs",
   "get_run",
-  // RUYI-433 execution-config reads.
+  // Execution-config reads.
   "list_daemon_instances",
   "get_daemon_instance",
   "get_runtime",
@@ -57,7 +57,7 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "list_runtimes",
   "list_squads",
   "get_squad",
-  // RUYI-458 project resource binding read.
+  // Project resource binding read.
   "list_project_resources",
 ]);
 

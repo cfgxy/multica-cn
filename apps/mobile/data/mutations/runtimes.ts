@@ -95,6 +95,37 @@ export function useDeleteRuntimeCredential(wsId: string | null) {
   });
 }
 
+// RUYI-566: direct instance delete — only valid for profile-less
+// instances; the server refuses (409) the profile-backed ones. Invalidates
+// the runtime list so the deleted row disappears everywhere.
+export function useDeleteRuntime(wsId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runtimeId: string) => api.deleteRuntime(runtimeId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+// RUYI-566: the supported delete channel for profile-backed (manual voice)
+// instances — the server's single-transaction cascade removes the bound
+// instances, their stored credentials and the profile. Invalidation matches
+// @multica/core/runtimes/profiles: the profile catalog plus the instance
+// list (the instances vanish with it).
+export function useDeleteRuntimeProfile(wsId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (profileId: string) => api.deleteRuntimeProfile(wsId ?? "", profileId),
+    onSettled: () => {
+      if (wsId) {
+        qc.invalidateQueries({ queryKey: runtimeProfileKeys.all(wsId) });
+        qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+      }
+    },
+  });
+}
+
 // §4.3: the no-profile escape hatch — creates the workspace's default
 // "Gemini Live" profile, then refreshes the catalog (the form selects the
 // new profile id from the mutation result) and the instance list.

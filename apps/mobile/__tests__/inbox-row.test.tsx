@@ -83,3 +83,27 @@ describe("InboxRow issue identifier", () => {
     expect(screen.queryByText("RUYI-314")).toBeNull();
   });
 });
+
+describe("InboxRow unread affordance", () => {
+  function unreadItem(): InboxItem {
+    return inboxItem({ read: false });
+  }
+
+  it("shows the unread dot for an unread row by default", async () => {
+    await render(<InboxRow item={unreadItem()} onPress={jest.fn()} />);
+
+    expect(screen.queryByTestId("inbox-row-unread-dot")).toBeTruthy();
+  });
+
+  // Archived view parity with web (packages/views/inbox/components/
+  // inbox-list-item.tsx): archiving leaves `read` untouched, so the archived
+  // list would otherwise pin an unread marker the user cannot clear from
+  // there — the affordance is suppressed in that view only.
+  it("suppresses the unread dot when the view opts out", async () => {
+    await render(
+      <InboxRow item={unreadItem()} onPress={jest.fn()} showUnread={false} />,
+    );
+
+    expect(screen.queryByTestId("inbox-row-unread-dot")).toBeNull();
+  });
+});

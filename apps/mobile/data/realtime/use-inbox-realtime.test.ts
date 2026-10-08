@@ -72,13 +72,16 @@ describe("useInboxRealtime", () => {
     "inbox:new",
     "inbox:batch-read",
   ])(
-    "invalidates both the list and the cross-workspace unread summary on %s",
+    "invalidates the whole inbox family (list + archived) and the unread summary on %s",
     (event) => {
       const { handlers } = useMountAndGetHandlers();
       handlers.get(event)?.({});
 
+      // The key family invalidation reaches both the main list AND the
+      // archived sub-view cache: every inbox event can move an item across
+      // that boundary and the split is decided server-side (RUYI-532).
       expect(invalidateQueries).toHaveBeenCalledWith({
-        queryKey: inboxKeys.list("ws-1"),
+        queryKey: inboxKeys.all("ws-1"),
       });
       expect(invalidateQueries).toHaveBeenCalledWith({
         queryKey: inboxKeys.unreadSummary(),
@@ -91,7 +94,7 @@ describe("useInboxRealtime", () => {
     onReconnect?.(undefined);
 
     expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: inboxKeys.list("ws-1"),
+      queryKey: inboxKeys.all("ws-1"),
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: inboxKeys.unreadSummary(),
