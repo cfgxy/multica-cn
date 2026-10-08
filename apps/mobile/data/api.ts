@@ -832,6 +832,32 @@ class ApiClient {
     );
   }
 
+  // DELETE /api/runtimes/:id — direct instance delete (RUYI-566). The
+  // server refuses with a structured 409
+  // (`runtime_profile_instance_delete_unsupported`) while a live runtime
+  // profile backs the instance; that channel is deleteRuntimeProfile below,
+  // whose cascade removes the instance and its credentials in one
+  // transaction.
+  async deleteRuntime(runtimeId: string): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // DELETE /api/workspaces/:id/runtime-profiles/:profileId — the supported
+  // delete channel for profile-backed (manual voice) instances: the server
+  // tears down bound instances, deletes their credential rows and the
+  // profile in one transaction (RUYI-540 QA-verified cascade, RUYI-566).
+  async deleteRuntimeProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
+      { method: "DELETE" },
+    );
+  }
+
   // Workspace-wide active agent tasks + each agent's most recent terminal —
   // feeds the workload dimension of presence (currently unused in the mobile
   // dot; reserved for the P1 long-press peek sheet). Listed here now so the

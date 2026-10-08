@@ -146,6 +146,10 @@ jest.mock("@/data/mutations/runtimes", () => ({
   useDeleteRuntimeCredential: () => ({ mutate: mockDeleteMutate, isPending: false }),
   useCreateManualRuntime: () => ({ mutateAsync: jest.fn(), isPending: false }),
   useCreateRuntimeProfile: () => ({ mutate: jest.fn(), isPending: false }),
+  // RUYI-566 delete flow hooks — inert stubs here; the delete semantics are
+  // pinned by voice-runtime-detail.test.tsx.
+  useDeleteRuntime: () => ({ mutate: jest.fn(), isPending: false }),
+  useDeleteRuntimeProfile: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 
 beforeEach(() => {
