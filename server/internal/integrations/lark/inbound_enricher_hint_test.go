@@ -79,7 +79,7 @@ func TestEnrichQuotedFetchDeniedSendsHintCard(t *testing.T) {
 	if len(fake.cardSends) != 1 {
 		t.Fatalf("permission-denied quote fetch must send one hint card, got %d", len(fake.cardSends))
 	}
-	if !strings.Contains(fake.cardSends[0].CardJSON, "im:message.history:readonly") {
+	if !strings.Contains(fake.cardSends[0].CardJSON, "im:message.group_msg") {
 		t.Fatalf("quote-path card must carry the read_history catalog scopes: %s", fake.cardSends[0].CardJSON)
 	}
 	_ = got

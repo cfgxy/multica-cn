@@ -937,11 +937,6 @@ func filenameFromContentDisposition(raw string) string {
 	return params["filename"]
 }
 
-// larkBatchGetUsersMaxIDs is Lark's hard cap on user_ids per
-// contact/v3/users/batch call. We drop the overflow rather than error so
-// a caller asking for more still gets the first 50 resolved.
-const larkBatchGetUsersMaxIDs = 50
-
 // AddMessageReaction adds an emoji reaction to a message via
 // POST /open-apis/im/v1/messages/{message_id}/reactions.
 // Returns the reaction_id so it can be deleted later.
@@ -1001,56 +996,51 @@ func (c *httpAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReact
 	return nil
 }
 
-// BatchGetUsers resolves user open_ids to display names via
-// GET /open-apis/contact/v3/users/batch?user_ids=…&user_id_type=open_id.
-// It mirrors fetchBotUnionID's single-user contact lookup, batched. Only
-// id->name pairs the API actually returns are included; a restricted
-// contact scope or an unknown id simply yields a smaller map (code==0
-// with fewer items), never an error, so the enricher degrades to
-// positional speaker labels. Ids past Lark's 50-per-call cap are dropped.
-func (c *httpAPIClient) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
-	if len(openIDs) == 0 {
-		return map[string]string{}, nil
-	}
-	if len(openIDs) > larkBatchGetUsersMaxIDs {
-		openIDs = openIDs[:larkBatchGetUsersMaxIDs]
+// GetUserName resolves one user open_id to its display name via
+// GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id — the
+// same single-user Contact lookup CC Connect performs for speaker
+// labels, migrated here (RUYI-546) so the enricher's contact scope
+// story matches a proven-working Feishu app instead of the batch
+// endpoint's stricter documented gate. It reuses fetchBotUnionID's
+// request shape; only the parsed field differs.
+//
+// Errors: transport failures, Lark business codes (a permission denial
+// reaches the caller's hint machinery with its code intact), and —
+// mirroring CC Connect's "no data" branch — a code=0 response whose
+// user object carries no name, which is how the API answers when the
+// app holds none of the name-field scopes. Callers cache successes and
+// degrade failures; nothing here retries.
+func (c *httpAPIClient) GetUserName(ctx context.Context, creds InstallationCredentials, openID string) (string, error) {
+	if openID == "" {
+		return "", errors.New("lark http client: empty open_id")
 	}
 	q := url.Values{}
 	q.Set("user_id_type", "open_id")
-	for _, id := range openIDs {
-		if id != "" {
-			q.Add("user_ids", id)
-		}
-	}
-	path := "/open-apis/contact/v3/users/batch?" + q.Encode()
-
+	path := "/open-apis/contact/v3/users/" + url.PathEscape(openID) + "?" + q.Encode()
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 		Data struct {
-			Items []struct {
-				OpenID string `json:"open_id"`
-				Name   string `json:"name"`
-			} `json:"items"`
+			User struct {
+				Name string `json:"name"`
+			} `json:"user"`
 		} `json:"data"`
 	}
 	if err := c.doAuthedJSON(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, fmt.Errorf("lark http client: batch get users: %w", err)
+		return "", fmt.Errorf("lark http client: get user name: %w", err)
 	}
 	if resp.Code != 0 {
+		// invalidateToken is keyed by app_id (the cache key on
+		// httpAPIClient.tokens), NOT by the bearer string.
 		if isTokenError(resp.Code) {
 			c.invalidateToken(creds.AppID)
 		}
-		return nil, fmt.Errorf("lark http client: batch get users: code=%d msg=%q", resp.Code, resp.Msg)
+		return "", &APIError{Op: "get user name", Code: resp.Code, Msg: resp.Msg}
 	}
-
-	out := make(map[string]string, len(resp.Data.Items))
-	for _, it := range resp.Data.Items {
-		if it.OpenID != "" && it.Name != "" {
-			out[it.OpenID] = it.Name
-		}
+	if resp.Data.User.Name == "" {
+		return "", fmt.Errorf("lark http client: get user name: user %s carries no name (name-field scopes missing?)", openID)
 	}
-	return out, nil
+	return resp.Data.User.Name, nil
 }
 
 // larkRESTMessageItem is the IM v1 message item shape returned by the

@@ -222,8 +222,8 @@ func (f *fakeAPIClient) ListChatMessages(ctx context.Context, creds Installation
 func (f *fakeAPIClient) DownloadMessageResource(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResource, error) {
 	return DownloadedResource{}, nil
 }
-func (f *fakeAPIClient) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
-	return nil, nil
+func (f *fakeAPIClient) GetUserName(ctx context.Context, creds InstallationCredentials, openID string) (string, error) {
+	return "", nil
 }
 func (f *fakeAPIClient) AddMessageReaction(ctx context.Context, p AddReactionParams) (string, error) {
 	return "fake-reaction-id", nil

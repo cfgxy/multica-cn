@@ -12,10 +12,16 @@ import { useTasksViewStore } from "./tasks-view-store";
  *      user returns to it.
  *   2. clearFilters (sheet 重置) must NOT reset the current TAB or the
  *      sort choice — it clears filters only.
- *   3. A workspace switch must NOT carry filters across workspaces (item 12).
+ *   3. A workspace/connection switch lands on the target workspace's own
+ *      memory: filters never ride across workspaces, and each workspace's
+ *      last selection comes back on return (RUYI-531; supersedes item 12's
+ *      wipe-on-switch).
  *   4. Filters (set + check ORDER) persist across a cold start, scoped to
- *      their owning workspace; TAB and sort stay session-scoped (RUYI-344
- *      增量: the Owner's 记住筛选与顺序 requirement).
+ *      their owning workspace; the TAB comes back too (RUYI-531), the sort
+ *      key stays session-scoped (RUYI-344 增量: the Owner's 记住筛选与顺序
+ *      requirement).
+ *   5. syncWorkspace(null) — the unresolved-workspace window on cold starts
+ *      and server switches — must not wipe what hydration just restored.
  */
 
 const { backend } = vi.hoisted(() => {
@@ -56,6 +62,7 @@ function resetState() {
   useTasksViewStore.setState({
     tab: "all",
     wsId: null,
+    byWs: {},
     statusFilters: [],
     priorityFilters: [],
     mineRelations: { assigned: false, created: false, involved: false },
@@ -85,6 +92,7 @@ describe("tasks view store", () => {
 
     const s = fresh.getState();
     expect(s.tab).toBe("all");
+    expect(s.byWs).toEqual({});
     expect(s.sortBy).toBe("updated_at");
     expect(s.statusFilters).toEqual([]);
     expect(s.priorityFilters).toEqual([]);
@@ -204,11 +212,13 @@ describe("tasks view store", () => {
     expect(getState().sortBy).toBe("updated_at");
   });
 
-  // Item 12 (P1): filters set in workspace A must not appear in workspace
-  // B. The screen remounts with the new wsId already set, so the transition
-  // is detected by the wsId stored in the state itself — syncWorkspace is
-  // the screen-facing entry point.
-  it("clears filters on a workspace switch but keeps TAB and sort", () => {
+  // RUYI-531: a switch lands on the target workspace's own memory instead
+  // of a wipe. Filters set in A must not appear in B (B has no memory →
+  // clean default), and the round trip brings each side's own selection
+  // back. The screen remounts with the new wsId already set, so the
+  // transition is detected by the wsId stored in the state itself —
+  // syncWorkspace is the screen-facing entry point.
+  it("lands on each workspace's own filter memory across switches", () => {
     const { getState } = useTasksViewStore;
     // Workspace A: QA's repro shape — Blocked TAB + Medium priority chip.
     getState().syncWorkspace("ws-dev");
@@ -217,8 +227,8 @@ describe("tasks view store", () => {
     getState().toggleStatusFilter("done");
     expect(getState().wsId).toBe("ws-dev");
 
-    // Switch to workspace B (never had filters): filters must clear,
-    // TAB survives (保 TAB), sort is untouched.
+    // Switch to workspace B (never had filters): opens clean — filters must
+    // NOT ride across. TAB survives (保 TAB), sort is untouched.
     getState().syncWorkspace("ws-backup");
     let s = getState();
     expect(s.wsId).toBe("ws-backup");
@@ -236,13 +246,53 @@ describe("tasks view store", () => {
     expect(s.tab).toBe("blocked");
     expect(s.sortBy).toBe("updated_at");
 
-    // Reverse trip: filters set in B must not ride back into A either.
+    // B sets its own choice; the round trip restores each side's own.
     getState().togglePriorityFilter("high");
     getState().syncWorkspace("ws-dev");
     s = getState();
     expect(s.wsId).toBe("ws-dev");
-    expect(s.priorityFilters).toEqual([]);
+    expect(s.priorityFilters).toEqual(["medium"]);
+    expect(s.statusFilters).toEqual(["done"]);
     expect(s.tab).toBe("blocked");
+
+    getState().syncWorkspace("ws-backup");
+    expect(getState().priorityFilters).toEqual(["high"]);
+  });
+
+  // RUYI-531 切换连接: servers live behind distinct workspace ids, so the
+  // same per-workspace memory carries a connection round trip.
+  it("keeps per-workspace memory across a connection (server) round trip", () => {
+    const { getState } = useTasksViewStore;
+    getState().syncWorkspace("srv-a-ws-1");
+    getState().toggleStatusFilter("blocked");
+
+    // Switch connection → server B's workspace opens clean.
+    getState().syncWorkspace("srv-b-ws-9");
+    expect(getState().statusFilters).toEqual([]);
+    getState().togglePriorityFilter("urgent");
+
+    // Back to server A: the selection set before the switch comes back.
+    getState().syncWorkspace("srv-a-ws-1");
+    expect(getState().statusFilters).toEqual(["blocked"]);
+    expect(getState().priorityFilters).toEqual([]);
+
+    getState().syncWorkspace("srv-b-ws-9");
+    expect(getState().priorityFilters).toEqual(["urgent"]);
+  });
+
+  it("caps the per-workspace memory and evicts the oldest slot", () => {
+    const { getState } = useTasksViewStore;
+    getState().syncWorkspace("ws-0");
+    getState().toggleStatusFilter("done");
+    for (let i = 1; i <= 21; i += 1) {
+      getState().syncWorkspace(`ws-${i}`);
+      if (i === 19) getState().togglePriorityFilter("high");
+    }
+    // ws-0 (the oldest slot) gave way; a recent slot keeps its selection.
+    getState().syncWorkspace("ws-0");
+    expect(getState().statusFilters).toEqual([]);
+    getState().syncWorkspace("ws-19");
+    expect(getState().priorityFilters).toEqual(["high"]);
   });
 
   it("syncWorkspace is a no-op while the workspace is unchanged", () => {
@@ -358,7 +408,7 @@ describe("tasks view persistence", () => {
     expect(s.statusFilters).toEqual([]);
   });
 
-  it("keeps TAB and sort session-scoped across a cold start", async () => {
+  it("restores the TAB across a cold start but keeps the sort session-scoped", async () => {
     vi.resetModules();
     const mod = await import("./tasks-view-store");
     const { getState } = mod.useTasksViewStore;
@@ -369,9 +419,9 @@ describe("tasks view persistence", () => {
 
     const restarted = await coldStart();
     const s = restarted.useTasksViewStore.getState();
-    // TAB defaults back to 全部 and sort to updated_at (dispatch card: TAB
-    // 本身不要求持久化，默认仍为全部), while the filter memory still works.
-    expect(s.tab).toBe("all");
+    // RUYI-531 验收 1: the segment TAB comes back; the sort key stays
+    // session-scoped (RUYI-344), and the filter memory still works.
+    expect(s.tab).toBe("blocked");
     expect(s.sortBy).toBe("updated_at");
     expect(s.statusFilters).toEqual(["done"]);
   });
@@ -396,17 +446,69 @@ describe("tasks view persistence", () => {
     expect(s.agentRunning).toBe(false);
   });
 
-  it("persists a mid-session workspace switch cleared, not the old filters", async () => {
+  it("keeps both workspaces' memory across a restart after a mid-session switch", async () => {
     const seeded = await seededStore();
     seeded.useTasksViewStore.getState().syncWorkspace("ws-other");
     expect(seeded.useTasksViewStore.getState().statusFilters).toEqual([]);
 
     const restarted = await coldStart();
-    const s = restarted.useTasksViewStore.getState();
-    // The last write wins: storage now belongs to ws-other with no filters,
-    // so a restart must not resurrect ws-dev's selection.
+    let s = restarted.useTasksViewStore.getState();
+    // The restart lands in the last-active workspace with its own (empty)
+    // view; ws-dev's selection survives in the per-workspace memory.
     expect(s.wsId).toBe("ws-other");
     expect(s.statusFilters).toEqual([]);
+
+    // RUYI-531 切空间: switching back must not force a re-select — even
+    // across the restart boundary.
+    restarted.useTasksViewStore.getState().syncWorkspace("ws-dev");
+    s = restarted.useTasksViewStore.getState();
+    expect(s.statusFilters).toEqual(["blocked", "in_progress", "backlog"]);
+  });
+
+  // RUYI-531: on a cold start currentWorkspaceId resolves AFTER hydration
+  // can land (the workspaces list is a network round trip) — the screen's
+  // first syncWorkspace(null) used to wipe the just-restored memory.
+  it("syncWorkspace(null) keeps the restored filters while the workspace is unresolved", async () => {
+    await seededStore();
+    const restarted = await coldStart();
+    restarted.useTasksViewStore.getState().syncWorkspace(null);
+
+    let s = restarted.useTasksViewStore.getState();
+    expect(s.wsId).toBe("ws-dev");
+    expect(s.statusFilters).toEqual(["blocked", "in_progress", "backlog"]);
+    // …and the real id arriving later stays a same-workspace no-op.
+    restarted.useTasksViewStore.getState().syncWorkspace("ws-dev");
+    s = restarted.useTasksViewStore.getState();
+    expect(s.statusFilters).toEqual(["blocked", "in_progress", "backlog"]);
+  });
+
+  it("migrates an RUYI-344-era blob without a per-workspace map", async () => {
+    backend.map.set(
+      "multica_mobile_tasks_view",
+      JSON.stringify({
+        state: {
+          wsId: "ws-dev",
+          statusFilters: ["done"],
+          priorityFilters: [],
+          mineRelations: { assigned: false, created: false, involved: false },
+          assigneeRefs: [],
+          includeNoAssignee: false,
+          creatorRefs: [],
+          agentRunning: false,
+        },
+        version: 0,
+      }),
+    );
+
+    const restarted = await coldStart();
+    const s = restarted.useTasksViewStore.getState();
+    expect(s.wsId).toBe("ws-dev");
+    expect(s.statusFilters).toEqual(["done"]);
+
+    // The migrated memory round-trips a workspace switch.
+    restarted.useTasksViewStore.getState().syncWorkspace("ws-x");
+    restarted.useTasksViewStore.getState().syncWorkspace("ws-dev");
+    expect(restarted.useTasksViewStore.getState().statusFilters).toEqual(["done"]);
   });
 
   it("ignores a persisted blob with no owning workspace", async () => {

@@ -24,7 +24,7 @@ describe("redactTokens", () => {
   });
 
   it("leaves normal text untouched", () => {
-    const text = "issue RUYI-82 updated to in_progress";
+    const text = "issue ENG-82 updated to in_progress";
     expect(redactTokens(text)).toBe(text);
   });
 

@@ -16,6 +16,7 @@
  */
 import { useMemo, useState } from "react";
 import { RefreshControl, ScrollView, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -89,6 +90,8 @@ export default function RunDetailRoute() {
   const durationMs = task ? runDurationMs(task) : null;
   const agentLabel = useAgentName(task);
 
+  // 顶部让出系统状态栏（RUYI-563）。
+  const insets = useSafeAreaInsets();
   const [copiedAll, setCopiedAll] = useState(false);
   const copyAll = () => {
     void Clipboard.setStringAsync(runCopyAllText(items));
@@ -97,7 +100,7 @@ export default function RunDetailRoute() {
 
   return (
     <View className="flex-1">
-      <View className="flex-row items-center gap-2 px-4 pt-4 pb-2">
+      <View className="flex-row items-center gap-2 px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
         <Text className="flex-1 text-base font-semibold text-foreground" numberOfLines={1}>
           {t("mobile.run_detail.title", "Run details")}
         </Text>

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { LarkTab } from "./lark-tab";
 import { ComposioTab } from "./composio-tab";
@@ -12,6 +13,7 @@ import { ApiError } from "@multica/core/api";
 import { composioToolkitsOptions } from "@multica/core/composio";
 import { useConfigStore, useFeatureEnabled } from "@multica/core/config";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
+import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { SettingsSection, SettingsTab } from "./settings-layout";
 import { IntegrationChannelIcon } from "./integration-channel-icon";
@@ -38,6 +40,23 @@ export function IntegrationsTab() {
   // omitted from /api/config), so the whole section — header included — is
   // hidden there rather than showing an operator-only "missing key" message.
   const vcsAvailable = useConfigStore((s) => s.vcsIntegrationAvailable);
+
+  // Deep link from the repository picker's "connect new instance" entry:
+  // `?section=vcs` scrolls to the Git providers section once, then the param
+  // is dropped so revisiting the tab does not re-scroll (same one-shot
+  // pattern as the repositories tab's github_connected cleanup).
+  const navigation = useNavigation();
+  const section = navigation.searchParams.get("section");
+  useEffect(() => {
+    if (section !== "vcs" || !vcsAvailable) return;
+    document
+      .getElementById("settings-vcs-section")
+      ?.scrollIntoView({ block: "start" });
+    const params = new URLSearchParams(navigation.searchParams);
+    params.delete("section");
+    const search = params.toString();
+    navigation.replace(`${navigation.pathname}${search ? `?${search}` : ""}`);
+  }, [section, vcsAvailable, navigation]);
 
   return (
     <SettingsTab title={t(($) => $.page.tabs.integrations)}>
@@ -80,7 +99,7 @@ export function IntegrationsTab() {
         <DingTalkTab />
       </SettingsSection>
       {vcsAvailable && (
-        <SettingsSection title={t(($) => $.vcs.section_title)}>
+        <SettingsSection id="settings-vcs-section" title={t(($) => $.vcs.section_title)}>
           <VCSTab />
         </SettingsSection>
       )}

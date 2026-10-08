@@ -46,7 +46,7 @@ func TestFeishuMediaResolverDownloadDeniedSendsHintCard(t *testing.T) {
 	if got := sender.cardSends[0].ChatID; got != "oc_media" {
 		t.Fatalf("hint card must target the message's chat, got %q", got)
 	}
-	if !strings.Contains(sender.cardSends[0].CardJSON, "im:resource") {
+	if !strings.Contains(sender.cardSends[0].CardJSON, "im:message.history:readonly") {
 		t.Fatalf("media card must carry the media_resources catalog scopes: %s", sender.cardSends[0].CardJSON)
 	}
 }

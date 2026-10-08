@@ -100,6 +100,19 @@ export function upsertDecisionInCache(
   });
 }
 
+/**
+ * Batch-answer views render their own index letter (OPTION_LETTERS), so a
+ * label written under the workspace decision-numbering convention already
+ * embeds it ("A：…") and the letter would show twice (RUYI-575). Strip one
+ * leading A-Z letter plus one of ： : 、 . when non-empty text follows;
+ * anything else (A-type, B超, lowercase, mid-label) renders untouched.
+ * Display-only — stored labels stay verbatim.
+ */
+export function stripDecisionOptionLetterPrefix(label: string): string {
+  const match = /^[A-Z][：:、.]\s*(\S.*)$/.exec(label);
+  return match?.[1] ?? label;
+}
+
 export const answerIssueDecision: MutationFunction<
   IssueDecision,
   { issueId: string; decisionId: string; selectedIndices: number[] }

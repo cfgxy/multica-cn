@@ -3,7 +3,10 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RESOURCES } from "@multica/views/locales";
-import { DECISION_SECTION_ORDER } from "./decision-inbox-display";
+import {
+  DECISION_SECTION_ORDER,
+  DECISION_TAB_ORDER,
+} from "./decision-inbox-display";
 import type {
   AgentTask,
   IssueStatus,
@@ -442,6 +445,9 @@ const PREFIX_VALUES: Record<string, string[]> = {
   "issues:mobile.tasks.filtered_empty": ["title", "clear_button"],
   // RUYI-494: 决策中心分区标题按状态枚举拼接，枚举取自 lib/decision-inbox-display。
   "decisions:section": [...DECISION_SECTION_ORDER],
+  // RUYI-530: 决策中心 TAB 标签按状态枚举拼接（全部 + 三个状态页签），
+  // 枚举同取自 lib/decision-inbox-display 的 DECISION_TAB_ORDER。
+  "decisions:mobile.tabs": [...DECISION_TAB_ORDER],
 };
 
 const MOBILE_ROOT = join(__dirname, "..");

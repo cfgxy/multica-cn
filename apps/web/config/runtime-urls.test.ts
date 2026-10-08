@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isBackendAuthPath,
   resolveBrowserApiBaseUrl,
   resolveBrowserWsUrl,
   resolveDevDocsUrl,
@@ -421,5 +422,28 @@ describe("dev-only fallbacks", () => {
 
   it("falls back to the local docs port", () => {
     expect(resolveDevDocsUrl({})).toBe("http://localhost:4000");
+  });
+});
+
+// RUYI-526: the post-auth `next` navigation (lib/auth-resume-navigation.ts)
+// reuses this classification to decide full-page vs client-side routing, so
+// the browser and the rewrite table must stay in lockstep.
+describe("isBackendAuthPath", () => {
+  it("claims the OAuth authorize endpoint and the rest of the backend auth surface", () => {
+    expect(isBackendAuthPath("/auth/oauth/authorize")).toBe(true);
+    expect(isBackendAuthPath("/auth")).toBe(true);
+    expect(isBackendAuthPath("/auth/send-code")).toBe(true);
+  });
+
+  it("spares the frontend-owned callback pages", () => {
+    expect(isBackendAuthPath("/auth/callback")).toBe(false);
+    expect(isBackendAuthPath("/auth/callback/nested")).toBe(false);
+    expect(isBackendAuthPath("/auth/hg-sso/callback")).toBe(false);
+    expect(isBackendAuthPath("/auth/hg-sso/callback/nested")).toBe(false);
+  });
+
+  it("ignores the query and fragment when classifying", () => {
+    // The navigation helper strips these before calling in.
+    expect(isBackendAuthPath("/auth/oauth/authorize")).toBe(true);
   });
 });

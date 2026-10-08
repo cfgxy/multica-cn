@@ -1,4 +1,4 @@
-import { ActivityIndicator, Linking, ScrollView, View } from "react-native";
+import { Alert, ActivityIndicator, Linking, ScrollView, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -10,6 +10,9 @@ import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { inboxListOptions } from "@/data/queries/inbox";
+import { useRetrySourceContextQuickCreate } from "@/data/mutations/inbox";
+import { ApiError } from "@/data/api";
+import { getQuickCreateRetryPlan } from "@/lib/quick-create-retry";
 import {
   appConfigOptions,
   workspaceSubscriptionSummaryOptions,
@@ -84,6 +87,7 @@ export default function InboxNoticeDetail() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("inbox");
+  const { t: tModals } = useT("modals");
   const { data: items, isLoading } = useQuery(inboxListOptions(wsId));
 
   // Read the raw workspace-scoped cache: deduplication can replace a row,
@@ -124,6 +128,67 @@ export default function InboxNoticeDetail() {
     item?.type === "quick_create_unconfirmed"
       ? (item.details?.original_prompt ?? null)
       : null;
+  // Retry gate mirrors web's detail pane
+  // (packages/views/inbox/components/inbox-page.tsx): only a failed
+  // quick-create whose details still carry the source-context linkage gets
+  // the button. The server reuses the stored original input; the client
+  // never resends the prompt.
+  const retryPlan = item ? getQuickCreateRetryPlan(item) : null;
+  const retryMutation = useRetrySourceContextQuickCreate();
+
+  const onRetry = async () => {
+    if (!retryPlan || retryMutation.isPending) return;
+    try {
+      await retryMutation.mutateAsync(retryPlan.taskId);
+      // Back to the inbox first — the settled invalidate refetches the list,
+      // where the retried task's new entry appears. Mobile has no toast
+      // layer, so the started-confirmation rides a native alert (same
+      // feedback channel as the error branches below).
+      router.back();
+      Alert.alert(
+        t(
+          "toasts.source_context_retry_started",
+          "Retry started with the original context",
+        ),
+      );
+    } catch (err) {
+      // Structured 4xx bodies, same decode as quick-create-panel's submit
+      // catch — the server is the trust boundary for every gate.
+      const code =
+        err instanceof ApiError &&
+        err.body &&
+        typeof err.body === "object" &&
+        "code" in err.body
+          ? String((err.body as { code: unknown }).code)
+          : null;
+      if (code === "source_context_retry_unavailable") {
+        Alert.alert(
+          t(
+            "errors.source_context_retry_unavailable",
+            "This context can no longer be retried. Start again from the branch point.",
+          ),
+        );
+        return;
+      }
+      if (code === "issue_limit_reached") {
+        // Same key + fallback web routes to its upgrade prompt; mobile keeps
+        // the alert treatment quick-create-panel already established.
+        Alert.alert(
+          tModals(
+            "create_issue.issue_limit.title",
+            "This workspace has reached its issue limit",
+          ),
+        );
+        return;
+      }
+      Alert.alert(
+        t(
+          "errors.source_context_retry_failed",
+          "Could not retry with the original context",
+        ),
+      );
+    }
+  };
 
   return (
     <View className="flex-1 bg-background">
@@ -181,6 +246,25 @@ export default function InboxNoticeDetail() {
                 {originalPrompt}
               </Text>
             </View>
+          ) : null}
+
+          {/* RUYI-527: retry a failed quick-create with its original input.
+              Unconfirmed outcomes stay button-less (the issue may exist) —
+              same gate web's detail pane applies. */}
+          {retryPlan ? (
+            <Button
+              size="sm"
+              disabled={retryMutation.isPending}
+              onPress={onRetry}
+              accessibilityLabel={t(
+                "detail.retry_with_context",
+                "Retry with context",
+              )}
+            >
+              <Text>
+                {t("detail.retry_with_context", "Retry with context")}
+              </Text>
+            </Button>
           ) : null}
 
           {isQuotaNotice ? (

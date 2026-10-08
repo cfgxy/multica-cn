@@ -8,6 +8,7 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { paths, resolvePostAuthDestination } from "@multica/core/paths";
 import { api } from "@multica/core/api";
 import { validateCliCallback, redirectToCliCallback } from "@multica/views/auth";
+import { navigateToNextUrl } from "@/lib/auth-resume-navigation";
 import {
   Card,
   CardHeader,
@@ -102,7 +103,7 @@ function CallbackContent() {
           //    round-trip — the user clicked a specific link and we should
           //    honor exactly that destination.
           if (nextUrl) {
-            router.push(nextUrl);
+            navigateToNextUrl(nextUrl, router, "push");
             return;
           }
 

@@ -1,15 +1,14 @@
 /**
- * Extended-surface combined regression (RUYI-399, scope round 2).
+ * Extended-surface combined regression.
  *
- * Round 1 (combined-regression.test.ts) pinned the RUYI-350/351/353 union.
- * This file extends the same cross-tool discipline to the rest of the
- * week's MCP capability surface — RUYI-282 (assign_issue), RUYI-292 (run
- * management), RUYI-352 (comment management), RUYI-354 (project
- * management) — and pins the cross-tool contracts their merges could have
- * broken:
+ * combined-regression.test.ts pins the update_issue / relations /
+ * bulk_update_issues union. This file extends the same cross-tool
+ * discipline to the rest of the MCP capability surface — assign_issue, run
+ * management, comment management, project management — and pins the
+ * cross-tool contracts shared across those faces:
  *   - every tool is registered once, and readOnlyHint matches the pure-read
  *     set exactly across the whole tools/list (list_projects/get_project
- *     included — same defect class as round 1's get_issue_relations);
+ *     included — same defect class as get_issue_relations);
  *   - one expected_revision floor (>=1, rejected client-side at 0) across
  *     every CAS tool, and stale revisions answer STRUCTURED
  *     revision_conflict results on the comment and project faces just like
@@ -64,7 +63,7 @@ const PURE_READ_TOOLS = [
   "get_issue_relations",
   "list_issue_runs",
   "get_run",
-  // RUYI-433 execution-config reads.
+  // Execution-config reads.
   "list_daemon_instances",
   "get_daemon_instance",
   "list_runtimes",
@@ -75,12 +74,12 @@ const PURE_READ_TOOLS = [
   "get_execution_profile",
   "get_execution_topology",
   "search_audit_events",
-  // RUYI-419 workspace management reads.
+  // Workspace management reads.
   "list_runs",
   "get_agent",
   "list_squads",
   "get_squad",
-  // RUYI-458 project resource binding read.
+  // Project resource binding read.
   "list_project_resources",
 ] as const;
 
@@ -95,7 +94,7 @@ const CAS_TOOLS = [
 
 // ---- Part A: registration surface & readOnlyHint audit -------------------
 
-describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)", () => {
+describe("whole-surface registration and readOnlyHint audit", () => {
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
@@ -178,7 +177,7 @@ describe("whole-surface registration and readOnlyHint audit (RUYI-399 round 2)",
 
 // ---- Part B: one expected_revision floor across the whole face -----------
 
-describe("expected_revision floor across every CAS tool (RUYI-399 round 2)", () => {
+describe("expected_revision floor across every CAS tool", () => {
   it("keeps schema minimum 1 on every expected_revision property anywhere in the surface", () => {
     const floors: Array<{ tool: string; minimum: unknown }> = [];
     const walk = (tool: string, schema: unknown, path: string): void => {
@@ -253,9 +252,9 @@ describe("expected_revision floor across every CAS tool (RUYI-399 round 2)", () 
   });
 });
 
-// ---- Part C: project face (RUYI-354) --------------------------------------
+// ---- Part C: project face --------------------------------------
 
-describe("project face: PATCH serialization, CAS, metadata-only (RUYI-354)", () => {
+describe("project face: PATCH serialization, CAS, metadata-only", () => {
   it("omitted keys stay off the wire; explicit nulls survive to the wire and clear", async () => {
     const backend = new FakeRestBackend();
     const client = backend.client();
@@ -368,9 +367,9 @@ describe("project face: PATCH serialization, CAS, metadata-only (RUYI-354)", () 
   });
 });
 
-// ---- Part D: comment face (RUYI-352) --------------------------------------
+// ---- Part D: comment face --------------------------------------
 
-describe("comment face: CAS wire contract and structured failures (RUYI-352)", () => {
+describe("comment face: CAS wire contract and structured failures", () => {
   it("edit_comment sends exactly the provided keys and echoes trigger_outcomes", async () => {
     const backend = new FakeRestBackend();
     const client = backend.client();
@@ -518,9 +517,9 @@ describe("comment face: CAS wire contract and structured failures (RUYI-352)", (
   });
 });
 
-// ---- Part E: run side-effect boundary (RUYI-282 / RUYI-350) ---------------
+// ---- Part E: run side-effect boundary ---------------
 
-describe("run side-effect boundary across assign/status/bulk (RUYI-399 round 2)", () => {
+describe("run side-effect boundary across assign/status/bulk", () => {
   it("update_issue_status echoes run_suppressed on its result", async () => {
     const backend = new FakeRestBackend();
     const { client, cleanup } = await connectViaMcp(backend);
@@ -630,9 +629,9 @@ describe("run side-effect boundary across assign/status/bulk (RUYI-399 round 2)"
   });
 });
 
-// ---- Part F: run management shapes (RUYI-292) ------------------------------
+// ---- Part F: run management shapes ------------------------------
 
-describe("run management keeps its documented outcome shapes (RUYI-292)", () => {
+describe("run management keeps its documented outcome shapes", () => {
   it("cancel_run: queued run cancels, finished run answers not_cancellable", async () => {
     const backend = new FakeRestBackend();
     const client = backend.client();
@@ -706,7 +705,7 @@ describe("run management keeps its documented outcome shapes (RUYI-292)", () => 
 
 // ---- Part G: one issue, four capability faces in series --------------------
 
-describe("combined serial path: update → assign → relations → comments (RUYI-399 round 2)", () => {
+describe("combined serial path: update → assign → relations → comments", () => {
   it("keeps one revision and consistent read-back views across the four faces", async () => {
     const backend = new FakeRestBackend();
     const { client, cleanup } = await connectViaMcp(backend);
@@ -797,9 +796,9 @@ describe("combined serial path: update → assign → relations → comments (RU
   });
 });
 
-// ---- Part H: project resource face (RUYI-458) ------------------------------
+// ---- Part H: project resource face ------------------------------
 
-describe("project resource face: bindings, duplicate guard, label clearing (RUYI-458)", () => {
+describe("project resource face: bindings, duplicate guard, label clearing", () => {
   const GITHUB_REF = { url: "https://github.com/cfgxy/multica-cn.git" };
   const LOCAL_REF = { local_path: "/home/guxy/work", daemon_id: "d-1" };
 
@@ -1334,7 +1333,7 @@ class FakeRestBackend {
         (issue as unknown as Record<string, unknown>)[key] = body[key] ?? null;
       }
     }
-    // Mirror the server's RUYI-275 disposition (issue.go: set when the write
+    // Mirror the server's disposition (issue.go: set when the write
     // would have enqueued a run and was suppressed; clear when it truly
     // starts a run or clears the assignee; keep otherwise) — a member
     // assign or metadata edit never flips the flag.
@@ -1493,7 +1492,7 @@ class FakeRestBackend {
     return json(project);
   }
 
-  // ---- project resource mirror (RUYI-458) -----------------------------------
+  // ---- project resource mirror -----------------------------------
   // Mirrors server/internal/handler/project_resource.go's observable contract:
   // type-aware ref validation (400), UNIQUE(project,type,ref) plus the
   // per-daemon local_directory conflict (409), PATCH-by-key-presence with the

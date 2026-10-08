@@ -157,6 +157,28 @@ export function deriveVersion(cwd) {
   return normalizeGitVersion(git(DESCRIBE_ARGS, cwd));
 }
 
+// Version resolution for one packaging run (RUYI-573): the dev channel
+// (desktop-dev-build.yml) injects DESKTOP_PACKAGE_VERSION so daily Windows
+// builds carry `X.Y.Z-dev.YYYYMMDD-N`; every other consumer keeps the
+// git-describe derivation. The override must still look like a semver-ish
+// `X.Y.Z[-suffix]` — electron-updater refuses to launch with anything that
+// does not start major.minor.patch.
+const VERSION_OVERRIDE_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
+
+export function resolvePackageVersion(env = process.env) {
+  const override = env.DESKTOP_PACKAGE_VERSION?.trim();
+  if (override) {
+    if (!VERSION_OVERRIDE_RE.test(override)) {
+      throw new Error(
+        `[package] DESKTOP_PACKAGE_VERSION "${override}" is not a valid ` +
+          "version (expected X.Y.Z or X.Y.Z-suffix)",
+      );
+    }
+    return override;
+  }
+  return deriveVersion();
+}
+
 function uniqueOrdered(values) {
   return [...new Set(values)];
 }
@@ -408,10 +430,11 @@ function main() {
     process.exit(viteResult.status ?? 1);
   }
 
-  // Step 2: derive the version that should be written into the app.
-  const version = deriveVersion();
+  // Step 2: derive the version that should be written into the app —
+  // DESKTOP_PACKAGE_VERSION override first (dev channel), else git describe.
+  const version = resolvePackageVersion();
   if (version) {
-    console.log(`[package] Desktop version → ${version} (from git describe)`);
+    console.log(`[package] Desktop version → ${version}`);
   } else {
     console.warn(
       "[package] could not derive version from git; falling back to package.json",

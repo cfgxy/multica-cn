@@ -60,16 +60,35 @@ func TestScopesForCapability(t *testing.T) {
 		id   CapabilityID
 		want []string
 	}{
+		// receive_messages: one group-side scope AND one p2p-side scope —
+		// the receive-event doc's full subscription set, partitioned by
+		// delivery side.
 		{CapabilityReceiveMessages, []string{
-			"im:message.group_at_msg", "im:message.group_at_msg:readonly",
+			"im:message.group_at_msg", "im:message.group_at_msg.include_bot:readonly", "im:message.group_at_msg:readonly",
+			"im:message.group_bot_msg:readonly", "im:message.group_msg", "im:message.group_msg.include_bot:read", "im:message.group_msg:readonly",
 			"im:message.p2p_msg", "im:message.p2p_msg:readonly",
 		}},
-		{CapabilitySendMessages, []string{"im:message", "im:message:send_as_bot"}},
+		// send_messages: the POST /im/v1/messages doc's three-way grant
+		// row — im:message:send is the closed-to-new-apps historical
+		// scope, kept for legacy-install diff correctness.
+		{CapabilitySendMessages, []string{"im:message", "im:message:send", "im:message:send_as_bot"}},
+		// read_history: the intersection of the single-message GET and the
+		// conversation-list requirements — im:message.history:readonly
+		// grants the list but NOT the quoted-message GET, so it must not
+		// satisfy this capability on its own.
 		{CapabilityReadHistory, []string{
-			"im:message", "im:message.group_msg", "im:message.history:readonly", "im:message:readonly",
+			"im:message", "im:message.group_msg", "im:message:readonly",
 		}},
-		{CapabilityMediaResources, []string{"im:resource"}},
-		{CapabilityContactLookup, []string{"contact:user.base:readonly"}},
+		// media_resources: the message-resource doc's grant list.
+		{CapabilityMediaResources, []string{
+			"im:message", "im:message.history:readonly", "im:message:readonly",
+		}},
+		// contact_lookup: union of the single-user doc's two requirement
+		// rows (API gate AND name-field grants) — ScopesForCapability
+		// flattens groups; dedup collapses the three shared grants.
+		{CapabilityContactLookup, []string{
+			"contact:contact.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app", "contact:user.base:readonly",
+		}},
 	}
 	for _, tc := range cases {
 		got := ScopesForCapability(tc.id)
@@ -113,13 +132,20 @@ func TestMissingScopes(t *testing.T) {
 // flow must surface exactly that one scope.
 func TestCapabilityScopeDiffGroupMsgGap(t *testing.T) {
 	t.Parallel()
-	granted := []string{"im:message", "im:message:send_as_bot", "im:resource"}
+	granted := []string{"im:message", "im:message:send_as_bot"}
 	for _, id := range []CapabilityID{CapabilityReadHistory, CapabilitySendMessages, CapabilityMediaResources} {
 		want := ScopesForCapability(id)
 		got := MissingScopes(want, granted)
 		switch id {
 		case CapabilityReadHistory:
-			want = []string{"im:message.group_msg", "im:message.history:readonly", "im:message:readonly"}
+			want = []string{"im:message.group_msg", "im:message:readonly"}
+		case CapabilityMediaResources:
+			want = []string{"im:message.history:readonly", "im:message:readonly"}
+		case CapabilitySendMessages:
+			// The flatten-based diff lists every candidate grant, so the
+			// historical im:message:send shows up even though the granted
+			// im:message already satisfies the group.
+			want = []string{"im:message:send"}
 		default:
 			want = nil
 		}
@@ -139,8 +165,20 @@ func TestClassifyProbeError(t *testing.T) {
 		{"nil", nil, ProbeGranted},
 		{"canonical no-permission 99991672", &APIError{Op: "get message", Code: 99991672}, ProbeMissing},
 		{"no-permission 99991002", &APIError{Op: "list chat messages", Code: 99991002}, ProbeMissing},
-		{"no-permission 230001", &APIError{Op: "get message", Code: 230001}, ProbeMissing},
-		{"group_msg gap 230027", &APIError{Op: "list chat messages", Code: 230027, Msg: "missing im:message.group_msg"}, ProbeMissing},
+		// 230001/230027 are enforced at the business layer against a REAL
+		// target ("bot is not in the chat", missing im:message.group_msg).
+		// A probe carries a synthetic target, so parameter validation runs
+		// before any business-layer scope check — QA live evidence
+		// 2026-10-08: a send-granted install got 230001 "invalid
+		// receive_id" on the send probe. Both mean the gateway's scope
+		// check passed → granted.
+		{"230001 param validation on synthetic target", &APIError{Op: "send message", Code: 230001, Msg: "invalid receive_id"}, ProbeGranted},
+		{"230027 business-layer gap not reachable on synthetic target", &APIError{Op: "list chat messages", Code: 230027, Msg: "missing im:message.group_msg"}, ProbeGranted},
+		// QA-observed not-exist family on synthetic targets (contact
+		// lookup / message GET / resource download), installs verified
+		// granted via the data plane → target validation, gateway passed.
+		{"contact not-exist 99992351", &APIError{Op: "get user", Code: 99992351}, ProbeGranted},
+		{"message id not-exist 99992354", &APIError{Op: "get message", Code: 99992354}, ProbeGranted},
 		{"not-exist business code", &APIError{Op: "get message", Code: 230002}, ProbeGranted},
 		{"deleted 230110", &APIError{Op: "get message", Code: 230110}, ProbeGranted},
 		{"invisible 230050", &APIError{Op: "get message", Code: 230050}, ProbeGranted},
@@ -177,8 +215,8 @@ func (s *probeStubClient) SendTextMessage(context.Context, SendTextParams) (stri
 func (s *probeStubClient) DownloadMessageResource(context.Context, InstallationCredentials, DownloadResourceParams) (DownloadedResource, error) {
 	return DownloadedResource{}, s.downloadErr
 }
-func (s *probeStubClient) BatchGetUsers(context.Context, InstallationCredentials, []string) (map[string]string, error) {
-	return nil, s.usersErr
+func (s *probeStubClient) GetUserName(context.Context, InstallationCredentials, string) (string, error) {
+	return "", s.usersErr
 }
 
 func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
@@ -215,7 +253,7 @@ func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
 			t.Errorf("status = %q (%s), want granted", out.Status, out.Detail)
 		}
 	})
-	t.Run("contact_lookup probes batch users", func(t *testing.T) {
+	t.Run("contact_lookup probes the single-user lookup", func(t *testing.T) {
 		t.Parallel()
 		out := ProbeCapability(context.Background(), &probeStubClient{}, creds, CapabilityContactLookup)
 		if out.Status != ProbeGranted {
