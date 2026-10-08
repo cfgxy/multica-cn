@@ -282,25 +282,25 @@ function DecisionsToolbar({
         </ScrollView>
       )}
       <View style={{ position: "relative" }} className="ml-2">
+        {/* RUYI-554: filter-active reads from the button's brand tint —
+            the old corner blue dot is retired. */}
         <Button
           variant="outline"
           size="sm"
           onPress={onOpenFilter}
           accessibilityLabel={t("mobile.filters.a11y", "Filter")}
-          className="w-9 px-0"
+          className={`w-9 px-0 ${filterActive ? "border-brand" : ""}`}
         >
           <Ionicons
             name="options-outline"
             size={16}
-            color={THEME[colorScheme].mutedForeground}
+            color={
+              filterActive
+                ? THEME[colorScheme].brand
+                : THEME[colorScheme].mutedForeground
+            }
           />
         </Button>
-        {filterActive ? (
-          <View
-            pointerEvents="none"
-            className="absolute top-1 right-1 size-1.5 rounded-full bg-brand"
-          />
-        ) : null}
       </View>
     </View>
   );

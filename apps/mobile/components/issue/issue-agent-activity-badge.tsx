@@ -5,8 +5,8 @@
  * its badge-only, no-hover-card form — the exact variant web's inbox rows
  * render (MUL-5189):
  *
- *   ≥1 running task          → avatar stack + PulseDot          (full)
- *   0 running, ≥1 queued     → half-opacity stack, no dot
+ *   ≥1 running task          → breathing avatar stack          (full)
+ *   0 running, ≥1 queued     → half-opacity stack
  *   nothing                  → null (no chrome, no placeholder)
  *
  * Stack heads prefer running and fall back to queued — never both — same
@@ -14,16 +14,17 @@
  * the shared workspace snapshot (`lib/issue-agent-activity.ts`), so long
  * lists pay one derivation pass, not one per row.
  *
- * Documented divergence from web: the web badge also renders a
- * "Working"/"Queued" text label; mobile drops the label for row width —
- * the same call `AgentHeaderBadge` made — and the running/queued
- * distinction reads from the PulseDot vs the half-opacity stack.
+ * Documented divergences from web:
+ *   - The web badge also renders a "Working"/"Queued" text label; mobile
+ *     drops the label for row width — the same call `AgentHeaderBadge` made.
+ *   - RUYI-554 unified status language: the running/queued distinction is
+ *     carried by the stack avatars themselves (breathing vs grayed) instead
+ *     of a separate pulsing dot beside them — one avatar-driven cue.
  */
 import { View } from "react-native";
 import { useT } from "@/lib/use-t";
 import type { AgentTask } from "@multica/core/types";
 import { AvatarStack, type StackActor } from "@/components/ui/avatar-stack";
-import { PulseDot } from "@/components/ui/pulse-dot";
 
 interface Props {
   running: AgentTask[];
@@ -46,7 +47,6 @@ export function IssueAgentActivityBadge({ running, queued, size = 16 }: Props) {
   return (
     <View
       className="flex-row items-center"
-      style={isRunning ? undefined : { opacity: 0.5 }}
       accessibilityLabel={
         isRunning
           ? t(
@@ -59,12 +59,12 @@ export function IssueAgentActivityBadge({ running, queued, size = 16 }: Props) {
             )
       }
     >
-      <AvatarStack actors={actors} max={2} size={size} />
-      {isRunning ? (
-        <View className="ml-1">
-          <PulseDot size={6} />
-        </View>
-      ) : null}
+      <AvatarStack
+        actors={actors}
+        max={2}
+        size={size}
+        activity={isRunning ? "running" : "queued"}
+      />
     </View>
   );
 }

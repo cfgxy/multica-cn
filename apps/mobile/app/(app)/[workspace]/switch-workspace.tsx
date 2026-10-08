@@ -140,16 +140,16 @@ function WorkspaceRow({
         avatarUrl={workspace.avatar_url}
         size={24}
       />
-      {/* Unread dot BEFORE the name, per RUYI-44 spec. Data and predicate
-          are web-identical (account-level unread summary +
-          unreadWorkspaceIds in @multica/core/inbox/unread); only placement
-          differs — web puts the dot on the row's right edge, the mobile
-          sheet puts it ahead of the name. Rendered only when there IS
-          unread so rows without unread keep their rhythm. */}
-      {hasUnread ? <View className="h-2 w-2 rounded-full bg-brand" /> : null}
+      {/* Unread state is typographic (RUYI-554): an unread workspace's
+          name gets medium weight instead of the old leading blue dot
+          (RUYI-44's dot is retired from mobile). Data and predicate stay
+          web-identical (account-level unread summary + unreadWorkspaceIds
+          in @multica/core/inbox/unread). Active keeps semibold + checkmark,
+          so the two states stay distinguishable. */}
       <Text
         className={cn(
           "flex-1 text-sm text-foreground",
+          hasUnread && "font-medium",
           active && "font-semibold",
         )}
         numberOfLines={1}

@@ -9,6 +9,12 @@
  * apps/mobile/CLAUDE.md "Visual alignment is baseline":
  *   - Right column stacks vertically: status icon on top row, time on bottom.
  *   - Secondary line uses the type-aware `InboxDetailLabel`, not raw body.
+ *
+ * RUYI-554 unified status language (documented mobile divergence from web,
+ * which still renders an unread dot): unread vs read is typographic only —
+ * unread = semibold foreground title, read = muted title — and the row's
+ * agent avatar carries the agent-activity state (breathing / grayed /
+ * static) instead of a presence dot.
  */
 import { Pressable, View } from "react-native";
 import type { InboxItem } from "@multica/core/types";
@@ -17,6 +23,7 @@ import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueAgentActivityBadge } from "@/components/issue/issue-agent-activity-badge";
 import type { IssueActivity } from "@/lib/issue-agent-activity";
+import { selectActorActivity } from "@/lib/issue-agent-activity";
 import { InboxDetailLabel } from "@/components/inbox/detail-label";
 import { getInboxDisplayTitle } from "@/lib/inbox-display";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
@@ -45,17 +52,25 @@ export function InboxRow({ item, activity, onPress }: Props) {
   return (
     <Pressable onPress={onPress} className="bg-background active:bg-secondary px-4 py-3">
       <View className="flex-row gap-3">
-        <ActorAvatar type={actorType} id={actorId} size={36} showPresence />
+        {/* Avatar state is the unified activity language (RUYI-554): the
+            actor's own task on this issue drives breathing (running) /
+            grayed (queued) / static — the corner presence dot is retired
+            from list rows. */}
+        <ActorAvatar
+          type={actorType}
+          id={actorId}
+          size={36}
+          activity={selectActorActivity(activity, actorId) ?? undefined}
+        />
         <View className="flex-1 min-w-0">
-          {/* Top row: [unread dot + identifier + title] (left) | [status icon]
-              (right). The identifier anchors the row to its issue (RUYI-314):
+          {/* Top row: [identifier + title] (left) | [status icon] (right).
+              Unread state is typographic only (RUYI-554): bold-vs-regular
+              weight + foreground-vs-muted colour — the old leading blue dot
+              is gone. The identifier anchors the row to its issue (RUYI-314):
               muted and shrink-0 like issue-row.tsx's identifier column, so a
               long title truncates before the identifier does. */}
           <View className="flex-row items-center gap-2">
             <View className="flex-row items-center gap-1.5 flex-1 min-w-0">
-              {isUnread ? (
-                <View className="size-1.5 rounded-full bg-brand shrink-0" />
-              ) : null}
               {item.issue_identifier ? (
                 <Text className="text-xs text-muted-foreground shrink-0">
                   {item.issue_identifier}
@@ -65,7 +80,7 @@ export function InboxRow({ item, activity, onPress }: Props) {
                 className={cn(
                   "flex-1 text-sm",
                   isUnread
-                    ? "font-medium text-foreground"
+                    ? "font-semibold text-foreground"
                     : "text-muted-foreground",
                 )}
                 numberOfLines={1}
