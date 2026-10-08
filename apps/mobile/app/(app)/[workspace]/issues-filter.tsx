@@ -15,6 +15,7 @@
  * Self-contained: reads/writes the store directly, no callback passing.
  */
 import { Pressable, ScrollView, Switch, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
@@ -148,11 +149,13 @@ export default function IssuesFilterRoute() {
   const myHasActive = statusFilters.length > 0 || priorityFilters.length > 0;
   const hasActive = resolvedScope === "tasks" ? taskHasActive : myHasActive;
 
+  const insets = useSafeAreaInsets();
   const tabLabel = (tab: TaskTab) => t(`mobile.tasks.tabs.${tab}`);
 
   return (
     <View className="flex-1">
-      <View className="flex-row items-center justify-between px-4 pt-4 pb-3">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="flex-row items-center justify-between px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("filters.tooltip", "Filter")}
         </Text>

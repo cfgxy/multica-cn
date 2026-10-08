@@ -190,7 +190,8 @@
       "unknown_error": "unknown error",
       "search": "Search",
       "close": "Close",
-      "request_timeout": "Request timed out after {{seconds}}s"
+      "request_timeout": "Request timed out after {{seconds}}s",
+      "upload_timeout": "Upload timed out after {{seconds}}s"
     },
     "create_issue": {
       "mode_smart": "Smart",

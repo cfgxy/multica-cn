@@ -112,6 +112,33 @@ beforeEach(() => {
 });
 
 describe("DecisionBatchBar", () => {
+  // RUYI-575: labels written under the decision-numbering convention embed the
+  // letter itself ("A：…") while the bar renders its own index letter — the
+  // prefix must be stripped or the letter shows twice (RUYI-572 real card).
+  it("strips the embedded letter prefix so each letter renders once", async () => {
+    await renderBar([
+      card("d-572", {
+        question: "wiki/docx 链接的降级文案范围？（详见 ADR 005 §8 决策 2）",
+        options: [
+          { label: "A：维持现状，wiki/docx 链接不注入提示（仅 bare /file/ 引述块有 note）" },
+          { label: "B：note 扩展到 wiki/docx 链接（请以附件形式发送类提示）" },
+        ],
+      }),
+    ]);
+
+    expect(screen.getByText("维持现状，wiki/docx 链接不注入提示（仅 bare /file/ 引述块有 note）")).toBeTruthy();
+    expect(screen.queryByText("A：维持现状，wiki/docx 链接不注入提示（仅 bare /file/ 引述块有 note）")).toBeNull();
+    expect(screen.getByText("note 扩展到 wiki/docx 链接（请以附件形式发送类提示）")).toBeTruthy();
+    expect(screen.queryByText("B：note 扩展到 wiki/docx 链接（请以附件形式发送类提示）")).toBeNull();
+  });
+
+  it("renders labels without a matching prefix form untouched", async () => {
+    await renderBar([card("d-neg", { options: [{ label: "A-type 优先" }, { label: "B超 声呐" }] })]);
+
+    expect(screen.getByText("A-type 优先")).toBeTruthy();
+    expect(screen.getByText("B超 声呐")).toBeTruthy();
+  });
+
   it("renders one numbered row per open card and disables submit until a pick", async () => {
     await renderBar([card("d-1"), card("d-2")]);
 
