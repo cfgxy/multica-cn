@@ -294,4 +294,47 @@ describe("VoiceInstanceSettingsCard", () => {
       ).toBe("Renamed Voice");
     });
   });
+
+  // RUYI-564 候选 2 — the input seeds from the display name, so "still
+  // equals the seed" must count as unchanged: saving a create-only instance
+  // untouched used to materialize its fallback name into custom_name.
+  describe("name save semantics", () => {
+    const nameRowSaveButton = (nameInput: HTMLInputElement) =>
+      within(nameInput.closest("div") as HTMLElement).getByRole("button", {
+        name: "Save",
+      }) as HTMLButtonElement;
+
+    it("keeps the save disabled while a create-only instance's name matches its seed", () => {
+      renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      expect(nameInput.value).toBe("gemini-live-1");
+      const saveButton = nameRowSaveButton(nameInput);
+      expect(saveButton.disabled).toBe(true);
+      fireEvent.click(saveButton);
+      expect(mockUpdateRuntime).not.toHaveBeenCalled();
+    });
+
+    it("re-disables the save after an edit reverts to the seeded name", () => {
+      renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      fireEvent.change(nameInput, { target: { value: "temp rename" } });
+      const saveButton = nameRowSaveButton(nameInput);
+      expect(saveButton.disabled).toBe(false);
+      fireEvent.change(nameInput, { target: { value: "gemini-live-1" } });
+      expect(saveButton.disabled).toBe(true);
+      expect(mockUpdateRuntime).not.toHaveBeenCalled();
+    });
+
+    it("still saves a renamed alias over an existing one (no regression)", async () => {
+      renderCard(makeVoiceRuntime({ custom_name: "My Voice" }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      fireEvent.change(nameInput, { target: { value: "Renamed Voice" } });
+      fireEvent.click(nameRowSaveButton(nameInput));
+      await waitFor(() =>
+        expect(mockUpdateRuntime).toHaveBeenCalledWith("rt-voice-1", {
+          custom_name: "Renamed Voice",
+        }),
+      );
+    });
+  });
 });
