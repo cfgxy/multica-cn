@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDecision } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
@@ -65,6 +65,35 @@ describe("DecisionBatchBar", () => {
     expect(screen.getByText("问题 d-2？")).toBeInTheDocument();
     expect(screen.getByTestId(`decision-batch-option-d-1-0`)).toHaveTextContent("A");
     expect(screen.getByTestId(`decision-batch-option-d-2-1`)).toHaveTextContent("B");
+  });
+
+  // RUYI-575: labels written under the decision-numbering convention embed the
+  // letter itself ("A：…") while the bar renders its own index letter — the
+  // prefix must be stripped or the letter shows twice (RUYI-572 real card).
+  it("strips the embedded letter prefix so each letter renders once", () => {
+    renderBar([
+      card("d-572", {
+        question: "Stage 2 实施边界：本期 capability 覆盖面？（详见 ADR 005 §8 决策 1）",
+        options: [
+          { label: "A：仅 /file/ 云盘文件族（drive_file_links），wiki/docx 另立后续单" },
+          { label: "B：A 之上同期加 wiki_doc_links（wiki get_node + docx raw_content）" },
+        ],
+      }),
+    ]);
+
+    const first = screen.getByTestId("decision-batch-option-d-572-0");
+    expect(within(first).getByText("仅 /file/ 云盘文件族（drive_file_links），wiki/docx 另立后续单")).toBeInTheDocument();
+    expect(within(first).queryByText("A：仅 /file/ 云盘文件族（drive_file_links），wiki/docx 另立后续单")).toBeNull();
+    const second = screen.getByTestId("decision-batch-option-d-572-1");
+    expect(within(second).getByText("A 之上同期加 wiki_doc_links（wiki get_node + docx raw_content）")).toBeInTheDocument();
+    expect(within(second).queryByText("B：A 之上同期加 wiki_doc_links（wiki get_node + docx raw_content）")).toBeNull();
+  });
+
+  it("renders labels without a matching prefix form untouched", () => {
+    renderBar([card("d-neg", { options: [{ label: "A-type 优先" }, { label: "B超 声呐" }] })]);
+
+    expect(within(screen.getByTestId("decision-batch-option-d-neg-0")).getByText("A-type 优先")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-batch-option-d-neg-1")).getByText("B超 声呐")).toBeInTheDocument();
   });
 
   it("submit stays disabled until at least one card has a pick", () => {

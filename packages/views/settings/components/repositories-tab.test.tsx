@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { configStore } from "@multica/core/config";
 import enCommon from "../../locales/en/common.json";
 import enSettings from "../../locales/en/settings.json";
 
@@ -183,6 +184,7 @@ describe("RepositoriesTab — automatic updates", () => {
     vcsRef.current = { available: true, configured: true, can_manage: true, connections: [] };
     gitLabRef.current = { pages: [], isPending: false, isError: false, hasNextPage: false };
     searchParamsRef.current = new URLSearchParams("tab=repositories");
+    configStore.setState({ vcsIntegrationAvailable: true });
     mockNavReplace.mockImplementation((path: string) => {
       searchParamsRef.current = new URLSearchParams(path.split("?")[1] ?? "");
     });
@@ -391,6 +393,41 @@ describe("RepositoriesTab — automatic updates", () => {
     render(<RepositoriesTab />, { wrapper: I18nWrapper });
     await setupUser().click(screen.getByRole("button", { name: "Choose from GitLab" }));
     expect(screen.getByText(message)).toBeTruthy();
+  });
+
+  it("keeps the GitLab chooser reachable with zero connections and offers the connect entry", async () => {
+    vcsRef.current = { available: true, configured: true, can_manage: true, connections: [] };
+    const user = setupUser();
+    render(<RepositoriesTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByRole("button", { name: "Choose from GitLab" }));
+
+    expect(screen.getByText("No GitLab instances connected yet.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Connect new instance" }));
+    expect(mockNavReplace).toHaveBeenCalledWith(
+      "/acme/settings?tab=integrations&section=vcs",
+    );
+  });
+
+  it("offers connect-new-instance beside the connection selector and lands on the VCS section", async () => {
+    vcsRef.current = { available: true, configured: true, can_manage: true, connections: [{ id: "gl-1", provider: "gitlab", instance_url: "https://git.test", account_login: "admin" }] };
+    const user = setupUser();
+    render(<RepositoriesTab />, { wrapper: I18nWrapper });
+    await user.click(screen.getByRole("button", { name: "Choose from GitLab" }));
+
+    await user.click(screen.getByRole("button", { name: "Connect new instance" }));
+
+    expect(mockNavReplace).toHaveBeenCalledWith(
+      "/acme/settings?tab=integrations&section=vcs",
+    );
+  });
+
+  it("hides the GitLab chooser when the server does not expose VCS integration", () => {
+    configStore.setState({ vcsIntegrationAvailable: false });
+    vcsRef.current = { available: false, configured: false, can_manage: true, connections: [] };
+    render(<RepositoriesTab />, { wrapper: I18nWrapper });
+
+    expect(screen.queryByRole("button", { name: "Choose from GitLab" })).toBeNull();
   });
 
   it("starts GitHub connection with the signed repository return target", async () => {

@@ -47,18 +47,37 @@ import { InboxRow } from "./inbox-row";
 
 const ACTION_WIDTH = 80;
 
+/**
+ * Which list the row lives in decides its swipe action, mirroring web's
+ * InboxListItem (RUYI-532): Archive in the main list (destructive red),
+ * Unarchive in the archived one (neutral primary — restoring is not a
+ * destructive act).
+ */
+type SwipeAction = "archive" | "unarchive";
+
 interface Props {
   item: InboxItem;
   /** Agent activity badge input — passed straight through to InboxRow. */
   activity?: IssueActivity;
   onPress: () => void;
   onArchive: () => void;
+  /** Defaults to "archive"; the archived sub-view passes "unarchive". */
+  action?: SwipeAction;
+  /** False in the archived sub-view — see InboxRow.showUnread. */
+  showUnread?: boolean;
 }
 
-export function SwipeableInboxRow({ item, activity, onPress, onArchive }: Props) {
+export function SwipeableInboxRow({
+  item,
+  activity,
+  onPress,
+  onArchive,
+  action = "archive",
+  showUnread = true,
+}: Props) {
   const ref = useRef<SwipeableMethods>(null);
 
-  const fireArchive = () => {
+  const fireAction = () => {
     // Close first so the swipe spring doesn't fight the row's removal from
     // FlatList on the next render tick.
     ref.current?.close();
@@ -71,22 +90,30 @@ export function SwipeableInboxRow({ item, activity, onPress, onArchive }: Props)
       friction={2}
       rightThreshold={ACTION_WIDTH}
       renderRightActions={(_progress, drag) => (
-        <ArchiveAction onPress={fireArchive} drag={drag} />
+        <RowAction onPress={fireAction} drag={drag} action={action} />
       )}
     >
-      <InboxRow item={item} activity={activity} onPress={onPress} />
+      <InboxRow
+        item={item}
+        activity={activity}
+        onPress={onPress}
+        showUnread={showUnread}
+      />
     </ReanimatedSwipeable>
   );
 }
 
-function ArchiveAction({
+function RowAction({
   onPress,
   drag,
+  action,
 }: {
   onPress: () => void;
   drag: SharedValue<number>;
+  action: SwipeAction;
 }) {
   const { t } = useT("inbox");
+  const isUnarchive = action === "unarchive";
   // One-shot haptic when the drag crosses the action width threshold.
   // useAnimatedReaction runs on the UI thread; runOnJS bridges to the
   // Haptics.impactAsync call which has to live on JS.
@@ -104,13 +131,25 @@ function ArchiveAction({
     <Animated.View style={{ width: ACTION_WIDTH }}>
       <Pressable
         onPress={onPress}
-        accessibilityLabel={t("context_menu.archive", "Archive")}
-        className="flex-1 items-center justify-center bg-destructive"
+        accessibilityLabel={
+          isUnarchive
+            ? t("context_menu.unarchive", "Unarchive")
+            : t("context_menu.archive", "Archive")
+        }
+        className={`flex-1 items-center justify-center ${
+          isUnarchive ? "bg-primary" : "bg-destructive"
+        }`}
       >
         <View className="items-center gap-0.5">
-          <Ionicons name="archive-outline" size={20} color="white" />
+          <Ionicons
+            name={isUnarchive ? "arrow-undo-outline" : "archive-outline"}
+            size={20}
+            color="white"
+          />
           <Text className="text-xs text-white">
-            {t("context_menu.archive", "Archive")}
+            {isUnarchive
+              ? t("context_menu.unarchive", "Unarchive")
+              : t("context_menu.archive", "Archive")}
           </Text>
         </View>
       </Pressable>

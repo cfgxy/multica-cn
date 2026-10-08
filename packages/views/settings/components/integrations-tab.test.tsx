@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { ApiError } from "@multica/core/api";
 import { configStore } from "@multica/core/config";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
@@ -15,6 +15,22 @@ const composioErrorRef = vi.hoisted(() => ({
 }));
 const queryCallsRef = vi.hoisted(() => ({
   current: [] as { queryKey: unknown[]; enabled?: boolean }[],
+}));
+const mockNavReplace = vi.hoisted(() => vi.fn());
+const searchParamsRef = vi.hoisted(() => ({
+  current: new URLSearchParams("tab=integrations"),
+}));
+
+vi.mock("../../navigation", () => ({
+  useNavigation: () => ({
+    push: vi.fn(),
+    replace: mockNavReplace,
+    back: vi.fn(),
+    pathname: "/acme/settings",
+    searchParams: searchParamsRef.current,
+    hash: "",
+    getShareableUrl: (path: string) => `https://app.example${path}`,
+  }),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
@@ -77,6 +93,7 @@ describe("Settings IntegrationsTab", () => {
   beforeEach(() => {
     queryCallsRef.current = [];
     composioErrorRef.current = null;
+    mockNavReplace.mockClear();
     configStore.getState().setFeatureFlags({ [COMPOSIO_MCP_APPS_FLAG]: true });
     // Reset the self-host-only VCS gate to its default (hidden) so tests stay
     // isolated; individual tests opt in below.
@@ -150,5 +167,29 @@ describe("Settings IntegrationsTab", () => {
     renderTab();
 
     expect(screen.getByTestId("vcs-tab")).toBeInTheDocument();
+  });
+
+  it("scrolls to the Git providers section once when arriving via section=vcs", async () => {
+    configStore.getState().setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: true });
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    searchParamsRef.current = new URLSearchParams("tab=integrations&section=vcs");
+
+    renderTab();
+
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    expect(mockNavReplace).toHaveBeenCalledWith("/acme/settings?tab=integrations");
+    searchParamsRef.current = new URLSearchParams("tab=integrations");
+  });
+
+  it("does not scroll when no section target is requested", () => {
+    configStore.getState().setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: true });
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    renderTab();
+
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(mockNavReplace).not.toHaveBeenCalled();
   });
 });

@@ -17,7 +17,10 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { upsertDecisionInCache } from "@multica/core/issues/decisions";
+import {
+  stripDecisionOptionLetterPrefix,
+  upsertDecisionInCache,
+} from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { api } from "@/data/api";
@@ -143,7 +146,9 @@ export function DecisionBatchBar({
                       >
                         {OPTION_LETTERS[idx] ?? idx + 1}
                       </Text>
-                      <Text className="text-xs">{opt.label}</Text>
+                      <Text className="text-xs">
+                        {stripDecisionOptionLetterPrefix(opt.label)}
+                      </Text>
                     </Pressable>
                   );
                 })}
