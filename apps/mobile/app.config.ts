@@ -22,7 +22,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         ? "Multica (Staging)"
         : "Multica (Dev)",
     slug: "multica-mobile",
-    version: "0.2.0",
+    // 构建期可注入（RUYI-573）：日常开发构建由 mobile-android-build.yml 设
+    // MULTICA_APP_VERSION=X.Y.Z-dev.YYYYMMDD-N；未注入时即正式基线版本。
+    // 正式发版 = 更新这里的字面量后打 mobile-android-vX.Y.Z tag。
+    version: process.env.MULTICA_APP_VERSION || "0.2.0",
     orientation: "portrait",
     userInterfaceStyle: "automatic",
     scheme: "multica",
