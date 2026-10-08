@@ -110,8 +110,9 @@ export default function Tasks() {
   // Workspace-scoped filters live in a module-global store while this screen
   // remounts per workspace — and switch-workspace writes the new id before
   // the new screen mounts, so a ref-guard hook skips the transition. The
-  // owning wsId is tracked inside the store; a real switch clears filters
-  // and keeps TAB/sort (item 12: 清筛选保 TAB).
+  // owning wsId is tracked inside the store; a real switch swaps to the
+  // target workspace's own remembered set (empty when it has none) and keeps
+  // TAB/sort (RUYI-531: 按空间记忆筛选，切回无需重选).
   useEffect(() => {
     useTasksViewStore.getState().syncWorkspace(wsId);
   }, [wsId]);
