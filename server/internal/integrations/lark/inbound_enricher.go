@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -250,7 +249,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 				continue
 			}
 			media := EnrichedMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
-			if len(mediaResourcesFromMessage(InboundMessage{MessageID: media.MessageID, MessageType: media.MessageType, Content: media.Content})) > 0 {
+			if messageCarriesMediaOrLinks(InboundMessage{MessageID: media.MessageID, MessageType: media.MessageType, Content: media.Content}) {
 				msg.RecentMedia = append(msg.RecentMedia, media)
 			}
 		}
@@ -271,7 +270,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			// download fan-out bounded on this ACK-latency-sensitive path.
 			parent := quotedItems[0]
 			if parent.MessageID != "" && !parent.Deleted && parent.MessageType != larkMsgTypeMergeForward &&
-				len(mediaResourcesFromMessage(InboundMessage{MessageID: parent.MessageID, MessageType: parent.MessageType, Content: parent.Content})) > 0 {
+				messageCarriesMediaOrLinks(InboundMessage{MessageID: parent.MessageID, MessageType: parent.MessageType, Content: parent.Content}) {
 				msg.QuotedMedia = append(msg.QuotedMedia, EnrichedMediaMessage{
 					MessageID:   parent.MessageID,
 					MessageType: parent.MessageType,
@@ -672,47 +671,32 @@ func (e *inboundEnricher) renderQuotedBlock(parentID string, items []LarkMessage
 	if text == "" {
 		text = "[empty message]"
 	}
-	if note := feishuFileLinkNote(text); note != "" {
+	if note := feishuShareLinkNote(text); note != "" {
 		text += "\n" + note
 	}
 	return wrapQuoted(parentID, sender, parent.MessageType, text)
 }
 
-// feishuFileLinkNote returns the degradation note for a quoted TEXT parent
-// whose entire content is one bare Feishu file-share URL (RUYI-448: the
-// HCM xlsx incident — Lark renders such a message as a file card in the
-// UI, but over the API it is msg_type=text with a URL, so there is no
-// file_key for the quoted-media pipeline to capture and no attachment ever
-// reaches the agent). The bot cannot fetch that URL server-side with its
-// existing credentials — it 302s to the login page — yet agents reliably
-// burn tool calls trying. The note says so up front; the URL itself is
-// kept verbatim. Empty for anything that is not a bare Feishu file link,
-// so ordinary text and non-Feishu URLs never see it.
-func feishuFileLinkNote(text string) string {
-	if !isBareFeishuFileLink(text) {
+// feishuShareLinkNote returns the degradation note for a quoted TEXT parent
+// whose entire content is one bare Feishu share link — a cloud file, a docx
+// or a wiki page (RUYI-448: the HCM xlsx incident — Lark renders such a
+// message as a file card in the UI, but over the API it is msg_type=text
+// with a URL, so there is no file_key for the quoted-media pipeline to
+// capture. RUYI-572 builds the resolver side for /file/, /docx/ and /wiki/
+// links; the note stays as the fixed degradation copy for installs without
+// the capability (or document-level denials) and now covers all three
+// families, telling the agent to ask for an attachment when the linked
+// content did not arrive attached. The URL itself is kept verbatim. Empty
+// for anything that is not a bare Feishu share link, so ordinary text,
+// other Feishu families and non-Feishu URLs never see it.
+func feishuShareLinkNote(text string) string {
+	if !isBareFeishuShareLink(text) {
 		return ""
 	}
-	return "[Note: the quoted message is a Feishu file-share link, not an " +
-		"attachment. Its content cannot be downloaded with the bot's current " +
-		"permissions — ask the sender to send the file directly as an " +
-		"attachment instead of fetching the link.]"
-}
-
-func isBareFeishuFileLink(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.ContainsAny(s, " \n\t\r") {
-		return false
-	}
-	u, err := url.Parse(s)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
-		return false
-	}
-	host := strings.ToLower(u.Host)
-	if host != "feishu.cn" && !strings.HasSuffix(host, ".feishu.cn") &&
-		host != "larksuite.com" && !strings.HasSuffix(host, ".larksuite.com") {
-		return false
-	}
-	return strings.HasPrefix(u.Path, "/file/")
+	return "[Note: the quoted message is a Feishu file/doc/wiki share link, not " +
+		"an attachment. If the linked content was not attached automatically, the " +
+		"bot cannot download it with its current permissions — ask the sender to " +
+		"send the file directly as an attachment instead of fetching the link.]"
 }
 
 // renderForwardedItems renders the children of a forward whose own
