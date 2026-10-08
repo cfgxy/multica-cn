@@ -17,9 +17,23 @@
     "tab": {
       "title": "决策"
     },
+    "tabs": {
+      "all": "全部",
+      "open": "待决策",
+      "answered": "已决策",
+      "cancelled": "已失效"
+    },
+    "filters": {
+      "title": "筛选",
+      "reset": "重置",
+      "a11y": "筛选",
+      "recommended_only": "仅看有推荐",
+      "agent_created_only": "仅看 Agent 发起"
+    },
     "page": {
       "title": "决策中心",
-      "load_failed": "决策卡加载失败：{{reason}}"
+      "load_failed": "决策卡加载失败：{{reason}}",
+      "empty_filtered": "没有符合当前页签或筛选条件的决策卡"
     }
   }
 }

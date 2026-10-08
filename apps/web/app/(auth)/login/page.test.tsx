@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "@multica/views/locales/en/common.json";
@@ -199,6 +200,101 @@ describe("LoginPage", () => {
         expect(mockReplace).toHaveBeenCalledWith("/invite/abc");
       });
       expect(mockListWorkspaces).not.toHaveBeenCalled();
+    });
+  });
+
+  // RUYI-526: a `next` pointing at the backend authorize endpoint
+  // (/auth/oauth/authorize?...) must be followed by the browser itself —
+  // the endpoint answers with the OAuth redirect chain (302 to the client
+  // callback or the consent screen). A client-side router transition
+  // fetches it as an RSC payload, the fetch consumes the 302, and the
+  // chain never happens: the user was left stranded on the verification
+  // page with no error. Backend auth paths therefore need a full-page
+  // navigation; in-app paths keep the soft one.
+  describe("post-login resume of backend auth targets (RUYI-526)", () => {
+    // Realistic ChatGPT-connector authorize shape (synthetic PKCE/state
+    // values) — path + query, same-origin, sanitizeNextUrl-clean.
+    const authorizeNext =
+      "/auth/oauth/authorize?response_type=code&client_id=chatgpt&redirect_uri=https%3A%2F%2Fchatgpt.example%2Fconnector%2Foauth%2Ftest123&scope=mcp&code_challenge=WpErBVM92yLTRPFWrJz9LYfTmo-_ZdmSwKVsklZr6oQ&code_challenge_method=S256&resource=https%3A%2F%2Fapp.example.com%2Fapi%2Fmcp&state=chatgpt_scheme__oauth_s_synthetic";
+
+    function mockFullPageNavigation() {
+      const hrefSetter = vi.fn();
+      const originalLocation = window.location;
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: {
+          ...originalLocation,
+          set href(value: string) {
+            hrefSetter(value);
+          },
+        },
+      });
+      return {
+        hrefSetter,
+        restore: () => {
+          Object.defineProperty(window, "location", {
+            configurable: true,
+            value: originalLocation,
+          });
+        },
+      };
+    }
+
+    const onboardedUser = {
+      id: "u1",
+      email: "test@multica.ai",
+      onboarded_at: "2026-01-01T00:00:00Z",
+    };
+
+    it("continues the authorize chain with a full-page navigation after the verification code is accepted", async () => {
+      searchParamsState.params = new URLSearchParams({ next: authorizeNext });
+      authStateRef.state.sendCode.mockResolvedValue(undefined);
+      authStateRef.state.verifyCode.mockResolvedValue(undefined);
+      mockListWorkspaces.mockResolvedValue([{ id: "ws-1", slug: "acme" }]);
+
+      const { hrefSetter, restore } = mockFullPageNavigation();
+      try {
+        render(<LoginPage />, { wrapper: createWrapper() });
+
+        const user = userEvent.setup();
+        await user.type(screen.getByLabelText(/email/i), "test@multica.ai");
+        await user.click(screen.getByRole("button", { name: /continue/i }));
+        await waitFor(() => {
+          expect(
+            screen.getByRole("textbox", { hidden: true }),
+          ).toBeInTheDocument();
+        });
+        await user.type(screen.getByRole("textbox", { hidden: true }), "123456");
+
+        await waitFor(() => {
+          expect(hrefSetter).toHaveBeenCalledWith(authorizeNext);
+        });
+        // The soft router must stay out of the way — its RSC fetch would
+        // swallow the authorize 302.
+        expect(mockPush).not.toHaveBeenCalled();
+        expect(mockReplace).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    });
+
+    it("full-page-navigates a visitor who arrived already authenticated at /login?next=<authorize>", async () => {
+      searchParamsState.params = new URLSearchParams({ next: authorizeNext });
+      authStateRef.state.user = onboardedUser;
+
+      const { hrefSetter, restore } = mockFullPageNavigation();
+      try {
+        render(<LoginPage />, { wrapper: createWrapper() });
+
+        await waitFor(() => {
+          expect(hrefSetter).toHaveBeenCalledWith(authorizeNext);
+        });
+        expect(mockReplace).not.toHaveBeenCalled();
+        expect(mockPush).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
     });
   });
 });

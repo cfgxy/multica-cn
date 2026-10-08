@@ -537,6 +537,15 @@
     "advanced": {
       "expand": "Show",
       "collapse": "Hide"
+    },
+    "delete": {
+      "action": "Delete instance",
+      "hint": "Deletes this instance, its stored API key and its profile. This can't be undone.",
+      "confirm_title": "Delete instance?",
+      "confirm_message": "\"{{name}}\" and its stored API key will be permanently deleted. This can't be undone.",
+      "cancel": "Cancel",
+      "confirm": "Delete",
+      "failed": "Failed to delete instance"
     }
   }
 }

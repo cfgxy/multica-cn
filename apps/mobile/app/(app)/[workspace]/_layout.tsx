@@ -453,6 +453,9 @@ export default function WorkspaceLayout() {
         {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
         <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
         <Stack.Screen name="tasks-actor-picker" options={SHEET_OPTIONS} />
+        {/* Decisions-tab filter sheet (RUYI-530, formSheet presentation) —
+            reads/writes decisions-view-store directly. */}
+        <Stack.Screen name="decisions-filter" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/agents"
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
