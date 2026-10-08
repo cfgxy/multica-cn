@@ -74,7 +74,7 @@ describe("WindowFilter — period navigation", () => {
   });
 
   it("offers the way home only away from the current window", () => {
-    const current = renderFilter(QUICK, {
+    renderFilter(QUICK, {
       window: { start: "2026-02-09", end: "2026-03-10" },
     });
     expect(
