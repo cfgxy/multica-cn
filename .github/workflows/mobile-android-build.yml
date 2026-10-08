@@ -295,4 +295,5 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "Multica Android ($RELEASE_MODE) $VERSION" \
             --notes-file release-notes.md \
+            "${prerelease_flag[@]}" \
             --latest=false
