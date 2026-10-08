@@ -309,6 +309,11 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
 	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)（daemon-update 重渲染时自动读回）"
+	# linger（RUYI-529）：supervised 启动经 systemd-run 依赖用户管理器总线常驻；
+	# Linger=no 时会话注销即回收总线，全部启动集中失败。幂等开启，失败不阻断安装但显式告警。
+	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
+		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
+	@loginctl show-user $(USER) -p Linger || true
 	# deerflow 配置收敛（RUYI-548）：目标实例 config.json 缺 backends.deerflow.home 时自动补写（先于启动）
 	@$(call DEERFLOW_CONVERGE_SCOPE,$(PROFILE))
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
@@ -343,6 +348,10 @@ daemon-update: daemon-build ## Re-render and converge multica-daemon@.service fr
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
 	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)"
+	# linger（RUYI-529）：同 daemon-install——安装/更新任一路径都收敛 linger 为开启
+	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
+		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
+	@loginctl show-user $(USER) -p Linger || true
 	# deerflow 配置收敛（RUYI-548）：带 PROFILE 只收敛该实例；不带则收敛 default + 全部 enabled 实例（先于重启）
 	@$(call DEERFLOW_CONVERGE_SCOPE,$(if $(filter command line,$(origin PROFILE)),$(PROFILE),ALL))
 	sudo systemctl daemon-reload
