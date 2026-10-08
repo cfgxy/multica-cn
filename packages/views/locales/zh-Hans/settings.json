@@ -1067,6 +1067,8 @@
     "capability_send_messages": "发送消息",
     "capability_read_history": "读取历史消息（回复引用）",
     "capability_download_media": "下载消息中的文件",
+    "capability_drive_file_links": "下载飞书共享文件（/file/ 链接）",
+    "capability_wiki_doc_links": "读取飞书 wiki 与文档（/wiki/、/docx/ 链接）",
     "capability_lookup_contacts": "查询发送者信息",
     "install_permissions_title": "机器人所需权限",
     "install_permissions_hint": "扫码创建机器人即代表为其申请以下权限；每行任选其一开通，全部行均需开通。涉及审批的权限需企业管理员批准。",
