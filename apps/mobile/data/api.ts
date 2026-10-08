@@ -638,6 +638,19 @@ class ApiClient {
     });
   }
 
+  // Archived notifications, backing the inbox's "Archived" sub-view (RUYI-532,
+  // same capped endpoint web/desktop use — packages/core/api/client.ts
+  // listArchivedInbox). Schema-guarded like listInbox so a contract drift
+  // renders an empty archive instead of taking the screen down with it.
+  async listArchivedInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/archived", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, InboxListSchema, EMPTY_INBOX_LIST, {
+      endpoint: "listArchivedInbox",
+    });
+  }
+
   // Cross-workspace unread summary: one entry per workspace the user belongs
   // to that has unread inbox items. Backs the switch-workspace sheet's
   // per-workspace blue dot (RUYI-44) — the same endpoint web's sidebar dot
@@ -668,6 +681,12 @@ class ApiClient {
   // rolls back.
   async archiveInbox(id: string): Promise<InboxItem> {
     return this.fetch<InboxItem>(`/api/inbox/${id}/archive`, { method: "POST" });
+  }
+
+  async unarchiveInbox(id: string): Promise<InboxItem> {
+    return this.fetch<InboxItem>(`/api/inbox/${id}/unarchive`, {
+      method: "POST",
+    });
   }
 
   async markAllInboxRead(): Promise<{ count: number }> {
