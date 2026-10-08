@@ -34,6 +34,7 @@ Rules (see workspace/project instructions, RUYI-359):
 | 931 | 931_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
 | 932 | 932_voice_fact_event | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-writeback | reserved |
 | 933 | 933_issue_decision_client_request_id | RUYI-514 | agent/agent-f70e39b85abd/ruyi-514 | reserved |
+| 934 | 934_agent_task_queue_failed_retry_reeval_index | RUYI-579 | agent/agent-f70e39b85abd/ruyi-579 | reserved |
 
 Notes:
 
