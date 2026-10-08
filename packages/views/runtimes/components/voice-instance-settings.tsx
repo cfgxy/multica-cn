@@ -111,6 +111,11 @@ export function VoiceInstanceSettingsCard({
   const deleteCredential = useDeleteRuntimeCredential(wsId);
 
   const settings = readVoiceInstanceSettings(runtime.metadata);
+  // RUYI-564: the name field seeds from the display name, so "still equals
+  // the seed" means unchanged. Comparing against custom_name alone let a
+  // create-only instance's fallback name materialize into custom_name on a
+  // no-op save.
+  const seedName = runtimeDisplayName(runtime).trim();
 
   const [name, setName] = useState(() => runtimeDisplayName(runtime));
   const [model, setModel] = useState(settings.model);
@@ -148,7 +153,7 @@ export function VoiceInstanceSettingsCard({
 
   const saveName = () => {
     const next = name.trim();
-    if (next === (runtime.custom_name ?? "")) return;
+    if (next === seedName) return;
     updateRuntime.mutate(
       { runtimeId: runtime.id, patch: { custom_name: next } },
       {
@@ -281,11 +286,7 @@ export function VoiceInstanceSettingsCard({
                 variant="outline"
                 size="sm"
                 className="h-8 shrink-0"
-                disabled={
-                  pending ||
-                  !name.trim() ||
-                  name.trim() === (runtime.custom_name ?? "")
-                }
+                disabled={pending || !name.trim() || name.trim() === seedName}
                 onClick={saveName}
               >
                 {t(($) => $.voice_instance.save)}
