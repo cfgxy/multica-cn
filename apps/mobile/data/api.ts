@@ -219,6 +219,7 @@ import {
   EMPTY_TASK_MESSAGE_LIST,
   UserSchema,
   WorkspaceListSchema,
+  AgentTaskSchema,
 } from "./schemas";
 import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
@@ -1634,6 +1635,32 @@ class ApiClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  // Manual retry for a failed issue-less quick-create — mirrors web
+  // packages/core/api/client.ts retrySourceContextQuickCreate →
+  // POST /api/tasks/:id/retry-source-context (server/internal/handler/
+  // task_lifecycle.go RetrySourceContextQuickCreate). The server re-enqueues
+  // the creation and transfers the pending source context (original input)
+  // to the new task, so the client only names the failed task. The 202 body
+  // is the new AgentTask — validated, not degraded: a shape-mismatched reply
+  // here must fail loudly rather than hand the UI a fake task. 409 carries
+  // {code: "source_context_retry_unavailable"} through the ApiError body.
+  async retrySourceContextQuickCreate(taskId: string): Promise<AgentTask> {
+    const raw = await this.fetch<unknown>(
+      `/api/tasks/${taskId}/retry-source-context`,
+      { method: "POST" },
+    );
+    const task = parseWithFallback<AgentTask | null>(
+      raw,
+      AgentTaskSchema,
+      null,
+      { endpoint: "POST /api/tasks/:id/retry-source-context" },
+    );
+    if (!task) {
+      throw new ApiError("Invalid source-context retry response", 0, raw);
+    }
+    return task;
   }
 
   // Timeline returns the full ASC entry list in one shot — server-side
