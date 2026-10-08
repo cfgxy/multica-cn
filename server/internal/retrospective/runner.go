@@ -1,28 +1,26 @@
-// Package retrospective is the daily retrospective (RUYI-305 E3): a
-// base-layer scheduled task that analyzes the real execution content of
-// issues completed inside the configured window and distills Prompt
-// improvement drafts into the proposal pool.
+// Package retrospective is the daily retrospective (RUYI-305 E3, reworked by
+// RUYI-552 direction 3): a base-layer scheduled task that triggers one round
+// of the configured agent's run over the issues completed inside the
+// configured window. The agent reads those issues with its own tools and
+// reports Prompt-improvement drafts as one JSON message; the completion side
+// (task.go) distills them into the proposal pool.
 //
-// Hard boundaries (dry-run patches 1–4, 9–10):
+// Hard boundaries:
 //
 //   - It never writes to issues — no comments, no reports, no
 //     notifications. Every outcome lands in prompt_proposal (drafts) and
 //     retrospective_run (records). Failures are visible only on the
 //     self-evolution retrospective page.
-//   - It reads the issue's real execution content — description, comments,
-//     progress updates — never a pre-generated retrospective comment (B
-//     语义修正). The package itself writes nothing an issue could echo back.
+//   - The trigger walks the platform's own task queue: one enqueued run per
+//     pass, originator_source='retrospective', trigger evidence pointing at
+//     the run row. It never fabricates a run source, and it creates no issue
+//     to anchor on.
 //   - Idempotency is per-issue (retrospective_issue_watermark): an issue
 //     analyzed by any successful run is never analyzed again, so overlapping
 //     windows cannot produce duplicate drafts.
-//   - Draft dedup is two-layer: pool merge against a live same-topic draft
-//     (evidence anchors accumulate), and a current-clause pre-check against
-//     the workspace carrier's effective content (an add_clause whose clause
-//     name already exists is skipped, not re-proposed).
-//
-// The LLM is the single sanctioned entry point (pkg/llm). When the
-// deployment has no LLM configured, the run records a failed run with that
-// reason — the page shows it; nothing else in the product notices.
+//   - Draft dedup is two-layer (task.go): pool merge against a live
+//     same-topic draft (evidence anchors accumulate), and a current-clause
+//     pre-check against the workspace carrier's effective content.
 package retrospective
 
 import (
@@ -31,69 +29,95 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/promptscan"
 )
 
-// Per-run bounds. IssuesPerRun caps model spend per tick (the watermark and
-// next tick recover the remainder); the input budget keeps one noisy issue
-// from blowing the model context.
+// Per-run bounds. IssuesPerRun caps one run's scope (the watermark and the
+// next run recover the remainder).
 const (
-	IssuesPerRun       = 20
-	MaxInputChars      = 12000
-	MaxCommentChars    = 800
-	MaxDraftsPerIssue  = 3
-	LLMTimeout         = 2 * time.Minute
-	maxClauseNameRunes = 60
+	IssuesPerRun = 20
+	// EnqueuePriority sits below everything a human is waiting on — the same
+	// courtesy the prompt-quiz run extends: a retrospective landing a cadence
+	// later is still valid; a real task waiting behind one is not.
+	EnqueuePriority = 0
 )
 
-// LLMClient is the slice of pkg/llm the retrospective consumes. An
-// interface keeps this package (and its tests) free of the concrete client.
-type LLMClient interface {
-	GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error)
-	Enabled() bool
+// TaskEnqueuer places the platform task for one retrospective run. The
+// implementation (wired once by the API server) inserts the fenced no-issue
+// row and wakes runtimes; the func type keeps this package — and its tests —
+// free of the task service.
+type TaskEnqueuer func(ctx context.Context, params EnqueueParams) (string, error)
+
+// EnqueueParams is everything the fenced insert needs. AgentID/RuntimeID are
+// pre-validated by RunWorkspace; OriginatorUserID may be empty for configs
+// saved before migration 935 (the audit column stays NULL, nothing is
+// invented).
+type EnqueueParams struct {
+	RunID            string
+	WorkspaceID      string
+	AgentID          string
+	RuntimeID        string
+	OriginatorUserID string
+	Priority         int32
+	Context          []byte
 }
 
-// Runner executes retrospective runs for one workspace at a time. The
+// Runner triggers retrospective runs for one workspace at a time. The
 // scheduler drives RunWorkspace through a global-scope daily job; the
 // handler's manual trigger path calls the same method with trigger=manual.
+// The completion side shares this struct via ProcessTaskTerminal.
 type Runner struct {
-	// DB begins per-issue transactions (watermark + draft insert commit
+	// DB begins per-draft transactions (watermark + draft insert commit
 	// together). Satisfied by *pgxpool.Pool and the handler's txStarter.
 	DB interface {
 		Begin(ctx context.Context) (pgx.Tx, error)
 	}
 	Queries *db.Queries
-	LLM     LLMClient
-	Model   string
+	// Enqueue places the platform task for the run; both trigger entry
+	// points share one wired instance.
+	Enqueue TaskEnqueuer
 	// Now is overridable for tests.
 	Now func() time.Time
 }
 
-// RunStats is one workspace pass's outcome, feeding the run record and the
-// scheduler's HandlerResult.
+// RunStats is one workspace pass's outcome, feeding the run record, the
+// scheduler's HandlerResult and the manual trigger's response. At trigger
+// time only the window/scan/task fields are known; the completion side fills
+// the analyzed/proposal counts when the agent reports back.
 type RunStats struct {
 	WorkspaceID       string `json:"workspace_id"`
 	RunID             string `json:"run_id"`
+	TaskID            string `json:"task_id,omitempty"`
 	WindowDays        int32  `json:"window_days"`
 	IssuesScanned     int    `json:"issues_scanned"`
 	IssuesAnalyzed    int    `json:"issues_analyzed"`
 	ProposalsCreated  int    `json:"proposals_created"`
 	ProposalsMerged   int    `json:"proposals_merged"`
 	DuplicatesSkipped int    `json:"duplicates_skipped"`
-	SanitizedSkipped  int    `json:"sanitized_skipped"`
 }
 
-// RunWorkspace scans one workspace's completed-issue window and drops drafts
-// into the pool. It returns ErrNoConfig when the workspace has no config row.
+// ErrNoConfig marks "nothing to do" — no config row, or not enabled. The
+// scheduler job treats it as a silent skip; the manual trigger surfaces it
+// to the owner as a 400.
+var ErrNoConfig = errors.New("retrospective: workspace config missing or disabled")
+
+// ErrNoAgent marks "configured but not runnable": enabled with no agent
+// selected (a pre-migration row) or the selected agent missing, archived, or
+// runtime-less. The trigger records a failed run naming the reason — the
+// page shows it — and the scheduler treats it as a silent skip while the
+// manual trigger maps it to a 409.
+var ErrNoAgent = errors.New("retrospective: no usable agent configured")
+
+// RunWorkspace scans one workspace's completed-issue window and enqueues the
+// agent's run over it. It returns ErrNoConfig when the workspace has no
+// enabled config row and ErrNoAgent (after recording the failed run) when no
+// usable agent is configured.
 func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger string) (*RunStats, error) {
 	now := r.now()
 	cfg, err := r.Queries.GetRetrospectiveConfig(ctx, util.MustParseUUID(workspaceID))
@@ -114,6 +138,7 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 		Trigger:     trigger,
 		WindowStart: pgtype.Timestamptz{Time: windowStart, Valid: true},
 		WindowEnd:   pgtype.Timestamptz{Time: windowEnd, Valid: true},
+		Detail:      []byte("{}"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert retrospective run: %w", err)
@@ -121,225 +146,183 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 	runID := util.UUIDToString(run.ID)
 	stats := &RunStats{WorkspaceID: workspaceID, RunID: runID, WindowDays: cfg.WindowDays}
 
-	finish := func(status, errMsg string) error {
-		detail, _ := json.Marshal(map[string]any{"sanitized_skipped": stats.SanitizedSkipped})
-		_, ferr := r.Queries.FinishRetrospectiveRun(ctx, db.FinishRetrospectiveRunParams{
-			ID:                run.ID,
-			WorkspaceID:       run.WorkspaceID,
-			Status:            status,
-			IssuesScanned:     int32(stats.IssuesScanned),
-			IssuesAnalyzed:    int32(stats.IssuesAnalyzed),
-			ProposalsCreated:  int32(stats.ProposalsCreated),
-			ProposalsMerged:   int32(stats.ProposalsMerged),
-			DuplicatesSkipped: int32(stats.DuplicatesSkipped),
-			Error:             errMsg,
-			Detail:            detail,
-		})
-		if ferr != nil {
-			return fmt.Errorf("finish retrospective run: %w", ferr)
+	// Agent gate: the run is one round of the configured agent, so a config
+	// without a usable agent records a failed run naming the reason instead
+	// of enqueueing anything. PUT enforces enabled→agent_id going forward;
+	// these paths catch rows saved before migration 935 and agents that
+	// became unusable after saving.
+	agentReason := ""
+	switch {
+	case !cfg.AgentID.Valid:
+		agentReason = "每日总复盘未配置执行智能体：请在自进化 → 每日总复盘配置中选择一个智能体后重试"
+	default:
+		agent, agentErr := r.Queries.GetAgent(ctx, cfg.AgentID)
+		switch {
+		case agentErr != nil:
+			agentReason = "配置的执行智能体不存在：请重新选择后保存"
+		case agent.ArchivedAt.Valid:
+			agentReason = "配置的执行智能体已归档：请重新选择后保存"
+		case !agent.RuntimeID.Valid:
+			agentReason = "配置的执行智能体没有可用运行时：请为该智能体配置运行时后重试"
+		default:
+			stats.IssuesScanned, agentReason = r.enqueueRun(ctx, cfg, agent, run, windowStart, windowEnd, stats)
+			if agentReason == "" && stats.IssuesScanned == 0 {
+				// Empty window: nothing to analyze, no agent spend — close
+				// the run as a clean success right here.
+				if err := r.finishRun(ctx, run, "succeeded", "", runDetail{}, stats); err != nil {
+					return stats, err
+				}
+				return stats, nil
+			}
 		}
-		return nil
 	}
-
-	if r.LLM == nil || !r.LLM.Enabled() {
-		stats.IssuesScanned = r.countCandidates(ctx, workspaceID, cfg.IncludeInReview, windowStart, windowEnd)
-		if err := finish("failed", "LLM 未配置（MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL 为空），复盘无法提炼草案"); err != nil {
+	if agentReason != "" {
+		if err := r.finishRun(ctx, run, "failed", agentReason, runDetail{}, stats); err != nil {
 			return stats, err
 		}
-		return stats, nil
+		return stats, ErrNoAgent
 	}
+	return stats, nil
+}
 
+// enqueueRun scans the window (watermark-filtered, capped), enqueues the
+// agent's run over the scanned issues and links the task onto the run row.
+// It returns the scanned count; a non-empty reason string means the enqueue
+// itself failed and the run must be finished with it.
+func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, agent db.Agent, run db.RetrospectiveRun, windowStart, windowEnd time.Time, stats *RunStats) (int, string) {
+	var scanned []TaskContextIssue
 	statuses := []string{"done"}
 	if cfg.IncludeInReview {
 		statuses = append(statuses, "in_review")
 	}
-
-	analyzed := 0
 	for _, status := range statuses {
 		issues, err := r.Queries.ListIssuesCompletedInWindow(ctx, db.ListIssuesCompletedInWindowParams{
-			WorkspaceID: util.MustParseUUID(workspaceID),
+			WorkspaceID: run.WorkspaceID,
 			Status:      status,
 			UpdatedAt:   pgtype.Timestamptz{Time: windowStart, Valid: true},
 			UpdatedAt_2: pgtype.Timestamptz{Time: windowEnd, Valid: true},
 		})
 		if err != nil {
-			return stats, finish("failed", fmt.Sprintf("扫描窗口失败: %v", err))
+			return len(scanned), fmt.Sprintf("扫描窗口失败: %v", err)
 		}
-		stats.IssuesScanned += len(issues)
-
 		for _, issue := range issues {
-			if analyzed >= IssuesPerRun {
+			if len(scanned) >= IssuesPerRun {
 				break
 			}
 			issueID := util.UUIDToString(issue.ID)
 			// Idempotency watermark first: already-analyzed issues are
 			// invisible to this run, whatever put them in the window.
 			watermarked, err := r.Queries.HasRetrospectiveWatermark(ctx, db.HasRetrospectiveWatermarkParams{
-				WorkspaceID: util.MustParseUUID(workspaceID),
+				WorkspaceID: run.WorkspaceID,
 				IssueID:     issue.ID,
 			})
 			if err != nil {
-				return stats, finish("failed", fmt.Sprintf("水位查询失败: %v", err))
+				return len(scanned), fmt.Sprintf("水位查询失败: %v", err)
 			}
 			if watermarked == 1 {
 				continue
 			}
-
-			if err := r.analyzeIssue(ctx, workspaceID, runID, issueID, issue.Title, issue.Description, stats); err != nil {
-				return stats, finish("failed", fmt.Sprintf("分析 Issue %s 失败: %v", issueID, err))
-			}
-			analyzed++
-			stats.IssuesAnalyzed++
+			scanned = append(scanned, TaskContextIssue{ID: issueID, Title: truncateRunes(issue.Title, maxTitleRunes)})
 		}
-		if analyzed >= IssuesPerRun {
+		if len(scanned) >= IssuesPerRun {
 			break
 		}
 	}
+	stats.IssuesScanned = len(scanned)
 
-	if err := finish("succeeded", ""); err != nil {
-		return stats, err
+	// Nothing pending: finish immediately — no task, no agent spend. The
+	// watermark defines what has been analyzed, so an empty scan is a clean
+	// success, not a failure.
+	if len(scanned) == 0 {
+		return 0, ""
 	}
-	return stats, nil
+
+	// The scanned set rides on the run row from the start: the completion
+	// processor validates the agent's reported ids against it.
+	detail, _ := json.Marshal(runDetail{IssueIDs: taskContextIssueIDs(scanned)})
+	if err := r.Queries.UpdateRetrospectiveRunDetail(ctx, db.UpdateRetrospectiveRunDetailParams{
+		ID:     run.ID,
+		Detail: detail,
+	}); err != nil {
+		return len(scanned), fmt.Sprintf("记录扫描范围失败: %v", err)
+	}
+
+	taskCtx, _ := json.Marshal(TaskContext{
+		Kind:        TaskKind,
+		RunID:       stats.RunID,
+		WorkspaceID: stats.WorkspaceID,
+		WindowStart: windowStart.UTC().Format(time.RFC3339),
+		WindowEnd:   windowEnd.UTC().Format(time.RFC3339),
+		Issues:      scanned,
+	})
+	taskID, err := r.Enqueue(ctx, EnqueueParams{
+		RunID:            stats.RunID,
+		WorkspaceID:      stats.WorkspaceID,
+		AgentID:          util.UUIDToString(agent.ID),
+		RuntimeID:        util.UUIDToString(agent.RuntimeID),
+		OriginatorUserID: util.UUIDToString(cfg.UpdatedBy),
+		Priority:         EnqueuePriority,
+		Context:          taskCtx,
+	})
+	if err != nil {
+		return len(scanned), fmt.Sprintf("复盘任务入列失败: %v", err)
+	}
+	stats.TaskID = taskID
+	if err := r.Queries.SetRetrospectiveRunTaskID(ctx, db.SetRetrospectiveRunTaskIDParams{
+		ID:     run.ID,
+		TaskID: util.MustParseUUID(taskID),
+	}); err != nil {
+		// The task is live; the run record merely lost its back-pointer and
+		// the age-out reconciler will fail the row if the task dies unseen.
+		slog.Warn("retrospective: run row missing task back-pointer",
+			"run_id", stats.RunID, "task_id", taskID, "error", err)
+	}
+	return len(scanned), ""
 }
 
-// analyzeIssue runs one issue through the pipeline: gather content →
-// sanitize → LLM extract → two-layer dedup → pool insert + watermark in one
-// transaction.
-func (r *Runner) analyzeIssue(ctx context.Context, workspaceID, runID, issueID, title string, description pgtype.Text, stats *RunStats) error {
-	input := buildIssueInput(title, description)
-	comments, err := r.Queries.ListIssueCommentsForRetrospective(ctx, util.MustParseUUID(issueID))
+// ReconcileStaleRuns is the bulk backstop the scheduler runs on every tick:
+// runs whose task went terminal without the completion hook seeing it
+// (offline-runtime sweeps, cancel paths, daemon crashes) and runs whose task
+// never got enqueued. First terminal verdict wins — the status guards skip
+// runs the completion processor already finished.
+func (r *Runner) ReconcileStaleRuns(ctx context.Context) (int64, error) {
+	n1, err := r.Queries.ReconcileTerminalRetrospectiveRuns(ctx)
 	if err != nil {
-		return fmt.Errorf("读取评论: %w", err)
+		return 0, fmt.Errorf("retrospective: reconcile terminal: %w", err)
 	}
-	for _, c := range comments {
-		who := "member"
-		if c.AuthorType == "agent" {
-			who = "agent"
-		}
-		input += fmt.Sprintf("\n[%s] %s", who, truncateRunes(c.Content, MaxCommentChars))
-		if len(input) >= MaxInputChars {
-			break
-		}
-	}
-	input = truncateRunes(input, MaxInputChars)
-
-	// Credentials scan: the assembled content is about to leave for the
-	// model. A refusal skips the issue (counted, not fatal) — it never
-	// reaches upstream with the finding intact.
-	if scan := promptscan.Scan(input); !scan.OK() {
-		stats.SanitizedSkipped++
-		slog.Warn("retrospective: issue content refused by promptscan, skipping",
-			"issue_id", issueID, "findings", len(scan.Findings))
-		return nil
-	}
-
-	drafts, err := r.extractDrafts(ctx, input)
+	n2, err := r.Queries.ReconcileUnenqueuedRetrospectiveRuns(ctx)
 	if err != nil {
-		return fmt.Errorf("提炼草案: %w", err)
+		return n1, fmt.Errorf("retrospective: reconcile unenqueued: %w", err)
 	}
-	if len(drafts) == 0 {
-		// Analyzed, nothing worth proposing — still watermark so the issue
-		// is never re-read.
-		return r.watermark(ctx, workspaceID, issueID, runID)
-	}
+	return n1 + n2, nil
+}
 
-	// Current-clause pre-check source: the workspace carrier's effective
-	// content. Retrospective drafts always target the workspace carrier —
-	// the issue carries no project/squad/agent attribution, and a draft
-	// aimed at the wrong carrier is worse than one aimed at the base.
-	current, err := r.Queries.GetWorkspacePromptContent(ctx, util.MustParseUUID(workspaceID))
+// finishRun merges extra detail into the run row's existing detail and
+// writes the terminal state. Every terminal path funnels through here, so
+// the scanned set recorded at trigger survives every finish.
+func (r *Runner) finishRun(ctx context.Context, run db.RetrospectiveRun, status, errMsg string, extra runDetail, stats *RunStats) error {
+	detail := parseRunDetail(run.Detail)
+	if extra.IssueIDs != nil {
+		detail.IssueIDs = extra.IssueIDs
+	}
+	detail.AnalyzedIssueIDs = extra.AnalyzedIssueIDs
+	out, err := json.Marshal(detail)
 	if err != nil {
-		return fmt.Errorf("读取现行载体内容: %w", err)
+		out = []byte("{}")
 	}
-	liveClauses := map[string]bool{}
-	for _, c := range legislation.Clauses(current) {
-		liveClauses[strings.ToLower(c)] = true
-	}
-
-	for _, d := range drafts {
-		if d.ClauseName == "" || len([]rune(d.ClauseName)) > maxClauseNameRunes {
-			stats.DuplicatesSkipped++
-			continue
-		}
-		if d.ChangeKind == "add_clause" && liveClauses[strings.ToLower(d.ClauseName)] {
-			// 现行条款重复预检: the clause already exists in the carrier.
-			stats.DuplicatesSkipped++
-			continue
-		}
-
-		anchors, _ := json.Marshal([]map[string]string{{
-			"issue_id": issueID, "ref": d.EvidenceRef, "note": truncateRunes(d.EvidenceNote, 200),
-		}})
-		audit, _ := json.Marshal([]map[string]any{{
-			"action": "created", "actor_type": "system", "actor_id": runID,
-			"at": r.now().UTC().Format(time.RFC3339),
-		}})
-
-		// Two-layer dedup, one transaction per draft: pool merge beats a
-		// duplicate row; watermark rides along so a crash cannot re-analyze.
-		err := r.withTx(ctx, func(q *db.Queries) error {
-			existing, err := q.FindMergablePromptProposal(ctx, db.FindMergablePromptProposalParams{
-				WorkspaceID:    util.MustParseUUID(workspaceID),
-				CarrierScope:   "workspace",
-				CarrierScopeID: util.MustParseUUID(workspaceID),
-				ChangeKind:     d.ChangeKind,
-				ClauseName:     d.ClauseName,
-			})
-			if err == nil {
-				cand, _ := json.Marshal([]map[string]string{{"issue_id": issueID, "run_id": runID}})
-				_, err = q.MergePromptProposalEvidence(ctx, db.MergePromptProposalEvidenceParams{
-					ID:         existing.ID,
-					Anchors:    anchors,
-					MergedFrom: cand,
-					Audit:      audit,
-				})
-				if err != nil {
-					return err
-				}
-				stats.ProposalsMerged++
-				return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
-					WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
-				})
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			created, err := q.CreatePromptProposal(ctx, db.CreatePromptProposalParams{
-				WorkspaceID:         util.MustParseUUID(workspaceID),
-				CarrierScope:        "workspace",
-				CarrierScopeID:      util.MustParseUUID(workspaceID),
-				TargetSection:       d.TargetSection,
-				ChangeKind:          d.ChangeKind,
-				ClauseName:          d.ClauseName,
-				ClauseText:          d.ClauseText,
-				GateAnswerLayer:     d.GateAnswers.Layer,
-				GateAnswerRetention: d.GateAnswers.Retention,
-				GateAnswerCost:      d.GateAnswers.Cost,
-				GateAnswerConflict:  d.GateAnswers.Conflict,
-				GateAnswerDedup:     d.GateAnswers.Dedup,
-				EvidenceAnchors:     anchors,
-				Source:              "retrospective",
-				CreatedByType:       "system",
-				CreatedByID:         util.MustParseUUID(workspaceID),
-				AuditLog:            audit,
-			})
-			if err != nil {
-				return err
-			}
-			_ = created
-			stats.ProposalsCreated++
-			return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
-				WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
-			})
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	// Drafts were proposed or all skipped — watermark either way.
-	if stats.ProposalsCreated == 0 && stats.ProposalsMerged == 0 {
-		return r.watermark(ctx, workspaceID, issueID, runID)
+	if _, ferr := r.Queries.FinishRetrospectiveRun(ctx, db.FinishRetrospectiveRunParams{
+		ID:                run.ID,
+		WorkspaceID:       run.WorkspaceID,
+		Status:            status,
+		IssuesScanned:     int32(stats.IssuesScanned),
+		IssuesAnalyzed:    int32(stats.IssuesAnalyzed),
+		ProposalsCreated:  int32(stats.ProposalsCreated),
+		ProposalsMerged:   int32(stats.ProposalsMerged),
+		DuplicatesSkipped: int32(stats.DuplicatesSkipped),
+		Error:             errMsg,
+		Detail:            out,
+	}); ferr != nil {
+		return fmt.Errorf("finish retrospective run: %w", ferr)
 	}
 	return nil
 }
@@ -348,26 +331,6 @@ func (r *Runner) watermark(ctx context.Context, workspaceID, issueID, runID stri
 	return r.Queries.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
 		WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
 	})
-}
-
-func (r *Runner) countCandidates(ctx context.Context, workspaceID string, includeInReview bool, start, end time.Time) int {
-	statuses := []string{"done"}
-	if includeInReview {
-		statuses = append(statuses, "in_review")
-	}
-	n := 0
-	for _, status := range statuses {
-		issues, err := r.Queries.ListIssuesCompletedInWindow(ctx, db.ListIssuesCompletedInWindowParams{
-			WorkspaceID: util.MustParseUUID(workspaceID), Status: status,
-			UpdatedAt:   pgtype.Timestamptz{Time: start, Valid: true},
-			UpdatedAt_2: pgtype.Timestamptz{Time: end, Valid: true},
-		})
-		if err != nil {
-			return n
-		}
-		n += len(issues)
-	}
-	return n
 }
 
 func (r *Runner) withTx(ctx context.Context, fn func(q *db.Queries) error) error {
@@ -389,74 +352,12 @@ func (r *Runner) now() time.Time {
 	return time.Now()
 }
 
-// --- LLM extraction ---
-
-// extractedDraft mirrors one draft in the model's JSON reply.
-type extractedDraft struct {
-	CarrierScope  string `json:"carrier_scope"`
-	TargetSection string `json:"target_section"`
-	ChangeKind    string `json:"change_kind"`
-	ClauseName    string `json:"clause_name"`
-	ClauseText    string `json:"clause_text"`
-	GateAnswers   struct {
-		Layer     string `json:"layer"`
-		Retention string `json:"retention"`
-		Cost      string `json:"cost"`
-		Conflict  string `json:"conflict"`
-		Dedup     string `json:"dedup"`
-	} `json:"gate_answers"`
-	EvidenceRef  string `json:"evidence_ref"`
-	EvidenceNote string `json:"evidence_note"`
-}
-
-const extractSystem = `你是 Prompt 立法管线的草案提炼器。输入是若干已完成 Issue 的真实执行内容（标题、描述、讨论）。请从中提炼 Prompt 改进草案：条款必须写成可直接落库的最终文本（不带修订痕迹、不用弱表述），每条草案必须给出内容闸五答（层次归属 layer / 去留判据 retention / 代价声明 cost / 同主题冲突裁决 conflict / 重复检查结论 dedup）与证据锚。没有值得提炼的内容就返回空数组。只输出 JSON 对象，形如：
-{"drafts":[{"carrier_scope":"workspace","target_section":"章节名或空串","change_kind":"add_clause|revise_clause|remove_clause","clause_name":"条款名","clause_text":"- **条款名**：条款正文","gate_answers":{"layer":"...","retention":"...","cost":"...","conflict":"...","dedup":"..."},"evidence_ref":"issue 标题或评论摘要","evidence_note":"一句话说明依据"}]}`
-
-func (r *Runner) extractDrafts(ctx context.Context, input string) ([]extractedDraft, error) {
-	ctx, cancel := context.WithTimeout(ctx, LLMTimeout)
-	defer cancel()
-	raw, err := r.LLM.GenerateJSON(ctx, r.Model, extractSystem, input, 0.2, 4096)
-	if err != nil {
-		return nil, err
+func taskContextIssueIDs(in []TaskContextIssue) []string {
+	out := make([]string, 0, len(in))
+	for _, i := range in {
+		out = append(out, i.ID)
 	}
-	var parsed struct {
-		Drafts []extractedDraft `json:"drafts"`
-	}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, fmt.Errorf("模型输出不是合法 JSON: %w", err)
-	}
-	if len(parsed.Drafts) > MaxDraftsPerIssue {
-		parsed.Drafts = parsed.Drafts[:MaxDraftsPerIssue]
-	}
-	// Normalize: retrospective drafts target the workspace carrier only, and
-	// unknown change kinds are dropped rather than half-validated later.
-	kept := parsed.Drafts[:0]
-	for _, d := range parsed.Drafts {
-		switch d.ChangeKind {
-		case "add_clause", "revise_clause", "remove_clause":
-		default:
-			continue
-		}
-		if d.ChangeKind != "remove_clause" && strings.TrimSpace(d.ClauseText) == "" {
-			continue
-		}
-		kept = append(kept, d)
-	}
-	return kept, nil
-}
-
-// buildIssueInput assembles the model's user prompt head: title, description,
-// status-independent (the window already selected completion).
-func buildIssueInput(title string, description pgtype.Text) string {
-	var b strings.Builder
-	b.WriteString("Issue 标题：")
-	b.WriteString(title)
-	if description.Valid && strings.TrimSpace(description.String) != "" {
-		b.WriteString("\n描述：")
-		b.WriteString(truncateRunes(description.String, MaxCommentChars))
-	}
-	b.WriteString("\n讨论与进度：")
-	return b.String()
+	return out
 }
 
 func truncateRunes(s string, n int) string {
@@ -466,8 +367,3 @@ func truncateRunes(s string, n int) string {
 	}
 	return string(r[:n]) + "…"
 }
-
-// ErrNoConfig marks "nothing to do" — no config row, or not enabled. The
-// scheduler job treats it as a silent skip; the manual trigger surfaces it
-// to the owner as a 400.
-var ErrNoConfig = errors.New("retrospective: workspace config missing or disabled")
