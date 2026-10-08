@@ -76,9 +76,10 @@ export function interleaveDecisions(
   const out = ordered
     .sort((a, b) => a.at - b.at || a.tie - b.tie)
     .map((o) => o.item);
-  // Mirrors web's issue-detail splice: with two or more open cards the bar
-  // lands immediately before the first open card, placed after the sort so
-  // timestamps never move it.
+  // Mirrors web's issue-detail placement (RUYI-534): with two or more open
+  // cards the bar lands at the very end of the timeline, appended after the
+  // sort so timestamps never move it. The cards themselves stay ordered by
+  // created_at, which is what the server's "1A 2B" numbering reads.
   // Server numbering ("1A 2B" binding) is created_at ASC over open cards —
   // sort locally so the bar's row order and anchor never depend on the
   // caller's array order.
@@ -90,15 +91,10 @@ export function interleaveDecisions(
         (a.id < b.id ? -1 : 1),
     );
   if (open.length >= 2) {
-    const firstOpenIdx = out.findIndex(
-      (item) => "decision" in item && item.decision.id === open[0]!.id,
-    );
-    if (firstOpenIdx !== -1) {
-      out.splice(firstOpenIdx, 0, {
-        batchBar: { open },
-        entry: { id: DECISION_BATCH_BAR_ID, created_at: open[0]!.created_at },
-      });
-    }
+    out.push({
+      batchBar: { open },
+      entry: { id: DECISION_BATCH_BAR_ID, created_at: open[0]!.created_at },
+    });
   }
   return out;
 }

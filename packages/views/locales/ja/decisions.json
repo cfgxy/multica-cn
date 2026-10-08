@@ -35,5 +35,25 @@
       "load_failed": "意思決定カードの読み込みに失敗しました: {{reason}}",
       "empty_filtered": "現在のタブやフィルターに一致する意思決定カードはありません"
     }
+  },
+  "view": {
+    "section": "ビュー",
+    "list": "リスト",
+    "board": "ボード",
+    "tooltip_list": "リストビュー",
+    "tooltip_board": "ボードビュー"
+  },
+  "filter": {
+    "tooltip": "フィルター",
+    "active_count_other": "フィルター {{count}} 件",
+    "reset": "リセット"
+  },
+  "board": {
+    "empty_column": "カードはありません"
+  },
+  "filtered_empty": {
+    "title": "フィルターに一致する意思決定カードはありません",
+    "hint": "フィルターを調整またはクリアして、このビューのカードを表示してください。",
+    "clear_button": "フィルターをクリア"
   }
 }

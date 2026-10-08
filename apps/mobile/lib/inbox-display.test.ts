@@ -3,6 +3,7 @@ import i18n from "i18next";
 import { RESOURCES } from "@multica/views/locales";
 import type { InboxItem } from "@multica/core/types";
 import {
+  deduplicateArchivedInboxItems,
   deduplicateInboxItems,
   getAutopilotQuotaBody,
   getInboxDisplayTitle,
@@ -72,6 +73,99 @@ describe("deduplicateInboxItems", () => {
         comment_id: "comment-1",
       },
     });
+  });
+});
+
+describe("deduplicateArchivedInboxItems", () => {
+  it("keeps only archived rows and drops active ones", () => {
+    const merged = deduplicateArchivedInboxItems([
+      item({ id: "active-1", archived: false }),
+      item({ id: "archived-1", archived: true, created_at: "2026-06-15T08:01:00Z" }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toBe("archived-1");
+  });
+
+  it("keeps the newest archived row per issue while preserving an older comment anchor", () => {
+    const merged = deduplicateArchivedInboxItems([
+      item({
+        id: "comment-notification",
+        archived: true,
+        created_at: "2026-06-15T08:00:00Z",
+        details: { comment_id: "comment-1" },
+      }),
+      item({
+        id: "status-notification",
+        type: "status_changed",
+        archived: true,
+        created_at: "2026-06-15T08:01:00Z",
+        details: { from: "in_progress", to: "in_review" },
+      }),
+      // Same issue, but still in the main inbox — must not leak into the
+      // archived list (the two lists are mutually exclusive server-side).
+      item({
+        id: "active-sibling",
+        archived: false,
+        created_at: "2026-06-15T08:02:00Z",
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "status-notification",
+      details: {
+        from: "in_progress",
+        to: "in_review",
+        comment_id: "comment-1",
+      },
+    });
+  });
+
+  it("sorts issues newest-first and groups issue-less items by their own id", () => {
+    const merged = deduplicateArchivedInboxItems([
+      item({
+        id: "quick-create-1",
+        type: "quick_create_failed",
+        issue_id: null,
+        archived: true,
+        created_at: "2026-06-15T08:00:00Z",
+      }),
+      item({
+        id: "older-issue",
+        archived: true,
+        created_at: "2026-06-15T07:00:00Z",
+      }),
+      item({
+        id: "quick-create-2",
+        type: "quick_create_failed",
+        issue_id: null,
+        archived: true,
+        created_at: "2026-06-15T09:00:00Z",
+      }),
+    ]);
+
+    expect(merged.map((i) => i.id)).toEqual([
+      "quick-create-2",
+      "quick-create-1",
+      "older-issue",
+    ]);
+  });
+
+  // useUnarchiveInbox's optimistic patch flips `archived` to false on the
+  // tapped row AND its issue siblings inside the archived cache; this filter
+  // is what makes them leave the rendered list at once (mirrors how the main
+  // dedup drops optimistically archived rows).
+  it("drops rows the optimistic unarchive flipped back to active", () => {
+    const cached: InboxItem[] = [
+      item({ id: "target", archived: false }),
+      item({ id: "sibling", archived: false }),
+      item({ id: "other-issue", archived: true }),
+    ];
+
+    const merged = deduplicateArchivedInboxItems(cached);
+
+    expect(merged.map((i) => i.id)).toEqual(["other-issue"]);
   });
 });
 

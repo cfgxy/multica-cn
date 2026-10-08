@@ -27,7 +27,7 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 // Two credential shapes, one transport. `mul_…` is the Multica PAT this
 // server has always taken. The second branch is a compact JWS — the OAuth
-// access token the Go authorization server mints for ChatGPT (RUYI-209).
+// access token the Go authorization server mints for ChatGPT.
 //
 // Neither is verified here. The token is forwarded verbatim to the backend
 // (src/rest.ts), whose auth middleware already dispatches on the same two
@@ -46,7 +46,7 @@ export function extractBearerToken(header: string | undefined): string | null {
 }
 
 /**
- * Static diagnostic payload for GET /diag (RUYI-420): the tool catalogue
+ * Static diagnostic payload for GET /diag: the tool catalogue
  * and this process's version, nothing else. Computed once at startup —
  * the registry is compile-time static, so answering the admin status page
  * never constructs a client, touches the backend, or can trigger a run.
@@ -137,7 +137,7 @@ async function handleRequest(
       return;
     }
     if (url === "/diag" || url.startsWith("/diag?")) {
-      // Static read-only diagnostic (RUYI-420): version + tool names,
+      // Static read-only diagnostic: version + tool names,
       // computed at startup, no credential, no backend call.
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify(diagnosticPayload()));
