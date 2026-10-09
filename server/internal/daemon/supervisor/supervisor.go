@@ -22,23 +22,29 @@ type Supervisor struct {
 	binPath string
 	owner   string
 	log     *slog.Logger
+	// daemonID is this daemon's persistent identity, written into every
+	// manifest at Launch so reconciliation can attribute units to their
+	// launching daemon (RUYI-592 fix 1).
+	daemonID string
 
 	detaching atomic.Bool
 }
 
 // New wires a Supervisor. binPath is the daemon binary re-executed as the
-// launcher (os.Executable() of the daemon process); owner is this daemon's
-// RUYI-607 identity (OwnerIdentity of its profile), stamped into every
-// manifest Launch writes so reconcile can prove a run is ours before
-// acting on it.
-func New(mgr *Manager, sys *systemdCtl, binPath string, owner string, log *slog.Logger) (*Supervisor, error) {
+// launcher (os.Executable() of the daemon process). daemonID is the
+// daemon's persistent identity (cfg.DaemonID) and owner its RUYI-607
+// identity (OwnerIdentity of its profile); both are stamped into every
+// manifest Launch writes — daemonID so reconciliation can attribute the
+// unit to this exact daemon installation, owner so reconcile can prove a
+// run is ours at all before acting on it.
+func New(mgr *Manager, sys *systemdCtl, binPath, daemonID, owner string, log *slog.Logger) (*Supervisor, error) {
 	if binPath == "" {
 		return nil, fmt.Errorf("supervisor: empty daemon binary path")
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Supervisor{mgr: mgr, sys: sys, binPath: binPath, owner: owner, log: log}, nil
+	return &Supervisor{mgr: mgr, sys: sys, binPath: binPath, daemonID: daemonID, owner: owner, log: log}, nil
 }
 
 // Manager exposes the run registry (reconciliation, cleanup, tests).
@@ -67,6 +73,7 @@ func (s *Supervisor) Launch(ctx context.Context, spec agent.LaunchSpec) (agent.W
 		Runtime:       spec.Runtime,
 		Unit:          UnitName(spec.RunID),
 		State:         StateRunning,
+		DaemonID:      s.daemonID,
 		ControlSocket: controlSocketPath(dir),
 		StdoutLog:     stdoutLogPath(dir),
 		StderrLog:     stderrLogPath(dir),
