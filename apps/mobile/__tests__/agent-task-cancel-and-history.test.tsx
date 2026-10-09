@@ -282,7 +282,7 @@ describe("AgentRunHistoryRow", () => {
 
   it("falls back to the issue short id when the title is unresolved (no 任务不可见 placeholder)", async () => {
     await renderRow({ status: "completed", issue_id: "issue-0001-aaaa" }, null);
-    expect(screen.getByText("Task issue-00...")).toBeTruthy();
+    expect(screen.getByText("Issue issue-00…")).toBeTruthy();
   });
 
   it("keeps the source-label vocabulary for issue-less runs", async () => {

@@ -44,7 +44,7 @@ export function AgentTaskRow({ task, issueTitle, wsSlug }: Props) {
       // Unresolved title (issue beyond a list window, or still fetching) —
       // mirror web's activity tab: short-id fallback, never a "task
       // invisible" placeholder (RUYI-538 ④).
-      t("agents:tab_body.activity.issue_short_fallback", "Task {{prefix}}...", {
+      t("agents:tab_body.activity.issue_short_fallback", "Issue {{prefix}}…", {
         prefix: task.issue_id.slice(0, 8),
       }))
     : sourceLabel(task, t);

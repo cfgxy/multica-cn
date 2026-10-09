@@ -138,6 +138,7 @@
     "archive_dialog_confirm": "Archive"
   },
   "detail": {
+    "section_history": "Run history",
     "back_to_agents": "Agents",
     "back_to_agents_full": "Back to agents",
     "not_found_title": "Agent not found",
