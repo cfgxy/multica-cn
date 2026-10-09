@@ -299,6 +299,13 @@ node -e '
 grep -q '"mcp_port": 13001' "$repo/scripts/slots.json" || fail "dev1's mcp_port must be a registered fact"
 grep -q '"mcp_port": 13002' "$repo/scripts/slots.json" || fail "dev2's mcp_port must be a registered fact"
 
+# The slot daemon's supervisor run store must stay slot-scoped (RUYI-606): the
+# shared default (~/.multica/supervisor-runs) is where production workers
+# live, and a slot startup reconcile enumerating them is the RUYI-592
+# cross-daemon kill blind spot.
+grep -q 'MULTICA_SUPERVISOR_RUNS_DIR="$SLOT_DIR/supervisor-runs"' "$repo/scripts/dev-env.sh" \
+  || fail "slot daemon must scope MULTICA_SUPERVISOR_RUNS_DIR to \$SLOT_DIR (RUYI-606)"
+
 # component_resource_env translates the budget into per-component env so the
 # quota travels with the process even before the watchdog is up.
 for check in \
