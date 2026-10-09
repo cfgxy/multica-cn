@@ -73,7 +73,7 @@ func TestTerminalCoordinatorTaskSettlesDeliveredRecovery(t *testing.T) {
 		finalize func(t *testing.T, svc *TaskService, taskID pgtype.UUID)
 	}{
 		{"complete", func(t *testing.T, svc *TaskService, taskID pgtype.UUID) {
-			if _, err := svc.CompleteTask(context.Background(), taskID, []byte(`{"ok":true}`), "", "", "", false, "", ""); err != nil {
+			if _, _, err :=svc.CompleteTask(context.Background(), taskID, []byte(`{"ok":true}`), "", "", "", false, "", ""); err != nil {
 				t.Fatalf("CompleteTask: %v", err)
 			}
 		}},
