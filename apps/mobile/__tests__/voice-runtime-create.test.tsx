@@ -2,12 +2,15 @@
  * RUYI-425 §4.3 mobile — voice instance create screen (`more/runtimes/new`).
  * Pins the desktop-parity semantics that the acceptance criteria call out:
  * the no-profile escape hatch, the voice-only Type filter, the advanced-
- * params JSON gate, and the save-triggers-probe tri-state feedback.
+ * params JSON gate, and the save-triggers-probe tri-state feedback. Since
+ * RUYI-626 the probe verdict is the device's (direct path dials Google from
+ * the user's network), so the device probe is mocked per test.
  */
 import { Alert } from "react-native";
 import { router } from "expo-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import NewVoiceRuntimeScreen from "@/app/(app)/[workspace]/more/runtimes/new";
+import { probeVoiceCredential } from "@/lib/voice/probe";
 import type { RuntimeDevice, RuntimeProfile } from "@multica/core/types";
 
 // jest.mock factories run before module-body consts initialize, so the
@@ -18,6 +21,11 @@ const mockInvalidateQueries = jest.fn();
 const mockCreateRuntimeAsync = jest.fn();
 const mockPutCredentialAsync = jest.fn();
 const mockCreateProfile = jest.fn();
+const mockProbeVoiceCredential = jest.mocked(probeVoiceCredential);
+
+jest.mock("@/lib/voice/probe", () => ({
+  probeVoiceCredential: jest.fn(),
+}));
 
 jest.mock("expo-router", () => ({
   Stack: { Screen: () => null },
@@ -187,6 +195,8 @@ jest.mock("@/data/mutations/runtimes", () => ({
 beforeEach(() => {
   jest.clearAllMocks();
   mockProfiles = [cliProfile, voiceProfile];
+  // Default device-probe verdict: reachable and valid (RUYI-626).
+  mockProbeVoiceCredential.mockResolvedValue({ status: "ok" });
 });
 
 describe("NewVoiceRuntimeScreen", () => {
@@ -224,7 +234,7 @@ describe("NewVoiceRuntimeScreen", () => {
     ).toBeOnTheScreen();
   });
 
-  it("registers, stores the key, and warns when the probe fails (tri-state)", async () => {
+  it("registers, stores the key, and warns when the device probe rejects the key (tri-state)", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     mockCreateRuntimeAsync.mockResolvedValue(createdRuntime);
     mockPutCredentialAsync.mockResolvedValue({
@@ -232,6 +242,12 @@ describe("NewVoiceRuntimeScreen", () => {
       credential_key: "api_key",
       credential_status: "invalid",
       probe: { status: "invalid", http_status: 400 },
+    });
+    // RUYI-626: the alert follows the DEVICE probe verdict, not the PUT
+    // response's server-side probe (that describes the server's egress).
+    mockProbeVoiceCredential.mockResolvedValue({
+      status: "invalid",
+      httpStatus: 400,
     });
     await render(<NewVoiceRuntimeScreen />);
 

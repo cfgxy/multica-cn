@@ -386,7 +386,7 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if userID := h.voiceRequestUserID(r); userID != "" {
-		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID)
+		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, voiceSessionModeGateway)
 		if hsErr != nil {
 			hsErr.writeHTTP(w)
 			return
@@ -407,6 +407,15 @@ type voiceSessionPlan struct {
 	advanced     map[string]json.RawMessage
 }
 
+// Transport modes for live_session rows (RUYI-626): 'gateway' rows were
+// relayed by the server hop, 'direct' rows were handed off to a client that
+// dials the provider itself. The DB CHECK (migration 937) pins the enum;
+// pre-direct rows backfilled 'gateway'.
+const (
+	voiceSessionModeGateway = "gateway"
+	voiceSessionModeDirect  = "direct"
+)
+
 // voiceHandshakeError is a guard/gate failure both start paths can express:
 // an HTTP status pre-upgrade, a JSON error frame post-upgrade.
 type voiceHandshakeError struct {
@@ -425,10 +434,11 @@ func (e *voiceHandshakeError) writeHTTP(w http.ResponseWriter) {
 
 // openVoiceSession runs the full guard chain — workspace membership, agent
 // existence, the §4.4 rule-3 initiation recheck, the actor-vs-runtime slot
-// check — and creates the live session row. Identity and workspace have
-// already been resolved by the caller. The rejection order mirrors the
-// pre-RUYI-449 header path exactly.
-func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionPlan, *voiceHandshakeError) {
+// check — and creates the live session row tagged with the caller's
+// transport mode (RUYI-626). Identity and workspace have already been
+// resolved by the caller. The rejection order mirrors the pre-RUYI-449
+// header path exactly.
+func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID, mode string) (*voiceSessionPlan, *voiceHandshakeError) {
 	if workspaceID == "" {
 		return nil, &voiceHandshakeError{status: http.StatusBadRequest, detail: "workspace_id is required"}
 	}
@@ -469,6 +479,7 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 		UserID:            parseUUID(userID),
 		Model:             model,
 		ContextSnapshot:   liveSessionSnapshot(agentRow, rt, model),
+		Mode:              mode,
 	})
 	if err != nil {
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
@@ -602,7 +613,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID)
+	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, voiceSessionModeGateway)
 	if hsErr != nil {
 		// Guard failures carry no stable code; the frame path always names
 		// one so clients branch on `code` uniformly.

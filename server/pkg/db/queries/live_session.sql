@@ -5,9 +5,12 @@
 -- the relay finishes.
 
 -- name: CreateLiveSession :one
+-- mode (RUYI-626) tags the transport that opened the session: the gateway
+-- relay writes 'gateway', the direct-connect handoff writes 'direct'. The
+-- CHECK in migration 937 pins the enum.
 INSERT INTO live_session (
-    workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot
-) VALUES ($1, $2, $3, $4, $5, $6)
+    workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot, mode
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: GetLiveSession :one
