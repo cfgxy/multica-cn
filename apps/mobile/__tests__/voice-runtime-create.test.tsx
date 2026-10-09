@@ -272,6 +272,41 @@ describe("NewVoiceRuntimeScreen", () => {
     alertSpy.mockRestore();
   });
 
+  it("registers with could-not-verify wording when the probe reports unreachable (RUYI-619)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockCreateRuntimeAsync.mockResolvedValue(createdRuntime);
+    mockPutCredentialAsync.mockResolvedValue({
+      runtime_id: "rt-new",
+      credential_key: "api_key",
+      credential_status: "unreachable",
+      probe: { status: "unreachable" },
+    });
+    await render(<NewVoiceRuntimeScreen />);
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("e.g. Gemini Live (personal)"),
+      "Gemini Live (personal)",
+    );
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Paste the Gemini API key"),
+      "qaFAKE-key",
+    );
+    await fireEvent.press(screen.getByLabelText("Register"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Registered, but connectivity could not be verified — the target may be unreachable",
+        undefined,
+      );
+    });
+    // Registration still lands on the settings page (§4.5).
+    expect(mockReplace).toHaveBeenCalledWith({
+      pathname: "/[workspace]/more/runtimes/[id]",
+      params: { workspace: "ws", id: "rt-new" },
+    });
+    alertSpy.mockRestore();
+  });
+
   it("keeps the instance when the credential PUT fails and surfaces the server message (RUYI-540)", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     mockCreateRuntimeAsync.mockResolvedValue(createdRuntime);

@@ -117,7 +117,10 @@ export function VoiceInstanceCreateDialog({
             credentialKey: VOICE_INSTANCE_CREDENTIAL_KEY,
             value: apiKey.trim(),
           });
-          if (result.probe?.status === "invalid") {
+          if (result.probe?.status === "unreachable") {
+            // Registered fine; the probe just could not verify (RUYI-619).
+            toast.warning(t(($) => $.voice_instance_create.created_probe_unreachable));
+          } else if (result.probe?.status === "invalid") {
             toast.warning(t(($) => $.voice_instance_create.created_probe_invalid));
           } else {
             toast.success(t(($) => $.voice_instance_create.created));
