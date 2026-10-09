@@ -2782,10 +2782,21 @@ export class ApiClient {
   // ---------------------------------------------------------------------------
 
   async getDashboardUsageDaily(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardUsageDaily[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.tz) search.set("tz", params.tz);
     const raw = await this.fetch<unknown>(`/api/dashboard/usage/daily?${search}`);
@@ -2798,10 +2809,21 @@ export class ApiClient {
   }
 
   async getDashboardUsageByAgent(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardUsageByAgent[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.tz) search.set("tz", params.tz);
     const raw = await this.fetch<unknown>(`/api/dashboard/usage/by-agent?${search}`);
@@ -2814,10 +2836,21 @@ export class ApiClient {
   }
 
   async getDashboardAgentRunTime(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardAgentRunTime[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     // `tz` aligns the "last N days" cutoff with the viewer's calendar,
     // matching the per-agent token card.
@@ -2832,10 +2865,21 @@ export class ApiClient {
   }
 
   async getDashboardRunTimeDaily(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardRunTimeDaily[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     // `tz` cuts the day buckets in the viewer's calendar so Time / Tasks
     // align with the Cost / Tokens charts.
@@ -2850,10 +2894,21 @@ export class ApiClient {
   }
 
   async getDashboardFailuresDaily(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardFailureDaily[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     // `tz` cuts the day buckets in the viewer's calendar so the Errors chart
     // shares an x-axis with the other four metrics.
@@ -2868,10 +2923,21 @@ export class ApiClient {
   }
 
   async getDashboardFailuresByAgent(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardFailureByAgent[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.tz) search.set("tz", params.tz);
     const raw = await this.fetch<unknown>(`/api/dashboard/failures/by-agent?${search}`);

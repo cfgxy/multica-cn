@@ -5,9 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
-import { useWorkspacePaths } from "@multica/core/paths";
 import {
-  retrospectiveConfigOptions,
   useRestoreSelfEvolutionModelDefault,
   useSaveSelfEvolutionModelConfig,
   useValidateSelfEvolutionModelConfig,
@@ -36,15 +34,15 @@ import { Label } from "@multica/ui/components/ui/label";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { useLocale, useT } from "../../i18n";
-import { AppLink } from "../../navigation";
 import { ConfigSourceBadge } from "./config-source-badge";
 import { SecretField } from "./secret-field";
 
 /**
- * The one model-service card (RUYI-551 §3): a single workspace-scoped
- * LLM endpoint behind the module's two consumers (quality scoring and the
- * daily retrospective). One card, not two — the consumers share the client,
- * and two cards would invite diverging credentials.
+ * The one model-service card (RUYI-551 §3): a single workspace-scoped LLM
+ * endpoint behind the module's quality scoring. One card, not two — two
+ * cards would invite diverging credentials. (The daily retrospective used
+ * to consume this endpoint too, but since RUYI-552's agent-based rework it
+ * runs as an agent run and no longer reads this config.)
  *
  * Save is validate-first: a config that fails its connectivity check is
  * never persisted (the server refuses too, but failing here keeps the
@@ -61,15 +59,10 @@ export function ModelConfigCard({
 }) {
   const { t } = useT("self-evolution");
   const locale = useLocale();
-  const paths = useWorkspacePaths();
   const currentMember = useCurrentMember(wsId);
   const canManage = currentMember.role === "owner";
 
   const config = useQuery(selfEvolutionModelConfigOptions(wsId));
-  const retroConfig = useQuery({
-    ...retrospectiveConfigOptions(wsId),
-    enabled: showConsumers && wsId !== "",
-  });
   const save = useSaveSelfEvolutionModelConfig(wsId);
   const validate = useValidateSelfEvolutionModelConfig(wsId);
   const restore = useRestoreSelfEvolutionModelDefault(wsId);
@@ -266,22 +259,6 @@ export function ModelConfigCard({
                 onCheckedChange={(v) => setScoringEnabled(v === true)}
                 aria-label={t(($) => $.modelConfig.scoringConsumer)}
               />
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-body">{t(($) => $.modelConfig.retroConsumer)}</span>
-              {retroConfig.data ? (
-                <span className="text-caption text-muted-foreground">
-                  {retroConfig.data.enabled
-                    ? t(($) => $.modelConfig.consumerOn)
-                    : t(($) => $.modelConfig.consumerOff)}
-                </span>
-              ) : null}
-              <AppLink
-                href={paths.selfEvolutionRetrospective()}
-                className="text-caption text-primary"
-              >
-                {t(($) => $.modelConfig.consumerLink)}
-              </AppLink>
             </div>
           </div>
         ) : null}

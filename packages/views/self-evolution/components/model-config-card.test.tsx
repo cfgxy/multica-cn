@@ -60,11 +60,6 @@ vi.mock("@multica/core/self-evolution", async () => {
       queryKey: ["se-model-config", wsId],
       queryFn: () => Promise.resolve(m.config),
     }),
-    retrospectiveConfigOptions: (wsId: string) => ({
-      queryKey: ["retro-config", wsId],
-      queryFn: () =>
-        Promise.resolve({ enabled: true, include_in_review: true, window_days: 1 }),
-    }),
     useValidateSelfEvolutionModelConfig: () => ({
       mutate: m.validateMutate.mockImplementation((_vars, opts) => {
         opts?.onSuccess?.(m.validateResult);
@@ -243,12 +238,13 @@ describe("ModelConfigCard", () => {
     expect(m.restoreMutate).toHaveBeenCalledTimes(1);
   });
 
-  it("names both consumers only on the module-config variant", async () => {
+  it("names the scoring consumer only on the module-config variant", async () => {
     const { unmount } = mount(true);
     const consumers = await screen.findByTestId("model-config-consumers");
     expect(within(consumers).getByText("Quality scoring")).toBeTruthy();
-    expect(within(consumers).getByText("Daily retrospective")).toBeTruthy();
-    expect(within(consumers).getByText("Enabled")).toBeTruthy();
+    // RUYI-552's agent-based rework took the daily retrospective off this
+    // endpoint, so it must not be listed as a consumer of the model config.
+    expect(within(consumers).queryByText("Daily retrospective")).toBeNull();
     unmount();
 
     // The overview/quality variant stays silent about the switches.

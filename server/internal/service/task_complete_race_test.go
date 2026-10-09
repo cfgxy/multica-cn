@@ -1,8 +1,8 @@
 package service
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -111,7 +111,7 @@ func TestCompleteTask_AlreadyFinalized(t *testing.T) {
 				Bus:     events.New(),
 			}
 
-			got, err := svc.CompleteTask(context.Background(), taskID, nil, "", "", "", false, "", "")
+			got, _, err := svc.CompleteTask(context.Background(), taskID, nil, "", "", "", false, "", "")
 			if err != nil {
 				t.Fatalf("expected no error, got %v", err)
 			}
