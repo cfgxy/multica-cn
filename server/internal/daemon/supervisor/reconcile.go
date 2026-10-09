@@ -292,6 +292,11 @@ func exitSourceLabel(e *ExitRecord) string {
 func (r *Reconciler) act(ctx context.Context, res ReconcileResult, man *Manifest) {
 	switch res.Decision {
 	case DecisionStopOrphan:
+		// The decision goes on the record BEFORE the irreversible action: a
+		// reconciler dying mid-kill must not take the audit with it
+		// (RUYI-592 fix 4 — every kill's decision line was lost to exactly
+		// this when the killer daemon died seconds after starting).
+		r.logDecision(res)
 		if err := r.Units.KillUnit(ctx, man.Unit); err != nil {
 			r.logError(res, "orphan stop failed", err)
 			return
@@ -314,6 +319,16 @@ func (r *Reconciler) act(ctx context.Context, res ReconcileResult, man *Manifest
 		// No action, by design: the foreign daemon owns this run's evidence
 		// and its unit. The decision reaches the audit log via the results.
 	}
+}
+
+// logDecision is the at-action audit line for destructive decisions.
+func (r *Reconciler) logDecision(res ReconcileResult) {
+	log := r.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Warn("supervisor: reconcile executing decision", "run_id", res.RunID, "task_id", res.TaskID,
+		"unit", res.Unit, "decision", res.Decision.String(), "reason", res.Reason)
 }
 
 func (r *Reconciler) logError(res ReconcileResult, what string, err error) {
