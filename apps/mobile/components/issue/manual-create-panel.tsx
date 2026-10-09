@@ -41,9 +41,19 @@ import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/use-t";
 
-export function ManualCreatePanel() {
+export function ManualCreatePanel({
+  initialDescription,
+}: {
+  /** RUYI-605: plain-text seed for the description (quick-create outcome's
+   *  original prompt, handed over via new-issue-prefill-store). Read once at
+   *  mount by `useMentionInput`; undefined keeps the always-empty default. */
+  initialDescription?: string;
+} = {}) {
   const [title, setTitle] = useState("");
-  const description = useMentionInput({ mentionMode: "chips" });
+  const description = useMentionInput({
+    mentionMode: "chips",
+    initialText: initialDescription,
+  });
   // Attribute chips (status / priority / assignee / due date / project)
   // live in `useNewIssueDraftStore` so the new-issue-picker/* formSheet
   // routes can read and write the same values without a parent-child
