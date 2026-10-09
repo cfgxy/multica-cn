@@ -55,10 +55,15 @@ const (
 // on supervisor-initiated stops). Always replaced atomically — readers never
 // see a partial file, and a daemon crash mid-write leaves the previous state.
 type Manifest struct {
-	Version       int         `json:"version"`
-	RunID         string      `json:"run_id"`
-	TaskID        string      `json:"task_id"`
-	Runtime       string      `json:"runtime"`
+	Version int    `json:"version"`
+	RunID   string `json:"run_id"`
+	TaskID  string `json:"task_id"`
+	Runtime string `json:"runtime"`
+	// Owner is the RUYI-607 identity of the daemon that launched this run
+	// (OwnerIdentity of its profile). Empty on pre-RUYI-607 manifests:
+	// ownership is then unproven, and reconcile never takes a destructive
+	// action on an unproven owner.
+	Owner         string      `json:"owner,omitempty"`
 	Unit          string      `json:"unit"`
 	State         string      `json:"state"`
 	WorkerPID     int         `json:"worker_pid"`
