@@ -3791,6 +3791,24 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		// RUYI-608: cheap freeze probe before the claim UPDATE. ClaimAgentTask
+		// re-enforces the fence authoritatively inside its own statement;
+		// this pre-check only makes the claim log distinguishable — without
+		// it a frozen agent's poll is indistinguishable from "queue empty".
+		if frozen, err := qtx.GetSchedulingPauseForAgent(ctx, db.GetSchedulingPauseForAgentParams{
+			WorkspaceID: agent.WorkspaceID,
+			AgentID:     agentID,
+		}); err == nil {
+			outcome = "scheduling_paused"
+			slog.Info("task claim: scheduling frozen",
+				"agent_id", util.UUIDToString(agentID),
+				"scope", schedulingPauseScopeOf(frozen))
+			return nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			outcome = "error_pause_probe"
+			return fmt.Errorf("probe scheduling pause: %w", err)
+		}
+
 		t0 = time.Now()
 		running, err := qtx.CountRunningTasks(ctx, agentID)
 		countRunningMs = time.Since(t0).Milliseconds()
