@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"math"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -24,6 +26,14 @@ import (
 // All of them accept ?days=N (defaults to 30, capped at 365) and an optional
 // ?project_id=<uuid> to scope the rollup to a single project. With no
 // project_id the data spans the whole workspace.
+//
+// Historical windows: instead of ?days=N a client may pass
+// ?start=YYYY-MM-DD&end=YYYY-MM-DD — inclusive calendar dates in the viewer's
+// tz — to read an arbitrary past window (the dashboard's period navigation).
+// Explicit bounds win over days when both are present, carry a matching
+// upper bound (until) so per-AGENT rollups cannot bleed past end, and are
+// validated (400) on format, order, future bounds, and a 365-day span cap.
+// See parseDashboardWindow.
 //
 // Cutoff convention: the three date-bucketed series use parseSinceParamInTZ
 // (N+1 calendar days, the surplus day trimmed client-side with `-(days-1)`),
@@ -147,6 +157,104 @@ func parseProjectIDParam(w http.ResponseWriter, r *http.Request) (pgtype.UUID, b
 	return u, true
 }
 
+// dashboardWindow is the resolved half-open [since, until) instant pair a
+// dashboard query filters on. until.Valid == false means "no upper bound" —
+// the shape every legacy ?days=N request keeps, which is safe there because
+// no rows exist in the future.
+type dashboardWindow struct {
+	since pgtype.Timestamptz
+	until pgtype.Timestamptz
+}
+
+// dashboardMaxWindowDays caps an explicit window at the same span the days
+// parameter enforces, so either way of asking cannot open a heavier query
+// than the other.
+const dashboardMaxWindowDays = 365
+
+// parseDashboardWindow resolves the time window for the six dashboard
+// endpoints. Two modes:
+//
+//   - Legacy (no start/end): ?days=N relative to today in the viewer's tz,
+//     byte-for-byte the behaviour parseSinceParamInTZ /
+//     parseExactSinceParamInTZ have always had, and no upper bound.
+//   - Explicit: ?start=YYYY-MM-DD&end=YYYY-MM-DD — inclusive calendar dates
+//     in the viewer's tz. since = local midnight of start, until = local
+//     midnight of the day AFTER end (exclusive), so the pair exactly bounds
+//     the requested calendar days. Explicit wins when a ?days= rides along
+//     with it: old clients never send start/end, so the precedence is
+//     unobservable to them, and it is pinned by test rather than left
+//     accidental.
+//
+// exact carries the same meaning as parseExactSinceParamInTZ: per-agent
+// rollups close the LEGACY window at exactly N days because their rows have
+// no date the client could trim (MUL-5551). Explicit windows are always
+// exact — the client owns the fetch span and widens start itself when a
+// weekly chart needs the headroom.
+//
+// Writes a 400 and returns ok=false on any half-provided pair, non-ISO date,
+// inverted range, bound in the future (today is allowed; it is the default
+// window), or span over 365 days. A read-only filter could silently clamp,
+// but a silently-wrong window is worse than a loud rejection.
+func parseDashboardWindow(
+	w http.ResponseWriter,
+	r *http.Request,
+	tzName string,
+	exact bool,
+) (dashboardWindow, bool) {
+	rawStart := r.URL.Query().Get("start")
+	rawEnd := r.URL.Query().Get("end")
+	if rawStart == "" && rawEnd == "" {
+		trim := 0
+		if exact {
+			trim = 1
+		}
+		return dashboardWindow{since: parseDaysCutoff(r, 30, tzName, trim)}, true
+	}
+	if rawStart == "" || rawEnd == "" {
+		writeError(w, http.StatusBadRequest, "start and end must be provided together")
+		return dashboardWindow{}, false
+	}
+
+	loc, err := time.LoadLocation(tzName)
+	if err != nil || loc == nil {
+		loc = time.UTC
+	}
+	// ParseInLocation on a date-only string yields local midnight in loc,
+	// which is exactly the bound semantics: the window opens and closes at
+	// the viewer's calendar boundaries, DST shifts included.
+	start, errStart := time.ParseInLocation("2006-01-02", rawStart, loc)
+	end, errEnd := time.ParseInLocation("2006-01-02", rawEnd, loc)
+	if errStart != nil || errEnd != nil {
+		writeError(w, http.StatusBadRequest, "invalid start/end: want YYYY-MM-DD")
+		return dashboardWindow{}, false
+	}
+
+	now := dayWindowNow().In(loc)
+	todayMidnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	if end.After(todayMidnight) {
+		writeError(w, http.StatusBadRequest, "end is in the future")
+		return dashboardWindow{}, false
+	}
+	if end.Before(start) {
+		writeError(w, http.StatusBadRequest, "start is after end")
+		return dashboardWindow{}, false
+	}
+	// Round the division: DST makes a span's wall-clock hours land off the
+	// 24h grid, and truncation would let a 366-day window slip through.
+	spanDays := int(math.Round(end.Sub(start).Hours() / 24)) + 1
+	if spanDays > dashboardMaxWindowDays {
+		writeError(w, http.StatusBadRequest, "window span exceeds 365 days")
+		return dashboardWindow{}, false
+	}
+
+	return dashboardWindow{
+		since: pgtype.Timestamptz{Time: start, Valid: true},
+		// AddDate keeps the bound at genuine local midnight of the day
+		// after end even when the span crosses a DST transition.
+		until: pgtype.Timestamptz{Time: end.AddDate(0, 0, 1), Valid: true},
+	}, true
+}
+
 // DashboardUsageDailyResponse is one (date, provider, model) bucket. Cost-side
 // math happens on the client from a per-model pricing table; provider + model
 // stay on the wire so the client can disambiguate bare model ids that collide
@@ -185,9 +293,12 @@ func (h *Handler) GetDashboardUsageDaily(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tz := h.resolveViewingTZ(r)
-	since := parseSinceParamInTZ(r, 30, tz)
+	window, ok := parseDashboardWindow(w, r, tz, false)
+	if !ok {
+		return
+	}
 
-	resp, err := h.listDashboardUsageDaily(r.Context(), parseUUID(workspaceID), tz, since, projectID)
+	resp, err := h.listDashboardUsageDaily(r.Context(), parseUUID(workspaceID), tz, window, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list usage")
 		return
@@ -199,13 +310,14 @@ func (h *Handler) listDashboardUsageDaily(
 	ctx context.Context,
 	workspaceID pgtype.UUID,
 	tz string,
-	since pgtype.Timestamptz,
+	window dashboardWindow,
 	projectID pgtype.UUID,
 ) ([]DashboardUsageDailyResponse, error) {
 	rows, err := h.Queries.ListDashboardUsageDaily(ctx, db.ListDashboardUsageDailyParams{
 		WorkspaceID: workspaceID,
 		Tz:          tz,
-		Since:       since,
+		Since:       window.since,
+		Until:       window.until,
 		ProjectID:   projectID,
 	})
 	if err != nil {
@@ -282,9 +394,12 @@ func (h *Handler) GetDashboardUsageByAgent(w http.ResponseWriter, r *http.Reques
 	// the chart directly above it, so at 1D a single agent's row could read
 	// higher than the workspace total (MUL-5551).
 	tz := h.resolveViewingTZ(r)
-	since := parseExactSinceParamInTZ(r, 30, tz)
+	window, ok := parseDashboardWindow(w, r, tz, true)
+	if !ok {
+		return
+	}
 
-	resp, err := h.listDashboardUsageByAgent(r.Context(), parseUUID(workspaceID), since, projectID)
+	resp, err := h.listDashboardUsageByAgent(r.Context(), parseUUID(workspaceID), window, projectID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list usage by agent")
 		return
@@ -330,12 +445,13 @@ func foldRestrictedUsageByAgent(
 func (h *Handler) listDashboardUsageByAgent(
 	ctx context.Context,
 	workspaceID pgtype.UUID,
-	since pgtype.Timestamptz,
+	window dashboardWindow,
 	projectID pgtype.UUID,
 ) ([]DashboardUsageByAgentResponse, error) {
 	rows, err := h.Queries.ListDashboardUsageByAgent(ctx, db.ListDashboardUsageByAgentParams{
 		WorkspaceID: workspaceID,
-		Since:       since,
+		Since:       window.since,
+		Until:       window.until,
 		ProjectID:   projectID,
 	})
 	if err != nil {
@@ -402,11 +518,15 @@ func (h *Handler) GetDashboardAgentRunTime(w http.ResponseWriter, r *http.Reques
 	// Tasks KPI tiles, so the N+1 cutoff put those two tiles on a wider
 	// window than the Cost / Tokens tiles beside them (MUL-5551).
 	tz := h.resolveViewingTZ(r)
-	since := parseExactSinceParamInTZ(r, 30, tz)
+	window, ok := parseDashboardWindow(w, r, tz, true)
+	if !ok {
+		return
+	}
 
 	rows, err := h.Queries.ListDashboardAgentRunTime(r.Context(), db.ListDashboardAgentRunTimeParams{
 		WorkspaceID: parseUUID(workspaceID),
-		Since:       since,
+		Since:       window.since,
+		Until:       window.until,
 		ProjectID:   projectID,
 	})
 	if err != nil {
@@ -480,12 +600,16 @@ func (h *Handler) GetDashboardRunTimeDaily(w http.ResponseWriter, r *http.Reques
 	// Slice day buckets in the viewer's tz so the Time / Tasks charts cut
 	// their calendar day identically to the Cost / Tokens charts.
 	tz := h.resolveViewingTZ(r)
-	since := parseSinceParamInTZ(r, 30, tz)
+	window, ok := parseDashboardWindow(w, r, tz, false)
+	if !ok {
+		return
+	}
 
 	rows, err := h.Queries.ListDashboardRunTimeDaily(r.Context(), db.ListDashboardRunTimeDailyParams{
 		WorkspaceID: parseUUID(workspaceID),
 		Tz:          tz,
-		Since:       since,
+		Since:       window.since,
+		Until:       window.until,
 		ProjectID:   projectID,
 	})
 	if err != nil {
@@ -547,12 +671,16 @@ func (h *Handler) GetDashboardFailuresDaily(w http.ResponseWriter, r *http.Reque
 	// Same viewer-tz day boundary as every other daily series so the Errors
 	// tab lines up with Cost / Tokens / Time / Tasks.
 	tz := h.resolveViewingTZ(r)
-	since := parseSinceParamInTZ(r, 30, tz)
+	window, ok := parseDashboardWindow(w, r, tz, false)
+	if !ok {
+		return
+	}
 
 	rows, err := h.Queries.ListDashboardFailuresDaily(r.Context(), db.ListDashboardFailuresDailyParams{
 		WorkspaceID: parseUUID(workspaceID),
 		Tz:          tz,
-		Since:       since,
+		Since:       window.since,
+		Until:       window.until,
 		ProjectID:   projectID,
 	})
 	if err != nil {
@@ -603,11 +731,15 @@ func (h *Handler) GetDashboardFailuresByAgent(w http.ResponseWriter, r *http.Req
 	// covered one extra day, so at days=1 the card could report yesterday's
 	// failures next to a chart showing none.
 	tz := h.resolveViewingTZ(r)
-	since := parseExactSinceParamInTZ(r, 30, tz)
+	window, ok := parseDashboardWindow(w, r, tz, true)
+	if !ok {
+		return
+	}
 
 	rows, err := h.Queries.ListDashboardFailuresByAgent(r.Context(), db.ListDashboardFailuresByAgentParams{
 		WorkspaceID: parseUUID(workspaceID),
-		Since:       since,
+		Since:       window.since,
+		Until:       window.until,
 		ProjectID:   projectID,
 	})
 	if err != nil {

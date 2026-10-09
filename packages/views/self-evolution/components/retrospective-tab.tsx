@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -15,9 +15,17 @@ import {
 } from "@multica/ui/components/ui/empty";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { clientErrorMessage } from "@multica/core/api";
+import { ApiError, clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
+import { agentListOptions } from "@multica/core/workspace/queries";
 import {
   retrospectiveConfigOptions,
   retrospectiveRunsOptions,
@@ -30,13 +38,13 @@ import { useT } from "../../i18n";
 /**
  * The daily retrospective tab (RUYI-305 E3).
  *
- * The job itself is base-platform plumbing: a registered scheduler task reads
- * the real execution content of completed issues inside the lookback window,
- * distills prompt-improvement drafts into the legislation pool, and keeps a
- * per-issue watermark for idempotency. It never posts issue comments — the
- * only visible traces are the config, the run records below (failures name
- * the reason, e.g. a missing LLM configuration) and, on success, new
- * proposals in the legislation tab.
+ * The job itself is base-platform plumbing (RUYI-552 direction 3): a
+ * registered scheduler task (or the "run now" button) starts a single run of
+ * the configured execution agent. That run reads the real execution content
+ * of completed issues inside the lookback window and distills
+ * prompt-improvement drafts into the legislation pool. It never creates or
+ * comments on issues — the only visible traces are the config, the run
+ * records below and, on success, new proposals in the legislation tab.
  */
 export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
@@ -45,12 +53,14 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
 
   const config = useQuery(retrospectiveConfigOptions(wsId));
   const runs = useQuery(retrospectiveRunsOptions(wsId));
+  const agents = useQuery(agentListOptions(wsId));
   const saveConfig = useUpdateRetrospectiveConfig(wsId);
   const trigger = useTriggerRetrospectiveRun(wsId);
 
   const [enabled, setEnabled] = useState(false);
   const [includeInReview, setIncludeInReview] = useState(false);
   const [windowDays, setWindowDays] = useState(7);
+  const [agentId, setAgentId] = useState("");
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -58,12 +68,24 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
       setEnabled(config.data.enabled);
       setIncludeInReview(config.data.include_in_review);
       setWindowDays(config.data.window_days);
+      setAgentId(config.data.agent_id ?? "");
       setLoaded(true);
     }
   }, [config.data, loaded]);
 
   const mutationError = (e: unknown) =>
     toast.error(clientErrorMessage(e) ?? t(($) => $.retrospective.errorLabel));
+
+  // The server's 409 on "run now" is the no-usable-agent state; the UI
+  // renders its own localized copy with the fix in view (the selector above),
+  // not the server's sentence.
+  const triggerError = (e: unknown) => {
+    if (e instanceof ApiError && e.status === 409) {
+      toast.error(t(($) => $.retrospective.agentTriggerBlocked));
+      return;
+    }
+    mutationError(e);
+  };
 
   const runsList: RetrospectiveRun[] = runs.data ?? [];
 
@@ -74,6 +96,24 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
       case "running": return t(($) => $.retrospective.status.running);
       default: return s;
     }
+  };
+
+  // Archived agents stay listed when one is the saved selection (the server
+  // still reports it), but only live agents are selectable going forward.
+  const agentChoices = (agents.data ?? []).filter(
+    (a) => !a.archived_at || a.id === agentId,
+  );
+  const selectedAgent = agentChoices.find((a) => a.id === agentId);
+  // "none" stands in for the empty selection — the select's value is never
+  // "" so the placeholder item stays a real, pickable option.
+  const agentItems: Record<string, ReactNode> = {
+    none: t(($) => $.retrospective.agentPlaceholder),
+    ...Object.fromEntries(
+      agentChoices.map((a) => [
+        a.id,
+        a.name + (a.archived_at ? t(($) => $.retrospective.agentArchivedSuffix) : ""),
+      ]),
+    ),
   };
 
   return (
@@ -118,6 +158,41 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                 }}
               />
             </div>
+
+            <div className="mt-2 flex flex-col gap-3 border-t pt-3" data-testid="retrospective-agent-config">
+              <div className="flex flex-col gap-1">
+                <div className="text-body font-medium">{t(($) => $.retrospective.agentTitle)}</div>
+                <p className="text-muted-foreground text-caption">{t(($) => $.retrospective.agentDescription)}</p>
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="retro-agent">{t(($) => $.retrospective.agentLabel)}</Label>
+                <Select
+                  items={agentItems}
+                  value={agentId || "none"}
+                  onValueChange={(v) => setAgentId(!v || v === "none" ? "" : v)}
+                  disabled={!canManage}
+                >
+                  <SelectTrigger id="retro-agent" className="w-72" data-testid="retrospective-agent-select">
+                    <SelectValue placeholder={t(($) => $.retrospective.agentPlaceholder)} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">{t(($) => $.retrospective.agentPlaceholder)}</SelectItem>
+                    {agentChoices.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.name}
+                        {a.archived_at ? t(($) => $.retrospective.agentArchivedSuffix) : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedAgent?.archived_at ? (
+                  <p className="text-muted-foreground text-caption" data-testid="retrospective-agent-archived">
+                    {t(($) => $.retrospective.agentArchivedHint)}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
             {canManage ? (
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -125,7 +200,12 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   disabled={saveConfig.isPending}
                   onClick={() =>
                     saveConfig.mutate(
-                      { enabled, include_in_review: includeInReview, window_days: windowDays },
+                      {
+                        enabled,
+                        include_in_review: includeInReview,
+                        window_days: windowDays,
+                        agent_id: agentId,
+                      },
                       {
                         onError: mutationError,
                         onSuccess: () => toast.success(t(($) => $.retrospective.saveOk)),
@@ -141,7 +221,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   disabled={trigger.isPending}
                   onClick={() =>
                     trigger.mutate(undefined, {
-                      onError: mutationError,
+                      onError: triggerError,
                       onSuccess: () => toast.success(t(($) => $.retrospective.triggerOk)),
                     })
                   }
@@ -164,7 +244,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
               {/* eslint-disable-next-line i18next/no-literal-string -- icon glyph, not copy */}
               <EmptyMedia variant="icon">↻</EmptyMedia>
               <EmptyTitle>{t(($) => $.retrospective.empty)}</EmptyTitle>
-              <EmptyDescription>{t(($) => $.retrospective.llmUnavailable)}</EmptyDescription>
+              <EmptyDescription>{t(($) => $.retrospective.emptyDescription)}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (

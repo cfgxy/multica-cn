@@ -74,7 +74,7 @@ export interface UpdateProjectBody {
   due_date?: string | null;
 }
 
-// ---- project resource bindings (RUYI-458) ---------------------------------
+// ---- project resource bindings ---------------------------------
 // Mirrors packages/core/types/project.ts and the Go handler
 // (server/internal/handler/project_resource.go). resource_type is immutable
 // server-side; only the shapes below exist today.
@@ -156,7 +156,7 @@ export interface IssueInfo {
   updated_at?: string;
   last_activity_at?: string;
   revision?: number;
-  /** True while the last run-triggering write was suppressed (RUYI-275). */
+  /** True while the last run-triggering write was suppressed. */
   run_suppressed?: boolean;
 }
 
@@ -268,14 +268,14 @@ export interface UpdateCommentBody {
 
 export interface UpdateIssueBody {
   status?: string;
-  // Core field edit (RUYI-350 update_issue). PATCH semantics: an omitted key
+  // Core field edit. PATCH semantics: an omitted key
   // keeps the current value. For the four nullable fields an EXPLICIT null
   // clears the value — the null must survive serialization, because the
   // server decides "clear" by rawFields key presence (server/internal/handler/
   // issue.go), exactly like the assignee nulls below. title/description/
   // priority are plain writes: the server models them as *string, so a JSON
   // null decodes to nil and means "keep" — the tool layer never sends null
-  // for them. bulk_update_issues (RUYI-353) shares this body type but its
+  // for them. bulk_update_issues shares this body type but its
   // items only ever assign plain strings, so omitted keys keep the current
   // value there.
   title?: string;
@@ -296,13 +296,13 @@ export interface UpdateIssueBody {
   // Injected into the triggered run's opening context; dropped when the
   // write starts no run (suppress_run, backlog parking, member/unassign).
   handoff_note?: string;
-  // Parent change (RUYI-351). A string re-parents the issue (server walks
+  // Parent change. A string re-parents the issue (server walks
   // the ancestor chain for cycles); explicit null clears the parent. The
   // null must survive serialization — same rawFields rule as the assignee.
   parent_issue_id?: string | null;
 }
 
-// RUYI-351 structured issue relations. The five caller-facing types; the
+// Structured issue relations. The five caller-facing types; the
 // server stores one canonical row per edge, so blocked_by / superseded_by
 // writes land as their forward counterpart and relates_to is symmetric.
 export type IssueRelationType =
@@ -368,7 +368,7 @@ export interface ActiveTaskInfo {
   [key: string]: unknown;
 }
 
-// RUYI-292 run lifecycle. status is the raw server value: queued, dispatched,
+// Run lifecycle. status is the raw server value: queued, dispatched,
 // deferred, waiting_local_directory, running, cancel_requested, completed,
 // failed, cancelled. Raw values, not display buckets — callers merge for
 // display (queued/dispatched/deferred/waiting_local_directory → "pending").
@@ -420,7 +420,7 @@ export interface CancelRunResult {
   task: RunInfo;
 }
 
-// ---- execution-config management (RUYI-433) ------------------------------
+// ---- execution-config management ------------------------------
 // Wire shapes mirroring the Go handlers (AgentRuntimeResponse, ModelListRequest,
 // AgentResponse, ExecutionProfileResponse, SquadResponse). Fields not listed
 // are ignored, never re-serialized.
@@ -488,7 +488,7 @@ export interface AgentConfigInfo {
   runtime_id?: string | null;
   runtime_mode?: string;
   model?: string;
-  /** Runtime-native reasoning token; empty = runtime default (MUL-2339). */
+  /** Runtime-native reasoning token; empty = runtime default. */
   thinking_level?: string;
   service_tier?: string;
   status?: string;
@@ -496,7 +496,7 @@ export interface AgentConfigInfo {
   owner_id?: string | null;
   archived_at?: string | null;
   updated_at?: string;
-  /** Optimistic-lock token for execution-config writes (RUYI-433). */
+  /** Optimistic-lock token for execution-config writes. */
   revision: number;
 }
 
@@ -529,7 +529,7 @@ export interface ExecutionProfileInfo {
   created_at?: string;
   updated_at?: string;
   entries: ExecutionProfileEntryInfo[];
-  /** Optimistic-lock token, including entry upserts/deletes (RUYI-433). */
+  /** Optimistic-lock token, including entry upserts/deletes. */
   revision: number;
 }
 
@@ -575,7 +575,7 @@ export interface SquadMemberInfo {
   created_at?: string;
 }
 
-// One audit_event row (RUYI-355). Dimensions the event does not name come
+// One audit_event row. Dimensions the event does not name come
 // back as null so a timeline renders absence, not zero UUIDs. details is the
 // raw JSONB payload — key names and metadata only, never secret values.
 export interface AuditEventInfo {
@@ -619,7 +619,7 @@ export interface AuditEventListResult {
   next_cursor_id: string | null;
 }
 
-// ---- workspace management surface (RUYI-419) -----------------------------
+// ---- workspace management surface -----------------------------
 
 // One row of the workspace-wide run view (GET /api/task-runs). Same execution
 // row as RunInfo plus the cross-issue fields the issue-scoped read gets from
@@ -699,7 +699,7 @@ export interface AgentDetailInfo {
 }
 
 // Create/update bodies expose the safe metadata subset only. The server
-// rejects a PUT body carrying custom_env (MUL-2600) and agent creation
+// rejects a PUT body carrying custom_env and agent creation
 // requires runtime_id; secrets (runtime_config, mcp_config, custom_env,
 // composio allowlist) are configured in the product UI, not through MCP.
 export interface CreateAgentBody {

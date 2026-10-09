@@ -169,15 +169,15 @@ func (s *PermissionHintSender) sendHintCard(ctx context.Context, creds Installat
 }
 
 // isRuntimePermissionDenied reports whether err is a Lark permission-class
-// failure. Exact business codes first (the probe's set, including the
-// canonical 99991672), then the shared enricher classifier's code/text
-// heuristics as the fallback.
+// failure. Exact business codes first (the real-target runtime set,
+// including the canonical 99991672), then the shared enricher
+// classifier's code/text heuristics as the fallback.
 func isRuntimePermissionDenied(err error) bool {
 	if err == nil {
 		return false
 	}
 	if code, _, ok := larkErrorCodeMsg(err); ok {
-		if _, denied := probePermissionCodes[code]; denied {
+		if _, denied := runtimePermissionCodes[code]; denied {
 			return true
 		}
 	}
@@ -199,6 +199,10 @@ func capabilityHintCopy(id CapabilityID) (label, impact string) {
 		return "下载消息附件", "图片、文件等附件将无法读取"
 	case CapabilityContactLookup:
 		return "解析成员名称", "群聊中发言人将显示为 User N"
+	case CapabilityDriveFileLinks:
+		return "下载飞书共享文件（/file/ 链接）", "分享链接指向的云文件将无法读取"
+	case CapabilityWikiDocLinks:
+		return "读取飞书 wiki 与文档（/wiki/、/docx/ 链接）", "分享链接指向的 wiki 页与文档将无法读取"
 	}
 	return string(id), "相关功能将不可用"
 }

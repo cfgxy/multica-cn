@@ -14,16 +14,26 @@
  * (`packages/views/common/actor-avatar.tsx:51`). The prop is opt-in (default
  * false) because the dot mounts `useAgentPresence` — three queries +
  * 30s wall-clock tick — and we don't want every comment-author thumbnail
- * subscribing to that.
+ * subscribing to that. List rows no longer use it (RUYI-554): avatar state
+ * there is the agent-activity language instead (`activity` prop — running →
+ * breathing, queued → grayed, none → static), so rows read one unified cue.
  */
+import { useEffect } from "react";
 import { Image, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useColorScheme } from "nativewind";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
 import { Text } from "@/components/ui/text";
 import { cn } from "@/lib/utils";
 import { useActorLookup, getInitials } from "@/data/use-actor-name";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useAgentPresence } from "@/lib/use-agent-presence";
+import type { AgentActivityState } from "@/lib/issue-agent-activity";
 import { PresenceDot } from "@/components/ui/presence-dot";
 import { THEME } from "@/lib/theme";
 
@@ -46,6 +56,15 @@ interface Props {
    * subscriptions — off thumbnails that don't need it.
    */
   showPresence?: boolean;
+  /**
+   * Unified agent-activity treatment (RUYI-554): running → breathing
+   * animation, queued → grayed, undefined → static normal. List rows derive
+   * it from the issue activity slice they already hold (`selectActorActivity`)
+   * — zero extra queries; the presence dot is retired from list rows in
+   * favour of this whole-avatar language and stays opt-in for agent-picker /
+   * availability surfaces.
+   */
+  activity?: AgentActivityState;
 }
 
 export function ActorAvatar({
@@ -55,6 +74,7 @@ export function ActorAvatar({
   avatarUrl,
   size = 32,
   showPresence,
+  activity,
 }: Props) {
   const avatar = (
     <BareAvatar
@@ -66,10 +86,57 @@ export function ActorAvatar({
     />
   );
 
+  // The activity state wraps the whole avatar (RUYI-554). Breathing uses
+  // transform+opacity only, so the pulse can never shift layout.
+  const staged =
+    activity === "running" ? (
+      <Breathing>{avatar}</Breathing>
+    ) : activity === "queued" ? (
+      <View testID="avatar-queued" style={{ opacity: QUEUED_OPACITY }}>
+        {avatar}
+      </View>
+    ) : (
+      avatar
+    );
+
   if (!showPresence || type !== "agent" || !id) {
-    return avatar;
+    return staged;
   }
-  return <AgentAvatarWithPresence id={id} size={size}>{avatar}</AgentAvatarWithPresence>;
+  return <AgentAvatarWithPresence id={id} size={size}>{staged}</AgentAvatarWithPresence>;
+}
+
+// Queued graying matches the half-opacity queued stack the activity badge
+// has always used — one "waiting" visual across badge and avatar.
+const QUEUED_OPACITY = 0.5;
+// One breath = 1.1s in + 1.1s out — slow enough to read as ambient,
+// fast enough to read as alive.
+const BREATH_DURATION_MS = 1100;
+
+// Slow scale+opacity oscillation on the UI thread via Reanimated's
+// `withRepeat` — the "an agent is actively working" cue (RUYI-554).
+// Transform/opacity are compositor-side and never trigger layout, so the
+// animation cannot shift neighbouring rows. Same animation library as the
+// rest of the app, no new primitive.
+function Breathing({ children }: { children: React.ReactNode }) {
+  const phase = useSharedValue(0);
+  useEffect(() => {
+    phase.value = withRepeat(
+      withTiming(1, { duration: BREATH_DURATION_MS }),
+      -1, // infinite
+      true, // reverse — yields the in/out breath cycle
+    );
+  }, [phase]);
+
+  const style = useAnimatedStyle(() => ({
+    transform: [{ scale: 1 + 0.05 * phase.value }],
+    opacity: 1 - 0.3 * phase.value,
+  }));
+
+  return (
+    <Animated.View testID="avatar-breathing" style={style}>
+      {children}
+    </Animated.View>
+  );
 }
 
 // Pure avatar render — no presence subscription, no workspace lookup. Kept

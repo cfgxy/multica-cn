@@ -489,7 +489,7 @@
   },
   "retrospective": {
     "title": "日次ふりかえり",
-    "description": "組み込みスケジューラがウィンドウ内の完了 Issue の実際の実行内容を読み、プロンプト改善草案を立法プールへ投入します。実行が Issue コメントを投稿することはありません。",
+    "description": "実行エージェントを選択：そのエージェントの 1 回のランが、振り返り期間内の完了 Issue の実行内容を読み取り、Prompt 改善ドラフトを立法プールへ登録します。ランは Issue を作成せず、Issue コメントも投稿しません。",
     "enabled": "定期実行を有効化",
     "includeInReview": "in_review の Issue も対象にする",
     "windowDays": "参照ウィンドウ（日）",
@@ -509,9 +509,16 @@
     "duplicates": "重複スキップ",
     "errorLabel": "エラー",
     "empty": "実行履歴はまだありません。",
-    "llmUnavailable": "LLM が未設定です——実行は不足設定を示す失敗レコードを残します。",
     "saveOk": "ふりかえり設定を保存しました。",
-    "triggerOk": "ふりかえり実行が完了しました。"
+    "triggerOk": "振り返りランを開始しました。",
+    "agentTitle": "実行エージェント",
+    "agentDescription": "毎日の総振り返りは選択したエージェントの 1 回のランとして実行されます：期間内の完了 Issue を読み取り改善ドラフトを抽出します。Issue の作成もコメントも行いません。",
+    "agentLabel": "実行エージェント",
+    "agentPlaceholder": "エージェントを選択",
+    "agentArchivedSuffix": "（アーカイブ済み）",
+    "agentArchivedHint": "このエージェントはアーカイブ済みです。ランが失敗するため、他のエージェントを選択してください。",
+    "agentTriggerBlocked": "実行可能なエージェントが未設定です：上の設定でエージェントを選択してから実行してください。",
+    "emptyDescription": "定時または手動の実行後に、ここにランの記録が表示されます。"
   },
   "knowledge": {
     "title": "ナレッジライブラリ",

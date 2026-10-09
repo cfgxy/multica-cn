@@ -110,8 +110,9 @@ export default function Tasks() {
   // Workspace-scoped filters live in a module-global store while this screen
   // remounts per workspace — and switch-workspace writes the new id before
   // the new screen mounts, so a ref-guard hook skips the transition. The
-  // owning wsId is tracked inside the store; a real switch clears filters
-  // and keeps TAB/sort (item 12: 清筛选保 TAB).
+  // owning wsId is tracked inside the store; a real switch swaps to the
+  // target workspace's own remembered set (empty when it has none) and keeps
+  // TAB/sort (RUYI-531: 按空间记忆筛选，切回无需重选).
   useEffect(() => {
     useTasksViewStore.getState().syncWorkspace(wsId);
   }, [wsId]);
@@ -624,25 +625,23 @@ function ToolbarIconButton({
       style={{ position: "relative" }}
       className={extraLeftMargin ? "ml-2" : "ml-1.5"}
     >
+      {/* RUYI-554: active state reads from the button's brand tint — the
+          old corner blue dot is retired. */}
       <Button
         variant="outline"
         size="sm"
         onPress={onPress}
         accessibilityLabel={accessibilityLabel}
-        className="w-9 px-0"
+        className={`w-9 px-0 ${active ? "border-brand" : ""}`}
       >
         <Ionicons
           name={icon}
           size={16}
-          color={THEME[colorScheme].mutedForeground}
+          color={
+            active ? THEME[colorScheme].brand : THEME[colorScheme].mutedForeground
+          }
         />
       </Button>
-      {active ? (
-        <View
-          pointerEvents="none"
-          className="absolute top-1 right-1 size-1.5 rounded-full bg-brand"
-        />
-      ) : null}
     </View>
   );
 }

@@ -68,6 +68,32 @@ export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
   });
 }
 
+/**
+ * Splits the one flat `status=all` sessions cache into the two list views
+ * (RUYI-533): active chats fill the tab list, archived chats fill the
+ * Archived sub-view reached from the list's footer entry. Each view is
+ * sorted pinned-first / most-recent-activity. Mirrors web's local split in
+ * chat-thread-list.tsx (same single-cache design): the optimistic patch in
+ * useSetChatSessionArchived flips `status` in this cache, so a row moves
+ * between the views the same frame it's archived or restored — no extra
+ * fetch, and the two views can never show the same session twice.
+ */
+export function splitChatSessions(sessions: ChatSession[]): {
+  active: ChatSession[];
+  archived: ChatSession[];
+} {
+  const active: ChatSession[] = [];
+  const archived: ChatSession[] = [];
+  for (const s of sessions) {
+    if (s.status === "archived") archived.push(s);
+    else active.push(s);
+  }
+  return {
+    active: sortChatSessions(active),
+    archived: sortChatSessions(archived),
+  };
+}
+
 export function isTaskMessageTaskId(
   taskId: string | null | undefined,
 ): taskId is string {

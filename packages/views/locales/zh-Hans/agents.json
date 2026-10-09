@@ -1046,7 +1046,8 @@
       "fact_thinking": "思考强度",
       "forbidden_title": "无权访问此智能体",
       "runtime_unbound_banner": "该智能体尚未绑定运行时——绑定后才能运行。",
-      "forbidden_body": "你没有查看此智能体的权限，请其所有者与你共享后再试。"
+      "forbidden_body": "你没有查看此智能体的权限，请其所有者与你共享后再试。",
+      "instructions_empty": "暂无指令"
     },
     "run_history": {
       "load_more": "加载更多",

@@ -518,6 +518,8 @@
     },
     "leave_comment_placeholder": "댓글 남기기...",
     "send_tooltip": "보내기",
+    "mention_hint": "멤버 또는 Issue 언급",
+    "upload_image": "이미지 업로드",
     "trigger_source_issue_assignee": "담당자",
     "trigger_source_mention_agent": "@멘션",
     "trigger_source_mention_squad_leader": "Squad",

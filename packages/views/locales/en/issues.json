@@ -530,6 +530,8 @@
     },
     "leave_comment_placeholder": "Leave a comment...",
     "send_tooltip": "Send",
+    "mention_hint": "Mention someone or an issue",
+    "upload_image": "Upload image",
     "trigger_source_issue_assignee": "assignee",
     "trigger_source_mention_agent": "@mention",
     "trigger_source_mention_squad_leader": "squad",

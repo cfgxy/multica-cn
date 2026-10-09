@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { AgentRuntime } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enRuntimes from "../../locales/en/runtimes.json";
@@ -229,5 +229,112 @@ describe("VoiceInstanceSettingsCard", () => {
     expect(screen.getByText("Entire workspace (fixed)")).toBeTruthy();
     // Disabled flag readable in read-only mode.
     expect(screen.getByText("gemini-3.8-live")).toBeTruthy();
+  });
+
+  // RUYI-564 — the name input must echo the instance's display name
+  // (custom_name first, else name — runtimeDisplayName parity with the
+  // mobile RUYI-540 fix). Create-only instances carry no custom_name;
+  // seeding only from it left the field blank.
+  describe("name field echo", () => {
+    it("seeds the input with the instance name when no custom_name is set", () => {
+      renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      expect(nameInput.value).toBe("gemini-live-1");
+    });
+
+    it("seeds the input with the custom name when one is set", () => {
+      renderCard(makeVoiceRuntime({ custom_name: "My Voice" }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      expect(nameInput.value).toBe("My Voice");
+    });
+
+    it("re-seeds from the display name when the instance data changes", () => {
+      const { rerender } = renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      expect(nameInput.value).toBe("gemini-live-1");
+
+      // Background refetch / re-entry delivers the renamed instance.
+      rerender(
+        <QueryClientProvider client={new QueryClient()}>
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <VoiceInstanceSettingsCard
+              runtime={makeVoiceRuntime({ custom_name: "Renamed Voice" })}
+              canEdit
+            />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+      expect(nameInput.value).toBe("Renamed Voice");
+    });
+
+    it("saves the edit and echoes the new name on re-enter", async () => {
+      const first = renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      expect(nameInput.value).toBe("gemini-live-1");
+
+      fireEvent.change(nameInput, { target: { value: "Renamed Voice" } });
+      // The card renders several "Save" buttons (name / model / advanced);
+      // scope to the one in the name row.
+      fireEvent.click(
+        within(nameInput.closest("div") as HTMLElement).getByRole("button", {
+          name: "Save",
+        }),
+      );
+      await waitFor(() =>
+        expect(mockUpdateRuntime).toHaveBeenCalledWith("rt-voice-1", {
+          custom_name: "Renamed Voice",
+        }),
+      );
+
+      // Fresh mount against the refetched instance (exit + re-enter).
+      first.unmount();
+      renderCard(makeVoiceRuntime({ custom_name: "Renamed Voice" }));
+      expect(
+        (screen.getByLabelText("Name") as HTMLInputElement).value,
+      ).toBe("Renamed Voice");
+    });
+  });
+
+  // RUYI-564 候选 2 — the input seeds from the display name, so "still
+  // equals the seed" must count as unchanged: saving a create-only instance
+  // untouched used to materialize its fallback name into custom_name.
+  describe("name save semantics", () => {
+    const nameRowSaveButton = (nameInput: HTMLInputElement) =>
+      within(nameInput.closest("div") as HTMLElement).getByRole("button", {
+        name: "Save",
+      }) as HTMLButtonElement;
+
+    it("keeps the save disabled while a create-only instance's name matches its seed", () => {
+      renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      expect(nameInput.value).toBe("gemini-live-1");
+      const saveButton = nameRowSaveButton(nameInput);
+      expect(saveButton.disabled).toBe(true);
+      fireEvent.click(saveButton);
+      expect(mockUpdateRuntime).not.toHaveBeenCalled();
+    });
+
+    it("re-disables the save after an edit reverts to the seeded name", () => {
+      renderCard(makeVoiceRuntime({ custom_name: null }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      fireEvent.change(nameInput, { target: { value: "temp rename" } });
+      const saveButton = nameRowSaveButton(nameInput);
+      expect(saveButton.disabled).toBe(false);
+      fireEvent.change(nameInput, { target: { value: "gemini-live-1" } });
+      expect(saveButton.disabled).toBe(true);
+      expect(mockUpdateRuntime).not.toHaveBeenCalled();
+    });
+
+    it("still saves a renamed alias over an existing one (no regression)", async () => {
+      renderCard(makeVoiceRuntime({ custom_name: "My Voice" }));
+      const nameInput = screen.getByLabelText("Name") as HTMLInputElement;
+      fireEvent.change(nameInput, { target: { value: "Renamed Voice" } });
+      fireEvent.click(nameRowSaveButton(nameInput));
+      await waitFor(() =>
+        expect(mockUpdateRuntime).toHaveBeenCalledWith("rt-voice-1", {
+          custom_name: "Renamed Voice",
+        }),
+      );
+    });
   });
 });
