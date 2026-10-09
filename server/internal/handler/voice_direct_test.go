@@ -68,15 +68,49 @@ func TestVoiceDirectSession_StartReturnsProviderHandoff(t *testing.T) {
 		t.Fatalf("advanced = %v, want the instance metadata's advanced bag", payload.Advanced)
 	}
 
-	// The gate pass creates the same live_session row the gateway used to.
-	var status string
+	// The gate pass creates the same live_session row the gateway used to,
+	// tagged mode='direct' so the direct row is distinguishable from — and
+	// auditable against — gateway-relayed rows (RUYI-626 P1).
+	var status, mode string
 	if err := testPool.QueryRow(context.Background(),
-		`SELECT status FROM live_session WHERE id = $1`, payload.SessionID,
-	).Scan(&status); err != nil {
+		`SELECT status, mode FROM live_session WHERE id = $1`, payload.SessionID,
+	).Scan(&status, &mode); err != nil {
 		t.Fatalf("load live session: %v", err)
 	}
 	if status != "active" {
 		t.Fatalf("live_session status = %q, want active", status)
+	}
+	if mode != "direct" {
+		t.Fatalf("live_session mode = %q, want direct", mode)
+	}
+}
+
+// TestOpenVoiceSessionTagsGatewayMode pins the gateway side of the
+// live_session mode split (RUYI-626 P1): the shared gate chain creates the
+// row for the relay transport, and that row must stay 'gateway' — the value
+// migration 937 backfilled every pre-direct row with — so mode='direct'
+// remains a precise audit predicate for the direct-connect handoff.
+func TestOpenVoiceSessionTagsGatewayMode(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	credentialTestBox(t)
+	stubProbeTarget(t, http.StatusOK)
+	agentID, _ := seedUsableVoiceSetup(t, "Gateway Mode", "")
+
+	plan, hsErr := testHandler.openVoiceSession(context.Background(), testUserID, testWorkspaceID, parseUUID(agentID), voiceSessionModeGateway)
+	if hsErr != nil {
+		t.Fatalf("openVoiceSession rejected a usable setup: %+v", hsErr)
+	}
+
+	var mode string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT mode FROM live_session WHERE id = $1`, uuidToString(plan.session.ID),
+	).Scan(&mode); err != nil {
+		t.Fatalf("load live session: %v", err)
+	}
+	if mode != "gateway" {
+		t.Fatalf("live_session mode = %q, want gateway", mode)
 	}
 }
 
