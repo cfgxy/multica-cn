@@ -66,9 +66,10 @@ const (
 	RecycleTopologyNone       = "none"
 
 	// Scan kinds, recorded in evidence and filenames.
-	RecycleKindTaskDir  = "task-dir"
-	RecycleKindWorktree = "worktree"
-	RecycleKindBareRepo = "bare-cache"
+	RecycleKindTaskDir     = "task-dir"
+	RecycleKindWorktree    = "worktree"
+	RecycleKindBareRepo    = "bare-cache"
+	RecycleKindAgentBranch = "agent-branch"
 
 	// recycleEvidenceListCap bounds every predicate list in evidence. A human
 	// reading a blocked recycle needs the shape of the loss, not every sha of
@@ -445,6 +446,56 @@ func scanBareRoot(ctx context.Context, barePath string) RecycleRootScan {
 
 	if branches.Count > 0 {
 		scan.blocked(fmt.Sprintf("%d commit(s) on local branches are not on any remote", branches.Count))
+	}
+	return scan
+}
+
+// ScanAgentBranchForRecycle runs the stale-agent-branch predicate on one
+// agent/* branch of a bare repo cache (RUYI-617). The branch ref itself is
+// the deletion scope: a commit reachable from the branch but from no
+// remote-tracking ref would lose its last reference when the ref is deleted —
+// the same loss shape scanHeadRoot routes blocked as sole-reference — so the
+// verdict routes blocked and the maintenance loop keeps the branch for a
+// later tick.
+//
+// Unlike scanBareRoot this scan never fetches. The maintenance path runs on
+// every GC tick for every cache; a network call there would stall cleanup for
+// minutes per cache whenever the remote is slow or gone, and a fetch failure
+// would freeze branch cleanup entirely. The trade is safe because
+// remote-tracking refs can only understate the remote: repocache guarantees
+// the modern refs/remotes/origin/* layout (gitCloneBareContext migrates at
+// creation, gitFetchContext re-ensures on every sync), and under that refspec
+// a push from a linked worktree records refs/remotes/origin/<branch> in the
+// shared git dir. A stale snapshot — an external push, or a legacy cache not
+// yet migrated — can only over-count unpushed commits and retain the branch;
+// the next daemon fetch heals it, and eviction still runs the fetch-verified
+// scanBareRoot before any whole-cache loss is possible.
+func ScanAgentBranchForRecycle(ctx context.Context, barePath, branch string) RecycleRootScan {
+	scan := RecycleRootScan{Root: barePath, Topology: RecycleTopologyBare, Verdict: RecyclePass}
+
+	unpushedCmd := []string{"rev-list", "--count", branch, "--not", "--remotes"}
+	unpushed := RecyclePredicate{Name: "unpushed"}
+	out, code, err := runGitPredicate(ctx, barePath, unpushedCmd...)
+	if err != nil && code != 0 {
+		// No unborn-HEAD exemption here: a bare-cache branch always has
+		// commits to name, and a branch that vanished under us is gone by
+		// the next for-each-ref, so every failure fails closed for one tick.
+		scan.fail(&unpushed, unpushedCmd, code, out, err)
+		scan.Predicates = append(scan.Predicates, unpushed)
+		return scan.blocked("git scan failed; refusing to read a broken repo as an empty one")
+	}
+	unpushed.Command = strings.Join(append([]string{"git", "-C", barePath}, unpushedCmd...), " ")
+	unpushed.ExitCode = code
+	unpushed.Count, _ = strconv.Atoi(strings.TrimSpace(out))
+	if unpushed.Count > 0 {
+		list := RecyclePredicate{Name: "unpushed_list"}
+		fillList(ctx, barePath, &list, []string{"rev-list", branch, "--not", "--remotes"})
+		scan.Predicates = append(scan.Predicates, list)
+	}
+	scan.Predicates = append(scan.Predicates, unpushed)
+
+	if unpushed.Count > 0 {
+		scan.blocked(fmt.Sprintf("%d commit(s) would lose their last reference", unpushed.Count))
 	}
 	return scan
 }
