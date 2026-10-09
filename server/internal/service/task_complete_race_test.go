@@ -258,6 +258,13 @@ func TestTaskFailureClassifiers(t *testing.T) {
 		// Transient mid-stream provider disconnect (MUL-4910): retryable, and
 		// resume-safe so the retry continues the truncated conversation.
 		{reason: "agent_error.provider_network", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
+		// Transient agent-side failures (RUYI-601): a crashed agent subprocess
+		// or a provider 429/5xx continues on the original agent through the
+		// standard auto-retry budget before delegated-failure recovery hands
+		// coordination back — all resume-safe, no bespoke backoff.
+		{reason: "agent_error.process_failure", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
+		{reason: "agent_error.provider_capacity_or_rate_limit", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
+		{reason: "agent_error.provider_server_error", wantType: "agent_error", wantResumeOK: true, wantRetry: true},
 		{reason: "runtime_recovery", wantType: "runtime", wantResumeOK: true, wantRetry: true},
 		{reason: "iteration_limit", wantType: "agent_output", wantResumeOK: false, wantRetry: false},
 		{reason: "api_invalid_request", wantType: "agent_error", wantResumeOK: false, wantRetry: false},
@@ -266,6 +273,11 @@ func TestTaskFailureClassifiers(t *testing.T) {
 		// Missing terminal result errors classify to agent_error.unknown. Keep
 		// that deterministic upstream failure outside the auto-retry allowlist.
 		{reason: "agent_error.unknown", wantType: "agent_error", wantResumeOK: true, wantRetry: false},
+		// RUYI-601 negative locks: deterministic agent-side and platform-prep
+		// failures stay out of the allowlist — they reproduce identically on
+		// the next attempt, so only the delegated-failure recovery answers.
+		{reason: "agent_error.agent_timeout", wantType: "agent_error", wantResumeOK: true, wantRetry: false},
+		{reason: "agent_error.provider_quota_limit", wantType: "agent_error", wantResumeOK: true, wantRetry: false},
 	}
 
 	for _, tc := range cases {
