@@ -15,13 +15,16 @@
  * Directory-backed name resolution uses the mobile queries + core's pure
  * `buildActorNameResolver` — core's `useActorName` hook is NOT reused
  * because its query options call core's unconfigured api singleton.
+ *
+ * Option rows render the same index letters as DecisionBatchBar (RUYI-588)
+ * and strip the label's embedded "A：" prefix so the letter shows once.
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { buildActorNameResolver } from "@multica/core/workspace/hooks";
-import { upsertDecisionInCache } from "@multica/core/issues/decisions";
+import { stripDecisionOptionLetterPrefix, upsertDecisionInCache } from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { agentListOptions } from "@/data/queries/agents";
@@ -41,6 +44,8 @@ import { cn } from "@/lib/utils";
 const EMPTY_MEMBERS: { user_id: string; name: string }[] = [];
 const EMPTY_AGENTS: { id: string; name: string }[] = [];
 const EMPTY_SQUADS: { id: string; name: string }[] = [];
+
+const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
 
 export function DecisionCard({ decision }: { decision: IssueDecision }) {
   const { t } = useT("issues");
@@ -172,7 +177,15 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
                     isSelected ? "border-brand bg-brand" : "border-muted-foreground/50",
                   )}
                 />
-                <Text className="flex-1">{opt.label}</Text>
+                <Text
+                  className={cn(
+                    "shrink-0 font-medium",
+                    isSelected ? "text-brand" : "text-muted-foreground",
+                  )}
+                >
+                  {OPTION_LETTERS[idx] ?? idx + 1}
+                </Text>
+                <Text className="flex-1">{stripDecisionOptionLetterPrefix(opt.label)}</Text>
                 {recommended.has(idx) && (
                   <Text className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
                     {t("decisions.recommended", "Recommended")}
