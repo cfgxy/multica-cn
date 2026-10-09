@@ -34,6 +34,7 @@ import {
 } from "@multica/core/self-evolution";
 import type { RetrospectiveRun } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { runErrorLine } from "./retrospective-run-error";
 
 /**
  * The daily retrospective tab (RUYI-305 E3).
@@ -249,7 +250,9 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
           </Empty>
         ) : (
           <ul className="flex flex-col gap-2" data-testid="retrospective-runs">
-            {runsList.map((run) => (
+            {runsList.map((run) => {
+              const errorLine = runErrorLine(run, t);
+              return (
               <li key={run.id} className="rounded-md border p-3 text-body">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
@@ -269,13 +272,14 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   {t(($) => $.retrospective.merged)} {run.proposals_merged} ·{" "}
                   {t(($) => $.retrospective.duplicates)} {run.duplicates_skipped}
                 </div>
-                {run.error ? (
+                {errorLine ? (
                   <div className="text-destructive mt-1 text-caption" data-testid="retrospective-run-error">
-                    {t(($) => $.retrospective.errorLabel)}: {run.error}
+                    {t(($) => $.retrospective.errorLabel)}: {errorLine}
                   </div>
                 ) : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
