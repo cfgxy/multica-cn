@@ -469,6 +469,7 @@
     "voice_empty": "No voice-capable instance",
     "credential_configured": "Configured ✓",
     "credential_invalid": "Key invalid",
+    "credential_unreachable": "Can't verify",
     "credential_not_configured": "Not configured"
   },
   "conversation_starters": {

@@ -485,6 +485,7 @@
     "key_cleared": "Key removed",
     "key_update_failed": "Failed to update key",
     "probe_invalid": "Key saved, but the connectivity check failed (HTTP {{status}})",
+    "probe_unreachable": "Key saved, but connectivity could not be verified (target unreachable)",
     "model_label": "Model",
     "model_placeholder": "gemini-3.8-live",
     "advanced_label": "Advanced params (JSON)",
@@ -504,6 +505,7 @@
     "model_saved": "Model updated",
     "badge_configured": "Key configured",
     "badge_invalid": "Key invalid",
+    "badge_unreachable": "Can't verify",
     "badge_not_configured": "No key"
   },
   "voice_instance_create": {
@@ -518,6 +520,7 @@
     "creating": "Registering…",
     "created": "Voice instance registered",
     "created_probe_invalid": "Registered, but the connectivity check failed — check the API key",
+    "created_probe_unreachable": "Registered, but connectivity could not be verified — the target may be unreachable",
     "create_failed": "Failed to register the voice instance",
     "key_save_failed": "Registered, but saving the API key failed — add it from the instance settings"
   },
