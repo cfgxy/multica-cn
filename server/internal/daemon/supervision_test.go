@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -409,6 +410,54 @@ func TestReconcileSupervisedRunsLegacyStoreOwnership(t *testing.T) {
 	}
 	if _, err := mgr.ReadManifest(foreignRun); err == nil {
 		t.Fatalf("foreign run must never be adopted into this daemon's run store")
+	}
+}
+
+// RUYI-607 acceptance: kill/skip decisions must be visible in the daemon
+// log. A foreign-owner manifest sitting in THIS daemon's own run store with
+// its unit live is the exact shape the identity gate exists for — its task
+// is absent from the in-flight list, so without the gate the matrix would
+// issue StopOrphan and kill. One reconcile pass must log decision=foreign_skip
+// with a reason echoing the foreign owner, kill nothing, and leave the
+// manifest untouched.
+func TestReconcileSupervisedRunsForeignSkipLogged(t *testing.T) {
+	foreignTask := "01deb00f-0000-0000-0000-00000000beef"
+	foreignRun := "99990000-0000-0000-0000-000000000006"
+	foreignOwner := supervisor.OwnerIdentity("prod-profile")
+
+	d, mgr, _, killLog := newReconcileHarness(t, []string{"rt-1"}, func(string) (int, string) {
+		return http.StatusOK, `[{"id":"` + testTaskID + `"}]`
+	}, supervisor.UnitName(reconcileTestRunID), supervisor.UnitName(foreignRun))
+	var logs bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := mgr.WriteManifest(&supervisor.Manifest{
+		Version: 1, RunID: foreignRun, TaskID: foreignTask, Runtime: "claude",
+		Unit: supervisor.UnitName(foreignRun), State: supervisor.StateRunning,
+		StartedAt: time.Now().UTC(), Owner: foreignOwner,
+	}); err != nil {
+		t.Fatalf("seed foreign manifest: %v", err)
+	}
+
+	d.reconcileSupervisedRuns(context.Background())
+
+	if kills := killLogEntries(t, killLog); kills != nil {
+		t.Fatalf("foreign-owned live unit must never be killed on this daemon's startup reconcile, shim recorded %q", kills)
+	}
+	// Substring checks avoid quoting forms: slog TextHandler escapes inner
+	// quotes, so assert on pieces that survive any handler encoding.
+	logged := logs.String()
+	if !strings.Contains(logged, "decision=foreign_skip") {
+		t.Fatalf("reconcile pass must log the foreign_skip decision, log captured:\n%s", logged)
+	}
+	if !strings.Contains(logged, foreignRun) || !strings.Contains(logged, "manifest owner ") || !strings.Contains(logged, foreignOwner) {
+		t.Fatalf("foreign_skip log must name run %s and echo foreign owner %q in its reason, log captured:\n%s", foreignRun, foreignOwner, logged)
+	}
+	man, err := mgr.ReadManifest(foreignRun)
+	if err != nil || man == nil {
+		t.Fatalf("foreign manifest must survive the pass: %v (man %+v)", err, man)
+	}
+	if man.Exit != nil || man.State != supervisor.StateRunning {
+		t.Fatalf("foreign_skip must leave the manifest untouched, got %+v", man)
 	}
 }
 
