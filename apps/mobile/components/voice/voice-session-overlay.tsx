@@ -21,6 +21,9 @@ import {
   voiceFailureText,
   type VoiceFailure,
 } from "@/lib/voice/failure-text";
+import {
+  VoiceRejectionError,
+} from "@multica/core/voice";
 import { MobileVoiceSession } from "@/lib/voice/session";
 
 interface Props {
@@ -77,11 +80,12 @@ export function VoiceSessionOverlay({
     });
     sessionRef.current = session;
     session.start().catch((error: Error) => {
-      // 权限被拒给专属引导；其余哨兵（平台无原生模块、本地无凭据、
-      // WS 建连失败）一律走通用降级文案 —— 文本发送不受影响。
+      // 权限被拒给专属引导；带类型化拒绝的失败（服务端 §4.4 闸门 409、
+      // provider 不可达）已由 onDegrade 记录精确文案，这里不覆盖；其余
+      // 哨兵一律走通用降级文案 —— 文本发送不受影响。
       if (error.message === "VOICE_PERMISSION_DENIED") {
         setFailure({ kind: "permission" });
-      } else {
+      } else if (!(error instanceof VoiceRejectionError)) {
         setFailure({ kind: "rejection", rejection: null });
       }
       setPhase("failed");

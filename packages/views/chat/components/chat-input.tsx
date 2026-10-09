@@ -190,6 +190,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const { t } = useT("chat");
   const { t: tEditor } = useT("editor");
+  const { t: tVoice } = useT("voice");
   // Warm the workspace skill library so the `/` skill picker reads the full
   // list instead of whatever the active agent happens to have attached
   // (RUYI-288). Same prefetch the issue comment composer does.
@@ -605,7 +606,11 @@ export function ChatInput({
   // targets the bound agent through the shared 425 chain; failures surface in
   // the overlay below and never touch drafts or `submit`.
   const voice = useVoiceSession({ agentId: agentId ?? null });
-  const voiceEligible =
+  // RUYI-626 stage 1: the direct-connect path ships mobile-only, so the
+  // desktop/web entry renders as a disabled mic that says so explicitly —
+  // it must neither start the retired relay path nor fail silently.
+  const voiceEligible = false;
+  const voiceSlot =
     !!agentId &&
     hasNothingToSend &&
     !isRunning &&
@@ -768,8 +773,13 @@ export function ChatInput({
           </div>
         )}
         <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
-          {voiceEligible ? (
-            <VoiceButton onStart={voice.start} />
+          {voiceSlot ? (
+            <VoiceButton
+              onStart={voice.start}
+              disabledReason={
+                voiceEligible ? null : tVoice(($) => $.button.disabled_stage1)
+              }
+            />
           ) : (
           <SubmitButton
             onClick={submit}

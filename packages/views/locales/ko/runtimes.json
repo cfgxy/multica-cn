@@ -488,7 +488,12 @@
     "model_saved": "모델이 업데이트되었습니다",
     "badge_configured": "구성됨 ✓",
     "badge_invalid": "키 무효",
-    "badge_not_configured": "미구성"
+    "badge_not_configured": "미구성",
+    "probe_test": "연결 테스트",
+    "probe_running": "테스트 중…",
+    "probe_ok": "연결 성공 — 이 기기에서 이 키를 사용할 수 있습니다",
+    "probe_unreachable": "이 기기에서 Google에 연결할 수 없습니다 — 네트워크를 확인하세요. 키가 잘못되었다는 뜻은 아닙니다.",
+    "key_saved_unreachable": "키는 저장되었지만 이 기기에서 Google에 연결해 확인하지 못했습니다 — 이 네트워크에서는 음성이 작동하지 않을 수 있습니다"
   },
   "voice_instance_create": {
     "action": "음성 인스턴스 추가",
@@ -503,7 +508,8 @@
     "created": "음성 인스턴스가 등록되었습니다",
     "created_probe_invalid": "등록되었지만 연결 확인에 실패했습니다. API 키를 확인하세요",
     "create_failed": "음성 인스턴스 등록 실패",
-    "key_save_failed": "등록되었지만 API 키 저장에 실패했습니다. 인스턴스 설정에서 추가하세요"
+    "key_save_failed": "등록되었지만 API 키 저장에 실패했습니다. 인스턴스 설정에서 추가하세요",
+    "created_unreachable": "등록되었지만 이 기기에서 Google에 연결해 키를 확인하지 못했습니다 — 이 네트워크에서는 음성이 작동하지 않을 수 있습니다"
   },
   "mobile": {
     "list_loading": "불러오는 중…",
