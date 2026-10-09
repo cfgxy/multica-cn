@@ -18,8 +18,11 @@ const LOCALES = { en, "zh-Hans": zhHans, ja, ko } as const;
 const expectedKeys = Object.values(RUN_ERROR_I18N_KEYS).toSorted();
 const ISSUE_ID_CODES = new Set(["report_out_of_scope", "draft_out_of_scope"]);
 
-function phraseOf(locale: Record<string, unknown>, key: string): unknown {
-  return (locale.retrospective as Record<string, unknown>)?.run_errors?.[key];
+function phraseOf(locale: unknown, key: string): unknown {
+  const runErrors = (
+    locale as { retrospective?: { run_errors?: Record<string, unknown> } }
+  ).retrospective?.run_errors;
+  return runErrors?.[key];
 }
 
 describe("retrospective run error i18n parity across all 4 locales", () => {
@@ -34,9 +37,8 @@ describe("retrospective run error i18n parity across all 4 locales", () => {
 
   it("keeps every reason phrase and the unknown-code fallback non-empty", () => {
     for (const [name, locale] of Object.entries(LOCALES)) {
-      const fallback = (locale.retrospective as Record<string, unknown>)[
-        RUN_ERROR_FALLBACK_KEY.split(".")[1]
-      ];
+      const fallbackKey = RUN_ERROR_FALLBACK_KEY.split(".")[1] ?? "";
+      const fallback = (locale.retrospective as Record<string, unknown>)[fallbackKey];
       expect(fallback, `${name}: ${RUN_ERROR_FALLBACK_KEY} missing`).toBeDefined();
       expect(typeof fallback, `${name}: ${RUN_ERROR_FALLBACK_KEY} not a string`).toBe("string");
       expect(String(fallback).length, `${name}: fallback is empty`).toBeGreaterThan(0);
