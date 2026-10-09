@@ -489,7 +489,7 @@
   },
   "retrospective": {
     "title": "每日总复盘",
-    "description": "底座内置定时任务读取窗口内已完成 Issue 的真实执行内容，提炼 Prompt 改进草案批量入立法池。运行不产生任何 Issue 评论。",
+    "description": "选定一个执行智能体：由它的一轮 Run 定时读取窗口内已完成 Issue 的真实执行内容，提炼 Prompt 改进草案批量入立法池。运行全程不创建 Issue、不产生任何 Issue 评论。",
     "enabled": "启用定时运行",
     "includeInReview": "同时扫描 in_review 的 Issue",
     "windowDays": "回看窗口（天）",
@@ -509,9 +509,16 @@
     "duplicates": "去重跳过",
     "errorLabel": "错误",
     "empty": "还没有运行记录。",
-    "llmUnavailable": "LLM 未配置——运行会记录一条指明缺失配置的失败记录。",
     "saveOk": "总复盘配置已保存。",
-    "triggerOk": "总复盘运行已结束。"
+    "triggerOk": "总复盘运行已启动。",
+    "agentTitle": "执行智能体",
+    "agentDescription": "每日总复盘由所选智能体的一轮 Run 执行：读取回看窗口内已完成 Issue 并提炼改进草案，全程不创建 Issue、不产生评论。",
+    "agentLabel": "执行智能体",
+    "agentPlaceholder": "选择智能体",
+    "agentArchivedSuffix": "（已归档）",
+    "agentArchivedHint": "该智能体已归档；请改选其他智能体，否则运行会失败。",
+    "agentTriggerBlocked": "未配置可用的执行智能体：请先在上方配置中选择一个智能体再运行。",
+    "emptyDescription": "定时或手动触发后，这里会显示每次运行的记录。"
   },
   "knowledge": {
     "title": "知识库",
