@@ -17,16 +17,18 @@
  * Manual mode: `ManualCreatePanel` (the original form, extracted verbatim).
  * Smart mode: `QuickCreatePanel` (web AgentCreatePanel counterpart).
  */
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Text } from "@/components/ui/text";
 import { ManualCreatePanel } from "@/components/issue/manual-create-panel";
 import { QuickCreatePanel } from "@/components/issue/quick-create-panel";
+import type { QuickCreateEditSeed } from "@/lib/quick-create-edit";
 import {
   seedDraftAssigneeFromMemory,
   useNewIssueDraftStore,
 } from "@/data/stores/new-issue-draft-store";
+import { takeNewIssuePrefill } from "@/data/stores/new-issue-prefill-store";
 import { useQuickCreatePrefsStore } from "@/data/stores/quick-create-prefs-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
@@ -37,6 +39,14 @@ export default function NewIssueModal() {
   const setLastMode = useQuickCreatePrefsStore((s) => s.setLastMode);
   const resetDraft = useNewIssueDraftStore((s) => s.reset);
   const { t } = useT("common");
+  // RUYI-605: one-shot seed from the inbox quick-create outcome detail
+  // ("edit in the full form"). Mirrors web's create-issue registry entry:
+  // that open lands in the manual form (`initialMode="manual"`) without
+  // touching the remembered mode preference, so the override below applies
+  // to this visit only and the first tab switch falls back to `lastMode`.
+  const [prefill, setPrefill] = useState<QuickCreateEditSeed | null>(null);
+  const [manualModeOverride, setManualModeOverride] = useState(false);
+  const prefillTakenRef = useRef(false);
 
   // Reset before child passive effects seed Smart actor memory. Both panels
   // still share one draft for the rest of this visit.
@@ -44,20 +54,43 @@ export default function NewIssueModal() {
     resetDraft();
   }, [resetDraft]);
 
+  // Consume the prefill AFTER the reset above (layout effects run in
+  // declaration order) so the seed lands in a clean draft, and BEFORE paint
+  // so the manual panel with the seeded description is the first frame.
+  useLayoutEffect(() => {
+    const taken = takeNewIssuePrefill();
+    if (!taken) return;
+    if (taken.agentId) {
+      prefillTakenRef.current = true;
+      useNewIssueDraftStore.getState().setAssignee({
+        type: "agent",
+        id: taken.agentId,
+      });
+    }
+    setPrefill(taken);
+    setManualModeOverride(true);
+  }, []);
+
   useEffect(() => {
     // RUYI-79 web parity: prefill the assignee with the last one submitted
     // from this server × workspace. The version guard prevents a delayed
     // AsyncStorage read from replacing a picker choice made after this reset.
-    const assigneeVersion = useNewIssueDraftStore.getState().assigneeVersion;
-    const { activeServerId } = useServerStore.getState();
-    const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
-    if (activeServerId && slug) {
-      void seedDraftAssigneeFromMemory(activeServerId, slug, assigneeVersion);
+    // An inbox prefill (above) skips the memory seed — the explicit agent
+    // candidate is the user's recovery path, not a remembered default.
+    if (!prefillTakenRef.current) {
+      const assigneeVersion = useNewIssueDraftStore.getState().assigneeVersion;
+      const { activeServerId } = useServerStore.getState();
+      const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
+      if (activeServerId && slug) {
+        void seedDraftAssigneeFromMemory(activeServerId, slug, assigneeVersion);
+      }
     }
     return () => {
       resetDraft();
     };
   }, [resetDraft]);
+
+  const mode = manualModeOverride ? "manual" : lastMode;
 
   return (
     <View className="flex-1 bg-background">
@@ -66,8 +99,11 @@ export default function NewIssueModal() {
           (behavior="padding" twice would double-offset). */}
       <View className="px-4 pt-3 pb-1">
         <Tabs
-          value={lastMode}
-          onValueChange={(v) => setLastMode(v as "smart" | "manual")}
+          value={mode}
+          onValueChange={(v) => {
+            setManualModeOverride(false);
+            setLastMode(v as "smart" | "manual");
+          }}
         >
           <TabsList className="w-full">
             <TabsTrigger value="smart" className="flex-1">
@@ -79,7 +115,11 @@ export default function NewIssueModal() {
           </TabsList>
         </Tabs>
       </View>
-      {lastMode === "smart" ? <QuickCreatePanel /> : <ManualCreatePanel />}
+      {mode === "smart" ? (
+        <QuickCreatePanel />
+      ) : (
+        <ManualCreatePanel initialDescription={prefill?.description} />
+      )}
     </View>
   );
 }
