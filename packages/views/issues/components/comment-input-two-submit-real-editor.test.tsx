@@ -10,8 +10,7 @@
 // swap lands, which is exactly the segment the QA orphan lives in.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { UploadResult } from "@multica/core/hooks/use-file-upload";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import type { Attachment } from "@multica/core/types";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import { setCurrentWorkspace } from "@multica/core/platform";
@@ -153,9 +152,10 @@ afterEach(() => {
 
 function renderComposer() {
   const onSubmit = vi.fn(
-    (content: string, attachmentIds?: string[]) =>
-      submissions.push({ content, attachmentIds: attachmentIds?.length ? attachmentIds : undefined }) &&
-      Promise.resolve(`comment-${submissions.length}` as string | boolean),
+    (content: string, attachmentIds?: string[]) => {
+      submissions.push({ content, attachmentIds: attachmentIds?.length ? attachmentIds : undefined });
+      return Promise.resolve(`comment-${submissions.length}`);
+    },
   );
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = renderWithI18n(
