@@ -302,8 +302,13 @@ export function ModelConfigCard({
               {t(($) => $.modelConfig.restoreDefault)}
             </Button>
           ) : null}
-          {resolved.status === "error" ? (
-            <Button size="sm" variant="outline" disabled={validate.isPending} onClick={revalidateStored}>
+          {override?.base_url && override?.model ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={validate.isPending}
+              onClick={revalidateStored}
+            >
               {t(($) => $.modelConfig.revalidate)}
             </Button>
           ) : null}
