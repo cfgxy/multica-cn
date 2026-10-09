@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { ComponentProps } from "react";
+import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -20,6 +20,7 @@ import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useSquadsRealtime } from "@/data/realtime/use-squads-realtime";
 import { useDecisionInboxRealtime } from "@/data/realtime/use-decision-inbox-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
+import { modalStackedSheetOptions } from "@/lib/modal-stacked-sheet-options";
 import { shouldResolveWorkspaceMembership } from "@/lib/workspace-route";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
@@ -51,7 +52,7 @@ import { useChatAgentRequestResetOnWorkspaceChange } from "@/data/stores/chat-ag
  *   - `headerShown: false` — every sheet body draws its own header (title
  *     + optional right action). The native Stack header would double up.
  */
-const SHEET_OPTIONS: ComponentProps<typeof Stack.Screen>["options"] = {
+const SHEET_OPTIONS: NativeStackNavigationOptions = {
   presentation: "formSheet",
   sheetGrabberVisible: true,
   sheetAllowedDetents: [0.6, 0.95],
@@ -369,51 +370,58 @@ export default function WorkspaceLayout() {
           name="project/[id]/add-resource"
           options={SHEET_OPTIONS}
         />
-        {/* New-issue draft formSheet pickers — stacked on top of the
-            new-issue.tsx Stack.Screen (which is itself a `modal`).
-            Expo Router 55 / RN Screens 4 support a formSheet pushed on top
-            of a modal in the same Stack. */}
+        {/* New-issue draft pickers — stacked on top of the new-issue.tsx
+            Stack.Screen (which is itself a `modal`). iOS presents them as
+            formSheets; Android swaps each one to a full-screen modal —
+            modalStackedSheetOptions explains why the nested
+            formSheet-on-modal path is avoided on Android (RUYI-623). */}
         <Stack.Screen
           name="new-issue-picker/status"
-          options={SHEET_OPTIONS}
+          options={modalStackedSheetOptions(SHEET_OPTIONS, Platform.OS)}
         />
         <Stack.Screen
           name="new-issue-picker/priority"
-          options={SHEET_OPTIONS}
+          options={modalStackedSheetOptions(SHEET_OPTIONS, Platform.OS)}
         />
         <Stack.Screen
           name="new-issue-picker/assignee"
-          options={{
-            ...SHEET_OPTIONS,
-            headerShown: true,
-            title: i18n.t("issues:actions.assignee", "Assignee"),
-          }}
+          options={modalStackedSheetOptions(
+            {
+              ...SHEET_OPTIONS,
+              headerShown: true,
+              title: i18n.t("issues:actions.assignee", "Assignee"),
+            },
+            Platform.OS,
+          )}
         />
         {/* 同 issue/[id]/picker/project。sheetInitialDetentIndex 见彼处
             RUYI-476 注释：长列表选择器以最大 detent 打开，避免 detent
             切换抢走列表的纵向手势。 */}
         <Stack.Screen
           name="new-issue-picker/project"
-          options={{
-            ...SHEET_OPTIONS,
-            headerShown: true,
-            title: i18n.t("layout:tab.project", "Project"),
-            sheetInitialDetentIndex: "last",
-          }}
+          options={modalStackedSheetOptions(
+            {
+              ...SHEET_OPTIONS,
+              headerShown: true,
+              title: i18n.t("layout:tab.project", "Project"),
+              sheetInitialDetentIndex: "last" as const,
+            },
+            Platform.OS,
+          )}
         />
         <Stack.Screen
           name="new-issue-picker/due-date"
-          options={SHEET_OPTIONS}
+          options={modalStackedSheetOptions(SHEET_OPTIONS, Platform.OS)}
         />
-        {/* New-project draft formSheet pickers — same pattern as
+        {/* New-project draft pickers — same pattern as
             new-issue-picker/*. Stacked on top of `project/new` (a modal). */}
         <Stack.Screen
           name="new-project-picker/status"
-          options={SHEET_OPTIONS}
+          options={modalStackedSheetOptions(SHEET_OPTIONS, Platform.OS)}
         />
         <Stack.Screen
           name="new-project-picker/priority"
-          options={SHEET_OPTIONS}
+          options={modalStackedSheetOptions(SHEET_OPTIONS, Platform.OS)}
         />
         {/* Shared filter sheet for My Issues and the workspace Issues page —
             chooses the right view-store via `?scope=my|all` URL param. */}
@@ -604,14 +612,17 @@ export default function WorkspaceLayout() {
             mirrors new-issue-picker/assignee. */}
         <Stack.Screen
           name="new-issue-picker/actor"
-          options={{
-            ...SHEET_OPTIONS,
-            headerShown: true,
-            title: i18n.t(
-              "modals:create_issue.agent.created_by",
-              "Created by",
-            ),
-          }}
+          options={modalStackedSheetOptions(
+            {
+              ...SHEET_OPTIONS,
+              headerShown: true,
+              title: i18n.t(
+                "modals:create_issue.agent.created_by",
+                "Created by",
+              ),
+            },
+            Platform.OS,
+          )}
         />
         <Stack.Screen
           name="search"
