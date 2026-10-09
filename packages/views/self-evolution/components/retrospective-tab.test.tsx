@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { it, expect, vi, afterEach, beforeEach } from "vitest";
+import { it, describe, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -58,7 +58,14 @@ vi.mock("@multica/core/workspace/queries", () => ({
 
 vi.mock("@multica/core/api", () => ({
   ApiError: TestApiError,
-  clientErrorMessage: (e: unknown) => (e instanceof Error ? e.message : undefined),
+  // Mirrors the real clientErrorMessage contract (MUL-6472): the server's
+  // message is worth rendering only for 4xx — handlers write those for the
+  // user. A 5xx message is internal detail and must fall through to the
+  // caller's localized fallback. Mocking it as a full passthrough made the
+  // non-409 assertion below pass against behavior the real client never
+  // has (RUYI-561).
+  clientErrorMessage: (e: unknown) =>
+    e instanceof TestApiError && e.status >= 400 && e.status < 500 ? e.message : undefined,
   api: {
     getRetrospectiveConfig: () => Promise.resolve(state.config),
     updateRetrospectiveConfig: (patch: unknown) => {
@@ -195,13 +202,15 @@ it("toasts the localized blocker, not the server sentence, on a 409 run rejectio
   );
 });
 
-it("keeps the raw server message for non-409 run failures", async () => {
+it("falls back to the localized label for non-409 run failures", async () => {
   state.triggerResult = rejected(new TestApiError("retrospective queue busy", 500));
   renderTab();
   fireEvent.click(await screen.findByRole("button", { name: "Run now" }));
 
   await waitFor(() => expect(vi.mocked(toast.error)).toHaveBeenCalled());
-  expect(vi.mocked(toast.error)).toHaveBeenCalledWith("retrospective queue busy");
+  // A 5xx message is internal detail (clientErrorMessage returns undefined
+  // for it), so the toast shows the component's own localized fallback.
+  expect(vi.mocked(toast.error)).toHaveBeenCalledWith("Error");
 });
 
 it("toasts the started wording on an accepted run trigger", async () => {
@@ -210,4 +219,78 @@ it("toasts the started wording on an accepted run trigger", async () => {
 
   await waitFor(() => expect(vi.mocked(toast.success)).toHaveBeenCalled());
   expect(vi.mocked(toast.success)).toHaveBeenCalledWith("Retrospective run started.");
+});
+
+function run(overrides: Partial<RetrospectiveRun> = {}): RetrospectiveRun {
+  return {
+    id: "run-1",
+    status: "failed",
+    trigger: "schedule",
+    window_start: "2026-10-01T00:00:00Z",
+    window_end: "2026-10-08T00:00:00Z",
+    issues_scanned: 2,
+    issues_analyzed: 0,
+    proposals_created: 0,
+    proposals_merged: 0,
+    duplicates_skipped: 0,
+    error: "",
+    detail: null,
+    created_at: "2026-10-08T00:00:00Z",
+    ...overrides,
+  };
+}
+
+// The run row's failure verdict (RUYI-561): the server persists a stable
+// reason code on detail.reason — the UI localizes it in the viewer's
+// language. What a mount proves that the parity test cannot: the rendered
+// line, the whitelisted param interpolation, and the fallbacks that keep
+// internal and legacy copy off the screen.
+describe("run failure reason rendering", () => {
+  it("localizes a known reason code from the run detail", async () => {
+    state.runs = [run({ detail: { reason: { code: "agent_archived" } } })];
+    renderTab();
+
+    const line = await screen.findByTestId("retrospective-run-error");
+    expect(line).toHaveTextContent(
+      "Error: The configured execution agent is archived: pick another agent in the configuration above, then save.",
+    );
+  });
+
+  it("interpolates the whitelisted issue id on out-of-scope rejections", async () => {
+    state.runs = [
+      run({ detail: { reason: { code: "report_out_of_scope", issue_id: "9f1c-abc" } } }),
+    ];
+    renderTab();
+
+    const line = await screen.findByTestId("retrospective-run-error");
+    expect(line).toHaveTextContent("9f1c-abc");
+    expect(line).not.toHaveTextContent("{{issue_id}}");
+  });
+
+  it("falls back to generic copy for an unknown reason code", async () => {
+    state.runs = [run({ detail: { reason: { code: "reason_from_a_newer_server" } } })];
+    renderTab();
+
+    const line = await screen.findByTestId("retrospective-run-error");
+    expect(line).toHaveTextContent("This run failed");
+    expect(line).not.toHaveTextContent("reason_from_a_newer_server");
+  });
+
+  it("never renders the legacy raw error text", async () => {
+    state.runs = [run({ error: "扫描窗口失败: pq: relation does not exist" })];
+    renderTab();
+
+    const line = await screen.findByTestId("retrospective-run-error");
+    expect(line).toHaveTextContent("This run failed");
+    expect(line).not.toHaveTextContent("扫描窗口失败");
+    expect(line).not.toHaveTextContent("relation does not exist");
+  });
+
+  it("shows no error line for a succeeded run", async () => {
+    state.runs = [run({ status: "succeeded", detail: { analyzed_issue_ids: ["x"] } })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-runs");
+    expect(screen.queryByTestId("retrospective-run-error")).toBeNull();
+  });
 });

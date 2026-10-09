@@ -183,6 +183,28 @@ func runRecord(t *testing.T, wsID string) (status, errMsg, detail string) {
 	return status, errMsg, detail
 }
 
+// runReasonOf reads the latest run's structured failure verdict. Fails the
+// test when the run carries no reason — failure paths must always write one
+// (RUYI-561), and the legacy `error` text column must stay empty on rows
+// this code finishes.
+func runReasonOf(t *testing.T, wsID string) runReason {
+	t.Helper()
+	_, errMsg, detail := runRecord(t, wsID)
+	var d struct {
+		Reason *runReason `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(detail), &d); err != nil {
+		t.Fatalf("parse run detail %s: %v", detail, err)
+	}
+	if d.Reason == nil || d.Reason.Code == "" {
+		t.Fatalf("run has no structured reason (error column %q, detail %s)", errMsg, detail)
+	}
+	if errMsg != "" {
+		t.Fatalf("error column must stay empty on coded failures, got %q", errMsg)
+	}
+	return *d.Reason
+}
+
 func counts(t *testing.T, wsID string) (issues, comments, proposals int) {
 	t.Helper()
 	if err := testPool.QueryRow(context.Background(), `
@@ -286,8 +308,9 @@ func TestRunWorkspaceEmptyWindowFinishesImmediately(t *testing.T) {
 }
 
 // TestRunWorkspaceNoAgent: a legacy row enabled without an agent (only
-// possible before migration 935) records a failed run and reports
-// ErrNoAgent instead of dispatching anything.
+// possible before migration 935) records a failed run carrying the
+// actionable agent_not_configured reason and reports ErrNoAgent instead of
+// dispatching anything.
 func TestRunWorkspaceNoAgent(t *testing.T) {
 	wsID, _ := retroFixture(t)
 	_ = retroIssue(t, wsID, "有活干但没人干", "")
@@ -304,9 +327,52 @@ func TestRunWorkspaceNoAgent(t *testing.T) {
 	if n := len(*calls); n != 0 {
 		t.Fatalf("no agent must not enqueue, got %d calls", n)
 	}
-	status, errMsg, _ := runRecord(t, wsID)
-	if status != "failed" || errMsg == "" {
-		t.Fatalf("run should fail with a reason, got %q / %q", status, errMsg)
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run should fail, got %q", status)
+	}
+	if reason := runReasonOf(t, wsID); reason.Code != ReasonAgentNotConfigured || reason.IssueID != "" {
+		t.Fatalf("want actionable %s reason without params, got %+v", ReasonAgentNotConfigured, reason)
+	}
+}
+
+// TestRunWorkspaceAgentGateReasons: each way a configured agent can become
+// unusable records its own actionable reason on the failed run — missing,
+// archived, runtime-less — so the UI can name the exact fix.
+func TestRunWorkspaceAgentGateReasons(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate string // SQL making the configured agent unusable
+		want   string
+	}{
+		{"configured agent vanished", `UPDATE retrospective_config SET agent_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id = $1`, ReasonAgentMissing},
+		{"configured agent archived", `UPDATE agent SET archived_at = now() WHERE id = (SELECT agent_id FROM retrospective_config WHERE workspace_id = $1)`, ReasonAgentArchived},
+		{"configured agent lost its runtime", `UPDATE agent SET runtime_id = NULL WHERE id = (SELECT agent_id FROM retrospective_config WHERE workspace_id = $1)`, ReasonAgentRuntimeMissing},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wsID, _ := retroFixture(t)
+			_ = retroIssue(t, wsID, "有人干但干不了", "")
+			if _, err := testPool.Exec(context.Background(), tc.mutate, wsID); err != nil {
+				t.Fatalf("mutate agent: %v", err)
+			}
+			runner, calls := newTestRunner(t)
+
+			_, err := runner.RunWorkspace(context.Background(), wsID, "schedule")
+			if err == nil || err.Error() != ErrNoAgent.Error() {
+				t.Fatalf("expected ErrNoAgent, got %v", err)
+			}
+			if n := len(*calls); n != 0 {
+				t.Fatalf("unusable agent must not enqueue, got %d calls", n)
+			}
+			status, _, _ := runRecord(t, wsID)
+			if status != "failed" {
+				t.Fatalf("run should fail, got %q", status)
+			}
+			if reason := runReasonOf(t, wsID); reason.Code != tc.want || reason.IssueID != "" {
+				t.Fatalf("want %s without params, got %+v", tc.want, reason)
+			}
+		})
 	}
 }
 
@@ -376,15 +442,23 @@ func TestProcessTaskTerminalRejectsOutOfScopeIssues(t *testing.T) {
 		ID:      util.MustParseUUID(stubTaskID),
 		Context: (*calls)[0].params.Context,
 	}
-	_, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(inScope+issueSuffixStub(), "越权条款"), "")
+	outOfScope := inScope + issueSuffixStub()
+	_, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(outOfScope, "越权条款"), "")
 	// The rejection is the run's verdict, recorded on the run row — not a
 	// processing error, same contract as the taskErr path.
 	if err != nil {
 		t.Fatalf("rejection should record a failed run, not error: %v", err)
 	}
-	status, errMsg, _ := runRecord(t, wsID)
-	if status != "failed" || !strings.Contains(errMsg, "回看窗口之外") {
-		t.Fatalf("run should fail with the out-of-scope reason, got %q / %q", status, errMsg)
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run should fail with the out-of-scope verdict, got %q", status)
+	}
+	reason := runReasonOf(t, wsID)
+	if reason.Code != ReasonReportOutOfScope {
+		t.Fatalf("want %s, got %+v", ReasonReportOutOfScope, reason)
+	}
+	if reason.IssueID != outOfScope {
+		t.Fatalf("reason must carry the offending issue id %q, got %+v", outOfScope, reason)
 	}
 	_, _, proposalsAfter := counts(t, wsID)
 	if proposalsAfter != proposalsBefore {
@@ -481,9 +555,14 @@ func TestProcessTaskTerminalFailurePath(t *testing.T) {
 	if _, err := runner.ProcessTaskTerminal(context.Background(), task, "", "runtime crashed mid-run"); err != nil {
 		t.Fatalf("ProcessTaskTerminal: %v", err)
 	}
-	status, errMsg, _ := runRecord(t, wsID)
-	if status != "failed" || errMsg == "" {
-		t.Fatalf("run should record the failure, got %q / %q", status, errMsg)
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run should record the failure, got %q", status)
+	}
+	// The daemon's raw failure text must stay out of the run row (RUYI-561):
+	// the coded reason is all the UI gets.
+	if reason := runReasonOf(t, wsID); reason.Code != ReasonAgentRunFailed || reason.IssueID != "" {
+		t.Fatalf("want %s without params, got %+v", ReasonAgentRunFailed, reason)
 	}
 	_, _, proposalsAfter := counts(t, wsID)
 	if proposalsAfter != proposalsBefore {
@@ -578,9 +657,12 @@ func TestReconcileStaleRuns(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("expected one reconciled run, got %d", n)
 	}
-	status, errMsg, _ := runRecord(t, wsID)
-	if status != "failed" || errMsg == "" {
-		t.Fatalf("stale run should be failed with a reason, got %q / %q", status, errMsg)
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("stale run should be failed, got %q", status)
+	}
+	if reason := runReasonOf(t, wsID); reason.Code != ReasonTaskNotCompleted || reason.IssueID != "" {
+		t.Fatalf("stale run should carry %s, got %+v", ReasonTaskNotCompleted, reason)
 	}
 }
 
