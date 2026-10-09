@@ -9,7 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import { api } from "@multica/core/api";
-import { patchDecisionInCache, stripDecisionOptionLetterPrefix } from "@multica/core/issues/decisions";
+import { decisionOptionDisplayLabel, patchDecisionInCache } from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -21,7 +21,8 @@ import { useT, useTimeAgo } from "../../i18n";
 // the card is the gate, the server is the authority.
 //
 // Option rows render the same index letters as DecisionBatchBar (RUYI-588)
-// and strip the label's embedded "A：" prefix so the letter shows once.
+// and strip the label's embedded letter prefix / trailing （推荐） marker
+// (decisionOptionDisplayLabel) so letter and badge each show once (RUYI-620).
 
 const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
 
@@ -149,7 +150,7 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
                 {OPTION_LETTERS[idx] ?? idx + 1}
               </span>
               <span className="min-w-0 flex-1 break-words">
-                {stripDecisionOptionLetterPrefix(opt.label)}
+                {decisionOptionDisplayLabel(opt.label)}
               </span>
               {recommended.has(idx) && (
                 <Badge variant="outline" className="shrink-0">
