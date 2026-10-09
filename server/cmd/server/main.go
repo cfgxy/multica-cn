@@ -25,6 +25,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/scheduler"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -757,8 +758,19 @@ func main() {
 	// RUYI-305 E3: the daily retrospective distills completed issues into
 	// Prompt legislation drafts. It writes only to the proposal pool and its
 	// own run records — never to issues — and is inert until a workspace
-	// owner enables it (retrospective_config).
-	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(pool, h.LLM, "")); err != nil {
+	// owner enables it (retrospective_config). RUYI-552 direction 3: each
+	// pass triggers the configured agent's single Run through the platform's
+	// own task queue (no server-side LLM calls); the completion hook and the
+	// scheduler's stale-run reconcile both feed the same runner, and
+	// first-terminal-verdict-wins keeps double reports harmless.
+	retroRunner := &retrospective.Runner{
+		DB:      pool,
+		Queries: queries,
+		Enqueue: h.RetrospectiveTaskEnqueuer(),
+	}
+	h.RetrospectiveRunner = retroRunner
+	h.TaskService.RetrospectiveTerminal = retroRunner.ProcessTaskTerminal
+	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(retroRunner)); err != nil {
 		slog.Warn("scheduler: failed to register prompt_retrospective job", "error", err)
 	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed

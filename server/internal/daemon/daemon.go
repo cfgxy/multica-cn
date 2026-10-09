@@ -7383,6 +7383,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ChatChannelType:                  task.ChatChannelType,
 		ChatChannelDeliversFiles:         task.ChatChannelDeliversFiles,
 		QuizPrompt:                       task.QuizPrompt,
+		RetrospectivePrompt:              task.RetrospectivePrompt,
 		AutopilotRunID:                   task.AutopilotRunID,
 		AutopilotID:                      task.AutopilotID,
 		AutopilotTitle:                   task.AutopilotTitle,
