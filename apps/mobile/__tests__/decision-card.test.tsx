@@ -135,6 +135,45 @@ beforeEach(() => {
 });
 
 describe("DecisionCard", () => {
+  // RUYI-588: the single card renders its own index letter per row — the
+  // same letter language as the batch bar (RUYI-471) — so cards whose labels
+  // no longer embed an "A：" prefix still show A/B/C/D.
+  it("renders an index letter per option row", async () => {
+    await renderCard(card());
+
+    expect(screen.getByText("A")).toBeTruthy();
+    expect(screen.getByText("B")).toBeTruthy();
+    expect(screen.getByText("Ship")).toBeTruthy();
+    expect(screen.getByText("Wait")).toBeTruthy();
+  });
+
+  // RUYI-575's guard, single-card side: labels written under the
+  // decision-numbering convention embed the letter itself ("A：…") — the
+  // card's own index letter must not double it.
+  it("strips the embedded letter prefix so each letter renders once", async () => {
+    await renderCard(
+      card({ options: [{ label: "A：立即发布" }, { label: "B：观察一周" }] }),
+    );
+
+    expect(screen.getByText("A")).toBeTruthy();
+    expect(screen.getByText("B")).toBeTruthy();
+    expect(screen.getByText("立即发布")).toBeTruthy();
+    expect(screen.getByText("观察一周")).toBeTruthy();
+    expect(screen.queryByText("A：立即发布")).toBeNull();
+    expect(screen.queryByText("B：观察一周")).toBeNull();
+  });
+
+  it("renders labels without a matching prefix form untouched", async () => {
+    await renderCard(
+      card({ options: [{ label: "A-type 优先" }, { label: "B超 声呐" }] }),
+    );
+
+    expect(screen.getByText("A")).toBeTruthy();
+    expect(screen.getByText("B")).toBeTruthy();
+    expect(screen.getByText("A-type 优先")).toBeTruthy();
+    expect(screen.getByText("B超 声呐")).toBeTruthy();
+  });
+
   it("renders the question, options and creator for an open single-select card", async () => {
     await renderCard(card({ recommended_indices: [1] }));
 
@@ -203,6 +242,7 @@ describe("DecisionCard", () => {
     );
 
     expect(screen.getByText("Answered")).toBeTruthy();
+    expect(screen.getByText("B")).toBeTruthy();
     expect(screen.queryByTestId("decision-submit")).toBeNull();
     expect(screen.queryByTestId("decision-cancel")).toBeNull();
     expect(optionState(1)).toMatchObject({ checked: true, disabled: true });
