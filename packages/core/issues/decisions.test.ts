@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { IssueDecision } from "../types";
-import { patchDecisionInCache, stripDecisionOptionLetterPrefix, upsertDecisionInCache } from "./decisions";
+import {
+  decisionOptionDisplayLabel,
+  patchDecisionInCache,
+  stripDecisionOptionLetterPrefix,
+  stripDecisionOptionRecommendedSuffix,
+  upsertDecisionInCache,
+} from "./decisions";
 
 function card(id: string, status: IssueDecision["status"] = "open"): IssueDecision {
   return {
@@ -118,5 +124,57 @@ describe("stripDecisionOptionLetterPrefix", () => {
     expect(stripDecisionOptionLetterPrefix("a：小写")).toBe("a：小写");
     expect(stripDecisionOptionLetterPrefix("方案 A：前缀不在开头")).toBe("方案 A：前缀不在开头");
     expect(stripDecisionOptionLetterPrefix("")).toBe("");
+  });
+
+  // RUYI-620: the numbering convention also degrades to "A 选项文本"
+  // (letter + space, half- or full-width) — that form double-numbers against
+  // the control's own index letter just like "A：…" does.
+  it("strips letter + space forms (half- and full-width)", () => {
+    expect(stripDecisionOptionLetterPrefix("A 方案一")).toBe("方案一");
+    expect(stripDecisionOptionLetterPrefix("B 继续观望")).toBe("继续观望");
+    expect(stripDecisionOptionLetterPrefix("C　方案三")).toBe("方案三");
+  });
+
+  // RUYI-620: A-led words and double letters followed by a space are
+  // content, not numbering — they must render untouched.
+  it("keeps A-led words and double letters untouched", () => {
+    expect(stripDecisionOptionLetterPrefix("A股龙头")).toBe("A股龙头");
+    expect(stripDecisionOptionLetterPrefix("AB 测试")).toBe("AB 测试");
+  });
+});
+
+// RUYI-620: the control renders the recommended badge from
+// recommended_indices, so a trailing "（推荐）" in the label text doubles it.
+// Only a terminating suffix is stripped — mid-label or leading occurrences
+// are content.
+describe("stripDecisionOptionRecommendedSuffix", () => {
+  it("strips trailing （推荐）/ (推荐) with optional padding", () => {
+    expect(stripDecisionOptionRecommendedSuffix("方案一（推荐）")).toBe("方案一");
+    expect(stripDecisionOptionRecommendedSuffix("方案一 (推荐)")).toBe("方案一");
+    expect(stripDecisionOptionRecommendedSuffix("方案一（推荐） ")).toBe("方案一");
+  });
+
+  it("keeps non-suffix occurrences untouched", () => {
+    expect(stripDecisionOptionRecommendedSuffix("（推荐）方案一")).toBe("（推荐）方案一");
+    expect(stripDecisionOptionRecommendedSuffix("方案一（推荐）备注")).toBe("方案一（推荐）备注");
+    expect(stripDecisionOptionRecommendedSuffix("推荐方案一")).toBe("推荐方案一");
+    expect(stripDecisionOptionRecommendedSuffix("方案一")).toBe("方案一");
+  });
+});
+
+// RUYI-620: the single display helper every render surface (issue card,
+// batch bar, mobile copies) calls — one place strips both the letter prefix
+// and the recommended suffix so the control's own letter and badge render
+// exactly once.
+describe("decisionOptionDisplayLabel", () => {
+  it("composes both strips for the render surfaces", () => {
+    expect(decisionOptionDisplayLabel("A 方案一（推荐）")).toBe("方案一");
+    expect(decisionOptionDisplayLabel("B：方案二")).toBe("方案二");
+    expect(decisionOptionDisplayLabel("方案三")).toBe("方案三");
+  });
+
+  it("keeps non-numbering, non-suffix labels verbatim", () => {
+    expect(decisionOptionDisplayLabel("A股龙头（推荐）")).toBe("A股龙头");
+    expect(decisionOptionDisplayLabel("AB 测试")).toBe("AB 测试");
   });
 });
