@@ -31,7 +31,7 @@ describe("agentTasksOptions", () => {
     mockListAgentTasks.mockResolvedValue([]);
     const options = agentTasksOptions("ws-1", "agent-1");
     expect(options.enabled).toBe(true);
-    return Promise.resolve(options.queryFn({ signal: undefined } as never)).then(
+    return Promise.resolve(options.queryFn?.({ signal: undefined } as never)).then(
       () => {
         expect(mockListAgentTasks).toHaveBeenCalledWith("agent-1", {
           signal: undefined,
