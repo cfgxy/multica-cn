@@ -35,7 +35,7 @@ jest.mock("@/data/auth-store", () => ({
 }));
 
 jest.mock("@/data/use-actor-name", () => ({
-  useActorLookup: () => ({ getName: () => "Agent A" }),
+  useActorLookup: () => ({ getName: () => "Agent A", getAvatarUrl: () => null }),
 }));
 
 // Interpolating stand-in for i18next so the short-id fallback renders its
