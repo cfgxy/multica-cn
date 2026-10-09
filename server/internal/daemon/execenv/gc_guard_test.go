@@ -250,6 +250,86 @@ func TestScanBareRoot_RemoteUnreachableFailsClosed(t *testing.T) {
 	}
 }
 
+// guardTestBareCache builds a bare cache with the daemon's modern
+// remote-tracking layout: origin configured with the refs/remotes/origin/*
+// fetch refspec and backfilled (gitCloneBareContext's contract). A plain
+// `git clone --bare` writes no fetch refspec at all, and without it pushes
+// from linked worktrees never record refs/remotes/origin/<branch> — the
+// comparison base ScanAgentBranchForRecycle reads would never see a push.
+func guardTestBareCache(t *testing.T) string {
+	t.Helper()
+	source := guardTestRepo(t)
+	bare := filepath.Join(t.TempDir(), "cache.git")
+	guardTestGit(t, "", "clone", "-q", "--bare", source, bare)
+	guardTestGit(t, bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	guardTestGit(t, bare, "fetch", "-q", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	return bare
+}
+
+// TestScanAgentBranch_PushedPassesUnpushedBlocks pins the branch guard's
+// routing (RUYI-617): a stale agent branch whose commits are all covered by
+// remote-tracking refs scans pass — today's cleanup proceeds — while a
+// branch holding a commit no remote-tracking ref reaches routes blocked
+// with the commit listed.
+func TestScanAgentBranch_PushedPassesUnpushedBlocks(t *testing.T) {
+	bare := guardTestBareCache(t)
+	ctx := context.Background()
+
+	// Pushed shape: the branch ref plus its covering refs/remotes/origin/*
+	// entry, exactly what a worktree push records under the cache's refspec.
+	pushedTip := strings.TrimSpace(guardTestGit(t, bare, "rev-parse", "HEAD"))
+	guardTestGit(t, bare, "branch", "agent/stale/pushed", pushedTip)
+	guardTestGit(t, bare, "update-ref", "refs/remotes/origin/agent/stale/pushed", pushedTip)
+
+	pass := ScanAgentBranchForRecycle(ctx, bare, "agent/stale/pushed")
+	if pass.Verdict != RecyclePass || pass.Topology != RecycleTopologyBare {
+		t.Fatalf("pushed branch verdict/topology = %s/%s, want pass/bare: %+v", pass.Verdict, pass.Topology, pass)
+	}
+	if p := predicateByName(pass, "unpushed"); p == nil || p.Count != 0 {
+		t.Fatalf("unpushed predicate = %+v, want count 0", p)
+	}
+
+	// Unpushed shape: a commit no remote-tracking ref can reach.
+	orphan := strings.TrimSpace(guardTestGit(t, bare, "commit-tree", "HEAD^{tree}", "-m", "unpushed task work"))
+	guardTestGit(t, bare, "update-ref", "refs/heads/agent/stale/unpushed", orphan)
+
+	blocked := ScanAgentBranchForRecycle(ctx, bare, "agent/stale/unpushed")
+	if blocked.Verdict != RecycleBlocked {
+		t.Fatalf("unpushed branch verdict = %s, want blocked: %+v", blocked.Verdict, blocked)
+	}
+	list := predicateByName(blocked, "unpushed_list")
+	if list == nil || len(list.List) != 1 || list.List[0] != orphan {
+		t.Fatalf("unpushed_list = %+v, want exactly %s", list, orphan)
+	}
+	if !strings.Contains(list.Command, "agent/stale/unpushed") {
+		t.Fatalf("list command %q must name the branch", list.Command)
+	}
+}
+
+// TestScanAgentBranch_ScanFailureFailsClosed: a branch ref pointing at a
+// missing object makes rev-list fail; the scan must read as blocked — never
+// as empty — so the deletion skips this tick.
+func TestScanAgentBranch_ScanFailureFailsClosed(t *testing.T) {
+	bare := guardTestBareCache(t)
+	// Raw ref-file write bypasses object validation, so rev-list fails.
+	if err := os.MkdirAll(filepath.Join(bare, "refs", "heads", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bare, "refs", "heads", "agent", "broken"),
+		[]byte("0000000000000000000000000000000000000001\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scan := ScanAgentBranchForRecycle(context.Background(), bare, "agent/broken")
+	if scan.Verdict != RecycleBlocked {
+		t.Fatalf("scan failure verdict = %s, want blocked: %+v", scan.Verdict, scan)
+	}
+	p := predicateByName(scan, "unpushed")
+	if p == nil || p.ExitCode == 0 || p.Error == "" {
+		t.Fatalf("failure must be recorded on the predicate: %+v", p)
+	}
+}
+
 func TestRecycleEvidenceWrittenAndSurvivesRecycle(t *testing.T) {
 	evidenceDir := configureTestGuard(t)
 	source := guardTestRepo(t)
