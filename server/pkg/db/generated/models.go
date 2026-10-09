@@ -1812,6 +1812,19 @@ type SeatCapacityOutbox struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Self-evolution module model-service config per workspace (RUYI-551): gateway base_url/model, secretbox-encrypted API key, scoring switch, last validation outcome. Module config outranks the deploy default.
+type SelfEvolutionModelConfig struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	BaseUrl             pgtype.Text        `json:"base_url"`
+	ApiKeyEncrypted     []byte             `json:"api_key_encrypted"`
+	Model               pgtype.Text        `json:"model"`
+	ScoringEnabled      bool               `json:"scoring_enabled"`
+	LastValidatedAt     pgtype.Timestamptz `json:"last_validated_at"`
+	LastValidationOk    pgtype.Bool        `json:"last_validation_ok"`
+	LastValidationError string             `json:"last_validation_error"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Skill struct {
 	ID                   pgtype.UUID        `json:"id"`
 	WorkspaceID          pgtype.UUID        `json:"workspace_id"`

@@ -18,10 +18,8 @@ import {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { cn } from "@multica/ui/lib/utils";
 import {
-  degradedSourceKinds,
   groupPerplexityByProfile,
   promptQualityDashboardOptions,
   toDimensionCards,
@@ -90,7 +88,6 @@ export function QualityTab({
   const compareLeft = findVersion(versions, selectedVersions[0]);
   const compareRight = findVersion(versions, selectedVersions[1]);
 
-  const degraded = dashboard.data ? degradedSourceKinds(dashboard.data.data_sources) : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -332,23 +329,9 @@ export function QualityTab({
             ) : null}
           </section>
 
-          {/* T3: an optional export being off is a footer line and nothing
-              more — no card above is gated on it. */}
-          {degraded.length > 0 ? (
-            <footer className="flex flex-wrap gap-2 pt-2">
-              {degraded.map((kind) => (
-                <Tooltip key={kind}>
-                  <TooltipTrigger
-                    className="text-caption text-muted-foreground"
-                    data-testid={`degraded-${kind}`}
-                  >
-                    {sourceLabel(t, kind)}
-                  </TooltipTrigger>
-                  <TooltipContent>{t(($) => $.quality.sources.note)}</TooltipContent>
-                </Tooltip>
-              ))}
-            </footer>
-          ) : null}
+          {/* T3: an optional export being off is the quality page's degraded
+              banner above this surface (RUYI-551 §2.5) — never a tooltip
+              footnote here. */}
 
           <QualityPerplexitySheet
             score={openScore}
@@ -384,13 +367,4 @@ function toggleVersion(prev: number[], version: number): number[] {
   if (prev.includes(version)) return prev.filter((v) => v !== version);
   if (prev.length < 2) return [...prev, version];
   return [prev[1] as number, version];
-}
-
-function sourceLabel(
-  t: ReturnType<typeof useT<"self-evolution">>["t"],
-  kind: string,
-): string {
-  if (kind === "langfuse") return t(($) => $.quality.sources.langfuse);
-  if (kind === "scoring_model") return t(($) => $.quality.sources.scoring_model);
-  return t(($) => $.quality.sources.unknown, { kind });
 }

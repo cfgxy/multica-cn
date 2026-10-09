@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/promptqualityrollup"
@@ -25,7 +26,10 @@ const JobNameRollupPromptQuality = "rollup_prompt_quality"
 // history is driven by the handler's own watermark, not by replaying missed
 // ticks, and each tick is bounded by promptqualityrollup.BucketLimit so a long
 // backfill walks forward a few ticks rather than in one run.
-func PromptQualityJob(pool *pgxpool.Pool, gen promptperplexity.Generator) JobSpec {
+//
+// generatorFor is the per-workspace scoring seam (RUYI-551): nil keeps the
+// deploy-wide generator for every workspace.
+func PromptQualityJob(pool *pgxpool.Pool, gen promptperplexity.Generator, generatorFor func(context.Context, pgtype.UUID) promptperplexity.Generator) JobSpec {
 	return JobSpec{
 		Name:              JobNameRollupPromptQuality,
 		Cadence:           5 * time.Minute,
@@ -43,14 +47,14 @@ func PromptQualityJob(pool *pgxpool.Pool, gen promptperplexity.Generator) JobSpe
 			15 * time.Minute,
 		},
 		Scopes:  StaticScopes(ScopeGlobal),
-		Handler: makePromptQualityHandler(pool, gen),
+		Handler: makePromptQualityHandler(pool, gen, generatorFor),
 	}
 }
 
-func makePromptQualityHandler(pool *pgxpool.Pool, gen promptperplexity.Generator) Handler {
+func makePromptQualityHandler(pool *pgxpool.Pool, gen promptperplexity.Generator, generatorFor func(context.Context, pgtype.UUID) promptperplexity.Generator) Handler {
 	queries := db.New(pool)
 	runner := promptqualityrollup.Runner{Queries: queries}
-	perplexity := promptqualityrollup.Perplexity{Queries: queries, Generator: gen}
+	perplexity := promptqualityrollup.Perplexity{Queries: queries, Generator: gen, GeneratorFor: generatorFor}
 	return func(ctx context.Context, in HandlerInput) (HandlerResult, error) {
 		out, err := runner.Run(ctx)
 		if err != nil {
