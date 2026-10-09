@@ -121,6 +121,7 @@
     "archive_dialog_confirm": "アーカイブ"
   },
   "detail": {
+    "section_history": "実行履歴",
     "back_to_agents": "エージェント",
     "back_to_agents_full": "エージェントに戻る",
     "not_found_title": "エージェントが見つかりません",

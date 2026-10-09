@@ -129,6 +129,7 @@
     "archive_dialog_confirm": "归档"
   },
   "detail": {
+    "section_history": "运行历史",
     "back_to_agents": "智能体",
     "back_to_agents_full": "返回智能体列表",
     "not_found_title": "未找到该智能体",
