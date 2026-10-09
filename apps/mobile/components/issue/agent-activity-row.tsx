@@ -3,7 +3,9 @@
  * `issue/[id]/runs` formSheet route — the Stack-header
  * `<AgentHeaderBadge>` pushes the same route.
  *
- *   ≥1 active task        → [agent avatars] (pulse) Working           ›
+ *   ≥1 active task        → [breathing agent avatars] Working         ›
+ *                           (RUYI-554: the avatars carry the state — no
+ *                           dot beside them)
  *   0 active, ≥1 past     → 🕓 Runs · N                                ›
  *   never run             → null (zero space)
  *
@@ -18,7 +20,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { Text } from "@/components/ui/text";
 import { AvatarStack, type StackActor } from "@/components/ui/avatar-stack";
-import { PulseDot } from "@/components/ui/pulse-dot";
 import {
   issueActiveTasksOptions,
   issueTasksOptions,
@@ -78,6 +79,7 @@ export function AgentActivityRow({ issueId }: Props) {
             type: "agent",
             id: t.agent_id,
           }))}
+          hasRunning={activeTasks.some((t) => t.status === "running")}
         />
       ) : (
         <IdleContent count={pastCount} mutedFg={mutedFg} />
@@ -87,12 +89,24 @@ export function AgentActivityRow({ issueId }: Props) {
   );
 }
 
-function ActiveContent({ actors }: { actors: StackActor[] }) {
+function ActiveContent({
+  actors,
+  hasRunning,
+}: {
+  actors: StackActor[];
+  hasRunning: boolean;
+}) {
   const { t } = useT("issues");
   return (
     <View className="flex-1 flex-row items-center gap-2">
-      <AvatarStack actors={actors} max={3} size={24} />
-      <PulseDot />
+      {/* RUYI-554: running agents breathe in place; a queued-only stack sits
+          gray. The "Working" text keeps the discovery-surface label. */}
+      <AvatarStack
+        actors={actors}
+        max={3}
+        size={24}
+        activity={hasRunning ? "running" : "queued"}
+      />
       <Text className="text-sm font-medium text-foreground">
         {t("agent_activity.status_running", "Working")}
       </Text>
