@@ -243,6 +243,10 @@ function useLarkCapabilityCopy() {
         return t(($) => $.lark.capability_read_history);
       case "media_resources":
         return t(($) => $.lark.capability_download_media);
+      case "drive_file_links":
+        return t(($) => $.lark.capability_drive_file_links);
+      case "wiki_doc_links":
+        return t(($) => $.lark.capability_wiki_doc_links);
       case "contact_lookup":
         return t(($) => $.lark.capability_lookup_contacts);
       default:
