@@ -193,12 +193,13 @@ function VoiceRuntimeRow({
   );
 }
 
-// §4.5 credential tri-state — text badge, runtimes:voice_instance.badge_*
-// (desktop CredentialBadge parity, RN text styling).
+// §4.5 credential badge states — text badge, runtimes:voice_instance.badge_*
+// (desktop CredentialBadge parity, RN text styling). `unreachable`
+// (RUYI-619) = could not verify, a warning — never rendered as invalid.
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("runtimes");
   return (
@@ -207,6 +208,7 @@ function CredentialBadge({
         "text-xs",
         status === "configured" && "text-success",
         status === "invalid" && "text-destructive",
+        status === "unreachable" && "text-warning",
         status === "not_configured" && "text-muted-foreground",
       )}
     >
@@ -214,7 +216,9 @@ function CredentialBadge({
         ? t("voice_instance.badge_configured")
         : status === "invalid"
           ? t("voice_instance.badge_invalid")
-          : t("voice_instance.badge_not_configured")}
+          : status === "unreachable"
+            ? t("voice_instance.badge_unreachable")
+            : t("voice_instance.badge_not_configured")}
     </RNText>
   );
 }

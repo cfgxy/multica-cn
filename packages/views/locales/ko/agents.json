@@ -359,6 +359,7 @@
     "voice_empty": "음성 지원 인스턴스가 없습니다",
     "credential_configured": "구성됨 ✓",
     "credential_invalid": "키 무효",
+    "credential_unreachable": "검증 불가",
     "credential_not_configured": "미구성"
   },
   "conversation_starters": {
