@@ -698,6 +698,14 @@ type profileLaunchSpec struct {
 
 // New creates a new Daemon instance.
 func New(cfg Config, logger *slog.Logger) *Daemon {
+	// Recycle guard (RUYI-594): every execenv-side removal hook reads this
+	// process-wide configuration. Evidence lives in a dot directory under the
+	// workspaces root that no GC walk descends into.
+	execenv.ConfigureRecycleGuard(execenv.RecycleGuardConfig{
+		Enabled:     cfg.GCGuardEnabled,
+		EvidenceDir: filepath.Join(cfg.WorkspacesRoot, ".recycle-evidence"),
+		EvidenceTTL: cfg.GCGuardEvidenceTTL,
+	})
 	cacheRoot := filepath.Join(cfg.WorkspacesRoot, ".repos")
 	skillCacheRoot := filepath.Join(cfg.WorkspacesRoot, ".skill-cache", "v1")
 	client := NewClient(cfg.ServerBaseURL)

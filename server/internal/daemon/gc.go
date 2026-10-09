@@ -38,6 +38,8 @@ func (d *Daemon) gcLoop(ctx context.Context) {
 		"repo_ttl", d.cfg.GCRepoTTL,
 		"repo_maintenance_enabled", d.cfg.GCRepoMaintenanceEnabled,
 		"artifact_patterns", d.cfg.GCArtifactPatterns,
+		"guard_enabled", d.cfg.GCGuardEnabled,
+		"guard_evidence_ttl", d.cfg.GCGuardEvidenceTTL,
 		"managed_artifact_subpaths", execenv.ManagedReclaimableArtifactSubpaths(),
 	)
 
@@ -74,6 +76,9 @@ type gcStats struct {
 	hermesMemoryStoresReclaimed   int            // per-agent Hermes memory stores reclaimed past their TTL
 	hermesSessionStoresReclaimed  int            // per-conversation Hermes session stores reclaimed past their TTL
 	repoCachesReclaimed           int            // bare repo caches under .repos evicted past their TTL
+	guardBlocked                  int            // recycles the recycle guard refused (L2): dir/repo kept, human needed
+	guardEvidence                 int            // recycles that proceeded after writing evidence (L1): refs survive
+	evidenceSwept                 int            // expired recycle-evidence files removed by the guard's sweeper
 	taskTempDirsReclaimed         int            // per-task temp dirs under the temp base reclaimed after their owning execution ended
 	taskRootIndexEntriesReclaimed int            // abandoned stable-root records and unpublished entries reclaimed past the orphan TTL
 	bytesReclaimed                int64          // total bytes freed in this cycle
@@ -133,6 +138,13 @@ func (d *Daemon) runGC(ctx context.Context) {
 	// and are never reclaimed by the task walk above.
 	d.pruneRepoWorktreesContext(ctx, root, stats)
 
+	// Recycle guard evidence sweeper (RUYI-594). Evidence lives in a root-level
+	// dot directory no GC walk descends into; this sweeper is the only deleter,
+	// so a file younger than the TTL always outlives the recycle it describes.
+	if d.cfg.GCGuardEnabled {
+		stats.evidenceSwept = execenv.SweepRecycleEvidence(d.cfg.GCGuardEvidenceTTL, time.Now())
+	}
+
 	// Reclaim per-issue Codex session stores idle past their TTL. These live
 	// under the shared ~/.codex home (outside WorkspacesRoot) so resume survives
 	// the task GC, which means they need their own bounded lifecycle (MUL-4424).
@@ -173,7 +185,7 @@ func (d *Daemon) runGC(ctx context.Context) {
 		}
 	}
 
-	if stats.cleaned > 0 || stats.orphaned > 0 || stats.artifactDirs > 0 || stats.storesReclaimed > 0 || stats.hermesMemoryStoresReclaimed > 0 || stats.hermesSessionStoresReclaimed > 0 || stats.repoCachesReclaimed > 0 || stats.taskTempDirsReclaimed > 0 || stats.taskRootIndexEntriesReclaimed > 0 {
+	if stats.cleaned > 0 || stats.orphaned > 0 || stats.artifactDirs > 0 || stats.storesReclaimed > 0 || stats.hermesMemoryStoresReclaimed > 0 || stats.hermesSessionStoresReclaimed > 0 || stats.repoCachesReclaimed > 0 || stats.taskTempDirsReclaimed > 0 || stats.taskRootIndexEntriesReclaimed > 0 || stats.guardBlocked > 0 || stats.guardEvidence > 0 || stats.evidenceSwept > 0 {
 		d.logger.Info("gc: cycle complete",
 			"cleaned", stats.cleaned,
 			"orphaned", stats.orphaned,
@@ -186,6 +198,9 @@ func (d *Daemon) runGC(ctx context.Context) {
 			"repo_caches_reclaimed", stats.repoCachesReclaimed,
 			"task_temp_dirs_reclaimed", stats.taskTempDirsReclaimed,
 			"task_root_index_entries_reclaimed", stats.taskRootIndexEntriesReclaimed,
+			"guard_blocked", stats.guardBlocked,
+			"guard_evidence", stats.guardEvidence,
+			"recycle_evidence_swept", stats.evidenceSwept,
 			"bytes_reclaimed", stats.bytesReclaimed,
 			"by_pattern", stats.byPattern,
 		)
@@ -342,19 +357,31 @@ func (d *Daemon) applyGCAction(taskDir string, action gcAction, stats *gcStats) 
 	}
 	switch action {
 	case gcActionClean:
-		bytes, removed := d.cleanTaskDir(taskDir)
+		bytes, removed, guard := d.cleanTaskDir(taskDir)
 		if !removed {
 			stats.skipped++
+			if guard == execenv.RecycleBlocked {
+				stats.guardBlocked++
+			}
 			return 0
+		}
+		if guard == execenv.RecycleEvidence {
+			stats.guardEvidence++
 		}
 		stats.cleaned++
 		stats.bytesReclaimed += bytes
 		return 1
 	case gcActionOrphan:
-		bytes, removed := d.cleanTaskDir(taskDir)
+		bytes, removed, guard := d.cleanTaskDir(taskDir)
 		if !removed {
 			stats.skipped++
+			if guard == execenv.RecycleBlocked {
+				stats.guardBlocked++
+			}
 			return 0
+		}
+		if guard == execenv.RecycleEvidence {
+			stats.guardEvidence++
 		}
 		stats.orphaned++
 		stats.bytesReclaimed += bytes
@@ -870,8 +897,9 @@ func (d *Daemon) gcTaskDirOwner(taskDir string) (*execenv.EnvRootOwner, error) {
 
 // cleanTaskDir removes a proven daemon-owned task directory, logs the
 // reclaimed bytes, and returns that count for the cycle summary. A failed or
-// refused removal reports removed=false.
-func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool) {
+// refused removal reports removed=false, and guard reports the recycle
+// guard's verdict ("" when the guard is disabled).
+func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool, guard string) {
 	// Measure first, prove ownership second. dirSize walks the entire tree,
 	// which on a large task directory takes long enough for the validated
 	// directory to be replaced underneath us — checking before that walk would
@@ -881,18 +909,68 @@ func (d *Daemon) cleanTaskDir(taskDir string) (bytes int64, removed bool) {
 	owner, ownerErr := d.gcTaskDirOwner(taskDir)
 	if ownerErr != nil {
 		d.logger.Warn("gc: refusing to remove unowned task directory", "dir", taskDir, "error", ownerErr)
-		return 0, false
+		return 0, false, ""
+	}
+	// Recycle guard (RUYI-594): scan every git root in the directory before
+	// it goes away. Blocked verdicts refuse the removal and keep the scene
+	// for a human; evidence verdicts proceed because the scanned commits'
+	// refs survive outside this deletion. The scan runs after ownership is
+	// proven and before any worktree prune can drop the refs the sole-ref
+	// predicate reads. Every removal writes evidence — pass included — so a
+	// deleted directory still answers "what was scanned, what would have
+	// been lost" after the fact.
+	scan := d.guardTaskDirRecycle(taskDir, false)
+	if scan != nil {
+		guard = scan.Verdict
+		switch scan.Verdict {
+		case execenv.RecycleBlocked:
+			d.logger.Warn("gc: recycle guard blocked task dir removal",
+				"guard", "blocked", "dir", taskDir, "reasons", scan.Reasons)
+			return 0, false, guard
+		case execenv.RecycleEvidence:
+			d.logger.Info("gc: recycle guard recorded evidence; proceeding",
+				"guard", "evidence", "dir", taskDir, "reasons", scan.Reasons)
+		default:
+			d.logger.Debug("gc: recycle guard passed", "guard", "pass", "dir", taskDir)
+		}
 	}
 	if err := os.RemoveAll(taskDir); err != nil {
 		d.logger.Warn("gc: remove task dir failed", "dir", taskDir, "error", err)
-		return 0, false
+		return 0, false, guard
 	} else {
-		d.logger.Info("gc: removed", "dir", taskDir, "bytes_reclaimed", bytes)
+		d.logger.Info("gc: removed", "dir", taskDir, "bytes_reclaimed", bytes, "guard", guardStringOrPass(guard))
 	}
 	if err := execenv.RemoveRootDirRecord(d.cfg.WorkspacesRoot, taskDir, *owner); err != nil {
 		d.logger.Warn("gc: remove stable task root record failed", "dir", taskDir, "error", err)
 	}
-	return bytes, true
+	return bytes, true, guard
+}
+
+// guardTaskDirRecycle scans a whole task directory for the recycle guard and
+// writes its evidence file. Returns nil when the guard is disabled. Scan
+// failures fail closed inside the scan (verdict blocked), so a nil return
+// means "disabled", never "unscanned".
+func (d *Daemon) guardTaskDirRecycle(taskDir string, dryRun bool) *execenv.RecycleScan {
+	if !d.cfg.GCGuardEnabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), execenv.GuardScanTimeout)
+	defer cancel()
+	scan := execenv.ScanTaskDirForRecycle(ctx, taskDir)
+	scan.DryRun = dryRun
+	if path, err := execenv.WriteRecycleEvidence(scan); err != nil {
+		d.logger.Warn("gc: recycle evidence write failed", "dir", taskDir, "error", err)
+	} else if path != "" {
+		scan.EvidencePath = path
+	}
+	return scan
+}
+
+func guardStringOrPass(guard string) string {
+	if guard == "" {
+		return execenv.RecyclePass
+	}
+	return guard
 }
 
 // linkedDirModes are the mode bits that mark a directory entry as a link to
@@ -1285,6 +1363,37 @@ func (d *Daemon) evictRepoCacheLocked(ctx context.Context, barePath string, stat
 	idle := time.Since(lastUsed)
 	if idle <= d.cfg.GCRepoTTL {
 		return
+	}
+
+	// Recycle guard (RUYI-594): evicting the bare repo deletes every
+	// local-branch commit and stash it holds. Refuse eviction while either
+	// is non-empty — the next idle cycle re-scans, so preserving the work
+	// (pushing, or reching a remote from any branch) resolves the block with
+	// no manual override. Blocked evictions write evidence; passes do not,
+	// because a re-clonable cache with nothing unpushed on it has nothing
+	// for evidence to answer for.
+	if d.cfg.GCGuardEnabled {
+		scan := execenv.ScanBareRepoForRecycle(ctx, barePath)
+		if scan.Verdict == execenv.RecycleBlocked {
+			if path, err := execenv.WriteRecycleEvidence(&execenv.RecycleScan{
+				Target:    barePath,
+				Kind:      execenv.RecycleKindBareRepo,
+				Verdict:   scan.Verdict,
+				Reasons:   scan.Reasons,
+				Roots:     []execenv.RecycleRootScan{scan},
+				ScannedAt: time.Now().UTC(),
+			}); err != nil {
+				d.logger.Warn("gc: recycle evidence write failed", "repo", barePath, "error", err)
+			} else if path != "" {
+				d.logger.Warn("gc: recycle guard blocked repo cache eviction",
+					"guard", "blocked", "repo", barePath, "reasons", scan.Reasons, "evidence", path)
+			} else {
+				d.logger.Warn("gc: recycle guard blocked repo cache eviction",
+					"guard", "blocked", "repo", barePath, "reasons", scan.Reasons)
+			}
+			stats.guardBlocked++
+			return
+		}
 	}
 
 	// Measure before the final check, not after. dirSize walks every file in
