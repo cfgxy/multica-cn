@@ -1109,7 +1109,6 @@
       "submit_a11y": "タスクを作成"
     },
     "tasks": {
-      "issue_unavailable": "タスクが表示できません",
       "page": {
         "title": "タスク"
       },

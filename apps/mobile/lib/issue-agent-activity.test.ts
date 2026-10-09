@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentTask } from "@multica/core/types";
 import {
+  canCancelAgentTask,
   deriveIssueActivityMap,
   isActiveTaskStatus,
   selectActorActivity,
@@ -151,6 +152,27 @@ describe("selectAgentActiveTasks", () => {
     const chatRun = task({ issue_id: "", chat_session_id: "chat-1" });
     const out = selectAgentActiveTasks([chatRun], "agent-1");
     expect(out).toEqual([chatRun]);
+  });
+});
+
+describe("canCancelAgentTask", () => {
+  it("offers cancel across every non-terminal status", () => {
+    expect(canCancelAgentTask(task({ status: "queued" }))).toBe(true);
+    expect(canCancelAgentTask(task({ status: "dispatched" }))).toBe(true);
+    expect(
+      canCancelAgentTask(task({ status: "waiting_local_directory" })),
+    ).toBe(true);
+    expect(canCancelAgentTask(task({ status: "running" }))).toBe(true);
+  });
+
+  it("keeps cancel available while a stop is pending (repeat nudge)", () => {
+    expect(canCancelAgentTask(task({ status: "cancel_requested" }))).toBe(true);
+  });
+
+  it("never offers cancel on terminal rows", () => {
+    expect(canCancelAgentTask(task({ status: "completed" }))).toBe(false);
+    expect(canCancelAgentTask(task({ status: "failed" }))).toBe(false);
+    expect(canCancelAgentTask(task({ status: "cancelled" }))).toBe(false);
   });
 });
 

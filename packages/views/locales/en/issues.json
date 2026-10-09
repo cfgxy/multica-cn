@@ -1149,7 +1149,6 @@
       "submit_a11y": "Create issue"
     },
     "tasks": {
-      "issue_unavailable": "Issue unavailable",
       "page": {
         "title": "Tasks"
       },

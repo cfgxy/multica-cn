@@ -100,7 +100,9 @@ export function RunRow({ task, issueId }: Props) {
   );
 }
 
-function StatusBadge({ task }: { task: AgentTask }) {
+// Exported for the agent run-history rows (RUYI-538 ②) — one status/failure
+// vocabulary everywhere a run renders.
+export function StatusBadge({ task }: { task: AgentTask }) {
   const { t } = useT("issues");
   const en = STATUS_LABEL[task.status];
   // 未知 status 原样透出（API Response Compatibility：服务端可能新增枚举

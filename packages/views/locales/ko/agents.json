@@ -1036,16 +1036,22 @@
       "edit": "편집"
     },
     "detail": {
+      "section_history": "실행 기록",
       "edit_profile": "프로필 편집",
       "tab_active": "진행 중",
       "fact_status": "상태",
       "fact_runtime_unbound": "런타임 미설정",
       "bind_runtime": "런타임 연결",
       "fact_concurrency": "동시 실행 한도",
+      "fact_thinking": "思考 강도",
       "forbidden_title": "이 에이전트에 대한 접근 권한이 없습니다",
       "runtime_unbound_banner": "이 에이전트에 런타임이 연결되지 않았습니다 — 실행하려면 런타임을 연결하세요.",
       "forbidden_body": "이 에이전트를 볼 권한이 없습니다. 소유자에게 공유를 요청하세요.",
       "instructions_empty": "아직 지침이 없습니다"
+    },
+    "run_history": {
+      "load_more": "더 보기",
+      "empty": "아직 실행 기록이 없습니다."
     },
     "edit": {
       "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다",
