@@ -257,6 +257,15 @@ interface ContentEditorRef {
   focus: () => void;
   insertSlashTrigger: () => boolean;
   /**
+   * Insert a mention trigger at the caret and open the @ picker — the
+   * toolbar-button equivalent of the user typing "@" (RUYI-550). Arms the
+   * same typed-provenance record as keyboard input, so the picker opens
+   * exactly once instead of treating the inserted "@" as pasted text.
+   * Returns false when the editor is not mounted (or mentions are disabled);
+   * hosts queue and replay on the first ready frame, like the slash entry.
+   */
+  insertMentionTrigger: () => boolean;
+  /**
    * Focus and place the caret at the document position under the given
    * viewport coordinates. Used by readonly-first hosts so the click that
    * summoned the editor lands the caret where the user clicked, matching
@@ -599,7 +608,18 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         // after typing `1.`) parses into a caretless, schema-invalid item;
         // repair it so the mounted editor has a real cursor in the list.
         repairEmptyListItems(ed);
-        lastEmittedRef.current = normalizeEditorMarkdown(ed);
+        // Snapshot the "already delivered to the host" watermark only when no
+        // debounced emission is pending. Tiptap v3 emits `create` from a
+        // deferred task, so a programmatic insert fired between construction
+        // and this hook (a quick reply picked on the readonly shell —
+        // RUYI-550) has already armed the debounce for bytes the host has
+        // never seen; snapping the watermark to the current doc here would
+        // mark them delivered, the pending fire would dedupe-suppress, and
+        // the host's isEmpty state would go stale (send button stuck grey
+        // until the next keystroke). The pending fire emits the true delta.
+        if (!debounceRef.current) {
+          lastEmittedRef.current = normalizeEditorMarkdown(ed);
+        }
         if (focusOnReadyRef.current) {
           focusOnReadyRef.current = false;
           ed.commands.focus("end");
@@ -927,6 +947,12 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         editor.commands.focus();
         armSuggestionTrigger(editor, editor.state.selection.from);
         return editor.commands.insertContent("/");
+      },
+      insertMentionTrigger: () => {
+        if (!editor || editor.isDestroyed || disableMentions) return false;
+        editor.commands.focus();
+        armSuggestionTrigger(editor, editor.state.selection.from);
+        return editor.commands.insertContent("@");
       },
       focusAtCoords: (coords: { x: number; y: number }) => {
         if (!editor) {
