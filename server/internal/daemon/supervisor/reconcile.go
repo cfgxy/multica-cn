@@ -35,6 +35,13 @@ const (
 	// lock — the worker is provably not running anywhere. Converge as failed
 	// with the honest explanation that the exit went unrecorded.
 	DecisionLost
+	// DecisionForeignSkip: the run's manifest is not this daemon's — owner
+	// empty (pre-RUYI-607 manifest) or a foreign identity. RUYI-607 defense
+	// in depth: the systemd user manager is shared by every profile on the
+	// host, so unit visibility proves nothing; only manifest ownership
+	// authorizes action. Foreign runs are never touched — no kill, no stop,
+	// not even a quarantine write (their daemon owns the evidence).
+	DecisionForeignSkip
 )
 
 func (d Decision) String() string {
@@ -51,6 +58,8 @@ func (d Decision) String() string {
 		return "quarantine"
 	case DecisionLost:
 		return "lost"
+	case DecisionForeignSkip:
+		return "foreign_skip"
 	default:
 		return fmt.Sprintf("decision(%d)", int(d))
 	}
@@ -67,6 +76,11 @@ type ReconcileInput struct {
 	LockHeld bool
 	// TaskInFlight: the server still considers this task running.
 	TaskInFlight bool
+	// Self is this daemon's RUYI-607 ownership identity (OwnerIdentity of
+	// its profile). A manifest whose Owner differs — or carries no owner,
+	// as every pre-RUYI-607 manifest — is foreign evidence this daemon must
+	// never act on, whatever the rest of the matrix says.
+	Self string
 }
 
 // Decide is the decision matrix.
@@ -75,6 +89,15 @@ func Decide(in ReconcileInput) Decision {
 		// A live multica-run unit we have no manifest for. Never silently
 		// kill what we cannot classify (dispatch requirement).
 		return DecisionQuarantine
+	}
+	// RUYI-607: the systemd user manager is host-global, so unit visibility
+	// is not ownership. Every branch below acts on the manifest's word that
+	// this run is ours — that word must check out first. A foreign stamp,
+	// the empty stamp of a pre-RUYI-607 manifest, or an empty self identity
+	// (own nothing) skips untouched, decisions included: not even a
+	// quarantine write, the evidence is not ours to record.
+	if in.Self == "" || in.Manifest.Owner == "" || in.Manifest.Owner != in.Self {
+		return DecisionForeignSkip
 	}
 	exitProven := in.Manifest.Exit != nil
 	switch {
@@ -113,6 +136,10 @@ type Reconciler struct {
 	Mgr   *Manager
 	Units UnitLister
 	Log   *slog.Logger
+	// Self is this daemon's RUYI-607 ownership identity, passed into every
+	// classification. Empty means "own nothing": every manifest reads as
+	// foreign and no destructive action can fire (RUYI-607).
+	Self string
 
 	// LockHeld probes the run's env-root task lock. nil means "unknown".
 	LockHeld func(runID string) bool
@@ -199,7 +226,7 @@ func (r *Reconciler) Run(ctx context.Context) ([]ReconcileResult, error) {
 }
 
 func (r *Reconciler) classify(ctx context.Context, man *Manifest, unitActive bool) ReconcileResult {
-	in := ReconcileInput{Manifest: man, UnitActive: unitActive}
+	in := ReconcileInput{Manifest: man, UnitActive: unitActive, Self: r.Self}
 	if r.LockHeld != nil {
 		in.LockHeld = r.LockHeld(man.RunID)
 	}
@@ -223,6 +250,8 @@ func (r *Reconciler) classify(ctx context.Context, man *Manifest, unitActive boo
 		}
 	case DecisionLost:
 		res.Reason = "unit gone, no exit record, no task lock"
+	case DecisionForeignSkip:
+		res.Reason = fmt.Sprintf("manifest owner %q is not this daemon's identity; foreign run left untouched", man.Owner)
 	}
 	return res
 }
@@ -260,6 +289,9 @@ func (r *Reconciler) act(ctx context.Context, res ReconcileResult, man *Manifest
 		}); err != nil {
 			r.logError(res, "quarantine write failed", err)
 		}
+	case DecisionForeignSkip:
+		// No action, by design: the foreign daemon owns this run's evidence
+		// and its unit. The decision reaches the audit log via the results.
 	}
 }
 
