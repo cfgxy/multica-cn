@@ -48,6 +48,13 @@ const (
 const (
 	ExitSourceLauncher   = "launcher"   // launcher observed the worker exit itself
 	ExitSourceSupervisor = "supervisor" // supervisor stopped the unit; cgroup teardown is the evidence
+	// ExitSourceLost marks a synthesized exit for a worker that is provably
+	// gone with nobody having recorded its exit (RUYI-592 fix 2): the unit
+	// disappeared, no exit record ever landed, and nothing holds the run's
+	// lock. It is convergence evidence, not an observed death — exactly the
+	// Decide matrix's lost corner, persisted so downstream readers converge
+	// on one record instead of re-deriving the loss.
+	ExitSourceLost = "lost"
 )
 
 // Manifest is the run's persisted identity. Written by the daemon before
