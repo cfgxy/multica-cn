@@ -1247,7 +1247,7 @@ func (d *Daemon) pruneRepoWorktreesContext(ctx context.Context, workspacesRoot s
 
 func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *gcStats) {
 	d.withRepoMaintenance(ctx, barePath, func(maintenanceCtx context.Context) {
-		d.pruneWorktreeLocked(maintenanceCtx, barePath)
+		d.pruneWorktreeLocked(maintenanceCtx, barePath, stats)
 		if maintenanceCtx.Err() == nil {
 			d.evictRepoCacheLocked(maintenanceCtx, barePath, stats)
 		}
@@ -1255,10 +1255,12 @@ func (d *Daemon) maintainRepoCache(ctx context.Context, barePath string, stats *
 }
 
 // pruneWorktree runs only the maintenance half — prune stale worktrees and
-// agent branches — without considering eviction.
+// agent branches — without considering eviction. No gcStats is threaded
+// through, so guard blocks on this path are logged and evidenced but not
+// counted into a cycle summary.
 func (d *Daemon) pruneWorktree(barePath string) {
 	d.withRepoMaintenance(context.Background(), barePath, func(ctx context.Context) {
-		d.pruneWorktreeLocked(ctx, barePath)
+		d.pruneWorktreeLocked(ctx, barePath, nil)
 	})
 }
 
@@ -1468,7 +1470,7 @@ func linkedWorktreeCountContext(ctx context.Context, barePath string) (int, erro
 	return count, nil
 }
 
-func (d *Daemon) pruneWorktreeLocked(ctx context.Context, barePath string) {
+func (d *Daemon) pruneWorktreeLocked(ctx context.Context, barePath string, stats *gcStats) {
 	if out, err := runGitGCCommandContext(ctx, barePath, "worktree", "prune"); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -1502,6 +1504,38 @@ func (d *Daemon) pruneWorktreeLocked(ctx context.Context, barePath string) {
 	for _, branch := range agentBranches {
 		if _, ok := activeBranches[branch]; ok {
 			continue
+		}
+		// Recycle guard (RUYI-617): deleting the branch ref is the deletion
+		// scope — a commit only this branch references would lose its last
+		// reference with it. Blocked branches stay for a later tick; a push
+		// (which records refs/remotes/origin/<branch> under the cache's
+		// remote-tracking refspec) or the next daemon fetch resolves the
+		// block with no manual override. Kill-switch off restores the
+		// unconditional delete.
+		if d.cfg.GCGuardEnabled {
+			scan := execenv.ScanAgentBranchForRecycle(ctx, barePath, branch)
+			if scan.Verdict == execenv.RecycleBlocked {
+				if stats != nil {
+					stats.guardBlocked++
+				}
+				if path, err := execenv.WriteRecycleEvidence(&execenv.RecycleScan{
+					Target:    branch,
+					Kind:      execenv.RecycleKindAgentBranch,
+					Verdict:   scan.Verdict,
+					Reasons:   scan.Reasons,
+					Roots:     []execenv.RecycleRootScan{scan},
+					ScannedAt: time.Now().UTC(),
+				}); err != nil {
+					d.logger.Warn("gc: recycle evidence write failed", "repo", barePath, "branch", branch, "error", err)
+				} else if path != "" {
+					d.logger.Warn("gc: recycle guard blocked agent branch deletion",
+						"guard", "blocked", "repo", barePath, "branch", branch, "reasons", scan.Reasons, "evidence", path)
+				} else {
+					d.logger.Warn("gc: recycle guard blocked agent branch deletion",
+						"guard", "blocked", "repo", barePath, "branch", branch, "reasons", scan.Reasons)
+				}
+				continue
+			}
 		}
 		if out, err := runGitGCCommandContext(ctx, barePath, "branch", "-D", "--", branch); err != nil {
 			if ctx.Err() != nil {
