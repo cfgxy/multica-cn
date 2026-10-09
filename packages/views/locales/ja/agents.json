@@ -121,7 +121,6 @@
     "archive_dialog_confirm": "アーカイブ"
   },
   "detail": {
-    "section_history": "実行履歴",
     "back_to_agents": "エージェント",
     "back_to_agents_full": "エージェントに戻る",
     "not_found_title": "エージェントが見つかりません",
@@ -1037,6 +1036,7 @@
       "edit": "編集"
     },
     "detail": {
+      "section_history": "実行履歴",
       "edit_profile": "プロフィールを編集",
       "tab_active": "進行中",
       "fact_status": "ステータス",
