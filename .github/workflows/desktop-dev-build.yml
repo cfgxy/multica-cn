@@ -48,7 +48,7 @@ jobs:
           # 既有版本推导同源），需要完整历史。
           fetch-depth: 0
 
-      # 开发版本 = <git describe 基线 tag>-dev.YYYYMMDD-N，与桌面正式版本
+      # 开发版本 = <可达最高正式 vX.Y.Z tag>-dev.YYYYMMDD-N，与桌面正式版本
       # 线（v0.4.x …）保持同源；由 scripts/dev-version.sh 从 GitHub Releases
       # 推算当天序号，经 DESKTOP_PACKAGE_VERSION 注入 scripts/package.mjs。
       - name: Resolve dev version
@@ -58,7 +58,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base=$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)
+          # v* 命名空间残留旧手动通道的 describe 形态 tag（如 v0.4.32-203-gbbc74a995），
+          # git describe 按拓扑最近匹配会取到这类非 semver 名而 fail-closed；
+          # 改取 HEAD 可达的最高正式 vX.Y.Z tag 作基线。
+          base=$(git tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 | sed 's/^v//' || true)
           if [[ -z "$base" ]]; then
             base="0.0.0"
           fi
