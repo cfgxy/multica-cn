@@ -1015,6 +1015,9 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 	if ctx.QuizPrompt != "" {
 		return renderQuizContext(ctx)
 	}
+	if ctx.RetrospectivePrompt != "" {
+		return renderRetrospectiveContext(ctx)
+	}
 	if ctx.QuickCreatePrompt != "" {
 		return renderQuickCreateContext(ctx)
 	}
@@ -1056,6 +1059,21 @@ func renderQuizContext(ctx TaskContextForEnv) string {
 	b.WriteString("**Trigger:** Prompt-evaluation run\n\n")
 	b.WriteString("## Item under test\n\n")
 	b.WriteString(ctx.QuizPrompt)
+	b.WriteString("\n\n")
+	return b.String()
+}
+
+// renderRetrospectiveContext renders issue_context.md for the
+// daily-retrospective agent run (RUYI-552 direction 3). The window prompt is
+// carried verbatim — the same text the per-turn prompt shows, so the output
+// contract the completion hook parses appears identically in both channels;
+// beyond the fixed headers it adds nothing.
+func renderRetrospectiveContext(ctx TaskContextForEnv) string {
+	var b strings.Builder
+	b.WriteString("# Daily Retrospective\n\n")
+	b.WriteString("**Trigger:** Scheduled retrospective run\n\n")
+	b.WriteString("## Assignment\n\n")
+	b.WriteString(ctx.RetrospectivePrompt)
 	b.WriteString("\n\n")
 	return b.String()
 }
