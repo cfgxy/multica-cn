@@ -460,4 +460,40 @@ describe("runtimeRowLabel", () => {
       ),
     ).toBe("just this one");
   });
+
+  // RUYI-564 — on a single-runtime machine a per-runtime rename is also the
+  // sharedCustomName that titles the machine, so the legacy "shared alias
+  // collapses to the base" rule hid the user's name entirely. A known
+  // single-runtime machine keeps the alias visible.
+  it("keeps a lone runtime's alias visible even when it equals the machine title", () => {
+    expect(
+      runtimeRowLabel(
+        makeRuntime({
+          name: "Gemini Live (dev.local)",
+          custom_name: "语音实例",
+        }),
+        "语音实例",
+        1,
+      ),
+    ).toBe("语音实例");
+  });
+
+  it("still collapses a machine-wide alias on a multi-runtime machine", () => {
+    expect(
+      runtimeRowLabel(
+        makeRuntime({ name: "Codex (dev.local)", custom_name: "Dev Box" }),
+        "Dev Box",
+        2,
+      ),
+    ).toBe("Codex");
+  });
+
+  it("keeps the legacy collapse when the machine size is unknown", () => {
+    expect(
+      runtimeRowLabel(
+        makeRuntime({ name: "Codex (dev.local)", custom_name: "Dev Box" }),
+        "Dev Box",
+      ),
+    ).toBe("Codex");
+  });
 });

@@ -425,6 +425,17 @@ export default function WorkspaceLayout() {
           name="chat/[sessionId]"
           options={{ headerShown: false }}
         />
+        {/* Archived chats sub-view (RUYI-533) — pushed from the entry at the
+            bottom of the chat tab list; native header like issue/[id]. Same
+            pattern as the RUYI-532 archived-inbox sub-view; title uses the
+            shared `list.archived_title` key web's archived view renders. */}
+        <Stack.Screen
+          name="chat/archived"
+          options={{
+            title: i18n.t("chat:list.archived_title", "Archived"),
+            headerBackTitle: "Back",
+          }}
+        />
         {/* Chat session rename sheet (RUYI-51) — reached from the chat
             header's ⋯ menu. Isolated sheet (no chip-row neighbours), so it
             may override the detents with fitToContents; see the SHEET_OPTIONS
@@ -556,6 +567,12 @@ export default function WorkspaceLayout() {
         {/* RUYI-418 Q10: 执行配置管理（列表/编辑/激活），formSheet。 */}
         <Stack.Screen
           name="more/squads/[id]/execution-profiles"
+          options={SHEET_OPTIONS}
+        />
+        {/* RUYI-541: 小队 instructions 编辑窗——详情页缩略预览背后的
+            独立窗口（完整查看/编辑 + 未保存离开拦截），formSheet。 */}
+        <Stack.Screen
+          name="more/squads/[id]/edit-instructions"
           options={SHEET_OPTIONS}
         />
         <Stack.Screen
