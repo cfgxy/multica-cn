@@ -19,6 +19,7 @@
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
 import {
@@ -37,6 +38,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/use-t";
 
 export default function AgentRuntimeConfig() {
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const agentId = typeof id === "string" ? id : "";
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -122,8 +124,11 @@ export default function AgentRuntimeConfig() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false） */}
-      <View className="flex-row items-center px-4 pt-3 pb-2 border-b border-border">
+      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；顶部让出系统状态栏（RUYI-563）。 */}
+      <View
+        className="flex-row items-center px-4 pb-2 border-b border-border"
+        style={{ paddingTop: insets.top + 12 }}
+      >
         <Text className="flex-1 text-lg font-semibold text-foreground">
           {t("tabs.runtime_config", "Routing")}
         </Text>

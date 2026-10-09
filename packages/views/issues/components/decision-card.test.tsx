@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDecision } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -65,6 +65,53 @@ describe("DecisionCard", () => {
     expect(screen.getByText("Recommended")).toBeInTheDocument();
   });
 
+  // RUYI-588: the single card renders its own index letter per row — the
+  // same letter language as the batch bar (RUYI-471) — so cards whose labels
+  // no longer embed an "A：" prefix still show A/B/C/D.
+  it("renders an index letter per option row, batch-bar form", () => {
+    renderCard(card());
+    const row0 = screen.getByTestId("decision-option-0");
+    expect(within(row0).getByText("A")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-option-1")).getByText("B")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-option-2")).getByText("C")).toBeInTheDocument();
+    expect(within(row0).getByText("方案 A")).toBeInTheDocument();
+    // Letter form parity with the batch bar: medium weight, brand-tinted
+    // when its row is picked, muted otherwise.
+    fireEvent.click(row0);
+    const letter = within(screen.getByTestId("decision-option-0")).getByText("A");
+    expect(letter).toHaveClass("font-medium");
+    expect(letter).toHaveClass("text-brand");
+    expect(within(screen.getByTestId("decision-option-1")).getByText("B")).toHaveClass("text-muted-foreground");
+  });
+
+  // RUYI-575's guard, single-card side: labels written under the
+  // decision-numbering convention embed the letter itself ("A：…") — the
+  // card's own index letter must not double it.
+  it("strips the embedded letter prefix so each letter renders once", () => {
+    renderCard(card({
+      question: "Stage 2 实施边界：本期 capability 覆盖面？",
+      options: [
+        { label: "A：仅 /file/ 云盘文件族（drive_file_links）" },
+        { label: "B：A 之上同期加 wiki_doc_links" },
+      ],
+    }));
+    const first = screen.getByTestId("decision-option-0");
+    expect(within(first).getByText("A")).toBeInTheDocument();
+    expect(within(first).getByText("仅 /file/ 云盘文件族（drive_file_links）")).toBeInTheDocument();
+    expect(within(first).queryByText("A：仅 /file/ 云盘文件族（drive_file_links）")).toBeNull();
+    const second = screen.getByTestId("decision-option-1");
+    expect(within(second).getByText("B")).toBeInTheDocument();
+    expect(within(second).getByText("A 之上同期加 wiki_doc_links")).toBeInTheDocument();
+    expect(within(second).queryByText("B：A 之上同期加 wiki_doc_links")).toBeNull();
+  });
+
+  it("renders labels without a matching prefix form untouched", () => {
+    renderCard(card({ options: [{ label: "A-type 优先" }, { label: "B超 声呐" }, { label: "方案 C" }] }));
+    expect(within(screen.getByTestId("decision-option-0")).getByText("A-type 优先")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-option-1")).getByText("B超 声呐")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-option-2")).getByText("方案 C")).toBeInTheDocument();
+  });
+
   it("single-select replaces the previous pick before submit", () => {
     renderCard(card());
     fireEvent.click(screen.getByTestId("decision-option-0"));
@@ -100,6 +147,7 @@ describe("DecisionCard", () => {
     expect(screen.getByTestId("decision-card")).toHaveAttribute("data-status", "answered");
     expect(screen.getByTestId("decision-option-1")).toHaveAttribute("aria-checked", "true");
     expect(screen.getByTestId("decision-option-1")).toBeDisabled();
+    expect(within(screen.getByTestId("decision-option-1")).getByText("B")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Submit answer" })).not.toBeInTheDocument();
     expect(screen.getByText("成员甲")).toBeInTheDocument();
   });

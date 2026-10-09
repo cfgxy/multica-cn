@@ -490,7 +490,7 @@
   },
   "retrospective": {
     "title": "Daily retrospective",
-    "description": "A built-in scheduler reads the real execution content of completed issues inside the window, distills prompt improvement drafts and drops them into the legislation pool. Runs never post issue comments.",
+    "description": "Pick an execution agent: a scheduled run of that agent reads the real execution content of completed issues inside the lookback window and distills prompt-improvement drafts into the legislation pool. Runs never create issues or post issue comments.",
     "enabled": "Scheduled run enabled",
     "includeInReview": "Also scan in_review issues",
     "windowDays": "Lookback window (days)",
@@ -510,9 +510,16 @@
     "duplicates": "Duplicates skipped",
     "errorLabel": "Error",
     "empty": "No runs yet.",
-    "llmUnavailable": "The LLM is not configured — a run records a failed entry naming the missing configuration.",
     "saveOk": "Retrospective config saved.",
-    "triggerOk": "Retrospective run finished."
+    "triggerOk": "Retrospective run started.",
+    "agentTitle": "Execution agent",
+    "agentDescription": "The daily retrospective runs as a single run of the selected agent: it reads completed issues inside the lookback window and distills improvement drafts — no issues created, no comments posted.",
+    "agentLabel": "Execution agent",
+    "agentPlaceholder": "Select an agent",
+    "agentArchivedSuffix": " (archived)",
+    "agentArchivedHint": "This agent is archived; pick another one or runs will fail.",
+    "agentTriggerBlocked": "No execution agent configured: select an agent in the configuration above, then run again.",
+    "emptyDescription": "Runs appear here after a scheduled or manual trigger."
   },
   "knowledge": {
     "title": "Knowledge library",

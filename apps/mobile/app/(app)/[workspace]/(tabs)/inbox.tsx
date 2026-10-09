@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import {
   Alert,
   FlatList,
+  Pressable,
   View,
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
@@ -22,7 +23,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
-import { inboxListOptions } from "@/data/queries/inbox";
+import { archivedInboxOptions, inboxListOptions } from "@/data/queries/inbox";
 import { agentTaskSnapshotOptions } from "@/data/queries/agent-task-snapshot";
 import { deriveIssueActivityMap } from "@/lib/issue-agent-activity";
 import {
@@ -37,6 +38,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import {
+  deduplicateArchivedInboxItems,
   deduplicateInboxItems,
   getInboxNavigationTarget,
 } from "@/lib/inbox-display";
@@ -55,6 +57,16 @@ export default function Inbox() {
   const data = useMemo(
     () => deduplicateInboxItems(rawItems ?? []),
     [rawItems],
+  );
+  // RUYI-532 archived sub-view. Fetched on the main list too — the entry's
+  // count label needs the archived cache before the user ever goes there
+  // (same reason web fetches both: inbox-page.tsx archivedInboxListOptions).
+  const { data: rawArchivedItems = [] } = useQuery(
+    archivedInboxOptions(wsId),
+  );
+  const archivedCount = useMemo(
+    () => deduplicateArchivedInboxItems(rawArchivedItems).length,
+    [rawArchivedItems],
   );
   // RUYI-76 ③: per-issue agent activity (running/queued runs), sliced from
   // the ONE shared workspace snapshot — the same query the presence
@@ -95,6 +107,13 @@ export default function Inbox() {
   const onMarkAllRead = () => markAllRead.mutate();
   const onArchiveAllRead = () => archiveAllRead.mutate();
   const onArchiveCompleted = () => archiveCompleted.mutate();
+  const openArchived = () => {
+    if (!wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/inbox/archived",
+      params: { workspace: wsSlug },
+    });
+  };
   const onArchiveAll = () => {
     Alert.alert(
       t("menu.archive_all", "Archive all"),
@@ -171,7 +190,15 @@ export default function Inbox() {
           </Button>
         </View>
       ) : !data || data.length === 0 ? (
-        <InboxEmpty iconColor={THEME[colorScheme].mutedForeground} />
+        // PC parity (inbox-list.tsx): still offer the archive when the main
+        // list is empty — that is exactly when a user goes looking for what
+        // they filed away.
+        <View className="flex-1">
+          <InboxEmpty iconColor={THEME[colorScheme].mutedForeground} />
+          {archivedCount > 0 ? (
+            <ArchivedEntry count={archivedCount} onPress={openArchived} />
+          ) : null}
+        </View>
       ) : (
         <FlatList
           data={data}
@@ -179,6 +206,11 @@ export default function Inbox() {
           ItemSeparatorComponent={() => (
             <View className="h-px bg-border ml-16" />
           )}
+          ListFooterComponent={
+            archivedCount > 0 ? (
+              <ArchivedEntry count={archivedCount} onPress={openArchived} />
+            ) : null
+          }
           contentContainerClassName="pb-6"
           renderItem={({ item }) => (
             <SwipeableInboxRow
@@ -195,6 +227,33 @@ export default function Inbox() {
         />
       )}
     </View>
+  );
+}
+
+// The entry into the archived sub-view (RUYI-532) — mirrors web's footer
+// button in inbox-list.tsx: archive glyph, localized title, count, chevron.
+// Sits below the last row of the main list (and below the empty state, where
+// web renders it for the same reason).
+function ArchivedEntry({ count, onPress }: { count: number; onPress: () => void }) {
+  const { t } = useT("inbox");
+  const { colorScheme } = useColorScheme();
+  const muted = THEME[colorScheme].mutedForeground;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={t("list.archived_title", "Archived")}
+      className="flex-row items-center gap-3 px-4 py-3 border-t border-border active:bg-secondary"
+    >
+      <Ionicons name="archive-outline" size={20} color={muted} />
+      <Text className="flex-1 text-sm font-medium text-muted-foreground">
+        {t("list.archived_title", "Archived")}
+      </Text>
+      <Text className="text-sm text-muted-foreground tabular-nums">
+        {count}
+      </Text>
+      <Ionicons name="chevron-forward" size={16} color={muted} />
+    </Pressable>
   );
 }
 

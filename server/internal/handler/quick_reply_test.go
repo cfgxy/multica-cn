@@ -12,7 +12,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// Workspace quick-reply catalog tests (RUYI-435).
+// Workspace quick-reply catalog tests (RUYI-435, RUYI-586).
 //
 // The shared test workspace is created with raw SQL (no catalog rows), which
 // is exactly the unseeded case the list endpoint self-heals.
@@ -49,14 +49,21 @@ func createTestQuickReply(t *testing.T, name, content string) QuickReplyResponse
 	return created
 }
 
-// TestQuickReplySeedMatchesOwnerSpec pins the 5 default templates to the
-// RUYI-435 owner spec verbatim — name AND body. The spec's texts are the
-// product contract: a paraphrased seed would ship different words than every
-// document and screenshot describing the feature.
+// TestQuickReplySeedMatchesOwnerSpec pins the default templates to the
+// RUYI-435/RUYI-586 owner specs verbatim — name AND body. The specs' texts
+// are the product contract: a paraphrased seed would ship different words
+// than every document and screenshot describing the feature. Runs against a
+// wiped catalog so the assertions cover exactly the empty-workspace first
+// seed: six defaults at positions 0..5 in spec order.
 func TestQuickReplySeedMatchesOwnerSpec(t *testing.T) {
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx,
+		`DELETE FROM quick_reply WHERE workspace_id = $1`, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("wipe catalog: %v", err)
+	}
 	seedTestQuickReplies(t)
 
-	replies, err := testHandler.Queries.ListQuickReplies(context.Background(), parseUUID(testWorkspaceID))
+	replies, err := testHandler.Queries.ListQuickReplies(ctx, parseUUID(testWorkspaceID))
 	if err != nil {
 		t.Fatalf("list quick replies: %v", err)
 	}
@@ -71,23 +78,25 @@ func TestQuickReplySeedMatchesOwnerSpec(t *testing.T) {
 		{"补测试 / QA", "请补齐当前 Issue 所需的实际测试 / QA 验证，并附上可核验的测试结果或证据；确认通过后再进入结单。"},
 		{"确认并结单", "请核对当前 Issue 的全部要求是否已经完成且无遗漏；确认满足验收要求后完成结单。"},
 		{"检查遗留事项", "请检查当前 Issue 是否还有未完成事项、待我决策事项，以及未提交或未合入的代码；如有请逐项列出，如无请明确确认。"},
+		{"Dry Run + 深度 Review", "执行完整思想实验 / Dry Run，逐条覆盖关键用户路径、状态变化和边界场景；随后进行深度 Code Review，重点检查状态一致性、异常/竞态、回归风险及测试覆盖。发现问题则修复并补测；若 Dry Run + 深度 Review 均无问题，则可按 QA PASS 收口。"},
 	}
 
-	byName := map[string]QuickReplyResponse{}
-	for _, r := range replies {
-		if len(r.Name) >= len(quickReplyFixturePrefix) && r.Name[:len(quickReplyFixturePrefix)] == quickReplyFixturePrefix {
-			continue // another test's fixture row, swept by its own cleanup
-		}
-		byName[r.Name] = quickReplyToResponse(r)
+	if len(replies) != len(want) {
+		t.Fatalf("empty workspace Ensure should seed exactly %d defaults, got %d", len(want), len(replies))
 	}
-	for _, w := range want {
-		got, ok := byName[w.name]
-		if !ok {
-			t.Errorf("seeded catalog missing default %q", w.name)
+	// The list is position-ordered, so index equality also pins the append
+	// semantics: defaults land at 0..n-1, new ones after the existing.
+	for i, w := range want {
+		got := replies[i]
+		if got.Name != w.name {
+			t.Errorf("seeded position %d: got %q, want %q", i, got.Name, w.name)
 			continue
 		}
 		if got.Content != w.content {
 			t.Errorf("seeded %q content drifted from the owner spec:\n  got:  %q\n  want: %q", w.name, got.Content, w.content)
+		}
+		if got.Position != float64(i) {
+			t.Errorf("seeded %q position drifted: got %v, want %v", w.name, got.Position, i)
 		}
 	}
 }
@@ -107,12 +116,86 @@ func TestQuickReplyEnsureIsIdempotent(t *testing.T) {
 	byName := map[string]struct{}{}
 	for _, r := range replies {
 		if r.Name == "解决 PR 冲突" || r.Name == "继续未完成工作" || r.Name == "补测试 / QA" ||
-			r.Name == "确认并结单" || r.Name == "检查遗留事项" {
+			r.Name == "确认并结单" || r.Name == "检查遗留事项" || r.Name == "Dry Run + 深度 Review" {
 			byName[r.Name] = struct{}{}
 		}
 	}
-	if len(byName) != 5 {
-		t.Fatalf("expected exactly 5 seeded names after double seeding, got %d", len(byName))
+	if len(byName) != 6 {
+		t.Fatalf("expected exactly 6 seeded names after double seeding, got %d", len(byName))
+	}
+}
+
+// TestQuickReplyEnsureMergesIntoExistingCatalog covers the upgrade path for a
+// workspace that already carries the RUYI-435 defaults: Ensure appends the
+// RUYI-586 template without disturbing the rows already there, and a
+// same-name row an admin customized (name kept, content replaced) keeps its
+// content — the (workspace_id, name) conflict skips the whole INSERT rather
+// than overwriting.
+func TestQuickReplyEnsureMergesIntoExistingCatalog(t *testing.T) {
+	ctx := context.Background()
+	seedTestQuickReplies(t)
+
+	// Simulate a pre-RUYI-586 workspace: only the original five defaults.
+	if _, err := testPool.Exec(ctx,
+		`DELETE FROM quick_reply WHERE workspace_id = $1 AND name = $2`,
+		parseUUID(testWorkspaceID), "Dry Run + 深度 Review"); err != nil {
+		t.Fatalf("remove new default: %v", err)
+	}
+	before, err := testHandler.Queries.ListQuickReplies(ctx, parseUUID(testWorkspaceID))
+	if err != nil {
+		t.Fatalf("list pre-upgrade catalog: %v", err)
+	}
+	if len(before) != 5 {
+		t.Fatalf("pre-upgrade catalog should hold exactly the 5 RUYI-435 defaults, got %d", len(before))
+	}
+
+	// An admin created a row with the new default's name before the upgrade
+	// reached this workspace. Ensure must treat it as a conflict, not data.
+	customContent := "qr-test admin-customized body"
+	var customID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO quick_reply (workspace_id, name, content, position)
+		VALUES ($1, $2, $3, 99)
+		RETURNING id
+	`, parseUUID(testWorkspaceID), "Dry Run + 深度 Review", customContent).Scan(&customID); err != nil {
+		t.Fatalf("insert customized row: %v", err)
+	}
+
+	if err := quickreply.Ensure(ctx, testHandler.Queries, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("ensure on existing catalog: %v", err)
+	}
+
+	after, err := testHandler.Queries.ListQuickReplies(ctx, parseUUID(testWorkspaceID))
+	if err != nil {
+		t.Fatalf("list post-upgrade catalog: %v", err)
+	}
+	byName := map[string]db.QuickReply{}
+	for _, r := range after {
+		byName[r.Name] = r
+	}
+	if got, ok := byName["Dry Run + 深度 Review"]; !ok {
+		t.Fatalf("post-upgrade catalog missing %q", "Dry Run + 深度 Review")
+	} else if got.Content != customContent || got.Position != 99 {
+		t.Fatalf("admin-customized row was overwritten: content %q position %v", got.Content, got.Position)
+	}
+	for _, b := range before {
+		a, ok := byName[b.Name]
+		if !ok {
+			t.Fatalf("post-upgrade catalog lost existing default %q", b.Name)
+		}
+		if a.Content != b.Content || a.Position != b.Position {
+			t.Fatalf("Ensure disturbed existing default %q: content %q→%q position %v→%v",
+				b.Name, b.Content, a.Content, b.Position, a.Position)
+		}
+	}
+
+	// Sweep the customized row and restore the canonical catalog so later
+	// tests (and later fixture runs) see the true default again.
+	if _, err := testPool.Exec(ctx, `DELETE FROM quick_reply WHERE id = $1`, parseUUID(customID)); err != nil {
+		t.Fatalf("remove customized row: %v", err)
+	}
+	if err := quickreply.Ensure(ctx, testHandler.Queries, parseUUID(testWorkspaceID)); err != nil {
+		t.Fatalf("restore canonical default: %v", err)
 	}
 }
 
@@ -132,8 +215,8 @@ func TestQuickReplyListSelfHeals(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.ListQuickReplies,
 		newRequest(http.MethodGet, "/api/quick-replies", nil)).Want(http.StatusOK).JSON(&resp)
-	if resp.Total != 5 {
-		t.Fatalf("self-heal after wipe should restore 5 defaults, got %d", resp.Total)
+	if resp.Total != 6 {
+		t.Fatalf("self-heal after wipe should restore 6 defaults, got %d", resp.Total)
 	}
 }
 

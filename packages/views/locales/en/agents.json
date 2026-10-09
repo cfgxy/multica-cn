@@ -1068,7 +1068,8 @@
       "fact_thinking": "Thinking",
       "forbidden_title": "No access to this agent",
       "runtime_unbound_banner": "This agent has no runtime bound yet — bind one to start running it.",
-      "forbidden_body": "You don't have permission to view this agent. Ask its owner to share it with you."
+      "forbidden_body": "You don't have permission to view this agent. Ask its owner to share it with you.",
+      "instructions_empty": "No instructions yet"
     },
     "run_history": {
       "load_more": "Load more",

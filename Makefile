@@ -236,6 +236,54 @@ printf '%s\n' \
 	  'BP_SWAP_RECOVERY_PCT ?= $(BP_SWAP_RECOVERY_PCT)' > $(DAEMON_RENDER_MK)
 endef
 
+# DeerFlow 配置收敛（RUYI-548）：daemon 安装/更新两条链路共用——目标实例 config.json
+# 缺 backends.deerflow.home 且本机存在 DeerFlow 部署（$(DEERFLOW_HOME)/config.yaml 在位）
+# 时自动补写，先于实例启动/重启执行，重启即生效（Owner 指令：安装和更新部署时自动配置）。
+# 幂等：键已存在不覆盖、只回显既有值；写入经同目录临时文件原子替换，保留原文件权限与
+# 全部既有键（token 不失）。DEERFLOW_HOME 置空整体禁用；按机覆盖：
+#   make daemon-install DEERFLOW_HOME=/path/to/deerflow
+# 仅收敛 deerflow 一项，不建通用 backend 配置框架。
+DEERFLOW_HOME ?= $(HOME)/srv/deerflow
+
+# $(1) = 目标 profile 名；ALL = default 配置 + 全部 enabled 实例的 profile 配置。
+define DEERFLOW_CONVERGE_SCOPE
+if [ -z "$(DEERFLOW_HOME)" ]; then \
+	  echo "deerflow 配置收敛：跳过（DEERFLOW_HOME 置空，整体禁用）"; \
+elif [ ! -f "$(DEERFLOW_HOME)/config.yaml" ]; then \
+	  echo "deerflow 配置收敛：跳过（未检测到 DeerFlow 部署：$(DEERFLOW_HOME)/config.yaml）"; \
+else \
+	  if [ "$(1)" = ALL ]; then \
+		    cfgs="$(HOME)/.multica/config.json"; \
+		    for u in $$(systemctl list-unit-files 'multica-daemon@*.service' --no-legend 2>/dev/null | awk '$$2 == "enabled" {print $$1}'); do \
+			      p=$${u#multica-daemon@}; p=$${p%.service}; \
+			      [ "$$p" = default ] || cfgs="$$cfgs $(HOME)/.multica/profiles/$$p/config.json"; \
+		    done; \
+	  elif [ "$(1)" = default ]; then \
+		    cfgs="$(HOME)/.multica/config.json"; \
+	  else \
+		    cfgs="$(HOME)/.multica/profiles/$(1)/config.json"; \
+	  fi; \
+	  for c in $$cfgs; do \
+		    if [ ! -f "$$c" ]; then \
+			      echo "deerflow 配置收敛：跳过（config 不存在：$$c）"; \
+		    elif jq -e '.backends.deerflow.home != null' "$$c" >/dev/null 2>&1; then \
+			      echo "deerflow 配置收敛：已配置，保持 backends.deerflow.home=$$(jq -r '.backends.deerflow.home' "$$c")（$$c）"; \
+		    else \
+			      dftmp=""; \
+			      if dftmp="$$(mktemp "$$c.XXXXXX")" \
+				      && jq --arg h "$(DEERFLOW_HOME)" '.backends.deerflow.home = $$h' "$$c" > "$$dftmp" \
+				      && chmod --reference="$$c" "$$dftmp" \
+				      && mv -f "$$dftmp" "$$c"; then \
+				        echo "deerflow 配置收敛：已写入 $$c → backends.deerflow.home=$(DEERFLOW_HOME)"; \
+			      else \
+				        [ -n "$$dftmp" ] && rm -f "$$dftmp"; \
+				        echo "WARN: deerflow 配置写入失败（已保留原 config）：$$c"; \
+			      fi; \
+		    fi; \
+	  done; \
+fi
+endef
+
 # Daemon 统一纳管为 systemd 模板实例 multica-daemon@<profile>，实例名即 profile 名。
 # 实例名 default 是保留字（模板内特判为不带 --profile 的默认 profile），因此旧机器上
 # 的非模板 multica-daemon.service 由 PROFILE=default 安装自动迁移：disable 并删除旧
@@ -261,6 +309,13 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
 	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)（daemon-update 重渲染时自动读回）"
+	# linger（RUYI-529）：supervised 启动经 systemd-run 依赖用户管理器总线常驻；
+	# Linger=no 时会话注销即回收总线，全部启动集中失败。幂等开启，失败不阻断安装但显式告警。
+	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
+		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
+	@loginctl show-user $(USER) -p Linger || true
+	# deerflow 配置收敛（RUYI-548）：目标实例 config.json 缺 backends.deerflow.home 时自动补写（先于启动）
+	@$(call DEERFLOW_CONVERGE_SCOPE,$(PROFILE))
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
 	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
 	sudo systemctl daemon-reload
@@ -293,6 +348,12 @@ daemon-update: daemon-build ## Re-render and converge multica-daemon@.service fr
 	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	@mkdir -p $(HOME)/.multica && $(DAEMON_RENDER_PERSIST)
 	@echo "渲染参数已持久化 → $(DAEMON_RENDER_MK)"
+	# linger（RUYI-529）：同 daemon-install——安装/更新任一路径都收敛 linger 为开启
+	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
+		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
+	@loginctl show-user $(USER) -p Linger || true
+	# deerflow 配置收敛（RUYI-548）：带 PROFILE 只收敛该实例；不带则收敛 default + 全部 enabled 实例（先于重启）
+	@$(call DEERFLOW_CONVERGE_SCOPE,$(if $(filter command line,$(origin PROFILE)),$(PROFILE),ALL))
 	sudo systemctl daemon-reload
 	@if [ "$(origin PROFILE)" = "command line" ]; then \
 		units="multica-daemon@$(PROFILE).service"; \

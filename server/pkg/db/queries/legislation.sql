@@ -206,12 +206,18 @@ RETURNING *;
 SELECT * FROM retrospective_config WHERE retrospective_config.workspace_id = @workspace_id;
 
 -- name: UpsertRetrospectiveConfig :one
-INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, updated_at)
-VALUES (@workspace_id, @enabled, @include_in_review, @window_days, now())
+-- Full-row upsert: the handler reads current, merges the patch (agent
+-- selection included, RUYI-552 direction 3) and writes everything back in
+-- one statement. agent_id/updated_by are nullable: a disabled config may
+-- clear the agent, and rows saved before migration 935 carry no saver.
+INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, agent_id, updated_by, updated_at)
+VALUES (@workspace_id, @enabled, @include_in_review, @window_days, @agent_id, @updated_by, now())
 ON CONFLICT (workspace_id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     include_in_review = EXCLUDED.include_in_review,
     window_days = EXCLUDED.window_days,
+    agent_id = EXCLUDED.agent_id,
+    updated_by = EXCLUDED.updated_by,
     updated_at = now()
 RETURNING *;
 
@@ -219,10 +225,22 @@ RETURNING *;
 SELECT * FROM retrospective_config WHERE retrospective_config.enabled = true;
 
 -- name: InsertRetrospectiveRun :one
+-- detail carries the scanned issue ids from the start: the completion
+-- processor validates the agent's reported issue ids against it, so the
+-- run row is the single source of what this pass put in scope.
 INSERT INTO retrospective_run (
-    workspace_id, status, trigger, window_start, window_end
-) VALUES (@workspace_id, 'running', @trigger, @window_start, @window_end)
+    workspace_id, status, trigger, window_start, window_end, detail
+) VALUES (@workspace_id, 'running', @trigger, @window_start, @window_end, @detail::jsonb)
 RETURNING *;
+
+-- name: SetRetrospectiveRunTaskID :exec
+UPDATE retrospective_run SET task_id = @task_id WHERE id = @id;
+
+-- name: UpdateRetrospectiveRunDetail :exec
+UPDATE retrospective_run SET detail = @detail::jsonb WHERE id = @id;
+
+-- name: GetRetrospectiveRunByTaskID :one
+SELECT * FROM retrospective_run WHERE retrospective_run.task_id = @task_id;
 
 -- name: FinishRetrospectiveRun :one
 UPDATE retrospective_run SET
@@ -238,6 +256,32 @@ WHERE retrospective_run.workspace_id = @workspace_id
 ORDER BY retrospective_run.created_at DESC
 LIMIT 50;
 
+-- name: ReconcileTerminalRetrospectiveRuns :execrows
+-- Bulk backstop for runs whose platform task went terminal without the
+-- completion hook seeing it: offline-runtime sweeps, cancel paths and
+-- daemon crashes all bypass FailTask. First terminal verdict wins — a run
+-- the completion processor already finished (succeeded/failed) is skipped
+-- by the status guard.
+UPDATE retrospective_run r
+SET status = 'failed',
+    error = '关联的智能体运行未正常完成（任务失败、被取消或已过期）',
+    finished_at = now()
+FROM agent_task_queue t
+WHERE r.task_id = t.id
+  AND r.status = 'running'
+  AND t.status IN ('failed', 'cancelled');
+
+-- name: ReconcileUnenqueuedRetrospectiveRuns :execrows
+-- Runs whose task never made it into the queue (enqueue interrupted, or the
+-- teardown fence refused) would stay "running" forever; age them out.
+UPDATE retrospective_run
+SET status = 'failed',
+    error = '复盘任务未能入列（工作空间或智能体已不可用），本轮已终止',
+    finished_at = now()
+WHERE retrospective_run.status = 'running'
+  AND retrospective_run.task_id IS NULL
+  AND retrospective_run.created_at < now() - interval '10 minutes';
+
 -- name: HasRetrospectiveWatermark :one
 -- Exists-shaped probe: 1 when the issue was already analyzed by any run.
 -- count(*) keeps :one always returning a row — a fresh issue has no
@@ -250,6 +294,42 @@ WHERE retrospective_issue_watermark.workspace_id = @workspace_id
 INSERT INTO retrospective_issue_watermark (workspace_id, issue_id, last_run_id)
 VALUES (@workspace_id, @issue_id, @last_run_id)
 ON CONFLICT DO NOTHING;
+
+-- name: CreateRetrospectiveTask :one
+-- The daily retrospective's one agent run (RUYI-552 direction 3), enqueued
+-- on the existing no-issue path. issue_id is NULL by construction — the run
+-- must never create an issue or comment — and originator_source='retrospective'
+-- keeps it out of the quick_create production statistic, the same discipline
+-- as the prompt-quiz run.
+--
+-- originator_user_id/accountable_user_id carry the member who last saved the
+-- config (the honest human originator); NULL for configs saved before
+-- migration 935.
+--
+-- Fenced against workspace teardown by lock_task_owner_rows (migration 284),
+-- exactly like the quiz enqueue: the owners' workspace rows are locked in
+-- this statement's own transaction and the INSERT writes no row once they
+-- are gone. Returning no row is that refusal, not an error.
+INSERT INTO agent_task_queue (
+    agent_id,
+    runtime_id,
+    issue_id,
+    status,
+    priority,
+    context,
+    originator_user_id,
+    accountable_user_id,
+    originator_source,
+    trigger_evidence_kind,
+    trigger_evidence_ref_id
+)
+SELECT
+    sqlc.arg('agent_id'), sqlc.arg('runtime_id'), NULL::uuid, 'queued', sqlc.arg('priority'),
+    sqlc.arg('context'),
+    sqlc.narg('originator_user_id'), sqlc.narg('accountable_user_id'),
+    'retrospective', 'retrospective_run', sqlc.arg('run_id')
+WHERE lock_task_owner_rows(sqlc.arg('agent_id'), NULL::uuid, sqlc.arg('runtime_id'))
+RETURNING *;
 
 -- name: ListIssuesCompletedInWindow :many
 -- 已完成口径: done always; in_review only when the config widens the scan.

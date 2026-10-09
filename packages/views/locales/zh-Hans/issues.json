@@ -518,6 +518,8 @@
     },
     "leave_comment_placeholder": "留下评论...",
     "send_tooltip": "发送",
+    "mention_hint": "提及成员或 Issue",
+    "upload_image": "上传图片",
     "trigger_source_issue_assignee": "assignee",
     "trigger_source_mention_agent": "@mention",
     "trigger_source_mention_squad_leader": "小队",

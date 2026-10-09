@@ -1,5 +1,5 @@
 /**
- * Execution-config management tools (RUYI-433).
+ * Execution-config management tools.
  *
  * The config faces share one contract and these tests pin it at the
  * tool↔client seam (same discipline as tools.test.ts: the client methods are
@@ -187,7 +187,7 @@ async function call(name: string, args: Record<string, unknown>, overrides: Part
 
 // ---- discovery reads ------------------------------------------------------
 
-describe("daemon instance discovery (RUYI-433)", () => {
+describe("daemon instance discovery", () => {
   it("groups runtimes per daemon and counts cloud runtimes separately", async () => {
     const { result } = await call("list_daemon_instances", {});
     const daemons = result.daemons as Array<Record<string, unknown>>;
@@ -213,7 +213,7 @@ describe("daemon instance discovery (RUYI-433)", () => {
   });
 });
 
-describe("runtime reads (RUYI-433)", () => {
+describe("runtime reads", () => {
   it("lists runtimes read-only", async () => {
     const { result, calls } = await call("list_runtimes", {});
     expect(result.total).toBe(3);
@@ -232,7 +232,7 @@ describe("runtime reads (RUYI-433)", () => {
   });
 });
 
-describe("get_runtime_models polling ladder (RUYI-433)", () => {
+describe("get_runtime_models polling ladder", () => {
   it("answers a cache hit inline without polling", async () => {
     const { result, calls } = await call("get_runtime_models", { runtime_id: "rt-1" });
     expect(result.completed).toBe(true);
@@ -296,7 +296,7 @@ describe("get_runtime_models polling ladder (RUYI-433)", () => {
 
 // ---- agent config read-modify-write --------------------------------------
 
-describe("agent config faces (RUYI-433)", () => {
+describe("agent config faces", () => {
   it("reads config by UUID directly and by unique name via resolution", async () => {
     const byId = await call("get_agent_runtime_config", { agent: A1 });
     expect(byId.result.found).toBe(true);
@@ -381,7 +381,7 @@ describe("agent config faces (RUYI-433)", () => {
   });
 });
 
-describe("bulk config updates (RUYI-433)", () => {
+describe("bulk config updates", () => {
   it("reports per-item outcomes and passes per-item expected_revision", async () => {
     const { result, calls } = await call("bulk_update_agent_runtime_config", {
       updates: [
@@ -450,7 +450,7 @@ describe("bulk config updates (RUYI-433)", () => {
 
 // ---- execution profile lifecycle ------------------------------------------
 
-describe("execution profile faces (RUYI-433)", () => {
+describe("execution profile faces", () => {
   it("lists profiles read-only with revisions", async () => {
     const { result, calls } = await call("list_execution_profiles", {});
     expect(result.total).toBe(1);
@@ -526,7 +526,7 @@ describe("execution profile faces (RUYI-433)", () => {
 
 // ---- apply_execution_profile: squad mapping (decision 1) -------------------
 
-describe("apply_execution_profile squad mapping (RUYI-433 decision 1)", () => {
+describe("apply_execution_profile squad mapping", () => {
   it("maps agent members one-to-one with the shared template and skips humans", async () => {
     const { result, calls } = await call("apply_execution_profile", {
       profile_id: "p1",
@@ -635,7 +635,7 @@ describe("apply_execution_profile squad mapping (RUYI-433 decision 1)", () => {
 
 // ---- topology composition ---------------------------------------------------
 
-describe("get_execution_topology (RUYI-433)", () => {
+describe("get_execution_topology", () => {
   it("composes runtimes, bindings, daemon groups, active profile and drift", async () => {
     const { result } = await call("get_execution_topology", {});
     const runtimes = result.runtimes as Array<Record<string, unknown>>;
@@ -673,7 +673,7 @@ describe("get_execution_topology (RUYI-433)", () => {
 
 // ---- surface invariants ------------------------------------------------------
 
-describe("config surface invariants (RUYI-433)", () => {
+describe("config surface invariants", () => {
   it("keeps the nine config reads wire-read-only and every other config face a write", () => {
     const readOnly = new Set([
       "list_daemon_instances", "get_daemon_instance", "list_runtimes", "get_runtime",

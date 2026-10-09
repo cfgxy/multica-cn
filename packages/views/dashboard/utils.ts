@@ -348,21 +348,36 @@ interface WeekShell {
 // carries the labels and partial-week metadata the chart components consume;
 // downstream aggregators fold their own per-week values onto the matching
 // shell.
-function buildWeekShells(tz: string, weekCount: number): WeekShell[] {
+function buildWeekShells(
+  tz: string,
+  weekCount: number,
+  // Anchor the trailing weeks at an arbitrary day instead of today — the
+  // workspace dashboard passes its selected window's end so a historical
+  // window aggregates into the weeks it actually spans. Undefined keeps
+  // the original "ending now" behaviour.
+  anchorIso?: string,
+  // Clip `daysCovered` to the start of the selected window, so a leftmost
+  // bucket that only partially overlaps the window reports the days it
+  // really covers instead of a full 7.
+  windowStartIso?: string,
+): WeekShell[] {
   const count = Math.max(1, Math.floor(weekCount));
-  const today = todayIso(tz);
+  const today = anchorIso ?? todayIso(tz);
   const currentWeekStart = weekStartIso(today);
   const firstWeekStart = addDaysIso(currentWeekStart, -(count - 1) * 7);
   const shells: WeekShell[] = [];
   for (let i = 0; i < count; i++) {
     const weekStart = addDaysIso(firstWeekStart, i * 7);
     const weekEnd = addDaysIso(weekStart, 6);
-    const partial = today < weekEnd;
-    // Inclusive count of how many days of this week have actually elapsed.
-    // Closed weeks sit at 7; the current week reports 1..6.
-    const clampedToday =
-      today < weekStart ? weekStart : today < weekEnd ? today : weekEnd;
-    const elapsed = Math.min(7, Math.max(1, diffDaysIso(weekStart, clampedToday) + 1));
+    // Days of this week the data window actually spans: clipped to the
+    // anchor and, when given, to the window start.
+    const coveredFrom =
+      windowStartIso && windowStartIso > weekStart ? windowStartIso : weekStart;
+    const coveredTo = today < weekEnd ? today : weekEnd;
+    const coveredDays =
+      coveredFrom > coveredTo ? 0 : diffDaysIso(coveredFrom, coveredTo) + 1;
+    const partial = coveredDays < 7;
+    const elapsed = Math.min(7, Math.max(1, coveredDays));
     shells.push({
       weekStart,
       weekEnd,
@@ -387,8 +402,10 @@ export function aggregateWeeklyTime(
   rows: DashboardRunTimeDaily[],
   tz: string,
   weekCount: number,
+  anchorIso?: string,
+  windowStartIso?: string,
 ): WeeklyTimeData[] {
-  const shells = buildWeekShells(tz, weekCount);
+  const shells = buildWeekShells(tz, weekCount, anchorIso, windowStartIso);
   const totals = new Map<string, number>();
   for (const shell of shells) totals.set(shell.weekStart, 0);
   for (const r of rows) {
@@ -403,8 +420,10 @@ export function aggregateWeeklyTasks(
   rows: DashboardRunTimeDaily[],
   tz: string,
   weekCount: number,
+  anchorIso?: string,
+  windowStartIso?: string,
 ): WeeklyTasksData[] {
-  const shells = buildWeekShells(tz, weekCount);
+  const shells = buildWeekShells(tz, weekCount, anchorIso, windowStartIso);
   const buckets = new Map<
     string,
     { completed: number; failed: number; cancelled: number }
@@ -558,8 +577,10 @@ export function aggregateWeeklyErrors(
   rows: DashboardFailureDaily[],
   tz: string,
   weekCount: number,
+  anchorIso?: string,
+  windowStartIso?: string,
 ): WeeklyErrorsData[] {
-  const shells = buildWeekShells(tz, weekCount);
+  const shells = buildWeekShells(tz, weekCount, anchorIso, windowStartIso);
   const buckets = new Map<string, FailureClassCounts & FailureBucketTotals>();
   for (const shell of shells) {
     buckets.set(shell.weekStart, { ...emptyClassCounts(), failed: 0, total: 0 });
