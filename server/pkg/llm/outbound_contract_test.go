@@ -126,6 +126,7 @@ var documentedConsumers = map[string]string{
 	"internal/handler/chat_title.go":                  "chat auto-titling: the first user message of a new chat session",
 	"internal/service/chat_quick_actions_generate.go": "chat follow-up questions: the tail of the conversation",
 	"pkg/promptperplexity/scorer.go":                  "prompt rule-perplexity scoring (D3): the workspace's own assembled system prompt, credential-scanned and PII-masked",
+	"internal/selfevconfig/resolver.go":               "model-config save-time validation ping (RUYI-551): one minimal health-check completion to the owner-saved base URL/key/model, no workspace content; failure text masked before storage or display",
 }
 
 // clientCallSurface is every method on Client that can produce an upstream

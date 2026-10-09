@@ -40,6 +40,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/selfevconfig"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -433,6 +434,13 @@ type Handler struct {
 	// misconfigured self-host deployment fails closed rather than storing
 	// plaintext. Wired in cmd/server/router.go after New.
 	RuntimeCredentialBox *secretbox.Box
+	// SelfEvolution resolves the per-workspace model service config for the
+	// self-evolution module (RUYI-551: module config > deploy default). Nil
+	// when MULTICA_SELF_EVOLUTION_SECRET_KEY is unset; the model-config write
+	// handlers return 503 in that case so a misconfigured self-host fails
+	// closed rather than storing plaintext, and every workspace keeps running
+	// on the deploy-wide default. Wired in cmd/server/router.go after New.
+	SelfEvolution *selfevconfig.Resolver
 	// RetrospectiveRunner is the daily retrospective's trigger+completion
 	// engine (RUYI-552 direction 3): RunWorkspace backs the manual trigger,
 	// ProcessTaskTerminal the task terminal path. Wired in
