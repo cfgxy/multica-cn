@@ -85,7 +85,7 @@ func newE2eSupervisor(t *testing.T, runsDir, launcherBin string) *Supervisor {
 	if err := sys.Available(); err != nil {
 		t.Fatalf("systemd user manager unavailable for E2E: %v", err)
 	}
-	sup, err := New(mgr, sys, launcherBin, slog.Default())
+	sup, err := New(mgr, sys, launcherBin, "e2e", slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

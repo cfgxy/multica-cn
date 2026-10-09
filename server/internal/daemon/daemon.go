@@ -565,6 +565,11 @@ type Daemon struct {
 	// setupSupervisor runs — keeps every worker on the legacy direct-child
 	// path; that nil IS the fallback switch.
 	supervisor *supervisor.Supervisor
+	// supervisedRunsBase is the pre-RUYI-607 shared run-store root (the
+	// parent of this daemon's namespaced segment). The startup reconcile
+	// migrates own in-flight runs out of it; empty — as in directly
+	// constructed test daemons — disables migration entirely.
+	supervisedRunsBase string
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
