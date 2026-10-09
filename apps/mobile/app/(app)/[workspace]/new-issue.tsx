@@ -63,6 +63,21 @@ export default function NewIssueModal() {
   }, [resetDraft]);
 
   const handleModeChange = (v: string) => {
+    // RUYI-624: web `switchToManual` parity. On a seeded (assign-work)
+    // visit, landing on Manual — after the CLI version gate blocked Smart
+    // or by explicit tap — carries the actor into the manual assignee slot
+    // when the user hasn't picked one (a landed memory backfill counts as
+    // picked). Unseeded visits stay memory-backfill-only: smartActor there
+    // is the panel's first-visible fallback, not an assignment intent.
+    // Going through setAssignee bumps assigneeVersion, so a still-pending
+    // RUYI-79 memory read can't replace the seed after the fact.
+    if (v === "manual" && smartForced) {
+      const { smartActor, assignee, setAssignee } =
+        useNewIssueDraftStore.getState();
+      if (smartActor && !assignee) {
+        setAssignee({ type: smartActor.type, id: smartActor.id });
+      }
+    }
     setSmartForced(false);
     setLastMode(v as "smart" | "manual");
   };
