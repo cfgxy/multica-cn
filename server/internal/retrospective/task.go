@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -144,11 +145,13 @@ type extractedDraft struct {
 
 // ParseRunOutput parses the agent's final message into a report. Tolerant of
 // markdown fences (models add them despite instructions); intolerant of
-// everything else — a malformed report fails the run visibly.
+// everything else — a malformed report fails the run visibly. The error is
+// internal (it can quote the raw output); callers log it server-side and
+// record the stable reason code on the run row, never the error text.
 func ParseRunOutput(output string) (RunOutput, error) {
 	var out RunOutput
 	if err := json.Unmarshal([]byte(stripJSONFences(output)), &out); err != nil {
-		return RunOutput{}, fmt.Errorf("Agent 输出不是合法的复盘 JSON: %w", err)
+		return RunOutput{}, fmt.Errorf("retrospective: agent report is not valid JSON: %w", err)
 	}
 	return out, nil
 }
@@ -169,10 +172,12 @@ func stripJSONFences(s string) string {
 
 // runDetail is the JSONB the run row carries: the scanned issue ids from the
 // trigger (the membership set the agent's report is validated against) plus
-// outcome fields merged in at finish.
+// outcome fields merged in at finish. Reason is the structured failure
+// verdict (RUYI-561): the UI localizes from its code; nil on success.
 type runDetail struct {
-	IssueIDs         []string `json:"issue_ids,omitempty"`
-	AnalyzedIssueIDs []string `json:"analyzed_issue_ids,omitempty"`
+	IssueIDs         []string   `json:"issue_ids,omitempty"`
+	AnalyzedIssueIDs []string   `json:"analyzed_issue_ids,omitempty"`
+	Reason           *runReason `json:"reason,omitempty"`
 }
 
 func parseRunDetail(raw []byte) runDetail {
@@ -210,16 +215,27 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	}
 
 	if strings.TrimSpace(taskErr) != "" || strings.TrimSpace(output) == "" {
-		msg := taskErr
-		if strings.TrimSpace(msg) == "" {
-			msg = "智能体运行结束但未产出复盘结果"
+		var reason *runReason
+		if strings.TrimSpace(taskErr) != "" {
+			// The daemon's failure text is internal (error chains, paths);
+			// the server log keeps it verbatim, the run row gets only the
+			// stable code (RUYI-561).
+			slog.Warn("retrospective: agent run failed",
+				"run_id", tc.RunID, "task_id", util.UUIDToString(task.ID), "error", taskErr)
+			reason = &runReason{Code: ReasonAgentRunFailed}
+		} else {
+			reason = &runReason{Code: ReasonAgentNoReport}
 		}
-		return stats, r.finishRun(ctx, run, "failed", msg, runDetail{IssueIDs: detail.IssueIDs, AnalyzedIssueIDs: nil}, stats)
+		return stats, r.finishRun(ctx, run, "failed", reason, runDetail{IssueIDs: detail.IssueIDs, AnalyzedIssueIDs: nil}, stats)
 	}
 
 	out, err := ParseRunOutput(output)
 	if err != nil {
-		return stats, r.finishRun(ctx, run, "failed", err.Error(), runDetail{IssueIDs: detail.IssueIDs}, stats)
+		// The parse error can quote raw agent output — log material, not UI
+		// material (RUYI-561).
+		slog.Warn("retrospective: agent report rejected",
+			"run_id", tc.RunID, "task_id", util.UUIDToString(task.ID), "error", err)
+		return stats, r.finishRun(ctx, run, "failed", &runReason{Code: ReasonAgentReportInvalid}, runDetail{IssueIDs: detail.IssueIDs}, stats)
 	}
 	// All-or-nothing membership validation before any write: a report that
 	// names issues outside this run's scanned set is rejected wholesale, so a
@@ -228,14 +244,14 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	for _, id := range analyzed {
 		if !scanned[id] {
 			return stats, r.finishRun(ctx, run, "failed",
-				fmt.Sprintf("Agent 报告了本轮回看窗口之外的 Issue（%s），整份报告已拒绝", id),
+				&runReason{Code: ReasonReportOutOfScope, IssueID: id},
 				runDetail{IssueIDs: detail.IssueIDs}, stats)
 		}
 	}
 	for _, d := range out.Drafts {
 		if !scanned[d.IssueID] {
 			return stats, r.finishRun(ctx, run, "failed",
-				fmt.Sprintf("Agent 草案引用了本轮回看窗口之外的 Issue（%s），整份报告已拒绝", d.IssueID),
+				&runReason{Code: ReasonDraftOutOfScope, IssueID: d.IssueID},
 				runDetail{IssueIDs: detail.IssueIDs}, stats)
 		}
 	}
@@ -295,7 +311,7 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 		stats.IssuesAnalyzed++
 	}
 
-	return stats, r.finishRun(ctx, run, "succeeded", "", runDetail{IssueIDs: detail.IssueIDs, AnalyzedIssueIDs: analyzed}, stats)
+	return stats, r.finishRun(ctx, run, "succeeded", nil, runDetail{IssueIDs: detail.IssueIDs, AnalyzedIssueIDs: analyzed}, stats)
 }
 
 // upsertDraft is the two-layer dedup for one draft, one transaction: pool

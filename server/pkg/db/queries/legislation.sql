@@ -261,10 +261,11 @@ LIMIT 50;
 -- completion hook seeing it: offline-runtime sweeps, cancel paths and
 -- daemon crashes all bypass FailTask. First terminal verdict wins — a run
 -- the completion processor already finished (succeeded/failed) is skipped
--- by the status guard.
+-- by the status guard. The verdict is the stable reason code on the run's
+-- detail (the UI localizes it); the legacy error text column stays empty.
 UPDATE retrospective_run r
 SET status = 'failed',
-    error = '关联的智能体运行未正常完成（任务失败、被取消或已过期）',
+    detail = COALESCE(r.detail, '{}'::jsonb) || '{"reason":{"code":"task_not_completed"}}'::jsonb,
     finished_at = now()
 FROM agent_task_queue t
 WHERE r.task_id = t.id
@@ -273,10 +274,11 @@ WHERE r.task_id = t.id
 
 -- name: ReconcileUnenqueuedRetrospectiveRuns :execrows
 -- Runs whose task never made it into the queue (enqueue interrupted, or the
--- teardown fence refused) would stay "running" forever; age them out.
+-- teardown fence refused) would stay "running" forever; age them out with
+-- the stable never-enqueued reason code (RUYI-561).
 UPDATE retrospective_run
 SET status = 'failed',
-    error = '复盘任务未能入列（工作空间或智能体已不可用），本轮已终止',
+    detail = COALESCE(retrospective_run.detail, '{}'::jsonb) || '{"reason":{"code":"task_never_enqueued"}}'::jsonb,
     finished_at = now()
 WHERE retrospective_run.status = 'running'
   AND retrospective_run.task_id IS NULL

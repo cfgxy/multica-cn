@@ -147,37 +147,37 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 	stats := &RunStats{WorkspaceID: workspaceID, RunID: runID, WindowDays: cfg.WindowDays}
 
 	// Agent gate: the run is one round of the configured agent, so a config
-	// without a usable agent records a failed run naming the reason instead
-	// of enqueueing anything. PUT enforces enabled→agent_id going forward;
-	// these paths catch rows saved before migration 935 and agents that
-	// became unusable after saving.
-	agentReason := ""
+	// without a usable agent records a failed run carrying the actionable
+	// reason instead of enqueueing anything. PUT enforces enabled→agent_id
+	// going forward; these paths catch rows saved before migration 935 and
+	// agents that became unusable after saving.
+	var agentGate *runReason
 	switch {
 	case !cfg.AgentID.Valid:
-		agentReason = "每日总复盘未配置执行智能体：请在自进化 → 每日总复盘配置中选择一个智能体后重试"
+		agentGate = &runReason{Code: ReasonAgentNotConfigured}
 	default:
 		agent, agentErr := r.Queries.GetAgent(ctx, cfg.AgentID)
 		switch {
 		case agentErr != nil:
-			agentReason = "配置的执行智能体不存在：请重新选择后保存"
+			agentGate = &runReason{Code: ReasonAgentMissing}
 		case agent.ArchivedAt.Valid:
-			agentReason = "配置的执行智能体已归档：请重新选择后保存"
+			agentGate = &runReason{Code: ReasonAgentArchived}
 		case !agent.RuntimeID.Valid:
-			agentReason = "配置的执行智能体没有可用运行时：请为该智能体配置运行时后重试"
+			agentGate = &runReason{Code: ReasonAgentRuntimeMissing}
 		default:
-			stats.IssuesScanned, agentReason = r.enqueueRun(ctx, cfg, agent, run, windowStart, windowEnd, stats)
-			if agentReason == "" && stats.IssuesScanned == 0 {
+			stats.IssuesScanned, agentGate = r.enqueueRun(ctx, cfg, agent, run, windowStart, windowEnd, stats)
+			if agentGate == nil && stats.IssuesScanned == 0 {
 				// Empty window: nothing to analyze, no agent spend — close
 				// the run as a clean success right here.
-				if err := r.finishRun(ctx, run, "succeeded", "", runDetail{}, stats); err != nil {
+				if err := r.finishRun(ctx, run, "succeeded", nil, runDetail{}, stats); err != nil {
 					return stats, err
 				}
 				return stats, nil
 			}
 		}
 	}
-	if agentReason != "" {
-		if err := r.finishRun(ctx, run, "failed", agentReason, runDetail{}, stats); err != nil {
+	if agentGate != nil {
+		if err := r.finishRun(ctx, run, "failed", agentGate, runDetail{}, stats); err != nil {
 			return stats, err
 		}
 		return stats, ErrNoAgent
@@ -187,9 +187,10 @@ func (r *Runner) RunWorkspace(ctx context.Context, workspaceID string, trigger s
 
 // enqueueRun scans the window (watermark-filtered, capped), enqueues the
 // agent's run over the scanned issues and links the task onto the run row.
-// It returns the scanned count; a non-empty reason string means the enqueue
-// itself failed and the run must be finished with it.
-func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, agent db.Agent, run db.RetrospectiveRun, windowStart, windowEnd time.Time, stats *RunStats) (int, string) {
+// It returns the scanned count; a non-nil reason means the enqueue itself
+// failed and the run must be finished with it — the full error chain goes
+// to the server log, the run row carries only the stable code (RUYI-561).
+func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, agent db.Agent, run db.RetrospectiveRun, windowStart, windowEnd time.Time, stats *RunStats) (int, *runReason) {
 	var scanned []TaskContextIssue
 	statuses := []string{"done"}
 	if cfg.IncludeInReview {
@@ -203,7 +204,9 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 			UpdatedAt_2: pgtype.Timestamptz{Time: windowEnd, Valid: true},
 		})
 		if err != nil {
-			return len(scanned), fmt.Sprintf("扫描窗口失败: %v", err)
+			slog.Warn("retrospective: window scan failed",
+				"run_id", stats.RunID, "workspace_id", stats.WorkspaceID, "error", err)
+			return len(scanned), &runReason{Code: ReasonWindowScanFailed}
 		}
 		for _, issue := range issues {
 			if len(scanned) >= IssuesPerRun {
@@ -217,7 +220,9 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 				IssueID:     issue.ID,
 			})
 			if err != nil {
-				return len(scanned), fmt.Sprintf("水位查询失败: %v", err)
+				slog.Warn("retrospective: watermark check failed",
+					"run_id", stats.RunID, "workspace_id", stats.WorkspaceID, "issue_id", issueID, "error", err)
+				return len(scanned), &runReason{Code: ReasonWatermarkCheckFailed}
 			}
 			if watermarked == 1 {
 				continue
@@ -234,7 +239,7 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 	// watermark defines what has been analyzed, so an empty scan is a clean
 	// success, not a failure.
 	if len(scanned) == 0 {
-		return 0, ""
+		return 0, nil
 	}
 
 	// The scanned set rides on the run row from the start: the completion
@@ -244,7 +249,9 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 		ID:     run.ID,
 		Detail: detail,
 	}); err != nil {
-		return len(scanned), fmt.Sprintf("记录扫描范围失败: %v", err)
+		slog.Warn("retrospective: recording the scanned scope failed",
+			"run_id", stats.RunID, "workspace_id", stats.WorkspaceID, "error", err)
+		return len(scanned), &runReason{Code: ReasonScanScopeRecordFailed}
 	}
 
 	taskCtx, _ := json.Marshal(TaskContext{
@@ -265,7 +272,9 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 		Context:          taskCtx,
 	})
 	if err != nil {
-		return len(scanned), fmt.Sprintf("复盘任务入列失败: %v", err)
+		slog.Warn("retrospective: enqueueing the agent task failed",
+			"run_id", stats.RunID, "workspace_id", stats.WorkspaceID, "error", err)
+		return len(scanned), &runReason{Code: ReasonTaskEnqueueFailed}
 	}
 	stats.TaskID = taskID
 	if err := r.Queries.SetRetrospectiveRunTaskID(ctx, db.SetRetrospectiveRunTaskIDParams{
@@ -277,7 +286,7 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 		slog.Warn("retrospective: run row missing task back-pointer",
 			"run_id", stats.RunID, "task_id", taskID, "error", err)
 	}
-	return len(scanned), ""
+	return len(scanned), nil
 }
 
 // ReconcileStaleRuns is the bulk backstop the scheduler runs on every tick:
@@ -299,13 +308,18 @@ func (r *Runner) ReconcileStaleRuns(ctx context.Context) (int64, error) {
 
 // finishRun merges extra detail into the run row's existing detail and
 // writes the terminal state. Every terminal path funnels through here, so
-// the scanned set recorded at trigger survives every finish.
-func (r *Runner) finishRun(ctx context.Context, run db.RetrospectiveRun, status, errMsg string, extra runDetail, stats *RunStats) error {
+// the scanned set recorded at trigger survives every finish. reason (nil on
+// success) is the structured failure verdict the UI localizes from; the
+// legacy `error` text column stays empty on everything this writes — raw
+// error chains live in the server log at the failing site, never here
+// (RUYI-561).
+func (r *Runner) finishRun(ctx context.Context, run db.RetrospectiveRun, status string, reason *runReason, extra runDetail, stats *RunStats) error {
 	detail := parseRunDetail(run.Detail)
 	if extra.IssueIDs != nil {
 		detail.IssueIDs = extra.IssueIDs
 	}
 	detail.AnalyzedIssueIDs = extra.AnalyzedIssueIDs
+	detail.Reason = reason
 	out, err := json.Marshal(detail)
 	if err != nil {
 		out = []byte("{}")
@@ -319,7 +333,7 @@ func (r *Runner) finishRun(ctx context.Context, run db.RetrospectiveRun, status,
 		ProposalsCreated:  int32(stats.ProposalsCreated),
 		ProposalsMerged:   int32(stats.ProposalsMerged),
 		DuplicatesSkipped: int32(stats.DuplicatesSkipped),
-		Error:             errMsg,
+		Error:             "",
 		Detail:            out,
 	}); ferr != nil {
 		return fmt.Errorf("finish retrospective run: %w", ferr)
