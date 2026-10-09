@@ -6,41 +6,24 @@ import {
 } from "@multica/ui/components/ui/number-flow";
 import { formatDuration } from "../utils";
 
-// Period selector — mirrors the runtime detail page so users see the same
-// option set across both dashboards. `dims` declares which chart dimensions
-// each range may be drawn at: 1d / 7d at the weekly grain collapse to a single
-// bar, 180d at the daily grain is 180 unreadable bars.
-//
-// 1d semantic: "today" (the natural calendar day from 00:00 in the viewer's
-// timezone), not "the last 24 hours". The `dailyCutoffIso` filter on the page
-// enforces this even at the midnight edge.
-export const TIME_RANGES = [
-  { label: "1d", days: 1, dims: ["daily"] as const },
-  { label: "7d", days: 7, dims: ["daily"] as const },
-  { label: "30d", days: 30, dims: ["daily", "weekly"] as const },
-  { label: "90d", days: 90, dims: ["daily", "weekly"] as const },
-  { label: "180d", days: 180, dims: ["weekly"] as const },
-] as const;
-
-export type TimeRange = (typeof TIME_RANGES)[number]["days"];
-export type Dim = "daily" | "weekly";
-
-/**
- * Which chart dimensions the current range may be drawn at.
- *
- * The constraint between range and dimension used to be enforced in both
- * directions by two sibling controls in the page header: picking Weekly while
- * on 1d silently reset the range to 90d, which moved every KPI on the page.
- * The range is now the page-scoped filter and the dimension is card-scoped, so
- * the dependency runs one way only — a card offers whichever dimensions its
- * range allows, and nothing resets. A card-scoped control must never reach up
- * and change a page-scoped one (MUL-5759).
- */
-export function dimsForDays(days: TimeRange): readonly Dim[] {
-  return (
-    TIME_RANGES.find((r) => r.days === days)?.dims ?? (["daily"] as const)
-  );
-}
+// Period vocabulary and window arithmetic live in ../window — the quick
+// ranges and the period navigation share one module so the selector and the
+// page can never disagree about what a range means. Re-exported here so the
+// card components keep their import site.
+export {
+  TIME_RANGES,
+  type TimeRange,
+  type Dim,
+  dimsForDays,
+  dimsForWindowLength,
+  type StatWindow,
+  quickWindow,
+  shiftedWindow,
+  windowLength,
+  shiftWindow,
+  canShiftNext,
+  isCurrentWindow,
+} from "../window";
 
 /** Sentinel for "no project filter" — kept distinct from the empty string so
  *  it survives a refactor that ever lets a project be slug-keyed. */

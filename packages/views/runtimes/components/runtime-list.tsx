@@ -192,6 +192,7 @@ export function buildWorkloadIndex(
 function RuntimeNameCell({
   runtime,
   machineTitle,
+  machineRuntimeCount,
 }: {
   runtime: AgentRuntime;
   /**
@@ -202,8 +203,19 @@ function RuntimeNameCell({
    * runtime profiles), where any alias is shown verbatim.
    */
   machineTitle?: string;
+  /**
+   * How many runtimes the containing machine has. A machine-wide alias on a
+   * multi-runtime machine still collapses to the provider base (MUL-5248);
+   * on a single-runtime machine the alias is the row's actual display name
+   * and stays visible (RUYI-564). Undefined without machine context.
+   */
+  machineRuntimeCount?: number;
 }) {
-  const label = runtimeRowLabel(runtime, machineTitle ?? "");
+  const label = runtimeRowLabel(
+    runtime,
+    machineTitle ?? "",
+    machineRuntimeCount,
+  );
   return (
     <ListGridCell className="gap-2">
       <div className="flex h-8 w-8 shrink-0 items-center justify-center">
@@ -667,6 +679,7 @@ export function RuntimeList({
   now,
   runtimeHref,
   machineTitle,
+  machineRuntimeCount,
 }: {
   runtimes: AgentRuntime[];
   now: number;
@@ -678,6 +691,12 @@ export function RuntimeList({
    * while a per-runtime alias still shows (MUL-5248).
    */
   machineTitle?: string;
+  /**
+   * How many runtimes the containing machine has — pass the machine's real
+   * runtime count, not the rendered row count (pending profile rows inflate
+   * the latter). Only meaningful alongside machineTitle (RUYI-564).
+   */
+  machineRuntimeCount?: number;
 }) {
   const { t } = useT("runtimes");
   const wsId = useWorkspaceId();
@@ -791,7 +810,11 @@ export function RuntimeList({
               className={pending ? "cursor-default" : "cursor-pointer"}
               {...(detailHref ? rowLink(detailHref) : {})}
             >
-              <RuntimeNameCell runtime={row.runtime} machineTitle={machineTitle} />
+              <RuntimeNameCell
+                runtime={row.runtime}
+                machineTitle={machineTitle}
+                machineRuntimeCount={machineRuntimeCount}
+              />
               <HealthCell
                 runtime={row.runtime}
                 workload={row.workload}

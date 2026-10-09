@@ -1023,12 +1023,21 @@ export function aggregateByWeek(
   usage: readonly WeeklyAggregable[],
   tz: string,
   weekCount: number,
+  // Anchor the trailing weeks at an arbitrary day instead of today — the
+  // workspace dashboard passes its selected window's end so historical
+  // periods aggregate into the weeks the window actually spans. Undefined
+  // keeps the original "ending now" behaviour (runtime usage section).
+  anchorIso?: string,
+  // Clip `daysCovered` to the start of the selected window, so a leftmost
+  // bucket that only partially overlaps the window reports the days it
+  // really covers instead of a full 7.
+  windowStartIso?: string,
 ): {
   weeklyTokens: WeeklyTokenData[];
   weeklyCostStack: WeeklyCostStackData[];
 } {
   const count = Math.max(1, Math.floor(weekCount));
-  const today = todayIso(tz);
+  const today = anchorIso ?? todayIso(tz);
   const currentWeekStart = weekStartIso(today);
   const firstWeekStart = addDaysIso(currentWeekStart, -(count - 1) * 7);
 
@@ -1074,17 +1083,17 @@ export function aggregateByWeek(
 
   const decorate = (weekStart: string) => {
     const weekEnd = addDaysIso(weekStart, 6);
-    const partial = today < weekEnd;
-    // Inclusive count of how many days of this week have actually elapsed.
-    // Sits at 7 for closed weeks, 1..6 for the current week.
-    const elapsedDays = Math.min(
-      7,
-      Math.max(
-        1,
-        // Day index of `today` within [weekStart, weekEnd] + 1.
-        diffDaysIso(weekStart, today < weekStart ? weekStart : today < weekEnd ? today : weekEnd) + 1,
-      ),
-    );
+    // Days of this week the data window actually spans: clipped to the
+    // anchor (a week cannot extend past "now" / the window end) and, when
+    // given, to the window start (a trailing count of weeks covers up to
+    // six days before the window opens).
+    const coveredFrom =
+      windowStartIso && windowStartIso > weekStart ? windowStartIso : weekStart;
+    const coveredTo = today < weekEnd ? today : weekEnd;
+    const coveredDays =
+      coveredFrom > coveredTo ? 0 : diffDaysIso(coveredFrom, coveredTo) + 1;
+    const partial = coveredDays < 7;
+    const elapsedDays = Math.min(7, Math.max(1, coveredDays));
     return {
       weekStart,
       weekEnd,
