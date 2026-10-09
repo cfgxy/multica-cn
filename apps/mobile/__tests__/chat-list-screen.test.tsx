@@ -14,6 +14,32 @@ import ChatListScreen from "@/app/(app)/[workspace]/(tabs)/chat";
 
 const mockRouterPush = jest.fn();
 
+// Records the props the screen hands the session FlatList on each render
+// (last entry is current), so tests can pin the refresh wiring without
+// reaching into the host tree. Only the FlatList export is wrapped — a
+// Proxy passthrough, NOT a spread: enumerating react-native's module
+// triggers every lazy export getter and crashes the jest env (TurboModule
+// DevMenu invariant). Referenced only at render time — this factory runs
+// before module consts initialize (same lazy-wrapper rule as the
+// expo-router mock above).
+const capturedFlatListProps: Record<string, unknown>[] = [];
+
+jest.mock("react-native", () => {
+  const RN = jest.requireActual<typeof import("react-native")>("react-native");
+  const React = jest.requireActual<typeof import("react")>("react");
+  return new Proxy(RN, {
+    get(target, prop) {
+      if (prop === "FlatList") {
+        return (props: Record<string, unknown>) => {
+          capturedFlatListProps.push(props);
+          return React.createElement(target.FlatList, props);
+        };
+      }
+      return Reflect.get(target, prop);
+    },
+  });
+});
+
 jest.mock("expo-router", () => ({
   // Lazy wrappers: the factory is evaluated while the test file's imports
   // resolve, before top-level consts initialize — direct refs would capture
@@ -26,7 +52,7 @@ jest.mock("expo-router", () => ({
 }));
 
 const mockRefetch = jest.fn();
-const mockQueryFlags = { isLoading: false, isError: false };
+const mockQueryFlags = { isLoading: false, isError: false, isRefetching: false };
 const mockSessions = [];
 const mockSeenQueryKeys = [];
 
@@ -43,6 +69,7 @@ jest.mock("@tanstack/react-query", () => ({
         isError: mockQueryFlags.isError,
         error: mockQueryFlags.isError ? new Error("boom") : null,
         refetch: mockRefetch,
+        isRefetching: mockQueryFlags.isRefetching,
       };
     }
     if (isAgents) {
@@ -84,6 +111,13 @@ jest.mock("@/data/queries/chat", () => ({
     queryFn: jest.fn(),
   }),
   sortChatSessions: (arr) => arr,
+  // RUYI-533: the screen splits the flat cache locally; mirror the real
+  // helper's split so the render conditions under test stay honest (the
+  // helper itself is unit-tested on the vitest lane).
+  splitChatSessions: (arr) => ({
+    active: arr.filter((s) => s.status !== "archived"),
+    archived: arr.filter((s) => s.status === "archived"),
+  }),
   chatMessagesOptions: (id) => ({
     queryKey: ["chat", "messages", id ?? ""],
     queryFn: jest.fn(),
@@ -110,12 +144,13 @@ jest.mock("@/data/queries/members", () => ({
 }));
 
 const mockDeleteMutate = jest.fn();
+const mockSetArchivedMutate = jest.fn();
 
 jest.mock("@/data/mutations/chat", () => ({
   useCreateChatSession: () => ({ mutateAsync: jest.fn() }),
   useDeleteChatSession: () => ({ mutate: mockDeleteMutate }),
   useMarkChatSessionRead: () => ({ mutate: jest.fn() }),
-  useSetChatSessionArchived: () => ({ mutate: jest.fn() }),
+  useSetChatSessionArchived: () => ({ mutate: mockSetArchivedMutate }),
   useSetChatSessionPinned: () => ({ mutate: jest.fn() }),
 }));
 
@@ -169,11 +204,18 @@ jest.mock("@/components/ui/header", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text, View } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
+    // Slots go in as static children args, NOT one array — the real Header
+    // renders each slot in its own conditional JSX position, and screen-created
+    // slot elements (e.g. the header IconButton) legitimately carry no key.
+    // Wrapping them in an array makes React demand keys it never would on the
+    // real screen ("unique key prop" console warnings, RUYI-533 follow-up).
     Header: ({ left, title, right }) =>
       React.createElement(
         View,
         { testID: "header" },
-        [left, title ? React.createElement(Text, { key: "t" }, title) : null, right],
+        left,
+        title ? React.createElement(Text, null, title) : null,
+        right,
       ),
   };
 });
@@ -193,8 +235,10 @@ jest.mock("@/components/ui/icon-button", () => {
   };
 });
 
+const mockSheetShow = jest.fn();
+
 jest.mock("@/components/ui/action-sheet", () => ({
-  useActionSheet: () => ({ show: jest.fn() }),
+  useActionSheet: () => ({ show: mockSheetShow }),
   ActionSheetModal: () => null,
 }));
 
@@ -218,6 +262,7 @@ beforeEach(() => {
   mockSeenQueryKeys.length = 0;
   mockQueryFlags.isLoading = false;
   mockQueryFlags.isError = false;
+  mockQueryFlags.isRefetching = false;
 });
 
 function seedSessions() {
@@ -263,7 +308,92 @@ describe("ChatListScreen (chat tab root, RUYI-496)", () => {
     await render(<ChatListScreen />);
     expect(await screen.findByText("Pinned chat")).toBeTruthy();
     expect(screen.getByText("Regular chat")).toBeTruthy();
-    expect(screen.getByText("Old chat")).toBeTruthy();
+  });
+
+  // RUYI-533: archived chats leave the tab list — they live in the Archived
+  // sub-view reachable from the footer entry, never inline (web parity with
+  // chat-thread-list.tsx's local split).
+  it("RUYI-533: excludes archived sessions from the tab list", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    expect(await screen.findByTestId("chat-row-sa")).toBeTruthy();
+    expect(screen.queryByText("Old chat")).toBeNull();
+    expect(screen.queryByTestId("chat-row-sc")).toBeNull();
+  });
+
+  it("RUYI-533: shows the archived entry with a count when archived chats exist", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    const entry = await screen.findByTestId("chat-archived-entry");
+    expect(entry).toBeTruthy();
+    expect(screen.getByText("Archived")).toBeTruthy();
+    expect(screen.getByText("1")).toBeTruthy();
+  });
+
+  it("RUYI-533: the archived entry pushes the archived sub-view", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    fireEvent.press(await screen.findByTestId("chat-archived-entry"));
+    expect(mockRouterPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pathname: "/[workspace]/chat/archived",
+        params: expect.objectContaining({ workspace: "acme" }),
+      }),
+    );
+  });
+
+  // RUYI-533: the archive action itself — long-press an active session and
+  // pick "Archive chat"; the optimistic patch flips `status` in the one flat
+  // cache, so the row leaves this list for the Archived sub-view.
+  it("RUYI-533: long-press archives an active session via the action sheet", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    fireEvent(await screen.findByTestId("chat-row-sb"), "longPress");
+    expect(mockSheetShow).toHaveBeenCalledTimes(1);
+    const sheetConfig = mockSheetShow.mock.calls[0][0];
+    const archiveIndex = sheetConfig.options.indexOf("Archive chat");
+    expect(archiveIndex).toBeGreaterThanOrEqual(0);
+    sheetConfig.onSelect(archiveIndex);
+    expect(mockSetArchivedMutate).toHaveBeenCalledWith({
+      sessionId: "sb",
+      archived: true,
+    });
+  });
+
+  it("RUYI-533: hides the archived entry when nothing is archived", async () => {
+    mockSessions.push(
+      {
+        id: "sa",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        creator_id: "user-1",
+        title: "Pinned chat",
+        status: "active",
+        has_unread: true,
+        pinned: true,
+        updated_at: "2026-10-07T08:00:00Z",
+        last_message: { content: "hello there", role: "user", created_at: "" },
+      },
+    );
+    await render(<ChatListScreen />);
+    expect(await screen.findByTestId("chat-row-sa")).toBeTruthy();
+    expect(screen.queryByTestId("chat-archived-entry")).toBeNull();
+  });
+
+  it("RUYI-533: keeps the archived entry reachable from the empty state", async () => {
+    mockSessions.push({
+      id: "sc",
+      workspace_id: "ws-1",
+      agent_id: "agent-1",
+      creator_id: "user-1",
+      title: "Old chat",
+      status: "archived",
+      has_unread: false,
+      updated_at: "2026-10-06T07:00:00Z",
+    });
+    await render(<ChatListScreen />);
+    expect(await screen.findByText("No chats yet.")).toBeTruthy();
+    expect(screen.getByTestId("chat-archived-entry")).toBeTruthy();
   });
 
   it("AC2: tapping a row pushes the strictly matching detail route", async () => {
@@ -300,6 +430,23 @@ describe("ChatListScreen (chat tab root, RUYI-496)", () => {
     seedSessions();
     await render(<ChatListScreen />);
     expect(mockSeenQueryKeys).toContainEqual(["chat", "ws-1", "sessions"]);
+  });
+
+  // Inbox parity (RUYI-532): the tab list pulls to refresh — FlatList
+  // `refreshing` is bound to the query's isRefetching and `onRefresh` is the
+  // very refetch the error retry uses, mirroring inbox.tsx prop-for-prop.
+  it("RUYI-533: pull-to-refresh refetches the sessions query", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    const list = capturedFlatListProps.at(-1) as {
+      refreshing?: unknown;
+      onRefresh?: unknown;
+    };
+    expect(list.refreshing).toBe(false);
+    expect(list.onRefresh).toBe(mockRefetch);
+    mockQueryFlags.isRefetching = true;
+    await screen.rerender(<ChatListScreen />);
+    expect(capturedFlatListProps.at(-1).refreshing).toBe(true);
   });
 
   it("new-chat entry routes to the blank detail screen", async () => {
