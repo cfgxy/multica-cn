@@ -558,6 +558,12 @@ export default function WorkspaceLayout() {
           name="more/squads/[id]/execution-profiles"
           options={SHEET_OPTIONS}
         />
+        {/* RUYI-541: 小队 instructions 编辑窗——详情页缩略预览背后的
+            独立窗口（完整查看/编辑 + 未保存离开拦截），formSheet。 */}
+        <Stack.Screen
+          name="more/squads/[id]/edit-instructions"
+          options={SHEET_OPTIONS}
+        />
         <Stack.Screen
           name="more/pins"
           options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
