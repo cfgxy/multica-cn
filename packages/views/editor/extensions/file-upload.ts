@@ -132,6 +132,27 @@ export function findImagePosBySrc(editor: any, src: string): number | null {
 }
 
 /**
+ * Locate a fileCard whose settled href matches — the non-image mirror of
+ * {@link findImagePosBySrc}. The settle-delivery watchers consult this to see
+ * whether the live document already holds the finished link (RUYI-483): the
+ * image-only check misreads a live editor holding a settled fileCard as
+ * "editor died", double-appending the link beside the inline swap.
+ */
+export function findFileCardPosByHref(editor: any, href: string): number | null {
+  if (!editor) return null;
+  let cardPos: number | null = null;
+  editor.state.doc.descendants((node: any, pos: number) => {
+    if (cardPos !== null) return false;
+    if (node.type.name === "fileCard" && node.attrs.href === href) {
+      cardPos = pos;
+      return false;
+    }
+    return undefined;
+  });
+  return cardPos;
+}
+
+/**
  * Read an image's intrinsic pixel dimensions off-thread. Returns null when the
  * decode fails or the API is unavailable (e.g. jsdom in tests, where
  * `createImageBitmap` is undefined) — callers degrade to no reserved box.

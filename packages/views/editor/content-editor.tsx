@@ -64,6 +64,7 @@ import {
   insertUploadPlaceholder,
   settleUploadNode,
   findImagePosBySrc,
+  findFileCardPosByHref,
 } from "./extensions/file-upload";
 import { configStore } from "@multica/core/config";
 import { preprocessMarkdown } from "./utils/preprocess";
@@ -338,6 +339,14 @@ interface ContentEditorRef {
    * either put the image there or it didn't (RUYI-478).
    */
   hasImageWithSrc: (src: string) => boolean;
+  /**
+   * True when the document already shows the finished upload link — an image
+   * with this src OR a settled fileCard with this href. The write-back
+   * watchers must consult this, not the image-only check: a live editor
+   * holding a settled non-image fileCard would otherwise read as "the editor
+   * died" and the link would be appended a second time (RUYI-483).
+   */
+  hasSettledUploadLink: (link: string) => boolean;
   /**
    * Cancel the pending debounced `onUpdate` and hand its markdown back to the
    * caller instead of firing it. Returns null when nothing is pending.
@@ -992,6 +1001,13 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       hasImageWithSrc: (src: string) => {
         if (!editor || editor.isDestroyed) return false;
         return findImagePosBySrc(editor, src) !== null;
+      },
+      hasSettledUploadLink: (link: string) => {
+        if (!editor || editor.isDestroyed) return false;
+        return (
+          findImagePosBySrc(editor, link) !== null ||
+          findFileCardPosByHref(editor, link) !== null
+        );
       },
       insertMarkdownAtEnd: (markdown: string) => {
         if (!editor || editor.isDestroyed) return false;
