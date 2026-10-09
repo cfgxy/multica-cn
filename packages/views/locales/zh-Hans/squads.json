@@ -217,7 +217,9 @@
       "unsaved_title": "有未保存的修改",
       "unsaved_keep": "继续编辑",
       "unsaved_discard": "放弃",
-      "unsaved_body": "你对指令的修改尚未保存。"
+      "unsaved_body": "你对指令的修改尚未保存。",
+      "instructions_empty": "暂无指引",
+      "instructions_edit": "编辑指引"
     },
     "execution": {
       "add_member": "添加成员",

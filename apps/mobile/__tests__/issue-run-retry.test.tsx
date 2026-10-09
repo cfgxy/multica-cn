@@ -203,6 +203,17 @@ describe("RunRow retry entry", () => {
     expect(screen.getByLabelText("Retry task")).toBeTruthy();
   });
 
+  it("renders the retry entry as a filled button matching the card's retry strip (RUYI-553)", async () => {
+    await renderRunRow({ status: "failed" });
+    const button = screen.getByLabelText("Retry task");
+    expect(button.props.accessibilityRole).toBe("button");
+    // 与 task-retry-strip.test.tsx 的卡片内重试按钮同串 className——
+    // 一屏两制防线：改形态必须两处同改。
+    expect(button.props.className).toMatch(/bg-secondary/);
+    expect(button.props.className).toMatch(/rounded-md/);
+    expect(button.props.className).toMatch(/px-3/);
+  });
+
   it("renders no retry entry on completed / active runs", async () => {
     const { rerender, queryClient } = await renderRunRow({
       status: "completed",

@@ -55,3 +55,30 @@ describe("CJK font fallback order", () => {
     expectJapaneseScopedOverride(cssSource);
   });
 });
+
+// Docs must keep fonts self-hosted: next/font/google fetches
+// fonts.googleapis.com at build time and stalls builds on hosts that cannot
+// reach Google (this already regressed once in apps/web, see its
+// app/layout.tsx). The layout imports fontsource packages and global.css
+// composes the static fontsource family names.
+describe("fonts are self-hosted", () => {
+  it("keeps next/font/google out of the docs layout", () => {
+    const layoutSource = readFileSync(
+      resolve(process.cwd(), "app/[lang]/layout.tsx"),
+      "utf8",
+    );
+
+    // Match import statements only — comments may still mention why
+    // next/font/google was rejected.
+    expect(layoutSource).not.toMatch(/import\s+[^;]*from\s+"next\/font/);
+    expect(layoutSource).toMatch(/import\s+"@fontsource-variable\//);
+  });
+
+  it("declares the fontsource family names in global.css", () => {
+    const cssSource = readFileSync(resolve(process.cwd(), "app/global.css"), "utf8");
+
+    expect(cssSource).toContain('"Inter Variable"');
+    expect(cssSource).toContain('"Geist Mono Variable"');
+    expect(cssSource).toContain('"Source Serif 4 Variable"');
+  });
+});

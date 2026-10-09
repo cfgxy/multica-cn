@@ -276,7 +276,7 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 		taskID := seedRunningChatTask(t, agentID, sessionID)
 		attID := seedAgentChatAttachment(t, agentID, sessionID, taskID)
 
-		if _, err := testHandler.TaskService.CompleteTask(context.Background(),
+		if _, _, err :=testHandler.TaskService.CompleteTask(context.Background(),
 			parseUUID(taskID), []byte(`{"output":"here is the chart"}`), "", "", "", false, "", ""); err != nil {
 			t.Fatalf("CompleteTask: %v", err)
 		}
@@ -297,7 +297,7 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 		taskID := seedRunningChatTask(t, agentID, sessionID)
 		attID := seedAgentChatAttachment(t, agentID, sessionID, taskID)
 
-		if _, err := testHandler.TaskService.CompleteTask(context.Background(),
+		if _, _, err :=testHandler.TaskService.CompleteTask(context.Background(),
 			parseUUID(taskID), []byte(`{"output":""}`), "", "", "", false, "", ""); err != nil {
 			t.Fatalf("CompleteTask: %v", err)
 		}
@@ -316,7 +316,7 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 
 	t.Run("empty output + no attachment creates no message", func(t *testing.T) {
 		taskID := seedRunningChatTask(t, agentID, sessionID)
-		if _, err := testHandler.TaskService.CompleteTask(context.Background(),
+		if _, _, err :=testHandler.TaskService.CompleteTask(context.Background(),
 			parseUUID(taskID), []byte(`{"output":""}`), "", "", "", false, "", ""); err != nil {
 			t.Fatalf("CompleteTask: %v", err)
 		}
@@ -339,7 +339,7 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 		}
 		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, looseID) })
 
-		if _, err := testHandler.TaskService.CompleteTask(context.Background(),
+		if _, _, err :=testHandler.TaskService.CompleteTask(context.Background(),
 			parseUUID(taskID), []byte(`{"output":"done"}`), "", "", "", false, "", ""); err != nil {
 			t.Fatalf("CompleteTask: %v", err)
 		}
@@ -377,7 +377,7 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 			t.Fatalf("pre-bind attachment: %v", err)
 		}
 
-		if _, err := testHandler.TaskService.CompleteTask(context.Background(),
+		if _, _, err :=testHandler.TaskService.CompleteTask(context.Background(),
 			parseUUID(taskID), []byte(`{"output":"done"}`), "", "", "", false, "", ""); err != nil {
 			t.Fatalf("CompleteTask: %v", err)
 		}

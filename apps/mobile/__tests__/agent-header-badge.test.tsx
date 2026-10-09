@@ -46,17 +46,12 @@ jest.mock("@/lib/use-t", () => ({
   }),
 }));
 
+const mockStackProps: Array<Record<string, unknown>> = [];
 jest.mock("@/components/ui/avatar-stack", () => ({
-  AvatarStack: () => {
+  AvatarStack: (props: Record<string, unknown>) => {
+    mockStackProps.push(props);
     const { View } = require("react-native");
     return <View testID="avatar-stack" />;
-  },
-}));
-
-jest.mock("@/components/ui/pulse-dot", () => ({
-  PulseDot: () => {
-    const { View } = require("react-native");
-    return <View testID="pulse-dot" />;
   },
 }));
 
@@ -134,7 +129,23 @@ describe("AgentHeaderBadge", () => {
     await renderBadge(queryClient);
 
     const badge = await screen.findByLabelText("Agent working — open runs");
-    expect(screen.getByTestId("pulse-dot")).toBeTruthy();
+    expect(screen.queryByTestId("pulse-dot")).toBeNull();
+    // RUYI-554: the stack itself carries the state — running agents breathe.
+    expect(mockStackProps.at(-1)?.activity).toBe("running");
+
+    fireEvent.press(badge);
+    expect(mockPush).toHaveBeenCalledWith(RUNS_ROUTE);
+  });
+
+  it("grays the stack when only queued tasks are active (RUYI-554)", async () => {
+    const queryClient = newQueryClient();
+    const queuedOnly = [task({ id: "task-q", status: "queued" })];
+    seedTasks(queryClient, queuedOnly, queuedOnly);
+
+    await renderBadge(queryClient);
+
+    const badge = await screen.findByLabelText("Agent working — open runs");
+    expect(mockStackProps.at(-1)?.activity).toBe("queued");
 
     fireEvent.press(badge);
     expect(mockPush).toHaveBeenCalledWith(RUNS_ROUTE);

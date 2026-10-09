@@ -11,7 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
-import { MessageSquareText, Slash } from "lucide-react";
+import { AtSign, ImagePlus, MessageSquareText, Slash } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useUploadGate, useComposerSubmit } from "../../editor";
@@ -72,6 +72,25 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   );
   const [content, setContent] = useState(initialDraft ?? "");
   const [isEmpty, setIsEmpty] = useState(() => !initialDraft?.trim());
+  const setDraft = useCommentDraftStore((s) => s.setDraft);
+  // The single state update every markdown emission flows through. The
+  // editor's onUpdate prop (debounced) and the synchronous flush after
+  // programmatic inserts (quick reply / voice turns) share it — a flushed
+  // insert must flip `isEmpty` (→ send button) in the same commit as the
+  // insert instead of waiting out the debounce window (RUYI-550).
+  const applyEditorMarkdown = useCallback(
+    (md: string | null) => {
+      if (md == null) return;
+      setContent(md);
+      setIsEmpty(!md.trim());
+      // Persist on every emission so a reload or scroll-out-of-viewport
+      // restores work to the keystroke. setDraft keeps any pending
+      // attachments and drops the entry only when text AND attachments are
+      // both empty.
+      setDraft(draftKey, md);
+    },
+    [draftKey, setDraft],
+  );
   const [suppressedAgentIds, setSuppressedAgentIds] = useState<Set<string>>(() => new Set());
   const triggerPreview = useCommentTriggerPreview({ issueId, content });
   // Uploads for this composer session (MUL-5181). Owned by the module-level
@@ -98,13 +117,27 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   useEffect(() => {
     if (slashPending && lazy.ready && editorRef.current?.insertSlashTrigger()) setSlashPending(false);
   }, [slashPending, lazy.ready]);
+  // @ mention entry (RUYI-550 mobile parity): replayed on the first ready
+  // frame when picked while the lazy editor is still mounting, same posture
+  // as the slash button's pending trigger.
+  const [mentionPending, setMentionPending] = useState(false);
+  useEffect(() => {
+    if (mentionPending && lazy.ready && editorRef.current?.insertMentionTrigger()) setMentionPending(false);
+  }, [mentionPending, lazy.ready]);
   // Replay a quick-reply pick that landed while the editor was still mounting.
   // insertMarkdownAtEnd is a no-op before Tiptap exists, so the pick waits here
-  // and fires on the first ready frame; on failure it stays queued.
+  // and fires on the first ready frame; on failure it stays queued. A landed
+  // insert is flushed synchronously through applyEditorMarkdown so the send
+  // button is usable in the same commit — never gated on the debounced
+  // emission (RUYI-550).
   useEffect(() => {
     if (!pendingQuickReply || !lazy.ready) return;
-    if (editorRef.current?.insertMarkdownAtEnd(pendingQuickReply)) setPendingQuickReply(null);
-  }, [pendingQuickReply, lazy.ready]);
+    const handle = editorRef.current;
+    if (handle?.insertMarkdownAtEnd(pendingQuickReply)) {
+      applyEditorMarkdown(handle.flushPendingUpdate());
+      setPendingQuickReply(null);
+    }
+  }, [pendingQuickReply, lazy.ready, applyEditorMarkdown]);
 
   // Voice entry (RUYI-474): the issue's assigned agent is the session target —
   // the same binding the comment itself is addressed to (unassigned/human/
@@ -118,7 +151,11 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   const voice = useVoiceSession({
     agentId: assignedAgentId ?? null,
     onUserTurn: (text) => {
-      if (lazy.ready && editorRef.current?.insertMarkdownAtEnd(text)) return;
+      const handle = editorRef.current;
+      if (lazy.ready && handle?.insertMarkdownAtEnd(text)) {
+        applyEditorMarkdown(handle.flushPendingUpdate());
+        return;
+      }
       lazy.activate();
       setPendingVoiceTurns((prev) => [...(prev ?? []), text]);
     },
@@ -127,22 +164,31 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
     if (!pendingVoiceTurns?.length || !lazy.ready) return;
     const rest: string[] = [];
     for (const turn of pendingVoiceTurns) {
-      if (!editorRef.current?.insertMarkdownAtEnd(turn)) rest.push(turn);
+      const handle = editorRef.current;
+      if (handle?.insertMarkdownAtEnd(turn)) {
+        applyEditorMarkdown(handle.flushPendingUpdate());
+      } else {
+        rest.push(turn);
+      }
     }
     // Only rewrite state when something landed — a fully-failing flush (a
     // destroyed editor) would otherwise loop on the same queue forever.
     if (rest.length !== pendingVoiceTurns.length) {
       setPendingVoiceTurns(rest.length > 0 ? rest : null);
     }
-  }, [pendingVoiceTurns, lazy.ready]);
+  }, [pendingVoiceTurns, lazy.ready, applyEditorMarkdown]);
 
   const insertQuickReply = useCallback(
     (content: string) => {
-      if (lazy.ready && editorRef.current?.insertMarkdownAtEnd(content)) return;
+      const handle = editorRef.current;
+      if (lazy.ready && handle?.insertMarkdownAtEnd(content)) {
+        applyEditorMarkdown(handle.flushPendingUpdate());
+        return;
+      }
       lazy.activate();
       setPendingQuickReply(content);
     },
-    [lazy],
+    [lazy, applyEditorMarkdown],
   );
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: lazy.uploadOrQueue,
@@ -156,7 +202,6 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   // (ContentEditorRef has no setContent, so this is the only injection point).
   // Flush on every onUpdate (debounced upstream) + visibilitychange/pagehide
   // so tab close / mobile background doesn't lose work. Cleared on submit.
-  const setDraft = useCommentDraftStore((s) => s.setDraft);
   useEffect(() => {
     const flush = () => {
       const md = editorRef.current?.getMarkdown();
@@ -305,15 +350,7 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
           defaultValue={initialDraft}
           onReady={lazy.onReady}
           placeholder={t(($) => $.comment.leave_comment_placeholder)}
-          onUpdate={(md) => {
-            setContent(md);
-            setIsEmpty(!md.trim());
-            // Debounced upstream (debounceMs=100). Persist on every tick so a
-            // reload or scroll-out-of-viewport restores work to the keystroke.
-            // setDraft keeps any pending attachments and drops the entry only
-            // when text AND attachments are both empty.
-            setDraft(draftKey, md);
-          }}
+          onUpdate={applyEditorMarkdown}
           onSubmit={submit}
           onUploadFile={handleUpload}
           onUploadingChange={uploadGate.onUploadingChange}
@@ -363,6 +400,23 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
         />
       </div>
       <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
+        {/* @ mention entry (RUYI-550 mobile parity): opens the same @ picker
+         *  as typing "@" — the mobile composer leads its toolbar with it. */}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          title={t(($) => $.comment.mention_hint)}
+          aria-label={t(($) => $.comment.mention_hint)}
+          disabled={submitting}
+          onClick={() => {
+            if (lazy.ready && editorRef.current?.insertMentionTrigger()) return;
+            setMentionPending(true);
+            lazy.activate();
+          }}
+        >
+          <AtSign className="size-4" />
+        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -412,6 +466,17 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
         >
           <Slash className="size-4" />
         </Button>
+        {/* Image entry (RUYI-550 mobile parity): the mobile composer keeps a
+         *  dedicated image button beside the generic file one; same upload
+         *  pipeline, OS picker narrowed to images. */}
+        <FileUploadButton
+          size="sm"
+          multiple
+          accept="image/*"
+          icon={<ImagePlus className="size-4" />}
+          label={t(($) => $.comment.upload_image)}
+          onSelect={(file) => lazy.uploadOrQueue([file])}
+        />
         <FileUploadButton
           size="sm"
           multiple

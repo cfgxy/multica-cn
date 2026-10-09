@@ -8,7 +8,12 @@
   "filter": {
     "project_label": "项目",
     "all_projects": "全部项目",
-    "period_label": "时间范围"
+    "period_label": "时间范围",
+    "period_prev": "上一周期",
+    "period_next": "下一周期",
+    "period_back_to_current": "回到当前周期",
+    "period_custom": "自定义区间",
+    "period_apply": "应用"
   },
   "kpi": {
     "cost_label": "费用 · {{days}}天",

@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
+import { addDaysIso } from "../../runtimes/utils";
 
 // The viewing timezone flows: auth store `user.timezone` → useViewingTimezone()
 // → every dashboard query key. This test pins that chain: when the stored
@@ -783,5 +784,60 @@ describe("DashboardPage — leaderboard density", () => {
       gridTemplateColumns:
         "minmax(10rem, 1.6fr) minmax(6rem, 1fr) 5rem 5rem 5rem 4rem",
     });
+  });
+});
+
+// The period navigation is page-owned state: the filter only reports intent,
+// the page derives the next window. That seam had zero coverage while the
+// shift handler's sign flipped — ‹ clamped itself back onto the current
+// window and no quick range could ever leave "now" (QA BUG-1).
+describe("DashboardPage — quick-range period navigation", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = true;
+    tzRef.current = "UTC";
+    replaceSpy.mockClear();
+    cleanup();
+  });
+
+  // The StatWindow rides inside every dashboard query key (dashboardKeys.*),
+  // so reading windows off the captured keys asserts what the six endpoints
+  // are actually asked for rather than what the trigger label claims.
+  function askedWindows(): string[] {
+    return queryKeys
+      .filter((k) => k[0] === "dashboard")
+      .map((k) => JSON.stringify(k[3]));
+  }
+
+  it("pages ‹ into the past and › back through whole periods to now", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const current = askedWindows();
+    expect(current.length).toBeGreaterThan(0);
+    // Six endpoints, one shared window — the boundary this page exists to
+    // keep, still true the moment the window starts moving.
+    expect(new Set(current).size).toBe(1);
+    const currentWindow = JSON.parse(current[0]!);
+
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("button", { name: "Previous period" }));
+
+    const past = askedWindows();
+    expect(past.length).toBeGreaterThan(0);
+    expect(new Set(past).size).toBe(1);
+    // Exactly one 30-day period back, not a clamped no-op.
+    expect(JSON.parse(past[0]!)).toEqual({
+      start: addDaysIso(currentWindow.start, -30),
+      end: addDaysIso(currentWindow.end, -30),
+    });
+
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("button", { name: "Next period" }));
+
+    // The round trip closes on the window it started from, and "now" is
+    // where › dies again — the forward direction has no future to show.
+    expect(new Set(askedWindows())).toEqual(new Set(current));
+    expect(screen.getByRole("button", { name: "Next period" })).toBeDisabled();
   });
 });

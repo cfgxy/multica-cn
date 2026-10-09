@@ -183,12 +183,14 @@ VALUES
     ($1::uuid, '继续未完成工作', '请基于当前已有成果继续推进，仅完成尚未完成的部分，不要重复已经完成的工作；完成后给出结果和验证证据。', 1),
     ($1::uuid, '补测试 / QA', '请补齐当前 Issue 所需的实际测试 / QA 验证，并附上可核验的测试结果或证据；确认通过后再进入结单。', 2),
     ($1::uuid, '确认并结单', '请核对当前 Issue 的全部要求是否已经完成且无遗漏；确认满足验收要求后完成结单。', 3),
-    ($1::uuid, '检查遗留事项', '请检查当前 Issue 是否还有未完成事项、待我决策事项，以及未提交或未合入的代码；如有请逐项列出，如无请明确确认。', 4)
+    ($1::uuid, '检查遗留事项', '请检查当前 Issue 是否还有未完成事项、待我决策事项，以及未提交或未合入的代码；如有请逐项列出，如无请明确确认。', 4),
+    ($1::uuid, 'Dry Run + 深度 Review', '执行完整思想实验 / Dry Run，逐条覆盖关键用户路径、状态变化和边界场景；随后进行深度 Code Review，重点检查状态一致性、异常/竞态、回归风险及测试覆盖。发现问题则修复并补测；若 Dry Run + 深度 Review 均无问题，则可按 QA PASS 收口。', 5)
 ON CONFLICT DO NOTHING
 `
 
-// Idempotent seed of the 5 default quick replies (RUYI-435 owner spec: names
-// and bodies are canonical — they must match the issue description verbatim).
+// Idempotent seed of the default quick replies (RUYI-435/RUYI-586 owner
+// specs: names and bodies are canonical — they must match the issue
+// descriptions verbatim; new defaults append after the existing ones).
 // Safe to call concurrently during a rolling deploy: the unique
 // (workspace_id, name) index makes a losing racer a no-op rather than an
 // error, and an admin-edited row (name kept, content changed) is never

@@ -91,14 +91,49 @@ func TestEnrichQuotedFeishuFileLinkDegrades(t *testing.T) {
 	if !strings.Contains(enriched.Body, link) {
 		t.Fatalf("引用块丢失链接原文：%q", enriched.Body)
 	}
-	if !strings.Contains(enriched.Body, "Feishu file-share link") {
+	if !strings.Contains(enriched.Body, "Feishu file/doc/wiki share link") {
 		t.Fatalf("裸飞书文件链接引用未附降级注记：%q", enriched.Body)
 	}
 }
 
+// TestEnrichQuotedWikiDocxLinksDegrade（RUYI-572 决策 2B）：裸 wiki /
+// docx 分享链接与裸 /file/ 链接同样触发降级注记——本期 resolver 已能
+// 解析这三族，但 capability 缺失或文档级 403 时内容不会到达，注记是
+// 固定降级文案。
+func TestEnrichQuotedWikiDocxLinksDegrade(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		link string
+	}{
+		{"wiki", "https://tenant.example.feishu.cn/wiki/wikcnExampleToken123"},
+		{"docx", "https://tenant.example.feishu.cn/docx/doxcnExampleToken123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newEnricherFake()
+			fake.byID["om_link_parent"] = []LarkMessage{
+				textMsg("om_link_parent", "ou_peer", tc.link, "1000"),
+			}
+			in := quotedFileTrigger()
+			in.ParentID = "om_link_parent"
+
+			enriched := enrich(t, fake, in, InboundEnricherConfig{})
+
+			if !strings.Contains(enriched.Body, tc.link) {
+				t.Fatalf("引用块丢失链接原文：%q", enriched.Body)
+			}
+			if !strings.Contains(enriched.Body, "Feishu file/doc/wiki share link") {
+				t.Fatalf("裸 %s 链接引用未附降级注记：%q", tc.name, enriched.Body)
+			}
+		})
+	}
+}
+
 // TestEnrichQuotedLinkNoteOnlyForBareFeishuFileLinks：降级注记的触发面
-// 收窄——普通文本、非飞书域名、飞书非 /file/ 路径、夹在正文中的链接均
-// 不触发注记。
+// 收窄——普通文本、非飞书域名、飞书不受支持路径（docs/sheets 等本期
+// 不解析的族）、夹在正文中的链接均不触发注记。
 func TestEnrichQuotedLinkNoteOnlyForBareFeishuFileLinks(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -107,7 +142,8 @@ func TestEnrichQuotedLinkNoteOnlyForBareFeishuFileLinks(t *testing.T) {
 	}{
 		{"plain-text", "只是普通文本"},
 		{"non-feishu-url", "https://example.com/file/abc"},
-		{"feishu-non-file-path", "https://tenant.example.feishu.cn/docs/abc"},
+		{"feishu-unsupported-path", "https://tenant.example.feishu.cn/docs/abc"},
+		{"feishu-unsupported-sheets", "https://tenant.example.feishu.cn/sheets/abc"},
 		{"link-in-prose", "表格在 https://tenant.example.feishu.cn/file/AbcDefExampleToken 请查收"},
 	}
 	for _, tc := range cases {

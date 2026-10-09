@@ -26,6 +26,18 @@ type fakeSender struct {
 	downloadedByKey  map[string]DownloadedResource
 	downloadErrByKey map[string]error
 	cardSends        []SendCardParams
+	// ShareLinkClient surface (RUYI-572). Unset maps answer with a
+	// synthetic resource so an unexpected call is visible in the call
+	// records rather than panicking.
+	driveFiles   map[string]DownloadedResource
+	driveErrByKey map[string]error
+	driveCalls   []string
+	wikiNodes    map[string]WikiNode
+	wikiErrByKey map[string]error
+	wikiCalls    []string
+	docxContents map[string]string
+	docxErrByKey map[string]error
+	docxCalls    []string
 }
 
 func (f *fakeSender) SendInteractiveCard(_ context.Context, p SendCardParams) (string, error) {
@@ -65,6 +77,46 @@ func (f *fakeSender) download(p DownloadResourceParams) (DownloadedResource, err
 	}
 	return f.downloaded, f.downloadErr
 }
+
+// --- ShareLinkClient fake (RUYI-572) ---
+
+func (f *fakeSender) DownloadDriveFile(_ context.Context, _ InstallationCredentials, token string) (DownloadedResource, error) {
+	f.driveCalls = append(f.driveCalls, token)
+	if err := f.driveErrByKey[token]; err != nil {
+		return DownloadedResource{}, err
+	}
+	if got, ok := f.driveFiles[token]; ok {
+		return got, nil
+	}
+	return DownloadedResource{Data: []byte("drive:" + token), ContentType: "application/octet-stream"}, nil
+}
+
+func (f *fakeSender) GetWikiNode(_ context.Context, _ InstallationCredentials, token string) (WikiNode, error) {
+	f.wikiCalls = append(f.wikiCalls, token)
+	if err := f.wikiErrByKey[token]; err != nil {
+		return WikiNode{}, err
+	}
+	if got, ok := f.wikiNodes[token]; ok {
+		return got, nil
+	}
+	return WikiNode{ObjType: "docx", ObjToken: "synth_" + token}, nil
+}
+
+func (f *fakeSender) GetDocxRawContent(_ context.Context, _ InstallationCredentials, documentID string) (string, error) {
+	f.docxCalls = append(f.docxCalls, documentID)
+	if err := f.docxErrByKey[documentID]; err != nil {
+		return "", err
+	}
+	if got, ok := f.docxContents[documentID]; ok {
+		return got, nil
+	}
+	return "synthetic docx body", nil
+}
+
+// bareSenderStub implements only APIClient — no ShareLinkClient — so the
+// resolver's link path must degrade to log-only silence, exactly like a
+// pre-RUYI-572 client or a stub.
+type bareSenderStub struct{ APIClient }
 
 type fakeMediaStorage struct {
 	uploads []fakeMediaUpload

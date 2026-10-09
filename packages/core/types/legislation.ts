@@ -121,6 +121,26 @@ export interface RetrospectiveConfig {
   enabled: boolean;
   include_in_review: boolean;
   window_days: number;
+  /** The agent that executes each retrospective run. Null until one is saved. */
+  agent_id: string | null;
+  /** Best-effort display name resolved by the server; null when the agent is gone. */
+  agent_name: string | null;
+}
+
+/**
+ * PATCH body for the retrospective config (RUYI-552): omit = keep the saved
+ * value; `agent_id: ""` clears the selection; a non-empty value replaces it
+ * and must name a live agent in this workspace.
+ */
+export interface RetrospectiveConfigPatch {
+  enabled?: boolean;
+  include_in_review?: boolean;
+  window_days?: number;
+  agent_id?: string;
+}
+
+export interface RetrospectiveRunDetail {
+  [key: string]: unknown;
 }
 
 export interface RetrospectiveRun {
@@ -135,5 +155,7 @@ export interface RetrospectiveRun {
   proposals_merged: number;
   duplicates_skipped: number;
   error: string;
+  /** Raw server JSONB passthrough (issue_ids membership, etc.). */
+  detail?: RetrospectiveRunDetail | null;
   created_at: string;
 }

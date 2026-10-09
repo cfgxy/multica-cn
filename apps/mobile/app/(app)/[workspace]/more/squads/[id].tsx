@@ -15,13 +15,13 @@
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { router, useLocalSearchParams, Stack } from "expo-router";
-import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
 import type { SquadMemberStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { InstructionsPreview } from "@/components/ui/instructions-preview";
 import {
   squadDetailOptions,
   squadMembersOptions,
@@ -64,21 +64,11 @@ export default function SquadDetailScreen() {
   const removeMember = useRemoveSquadMember(squadId);
   const updateRole = useUpdateSquadMemberRole(squadId);
   const { uploading, showAvatarSheet, modalProps } = useAvatarUploader();
-  const navigation = useNavigation();
 
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionDraft, setDescriptionDraft] = useState("");
-  const [instructions, setInstructions] = useState("");
-  const [instructionsSeeded, setInstructionsSeeded] = useState(false);
-
-  // Seed instruction editor once the payload lands (pattern shared with
-  // edit-profile: seed once, never fight a refetch mid-edit).
-  if (squad && !instructionsSeeded) {
-    setInstructions(squad.instructions);
-    setInstructionsSeeded(true);
-  }
 
   const isWorkspaceAdmin = useMemo(() => {
     if (!me) return false;
@@ -89,31 +79,6 @@ export default function SquadDetailScreen() {
   const canManage =
     !!squad && (isWorkspaceAdmin || (!!me && squad.creator_id === me.id));
   const isArchived = !!squad?.archived_at;
-
-  // S2 (RUYI-418): leaving with unsaved instructions silently discards them.
-  // Prevent the removal (back gesture, header back, router.back alike) and
-  // re-dispatch the original action only after an explicit discard.
-  const instructionsDirty = !!squad && instructions !== squad.instructions;
-  usePreventRemove(!!instructionsDirty, ({ data }) => {
-    Alert.alert(
-      t("mobile.detail.unsaved_title", "Unsaved changes"),
-      t(
-        "mobile.detail.unsaved_body",
-        "Your edits to the instructions haven't been saved yet.",
-      ),
-      [
-        {
-          text: t("mobile.detail.unsaved_keep", "Keep editing"),
-          style: "cancel",
-        },
-        {
-          text: t("mobile.detail.unsaved_discard", "Discard"),
-          style: "destructive",
-          onPress: () => navigation.dispatch(data.action),
-        },
-      ],
-    );
-  });
 
   const statusByMember = useMemo(() => {
     const map = new Map<string, SquadMemberStatus>();
@@ -188,15 +153,12 @@ export default function SquadDetailScreen() {
     setEditingDescription(false);
   };
 
-  const saveInstructions = () => {
-    if (!instructionsDirty || updateSquad.isPending) return;
-    updateSquad.mutate(
-      { instructions },
-      {
-        onSuccess: () => Alert.alert(t("toasts.instructions_saved", "Instructions saved")),
-        onError: () => Alert.alert(t("name_editor.save_failed", "Failed to save")),
-      },
-    );
+  const openInstructionsEditor = () => {
+    if (!wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/more/squads/[id]/edit-instructions",
+      params: { workspace: wsSlug, id: squad.id },
+    });
   };
 
   const confirmRemove = (memberType: string, memberId: string, name: string) => {
@@ -383,51 +345,43 @@ export default function SquadDetailScreen() {
           </View>
         </View>
 
-        {/* ── Instructions ── */}
+        {/* ── Instructions ── RUYI-541: long text keeps a truncated preview
+            here; full viewing and editing live in the dedicated
+            edit-instructions window (S2 unsaved-leaving guard relocated
+            there). Managers get the pencil; readers tap through to the
+            same window in its read-only mode — the full text stays
+            reachable without rendering any edit affordance for them. */}
         <View className="gap-1.5">
-          <Text className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            {t("detail_tabs.instructions", "Instructions")}
-          </Text>
+          <View className="flex-row items-center gap-1.5">
+            <Text className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              {t("detail_tabs.instructions", "Instructions")}
+            </Text>
+            {canManage ? (
+              <Ionicons
+                name="pencil"
+                size={12}
+                color={THEME[colorScheme].mutedForeground}
+              />
+            ) : null}
+          </View>
           <Text className="text-xs text-muted-foreground leading-4">
             {t(
               "instructions_tab.description",
               "Squad instructions are injected into the leader agent's prompt whenever it works on an issue assigned to this squad. Use them to give the leader squad-wide guidance, working agreements, or context the leader should follow on every task.",
             )}
           </Text>
-          {canManage ? (
-            <View className="gap-2">
-              <TextInput
-                value={instructions}
-                onChangeText={setInstructions}
-                placeholder={t(
-                  "instructions_tab.placeholder",
-                  "e.g. Always start by writing a failing test. Prefer small, atomic commits.",
-                )}
-                placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-                multiline
-                textAlignVertical="top"
-                editable={!updateSquad.isPending}
-                className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2 min-h-24 border border-transparent"
-              />
-              {instructionsDirty ? (
-                <Pressable
-                  onPress={saveInstructions}
-                  disabled={updateSquad.isPending}
-                  className={`self-end rounded-lg bg-primary px-4 py-2 ${
-                    updateSquad.isPending ? "opacity-50" : "active:opacity-80"
-                  }`}
-                  accessibilityRole="button"
-                  accessibilityLabel={t("instructions_tab.save_button", "Save")}
-                >
-                  <Text className="text-sm font-medium text-primary-foreground">
-                    {t("instructions_tab.save_button", "Save")}
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
-          ) : squad.instructions ? (
-            <Text className="text-sm text-foreground">{squad.instructions}</Text>
-          ) : null}
+          <InstructionsPreview
+            text={squad.instructions}
+            emptyHint={t("mobile.detail.instructions_empty", "No instructions yet")}
+            numberOfLines={6}
+            onTap={openInstructionsEditor}
+            canEdit={canManage}
+            accessibilityLabel={
+              canManage
+                ? t("mobile.detail.instructions_edit", "Edit instructions")
+                : t("detail_tabs.instructions", "Instructions")
+            }
+          />
         </View>
 
         {/* ── Execution profiles (Q10, managers only) ── */}

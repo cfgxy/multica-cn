@@ -16,7 +16,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
 	"github.com/multica-ai/multica/server/pkg/promptperplexity"
 )
@@ -240,23 +239,6 @@ func (h *Handler) deployModelConfigState() modelConfigResolved {
 
 func (h *Handler) writeConfigUnavailable(w http.ResponseWriter) {
 	writeError(w, http.StatusServiceUnavailable, "自进化模块配置未启用：需要设置 MULTICA_SELF_EVOLUTION_SECRET_KEY 并重启服务")
-}
-
-// RetrospectiveResolve adapts the per-workspace resolver to the retrospective
-// runner's string-keyed signature. nil keeps the runner's legacy static
-// wiring (deploy-wide LLM), which is the correct behavior while the
-// deployment key is absent.
-func RetrospectiveResolve(r *selfevconfig.Resolver) func(context.Context, string) (retrospective.ResolvedModel, error) {
-	if r == nil {
-		return nil
-	}
-	return func(ctx context.Context, ws string) (retrospective.ResolvedModel, error) {
-		target, err := r.ResolveRunTarget(ctx, parseUUID(ws))
-		if err != nil {
-			return retrospective.ResolvedModel{}, err
-		}
-		return retrospective.ResolvedModel{Client: target.Client, Source: target.Source, Model: target.Model}, nil
-	}
 }
 
 // PerplexityGeneratorFor adapts the resolver to the D3 scorer's per-workspace

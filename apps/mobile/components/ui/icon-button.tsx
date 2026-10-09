@@ -9,13 +9,17 @@
  * — that pattern hardcodes a light-mode hex and reinvents button chrome RNR
  * already ships.
  */
-import { type ComponentProps } from "react";
+import { type ComponentProps, type ReactNode } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@react-navigation/native";
 import { Button, type ButtonProps } from "@/components/ui/button";
 
 interface Props extends Omit<ButtonProps, "children" | "size"> {
-  name: ComponentProps<typeof Ionicons>["name"];
+  /** Ionicon glyph — omit when `icon` carries a custom SVG glyph. */
+  name?: ComponentProps<typeof Ionicons>["name"];
+  /** Custom glyph (e.g. a react-native-svg cross-client parity icon);
+   *  replaces the Ionicon render entirely. */
+  icon?: ReactNode;
   /** Glyph size in points. Default 20 matches iOS toolbar icons. */
   iconSize?: number;
   /** Override the icon color. Defaults to NAV_THEME[scheme].text. */
@@ -24,6 +28,7 @@ interface Props extends Omit<ButtonProps, "children" | "size"> {
 
 export function IconButton({
   name,
+  icon,
   iconSize = 20,
   color,
   ...buttonProps
@@ -31,7 +36,9 @@ export function IconButton({
   const { colors } = useTheme();
   return (
     <Button variant="ghost" size="icon" {...buttonProps}>
-      <Ionicons name={name} size={iconSize} color={color ?? colors.text} />
+      {icon ?? (
+        <Ionicons name={name} size={iconSize} color={color ?? colors.text} />
+      )}
     </Button>
   );
 }

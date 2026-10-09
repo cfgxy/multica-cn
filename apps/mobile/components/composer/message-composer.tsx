@@ -90,6 +90,7 @@ import { useT } from "@/lib/use-t";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
 import { IconButton } from "@/components/ui/icon-button";
+import { MessageSquareTextIcon } from "@/components/ui/message-square-text-icon";
 import { AttachmentZone } from "@/components/issue/attachment-zone";
 
 export interface MessageComposerReplyTarget {
@@ -663,8 +664,10 @@ export function MessageComposer({
           ) : null}
           {(quickReplies?.length ?? 0) > 0 ? (
             <IconButton
-              name="text-outline"
-              iconSize={20}
+              // RUYI-550: same glyph as the desktop composer's quick-reply
+              // entry (lucide MessageSquareText) so both clients read as the
+              // same control — Ionicons had no same-shape equivalent.
+              icon={<MessageSquareTextIcon size={20} />}
               onPress={onQuickReplyPress}
               disabled={toolsDisabled}
               accessibilityLabel={t(

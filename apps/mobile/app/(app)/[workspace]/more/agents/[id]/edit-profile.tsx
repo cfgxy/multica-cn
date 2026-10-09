@@ -52,11 +52,7 @@ import {
   AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,
   agentSessionEffectiveCompactThreshold,
 } from "@multica/core/agents/constants";
-import {
-  allowsSubagents,
-  mergeSubagentAllowance,
-} from "@multica/core/agents/subagent-tools";
-import type { UpdateAgentRequest } from "@multica/core/types";
+import { allowsSubagents } from "@multica/core/agents/subagent-tools";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { Switch } from "@/components/ui/switch";
@@ -75,25 +71,7 @@ import {
   resolveThinkingLevels,
 } from "@/lib/model-capability";
 import { useT } from "@/lib/use-t";
-
-/**
- * Integer draft → stored value, or null when the draft must not be stored:
- * non-numeric, or outside [min, max] (an `extra` sentinel such as the 0 =
- * disabled gate is admitted outside the range). Web BoundedNumberField
- * revert semantics — never clamp.
- */
-function parseBounded(
-  raw: string,
-  min: number,
-  max: number,
-  extra?: number,
-): number | null {
-  const parsed = parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return null;
-  if (extra !== undefined && parsed === extra) return parsed;
-  if (parsed < min || parsed > max) return null;
-  return parsed;
-}
+import { buildProfilePatch, parseBounded } from "@/lib/agent-profile-patch";
 
 function formatTokens(n: number): string {
   return new Intl.NumberFormat().format(n);
@@ -225,62 +203,27 @@ export default function EditAgentProfile() {
     setTier("");
   };
 
-  // The patch carries only fields whose value actually changed; tri-state
-  // fields (thinking_level / service_tier / voice_runtime_id) rely on
-  // omission = "no change" and "" = explicit clear, matching
-  // UpdateAgentRequest semantics.
-  const patch = useMemo<UpdateAgentRequest | null>(() => {
-    if (!agent || !agent.id || !seeded) return null;
-    const trimmed = name.trim();
-    if (!trimmed) return null;
-    const next: UpdateAgentRequest = {};
-    if (trimmed !== agent.name) next.name = trimmed;
-    if (description !== agent.description) next.description = description;
-    if (instructions !== agent.instructions) next.instructions = instructions;
-    if (avatarUrl !== (agent.avatar_url ?? "")) next.avatar_url = avatarUrl;
-    if (runtimeId !== agent.runtime_id) next.runtime_id = runtimeId;
-    // Tri-state voice slot (RUYI-425 §4.2): omitted = untouched, "" =
-    // unbind, id = bind.
-    if (voiceRuntimeId !== (agent.voice_runtime_id ?? ""))
-      next.voice_runtime_id = voiceRuntimeId;
-    if (model !== agent.model) next.model = model;
-    if (thinking !== (agent.thinking_level ?? ""))
-      next.thinking_level = thinking;
-    if (tier !== (agent.service_tier ?? "")) next.service_tier = tier;
-    const conc = parseBounded(
+  // The patch carries only fields whose value actually changed; the
+  // semantics (only-changed fields, bounded-number revert, tri-state ""
+  // clears, subagent runtime_config round-trip) live in
+  // lib/agent-profile-patch with unit coverage (RUYI-538 ①).
+  const patch = useMemo(() => {
+    if (!agent || !seeded) return null;
+    return buildProfilePatch(agent, {
+      name,
+      description,
+      instructions,
+      avatarUrl,
+      model,
+      runtimeId,
+      voiceRuntimeId,
+      thinking,
+      tier,
       concurrency,
-      AGENT_MAX_CONCURRENT_TASKS_MIN,
-      AGENT_MAX_CONCURRENT_TASKS_MAX,
-    );
-    if (conc !== null && conc !== agent.max_concurrent_tasks)
-      next.max_concurrent_tasks = conc;
-    const ctx = parseBounded(
       maxContext,
-      AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,
-      AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX,
-      AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED,
-    );
-    if (
-      ctx !== null &&
-      ctx !==
-        (agent.session_max_context_tokens ??
-          AGENT_SESSION_MAX_CONTEXT_TOKENS_DEFAULT)
-    )
-      next.session_max_context_tokens = ctx;
-    const pct = parseBounded(
       compactPct,
-      AGENT_SESSION_COMPACT_PCT_MIN,
-      AGENT_SESSION_COMPACT_PCT_MAX,
-    );
-    if (
-      pct !== null &&
-      pct !== (agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT)
-    )
-      next.session_compact_pct = pct;
-    if (subagents !== allowsSubagents(agent.runtime_config)) {
-      next.runtime_config = mergeSubagentAllowance(agent.runtime_config, subagents);
-    }
-    return next;
+      subagents,
+    });
   }, [
     agent,
     seeded,

@@ -367,6 +367,7 @@ func TestLegislationRejectKeepsRecordAndRestore(t *testing.T) {
 // from the route — proving the chain let the owner through.
 func TestLegislationOwnerPermissions(t *testing.T) {
 	wsID, ownerID, memberID := legislationFixture(t)
+	useRetrospectiveRunner(t)
 
 	id := createDraft(t, wsID, memberID, "每日同步", cleanClauseText)
 	submitDraft(t, wsID, memberID, id)
@@ -412,8 +413,8 @@ func TestLegislationOwnerPermissions(t *testing.T) {
 
 	// Positive control: the owner passes the identical chain. Approve hits
 	// the handler (a clean clause enacts — 200); retro-config writes (200);
-	// retro-run reaches the LLM check (409 while the test fixture has no
-	// LLM configured).
+	// retro-run with the runner wired but no config row answers 400
+	// (ErrNoConfig) — the route let the owner through to the handler.
 	code, body := legislationCall(t, ownerOnly["retro-config"]().ServeHTTP,
 		legislationReq(ownerID, wsID, http.MethodPut, "/api/retrospective/config", map[string]any{"enabled": false, "window_days": 7}))
 	if code != http.StatusOK {
@@ -421,8 +422,8 @@ func TestLegislationOwnerPermissions(t *testing.T) {
 	}
 	code, body = legislationCall(t, ownerOnly["retro-run"]().ServeHTTP,
 		legislationReq(ownerID, wsID, http.MethodPost, "/api/retrospective/run", nil))
-	if code != http.StatusConflict {
-		t.Fatalf("owner retro-run without LLM: expected 409, got %d: %s", code, body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("owner retro-run without config: expected 400, got %d: %s", code, body)
 	}
 	code, body = legislationCall(t, ownerOnly["approve"]().ServeHTTP,
 		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/approve", map[string]any{"confirm_diff_previewed": true}, "id", id))

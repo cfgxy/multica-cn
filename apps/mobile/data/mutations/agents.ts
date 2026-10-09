@@ -27,6 +27,8 @@ import type {
 import { api } from "@/data/api";
 import { agentKeys } from "@/data/queries/agents";
 import { agentTaskSnapshotKeys } from "@/data/queries/agent-task-snapshot";
+import { agentTasksKeys } from "@/data/queries/agent-tasks";
+import { issueKeys } from "@/data/queries/issue-keys";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
 /** Write the server-authoritative Agent into both the list row and the
@@ -143,18 +145,45 @@ export function useRestoreAgent() {
   });
 }
 
-export function useCancelAgentTasks(agentId: string) {
+// RUYI-538 ③: per-task cancel replaces the batch cancel-all entry. The
+// task id is a mutation argument (not a hook closure), so a swipe on row A
+// can only ever fire /cancel with A's id — the neighbor-untouched guarantee
+// is asserted in the component test.
+export function useCancelAgentTask() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
 
   return useMutation({
-    mutationKey: ["cancelAgentTasks", agentId] as const,
-    mutationFn: () => api.cancelAgentTasks(agentId),
+    mutationKey: ["cancelAgentTask"] as const,
+    mutationFn: (taskId: string) => api.cancelTaskById(taskId),
     onSettled: () => {
-      // Server broadcasts task:cancelled per row (presence realtime invalidates
-      // the snapshot again); the settle invalidate covers missed events.
+      // Server broadcasts task:cancelled per row (presence realtime
+      // invalidates again); the settle sweep covers missed socket events.
       qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.all(wsId) });
-      qc.invalidateQueries({ queryKey: agentKeys.detail(wsId, agentId) });
+      qc.invalidateQueries({ queryKey: agentTasksKeys.all(wsId) });
+    },
+  });
+}
+
+// RUYI-538 ②: retry a failed/cancelled run straight from the agent run
+// history — same run-level endpoint as the issue runs sheet (RUYI-292).
+// Anti-storm 409s surface structured codes; the row maps them through
+// retryFailureMessage instead of a blanket error string.
+export function useRetryAgentRun() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationKey: ["retryAgentRun"] as const,
+    mutationFn: ({ issueId, taskId }: { issueId: string; taskId: string }) =>
+      api.retryIssueRun(issueId, taskId),
+    onSettled: (_data, _error, vars) => {
+      // The retry mints a new queued task on the source issue and flips the
+      // retried row's lineage — refresh both the per-agent list and the
+      // issue's runs sheet.
+      qc.invalidateQueries({ queryKey: agentTasksKeys.all(wsId) });
+      qc.invalidateQueries({ queryKey: agentTaskSnapshotKeys.all(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, vars.issueId) });
     },
   });
 }

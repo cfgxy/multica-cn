@@ -4854,11 +4854,18 @@ export const PromptProposalBatchOutcomeSchema = z.object({
   body: z.string(),
 });
 
-export const RetrospectiveConfigSchema = z.object({
-  enabled: z.boolean(),
-  include_in_review: z.boolean(),
-  window_days: z.number(),
-});
+// RUYI-552: the config response carries the selected execution agent (plus a
+// best-effort display name). Loose like RetrospectiveRunSchema — the server
+// keeps adding status detail here.
+export const RetrospectiveConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    include_in_review: z.boolean(),
+    window_days: z.number(),
+    agent_id: z.string().nullable(),
+    agent_name: z.string().nullable(),
+  })
+  .loose();
 
 export const RetrospectiveRunSchema = z.object({
   id: z.string(),
@@ -4872,6 +4879,9 @@ export const RetrospectiveRunSchema = z.object({
   proposals_merged: z.number(),
   duplicates_skipped: z.number(),
   error: z.string(),
+  // Raw JSONB passthrough (server sends an object; the client keeps it
+  // untyped). Null-safe: rows predating the column serialize null.
+  detail: z.unknown().nullable().optional(),
   created_at: z.string(),
 }).loose();
 

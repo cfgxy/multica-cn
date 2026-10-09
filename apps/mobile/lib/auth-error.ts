@@ -30,7 +30,9 @@ export function mapAuthError(err: unknown, fallback: string): string {
       "Too many attempts. Wait a moment and try again.",
     );
   }
-  if (/network|fetch|timeout|unreachable/.test(msg)) {
+  // "Request timed out after Nms"（fetchRaw 超时路径的原文）必须落进
+  // 可达性文案——RUYI-568 特征测试暴露：只写 `timeout` 匹配不到 `timed out`。
+  if (/network|fetch|timed.?out|unreachable/.test(msg)) {
     return i18n.t(
       "auth:mobile.errors.unreachable",
       "Can't reach Multica. Check your connection and retry.",

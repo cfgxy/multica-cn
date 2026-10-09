@@ -4,20 +4,18 @@
  * the run transcript stay in the issue runs sheet, where the issue context
  * lives; this row answers "what is this agent doing right now".
  *
- *   - running            → PulseDot + brand-toned "Running" semantics
- *   - queued-side states → clock glyph, muted (same tone family as RunRow)
+ *   - running            → agent avatar breathing (RUYI-554 unified
+ *                          status language)
+ *   - queued-side states → agent avatar grayed, title muted
  *   - issue-linked task  → row navigates to the issue detail
  *   - chat / autopilot / manual run (no issue) → source label, inert row
  *     (mobile has no per-session run surface to link to today)
  */
 import { Pressable, View } from "react-native";
 import { router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import type { AgentTask } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
-import { PulseDot } from "@/components/ui/pulse-dot";
-import { useColorScheme } from "@/lib/use-color-scheme";
-import { THEME } from "@/lib/theme";
+import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { timeAgo } from "@/lib/time-ago";
 import { useT } from "@/lib/use-t";
 
@@ -30,8 +28,6 @@ interface Props {
 
 export function AgentTaskRow({ task, issueTitle, wsSlug }: Props) {
   const { t } = useT("issues");
-  const { colorScheme } = useColorScheme();
-  const mutedFg = THEME[colorScheme].mutedForeground;
 
   const isRunning = task.status === "running";
   const hasIssue = task.issue_id !== "";
@@ -40,16 +36,25 @@ export function AgentTaskRow({ task, issueTitle, wsSlug }: Props) {
   const timestamp = task.started_at ?? task.created_at;
 
   const title = hasIssue
-    ? (issueTitle ?? t("mobile.tasks.issue_unavailable", "Issue unavailable"))
+    ? (issueTitle ??
+      // Unresolved title (issue beyond a list window, or still fetching) —
+      // mirror web's activity tab: short-id fallback, never a "task
+      // invisible" placeholder (RUYI-538 ④).
+      t("agents:tab_body.activity.issue_short_fallback", "Issue {{prefix}}…", {
+        prefix: task.issue_id.slice(0, 8),
+      }))
     : sourceLabel(task, t);
 
   const body = (
     <View className="flex-row items-center gap-3 px-4 py-3">
-      {isRunning ? (
-        <PulseDot size={8} />
-      ) : (
-        <Ionicons name="time-outline" size={16} color={mutedFg} />
-      )}
+      {/* Avatar-driven state (RUYI-554): breathing while running, grayed
+          while queued-side — same cue as inbox rows and the runs badges. */}
+      <ActorAvatar
+        type="agent"
+        id={task.agent_id}
+        size={20}
+        activity={isRunning ? "running" : "queued"}
+      />
       <Text
         className={`flex-1 text-sm ${
           isRunning ? "text-foreground font-medium" : "text-muted-foreground"
@@ -79,8 +84,10 @@ export function AgentTaskRow({ task, issueTitle, wsSlug }: Props) {
 }
 
 /** Same wording as RunRow's run-summary fallbacks so a task reads the same
- *  in both surfaces (shared issues-ns locale keys, no new copies). */
-function sourceLabel(task: AgentTask, t: ReturnType<typeof useT>["t"]) {
+ *  in both surfaces (shared issues-ns locale keys, no new copies). Exported
+ *  for the run-history row (RUYI-538 ②), which shares the issue-less
+ *  fallback vocabulary. */
+export function sourceLabel(task: AgentTask, t: ReturnType<typeof useT>["t"]) {
   if (task.chat_session_id) {
     return t("mobile.run_summary.chat", "Chat task");
   }
