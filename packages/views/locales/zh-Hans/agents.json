@@ -458,6 +458,7 @@
     "voice_empty": "暂无支持语音的实例",
     "credential_configured": "已配置 ✓",
     "credential_invalid": "凭据失效",
+    "credential_unreachable": "无法验证",
     "credential_not_configured": "未配置"
   },
   "conversation_starters": {

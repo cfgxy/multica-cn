@@ -351,6 +351,7 @@
     "voice_empty": "音声対応インスタンスがありません",
     "credential_configured": "設定済み ✓",
     "credential_invalid": "キー無効",
+    "credential_unreachable": "検証不可",
     "credential_not_configured": "未設定"
   },
   "conversation_starters": {
