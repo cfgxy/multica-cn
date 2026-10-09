@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LogOut } from "lucide-react";
+import { CirclePause, LogOut } from "lucide-react";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Button } from "@multica/ui/components/ui/button";
+import { Switch } from "@multica/ui/components/ui/switch";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -152,6 +153,34 @@ export function WorkspaceTab() {
   const ownerCount = members.filter((m) => m.role === "owner").length;
   const isSoleOwner = isOwner && ownerCount <= 1;
   const isSoleMember = members.length <= 1;
+
+  // Workspace-wide scheduling freeze (RUYI-608). Toggling here hits the
+  // audited /scheduling-pause endpoints; the agents list is invalidated too
+  // because every agent DTO mirrors the workspace freeze in its own
+  // scheduling_paused fields.
+  const schedulingPaused = !!workspace?.scheduling_paused;
+  const handleSchedulingPauseToggle = async (pause: boolean) => {
+    if (!workspace) return;
+    try {
+      if (pause) {
+        await api.pauseWorkspaceScheduling(workspace.id);
+        toast.success(t(($) => $.workspace.scheduling_paused_toast));
+      } else {
+        const state = await api.resumeWorkspaceScheduling(workspace.id);
+        toast.success(
+          t(($) => $.workspace.scheduling_resumed_toast, { count: state.queued_count }),
+        );
+      }
+      qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+      qc.invalidateQueries({ queryKey: workspaceKeys.agents(workspace.id) });
+    } catch (e) {
+      toast.error(
+        e instanceof Error
+          ? e.message
+          : t(($) => $.workspace.scheduling_toggle_failed_toast),
+      );
+    }
+  };
 
   // Reset form state only when the user switches to a different workspace.
   // Keying on workspace?.id (not the object ref) avoids wiping unsaved edits
@@ -455,6 +484,33 @@ export function WorkspaceTab() {
                 placeholder={workspace.issue_prefix}
               />
           </SettingsRow>
+
+          <SettingsRow
+            label={
+              <span className="inline-flex items-center gap-1.5">
+                <CirclePause className="h-4 w-4 text-muted-foreground" />
+                {t(($) => $.workspace.scheduling_pause_label)}
+              </span>
+            }
+            description={t(($) => $.workspace.scheduling_pause_hint)}
+          >
+            <Switch
+              aria-label={t(($) => $.workspace.scheduling_pause_label)}
+              checked={schedulingPaused}
+              disabled={!canManageWorkspace}
+              onCheckedChange={(v) => void handleSchedulingPauseToggle(v)}
+            />
+          </SettingsRow>
+          {schedulingPaused && (
+            <div className="px-4 pb-3 text-caption text-amber-600 dark:text-amber-400">
+              {t(($) => $.workspace.scheduling_paused_note, {
+                count: workspace?.scheduling_queued_count ?? 0,
+              })}
+              {workspace?.scheduling_paused_reason
+                ? ` ${workspace.scheduling_paused_reason}`
+                : ""}
+            </div>
+          )}
 
             {!canManageWorkspace && (
               <div className="px-4 py-3 text-caption text-muted-foreground">

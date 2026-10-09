@@ -95,6 +95,7 @@ import type {
   CommentResolvedPayload,
   CommentUnresolvedPayload,
   ActivityCreatedPayload,
+  AgentSchedulingPausePayload,
   ReactionAddedPayload,
   ReactionRemovedPayload,
   IssueReactionAddedPayload,
@@ -1202,6 +1203,33 @@ export function useRealtimeSync(
       if (issue_id) invalidateTimeline(issue_id);
     });
 
+    // Scheduling freeze flips (RUYI-608). The generic "agent"-prefix refresh
+    // above already invalidates the agents list / working-agents / squad
+    // status caches; this handler covers the workspace-side reads (settings
+    // toggle + switcher summary), which the agent prefix does not reach.
+    const unsubSchedulingPaused = ws.on(
+      "agent:scheduling_paused",
+      (p: unknown) => {
+        const { workspace_id } = p as AgentSchedulingPausePayload;
+        const wsId = workspace_id || getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: workspaceKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+        }
+      },
+    );
+    const unsubSchedulingResumed = ws.on(
+      "agent:scheduling_resumed",
+      (p: unknown) => {
+        const { workspace_id } = p as AgentSchedulingPausePayload;
+        const wsId = workspace_id || getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: workspaceKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+        }
+      },
+    );
+
     const unsubReactionAdded = ws.on("reaction:added", (p) => {
       const { issue_id } = p as ReactionAddedPayload;
       if (issue_id) invalidateTimeline(issue_id);
@@ -1737,6 +1765,8 @@ export function useRealtimeSync(
       unsubCommentResolved();
       unsubCommentUnresolved();
       unsubActivityCreated();
+      unsubSchedulingPaused();
+      unsubSchedulingResumed();
       unsubReactionAdded();
       unsubReactionRemoved();
       unsubIssueReactionAdded();

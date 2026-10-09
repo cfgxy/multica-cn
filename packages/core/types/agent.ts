@@ -610,6 +610,26 @@ export interface MikaBootstrapResponse extends Agent {
   onboarding_session?: ChatSession;
 }
 
+/** Which level a scheduling freeze (RUYI-608) is anchored at. */
+export type SchedulingPauseScope = "agent" | "workspace";
+
+/**
+ * Read-back of a scheduling freeze mutation or GET (RUYI-608). `paused`
+ * answers "is this agent / workspace frozen right now", `scope` tells which
+ * freeze row is in effect (agent-level wins over workspace-level for an
+ * agent read), and `queued_count` is the depth that will flow on resume.
+ * Empty strings for the audit fields when not paused (resume replies carry
+ * only `paused` + `queued_count`).
+ */
+export interface SchedulingPauseState {
+  paused: boolean;
+  scope: SchedulingPauseScope | "";
+  reason: string;
+  created_by: string;
+  created_at: string;
+  queued_count: number;
+}
+
 export interface Agent {
   id: string;
   workspace_id: string;
@@ -728,6 +748,22 @@ export interface Agent {
    * treat `undefined` as 1.
    */
   resource_weight?: number;
+  /**
+   * Scheduling freeze state (RUYI-608). True when an owner/admin froze this
+   * agent's task claiming — queued tasks keep coalescing and running tasks
+   * drain, but nothing new is claimed until resume. Optional because servers
+   * predating RUYI-608 omit it; treat `undefined` as false.
+   *
+   * `scheduling_paused_scope` tells WHICH freeze is in effect when paused:
+   * `"agent"` (this agent only) or `"workspace"` (a workspace-wide freeze —
+   * an agent-level resume does not lift it). `scheduling_queued_count` is
+   * the number of tasks that will flow on resume.
+   */
+  scheduling_paused?: boolean;
+  scheduling_paused_scope?: SchedulingPauseScope;
+  scheduling_paused_reason?: string;
+  scheduling_paused_at?: string;
+  scheduling_queued_count?: number;
   /**
    * Session context gate (RUYI-107). Ceiling, in tokens, for a resumable
    * session before the platform starts a fresh one; `0` disables the gate.

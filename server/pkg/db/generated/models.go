@@ -1792,6 +1792,19 @@ type RuntimeSkillDiscovery struct {
 	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
 }
 
+// Active scheduling freezes (RUYI-608). agent_id NULL = workspace-level freeze; non-null = agent-level. ClaimAgentTask fences on this table, so frozen agents cannot claim queued tasks; enqueue and coalesce continue; running tasks drain normally.
+type SchedulingPause struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// NULL freezes every agent in the workspace; a value freezes exactly that agent.
+	AgentID pgtype.UUID `json:"agent_id"`
+	// Free-text note from the operator who froze scheduling; audit trail, never interpreted.
+	Reason string `json:"reason"`
+	// member.user_id of the workspace owner/admin who froze scheduling.
+	CreatedBy pgtype.UUID        `json:"created_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type SeatCapacityOutbox struct {
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
 	OperationToken pgtype.UUID        `json:"operation_token"`
