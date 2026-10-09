@@ -43,7 +43,7 @@ export function AgentRunHistoryRow({ task, issueTitle, wsSlug }: Props) {
 
   const title = hasIssue
     ? (issueTitle ??
-      t("agents:tab_body.activity.issue_short_fallback", "Task {{prefix}}...", {
+      t("agents:tab_body.activity.issue_short_fallback", "Issue {{prefix}}…", {
         prefix: task.issue_id.slice(0, 8),
       }))
     : sourceLabel(task, t);
