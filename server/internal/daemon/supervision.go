@@ -75,6 +75,15 @@ func supervisedProviderFamily(provider string) string {
 	return provider
 }
 
+// supervisorIdentity is this daemon's RUYI-607 ownership identity: the
+// normalized profile name that namespaces its run store and stamps every
+// manifest it launches. One string, two protection layers — store isolation
+// keeps foreign manifests out of our scans, and the reconcile guard refuses
+// to act on runs this identity does not own.
+func (d *Daemon) supervisorIdentity() string {
+	return supervisor.OwnerIdentity(d.cfg.Profile)
+}
+
 // setupSupervisor builds the daemon's WorkerSupervisor when this host can
 // run transient user units. Leaves d.supervisor nil (and logs why) when any
 // prerequisite is missing — that nil is the legacy switch.
@@ -88,6 +97,12 @@ func (d *Daemon) setupSupervisor() {
 		}
 		root = filepath.Join(home, ".multica", "supervisor-runs")
 	}
+	// supervisedRunsBase is the pre-RUYI-607 shared root: before namespacing
+	// every profile seeded runs directly here, so it is the migration source
+	// for this daemon's own in-flight runs. Only setupSupervisor sets it —
+	// directly constructed test daemons leave it empty and never migrate.
+	d.supervisedRunsBase = root
+	root = filepath.Join(root, d.supervisorIdentity())
 	mgr, err := supervisor.NewManager(root)
 	if err != nil {
 		d.logger.Warn("worker supervision disabled: run store unavailable", "root", root, "error", err)
@@ -103,7 +118,7 @@ func (d *Daemon) setupSupervisor() {
 		d.logger.Info("worker supervision disabled: systemd user manager unavailable; workers stay legacy children", "error", err)
 		return
 	}
-	sup, err := supervisor.New(mgr, sys, binPath, d.logger)
+	sup, err := supervisor.New(mgr, sys, binPath, d.supervisorIdentity(), d.logger)
 	if err != nil {
 		d.logger.Warn("worker supervision disabled: supervisor init failed", "error", err)
 		return
@@ -149,10 +164,22 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 			inFlight[t.ID] = true
 		}
 	}
+	// RUYI-607: before reconciling this daemon's namespaced store, adopt the
+	// runs it can prove it launched out of the pre-RUYI-607 shared root.
+	// Task ids are server-scoped, so "in flight on my runtimes" identifies
+	// own runs exactly; everything else stays in the shared root untouched.
+	// Skipped when the listing failed — attribution would run on incomplete
+	// evidence, the same rule that disables the kill path below.
+	if !listFailed && d.supervisedRunsBase != "" {
+		if _, err := supervisor.MigrateLegacyStore(d.supervisedRunsBase, d.supervisor.Manager(), d.supervisorIdentity(), func(taskID string) bool { return inFlight[taskID] }, d.logger); err != nil {
+			d.logger.Warn("supervisor legacy run store migration failed; runs stay in the shared root", "error", err)
+		}
+	}
 	rec := &supervisor.Reconciler{
 		Mgr:   d.supervisor.Manager(),
 		Units: d.supervisor.Systemd(),
 		Log:   d.logger,
+		Self:  d.supervisorIdentity(),
 		// On a failed listing every task reads as in flight: active units
 		// resolve to Resume (non-destructive) and dead-unit classifications
 		// are untouched (they never consult TaskInFlight), so the one
