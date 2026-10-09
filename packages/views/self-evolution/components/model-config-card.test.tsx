@@ -256,4 +256,48 @@ describe("ModelConfigCard", () => {
     await screen.findAllByLabelText("Base URL");
     expect(screen.queryByTestId("model-config-consumers")).toBeNull();
   });
+
+  // P2-1: the stored-config re-check entry is persistent, not error-only —
+  // a failed re-check is what makes the error state reachable from pure UI
+  // operations (RevalidateStored persists it server-side).
+  it("offers re-check outside the error state and surfaces its failure", async () => {
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "gpt-4o-mini",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+      resolved: { status: "ok", source: "module_config", model: "gpt-4o-mini" },
+    });
+    mount();
+
+    const recheck = await screen.findByRole("button", { name: "Re-check" });
+    expect(m.validateMutate).not.toHaveBeenCalled();
+    m.validateResult = {
+      ok: false,
+      error_kind: "credentials",
+      message: "网关拒绝凭据（HTTP 401）",
+    };
+    await userEvent.click(recheck);
+    // No payload: the re-check targets the stored config, not the form.
+    expect(m.validateMutate).toHaveBeenCalledWith(undefined, expect.anything());
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("model-config-validation-error").textContent,
+      ).toContain("网关拒绝凭据（HTTP 401）"),
+    );
+  });
+
+  // The deploy-default source never promised a check (walkthrough #23): no
+  // stored config to re-check, so no entry — the card stays green.
+  it("offers no re-check where no stored config exists", async () => {
+    m.config = configFixture({
+      resolved: { status: "ok", source: "deploy_default", model: "env-model" },
+    });
+    mount();
+
+    await screen.findAllByLabelText("Base URL");
+    expect(screen.queryByRole("button", { name: "Re-check" })).toBeNull();
+  });
 });
