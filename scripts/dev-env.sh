@@ -1299,7 +1299,11 @@ start_daemon() {
   MULTICA_BIN="$DIR/server/bin/multica"
 
   resource_env_args daemon
+  # RUYI-606: the slot daemon gets its own supervisor run store. The shared
+  # default (~/.multica/supervisor-runs) is where production workers live;
+  # enumerating them at startup is the RUYI-592 cross-daemon kill blind spot.
   "${CLEAN_ENV[@]}" MULTICA_WORKSPACES_ROOT="$SLOT_WORKSPACES_ROOT" \
+    MULTICA_SUPERVISOR_RUNS_DIR="$SLOT_DIR/supervisor-runs" \
     "${RE_ARGS[@]}" "$MULTICA_BIN" daemon start --profile "$SLOT_PROFILE" 2>&1 | sed 's/^/    /' || true
 
   status="$("${CLEAN_ENV[@]}" MULTICA_WORKSPACES_ROOT="$SLOT_WORKSPACES_ROOT" \
