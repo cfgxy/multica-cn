@@ -116,10 +116,11 @@ const DELIVER_MAX_TRIES = 100; // ~5s — editor init is a passive effect away
  * Land a finished upload's markdown link in the draft BODY after the mount
  * that owned the upload died. Delivery must be CONFIRMED, not assumed:
  *
- *  - the live editor's document already shows the image → the inline swap
- *    landed it; nothing to do (checked via `hasImageWithSrc`, not the body —
- *    the body only catches up after the debounced `onUpdate`, so a body check
- *    here would double-append inside that window)
+ *  - the live editor's document already shows the finished link → the inline
+ *    swap landed it; nothing to do (checked via `hasSettledUploadLink` — image
+ *    src or settled fileCard href — not the body: the body only catches up
+ *    after the debounced `onUpdate`, so a body check here would double-append
+ *    inside that window)
  *  - live editor for the key, insert landed → also persist the same body via
  *    `appendToBody` as insurance — the editor's debounced emit is dropped on a
  *    quick unmount, and it converges to identical content anyway.
@@ -145,9 +146,12 @@ function deliverFinishedUpload(
 
   const md = attachmentMarkdown(attachment);
   const live = liveEditors.get(binding.registryKey);
-  // The inline swap already put the finished image in this document — it
-  // serializes into the body through the debounced emit on its own.
-  if (live?.current?.hasImageWithSrc(toUploadResult(attachment).markdownLink) === true) {
+  // The inline swap already put the finished attachment in this document — it
+  // serializes into the body through the debounced emit on its own. The link
+  // check covers both shapes: an image src and a settled fileCard href
+  // (RUYI-483 — the image-only check misread a live editor holding a settled
+  // non-image card as "editor died" and appended the link a second time).
+  if (live?.current?.hasSettledUploadLink(toUploadResult(attachment).markdownLink) === true) {
     return;
   }
   // A composer showing this target rebuilt the placeholder on mount, so the
@@ -221,7 +225,7 @@ function confirmSettledUploadDelivery(
   }
   if (!hasUploadSwapLanded(uploadId)) return;
   if (
-    liveEditors.get(binding.registryKey)?.current?.hasImageWithSrc(
+    liveEditors.get(binding.registryKey)?.current?.hasSettledUploadLink(
       toUploadResult(attachment).markdownLink,
     ) === true
   ) {
@@ -236,8 +240,9 @@ function confirmSettledUploadDelivery(
     );
     return;
   }
-  // Nothing live holds the image anymore: the editor that received the swap
-  // died before its debounced emit, so the body will never get it unprompted.
+  // Nothing live holds the finished link anymore: the editor that received
+  // the swap died before its debounced emit, so the body will never get it
+  // unprompted.
   clearUploadSwapLanded(uploadId);
   deliverFinishedUpload(binding, clientUploadId, attachment);
 }
