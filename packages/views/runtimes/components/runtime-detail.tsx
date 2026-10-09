@@ -89,11 +89,18 @@ export function RuntimeDetail({
   runtime,
   machineHref,
   machineLabel,
+  machineRuntimeCount,
   afterDeleteHref,
 }: {
   runtime: AgentRuntime;
   machineHref?: string;
   machineLabel?: string;
+  /**
+   * How many runtimes the machine named by machineLabel has. Lets a
+   * single-runtime machine's alias surface in the title and breadcrumb leaf
+   * instead of collapsing to the provider base (RUYI-564).
+   */
+  machineRuntimeCount?: number;
   afterDeleteHref?: string;
 }) {
   const { t } = useT("runtimes");
@@ -156,7 +163,7 @@ export function RuntimeDetail({
     ? timeAgo(runtime.last_seen_at)
     : t(($) => $.detail.never_seen);
   const runtimeName = machineLabel
-    ? runtimeRowLabel(runtime, machineLabel)
+    ? runtimeRowLabel(runtime, machineLabel, machineRuntimeCount)
     : runtimeDisplayName(runtime);
 
   return (
