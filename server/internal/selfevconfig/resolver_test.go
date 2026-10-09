@@ -460,6 +460,49 @@ func TestRevalidateStoredPersistsOutcome(t *testing.T) {
 	}
 }
 
+// P2-2: the persisted validation message is the classified summary — never
+// the upstream response body or the endpoint URL the SDK error embeds.
+func TestRevalidateStoredMessageCarriesNoRawUpstreamDetail(t *testing.T) {
+	g := newGateway(t, http.StatusUnauthorized)
+	ws := testWS(11)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("secret-key-42"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{
+		ws: {WorkspaceID: ws, BaseUrl: pgtype.Text{String: g.srv.URL, Valid: true},
+			Model: pgtype.Text{String: "m1", Valid: true}, ApiKeyEncrypted: sealed, ScoringEnabled: true},
+	}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	out, err := r.RevalidateStored(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OK || out.Kind != llm.ErrorKindCredentials {
+		t.Fatalf("outcome = ok=%v kind=%q, want a credentials failure", out.OK, out.Kind)
+	}
+	if store.vals != 1 {
+		t.Fatalf("validation updates = %d, want 1", store.vals)
+	}
+	stored := store.lastVal.LastValidationError
+	if stored == "" {
+		t.Fatal("failed validation must persist a non-empty message")
+	}
+	for _, forbidden := range []string{"secret-key-42", "denied", "127.0.0.1", "/chat/completions"} {
+		if strings.Contains(stored, forbidden) {
+			t.Fatalf("stored message carries raw upstream detail %q: %q", forbidden, stored)
+		}
+	}
+	if !strings.Contains(stored, "HTTP 401") {
+		t.Fatalf("stored message should name the classified status, got %q", stored)
+	}
+	if !store.lastVal.LastValidationOk.Valid || store.lastVal.LastValidationOk.Bool {
+		t.Fatalf("failed outcome not persisted as last_validation_ok=false: %+v", store.lastVal.LastValidationOk)
+	}
+}
+
 func TestRevalidateStoredWithoutRowIsNotAnError(t *testing.T) {
 	ws := testWS(11)
 	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{}}

@@ -10,6 +10,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 
@@ -67,4 +68,40 @@ func Classify(err error) ErrorKind {
 		return ErrorKindConnection
 	}
 	return ErrorKindOther
+}
+
+// Summary renders err as a short, user-displayable reason: the classified
+// category plus, for gateway responses, only the HTTP status code. It
+// deliberately omits the response body and the endpoint URL — either could
+// carry hostile or internal detail into stored validation messages and the
+// UI — so user-facing text must come from here, never from err.Error().
+func Summary(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, ErrNotConfigured) {
+		return "未配置凭据"
+	}
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden:
+			return fmt.Sprintf("网关拒绝凭据（HTTP %d）", apiErr.StatusCode)
+		case apiErr.StatusCode >= 500:
+			return fmt.Sprintf("网关服务异常（HTTP %d）", apiErr.StatusCode)
+		case apiErr.StatusCode >= 400:
+			return fmt.Sprintf("网关拒绝请求（HTTP %d）", apiErr.StatusCode)
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "连接超时"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "请求已取消"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return "网络连接失败"
+	}
+	return "网关返回异常响应"
 }
