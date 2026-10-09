@@ -2425,6 +2425,23 @@ class ApiClient {
     await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
   }
 
+  // Full per-agent task list (active + terminal) — RUYI-538 ② run history.
+  // Mirrors packages/core/api/client.ts listAgentTasks: GET
+  // /api/agents/{id}/tasks behind the server's private-agent access gate.
+  // The server resolves the workspace from the agent row, so no workspace
+  // header is involved.
+  async listAgentTasks(
+    agentId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<AgentTask[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/tasks`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, AgentTaskListSchema, EMPTY_AGENT_TASK_LIST, {
+      endpoint: "listAgentTasks",
+    });
+  }
+
   // Task retry entries (RUYI-343). Mirrors packages/core/api/client.ts —
   // retryIssueRun is the RUYI-292 run-level endpoint whose anti-storm gates
   // answer structured 409s ({code, message, task}); rerunIssue is the

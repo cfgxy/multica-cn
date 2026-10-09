@@ -30,6 +30,7 @@ import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import { agentKeys } from "@/data/queries/agents";
 import { runtimeKeys } from "@/data/queries/runtimes";
 import { agentTaskSnapshotKeys } from "@/data/queries/agent-task-snapshot";
+import { agentTasksKeys } from "@/data/queries/agent-tasks";
 
 export function usePresenceRealtime() {
   const queryClient = useQueryClient();
@@ -39,13 +40,19 @@ export function usePresenceRealtime() {
       const runtimesKey = runtimeKeys.all(wsId);
       const agentsKey = agentKeys.all(wsId);
       const snapshotKey = agentTaskSnapshotKeys.all(wsId);
+      const tasksKey = agentTasksKeys.all(wsId);
 
       const invalidateRuntimes = () =>
         queryClient.invalidateQueries({ queryKey: runtimesKey });
       const invalidateAgents = () =>
         queryClient.invalidateQueries({ queryKey: agentsKey });
-      const invalidateSnapshot = () =>
+      // Snapshot (presence counters) + full per-agent task list (RUYI-538 ②
+      // run history) move on the same lifecycle events, so one handler
+      // invalidates both.
+      const invalidateTaskData = () => {
         queryClient.invalidateQueries({ queryKey: snapshotKey });
+        queryClient.invalidateQueries({ queryKey: tasksKey });
+      };
 
       return [
         // Daemon lifecycle — register events mean a runtime came online or
@@ -64,11 +71,11 @@ export function usePresenceRealtime() {
 
         // Task lifecycle — drives the workload dimension of presence and the
         // reserved-for-P1 peek sheet. progress / message intentionally absent.
-        ws.on("task:queued", invalidateSnapshot),
-        ws.on("task:dispatch", invalidateSnapshot),
-        ws.on("task:completed", invalidateSnapshot),
-        ws.on("task:failed", invalidateSnapshot),
-        ws.on("task:cancelled", invalidateSnapshot),
+        ws.on("task:queued", invalidateTaskData),
+        ws.on("task:dispatch", invalidateTaskData),
+        ws.on("task:completed", invalidateTaskData),
+        ws.on("task:failed", invalidateTaskData),
+        ws.on("task:cancelled", invalidateTaskData),
 
         // We may have missed sweeper-driven runtime offline transitions
         // while disconnected — refetch runtimes + snapshot. Agents not
@@ -76,7 +83,7 @@ export function usePresenceRealtime() {
         // that the user can pull-to-refresh if needed.
         ws.onReconnect(() => {
           invalidateRuntimes();
-          invalidateSnapshot();
+          invalidateTaskData();
         }),
       ];
     },
