@@ -14,6 +14,32 @@ import ChatListScreen from "@/app/(app)/[workspace]/(tabs)/chat";
 
 const mockRouterPush = jest.fn();
 
+// Records the props the screen hands the session FlatList on each render
+// (last entry is current), so tests can pin the refresh wiring without
+// reaching into the host tree. Only the FlatList export is wrapped — a
+// Proxy passthrough, NOT a spread: enumerating react-native's module
+// triggers every lazy export getter and crashes the jest env (TurboModule
+// DevMenu invariant). Referenced only at render time — this factory runs
+// before module consts initialize (same lazy-wrapper rule as the
+// expo-router mock above).
+const capturedFlatListProps: Record<string, unknown>[] = [];
+
+jest.mock("react-native", () => {
+  const RN = jest.requireActual<typeof import("react-native")>("react-native");
+  const React = jest.requireActual<typeof import("react")>("react");
+  return new Proxy(RN, {
+    get(target, prop) {
+      if (prop === "FlatList") {
+        return (props: Record<string, unknown>) => {
+          capturedFlatListProps.push(props);
+          return React.createElement(target.FlatList, props);
+        };
+      }
+      return Reflect.get(target, prop);
+    },
+  });
+});
+
 jest.mock("expo-router", () => ({
   // Lazy wrappers: the factory is evaluated while the test file's imports
   // resolve, before top-level consts initialize — direct refs would capture
@@ -26,7 +52,7 @@ jest.mock("expo-router", () => ({
 }));
 
 const mockRefetch = jest.fn();
-const mockQueryFlags = { isLoading: false, isError: false };
+const mockQueryFlags = { isLoading: false, isError: false, isRefetching: false };
 const mockSessions = [];
 const mockSeenQueryKeys = [];
 
@@ -43,6 +69,7 @@ jest.mock("@tanstack/react-query", () => ({
         isError: mockQueryFlags.isError,
         error: mockQueryFlags.isError ? new Error("boom") : null,
         refetch: mockRefetch,
+        isRefetching: mockQueryFlags.isRefetching,
       };
     }
     if (isAgents) {
@@ -235,6 +262,7 @@ beforeEach(() => {
   mockSeenQueryKeys.length = 0;
   mockQueryFlags.isLoading = false;
   mockQueryFlags.isError = false;
+  mockQueryFlags.isRefetching = false;
 });
 
 function seedSessions() {
@@ -402,6 +430,23 @@ describe("ChatListScreen (chat tab root, RUYI-496)", () => {
     seedSessions();
     await render(<ChatListScreen />);
     expect(mockSeenQueryKeys).toContainEqual(["chat", "ws-1", "sessions"]);
+  });
+
+  // Inbox parity (RUYI-532): the tab list pulls to refresh — FlatList
+  // `refreshing` is bound to the query's isRefetching and `onRefresh` is the
+  // very refetch the error retry uses, mirroring inbox.tsx prop-for-prop.
+  it("RUYI-533: pull-to-refresh refetches the sessions query", async () => {
+    seedSessions();
+    await render(<ChatListScreen />);
+    const list = capturedFlatListProps.at(-1) as {
+      refreshing?: unknown;
+      onRefresh?: unknown;
+    };
+    expect(list.refreshing).toBe(false);
+    expect(list.onRefresh).toBe(mockRefetch);
+    mockQueryFlags.isRefetching = true;
+    await screen.rerender(<ChatListScreen />);
+    expect(capturedFlatListProps.at(-1).refreshing).toBe(true);
   });
 
   it("new-chat entry routes to the blank detail screen", async () => {

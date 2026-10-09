@@ -79,6 +79,7 @@ export default function ChatTab() {
     isError,
     error,
     refetch,
+    isRefetching,
   } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
@@ -341,6 +342,8 @@ export default function ChatTab() {
               onLongPress={() => showSessionActions(session)}
             />
           )}
+          refreshing={isRefetching}
+          onRefresh={refetch}
         />
       )}
 
