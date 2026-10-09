@@ -1365,6 +1365,8 @@
     "gitlab_choose": "Choose from GitLab",
     "gitlab_picker_title": "Choose GitLab repositories",
     "gitlab_connection": "GitLab connection",
+    "gitlab_no_connections": "No GitLab instances connected yet.",
+    "gitlab_connect_new_instance": "Connect new instance",
     "gitlab_load_failed": "Could not load GitLab repositories. Check the connection and try again.",
     "gitlab_authorization_expired": "GitLab authorization expired. Reconnect in Integrations.",
     "gitlab_rate_limited": "GitLab is rate limiting requests. Try again later.",

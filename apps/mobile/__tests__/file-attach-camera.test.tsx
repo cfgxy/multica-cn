@@ -1,5 +1,8 @@
 /**
- * RUYI-477: 贴图按钮「拍照 / 相册」源选择与相机权限契约。
+ * RUYI-477: 贴图按钮「相册 / 拍照」源选择与相机权限契约。
+ * RUYI-553: 弹层顺序固定为相册在前、拍照在后（Owner 指定）；iOS
+ * ActionSheetIOS 与 Android Modal 共用同一 options 数组，选项顺序断言
+ * 同时锁两个平台的顺序。
  *
  * 锁定四条行为：
  *  1. hook 暴露 imageSourceModalProps，消费方必须挂载 <ActionSheetModal>
@@ -78,7 +81,7 @@ describe("useFileAttach image-source sheet (RUYI-477)", () => {
     mockedCameraPerm.mockResolvedValue({ granted: true });
   });
 
-  it("exposes imageSourceModalProps whose ActionSheetModal renders 拍照/相册/取消", async () => {
+  it("exposes imageSourceModalProps whose ActionSheetModal renders 相册/拍照/取消（相册在前，RUYI-553）", async () => {
     const { result } = await renderHook(() => useFileAttach());
 
     expect(result.current.imageSourceModalProps).toEqual(
@@ -94,8 +97,8 @@ describe("useFileAttach image-source sheet (RUYI-477)", () => {
     });
     expect(result.current.imageSourceModalProps.visible).toBe(true);
     expect(result.current.imageSourceModalProps.sheet?.options).toEqual([
-      "Take Photo",
       "Choose from Library",
+      "Take Photo",
       "Cancel",
     ]);
     expect(result.current.imageSourceModalProps.sheet?.cancelButtonIndex).toBe(
@@ -117,6 +120,20 @@ describe("useFileAttach image-source sheet (RUYI-477)", () => {
     expect(mockedLaunchLibrary).not.toHaveBeenCalled();
   });
 
+  it("maps 相册 (index 0) to the library picker and never to the camera (RUYI-553)", async () => {
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+    const { result } = await renderHook(() => useFileAttach());
+
+    await act(async () => {
+      result.current.chooseImageSource();
+    });
+    await act(async () => {
+      result.current.imageSourceModalProps.onSelect(0);
+    });
+    await waitFor(() => expect(mockedLaunchLibrary).toHaveBeenCalledTimes(1));
+    expect(mockedLaunchCamera).not.toHaveBeenCalled();
+  });
+
   it("Take Photo requests camera permission, launches the camera with the compatible representation, and uploads through the shared pipeline", async () => {
     mockedLaunchCamera.mockResolvedValue({
       canceled: false,
@@ -129,8 +146,9 @@ describe("useFileAttach image-source sheet (RUYI-477)", () => {
     await act(async () => {
       result.current.chooseImageSource();
     });
+    // 重排后「拍照」在 index 1（相册在前，RUYI-553）。
     await act(async () => {
-      result.current.imageSourceModalProps.onSelect(0);
+      result.current.imageSourceModalProps.onSelect(1);
     });
     // useActionSheet.handleSelect 有 50ms 延迟派发（关闭动画后再回调）。
     await waitFor(() =>
@@ -164,8 +182,9 @@ describe("useFileAttach image-source sheet (RUYI-477)", () => {
     await act(async () => {
       result.current.chooseImageSource();
     });
+    // 重排后「拍照」在 index 1（相册在前，RUYI-553）。
     await act(async () => {
-      result.current.imageSourceModalProps.onSelect(0);
+      result.current.imageSourceModalProps.onSelect(1);
     });
 
     expect(mockedLaunchCamera).not.toHaveBeenCalled();

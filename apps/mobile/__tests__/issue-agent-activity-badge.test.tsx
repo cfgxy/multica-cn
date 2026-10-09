@@ -24,12 +24,14 @@ jest.mock("@/lib/use-t", () => ({
   }),
 }));
 
-type JsonNode = { props?: Record<string, unknown>; children?: JsonNode[] } | null;
+// toJSON() hands back library JSON whose text leaves are plain strings
+// (react-test-renderer ≥1.2 node types), so the walker accepts both shapes.
+type JsonNode = string | { props?: Record<string, unknown>; children?: JsonNode[] } | null;
 
 /** Walk the rendered JSON tree collecting every className — tree-wide
  *  negative assertions without renderer-specific instance APIs. */
 function collectClassNames(node: JsonNode, out: string[] = []): string[] {
-  if (!node) return out;
+  if (!node || typeof node === "string") return out;
   const cls = node.props?.className;
   if (typeof cls === "string") out.push(cls);
   for (const child of node.children ?? []) collectClassNames(child, out);
