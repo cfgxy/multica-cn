@@ -317,6 +317,10 @@ export interface ApiClientOptions {
    *  deadline on each entry and aborts a request that is still pending.
    *  Optional: absent in node tests, where the timer path is covered. */
   subscribeAppState?: (listener: (state: string) => void) => () => void;
+  /** RUYI-576: 真实运行平台（Platform.OS，"ios" | "android"），由平台层
+   *  (data/api-app-state.ts) 启动时注入，驱动 X-Client-OS 上报真实平台。
+   *  缺省回落 "ios" 仅服务于未注入环境（node 测试），保持既有观测语义。 */
+  clientOS?: string;
 }
 
 class ApiClient {
@@ -342,7 +346,7 @@ class ApiClient {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "X-Client-Platform": "mobile",
-      "X-Client-OS": "ios",
+      "X-Client-OS": this.options.clientOS ?? "ios",
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
       ...((init.headers as Record<string, string>) ?? {}),
@@ -2547,7 +2551,7 @@ class ApiClient {
     const headers: Record<string, string> = {
       // No Content-Type — let fetch set the multipart boundary.
       "X-Client-Platform": "mobile",
-      "X-Client-OS": "ios",
+      "X-Client-OS": this.options.clientOS ?? "ios",
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
     };

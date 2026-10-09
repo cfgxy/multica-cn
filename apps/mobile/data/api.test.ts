@@ -597,3 +597,77 @@ describe("ApiClient.uploadFile", () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });
+
+// RUYI-576：X-Client-OS 必须来自平台运行时判定（平台层经 setOptions 注入
+// Platform.OS），不得硬编码 "ios"——Android 设备流量曾被服务端记为 iOS。
+// api.ts 自身不 import react-native（保持 vitest node lane 可加载），
+// 平台取值沿 RUYI-567 的 setOptions 缝线注入。
+describe("X-Client-OS header", () => {
+  afterEach(() => {
+    api.setToken(null);
+    api.setOptions({ clientOS: undefined });
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const pngAsset = {
+    uri: "file:///tmp/a.png",
+    name: "a.png",
+    type: "image/png",
+  };
+
+  async function captureJsonRequestHeaderOS(): Promise<string> {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([]),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(api.listAgents()).resolves.toEqual([]);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return (init.headers as Record<string, string>)["X-Client-OS"];
+  }
+
+  it("reports the injected android platform on JSON requests", async () => {
+    api.setOptions({ clientOS: "android" });
+
+    await expect(captureJsonRequestHeaderOS()).resolves.toBe("android");
+  });
+
+  it("reports the injected ios platform on JSON requests", async () => {
+    api.setOptions({ clientOS: "ios" });
+
+    await expect(captureJsonRequestHeaderOS()).resolves.toBe("ios");
+  });
+
+  it("reports the injected android platform on multipart uploads", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        id: "att-1",
+        filename: "a.png",
+        url: "https://cdn.example.test/a.png",
+      }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    api.setOptions({ clientOS: "android" });
+
+    await expect(api.uploadFile(pngAsset, { issueId: "issue-1" }))
+      .resolves.toMatchObject({ id: "att-1" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Client-OS"]).toBe(
+      "android",
+    );
+  });
+
+  it("falls back to ios when the platform layer injects nothing", async () => {
+    // 未注入时保持既有观测语义（旧行为），仅真实 App 的平台层注入 Platform.OS。
+    await expect(captureJsonRequestHeaderOS()).resolves.toBe("ios");
+  });
+});
