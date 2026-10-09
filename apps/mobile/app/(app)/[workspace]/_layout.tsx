@@ -490,6 +490,17 @@ export default function WorkspaceLayout() {
           name="more/agents/[id]/edit-profile"
           options={SHEET_OPTIONS}
         />
+        {/* RUYI-624: dedicated instructions window (RUYI-541 squad pattern)
+            and run-config editor (web execution section) behind the detail
+            page's split entries. */}
+        <Stack.Screen
+          name="more/agents/[id]/edit-instructions"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="more/agents/[id]/run-config"
+          options={SHEET_OPTIONS}
+        />
         <Stack.Screen
           name="more/agents/[id]/skills"
           options={SHEET_OPTIONS}
