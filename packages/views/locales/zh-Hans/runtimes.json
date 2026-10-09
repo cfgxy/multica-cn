@@ -488,7 +488,12 @@
     "model_saved": "模型已更新",
     "badge_configured": "已配置 ✓",
     "badge_invalid": "凭据失效",
-    "badge_not_configured": "未配置"
+    "badge_not_configured": "未配置",
+    "probe_test": "测试连接",
+    "probe_running": "测试中…",
+    "probe_ok": "连接成功——此设备上该 Key 可用",
+    "probe_unreachable": "无法从此设备访问 Google——请检查网络。这不代表 Key 无效。",
+    "key_saved_unreachable": "Key 已保存，但此设备无法访问 Google 完成验证——当前网络下语音可能不可用"
   },
   "voice_instance_create": {
     "action": "添加语音实例",
@@ -503,7 +508,8 @@
     "created": "语音实例已注册",
     "created_probe_invalid": "已注册，但连通性检查失败——请检查 API Key",
     "create_failed": "注册语音实例失败",
-    "key_save_failed": "已注册，但保存 API Key 失败——请在实例设置中补填"
+    "key_save_failed": "已注册，但保存 API Key 失败——请在实例设置中补填",
+    "created_unreachable": "已注册，但此设备无法访问 Google 验证 Key——当前网络下语音可能不可用"
   },
   "mobile": {
     "list_loading": "加载中…",

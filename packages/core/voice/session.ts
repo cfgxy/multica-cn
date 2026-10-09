@@ -20,13 +20,51 @@ import {
   rejectionFromError,
   type VoiceRejection,
 } from "./degrade";
-import { parseVoiceServerFrame, voiceAudioInputFrame } from "./protocol";
+import {
+  composeVoiceSetupFrame,
+  parseVoiceServerFrame,
+  voiceAudioInputFrame,
+} from "./protocol";
 
 export type VoiceSessionState = "idle" | "connecting" | "live" | "ended" | "failed";
 
 export interface VoiceTranscriptTurn {
   role: "user" | "assistant";
   text: string;
+}
+
+/** One persisted transcript row; shape matches the gateway's voiceTranscriptEntry. */
+export interface VoiceTranscriptEntry {
+  role: "user" | "assistant";
+  text: string;
+  at: string;
+}
+
+/** What a finished direct session hands back to the server's complete endpoint. */
+export interface VoiceSessionRecord {
+  transcript: VoiceTranscriptEntry[];
+  sessionHandle: string;
+}
+
+/**
+ * The REST hand-off that starts a direct session (RUYI-626): the server's
+ * rule-3 gate passed, the live_session row exists, and this payload is the
+ * one response that ever carries the plaintext credential — device-local
+ * only, never logged, never persisted by the client.
+ */
+export interface VoiceDirectSessionHandoff {
+  session_id: string;
+  provider_ws_url: string;
+  api_key: string;
+  model: string;
+  instructions: string;
+  advanced: Record<string, unknown> | null;
+}
+
+/** The terminal record POSTed back to /api/voice-sessions/{id}/complete. */
+export interface VoiceSessionCompleteRequest {
+  transcript: VoiceTranscriptEntry[];
+  session_handle?: string;
 }
 
 /** The platform socket surface the controller needs; nothing more. */
@@ -55,12 +93,32 @@ export interface VoiceSessionCallbacks {
   onEnded?(): void;
 }
 
+/**
+ * Direct-mode (RUYI-626) session inputs: the controller composes and sends
+ * the BidiGenerateContent setup itself, mirroring what the gateway used to
+ * do server-side before the client dialed the provider.
+ */
+export interface VoiceDirectSetup {
+  instructions: string;
+  model: string;
+  advanced: Record<string, unknown>;
+}
+
 export interface VoiceSessionOptions {
   url: string;
   /**
-   * Token for the first-frame auth path (header-less clients — mobile).
-   * Null/undefined uses cookie auth (desktop/web): the upgrade request
-   * carries the HttpOnly cookie and no auth frame is sent.
+   * "gateway" (default) connects through the server relay and authenticates
+   * with the first-frame token; "direct" connects straight to the provider
+   * and speaks the setup frame itself. Direct mode never sends an auth
+   * frame — the provider key rides the transport's connect headers.
+   */
+  mode?: "gateway" | "direct";
+  /** Direct mode only: the provider session parameters. */
+  directSetup?: VoiceDirectSetup;
+  /**
+   * Gateway-mode token for the first-frame auth path (header-less clients —
+   * mobile). Null/undefined uses cookie auth (desktop/web): the upgrade
+   * request carries the HttpOnly cookie and no auth frame is sent.
    */
   authToken?: string | null;
   transport: VoiceTransport;
@@ -72,15 +130,24 @@ export class VoiceSessionController {
   private readonly callbacks: VoiceSessionCallbacks;
   private readonly url: string;
   private readonly authToken: string | null;
+  private readonly mode: "gateway" | "direct";
+  private readonly directSetup: VoiceDirectSetup | null;
 
   private state: VoiceSessionState = "idle";
   private userBuffer = "";
   private assistantBuffer = "";
   private degraded = false;
   private finished = false;
+  // Direct-mode write-back collection (RUYI-626): transcript rows and the
+  // latest resumption handle, handed to the server's complete endpoint when
+  // the session reaches any terminal state.
+  private transcriptLog: VoiceTranscriptEntry[] = [];
+  private resumptionHandle = "";
 
   constructor(opts: VoiceSessionOptions) {
     this.url = opts.url;
+    this.mode = opts.mode ?? "gateway";
+    this.directSetup = opts.directSetup ?? null;
     this.authToken = opts.authToken ?? null;
     this.transport = opts.transport;
     this.callbacks = opts.callbacks;
@@ -102,6 +169,17 @@ export class VoiceSessionController {
       // A transport that recovered the gateway's code (mobile HTTP probe)
       // reports it via VoiceRejectionError; anything else stays generic.
       this.fail(rejectionFromError(error));
+      return;
+    }
+    if (this.mode === "direct") {
+      // The provider key rode the connect headers (never the URL); the setup
+      // frame is the first in-protocol message, gateway-composed until now.
+      const setup = this.directSetup ?? { instructions: "", model: "", advanced: {} };
+      this.transport.send(
+        JSON.stringify(
+          composeVoiceSetupFrame(setup.instructions, setup.model, setup.advanced),
+        ),
+      );
       return;
     }
     // First-frame auth (RUYI-429 pattern): the token rides the first
@@ -126,6 +204,18 @@ export class VoiceSessionController {
     this.finish("ended");
   }
 
+  /**
+   * The direct-mode write-back record: everything collected since connect.
+   * Null in gateway mode (the gateway owns persistence there). Available
+   * after any terminal state, so an abnormal disconnect still returns the
+   * partial transcript — the server's complete endpoint ends the live
+   * session row either way.
+   */
+  getSessionRecord(): VoiceSessionRecord | null {
+    if (this.mode !== "direct") return null;
+    return { transcript: this.transcriptLog, sessionHandle: this.resumptionHandle };
+  }
+
   private handleFrame(data: string): void {
     const frame = parseVoiceServerFrame(data);
     if (!frame) return;
@@ -143,6 +233,10 @@ export class VoiceSessionController {
       return;
     }
 
+    if (frame.resumptionHandle) {
+      this.resumptionHandle = frame.resumptionHandle;
+    }
+
     if (frame.interrupted) {
       this.assistantBuffer = "";
       this.callbacks.onInterrupted?.();
@@ -150,6 +244,13 @@ export class VoiceSessionController {
 
     if (frame.inputTranscription) {
       this.userBuffer += frame.inputTranscription;
+      if (this.mode === "direct") {
+        this.transcriptLog.push({
+          role: "user",
+          text: frame.inputTranscription,
+          at: new Date().toISOString(),
+        });
+      }
       this.callbacks.onUserTranscriptDelta?.(frame.inputTranscription);
     }
 
@@ -161,6 +262,13 @@ export class VoiceSessionController {
     }
     if (frame.outputTranscription) {
       this.assistantBuffer += frame.outputTranscription;
+      if (this.mode === "direct") {
+        this.transcriptLog.push({
+          role: "assistant",
+          text: frame.outputTranscription,
+          at: new Date().toISOString(),
+        });
+      }
       this.callbacks.onAssistantTranscriptDelta?.(frame.outputTranscription);
     }
     for (const part of frame.audioParts) {
