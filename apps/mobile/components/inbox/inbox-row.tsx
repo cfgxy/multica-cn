@@ -39,11 +39,18 @@ interface Props {
    * (IssueAgentActivityIndicator with hoverCard={false}).
    */
   activity?: IssueActivity;
+  /**
+   * False in the archived sub-view (RUYI-532): archiving deliberately leaves
+   * `read` untouched, so archived rows would otherwise pin an unread marker
+   * the user cannot clear from that view — web's InboxListItem suppresses
+   * the affordance there and mobile mirrors it.
+   */
+  showUnread?: boolean;
   onPress: () => void;
 }
 
-export function InboxRow({ item, activity, onPress }: Props) {
-  const isUnread = !item.read;
+export function InboxRow({ item, activity, showUnread = true, onPress }: Props) {
+  const isUnread = !item.read && showUnread;
   const { categoryOf, colorOf } = useIssueStatuses();
   const displayTitle = getInboxDisplayTitle(item);
   const actorType = item.actor_type ?? item.recipient_type;

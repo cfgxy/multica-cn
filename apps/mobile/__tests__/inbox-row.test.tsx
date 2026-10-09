@@ -49,13 +49,15 @@ jest.mock("@/lib/utils", () => ({
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(" "),
 }));
 
-type JsonNode = { props?: Record<string, unknown>; children?: JsonNode[] } | null;
+// toJSON() hands back library JSON whose text leaves are plain strings
+// (react-test-renderer ≥1.2 node types), so the walker accepts both shapes.
+type JsonNode = string | { props?: Record<string, unknown>; children?: JsonNode[] } | null;
 
 /** Walk the rendered JSON tree collecting every className — used for
  *  tree-wide negative assertions (no dot anywhere) without touching
  *  renderer-specific instance APIs. */
 function collectClassNames(node: JsonNode, out: string[] = []): string[] {
-  if (!node) return out;
+  if (!node || typeof node === "string") return out;
   const cls = node.props?.className;
   if (typeof cls === "string") out.push(cls);
   for (const child of node.children ?? []) collectClassNames(child, out);
@@ -183,5 +185,24 @@ describe("InboxRow unified status language (RUYI-554)", () => {
     await render(<InboxRow item={inboxItem()} onPress={jest.fn()} />);
 
     expect(mockAvatarProps.at(-1)?.showPresence).toBeUndefined();
+  });
+});
+
+// RUYI-532: archived-view parity with web (packages/views/inbox/components/
+// inbox-list-item.tsx) — archiving leaves `read` untouched, so the archived
+// list must not pin an unread affordance the user cannot clear from there.
+// Under RUYI-554's typographic language that affordance is the semibold/
+// foreground emphasis, so opting out renders an unread item with read
+// typography — the pre-merge unread-dot assertions recast, no dot exists.
+describe("InboxRow showUnread opt-out (RUYI-532)", () => {
+  it("styles an unread item with read typography when the view opts out", async () => {
+    await render(
+      <InboxRow item={inboxItem({ read: false })} onPress={jest.fn()} showUnread={false} />,
+    );
+
+    const title = screen.getByText("Fix login loop");
+    expect(title.props.className).toContain("text-muted-foreground");
+    expect(title.props.className).not.toContain("font-semibold");
+    expect(title.props.className).not.toContain("text-foreground");
   });
 });

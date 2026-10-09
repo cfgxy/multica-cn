@@ -7,6 +7,7 @@
  */
 import { useRef } from "react";
 import { Pressable, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import {
@@ -21,10 +22,12 @@ export default function NewIssueDueDatePickerRoute() {
   const setDueDate = useNewIssueDraftStore((s) => s.setDueDate);
   const ref = useRef<DueDatePickerBodyHandle>(null);
   const { t } = useT("issues");
+  const insets = useSafeAreaInsets();
 
   return (
     <View className="flex-1">
-      <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("detail.prop_due_date", "Due date")}
         </Text>

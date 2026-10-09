@@ -13,6 +13,7 @@
  */
 import { useEffect, useState } from "react";
 import { View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
@@ -32,6 +33,7 @@ export default function ChatRenameRoute() {
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const session = sessions.find((s) => s.id === sessionId);
   const { t } = useT("chat");
+  const insets = useSafeAreaInsets();
   const renameSession = useUpdateChatSession();
 
   const [draft, setDraft] = useState(session?.title ?? "");
@@ -69,7 +71,8 @@ export default function ChatRenameRoute() {
     <View className="flex-1">
       {/* Body-rendered header — SHEET_OPTIONS sets headerShown: false so the
           native bar doesn't fight the grabber (see _layout SHEET_OPTIONS). */}
-      <View className="px-4 pt-4 pb-3">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("header.rename", "Rename chat")}
         </Text>
