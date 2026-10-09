@@ -4187,7 +4187,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// transaction (force session_id NULL + flag the row), so an auto-retry the
 	// same commit creates and wakes can never observe the withheld pointer or a
 	// missing continuity-gap flag.
-	task, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.BranchName, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir)
+	task, freshlyFinalized, err := h.TaskService.CompleteTask(r.Context(), parseUUID(taskID), result, req.SessionID, req.WorkDir, req.BranchName, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir)
 	if err != nil {
 		// A CompleteTask error is an infrastructure failure (transaction /
 		// assistant-outcome write), not a bad request: an already-finalized
@@ -4207,7 +4207,16 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// input is never silently dropped. Loop-safe: member-authored only, capped
 	// by the existing per-(issue, agent) dedup, and terminating because the
 	// triggering comment always predates the follow-up run's started_at.
-	h.reconcileCommentsOnCompletion(r.Context(), task)
+	//
+	// Only on a fresh transition: a replayed terminal callback (already-
+	// finalized) already had its reconciliation when the row first finalized,
+	// so re-running it would replay the same window a second time. A daemon
+	// restart that re-reports hundreds of offline-finished runs would
+	// otherwise fan out one reconcile follow-up per historical task (the
+	// 2026-10-09 queue storm).
+	if freshlyFinalized {
+		h.reconcileCommentsOnCompletion(r.Context(), task)
+	}
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
 	// task's agent capacity or serialization key is re-claimed immediately.
@@ -4317,8 +4326,25 @@ func (h *Handler) emitIssueExecutedOnFirstCompletion(r *http.Request, task *db.A
 //     run, and terminating: the follow-up's own created_at is later than all of
 //     these comments and its delivered set will contain them, so its completion
 //     finds nothing to re-schedule.
+const reconcileMaxTaskAge = 24 * time.Hour
+
 func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.AgentTaskQueue) {
 	if task == nil || !task.IssueID.Valid || !task.AgentID.Valid || !task.CreatedAt.Valid {
+		return
+	}
+	// The reconcile window is "comments that landed while this run was in
+	// flight"; a run's lifetime is hours, not days. A task created before the
+	// cutoff has no legitimate in-flight window left — replaying its anchor
+	// would sweep the issue's entire comment history into a follow-up (the
+	// 2026-10-09 queue storm: days-old tasks re-reported on daemon restart
+	// each fanned out the full backlog). Skip and say so.
+	if age := time.Since(task.CreatedAt.Time); age > reconcileMaxTaskAge {
+		slog.Warn("reconcile comments on completion: skipped, task older than reconcile window",
+			"task_id", uuidToString(task.ID),
+			"issue_id", uuidToString(task.IssueID),
+			"task_age", age.Truncate(time.Minute).String(),
+			"max_age", reconcileMaxTaskAge.String(),
+		)
 		return
 	}
 	plannedCommentIDs := append([]pgtype.UUID{}, task.CoalescedCommentIds...)
