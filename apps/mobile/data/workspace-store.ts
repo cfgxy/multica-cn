@@ -25,11 +25,17 @@ import { invalidateNewIssueSubmissionContext } from "./stores/new-issue-draft-st
 interface WorkspaceState {
   currentWorkspaceId: string | null;
   currentWorkspaceSlug: string | null;
+  /** Server the confirmed id belongs to. restoreSlug compares it so a
+   *  cross-server switch persisting the SAME slug string still clears the
+   *  id (slug-only comparison would leak the old server's workspace). */
+  currentWorkspaceServerId: string | null;
   /** Set the active workspace and persist the slug (id is in-memory only —
    *  it's resolved from the workspaces list query, not stored). */
   setCurrentWorkspace: (id: string, slug: string) => Promise<void>;
-  /** Restore the slug from SecureStore on cold start / server switch. id
-   *  stays null until the workspaces list query resolves. */
+  /** Restore the slug from SecureStore on cold start / server switch. On
+   *  cold start the id stays null until the workspaces list query resolves;
+   *  on a mid-session replay (Android Activity recreation re-runs
+   *  initialize()) the identity is unchanged, so the confirmed id is kept. */
   restoreSlug: () => Promise<string | null>;
   clear: () => Promise<void>;
 }
@@ -37,27 +43,47 @@ interface WorkspaceState {
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   currentWorkspaceId: null,
   currentWorkspaceSlug: null,
+  currentWorkspaceServerId: null,
 
   setCurrentWorkspace: async (id, slug) => {
+    const { activeServerId } = useServerStore.getState();
     if (get().currentWorkspaceSlug !== slug) {
       invalidateNewIssueSubmissionContext();
     }
-    set({ currentWorkspaceId: id, currentWorkspaceSlug: slug });
-    const { activeServerId } = useServerStore.getState();
+    set({
+      currentWorkspaceId: id,
+      currentWorkspaceSlug: slug,
+      currentWorkspaceServerId: activeServerId,
+    });
     await setSlug(activeServerId, slug);
   },
 
   restoreSlug: async () => {
     const { activeServerId } = useServerStore.getState();
     const slug = await getSlug(activeServerId);
-    // Unconditional overwrite (including null): restoreSlug also runs on
-    // server switch, where a target server without a saved snapshot must
-    // NOT inherit the previous server's in-memory slug — otherwise the
-    // entry redirect would route straight into the old server's workspace.
-    if (get().currentWorkspaceSlug !== slug) {
+    // Identity is (server, slug): clear the confirmed id only when it actually
+    // changed. Mid-session replays (Activity recreation re-runs initialize())
+    // come back with the same identity — nulling the id there would re-key
+    // every tab list query to `[..., null, ...]` with enabled:false, silently
+    // emptying the UI with no self-heal, since the layout sync effect's deps
+    // wouldn't change (RUYI-543). A server switch keeps the existing
+    // semantics: a target server without a saved snapshot must NOT inherit
+    // the previous server's in-memory workspace — otherwise the entry
+    // redirect would route straight into the old server's workspace. The
+    // serverId stamp also covers a new server that persisted the SAME slug
+    // string: a different workspace that a slug-only check cannot detect.
+    const prev = get();
+    const identityChanged =
+      prev.currentWorkspaceSlug !== slug ||
+      prev.currentWorkspaceServerId !== activeServerId;
+    if (identityChanged) {
       invalidateNewIssueSubmissionContext();
     }
-    set({ currentWorkspaceId: null, currentWorkspaceSlug: slug });
+    set({
+      currentWorkspaceId: identityChanged ? null : prev.currentWorkspaceId,
+      currentWorkspaceSlug: slug,
+      currentWorkspaceServerId: activeServerId,
+    });
     return slug;
   },
 
@@ -65,7 +91,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     if (get().currentWorkspaceSlug !== null) {
       invalidateNewIssueSubmissionContext();
     }
-    set({ currentWorkspaceId: null, currentWorkspaceSlug: null });
+    set({
+      currentWorkspaceId: null,
+      currentWorkspaceSlug: null,
+      currentWorkspaceServerId: null,
+    });
     const { activeServerId } = useServerStore.getState();
     await clearSlug(activeServerId);
   },
