@@ -232,6 +232,12 @@ vi.mock("../../editor", async () => ({
         onUpdate?.(valueRef.current);
         return true;
       },
+      // RUYI-550: required handle member — the composer flushes after every
+      // programmatic insert. This mock emits onUpdate synchronously inside
+      // insertMarkdownAtEnd, so there is never a pending debounced emission;
+      // null (nothing to flush) is the faithful answer, and the host's
+      // applyEditorMarkdown(null) no-ops.
+      flushPendingUpdate: () => null,
     }));
 
     return (
@@ -471,8 +477,11 @@ describe("comment composers", () => {
     expect(screen.getByPlaceholderText("Leave a comment...")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Quick Replies" })).toBeInTheDocument();
+    // RUYI-550 mobile-parity entries: @ mention + dedicated image upload.
+    expect(screen.getByRole("button", { name: "Mention someone or an issue" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload image" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Attach file" })).toBeInTheDocument();
-    expect(container.querySelectorAll("button")).toHaveLength(4);
+    expect(container.querySelectorAll("button")).toHaveLength(6);
 
     const shell = screen.getByTestId("drop-zone");
     expect(shell.className).not.toMatch(/max-h-/);

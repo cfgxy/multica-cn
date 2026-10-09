@@ -36,6 +36,13 @@ import {
   formatTokens,
   todayIso,
 } from "../../runtimes/utils";
+import {
+  dimsForWindowLength,
+  shiftedWindow,
+  shiftWindow,
+  windowLength,
+  type StatWindow,
+} from "../window";
 import { useT } from "../../i18n";
 import {
   aggregateAgentFailures,
@@ -60,10 +67,13 @@ import {
 import {
   ALL_PROJECTS,
   DurationNumberFlow,
-  dimsForDays,
   type TimeRange,
 } from "./dashboard-shared";
-import { ProjectFilter, TimeRangeFilter } from "./dashboard-filters";
+import {
+  ProjectFilter,
+  WindowFilter,
+  type WindowSelection,
+} from "./dashboard-filters";
 import { UsageTrendCard } from "./usage-trend-card";
 import { Leaderboard } from "./leaderboard";
 import { ErrorsTab } from "./errors-tab";
@@ -153,8 +163,26 @@ export function DashboardPage() {
   const viewTZ = useViewingTimezone();
   const navigation = useNavigation();
   const locales = i18n.resolvedLanguage ?? i18n.language;
-  const [days, setDays] = useState<TimeRange>(30);
+  // The window is two independent axes: a quick range (1d…180d) sitting at
+  // "ending today", and WHERE it sits on the calendar — offset periods back,
+  // or an explicitly picked span. Every query, KPI and chart on the page
+  // derives from the single `statWindow` below, which is what keeps all the
+  // cards on one time boundary no matter how the window was chosen.
+  const [selection, setSelection] = useState<WindowSelection>({
+    kind: "quick",
+    days: 30,
+    offset: 0,
+  });
   const [projectValue, setProjectValue] = useState<string>(ALL_PROJECTS);
+  const today = todayIso(viewTZ);
+  const statWindow: StatWindow = useMemo(
+    () =>
+      selection.kind === "quick"
+        ? shiftedWindow(selection.days, selection.offset, today)
+        : selection.window,
+    [selection, today],
+  );
+  const windowLen = windowLength(statWindow);
 
   // The tab lives in the URL because the Errors view is the half of this page
   // people paste at each other ("this agent failed 54 times, see for
@@ -189,46 +217,36 @@ export function DashboardPage() {
     return projects.some((p) => p.id === projectValue) ? projectValue : null;
   }, [projectValue, projects]);
 
-  // The weekly charts paint `ceil(days / 7)` trailing calendar weeks anchored
-  // at today-in-UTC. In the worst case (today = Sunday) the leftmost Monday
-  // sits `weekCount * 7 - 1` days back, so a vanilla `days=30` request would
-  // silently truncate the leftmost bucket. Over-fetch the per-date queries to
-  // cover the full first week.
-  //
-  // Unconditionally, not only when a chart is weekly: the dimension is now a
-  // card-level control, so the page cannot know which grain is on screen — and
-  // fetching for the wider of the two means flipping a card between Daily and
-  // Weekly never refetches. Daily aggregations trim back to exactly `days`
-  // client-side via `dailyCutoffIso` below, so the extra rows change nothing
-  // they show. The per-agent rollups stay at `days` so KPI/leaderboard labels
-  // (e.g. "Tasks · 30D") keep their advertised window.
-  const weekCount = Math.max(1, Math.ceil(days / 7));
-  const chartFetchDays = weekCount * 7;
+  // The weekly charts fold the window into `ceil(len / 7)` calendar weeks
+  // anchored at the window's end. Historical windows aggregate into the weeks
+  // they actually spanned; a quick range keeps its old shape (ending at the
+  // current, partial week). The server returns exactly the requested window,
+  // so there is nothing left to over-fetch — the leftmost bucket may cover
+  // fewer days than the window opens with, and its tooltip says so.
+  const weekCount = Math.max(1, Math.ceil(windowLen / 7));
 
   const dailyQuery = useQuery(
-    dashboardUsageDailyOptions(wsId, chartFetchDays, projectId, viewTZ),
+    dashboardUsageDailyOptions(wsId, statWindow, projectId, viewTZ),
   );
-  // The three per-agent rollups carry no date, so `dailyCutoffIso` below
-  // cannot trim them — their window is closed server-side at exactly `days`
-  // calendar buckets (parseExactSinceParamInTZ). Anything derived from these
-  // three is therefore already on the same span as the trimmed daily series;
-  // do NOT put a per-agent rollup back on the N+1 cutoff, or the leaderboard
-  // and the Run time / Tasks KPIs silently widen by one day while the chart
-  // and the Cost / Tokens KPIs beside them do not (MUL-5551).
+  // All six rollups share one explicit window: the server closes the range
+  // [start, end + 1) for both the date-bucketed series and the per-agent
+  // rollups, so the leaderboard and the KPIs sit on the same span as the
+  // charts by construction — the old exact-vs-headroom split (MUL-5551) only
+  // ever applied to the legacy relative-days mode.
   const byAgentQuery = useQuery(
-    dashboardUsageByAgentOptions(wsId, days, projectId, viewTZ),
+    dashboardUsageByAgentOptions(wsId, statWindow, projectId, viewTZ),
   );
   const runTimeQuery = useQuery(
-    dashboardAgentRunTimeOptions(wsId, days, projectId, viewTZ),
+    dashboardAgentRunTimeOptions(wsId, statWindow, projectId, viewTZ),
   );
   const runTimeDailyQuery = useQuery(
-    dashboardRunTimeDailyOptions(wsId, chartFetchDays, projectId, viewTZ),
+    dashboardRunTimeDailyOptions(wsId, statWindow, projectId, viewTZ),
   );
   const failuresDailyQuery = useQuery(
-    dashboardFailuresDailyOptions(wsId, chartFetchDays, projectId, viewTZ),
+    dashboardFailuresDailyOptions(wsId, statWindow, projectId, viewTZ),
   );
   const failuresByAgentQuery = useQuery(
-    dashboardFailuresByAgentOptions(wsId, days, projectId, viewTZ),
+    dashboardFailuresByAgentOptions(wsId, statWindow, projectId, viewTZ),
   );
 
   const dailyUsage = dailyQuery.data ?? EMPTY_DAILY;
@@ -266,27 +284,32 @@ export function DashboardPage() {
     locales,
   );
 
-  // Daily-aggregation surfaces re-scope to the user-selected `days` even
-  // though the per-date queries over-fetch for the weekly charts. The cutoff is
-  // anchored on the viewer's timezone — the same axis the backend slices
-  // `bucket_hour` on — so it lands on the same calendar boundary. Applied in
-  // both dims so 1d strictly means "today" even at the midnight edge where a
-  // wall-clock cutoff would otherwise include yesterday.
-  const dailyCutoffIso = useMemo(
-    () => addDaysIso(todayIso(viewTZ), -(days - 1)),
-    [days, viewTZ],
-  );
+  // Daily-aggregation surfaces re-scope to the selected window. The server
+  // already returns exactly this range, but the trim is not dead weight: while
+  // a window switch is in flight the previous window's rows are still mounted
+  // (keep-previous-data), and without the trim they would bleed into every
+  // chart for a render or two. The bounds are the viewer's-timezone calendar
+  // — the same axis the backend slices `bucket_hour` on.
   const dailyUsageInWindow = useMemo(
-    () => dailyUsage.filter((u) => u.date >= dailyCutoffIso),
-    [dailyUsage, dailyCutoffIso],
+    () =>
+      dailyUsage.filter(
+        (u) => u.date >= statWindow.start && u.date <= statWindow.end,
+      ),
+    [dailyUsage, statWindow.start, statWindow.end],
   );
   const runTimeDailyInWindow = useMemo(
-    () => runTimeDailyRows.filter((r) => r.date >= dailyCutoffIso),
-    [runTimeDailyRows, dailyCutoffIso],
+    () =>
+      runTimeDailyRows.filter(
+        (r) => r.date >= statWindow.start && r.date <= statWindow.end,
+      ),
+    [runTimeDailyRows, statWindow.start, statWindow.end],
   );
   const failureDailyInWindow = useMemo(
-    () => failureDailyRows.filter((r) => r.date >= dailyCutoffIso),
-    [failureDailyRows, dailyCutoffIso],
+    () =>
+      failureDailyRows.filter(
+        (r) => r.date >= statWindow.start && r.date <= statWindow.end,
+      ),
+    [failureDailyRows, statWindow.start, statWindow.end],
   );
 
   // Loading and empty are per tab: the Usage tab has no reason to wait on the
@@ -336,13 +359,13 @@ export function DashboardPage() {
   // Failure summaries.
   //
   // Totals / classes / reasons are derived from the DATE-BUCKETED rollup after
-  // the same `dailyCutoffIso` trim the charts use, not from the per-agent one.
-  // `parseSinceParamInTZ` deliberately returns N+1 calendar days of headroom
-  // (see sinceFromDays in server/internal/handler/runtime.go), and only a
-  // series carrying a date can trim that back client-side. Reading these off
-  // the per-agent rollup put the summary one calendar day wider than the chart
-  // beside it — at 1D the chart could show no failures while the tile counted
-  // yesterday's.
+  // the same window trim the charts use, not from the per-agent one. On the
+  // legacy relative-days mode `parseSinceParamInTZ` deliberately returned N+1
+  // calendar days of headroom, and only a series carrying a date could trim
+  // that back client-side — reading these off the per-agent rollup put the
+  // summary one calendar day wider than the chart beside it. With explicit
+  // windows both series close on the same boundary server-side, and the trim
+  // now only guards the transition render.
   const failureTotals = useMemo(
     () => computeFailureTotals(failureDailyInWindow),
     [failureDailyInWindow],
@@ -364,8 +387,8 @@ export function DashboardPage() {
   );
 
   // The per-agent split has no date to trim on, so its window is closed
-  // server-side instead — GetDashboardFailuresByAgent uses the exact N-day
-  // cutoff rather than the N+1 one.
+  // server-side instead — the explicit-window mode bounds every series at
+  // [start, end + 1), legacy days mode used the exact N-day cutoff there.
   //
   // Anonymize BEFORE aggregating: the sentinel then behaves like any other
   // agent id, so the bucket's failure classes are summed from real
@@ -379,29 +402,57 @@ export function DashboardPage() {
     [failureByAgentRows, knownAgentIds],
   );
 
-  // Weekly aggregates — built from the over-fetched per-date queries so the
-  // leftmost trailing week always has data even when the user-selected `days`
-  // (e.g. 30D) is shorter than the chart's `weekCount * 7` span. Buckets are
-  // pre-zeroed inside the helpers, so sparse weeks render as empty bars
+  // Weekly aggregates — `weekCount` calendar weeks anchored at the window's
+  // end and clipped to its start, built from the trimmed per-date rows so a
+  // chart never shows a day outside the window the KPIs above quote. Buckets
+  // are pre-zeroed inside the helpers, so sparse weeks render as empty bars
   // instead of being dropped (MUL-2382 weekly window scoping). Week
   // boundaries follow the viewer's timezone.
   const weekly = useMemo(
-    () => aggregateByWeek(dailyUsage, viewTZ, weekCount),
-    [dailyUsage, viewTZ, weekCount],
+    () =>
+      aggregateByWeek(
+        dailyUsageInWindow,
+        viewTZ,
+        weekCount,
+        statWindow.end,
+        statWindow.start,
+      ),
+    [dailyUsageInWindow, viewTZ, weekCount, statWindow],
   );
   const weeklyCost = weekly.weeklyCostStack;
   const weeklyTokens = weekly.weeklyTokens;
   const weeklyTime = useMemo(
-    () => aggregateWeeklyTime(runTimeDailyRows, viewTZ, weekCount),
-    [runTimeDailyRows, viewTZ, weekCount],
+    () =>
+      aggregateWeeklyTime(
+        runTimeDailyInWindow,
+        viewTZ,
+        weekCount,
+        statWindow.end,
+        statWindow.start,
+      ),
+    [runTimeDailyInWindow, viewTZ, weekCount, statWindow],
   );
   const weeklyTasks = useMemo(
-    () => aggregateWeeklyTasks(runTimeDailyRows, viewTZ, weekCount),
-    [runTimeDailyRows, viewTZ, weekCount],
+    () =>
+      aggregateWeeklyTasks(
+        runTimeDailyInWindow,
+        viewTZ,
+        weekCount,
+        statWindow.end,
+        statWindow.start,
+      ),
+    [runTimeDailyInWindow, viewTZ, weekCount, statWindow],
   );
   const weeklyErrors = useMemo(
-    () => aggregateWeeklyErrors(failureDailyRows, viewTZ, weekCount),
-    [failureDailyRows, viewTZ, weekCount],
+    () =>
+      aggregateWeeklyErrors(
+        failureDailyInWindow,
+        viewTZ,
+        weekCount,
+        statWindow.end,
+        statWindow.start,
+      ),
+    [failureDailyInWindow, viewTZ, weekCount, statWindow],
   );
   const agentTokenRows = useMemo(
     () => aggregateAgentTokens(byAgentUsage),
@@ -453,8 +504,43 @@ export function DashboardPage() {
     [agentRows, knownAgentIds],
   );
 
-  const allowedDims = dimsForDays(days);
+  // KPI labels state the window LENGTH ("· 30D"); the picker next to the tabs
+  // states its position. A card-scoped label cannot spell out a page-scoped
+  // span without going stale the moment the user pages back a period.
+  const allowedDims = dimsForWindowLength(windowLen);
   const lessThanMinuteLabel = t(($) => $.duration.less_than_minute);
+
+  const handleQuickRange = (days: TimeRange) =>
+    setSelection({ kind: "quick", days, offset: 0 });
+  const handleCustomRange = (window: StatWindow) =>
+    setSelection({ kind: "custom", window });
+  const handleShift = (periods: number) =>
+    setSelection((s) => {
+      if (s.kind === "quick") {
+        // ‹ (periods = -1) steps into the past, and `offset` counts periods
+        // AWAY from today — so it grows; › walks it back down. 0 is the
+        // floor: the present, where › already renders disabled.
+        const offset = Math.max(0, s.offset - periods);
+        return offset === s.offset ? s : { ...s, offset };
+      }
+      const next = shiftWindow(s.window, periods);
+      // The UI disables › at the present, but a stale click still lands here.
+      if (next.end > today) return s;
+      return { kind: "custom", window: next };
+    });
+  // Same length, re-anchored on today — the one-click way home from any
+  // historical position.
+  const handleBackToCurrent = () =>
+    setSelection((s) => {
+      if (s.kind === "quick") return s.offset === 0 ? s : { ...s, offset: 0 };
+      return {
+        kind: "custom",
+        window: {
+          start: addDaysIso(today, -(windowLength(s.window) - 1)),
+          end: today,
+        },
+      };
+    });
 
   return (
     <Tabs
@@ -514,7 +600,15 @@ export function DashboardPage() {
             </TabsTrigger>
           </TabsList>
           <div className="flex shrink-0 items-center gap-2">
-            <TimeRangeFilter days={days} onChange={setDays} />
+            <WindowFilter
+              selection={selection}
+              window={statWindow}
+              today={today}
+              onQuickRange={handleQuickRange}
+              onCustomRange={handleCustomRange}
+              onShift={handleShift}
+              onBackToCurrent={handleBackToCurrent}
+            />
             <ProjectFilter
               projects={projects}
               projectValue={projectValue}
@@ -537,11 +631,11 @@ export function DashboardPage() {
                     section uses, expanded to four tiles. */}
                 <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
                   <KpiCard
-                    label={t(($) => $.kpi.cost_label, { days })}
+                    label={t(($) => $.kpi.cost_label, { days: windowLen })}
                     value={<CurrencyNumberFlow value={totals.cost} locales={locales} />}
                   />
                   <KpiCard
-                    label={t(($) => $.kpi.tokens_label, { days })}
+                    label={t(($) => $.kpi.tokens_label, { days: windowLen })}
                     value={
                       <CompactNumberFlow
                         value={
@@ -559,7 +653,7 @@ export function DashboardPage() {
                     })}
                   />
                   <KpiCard
-                    label={t(($) => $.kpi.run_time_label, { days })}
+                    label={t(($) => $.kpi.run_time_label, { days: windowLen })}
                     value={
                       <DurationNumberFlow
                         seconds={runTimeTotals.totalSeconds}
@@ -572,7 +666,7 @@ export function DashboardPage() {
                     })}
                   />
                   <KpiCard
-                    label={t(($) => $.kpi.tasks_label, { days })}
+                    label={t(($) => $.kpi.tasks_label, { days: windowLen })}
                     value={
                       <NumberFlow
                         value={runTimeTotals.taskCount}
@@ -621,7 +715,7 @@ export function DashboardPage() {
               <DashboardSkeleton />
             ) : (
               <ErrorsTab
-                days={days}
+                days={windowLen}
                 allowedDims={allowedDims}
                 totals={failureTotals}
                 classRows={failureClassRows}

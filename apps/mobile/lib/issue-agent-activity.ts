@@ -40,9 +40,46 @@ export function isActiveTaskStatus(status: AgentTask["status"]): boolean {
   return status === "running" || isQueuedTaskStatus(status);
 }
 
+/**
+ * Per-task cancel affordance (RUYI-538 ③): everything isActiveTaskStatus
+ * covers, plus the two-phase `cancel_requested` hold — the daemon hasn't
+ * confirmed the interrupt yet and a repeat cancel re-broadcasts the nudge
+ * (AgentTask.status type doc; mobile RunRow's CancelButton follows the same
+ * set). Terminal rows (completed / failed / cancelled) never offer cancel.
+ */
+export function canCancelAgentTask(task: AgentTask): boolean {
+  return isActiveTaskStatus(task.status) || task.status === "cancel_requested";
+}
+
 export interface IssueActivity {
   running: AgentTask[];
   queued: AgentTask[];
+}
+
+/** Avatar treatment bucket for the unified status language (RUYI-554):
+ *  running → breathing animation, queued → grayed, absent → static. */
+export type AgentActivityState = "running" | "queued";
+
+/**
+ * Per-actor slice of one issue's activity groups: does THIS actor have a
+ * running task (→ "running"), else a queued-side task (→ "queued"), else
+ * nothing (→ null). Feeds ActorAvatar's `activity` prop on rows that already
+ * hold the issue slice, so list rows derive the avatar state with zero extra
+ * queries. Member actors simply never match an AgentTask.agent_id and fall
+ * out as null — the static branch.
+ */
+export function selectActorActivity(
+  activity: IssueActivity | undefined,
+  actorId: string | null | undefined,
+): AgentActivityState | null {
+  if (!activity || !actorId) return null;
+  if (activity.running.some((task) => task.agent_id === actorId)) {
+    return "running";
+  }
+  if (activity.queued.some((task) => task.agent_id === actorId)) {
+    return "queued";
+  }
+  return null;
 }
 
 /** Per-issue slice: running + queued tasks, terminal tasks dropped. Mirrors

@@ -759,3 +759,122 @@ func TestCompleteTask_ReconcilesPlannedButUndeliveredComments(t *testing.T) {
 		})
 	}
 }
+
+// TestCompleteTask_ReplayedCallbackDoesNotReReconcile pins the idempotency
+// gate on the completion reconcile (2026-10-09 queue storm). A daemon restart
+// re-reports offline-finished runs; the replayed terminal callback hits
+// CompleteTask's already-finalized branch and must return 200 WITHOUT running
+// the MUL-4195 reconcile again — the first completion already reconciled that
+// window, and a re-run fans out a duplicate follow-up per replayed task.
+func TestCompleteTask_ReplayedCallbackDoesNotReReconcile(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 AND runtime_id IS NOT NULL LIMIT 1`,
+		testWorkspaceID).Scan(&agentID, &runtimeID)
+
+	issueID := dbfx.Issue(t, "reconcile-replay fixture", testutil.Cols{
+		"status":        "in_progress",
+		"number":        999010,
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
+
+	triggerCommentID := dbfx.Comment(t, issueID, "initial request", testutil.Cols{
+		"created_at": testutil.Raw("now() - interval '10 minutes'"),
+	})
+
+	var taskID string
+	dbfx.QueryRow(t, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, trigger_comment_id, delivered_comment_ids, status, priority, created_at, started_at)
+		VALUES ($1, $2, $3, $4, ARRAY[$4::uuid], 'running', 0, now() - interval '10 minutes', now() - interval '5 minutes')
+		RETURNING id
+	`, agentID, runtimeID, issueID, triggerCommentID).Scan(&taskID)
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID) })
+
+	// A deliberate member comment that arrived during the run: the fresh
+	// completion earns exactly one follow-up.
+	dbfx.Exec(t, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, created_at)
+		VALUES ($1, $2, 'member', $3, 'follow-up input', 'comment', now() - interval '1 minute')
+	`, issueID, testWorkspaceID, testUserID)
+
+	if w := completeTaskViaHandler(t, taskID, "done"); w.Code != http.StatusOK {
+		t.Fatalf("fresh CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 1 {
+		t.Fatalf("expected exactly 1 follow-up after fresh completion, got %d", n)
+	}
+
+	// Drain the first follow-up (the storm's mechanic: follow-ups are claimed
+	// by the running daemons while re-reports keep arriving). With no pending
+	// task left, the (issue, agent) dedup can no longer absorb a replay.
+	testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, issueID)
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 0 {
+		t.Fatalf("fixture setup: expected drained queue, got %d pending", n)
+	}
+
+	// The daemon-restart replay: the same terminal callback arrives again on a
+	// task that is already finalized. Must stay 200 and must NOT reconcile a
+	// second follow-up.
+	if w := completeTaskViaHandler(t, taskID, "done"); w.Code != http.StatusOK {
+		t.Fatalf("replayed CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 0 {
+		t.Fatalf("replayed callback re-reconciled: expected 0 new follow-ups, got %d", n)
+	}
+}
+
+// TestCompleteTask_StaleTaskSkipsReconcile bounds the reconcile window: the
+// guarantee covers comments that landed while the run was in flight (hours),
+// not a task's entire lifetime. A task created days ago completing now must
+// not sweep every comment since its creation into a follow-up — that is the
+// unbounded backlog replay behind the 2026-10-09 queue storm.
+func TestCompleteTask_StaleTaskSkipsReconcile(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 AND runtime_id IS NOT NULL LIMIT 1`,
+		testWorkspaceID).Scan(&agentID, &runtimeID)
+
+	issueID := dbfx.Issue(t, "reconcile-stale fixture", testutil.Cols{
+		"status":        "in_progress",
+		"number":        999011,
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
+
+	triggerCommentID := dbfx.Comment(t, issueID, "ancient request", testutil.Cols{
+		"created_at": testutil.Raw("now() - interval '3 days'"),
+	})
+
+	var taskID string
+	dbfx.QueryRow(t, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, trigger_comment_id, delivered_comment_ids, status, priority, created_at, started_at)
+		VALUES ($1, $2, $3, $4, ARRAY[$4::uuid], 'running', 0, now() - interval '3 days', now() - interval '3 days' + interval '5 minutes')
+		RETURNING id
+	`, agentID, runtimeID, issueID, triggerCommentID).Scan(&taskID)
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID) })
+
+	// Even with an undelivered member comment inside the stale window, the
+	// age guard must skip reconciliation entirely.
+	dbfx.Exec(t, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, created_at)
+		VALUES ($1, $2, 'member', $3, 'comment on a stale run', 'comment', now() - interval '1 minute')
+	`, issueID, testWorkspaceID, testUserID)
+
+	if w := completeTaskViaHandler(t, taskID, "done"); w.Code != http.StatusOK {
+		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 0 {
+		t.Fatalf("stale task reconciled past its window: expected 0 follow-ups, got %d", n)
+	}
+}

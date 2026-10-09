@@ -8,7 +8,12 @@
   "filter": {
     "project_label": "프로젝트",
     "all_projects": "모든 프로젝트",
-    "period_label": "기간"
+    "period_label": "기간",
+    "period_prev": "이전 기간",
+    "period_next": "다음 기간",
+    "period_back_to_current": "현재 기간으로 돌아가기",
+    "period_custom": "기간 지정",
+    "period_apply": "적용"
   },
   "kpi": {
     "cost_label": "비용 · {{days}}일",

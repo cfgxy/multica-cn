@@ -4,7 +4,9 @@
  * active, which erased the runs page's only always-visible entry the moment
  * a run finished:
  *
- *   ≥1 active task        → avatar stack + PulseDot        (live badge)
+ *   ≥1 active task        → breathing avatar stack         (live badge;
+ *                           RUYI-554: running agents breathe, queued-only
+ *                           stacks gray — no dot beside the stack)
  *   0 active, ≥1 past run → clock + "Runs · N"             (history entry)
  *   never run             → null (no chrome, no placeholder)
  *
@@ -28,7 +30,6 @@ import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { AvatarStack, type StackActor } from "@/components/ui/avatar-stack";
-import { PulseDot } from "@/components/ui/pulse-dot";
 import { Text } from "@/components/ui/text";
 import {
   issueActiveTasksOptions,
@@ -105,6 +106,9 @@ export function AgentHeaderBadge({ issueId }: Props) {
     type: "agent",
     id: t.agent_id,
   }));
+  // RUYI-554: the stack carries the state itself — running agents breathe,
+  // a queued-only stack sits gray. Same bucket rule as the row badge.
+  const hasRunning = active.some((t) => t.status === "running");
 
   return (
     <Pressable
@@ -116,8 +120,12 @@ export function AgentHeaderBadge({ issueId }: Props) {
       )}
       className="flex-row items-center gap-1.5 px-2 py-1 active:opacity-60"
     >
-      <AvatarStack actors={actors} max={2} size={20} />
-      <PulseDot size={6} />
+      <AvatarStack
+        actors={actors}
+        max={2}
+        size={20}
+        activity={hasRunning ? "running" : "queued"}
+      />
     </Pressable>
   );
 }

@@ -1069,6 +1069,8 @@
     "capability_send_messages": "Send messages",
     "capability_read_history": "Read message history (quoted replies, forwards, and recent group context)",
     "capability_download_media": "Download message files",
+    "capability_drive_file_links": "Download Feishu shared files (/file/ links)",
+    "capability_wiki_doc_links": "Read Feishu wiki & docs (/wiki/, /docx/ links)",
     "capability_lookup_contacts": "Look up sender info",
     "install_permissions_title": "Permissions this bot needs",
     "install_permissions_hint": "Creating the bot by scanning grants it the scopes below. For each line, any one scope suffices; every line must be covered. Approval-required scopes need an enterprise admin's approval.",

@@ -159,7 +159,6 @@ These are not generic shadcn components — RNR has no equivalent for "priority 
 - `project-priority-icon.tsx` (71)
 - `project-status-icon.tsx` (130)
 - `status-icon.tsx` (163)
-- `pulse-dot.tsx` (52)
 - `screen-header.tsx` (37)
 
 No PR for Tier C until a bug or feature touches the file. Then update the foundation as part of that PR — opportunistic, not scheduled.

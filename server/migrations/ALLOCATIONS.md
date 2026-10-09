@@ -34,7 +34,8 @@ Rules (see workspace/project instructions, RUYI-359):
 | 931 | 931_live_session | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-voice-gateway | reserved |
 | 932 | 932_voice_fact_event | RUYI-425 | agent/agent-f70e39b85abd/ruyi-425-writeback | reserved |
 | 933 | 933_issue_decision_client_request_id | RUYI-514 | agent/agent-f70e39b85abd/ruyi-514 | reserved |
-| 934 | 934_self_evolution_model_config | RUYI-551 | agent/agent-f70e39b85abd/ruyi-551 | reserved |
+| 934 | 934_self_evolution_model_config | RUYI-551 | agent/agent-f70e39b85abd/ruyi-551 | reserved (934_retrospective_llm_config, RUYI-552 direction-2, was issued to this number and superseded by 935 in the direction-3 rework before any main-disk apply — direction-2 QA applied it once to the `multica_dev1` slot ledger (2026-10-08); inert leftover (zero references in direction-3 code), cleared with slot lifecycle → freed, then re-registered here by RUYI-551. Main disk has 933/935 with 934 as the gap; no renumbering. |
+| 935 | 935_retrospective_agent | RUYI-552 | agent/agent-f70e39b85abd/ruyi-552 | reserved |
 
 Notes:
 

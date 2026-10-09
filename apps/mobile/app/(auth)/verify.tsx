@@ -26,6 +26,17 @@ export default function Verify() {
   const [cooldown, setCooldown] = useState(RESEND_COOLDOWN_SECONDS);
   const [resending, setResending] = useState(false);
   const otpRef = useRef<OtpInputRef>(null);
+  // RUYI-568 取消语义：返回修改邮箱（或任何方式离开本屏）时中止在途的
+  // verify/resend 请求——不留悬挂请求，也不会在用户已离开后突然导航。
+  const resendAbortRef = useRef<AbortController | null>(null);
+  const verifyAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      resendAbortRef.current?.abort();
+      verifyAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -40,24 +51,32 @@ export default function Verify() {
     void Haptics.selectionAsync();
     setSubmitting(true);
     setError(null);
+    const controller = new AbortController();
+    verifyAbortRef.current = controller;
     try {
-      await verifyCode(email, value);
+      await verifyCode(email, value, { signal: controller.signal });
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace("/");
     } catch (err) {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setError(
-        mapAuthError(
-          err,
-          t(
-            "mobile.errors.verify_failed",
-            "Couldn't verify the code. Try again.",
+      if (!controller.signal.aborted) {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setError(
+          mapAuthError(
+            err,
+            t(
+              "mobile.errors.verify_failed",
+              "Couldn't verify the code. Try again.",
+            ),
           ),
-        ),
-      );
-      setSubmitting(false);
-      otpRef.current?.clear();
-      setCode("");
+        );
+        setSubmitting(false);
+        otpRef.current?.clear();
+        setCode("");
+      }
+    } finally {
+      if (verifyAbortRef.current === controller) {
+        verifyAbortRef.current = null;
+      }
     }
   };
 
@@ -66,23 +85,30 @@ export default function Verify() {
     void Haptics.selectionAsync();
     setResending(true);
     setError(null);
+    const controller = new AbortController();
+    resendAbortRef.current = controller;
     try {
-      await sendCode(email);
+      await sendCode(email, { signal: controller.signal });
       setCooldown(RESEND_COOLDOWN_SECONDS);
       otpRef.current?.clear();
       setCode("");
     } catch (err) {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setError(
-        mapAuthError(
-          err,
-          t(
-            "mobile.errors.resend_failed",
-            "Couldn't resend the code. Try again.",
+      if (!controller.signal.aborted) {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        setError(
+          mapAuthError(
+            err,
+            t(
+              "mobile.errors.resend_failed",
+              "Couldn't resend the code. Try again.",
+            ),
           ),
-        ),
-      );
+        );
+      }
     } finally {
+      if (resendAbortRef.current === controller) {
+        resendAbortRef.current = null;
+      }
       setResending(false);
     }
   };
@@ -122,7 +148,7 @@ export default function Verify() {
             <Button
               size="lg"
               disabled={submitting || code.length < CODE_LENGTH}
-              onPress={() => submit(code)}
+              onPress={() => void submit(code)}
             >
               <Text>
                 {submitting
@@ -132,9 +158,10 @@ export default function Verify() {
             </Button>
 
             <Pressable
-              onPress={onResend}
+              onPress={() => void onResend()}
               disabled={cooldown > 0 || resending}
               className="py-2 items-center"
+              testID="verify-resend"
             >
               <Text
                 className={

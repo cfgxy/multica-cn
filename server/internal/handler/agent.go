@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -623,6 +624,7 @@ type AgentTaskResponse struct {
 	QuickCreateAttachments   []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`    // full rows behind the ids above — filenames + durable markdown URLs so the create-run can inline images into the description (RUYI-478)
 	QuickCreateSourceContext json.RawMessage             `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
 	QuizPrompt               string                      `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
+	RetrospectivePrompt      string                      `json:"retrospective_prompt,omitempty"`        // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — read issues, submit drafts, create nothing
 	HandoffNote              string                      `json:"handoff_note,omitempty"`                // assignment handoff instruction; rendered into the run's opening prompt + issue_context.md (omitempty so old daemons ignore it)
 	SquadID                  string                      `json:"squad_id,omitempty"`                    // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
 	SquadName                string                      `json:"squad_name,omitempty"`                  // display name for the picker squad
@@ -1158,6 +1160,12 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 	// production statistic quiz runs must stay out of.
 	if t.OriginatorSource.Valid && t.OriginatorSource.String == promptquiz.OriginatorSource {
 		return promptquiz.TaskKind
+	}
+	// Same discipline for the daily-retrospective agent run (RUYI-552): its
+	// whole point is to analyze completed issues without creating any, so it
+	// must never show up as a member-issued quick_create.
+	if t.OriginatorSource.Valid && t.OriginatorSource.String == retrospective.TaskOriginatorSource {
+		return retrospective.TaskKind
 	}
 	if uuidToString(t.IssueID) == "" {
 		return "quick_create"
