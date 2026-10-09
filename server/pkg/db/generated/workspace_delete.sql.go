@@ -661,6 +661,9 @@ deleted_retrospective_watermarks AS (
 deleted_retrospective_configs AS (
     DELETE FROM retrospective_config WHERE retrospective_config.workspace_id = $1
 ),
+deleted_model_configs AS (
+    DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.workspace_id = $1
+),
 deleted_scan_batches AS (
     DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
 ),
@@ -672,8 +675,9 @@ DELETE FROM knowledge_dir WHERE knowledge_dir.workspace_id = $1
 
 // Self-evolution tables (RUYI-265, RUYI-305) have no foreign keys or cascades.
 // Every row — prompt legislation proposals, structure baselines, retrospective
-// runs/watermarks/config, registered knowledge directories, mirror entries and
-// scan batches — is workspace-keyed, so each table deletes by workspace_id
+// runs/watermarks/config, the module model-service config (RUYI-551),
+// registered knowledge directories, mirror entries and scan batches — is
+// workspace-keyed, so each table deletes by workspace_id
 // directly; no id-set indirection is needed.
 func (q *Queries) DeleteWorkspaceSelfEvolutionData(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceSelfEvolutionData, workspaceID)

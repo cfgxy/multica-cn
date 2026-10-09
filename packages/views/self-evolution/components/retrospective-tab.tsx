@@ -277,6 +277,23 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                     {t(($) => $.retrospective.errorLabel)}: {errorLine}
                   </div>
                 ) : null}
+                {canManage && run.status === "failed" ? (
+                  <div className="mt-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={trigger.isPending}
+                      onClick={() =>
+                        trigger.mutate(undefined, {
+                          onError: mutationError,
+                          onSuccess: () => toast.success(t(($) => $.retrospective.triggerOk)),
+                        })
+                      }
+                    >
+                      {t(($) => $.retrospective.rerun)}
+                    </Button>
+                  </div>
+                ) : null}
               </li>
               );
             })}

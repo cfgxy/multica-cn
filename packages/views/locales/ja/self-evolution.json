@@ -1,16 +1,6 @@
 {
   "title": "自己進化",
   "description": "エージェントとスクワッドのプロンプトが時間とともにどう変化したか、その変化の要因を確認します。",
-  "tabs": {
-    "overview": "概要",
-    "quality": "品質",
-    "quiz": "クイズ",
-    "skills": "Skill",
-    "proposals": "立法提案",
-    "retrospective": "ふりかえり",
-    "knowledge": "ナレッジ",
-    "versions": "バージョン"
-  },
   "overview": {
     "loading": "概要を読み込み中",
     "error": "概要の読み込みに失敗しました",
@@ -56,7 +46,8 @@
       "empty": "登録された skill はまだありません。",
       "count": "skill {{count}} 件",
       "invocations": "累計明示呼び出し {{count}} 回"
-    }
+    },
+    "viewAll": "表示"
   },
   "skills": {
     "choose": "skill を選択",
@@ -511,6 +502,7 @@
     "empty": "実行履歴はまだありません。",
     "saveOk": "ふりかえり設定を保存しました。",
     "triggerOk": "振り返りランを開始しました。",
+    "rerun": "再実行",
     "agentTitle": "実行エージェント",
     "agentDescription": "毎日の総振り返りは選択したエージェントの 1 回のランとして実行されます：期間内の完了 Issue を読み取り改善ドラフトを抽出します。Issue の作成もコメントも行いません。",
     "agentLabel": "実行エージェント",
@@ -643,5 +635,162 @@
     "compareTitle": "v{{from}} → v{{to}} を比較",
     "secretBlocked": "未保存：プロンプトに認証情報が含まれている可能性があります。",
     "findingLine": "{{line}} 行目"
+  },
+  "nav": {
+    "label": "自己進化セクション",
+    "overview": "概要",
+    "groupKnowledgeAssets": "ナレッジ資産",
+    "groupMeasures": "計測",
+    "groupLoop": "進化ループ",
+    "groupConfig": "設定",
+    "knowledge": "ナレッジ",
+    "skills": "スキル進化",
+    "quality": "品質",
+    "quiz": "クイズ",
+    "proposals": "提案",
+    "versions": "バージョン",
+    "retrospective": "毎日の振り返り",
+    "config": "モジュール設定"
+  },
+  "configSource": {
+    "prefix": "適用元：",
+    "module": "モジュール設定",
+    "deploy": "デプロイ既定",
+    "system": "システムレベル"
+  },
+  "sources": {
+    "states": {
+      "ok": "利用可能",
+      "unconfigured": "未設定",
+      "error": "設定エラー",
+      "disabled": "無効"
+    },
+    "reason": "原因：",
+    "impact": "影響："
+  },
+  "secretField": {
+    "placeholder": "新しい値を入力",
+    "keepExisting": "空欄で現在の値を維持"
+  },
+  "segToolbar": {
+    "filters": "フィルター"
+  },
+  "attention": {
+    "title": "要対応",
+    "hint": "対応済みの項目はリストから消えます",
+    "modelUnconfigured": {
+      "title": "モデルサービスが未設定",
+      "description": "品質スコアリングと毎日の振り返りに利用可能な LLM がありません",
+      "action": "設定する"
+    },
+    "modelError": {
+      "title": "モデルサービスの検証に失敗",
+      "action": "設定を確認"
+    },
+    "discoveries": {
+      "title": "インポート待ちのスキル発見が {{count}} 件",
+      "action": "確認"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "エントリ",
+    "dirs": "ディレクトリ",
+    "external": "外部ソース",
+    "addSource": "外部ソースを追加",
+    "entryDrawerSubtitle": "{{dir}} のミラー",
+    "attrDir": "ディレクトリ",
+    "attrMirror": "ミラー状態",
+    "attrAdoption": "取り込み状態",
+    "attrSource": "ソースキー",
+    "attrUpdated": "最終確認",
+    "attrKind": "種別",
+    "attrEntries": "エントリ数",
+    "attrCreated": "登録日",
+    "scanHistory": "スキャン履歴",
+    "viewEntries": "エントリを表示",
+    "unregisterConfirm": "「{{label}}」を登録解除しますか？ミラーされたエントリは保持されますが更新されません。",
+    "emptyExternal": "外部ソースはまだ登録されていません。",
+    "jumpToDirs": "ディレクトリへ移動",
+    "colKey": "キー",
+    "colActions": "操作",
+    "colSource": "ソース",
+    "colPath": "パス",
+    "colHealth": "健全性",
+    "colLastScan": "最終スキャン"
+  },
+  "skillsSeg": {
+    "managed": "管理中のスキル",
+    "discoveries": "発見",
+    "colSkill": "スキル",
+    "colSource": "ソース",
+    "colLatestVersion": "最新版",
+    "colInvocations30d": "過去 30 日",
+    "invocationsValue": "{{count}} 回",
+    "emptyDiscoveries": "ランタイムの発見はまだありません — ランタイムで観測されたスキルがここに表示され、インポートを待ちます。"
+  },
+  "qualityCards": {
+    "title": "データソース状態",
+    "scoringModel": "スコアリングモデル",
+    "langfuse": "Langfuse",
+    "banner": "一部のデータソースが劣化しています — 直近の数値は不完全な場合があります。",
+    "viewSources": "データソース状態を見る",
+    "reasons": {
+      "okValidated": "接続チェックに合格しました（{{date}}）。",
+      "okModule": "モジュール設定を保存済み（未再検証）。",
+      "okDeploy": "デプロイ時に注入された既定値を検出（事前検証なし）。",
+      "error": "接続チェックに失敗しました。",
+      "errorDetail": "接続チェックに失敗：{{error}}",
+      "disabled": "ソースは正常ですが、ワークスペースのスイッチがオフです。",
+      "unconfigured": "このソースの設定が見つかりません。",
+      "langfuseOk": "デプロイ時に注入されたエクスポート認証情報を検出（システムレベル）。",
+      "langfuseMissing": "このデプロイには Langfuse エクスポート認証情報がありません。"
+    },
+    "impacts": {
+      "ok": "すべての指標が正常に収集されています。",
+      "error": "最後に成功したデータを時刻付きで保持中。新規収集は失敗しています。",
+      "disabled": "新規データの収集を停止。履歴は照会可能です。",
+      "unconfigured": "対象の指標にはデータがなく、ガイド状態になります。",
+      "langfuseOk": "会話エクスポートを実行できます。",
+      "langfuseMissing": "会話エクスポートは行われません。"
+    },
+    "actions": {
+      "configure": "設定する",
+      "viewConfig": "設定を見る",
+      "viewError": "エラーを見る",
+      "enable": "有効にする",
+      "deployNotes": "デプロイ側でのみ設定可能"
+    }
+  },
+  "modelConfig": {
+    "title": "モデルサービス",
+    "description": "このワークスペースの品質スコアリングと毎日の振り返りが共用する LLM エンドポイント。キーは暗号化して保存され、再表示されません。",
+    "baseUrl": "Base URL",
+    "apiKey": "API キー",
+    "model": "モデル",
+    "consumersTitle": "このエンドポイントの利用者",
+    "scoringConsumer": "品質スコアリング",
+    "saveAndValidate": "検証して保存",
+    "busy": "処理中…",
+    "revalidate": "再チェック",
+    "lastValidated": "最終検証 {{date}}",
+    "neverValidated": "未検証",
+    "validationOk": "接続チェックに合格しました。",
+    "validationFailed": "検証に失敗 — 何も保存されていません",
+    "saveOk": "モデルサービスを保存しました。",
+    "restoreDefault": "デプロイ既定に戻す",
+    "restoreConfirm": "このワークスペースの上書きを削除し、デプロイ既定値を再度適用します。続行しますか？",
+    "restoreOk": "デプロイ既定に戻しました。",
+    "encryptionNotReady": "このデプロイにはワークスペース単位の暗号化キーがないため、保存できません — デプロイ既定値が適用されます。",
+    "errorKind": {
+      "credentials": "認証情報が無効または期限切れ",
+      "model": "モデルが利用不可または拒否",
+      "connection": "接続失敗またはタイムアウト",
+      "notConfigured": "必須フィールドが不足",
+      "other": "その他のエラー"
+    }
+  },
+  "configPage": {
+    "title": "モジュール設定",
+    "description": "以下のモデルサービスが品質スコアリングと毎日の振り返りを支えます。Langfuse はインスタンス単位のため、ここでは読み取り専用です。"
   }
 }
