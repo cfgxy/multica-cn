@@ -1,4 +1,5 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react-native";
+import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-body";
 
 /**
  * RUYI-605: the new-issue screen's consumption of the one-shot inbox
@@ -131,9 +132,9 @@ const NewIssueModal =
   jest.requireActual<typeof import("../app/(app)/[workspace]/new-issue")>(
     "../app/(app)/[workspace]/new-issue",
   ).default;
-const tabsMock = jest.requireMock<typeof import("@/components/ui/tabs")>(
-  "@/components/ui/tabs",
-);
+const tabsMock = jest.requireMock("@/components/ui/tabs") as {
+  __fireModeChange: (v: string) => void;
+};
 const { ManualCreatePanel } = jest.requireMock<
   typeof import("@/components/issue/manual-create-panel")
 >("@/components/issue/manual-create-panel");
@@ -157,7 +158,7 @@ const { useQuickCreatePrefsStore } = jest.requireActual<
 
 const MEMORY_KEY = "multica_mobile_new_issue_last_assignee";
 
-function rememberLastAssignee(value: { type: string; id: string }) {
+function rememberLastAssignee(value: AssigneeValue) {
   useNewIssueLastAssigneeStore.setState({
     byServer: { "server-1": { "workspace-a": value } },
   });
@@ -204,7 +205,7 @@ describe("NewIssueModal inbox prefill (RUYI-605)", () => {
   });
 
   it("keeps the explicit agent prefill over the last-assignee memory", async () => {
-    rememberLastAssignee({ type: "user", id: "user-1" });
+    rememberLastAssignee({ type: "member", id: "user-1" });
     seedNewIssuePrefill({ description: "Fix the flaky test", agentId: "agent-1" });
 
     render(<NewIssueModal />);
@@ -227,7 +228,7 @@ describe("NewIssueModal inbox prefill (RUYI-605)", () => {
       key === MEMORY_KEY
         ? JSON.stringify({
             state: {
-              byServer: { "server-1": { "workspace-a": { type: "user", id: "user-1" } } },
+              byServer: { "server-1": { "workspace-a": { type: "member", id: "user-1" } } },
             },
             version: 0,
           })
@@ -235,11 +236,15 @@ describe("NewIssueModal inbox prefill (RUYI-605)", () => {
     );
     seedNewIssuePrefill({ description: "Prompt without an agent", agentId: null });
 
+    // The persist store auto-hydrates once at import with the empty default
+    // mock; data mocked after that point only lands via an explicit
+    // rehydrate before rendering.
+    await useNewIssueLastAssigneeStore.persist.rehydrate();
     render(<NewIssueModal />);
 
     await waitFor(() => {
       expect(useNewIssueDraftStore.getState().assignee).toEqual({
-        type: "user",
+        type: "member",
         id: "user-1",
       });
     });
@@ -268,12 +273,13 @@ describe("NewIssueModal inbox prefill (RUYI-605)", () => {
       key === MEMORY_KEY
         ? JSON.stringify({
             state: {
-              byServer: { "server-1": { "workspace-a": { type: "user", id: "user-1" } } },
+              byServer: { "server-1": { "workspace-a": { type: "member", id: "user-1" } } },
             },
             version: 0,
           })
         : null,
     );
+    await useNewIssueLastAssigneeStore.persist.rehydrate();
 
     render(<NewIssueModal />);
 
@@ -283,7 +289,7 @@ describe("NewIssueModal inbox prefill (RUYI-605)", () => {
     });
     await waitFor(() => {
       expect(useNewIssueDraftStore.getState().assignee).toEqual({
-        type: "user",
+        type: "member",
         id: "user-1",
       });
     });
