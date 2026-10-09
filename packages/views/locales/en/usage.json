@@ -8,7 +8,12 @@
   "filter": {
     "project_label": "Project",
     "all_projects": "All projects",
-    "period_label": "Period"
+    "period_label": "Period",
+    "period_prev": "Previous period",
+    "period_next": "Next period",
+    "period_back_to_current": "Back to current period",
+    "period_custom": "Custom range",
+    "period_apply": "Apply"
   },
   "kpi": {
     "cost_label": "Cost · {{days}}D",
