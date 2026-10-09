@@ -89,7 +89,10 @@ jest.mock("react-native-reanimated", () => {
   const { View } = require("react-native");
   // A real component with a displayName — NativeWind's css-interop wrapper
   // reads it for every animated JSX element.
-  const AnimatedView = React.forwardRef(function AnimatedView(props, ref) {
+  const AnimatedView = React.forwardRef(function AnimatedView(
+    props: React.ComponentPropsWithoutRef<typeof View>,
+    ref: React.Ref<View>,
+  ) {
     const { children, ...rest } = props;
     return (
       <View ref={ref} {...rest}>
