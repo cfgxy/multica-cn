@@ -49,42 +49,41 @@
       "cancelled": "진행하지 않기로 함."
     }
   },
-    "quick_replies": {
-      "title": "빠른 답장",
-      "description": "이슈 댓글 입력창의 빠른 답장 메뉴에 표시되는 공유 템플릿입니다. 모든 멤버가 읽을 수 있으며, 워크스페이스 관리자만 수정할 수 있습니다. 선택하면 입력창에 채워질 뿐 자동으로 전송되지 않습니다.",
-      "loading": "빠른 답장을 불러오는 중…",
-      "add": "새 빠른 답장",
-      "empty_title": "빠른 답장이 아직 없습니다",
-      "empty_hint": "반복적으로 쓰는 댓글 문구를 템플릿으로 저장하세요 — PR 충돌 해결, 테스트 보완, 완료 확인 등.",
-      "reorder_failed": "순서 저장에 실패했습니다",
-      "actions": {
-        "open": "\"{{name}}\" 작업 메뉴 열기",
-        "edit": "편집",
-        "delete": "삭제",
-        "reorder": "\"{{name}}\" 순서를 드래그로 변경"
-      },
-      "editor": {
-        "create_title": "새 빠른 답장",
-        "edit_title": "빠른 답장 편집",
-        "hint": "댓글 입력창에서 선택하면 입력란에 채워집니다. 전송 전에 자유롭게 수정할 수 있습니다.",
-        "name": "이름",
-        "name_placeholder": "예: PR 충돌 해결",
-        "content": "내용",
-        "content_placeholder": "입력창에 채워질 템플릿 본문…",
-        "cancel": "취소",
-        "save": "저장",
-        "saving": "저장 중…",
-        "save_failed": "저장에 실패했습니다"
-      },
-      "delete_dialog": {
-        "title": "빠른 답장 삭제",
-        "description": "\"{{name}}\"을(를) 삭제할까요? 모든 멤버의 댓글 메뉴에서 즉시 사라집니다.",
-        "cancel": "취소",
-        "confirm": "삭제",
-        "failed": "삭제에 실패했습니다"
-      }
+  "quick_replies": {
+    "title": "빠른 답장",
+    "description": "이슈 댓글 입력창의 빠른 답장 메뉴에 표시되는 공유 템플릿입니다. 모든 멤버가 읽을 수 있으며, 워크스페이스 관리자만 수정할 수 있습니다. 선택하면 입력창에 채워질 뿐 자동으로 전송되지 않습니다.",
+    "loading": "빠른 답장을 불러오는 중…",
+    "add": "새 빠른 답장",
+    "empty_title": "빠른 답장이 아직 없습니다",
+    "empty_hint": "반복적으로 쓰는 댓글 문구를 템플릿으로 저장하세요 — PR 충돌 해결, 테스트 보완, 완료 확인 등.",
+    "reorder_failed": "순서 저장에 실패했습니다",
+    "actions": {
+      "open": "\"{{name}}\" 작업 메뉴 열기",
+      "edit": "편집",
+      "delete": "삭제",
+      "reorder": "\"{{name}}\" 순서를 드래그로 변경"
+    },
+    "editor": {
+      "create_title": "새 빠른 답장",
+      "edit_title": "빠른 답장 편집",
+      "hint": "댓글 입력창에서 선택하면 입력란에 채워집니다. 전송 전에 자유롭게 수정할 수 있습니다.",
+      "name": "이름",
+      "name_placeholder": "예: PR 충돌 해결",
+      "content": "내용",
+      "content_placeholder": "입력창에 채워질 템플릿 본문…",
+      "cancel": "취소",
+      "save": "저장",
+      "saving": "저장 중…",
+      "save_failed": "저장에 실패했습니다"
+    },
+    "delete_dialog": {
+      "title": "빠른 답장 삭제",
+      "description": "\"{{name}}\"을(를) 삭제할까요? 모든 멤버의 댓글 메뉴에서 즉시 사라집니다.",
+      "cancel": "취소",
+      "confirm": "삭제",
+      "failed": "삭제에 실패했습니다"
     }
-,
+  },
   "quick_actions": {
     "title": "퀵 액션",
     "description": "실행할 에이전트와 프롬프트를 미리 설정한 뒤, 어떤 태스크의 사이드바에서든 한 번의 클릭으로 실행합니다.",
@@ -908,7 +907,15 @@
     "deleting": "삭제하는 중...",
     "toast_delete_failed": "워크스페이스를 삭제하지 못했습니다",
     "confirm_cancel": "취소",
-    "confirm_action": "확인"
+    "confirm_action": "확인",
+    "scheduling_pause_label": "작업 스케줄링 일시 중지",
+    "scheduling_pause_hint": "일시 중지 중에는 이 워크스페이스의 어떤 에이전트도 새 작업을 할당받지 않습니다. 대기 작업은 계속 병합되고 실행 중인 작업은 정상적으로 완료됩니다. 소유자/관리자만 가능하며 감사 로그에 기록됩니다.",
+    "scheduling_paused_note_one": "작업 스케줄링이 일시 중지됨 — 모든 에이전트에 걸쳐 {{count}}개의 작업이 대기 중입니다.",
+    "scheduling_paused_note_other": "작업 스케줄링이 일시 중지됨 — 모든 에이전트에 걸쳐 {{count}}개의 작업이 대기 중입니다.",
+    "scheduling_paused_toast": "워크스페이스 스케줄링이 일시 중지되었습니다",
+    "scheduling_resumed_toast_one": "워크스페이스 스케줄링 재개 — {{count}}개의 작업이 흐릅니다",
+    "scheduling_resumed_toast_other": "워크스페이스 스케줄링 재개 — {{count}}개의 작업이 흐릅니다",
+    "scheduling_toggle_failed_toast": "스케줄링 상태 변경 실패"
   },
   "delete_workspace_dialog": {
     "title": "워크스페이스 삭제",

@@ -216,8 +216,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"skill_file":                     workspaceDelete,
 	"skill_version":                  workspaceDelete,
 	"skill_to_label":                 workspaceDelete,
-	"squad":                          workspaceDelete,
-	"squad_member":                   workspaceDelete,
+	// Scheduling freezes (RUYI-608) are pure operational state owned by the
+	// workspace; no FK (house rule), swept explicitly by DeleteWorkspace's
+	// cleared_scheduling_pauses CTE. A freeze has no meaning once the
+	// workspace (and its agents) are gone.
+	"scheduling_pause": workspaceDelete,
+	"squad":            workspaceDelete,
+	"squad_member":     workspaceDelete,
 	"sys_cron_executions":            workspaceDeleteKeep,
 	"task_message":                   workspaceDelete,
 	"task_token":                     workspaceDelete,

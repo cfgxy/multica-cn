@@ -78,7 +78,9 @@
     "fallback_runtime_cloud": "クラウド",
     "fallback_runtime_local": "ローカル",
     "actions_aria": "行の操作",
-    "task_count_other": "{{count}} 件の作業"
+    "task_count_other": "{{count}} 件の作業",
+    "paused_one": "一時停止中 · {{count}} 件",
+    "paused_other": "一時停止中 · {{count}} 件"
   },
   "activity_tooltip": {
     "created_today": "今日作成",
@@ -118,7 +120,19 @@
     "archive_dialog_title": "\"{{name}}\" をアーカイブしますか？",
     "archive_dialog_description": "このエージェントは割り当てやメンションができなくなり、アクティブな作業はすべてキャンセルされます。履歴はすべて保持され、後で復元できます。",
     "archive_dialog_cancel": "キャンセル",
-    "archive_dialog_confirm": "アーカイブ"
+    "archive_dialog_confirm": "アーカイブ",
+    "pause_scheduling": "スケジューリングを一時停止",
+    "resume_scheduling": "スケジューリングを再開",
+    "paused_by_workspace": "ワークスペース単位で一時停止中",
+    "pause_dialog_title": "{{name}} のスケジューリングを一時停止しますか？",
+    "pause_dialog_description": "キュー内のタスクは保持され、実行中のタスクは通常どおり完了しますが、再開するまで新しいタスクは取得されません。この操作は監査ログに記録されます。",
+    "pause_dialog_cancel": "キャンセル",
+    "pause_dialog_confirm": "一時停止",
+    "agent_paused_toast": "エージェントのスケジューリングを一時停止しました",
+    "agent_resumed_toast_one": "スケジューリングを再開 — {{count}} 件のタスクが流れます",
+    "agent_resumed_toast_other": "スケジューリングを再開 — {{count}} 件のタスクが流れます",
+    "pause_failed_toast": "スケジューリングの一時停止に失敗しました",
+    "resume_failed_toast": "スケジューリングの再開に失敗しました"
   },
   "detail": {
     "back_to_agents": "エージェント",
@@ -150,7 +164,17 @@
     "runtime_required_toast": "このエージェントを実行する前にランタイムを設定してください。",
     "assign_work": "作業を割り当てる",
     "more_actions_aria": "エージェントの操作",
-    "updated": "{{when}}に更新"
+    "updated": "{{when}}に更新",
+    "paused_banner_one": "スケジューリング一時停止中 — {{count}} 件のタスクがキューで待機中。キューのタスクは統合され続け、実行中のタスクは通常どおり完了します。",
+    "paused_banner_other": "スケジューリング一時停止中 — {{count}} 件のタスクがキューで待機中。キューのタスクは統合され続け、実行中のタスクは通常どおり完了します。",
+    "paused_by_workspace_banner": "ワークスペース全体のスケジューリングが一時停止中。ワークスペース設定から再開してください — エージェント単位の再開では解除できません。",
+    "resume_scheduling": "スケジューリングを再開",
+    "more_pause_scheduling": "スケジューリングを一時停止",
+    "agent_paused_toast": "エージェントのスケジューリングを一時停止しました",
+    "agent_resumed_toast_one": "スケジューリングを再開 — {{count}} 件のタスクが流れます",
+    "agent_resumed_toast_other": "スケジューリングを再開 — {{count}} 件のタスクが流れます",
+    "pause_failed_toast": "スケジューリングの一時停止に失敗しました",
+    "resume_failed_toast": "スケジューリングの再開に失敗しました"
   },
   "inspector": {
     "section_profile": "プロフィール",
