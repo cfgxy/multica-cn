@@ -1237,6 +1237,7 @@ type LiveSession struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	Summary           string             `json:"summary"`
+	Mode              string             `json:"mode"`
 }
 
 // One workspace-published skill or MCP marketplace listing (RUYI-99). Merged with the embedded static catalog at read time. A withdrawn row is a tombstone that keeps its (kind, name_key) reserved; only source_workspace_id may republish it. source_workspace_id is authority only and must not be returned by any API.

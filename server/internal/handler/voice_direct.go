@@ -75,7 +75,7 @@ func (h *Handler) StartVoiceDirectSession(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveWorkspaceID(r), agentUUID)
+	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveWorkspaceID(r), agentUUID, voiceSessionModeDirect)
 	if hsErr != nil {
 		hsErr.writeHTTP(w)
 		return
