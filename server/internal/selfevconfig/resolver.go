@@ -408,7 +408,10 @@ func (r *Resolver) validate(ctx context.Context, baseURL, apiKey, model string) 
 	defer cancel()
 	_, err := client.GenerateText(pingCtx, model, "You are a connectivity health check. Reply with the single word: pong.", "ping")
 	if err != nil {
-		msg := maskSecrets(err.Error(), apiKey)
+		// The summary names the classified category plus at most the HTTP
+		// status. The raw SDK error (full response body, endpoint URL) must
+		// not reach the config row or any response.
+		msg := maskSecrets(llm.Summary(err), apiKey)
 		if len(msg) > maxValidationMessage {
 			msg = msg[:maxValidationMessage]
 		}

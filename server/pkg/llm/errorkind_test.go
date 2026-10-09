@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 
 	openai "github.com/openai/openai-go/v3"
@@ -81,3 +82,41 @@ func (*timeoutError) Is(target error) bool {
 }
 func (*timeoutError) Timeout() bool    { return true }
 func (*timeoutError) Temporary() bool  { return true }
+
+// Summary is the user-facing counterpart of Classify (RUYI-551 P2-2): the
+// category in user language plus at most the HTTP status — never the body
+// or URL the SDK error carries.
+func TestSummaryNamesCategoryAndStatusOnly(t *testing.T) {
+	if got := Summary(nil); got != "" {
+		t.Fatalf("Summary(nil) = %q, want empty", got)
+	}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"not configured", ErrNotConfigured, "未配置凭据"},
+		{"401", &openai.Error{StatusCode: http.StatusUnauthorized, Message: "upstream said no"}, "网关拒绝凭据（HTTP 401）"},
+		{"403", &openai.Error{StatusCode: http.StatusForbidden}, "网关拒绝凭据（HTTP 403）"},
+		{"400", &openai.Error{StatusCode: http.StatusBadRequest, Message: "bad model"}, "网关拒绝请求（HTTP 400）"},
+		{"502", &openai.Error{StatusCode: http.StatusBadGateway}, "网关服务异常（HTTP 502）"},
+		{"deadline", &timeoutError{}, "连接超时"},
+		{"canceled", context.Canceled, "请求已取消"},
+		{"net", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, "网络连接失败"},
+		{"other", errors.New("something exploded"), "网关返回异常响应"},
+	}
+	for _, tc := range cases {
+		if got := Summary(tc.err); got != tc.want {
+			t.Fatalf("%s: Summary = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// The hostile body must not survive into the summary, even wrapped the
+	// way callers receive it.
+	hostile := fmt.Errorf("generate: %w", &openai.Error{
+		StatusCode: http.StatusUnauthorized,
+		Message:    `{"secret":"INTERNAL_TOKEN_REJECTED","url":"/v1/chat/completions"}`,
+	})
+	if got := Summary(hostile); strings.Contains(got, "INTERNAL_TOKEN_REJECTED") {
+		t.Fatalf("summary carries the response body: %q", got)
+	}
+}
