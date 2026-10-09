@@ -1058,16 +1058,22 @@
       "edit": "Edit"
     },
     "detail": {
+      "section_history": "Run history",
       "edit_profile": "Edit Profile",
       "tab_active": "Active",
       "fact_status": "Status",
       "fact_runtime_unbound": "No runtime",
       "bind_runtime": "Bind runtime",
       "fact_concurrency": "Concurrency cap",
+      "fact_thinking": "Thinking",
       "forbidden_title": "No access to this agent",
       "runtime_unbound_banner": "This agent has no runtime bound yet — bind one to start running it.",
       "forbidden_body": "You don't have permission to view this agent. Ask its owner to share it with you.",
       "instructions_empty": "No instructions yet"
+    },
+    "run_history": {
+      "load_more": "Load more",
+      "empty": "No runs yet."
     },
     "edit": {
       "model_placeholder": "Leave empty for the runtime default",

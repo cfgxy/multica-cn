@@ -1036,16 +1036,22 @@
       "edit": "編集"
     },
     "detail": {
+      "section_history": "実行履歴",
       "edit_profile": "プロフィールを編集",
       "tab_active": "進行中",
       "fact_status": "ステータス",
       "fact_runtime_unbound": "ランタイム未設定",
       "bind_runtime": "ランタイムをバインド",
       "fact_concurrency": "同時実行上限",
+      "fact_thinking": "思考レベル",
       "forbidden_title": "このエージェントへのアクセス権がありません",
       "runtime_unbound_banner": "このエージェントにはランタイムが未バインドです — 実行にはバインドが必要です。",
       "forbidden_body": "このエージェントを表示する権限がありません。所有者に共有を依頼してください。",
       "instructions_empty": "指示はまだありません"
+    },
+    "run_history": {
+      "load_more": "さらに読み込む",
+      "empty": "実行履歴はまだありません。"
     },
     "edit": {
       "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します",
