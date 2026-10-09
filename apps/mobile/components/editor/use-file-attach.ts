@@ -86,9 +86,9 @@ export function useFileAttach({
 }: UseFileAttachOptions = {}) {
   const { t } = useT("common");
   const onOversize = useOversizeAlert();
-  // RUYI-477: 贴图按钮的「拍照/相册」源选择弹层；消费方挂载
-  // <ActionSheetModal {...imageSourceModalProps} />（Android 为 RN Modal，
-  // iOS 走 ActionSheetIOS 命令式路径）。
+  // RUYI-477: 贴图按钮的「相册/拍照」源选择弹层（顺序相册在前，
+  // RUYI-553）；消费方挂载 <ActionSheetModal {...imageSourceModalProps} />
+  // （Android 为 RN Modal，iOS 走 ActionSheetIOS 命令式路径）。
   const imageSourceSheet = useActionSheet();
   const [attachments, setAttachments] = useState<AttachmentZoneItem[]>([]);
   const attachmentsRef = useRef(attachments);
@@ -212,16 +212,20 @@ export function useFileAttach({
   }, [enqueueAssets, onOversize, t]);
 
   const chooseImageSource = useCallback(() => {
+    // RUYI-553: 相册在前、拍照在后（Owner 指定顺序）。iOS ActionSheetIOS
+    // 与 Android ActionSheetModal 共用本数组，顺序一处改动两端一致；
+    // onSelect 的索引映射与 options 顺序耦合，file-attach-camera.test.tsx
+    // 两侧都锁。
     imageSourceSheet.show({
       options: [
-        t("composer.image_source_camera", "Take Photo"),
         t("composer.image_source_library", "Choose from Library"),
+        t("composer.image_source_camera", "Take Photo"),
         t("composer.cancel", "Cancel"),
       ],
       cancelButtonIndex: 2,
       onSelect: (index) => {
-        if (index === 0) void takeAndUploadPhoto();
-        else if (index === 1) void pickAndUploadImages();
+        if (index === 0) void pickAndUploadImages();
+        else if (index === 1) void takeAndUploadPhoto();
       },
     });
   }, [imageSourceSheet, pickAndUploadImages, t, takeAndUploadPhoto]);
@@ -293,8 +297,8 @@ export function useFileAttach({
     attachments,
     pickAndUploadImages,
     pickAndUploadFiles,
-    // RUYI-477: 贴图按钮入口——弹出「拍照 / 相册」源选择；
-    // imageSourceModalProps 供消费方挂载 <ActionSheetModal />。
+    // RUYI-477: 贴图按钮入口——弹出「相册 / 拍照」源选择（相册在前，
+    // RUYI-553）；imageSourceModalProps 供消费方挂载 <ActionSheetModal />。
     chooseImageSource,
     imageSourceModalProps: imageSourceSheet.modalProps,
     removeAttachment,
