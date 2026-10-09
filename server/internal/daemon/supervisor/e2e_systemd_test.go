@@ -85,7 +85,7 @@ func newE2eSupervisor(t *testing.T, runsDir, launcherBin string) *Supervisor {
 	if err := sys.Available(); err != nil {
 		t.Fatalf("systemd user manager unavailable for E2E: %v", err)
 	}
-	sup, err := New(mgr, sys, launcherBin, slog.Default())
+	sup, err := New(mgr, sys, launcherBin, "e2e", slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func e2eDumpRunFiles(t *testing.T, sup *Supervisor, runID string) string {
 // in-flight predicate and returns the decisions.
 func e2eReconcile(t *testing.T, sup *Supervisor, inFlight func(string) bool) []ReconcileResult {
 	t.Helper()
-	rec := &Reconciler{Mgr: sup.Manager(), Units: sup.Systemd(), Log: slog.Default(), TaskInFlight: inFlight}
+	rec := &Reconciler{Mgr: sup.Manager(), Units: sup.Systemd(), Log: slog.Default(), Self: sup.owner, TaskInFlight: inFlight}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	results, err := rec.Run(ctx)
