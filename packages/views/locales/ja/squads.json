@@ -217,7 +217,9 @@
       "unsaved_title": "未保存の変更があります",
       "unsaved_keep": "編集を続ける",
       "unsaved_discard": "破棄",
-      "unsaved_body": "指示への変更はまだ保存されていません。"
+      "unsaved_body": "指示への変更はまだ保存されていません。",
+      "instructions_empty": "指示はまだありません",
+      "instructions_edit": "指示を編集"
     },
     "execution": {
       "add_member": "メンバーを追加",
