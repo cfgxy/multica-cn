@@ -362,6 +362,122 @@ func TestRunGC_RecycleEvidenceSurvivesOrphanGCAndExpiresByTTL(t *testing.T) {
 	}
 }
 
+// newAgentBranchGuardCache clones a bare cache stub with the daemon's modern
+// remote-tracking layout — refs/remotes/origin/* populated — the state
+// gitCloneBareContext guarantees in production. A plain `git clone --bare`
+// writes no fetch refspec at all, and without it a worktree push never
+// records refs/remotes/origin/<branch>, so the branch guard's comparison
+// base could not see a push.
+func newAgentBranchGuardCache(t *testing.T, barePath string) {
+	t.Helper()
+	sourceRepo := createGCGitRepo(t)
+	runGitForGC(t, "", "clone", "--bare", sourceRepo, barePath)
+	runGitForGC(t, "", "-C", barePath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	runGitForGC(t, "", "-C", barePath, "fetch", "-q", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*")
+}
+
+// TestPruneWorktree_GuardBlocksUnpushedStaleAgentBranch is the RUYI-617 L2
+// stub: a stale agent/* branch holding an unpushed commit survives the
+// maintenance cleanup with an evidence file naming the commit and the exact
+// predicate command, while a stale branch with no unpushed content keeps
+// today's cleanup behaviour exactly (regression zero-change) and a pushed
+// branch never writes evidence.
+func TestPruneWorktree_GuardBlocksUnpushedStaleAgentBranch(t *testing.T) {
+	d := newGuardTestDaemon(t, http.NewServeMux())
+	wsID := "66666666-6666-6666-6666-666666666666"
+	barePath := d.repoCache.BarePath(wsID, testRepoURL)
+	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newAgentBranchGuardCache(t, barePath)
+
+	// Active branch: checked out in a linked worktree, never stale.
+	activeWorktree := filepath.Join(t.TempDir(), "active")
+	runGitForGC(t, "", "-C", barePath, "worktree", "add", "-b", "agent/live/12345678", activeWorktree, "HEAD")
+
+	// Pushed stale branch: content covered by refs/remotes/origin/* — the
+	// post-push shape the cache's remote-tracking refspec guarantees.
+	pushedTip := strings.TrimSpace(runGitForGC(t, barePath, "rev-parse", "HEAD"))
+	runGitForGC(t, "", "-C", barePath, "branch", "agent/stale/pushed", pushedTip)
+	runGitForGC(t, "", "-C", barePath, "update-ref", "refs/remotes/origin/agent/stale/pushed", pushedTip)
+
+	// Unpushed stale branch: one commit only this branch references.
+	orphan := strings.TrimSpace(runGitForGC(t, "", "-C", barePath, "commit-tree", "HEAD^{tree}", "-m", "unpushed task work"))
+	runGitForGC(t, "", "-C", barePath, "update-ref", "refs/heads/agent/stale/unpushed", orphan)
+
+	stats := runRepoGC(d)
+
+	if !gitRefExists(t, barePath, "refs/heads/agent/stale/unpushed") {
+		t.Fatal("stale agent branch with an unpushed commit must not be deleted (L2 blocked)")
+	}
+	if gitRefExists(t, barePath, "refs/heads/agent/stale/pushed") {
+		t.Fatal("stale agent branch with no unpushed content must still be deleted (regression zero-change)")
+	}
+	if !gitRefExists(t, barePath, "refs/heads/agent/live/12345678") || !gitRefExists(t, barePath, "refs/heads/main") {
+		t.Fatal("active agent branch and non-agent branches must be preserved")
+	}
+	if stats.guardBlocked != 1 {
+		t.Fatalf("guard_blocked = %d, want 1", stats.guardBlocked)
+	}
+
+	evidenceDir := filepath.Join(d.cfg.WorkspacesRoot, ".recycle-evidence")
+	files := guardEvidenceFiles(t, evidenceDir, "agent-branch")
+	if len(files) != 1 {
+		t.Fatalf("blocked branch must leave exactly one evidence file, got %d", len(files))
+	}
+	if strings.Contains(files[0], "agent_stale_pushed") {
+		t.Fatal("pushed branch deletion must not write evidence (passes do not)")
+	}
+	scan := readGuardScan(t, files[0])
+	if scan.Verdict != execenv.RecycleBlocked || scan.Kind != execenv.RecycleKindAgentBranch {
+		t.Fatalf("evidence verdict/kind = %s/%s, want blocked/agent-branch", scan.Verdict, scan.Kind)
+	}
+	if scan.Target != "agent/stale/unpushed" {
+		t.Fatalf("evidence target = %q, want the blocked branch", scan.Target)
+	}
+	listed, command := false, ""
+	for _, r := range scan.Roots {
+		for _, p := range r.Predicates {
+			if p.Name == "unpushed_list" && len(p.List) == 1 && p.List[0] == orphan {
+				listed = true
+			}
+			if p.Name == "unpushed" {
+				command = p.Command
+			}
+		}
+	}
+	if !listed {
+		t.Fatalf("evidence must list the unpushed commit %s: %+v", orphan, scan)
+	}
+	// Mechanical after-the-fact review: the recorded command names the exact
+	// repo and branch the verdict is about.
+	if !strings.Contains(command, "agent/stale/unpushed") || !strings.Contains(command, "rev-list --count") {
+		t.Fatalf("evidence command %q must name the branch and the predicate", command)
+	}
+}
+
+// TestPruneWorktree_GuardDisabledKeepsLegacyAgentBranchCleanup is the
+// kill-switch evidence for RUYI-617: with the guard off, a stale agent
+// branch holding unpushed work is deleted exactly as before the guard
+// existed, and no evidence directory is created.
+func TestPruneWorktree_GuardDisabledKeepsLegacyAgentBranchCleanup(t *testing.T) {
+	d := newGuardTestDaemon(t, http.NewServeMux())
+	d.cfg.GCGuardEnabled = false
+	barePath := filepath.Join(t.TempDir(), "cache.git")
+	newAgentBranchGuardCache(t, barePath)
+	orphan := strings.TrimSpace(runGitForGC(t, "", "-C", barePath, "commit-tree", "HEAD^{tree}", "-m", "unpushed task work"))
+	runGitForGC(t, "", "-C", barePath, "update-ref", "refs/heads/agent/stale/unpushed", orphan)
+
+	d.pruneWorktree(barePath)
+
+	if gitRefExists(t, barePath, "refs/heads/agent/stale/unpushed") {
+		t.Fatal("guard off: stale agent branch must be deleted as before the guard existed")
+	}
+	if _, err := os.Stat(filepath.Join(d.cfg.WorkspacesRoot, ".recycle-evidence")); !os.IsNotExist(err) {
+		t.Fatalf("guard off must not create evidence: %v", err)
+	}
+}
+
 // TestRecycleGuardDryScan_ClassifiesWithoutDeleting exercises the gc
 // --dry-run engine: every verdict, dry-run flags, and zero deletions.
 func TestRecycleGuardDryScan_ClassifiesWithoutDeleting(t *testing.T) {
