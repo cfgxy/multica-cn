@@ -239,15 +239,26 @@ fi
 
 # --- 4. QA checkouts and slot worktrees: report only, never delete -----------
 
+# The report uses the recycle guard's own predicates (RUYI-594), report-only:
+# no evidence files, no refusals — but the numbers it prints are exactly the
+# numbers destroy/remove-worktree will act on, so the report can never say 0
+# while the guard blocks. A branch/detached mismatch with the guard's
+# sole_ref count is itself a finding.
 report_worktree() { # $1 = directory that may be a git worktree/checkout
-  local dir=$1 summary wt tree branch ahead
+  local dir=$1 summary wt tree
   summary="dir $dir, last modified $(stat -c %y "$dir" 2>/dev/null | cut -d. -f1 || echo '?')"
-  wt="$(find "$dir" -maxdepth 2 -name .git -type f 2>/dev/null | head -1 || true)"
+  wt="$(find "$dir" -maxdepth 2 -name .git 2>/dev/null | head -1 || true)"
   if [ -n "$wt" ]; then
     tree="$(dirname "$wt")"
-    branch="$(git -C "$tree" rev-parse --abbrev-ref HEAD 2>/dev/null || echo detached)"
-    ahead="$(git -C "$tree" rev-list --count origin/main..HEAD 2>/dev/null || echo '?')"
-    summary="$summary · worktree $tree on $branch, $ahead commit(s) ahead of origin/main"
+    RECYCLE_GUARD_EVIDENCE=skip
+    RG_TOOL="qa-clean report"
+    if recycle_guard_scan_worktree "$tree" report 1; then
+      summary="$summary · guard: $RG_VERDICT ($RG_COUNTS)"
+    else
+      summary="$summary · guard: BLOCKED ($RG_COUNTS)"
+      local reason
+      while IFS= read -r reason; do summary="$summary"$'\n'"    $reason"; done <<< "$RG_REASONS"
+    fi
   fi
   info "$summary"
 }
