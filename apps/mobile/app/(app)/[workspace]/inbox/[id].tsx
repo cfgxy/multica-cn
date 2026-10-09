@@ -13,6 +13,8 @@ import { inboxListOptions } from "@/data/queries/inbox";
 import { useRetrySourceContextQuickCreate } from "@/data/mutations/inbox";
 import { ApiError } from "@/data/api";
 import { getQuickCreateRetryPlan } from "@/lib/quick-create-retry";
+import { getQuickCreateEditSeed } from "@/lib/quick-create-edit";
+import { seedNewIssuePrefill } from "@/data/stores/new-issue-prefill-store";
 import {
   appConfigOptions,
   workspaceSubscriptionSummaryOptions,
@@ -135,6 +137,20 @@ export default function InboxNoticeDetail() {
   // never resends the prompt.
   const retryPlan = item ? getQuickCreateRetryPlan(item) : null;
   const retryMutation = useRetrySourceContextQuickCreate();
+  // RUYI-605: "edit in the full form" recovery — every quick-create outcome
+  // (failed AND unconfirmed) gets the button, mirroring web's detail pane
+  // (packages/views/inbox/components/inbox-page.tsx, isQuickCreateOutcome
+  // gate with no original_prompt requirement). Tapping hands the stored
+  // prompt + agent to the new-issue screen via the one-shot prefill store.
+  const editSeed = item ? getQuickCreateEditSeed(item) : null;
+
+  const onEditAdvanced = () => {
+    if (!editSeed || !wsSlug) return;
+    seedNewIssuePrefill(editSeed);
+    // Same navigation shape as the app header's create entry
+    // (components/ui/app-header-actions.tsx).
+    router.push(`/${wsSlug}/new-issue`);
+  };
 
   const onRetry = async () => {
     if (!retryPlan || retryMutation.isPending) return;
@@ -264,6 +280,22 @@ export default function InboxNoticeDetail() {
               <Text>
                 {t("detail.retry_with_context", "Retry with context")}
               </Text>
+            </Button>
+          ) : null}
+
+          {/* RUYI-605: recover the original input in the manual form. The
+              button is neutral on purpose — for unconfirmed outcomes this is
+              result re-editing, not failure recovery. */}
+          {editSeed ? (
+            <Button
+              size="sm"
+              onPress={onEditAdvanced}
+              accessibilityLabel={t(
+                "detail.edit_advanced",
+                "Edit as advanced form",
+              )}
+            >
+              <Text>{t("detail.edit_advanced", "Edit as advanced form")}</Text>
             </Button>
           ) : null}
 
