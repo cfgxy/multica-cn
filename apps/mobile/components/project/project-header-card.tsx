@@ -41,6 +41,9 @@ export function ProjectHeaderCard({ project, onEdit }: Props) {
         {project.description ? (
           <Text
             className="text-sm text-muted-foreground"
+            // RUYI-541: long-text field keeps the header card compact — the
+            // full text lives in the edit modal behind the card tap.
+            numberOfLines={4}
             selectable
           >
             {project.description}

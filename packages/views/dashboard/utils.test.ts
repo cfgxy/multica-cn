@@ -785,3 +785,74 @@ describe("anonymizeUnresolvedAgentRows", () => {
     expect(anonymizeUnresolvedAgentRows(rows, known)).toBe(rows);
   });
 });
+
+// Historical windows anchor the weekly fold at the window's END rather than
+// today, and clip `daysCovered` to the window's START — otherwise a trailing
+// count of weeks would claim full 7-day buckets for weeks the window only
+// partially covers (the same incoherence the explicit-window queries exist
+// to remove).
+describe("aggregateWeeklyTime — historical window anchoring", () => {
+  const row = (date: string, total_seconds = 60) => ({
+    date,
+    total_seconds,
+    task_count: 1,
+    failed_count: 0,
+    cancelled_count: 0,
+  });
+
+  it("anchors the trailing weeks at the window end instead of today", () => {
+    // Window = Feb 2–22, 2026 (21 days → 3 weeks). Feb 2 is a Monday, so the
+    // buckets are exactly the three window weeks.
+    const result = aggregateWeeklyTime(
+      [row("2026-02-09")],
+      "UTC",
+      3,
+      "2026-02-22",
+      "2026-02-02",
+    );
+
+    expect(result.map((w) => w.weekStart)).toEqual([
+      "2026-02-02",
+      "2026-02-09",
+      "2026-02-16",
+    ]);
+    // The row lands in the middle bucket.
+    expect(result[1]?.totalSeconds).toBe(60);
+    expect(result[0]?.totalSeconds).toBe(0);
+  });
+
+  it("clips daysCovered of the leftmost bucket to the window start", () => {
+    // 30-day window ending Mar 8, 2026 (a Sunday): five trailing weeks start
+    // Feb 2, but the window only opens Feb 7 — the leftmost bucket covers
+    // 2 of its 7 days, not 7.
+    const result = aggregateWeeklyTime([], "UTC", 5, "2026-03-08", "2026-02-07");
+
+    expect(result[0]?.weekStart).toBe("2026-02-02");
+    expect(result[0]?.partial).toBe(true);
+    expect(result[0]?.daysCovered).toBe(2);
+    // Buckets fully inside the window stay whole.
+    expect(result[1]?.partial).toBe(false);
+    expect(result[1]?.daysCovered).toBe(7);
+  });
+
+  it("still clips the last bucket at the anchor when the window ends mid-week", () => {
+    // Window ends Thursday Mar 5, 2026 — the last bucket covers 4 days.
+    const result = aggregateWeeklyTime([], "UTC", 2, "2026-03-05", "2026-02-23");
+
+    expect(result[1]?.weekStart).toBe("2026-03-02");
+    expect(result[1]?.partial).toBe(true);
+    expect(result[1]?.daysCovered).toBe(4);
+  });
+
+  it("defaults to today when no anchor is given (existing behaviour)", () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const result = aggregateWeeklyTime([], "UTC", 1);
+
+    // Single trailing week anchored on the week containing today.
+    const [y, m, d] = today.split("-").map(Number);
+    const utcMonday = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, (d ?? 1), 0, 0, 0));
+    const dow = (utcMonday.getUTCDay() + 6) % 7;
+    utcMonday.setUTCDate(utcMonday.getUTCDate() - dow);
+    expect(result[0]?.weekStart).toBe(utcMonday.toISOString().slice(0, 10));
+  });
+});

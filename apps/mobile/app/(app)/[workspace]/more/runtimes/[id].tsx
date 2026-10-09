@@ -23,6 +23,13 @@
  *
  * Drafts re-seed from the server values (deps are the server fields, never
  * the local drafts) so background refetches don't clobber in-flight typing.
+ *
+ * RUYI-566 delete flow: a bottom danger zone offers instance deletion
+ * behind the app-wide Alert confirm (message carries the instance name,
+ * cancel is inert). Profile-backed instances go through the profile
+ * cascade endpoint the server enforces (direct instance DELETE answers 409
+ * `runtime_profile_instance_delete_unsupported`); profile-less ones delete
+ * directly — routing lives in lib/voice/instance-delete.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -37,7 +44,8 @@ import {
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { Stack, useLocalSearchParams } from "expo-router";
+import * as Haptics from "expo-haptics";
+import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { runtimeCredentialStatus, runtimeDisplayName } from "@multica/core/runtimes";
 import {
@@ -45,11 +53,17 @@ import {
   parseAdvancedParams,
   readVoiceInstanceSettings,
 } from "@/lib/voice-runtime";
+import {
+  resolveVoiceInstanceDeleteTarget,
+  runtimeDeleteErrorMessage,
+} from "@/lib/voice/instance-delete";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import {
+  useDeleteRuntime,
   useDeleteRuntimeCredential,
+  useDeleteRuntimeProfile,
   usePutRuntimeCredential,
   useUpdateRuntime,
 } from "@/data/mutations/runtimes";
@@ -65,6 +79,8 @@ export default function VoiceRuntimeSettingsScreen() {
   const updateRuntime = useUpdateRuntime(wsId);
   const putCredential = usePutRuntimeCredential(wsId);
   const deleteCredential = useDeleteRuntimeCredential(wsId);
+  const deleteRuntime = useDeleteRuntime(wsId);
+  const deleteProfile = useDeleteRuntimeProfile(wsId);
 
   const { data: runtimes, isLoading } = useQuery(runtimeListOptions(wsId));
   const runtime = useMemo(
@@ -88,8 +104,11 @@ export default function VoiceRuntimeSettingsScreen() {
     return advanced ? JSON.stringify(advanced, null, 2) : "";
   }, [runtime?.metadata]);
   useEffect(() => {
-    setName(runtime?.custom_name ?? "");
-  }, [runtime?.id, runtime?.custom_name]);
+    // RUYI-540: seed with the display name (custom_name first, else name —
+    // runtimeDisplayName, desktop parity). Create-only instances carry no
+    // custom_name; seeding only from it left the field blank.
+    setName(runtime ? runtimeDisplayName(runtime) : "");
+  }, [runtime?.id, runtime?.custom_name, runtime?.name]);
   useEffect(() => {
     setModel(settings.model);
   }, [runtime?.id, settings.model]);
@@ -121,7 +140,11 @@ export default function VoiceRuntimeSettingsScreen() {
   const credential = runtimeCredentialStatus(runtime);
   const displayName = runtimeDisplayName(runtime);
   const pending =
-    updateRuntime.isPending || putCredential.isPending || deleteCredential.isPending;
+    updateRuntime.isPending ||
+    putCredential.isPending ||
+    deleteCredential.isPending ||
+    deleteRuntime.isPending ||
+    deleteProfile.isPending;
 
   const saveName = () => {
     const next = name.trim();
@@ -216,6 +239,47 @@ export default function VoiceRuntimeSettingsScreen() {
       {
         onError: (err) => showError(err, t("voice_instance.save_failed")),
       },
+    );
+  };
+
+  // RUYI-566: destructive delete behind the app-wide Alert confirm (same
+  // pattern as agent archive / squad delete). The message carries the
+  // instance name; cancel is inert. Channel routing follows the server's
+  // enforcement — profile-backed instances delete via the profile cascade,
+  // profile-less ones directly. A refusal (bound agents, not-owner) shows
+  // the server's `error` copy and stays on the page.
+  const confirmDelete = () => {
+    Alert.alert(
+      t("mobile.delete.confirm_title"),
+      t("mobile.delete.confirm_message", { name: displayName }),
+      [
+        { text: t("mobile.delete.cancel"), style: "cancel" },
+        {
+          text: t("mobile.delete.confirm"),
+          style: "destructive",
+          onPress: () => {
+            const onSettled = {
+              onSuccess: () => {
+                Haptics.notificationAsync(
+                  Haptics.NotificationFeedbackType.Success,
+                ).catch(() => {});
+                router.back();
+              },
+              onError: (err: unknown) =>
+                Alert.alert(
+                  runtimeDeleteErrorMessage(err, t("mobile.delete.failed")),
+                ),
+            };
+            const target = resolveVoiceInstanceDeleteTarget(runtime);
+            if (target.kind === "profile") {
+              if (!wsId) return;
+              deleteProfile.mutate(target.profileId, onSettled);
+            } else {
+              deleteRuntime.mutate(target.runtimeId, onSettled);
+            }
+          },
+        },
+      ],
     );
   };
 
@@ -400,6 +464,26 @@ export default function VoiceRuntimeSettingsScreen() {
         <Field label={t("voice_instance.visibility_label")}>
           <ReadonlyValue value={t("voice_instance.visibility_workspace")} />
         </Field>
+
+        {/* Danger zone — RUYI-566 删除实例（二次确认见 confirmDelete）。 */}
+        <View className="gap-1.5 border-t border-border pt-4">
+          <Pressable
+            onPress={confirmDelete}
+            disabled={pending}
+            className={`self-start rounded-md border border-destructive px-3 py-2 active:bg-destructive/10 ${
+              pending ? "opacity-40" : ""
+            }`}
+            accessibilityRole="button"
+            accessibilityLabel={t("mobile.delete.action")}
+          >
+            <Text className="text-sm text-destructive">
+              {t("mobile.delete.action")}
+            </Text>
+          </Pressable>
+          <Text className="text-xs text-muted-foreground">
+            {t("mobile.delete.hint")}
+          </Text>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );

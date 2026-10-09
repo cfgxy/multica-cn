@@ -1,8 +1,8 @@
 /**
  * Credential resolution for the MCP server.
  *
- * Credentials are exactly the CLI's credentials — no second storage format
- * (Owner decision for RUYI-82). Resolution order, highest first:
+ * Credentials are exactly the CLI's credentials — no second storage format.
+ * Resolution order, highest first:
  *
  *  1. Explicit overrides (`--token` / `--server-url` CLI flags).
  *  2. Environment: `MULTICA_TOKEN`, `MULTICA_SERVER_URL` (same vars the CLI

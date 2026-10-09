@@ -74,7 +74,9 @@ export function RunRow({ task, issueId }: Props) {
         detailAvailable ? "active:opacity-70" : ""
       }`}
     >
-      <ActorAvatar type="agent" id={task.agent_id} size={28} showPresence />
+      {/* RUYI-554: run rows carry no presence corner dot — the run's own
+          StatusBadge is the state cue on a history list. */}
+      <ActorAvatar type="agent" id={task.agent_id} size={28} />
       <View className="flex-1 gap-1">
         <Text
           className="text-sm text-foreground"

@@ -8,8 +8,10 @@
  *                      [description (1 line) | agent-activity badge · time]
  *
  * Divergences from inbox-row, all intentional:
- *   - No unread dot / read styling — a read state is an inbox-only concept;
- *     the title is always foreground + medium (the "unread" weight).
+ *   - No unread styling — a read state is an inbox-only concept and the
+ *     `Issue` shape carries no read flag; titles keep the unread weight
+ *     (semibold, RUYI-554's unread treatment) for visual parity with an
+ *     all-unread inbox.
  *   - No trailing status icon and no CustomStatusChip — the section header
  *     already names the status CATEGORY and RUYI-413 drops per-row status
  *     glyphs/badges. Custom-status display names live on the detail page.
@@ -21,7 +23,9 @@
  * The agent-activity badge is the SAME component and data slice the inbox
  * row renders (IssueAgentActivityBadge fed by deriveIssueActivityMap over
  * the shared workspace snapshot) — one visual language for "an agent is on
- * this" across both lists.
+ * this" across both lists. RUYI-554: the assignee avatar carries the same
+ * activity state (breathing / grayed / static) as the inbox row's actor
+ * avatar; the presence dot is retired from list rows.
  *
  * Left column: assignee when set; a neutral placeholder otherwise, so every
  * row's text edge stays aligned (web's list-row simply omits the avatar,
@@ -38,6 +42,7 @@ import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { IssueAgentActivityBadge } from "@/components/issue/issue-agent-activity-badge";
 import type { IssueActivity } from "@/lib/issue-agent-activity";
+import { selectActorActivity } from "@/lib/issue-agent-activity";
 import { timeAgo } from "@/lib/time-ago";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -70,7 +75,7 @@ export function IssueRowInbox({ issue, activity, onPress }: Props) {
             type={issue.assignee_type}
             id={issue.assignee_id}
             size={36}
-            showPresence
+            activity={selectActorActivity(activity, issue.assignee_id) ?? undefined}
           />
         ) : (
           <View
@@ -91,7 +96,7 @@ export function IssueRowInbox({ issue, activity, onPress }: Props) {
             </Text>
             <PriorityIcon priority={issue.priority} size={14} />
             <Text
-              className="flex-1 text-sm font-medium text-foreground"
+              className="flex-1 text-sm font-semibold text-foreground"
               numberOfLines={1}
             >
               {issue.title}

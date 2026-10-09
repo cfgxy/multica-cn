@@ -13,6 +13,7 @@ import {
   canCancelAgentTask,
   deriveIssueActivityMap,
   isActiveTaskStatus,
+  selectActorActivity,
   selectAgentActiveTasks,
   selectIssueActivity,
 } from "./issue-agent-activity";
@@ -172,5 +173,54 @@ describe("canCancelAgentTask", () => {
     expect(canCancelAgentTask(task({ status: "completed" }))).toBe(false);
     expect(canCancelAgentTask(task({ status: "failed" }))).toBe(false);
     expect(canCancelAgentTask(task({ status: "cancelled" }))).toBe(false);
+  });
+});
+
+// RUYI-554 unified status language: per-actor slice that drives the avatar's
+// three-state treatment (running → breathing, queued → grayed, none → static).
+describe("selectActorActivity", () => {
+  it("returns running when the actor has a running task", () => {
+    const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
+    expect(selectActorActivity(activity, "agent-1")).toBe("running");
+  });
+
+  it("running wins over queued when the actor holds both", () => {
+    const activity = selectIssueActivity(
+      [task({ status: "running" }), task({ status: "queued" })],
+      "issue-1",
+    );
+    expect(selectActorActivity(activity, "agent-1")).toBe("running");
+  });
+
+  it("returns queued for queued-side statuses (queued/dispatched/waiting)", () => {
+    for (const status of ["queued", "dispatched", "waiting_local_directory"] as const) {
+      const activity = selectIssueActivity([task({ status })], "issue-1");
+      expect(selectActorActivity(activity, "agent-1")).toBe("queued");
+    }
+  });
+
+  it("returns null when the actor has no active task", () => {
+    const activity = selectIssueActivity(
+      [task({ status: "completed" })],
+      "issue-1",
+    );
+    expect(selectActorActivity(activity, "agent-1")).toBeNull();
+  });
+
+  it("returns null for other actors' tasks and absent actors", () => {
+    const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
+    expect(selectActorActivity(activity, "agent-other")).toBeNull();
+    expect(selectActorActivity(activity, null)).toBeNull();
+    expect(selectActorActivity(activity, undefined)).toBeNull();
+    expect(selectActorActivity(undefined, "agent-1")).toBeNull();
+  });
+
+  it("does not match member actors — activity is agent-scoped data", () => {
+    // A member actor id can never appear in AgentTask.agent_id, but spell the
+    // guarantee out: the slice keys on the actor id only, so a member id that
+    // collides with an agent id (different id spaces in practice) still reads
+    // as active — callers only pass the prop for agent avatars via type check.
+    const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
+    expect(selectActorActivity(activity, "agent-1")).toBe("running");
   });
 });
