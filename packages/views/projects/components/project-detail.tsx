@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import { lazy, Suspense, useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { Check, ChevronRight, Link2, MoreHorizontal, PanelRight, Pin, PinOff, Trash2, UserMinus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -51,7 +51,14 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@multica/ui/components/ui/tooltip";
-import { EmojiPicker } from "@multica/ui/components/common/emoji-picker";
+// The full emoji-mart picker is ~1MB of emoji data. Load it only when the
+// picker actually renders — same pattern as quick-emoji-picker.tsx and
+// avatar-upload-control.tsx — so it stays out of the eager bundles.
+const EmojiPicker = lazy(() =>
+  import("@multica/ui/components/common/emoji-picker").then((m) => ({
+    default: m.EmojiPicker,
+  })),
+);
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import {
   AnimatedRightSidebar,
@@ -284,12 +291,14 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             }
           />
           <PopoverContent align="start" className="w-auto p-0">
-            <EmojiPicker
-              onSelect={(emoji) => {
-                handleUpdateField({ icon: emoji });
-                setIconPickerOpen(false);
-              }}
-            />
+            <Suspense fallback={<div className="p-4 text-body text-muted-foreground">Loading...</div>}>
+              <EmojiPicker
+                onSelect={(emoji) => {
+                  handleUpdateField({ icon: emoji });
+                  setIconPickerOpen(false);
+                }}
+              />
+            </Suspense>
           </PopoverContent>
         </Popover>
         <TitleEditor

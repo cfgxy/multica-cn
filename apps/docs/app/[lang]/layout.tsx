@@ -1,48 +1,28 @@
 import "../global.css";
+// Fonts ship as fontsource npm packages — the same packages apps/web uses —
+// instead of next/font/google: next/font/google downloads faces from
+// fonts.googleapis.com at build time, which stalls builds on hosts that cannot
+// reach Google (the build log fills with `Retrying 1/3...`). npm packages ride
+// the configured registry mirror and keep the build network-independent.
+// Family names are the static fontsource names ("Inter Variable", …), composed
+// into the font stacks in static CSS in ./global.css (CSP-safe, no inline
+// <style>). Mirrors apps/web/app/layout.tsx.
+import "@fontsource-variable/geist-mono";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/source-serif-4";
 import { RootProvider } from "fumadocs-ui/provider";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
-import { Inter, Geist_Mono, Source_Serif_4 } from "next/font/google";
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
-import { cn } from "@multica/ui/lib/utils";
 import { baseOptions } from "@/app/layout.config";
 import { source } from "@/lib/source";
 import { i18n, type Lang } from "@/lib/i18n";
 import { uiTranslations, localeLabels } from "@/lib/translations";
 import { DocsSettings } from "@/components/docs-settings";
 
-// Inter (Latin UI face) is exposed under `--font-inter`. The full `--font-sans`
-// stack — Inter + the per-locale CJK fallback chain, including the Japanese-first
-// override scoped to `<html lang="ja">` — is composed in static CSS in
-// ./global.css (CSP-safe, no inline <style>). Mirrors apps/web/app/layout.tsx.
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-});
-
-const geistMono = Geist_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-  fallback: ["ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
-});
-
-// Editorial serif used for headings and showpiece elements. Italic style is
-// deliberately NOT loaded — italic in CJK is a synthetic slant that breaks
-// glyph design. Emphasis in docs is carried by brand color + weight, never
-// font-style. Mirrors apps/web/app/layout.tsx for the upright family.
-const sourceSerif = Source_Serif_4({
-  subsets: ["latin"],
-  style: ["normal"],
-  variable: "--font-serif",
-  fallback: [
-    "ui-serif",
-    "Iowan Old Style",
-    "Apple Garamond",
-    "Baskerville",
-    "Times New Roman",
-    "serif",
-  ],
-});
+// Serif italic is deliberately NOT loaded — italic in CJK is a synthetic
+// slant that breaks glyph design. Emphasis in docs is carried by brand color
+// + weight, never font-style.
 
 export const metadata: Metadata = {
   title: {
@@ -77,12 +57,7 @@ export default async function Layout({
     <html
       lang={lang}
       suppressHydrationWarning
-      className={cn(
-        "antialiased",
-        inter.variable,
-        geistMono.variable,
-        sourceSerif.variable,
-      )}
+      className="antialiased"
     >
       <body className="font-sans">
         <RootProvider
