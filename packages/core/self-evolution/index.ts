@@ -65,3 +65,10 @@ export {
   useSwitchPromptVersion,
 } from "./version-queries";
 export { selfEvolutionOverviewKeys, selfEvolutionOverviewOptions } from "./overview-queries";
+export {
+  modelConfigKeys,
+  selfEvolutionModelConfigOptions,
+  useSaveSelfEvolutionModelConfig,
+  useRestoreSelfEvolutionModelDefault,
+  useValidateSelfEvolutionModelConfig,
+} from "./model-config-queries";
