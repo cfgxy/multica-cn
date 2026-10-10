@@ -2399,11 +2399,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
 
   // Comment-anchor resolution (RUYI-108). Answers strictly out of the timeline
-  // this client already holds: a hit renders the chip with author/time/excerpt,
-  // and everything else — deleted, not permitted, another issue's comment, or
-  // simply not fetched yet — returns null and renders identically degraded.
-  // No fetch, not even a HEAD: a probe would leak through timing exactly what
-  // the indistinguishable miss is there to withhold.
+  // this client already holds: a hit renders the chip with author/time/excerpt.
+  // Everything else — deleted, not permitted, another issue's comment, or
+  // simply not fetched yet — returns null. Since RUYI-643 a null no longer
+  // pins the chip's fate: the card may probe the server anchor endpoint once
+  // and become a cross-issue link. This callback itself stays fetch-free; a
+  // probe here would leak through timing exactly what the server's uniform
+  // 404 exists to withhold.
   const resolveAnchorComment = useCallback(
     (commentId: string): ResolvedAnchorComment | null => {
       const entry = timeline.find(
