@@ -3736,6 +3736,19 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			slog.Error("issue cancellation cascade failed", "issue_id", id, "workspace_id", workspaceID, "error", err)
 		}
 	}
+	// RUYI-648: priority is snapshotted onto queue rows at enqueue time, so a
+	// priority edit replays the new value onto the rows still queued — claim
+	// ordering reads the row's column and would otherwise keep serving the
+	// stale urgency. Same post-commit best-effort posture as the cancellation
+	// cascade above: a failed replay is logged with ids and never fails the
+	// request, and the next enqueue snapshots the fresh priority anyway.
+	if priorityChanged {
+		if n, err := h.TaskService.UpdateQueuedTaskPrioritiesForIssue(r.Context(), issue.ID, issue.Priority); err != nil {
+			slog.Error("queued task priority replay failed", "issue_id", id, "workspace_id", workspaceID, "error", err)
+		} else if n > 0 {
+			slog.Info("queued task priorities replayed", "issue_id", id, "workspace_id", workspaceID, "rows", n, "priority", issue.Priority)
+		}
+	}
 	if suppressedRun {
 		h.recordSuppressedIssueRun(r.Context(), issue, trigger, actorType, actorID)
 	} else if willEnqueue {
