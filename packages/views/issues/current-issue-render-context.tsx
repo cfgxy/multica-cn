@@ -27,10 +27,12 @@ export type CurrentIssueRenderContextValue = Readonly<{
    * this issue. Returns null for anything else — deleted, not permitted,
    * belonging to another issue, or simply not fetched yet.
    *
-   * Must never issue a request. The four misses are deliberately
-   * indistinguishable to the caller: separating "exists but you can't see
-   * it" from "doesn't exist" is itself the disclosure the anchor design
-   * forbids (RUYI-108).
+   * Must never issue a request. Since RUYI-643 a local miss is no longer the
+   * end of the road — the chip may probe the server anchor endpoint once and
+   * turn into a cross-issue link — but THIS callback stays fetch-free: the
+   * probe is the card's business, and separating "exists but you can't see
+   * it" from "doesn't exist" remains the disclosure the anchor design
+   * forbids (RUYI-108), now enforced server-side by the uniform 404.
    */
   resolveComment?: (commentId: string) => ResolvedAnchorComment | null;
   /**

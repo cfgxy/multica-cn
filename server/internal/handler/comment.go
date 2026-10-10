@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -3878,6 +3879,92 @@ func (h *Handler) loadCommentForActor(w http.ResponseWriter, r *http.Request) (d
 	}
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	return comment, workspaceID, actorType, actorID, true
+}
+
+// CommentAnchorResponse answers "which issue hosts this comment, and how do I
+// label a jump to it" for cross-issue `mention://comment/<id>` chips
+// (RUYI-643). Excerpt is the raw content truncated to anchorExcerptMax bytes —
+// the client strips Markdown for its label, same as it does for in-issue
+// comments.
+type CommentAnchorResponse struct {
+	IssueID    string `json:"issue_id"`
+	Identifier string `json:"identifier"`
+	AuthorType string `json:"author_type"`
+	AuthorID   string `json:"author_id"`
+	CreatedAt  string `json:"created_at"`
+	Excerpt    string `json:"excerpt"`
+}
+
+// anchorExcerptMax caps the content the anchor endpoint returns. The chip
+// needs a ≤60-char label after Markdown stripping; the headroom absorbs
+// fences and markup the client drops. It is a cap on an authorized read (the
+// caller's workspace hosts the comment), not an access boundary — every miss
+// below is a bare 404.
+const anchorExcerptMax = 240
+
+// truncateRunes clips s to max bytes without splitting a multi-byte rune.
+func truncateRunes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
+// ResolveCommentAnchor resolves a {commentId} URL param to the owning issue's
+// anchor info. Access follows loadCommentForActor: workspace membership, then
+// GetCommentInWorkspace — so a comment outside the CALLER's workspace and a
+// comment that does not exist are the same 404, and a 200 never leaks anything
+// the caller could not already open. This is the one probe a cross-issue
+// comment chip may make (RUYI-643); in-issue chips keep resolving locally
+// without any fetch.
+func (h *Handler) ResolveCommentAnchor(w http.ResponseWriter, r *http.Request) {
+	commentID := chi.URLParam(r, "commentId")
+	if _, ok := requireUserID(w, r); !ok {
+		return
+	}
+	commentUUID, ok := parseUUIDOrBadRequest(w, commentID, "comment id")
+	if !ok {
+		return
+	}
+	workspaceID := h.resolveWorkspaceID(r)
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return
+	}
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+	comment, err := h.Queries.GetCommentInWorkspace(r.Context(), db.GetCommentInWorkspaceParams{
+		ID:          commentUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err != nil {
+		// Unknown, deleted, and foreign-workspace comments are deliberately
+		// indistinguishable: separating them would disclose that an invisible
+		// comment exists.
+		writeError(w, http.StatusNotFound, "comment not found")
+		return
+	}
+	issue, err := h.Queries.GetIssue(r.Context(), comment.IssueID)
+	if err != nil {
+		// The comment row is unreachable without its issue; treat it like any
+		// other miss rather than half-answering.
+		writeError(w, http.StatusNotFound, "comment not found")
+		return
+	}
+	identifier := service.IssueIdentifier(h.getIssuePrefix(r.Context(), wsUUID), issue.Number)
+	writeJSON(w, http.StatusOK, CommentAnchorResponse{
+		IssueID:    uuidToString(comment.IssueID),
+		Identifier: identifier,
+		AuthorType: comment.AuthorType,
+		AuthorID:   uuidToString(comment.AuthorID),
+		CreatedAt:  timestampToString(comment.CreatedAt),
+		Excerpt:    truncateRunes(comment.Content, anchorExcerptMax),
+	})
 }
 
 func (h *Handler) ResolveComment(w http.ResponseWriter, r *http.Request) {
