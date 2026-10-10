@@ -105,8 +105,10 @@ func (h *Handler) runUsageQueries(ctx context.Context, queries []usageQuery, pla
 
 // GetDashboardUsageResources serves the usage page's system-resource panel:
 // per-daemon CPU cores, memory/swap, filesystem, and disk IO series for this
-// workspace, relayed by daemon heartbeats and stored in Prometheus
-// (RUYI-618). With PROMETHEUS_URL unset the panel reports
+// workspace, computed straight from node-exporter's native series —
+// Prometheus scrapes each daemon host's node-exporter directly via static
+// targets (deploy/prometheus/prometheus.yml), so the server never relays
+// resource samples (RUYI-618). With PROMETHEUS_URL unset the panel reports
 // configured=false — a deployment without the observability stack is normal,
 // not broken — and the frontend hides the section.
 func (h *Handler) GetDashboardUsageResources(w http.ResponseWriter, r *http.Request) {
@@ -139,16 +141,23 @@ func (h *Handler) GetDashboardUsageResources(w http.ResponseWriter, r *http.Requ
 	}
 	match := daemonMatcher(daemonIDs)
 	plan := planUsageMetricsWindow(window, time.Now())
+	// Plain node-exporter arithmetic: CPU busy cores from mode!="idle"
+	// counter rates, memory/swap gauges, per-daemon filesystem capacity over
+	// real (non-pseudo) filesystems, and disk throughput over real block
+	// devices (loop/ram/optical/device-mapper excluded to avoid double
+	// counting). Series keep the daemon label set on the static target.
+	fsFilter := `fstype!~"tmpfs|fuse.*|squashfs|nsfs|overlay|iso9660"`
+	diskFilter := `device!~"^(loop|ram|fd|sr|dm-|zram)"`
 	queries := []usageQuery{
-		{"cpu_cores", fmt.Sprintf("sum by (daemon) (rate(multica_daemon_cpu_seconds_total{%s}[%s]))", match, durationProm(plan.RateWindow))},
-		{"memory_total_bytes", fmt.Sprintf("multica_daemon_memory_total_bytes{%s}", match)},
-		{"memory_available_bytes", fmt.Sprintf("multica_daemon_memory_available_bytes{%s}", match)},
-		{"swap_total_bytes", fmt.Sprintf("multica_daemon_swap_total_bytes{%s}", match)},
-		{"swap_free_bytes", fmt.Sprintf("multica_daemon_swap_free_bytes{%s}", match)},
-		{"filesystem_size_bytes", fmt.Sprintf("multica_daemon_filesystem_size_bytes{%s}", match)},
-		{"filesystem_avail_bytes", fmt.Sprintf("multica_daemon_filesystem_avail_bytes{%s}", match)},
-		{"disk_read_bytes_per_second", fmt.Sprintf("rate(multica_daemon_disk_read_bytes_total{%s}[%s])", match, durationProm(plan.RateWindow))},
-		{"disk_written_bytes_per_second", fmt.Sprintf("rate(multica_daemon_disk_written_bytes_total{%s}[%s])", match, durationProm(plan.RateWindow))},
+		{"cpu_cores", fmt.Sprintf(`sum by (daemon) (rate(node_cpu_seconds_total{%s,mode!~"idle"}[%s]))`, match, durationProm(plan.RateWindow))},
+		{"memory_total_bytes", fmt.Sprintf("node_memory_MemTotal_bytes{%s}", match)},
+		{"memory_available_bytes", fmt.Sprintf("node_memory_MemAvailable_bytes{%s}", match)},
+		{"swap_total_bytes", fmt.Sprintf("node_memory_SwapTotal_bytes{%s}", match)},
+		{"swap_free_bytes", fmt.Sprintf("node_memory_SwapFree_bytes{%s}", match)},
+		{"filesystem_size_bytes", fmt.Sprintf(`sum by (daemon) (node_filesystem_size_bytes{%s,%s})`, match, fsFilter)},
+		{"filesystem_avail_bytes", fmt.Sprintf(`sum by (daemon) (node_filesystem_avail_bytes{%s,%s})`, match, fsFilter)},
+		{"disk_read_bytes_per_second", fmt.Sprintf(`sum by (daemon) (rate(node_disk_read_bytes_total{%s,%s}[%s]))`, match, diskFilter, durationProm(plan.RateWindow))},
+		{"disk_written_bytes_per_second", fmt.Sprintf(`sum by (daemon) (rate(node_disk_written_bytes_total{%s,%s}[%s]))`, match, diskFilter, durationProm(plan.RateWindow))},
 	}
 	series, err := h.runUsageQueries(r.Context(), queries, plan)
 	if err != nil {

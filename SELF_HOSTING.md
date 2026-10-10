@@ -428,13 +428,15 @@ External cron / systemd timer / Kubernetes `CronJob` setups that call `SELECT ro
 
 ## Observability Stack (Prometheus)
 
-The Usage page has two live panels — **System resources** (per-daemon host CPU / memory / disk) and **Model traffic** (token / cost / task rates). They are backed by Prometheus: the server exposes everything on a single `/metrics` endpoint, and the panels proxy their queries through the backend, so the browser never talks to Prometheus directly. There is deliberately **no Grafana** in the stack — the web UI is the only consumer.
+The Usage page has two live panels — **System resources** (per-daemon host CPU / memory / swap / disk) and **Model traffic** (token / cost / task rates). They are backed by Prometheus: the panels proxy their queries through the backend, so the browser never talks to Prometheus directly. There is deliberately **no Grafana** in the stack — the web UI is the only consumer.
 
 Components and how the data flows:
 
-1. **node-exporter** (optional, per host) — collects host metrics with the industry-standard exporter instead of anything Multica-specific. `make daemon-install` sets it up automatically (`multica-node-exporter.service`, loopback only, small fixed resource budget); the daemon scrapes it and relays samples to the server with every heartbeat.
-2. **Server `/metrics`** — the single scrape target. It serves both the relayed `multica_daemon_*` host series and the `multica_task_usage_*` aggregates rolled up from task usage.
-3. **Prometheus** (optional, in the Docker stack) — scrapes the server every 15s. The panels read from it via the backend proxy endpoints (`/api/dashboard/usage/resources` and `/api/dashboard/usage/traffic`).
+1. **node-exporter** (per daemon host) — collects host metrics with the industry-standard exporter instead of anything Multica-specific. `make daemon-install` / `daemon-update` install it alongside the daemon (`multica-node-exporter.service`, small fixed resource budget). In the Docker stack, the bundled `node-exporter` service plays the same role for the compose host.
+2. **Prometheus** (optional, in the Docker stack) — scrapes static targets: the server's `/metrics` for the `multica_task_usage_*` model-traffic aggregates, and every daemon host's node-exporter for the native `node_*` resource series. There is no service discovery — one line per daemon host in `deploy/prometheus/prometheus.yml`.
+3. **Server proxy** — the panels read through the backend (`/api/dashboard/usage/resources` and `/api/dashboard/usage/traffic`), which scopes every query to the requesting workspace.
+
+Each node-exporter target in the Prometheus config must carry a `daemon` label equal to that host's daemon id (`multica daemon status` prints it): the panels use it to show a workspace only the hosts it owns. Targets without a matching label are scraped but never displayed.
 
 ### Enabling it (Docker Compose)
 
@@ -450,11 +452,13 @@ Then bring up the observability profile (metrics on the server itself are on by 
 docker compose --profile observability up -d
 ```
 
-That starts the pinned Prometheus (`prom/prometheus`, data retained 15 days) with the bundled scrape config (`deploy/prometheus/prometheus.yml`). Once it has scraped for a minute or two, the two panels appear on the Usage page. Hide them again by clearing `PROMETHEUS_URL` and restarting the backend — an unset `PROMETHEUS_URL` means "no observability stack", which the UI treats as normal, not an error.
+That starts the pinned Prometheus (`prom/prometheus`, data retained 15 days) and a node-exporter for the compose host, with the bundled scrape config (`deploy/prometheus/prometheus.yml`). Edit that file to label the compose host's `daemon` label and to add one static target per remote daemon host. Once it has scraped for a minute or two, the two panels appear on the Usage page. Hide them again by clearing `PROMETHEUS_URL` and restarting the backend — an unset `PROMETHEUS_URL` means "no observability stack", which the UI treats as normal, not an error.
 
 ### Enabling it (daemon hosts)
 
-Daemons report host metrics only when they have a node-exporter to scrape. `make daemon-install` / `daemon-update` handle this by default: they install `multica-node-exporter.service` (downloading the upstream binary to `~/.local/bin/node_exporter` if absent), and render `MULTICA_DAEMON_NODE_EXPORTER_URL=http://127.0.0.1:9100/metrics` into the daemon unit. To opt a host out, install with `NODE_EXPORTER_URL=` (empty) — the daemon then sends heartbeats without a resources payload and the panels simply have nothing to show for it. Tune the listen address with `NODE_EXPORTER_LISTEN` (defaults to `127.0.0.1:9100`, loopback only; the exporter is never published to the network).
+`make daemon-install` / `daemon-update` install `multica-node-exporter.service` next to the daemon by default (downloading the upstream binary to `~/.local/bin/node_exporter` if absent). Tune the listen address with `NODE_EXPORTER_LISTEN` (defaults to `:9100`); Prometheus must be able to reach it, so firewall the port to your Prometheus host. Install with `NODE_EXPORTER_LISTEN=` (empty) to skip the exporter on a host. To opt a host into the panels, add it to the `node-exporter` scrape job in `deploy/prometheus/prometheus.yml` with its `daemon` label.
+
+Host-memory backpressure (new-claim pausing under watermarks) is configured per workspace in the web UI (**Settings → Workspace → Host backpressure**); the values reach every daemon of that workspace over the heartbeat channel. There are no `MULTICA_DAEMON_BACKPRESSURE_*` environment variables anymore.
 
 ### Verifying
 
@@ -462,30 +466,11 @@ Daemons report host metrics only when they have a node-exporter to scrape. `make
 # Server metrics reachable from the compose network:
 docker compose exec prometheus wget -qO- backend:9091/metrics | head
 
-# Both metric families present:
-curl -s http://127.0.0.1:9091/metrics | grep -c '^multica_daemon_'
+# Model-traffic aggregates present:
 curl -s http://127.0.0.1:9091/metrics | grep -c '^multica_task_usage_'
 
-# Prometheus sees the target as up:
+# Prometheus sees the targets as up (server + node-exporter):
 curl -s http://127.0.0.1:9099/api/v1/targets | grep -o '"health":"up"'
-```
-
-## Stopping Services
-
-If you installed via the install script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --stop
-```
-
-If you cloned the repo manually:
-
-```bash
-# Stop the Docker Compose services (backend, frontend, database)
-make selfhost-stop
-
-# Stop the local daemon
-multica daemon stop
 ```
 
 ## Switching to Multica Cloud

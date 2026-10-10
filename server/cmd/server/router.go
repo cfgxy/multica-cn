@@ -293,13 +293,6 @@ type RouterOptions struct {
 	// is what tests and NewRouter get.
 	LLMMaxRetries *llm.RetryOverride
 
-	// HostResources receives per-daemon host resource snapshots relayed by
-	// daemon heartbeats. main.go builds one store shared between the Handler
-	// (write path) and the metrics registry (read path); nil keeps the
-	// heartbeat handler skipping the relay, which is what deployments with
-	// the metrics listener disabled get.
-	HostResources handler.HostResourceRecorder
-
 	// Prometheus backs the usage page's system-resource and model-traffic
 	// panels. main.go builds it from PROMETHEUS_URL; nil (or an empty URL)
 	// keeps both proxy endpoints reporting configured=false.
@@ -1393,9 +1386,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
 	}
-	if opts.HostResources != nil {
-		h.HostResources = opts.HostResources
-	}
 	if opts.Prometheus != nil {
 		h.Prometheus = opts.Prometheus
 	}
@@ -2372,6 +2362,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+			})
+		})
+
+		// Workspace-level host backpressure settings (RUYI-618): the
+		// watermarks pause task claiming on every daemon host in the
+		// workspace, so reads are member-visible but saves are owner-only.
+		// Delivered to daemons on heartbeat acks (see processHeartbeat).
+		r.Route("/api/workspace/backpressure-settings", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspaceBackpressureSettings)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Put("/", h.PutWorkspaceBackpressureSettings)
 			})
 		})
 

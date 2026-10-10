@@ -49,42 +49,41 @@
       "cancelled": "决定不做。"
     }
   },
-    "quick_replies": {
-      "title": "快速回复",
-      "description": "Issue 评论框「快速回复」菜单的共享模板。所有成员可读，仅空间管理员可修改；选中后填入评论框，不会直接发送。",
-      "loading": "正在加载快速回复…",
-      "add": "新建快速回复",
-      "empty_title": "还没有快速回复",
-      "empty_hint": "把常用的评论写法存成模板，成员在评论框选中后一键填入。",
-      "reorder_failed": "排序保存失败",
-      "actions": {
-        "open": "打开\"{{name}}\"的操作菜单",
-        "edit": "编辑",
-        "delete": "删除",
-        "reorder": "拖动调整\"{{name}}\"的顺序"
-      },
-      "editor": {
-        "create_title": "新建快速回复",
-        "edit_title": "编辑快速回复",
-        "hint": "成员在评论框选中后，内容会填入输入框，可继续修改再发送。",
-        "name": "名称",
-        "name_placeholder": "例如：跟进发布",
-        "content": "内容",
-        "content_placeholder": "填入评论框的模板正文…",
-        "cancel": "取消",
-        "save": "保存",
-        "saving": "保存中…",
-        "save_failed": "保存失败"
-      },
-      "delete_dialog": {
-        "title": "删除快速回复",
-        "description": "确定删除\"{{name}}\"？所有成员的评论框都会立即不再显示它。",
-        "cancel": "取消",
-        "confirm": "删除",
-        "failed": "删除失败"
-      }
+  "quick_replies": {
+    "title": "快速回复",
+    "description": "Issue 评论框「快速回复」菜单的共享模板。所有成员可读，仅空间管理员可修改；选中后填入评论框，不会直接发送。",
+    "loading": "正在加载快速回复…",
+    "add": "新建快速回复",
+    "empty_title": "还没有快速回复",
+    "empty_hint": "把常用的评论写法存成模板，成员在评论框选中后一键填入。",
+    "reorder_failed": "排序保存失败",
+    "actions": {
+      "open": "打开\"{{name}}\"的操作菜单",
+      "edit": "编辑",
+      "delete": "删除",
+      "reorder": "拖动调整\"{{name}}\"的顺序"
+    },
+    "editor": {
+      "create_title": "新建快速回复",
+      "edit_title": "编辑快速回复",
+      "hint": "成员在评论框选中后，内容会填入输入框，可继续修改再发送。",
+      "name": "名称",
+      "name_placeholder": "例如：跟进发布",
+      "content": "内容",
+      "content_placeholder": "填入评论框的模板正文…",
+      "cancel": "取消",
+      "save": "保存",
+      "saving": "保存中…",
+      "save_failed": "保存失败"
+    },
+    "delete_dialog": {
+      "title": "删除快速回复",
+      "description": "确定删除\"{{name}}\"？所有成员的评论框都会立即不再显示它。",
+      "cancel": "取消",
+      "confirm": "删除",
+      "failed": "删除失败"
     }
-,
+  },
   "quick_actions": {
     "title": "快捷操作",
     "description": "预先配置好执行的智能体和提示词，之后在任意任务侧边栏一键触发。",
@@ -908,7 +907,27 @@
     "deleting": "删除中...",
     "toast_delete_failed": "删除工作区失败",
     "confirm_cancel": "取消",
-    "confirm_action": "确认"
+    "confirm_action": "确认",
+    "bp_title": "主机背压",
+    "bp_description": "宿主机内存越过水位线时，暂停 daemon 领取新任务。保存后随下一次心跳下发到本空间全部 daemon，无需重启。",
+    "bp_defaults_note": "当前显示代码默认值——本空间尚未保存过设置。",
+    "bp_enabled": "启用背压",
+    "bp_enabled_hint": "关闭后无论水位线如何都不会暂停领取新任务。",
+    "bp_mem_label": "内存水位线（可用内存 %）",
+    "bp_mem_hint": "低于高水位线暂停领取，回升到恢复水位线以上恢复；恢复值必须高于高值。",
+    "bp_swap_label": "Swap 水位线（已用 %）",
+    "bp_swap_hint": "高水位线填 0 表示不检查 swap；恢复值必须低于高值。",
+    "bp_psi_label": "内存 PSI avg10 水位线（%）",
+    "bp_psi_hint": "高水位线填 0 表示不检查 PSI；恢复值必须低于高值。",
+    "bp_sampling_label": "采样",
+    "bp_sampling_hint": "宿主机采样间隔（秒）与平滑窗口平均的样本数。",
+    "bp_high_aria": "高水位线",
+    "bp_recovery_aria": "恢复水位线",
+    "bp_interval_aria": "采样间隔（秒）",
+    "bp_window_aria": "平滑窗口（样本数）",
+    "bp_toast_saved": "背压设置已保存——daemon 将在下次心跳时生效。",
+    "bp_toast_failed": "背压设置保存失败。",
+    "bp_invalid": "设置无效："
   },
   "delete_workspace_dialog": {
     "title": "删除工作区",

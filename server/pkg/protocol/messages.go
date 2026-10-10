@@ -387,51 +387,6 @@ type DaemonBackpressureReport struct {
 	DeferredClaims int64 `json:"deferred_claims"`
 }
 
-// DaemonFilesystemSample is one real filesystem's capacity from the daemon
-// host, relayed from a co-located node-exporter (RUYI-618).
-type DaemonFilesystemSample struct {
-	Device     string  `json:"device"`
-	Mountpoint string  `json:"mountpoint"`
-	FSType     string  `json:"fstype"`
-	SizeBytes  float64 `json:"size_bytes"`
-	AvailBytes float64 `json:"avail_bytes"`
-}
-
-// DaemonResourceReport is the daemon's optional host resource telemetry
-// (RUYI-618), attached to heartbeats when node-exporter relay is enabled on
-// the daemon host. The daemon performs no OS-level sampling for these fields:
-// every value is lifted from a co-located node-exporter's /metrics exposition,
-// so counter series keep node-exporter's monotonic semantics and consumers
-// derive rates with rate() arithmetic over the server's Prometheus exposition
-// rather than from single snapshots. Nothing here is persisted to the
-// database — the server keeps only the latest snapshot per daemon in memory.
-// Optional end to end: servers and daemons that predate the field ignore it.
-type DaemonResourceReport struct {
-	// CollectedAt is when the daemon sampled node-exporter (RFC3339, UTC).
-	CollectedAt string `json:"collected_at"`
-	// CPUModeSeconds maps CPU mode ("user", "system", "idle", "iowait", ...)
-	// to cumulative CPU-seconds summed across all cores — the per-mode totals
-	// of node_cpu_seconds_total with per-core detail collapsed to keep the
-	// heartbeat payload flat.
-	CPUModeSeconds map[string]float64 `json:"cpu_mode_seconds,omitempty"`
-	// Host memory watermarks in bytes, mirroring node_memory_MemTotal_bytes
-	// and node_memory_MemAvailable_bytes. The gate decision itself keeps
-	// riding BackpressureReport; these feed observability only.
-	MemTotalBytes     float64 `json:"mem_total_bytes,omitempty"`
-	MemAvailableBytes float64 `json:"mem_available_bytes,omitempty"`
-	// Swap watermarks in bytes; both 0 on swap-less hosts.
-	SwapTotalBytes float64 `json:"swap_total_bytes,omitempty"`
-	SwapFreeBytes  float64 `json:"swap_free_bytes,omitempty"`
-	// Filesystems carries per-mount capacity for real, writable filesystems;
-	// pseudo filesystems and read-only mounts are filtered daemon-side.
-	Filesystems []DaemonFilesystemSample `json:"filesystems,omitempty"`
-	// Cumulative disk IO bytes summed across real block devices (the
-	// node_disk_read/written_bytes_total totals; loop/ram/dm/md-class devices
-	// are excluded daemon-side to avoid double counting).
-	DiskReadBytesTotal    float64 `json:"disk_read_bytes_total,omitempty"`
-	DiskWrittenBytesTotal float64 `json:"disk_written_bytes_total,omitempty"`
-}
-
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket
 // to update last_seen_at and pull pending actions for a single runtime.
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
@@ -440,10 +395,6 @@ type DaemonHeartbeatRequestPayload struct {
 	RuntimeID           string                    `json:"runtime_id"`
 	SupportsBatchImport bool                      `json:"supports_batch_import,omitempty"`
 	Backpressure        *DaemonBackpressureReport `json:"backpressure,omitempty"`
-	// Resources optionally carries the host resource snapshot relayed from
-	// the daemon's co-located node-exporter (RUYI-618). Empty when the relay
-	// is disabled or has not completed a first successful sample.
-	Resources *DaemonResourceReport `json:"resources,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -472,6 +423,12 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+	// BackpressureConfig is the workspace's effective host-memory
+	// backpressure settings (RUYI-618), delivered on EVERY ack — saved card
+	// or code defaults — so running daemons converge on the workspace value
+	// within one heartbeat, no restart. Daemons that predate the field
+	// ignore it (standard JSON behavior).
+	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
