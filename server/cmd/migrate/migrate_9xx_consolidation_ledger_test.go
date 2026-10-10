@@ -195,7 +195,8 @@ var postConsolidationStems = []string{
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
-	"995_knowledge_lifecycle", // RUYI-916
+	"944_workspace_squad_revision", // RUYI-666
+	"995_knowledge_lifecycle",      // RUYI-916
 	"995_knowledge_lifecycle_entry_version_index",
 	"995_knowledge_lifecycle_event_entry_index",
 	"996_knowledge_entry_version_provenance", // RUYI-916
