@@ -431,7 +431,12 @@ export function IssueUsageTotal({
             : t(($) => $.usage_detail.calls_complete, { count: total.modelCallCount })}
         </span>
         <span className="text-faint-foreground">·</span>
-        <span className="text-muted-foreground">{formatUsd(total.cost)}</span>
+        <span className="text-muted-foreground">{total.priced ? formatUsd(total.cost) : "—"}</span>
+        {total.unpricedRows > 0 && (
+          <span className="whitespace-nowrap align-baseline text-caption font-medium text-warning">
+            {t(($) => $.execution_log.unpriced_rows, { count: total.unpricedRows })}
+          </span>
+        )}
       </TooltipTrigger>
       <TooltipContent>{t(($) => $.execution_log.usage_total_tooltip)}</TooltipContent>
     </Tooltip>

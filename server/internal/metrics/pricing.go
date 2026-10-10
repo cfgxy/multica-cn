@@ -34,11 +34,40 @@ var modelPrices = map[string]ModelPrice{
 	"openai:gpt-5.6-sol":   {Provider: "openai", Model: "gpt-5.6-sol", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 6.25, OutputPerM: 30.00},
 	"openai:gpt-5.6-terra": {Provider: "openai", Model: "gpt-5.6-terra", InputPerM: 2.50, CacheReadPerM: 0.25, CacheWritePerM: 3.125, OutputPerM: 15.00},
 	"openai:gpt-5.6-luna":  {Provider: "openai", Model: "gpt-5.6-luna", InputPerM: 1.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25, OutputPerM: 6.00},
-	"openai:gpt-5.5":       {Provider: "openai", Model: "gpt-5.5", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 0.50, OutputPerM: 30.00},
-	"openai:gpt-5.4":       {Provider: "openai", Model: "gpt-5.4", InputPerM: 2.50, CacheReadPerM: 0.25, CacheWritePerM: 0.25, OutputPerM: 15.00},
-	"openai:gpt-5.4-mini":  {Provider: "openai", Model: "gpt-5.4-mini", InputPerM: 0.75, CacheReadPerM: 0.075, CacheWritePerM: 0.075, OutputPerM: 4.50},
-	"openai:gpt-5.3-codex": {Provider: "openai", Model: "gpt-5.3-codex", InputPerM: 1.75, CacheReadPerM: 0.175, CacheWritePerM: 0.175, OutputPerM: 14.00},
-	"openai:gpt-5.2-codex": {Provider: "openai", Model: "gpt-5.2-codex", InputPerM: 1.75, CacheReadPerM: 0.175, CacheWritePerM: 0.175, OutputPerM: 14.00},
+	// Cache writes on these five SKUs bill as ordinary input: OpenAI publishes
+	// no separate cache-write rate for them, so a cache-write token costs what
+	// an input token costs and CacheWritePerM mirrors InputPerM — contrast the
+	// 5.6 rows ABOVE, which do bill cache writes separately at 1.25x input.
+	//
+	// These rows previously mirrored CacheReadPerM, i.e. a tenth of the real
+	// rate: every cached write was under-charged by 10x, and the four of them
+	// the frontend also carries disagreed with it there. The signature was
+	// that CacheWritePerM equalled CacheReadPerM exactly, which no published
+	// rate would produce. TestFrontendPricingMatchesServerOnSharedRows now
+	// pins it.
+	"openai:gpt-5.5":       {Provider: "openai", Model: "gpt-5.5", InputPerM: 5.00, CacheReadPerM: 0.50, CacheWritePerM: 5.00, OutputPerM: 30.00},
+	"openai:gpt-5.4":       {Provider: "openai", Model: "gpt-5.4", InputPerM: 2.50, CacheReadPerM: 0.25, CacheWritePerM: 2.50, OutputPerM: 15.00},
+	"openai:gpt-5.4-mini":  {Provider: "openai", Model: "gpt-5.4-mini", InputPerM: 0.75, CacheReadPerM: 0.075, CacheWritePerM: 0.75, OutputPerM: 4.50},
+	"openai:gpt-5.3-codex": {Provider: "openai", Model: "gpt-5.3-codex", InputPerM: 1.75, CacheReadPerM: 0.175, CacheWritePerM: 1.75, OutputPerM: 14.00},
+	"openai:gpt-5.2-codex": {Provider: "openai", Model: "gpt-5.2-codex", InputPerM: 1.75, CacheReadPerM: 0.175, CacheWritePerM: 1.75, OutputPerM: 14.00},
+	// GPT-5 family, o-series and GPT-4o (RUYI-664): the dashboard has carried
+	// these all along while the Go table did not, so every one of them was a
+	// row the UI priced and nothing here did.
+	//
+	// `gpt-5` and `gpt-5-codex` share rates but are separate SKUs, and both are
+	// priced 5x `gpt-5-mini` and 25x `gpt-5-nano`. That spread is the whole
+	// reason the rules below must END: `gpt-5` as a bare substring would
+	// swallow `gpt-5-mini` and bill it at five times its real rate, silently.
+	// Same for `gpt-4o` and `gpt-4o-mini` (16x) and `o3` / `o3-mini` (2x).
+	"openai:gpt-5":       {Provider: "openai", Model: "gpt-5", InputPerM: 1.25, CacheReadPerM: 0.125, CacheWritePerM: 1.25, OutputPerM: 10.00},
+	"openai:gpt-5-codex": {Provider: "openai", Model: "gpt-5-codex", InputPerM: 1.25, CacheReadPerM: 0.125, CacheWritePerM: 1.25, OutputPerM: 10.00},
+	"openai:gpt-5-mini":  {Provider: "openai", Model: "gpt-5-mini", InputPerM: 0.25, CacheReadPerM: 0.025, CacheWritePerM: 0.25, OutputPerM: 2.00},
+	"openai:gpt-5-nano":  {Provider: "openai", Model: "gpt-5-nano", InputPerM: 0.05, CacheReadPerM: 0.005, CacheWritePerM: 0.05, OutputPerM: 0.40},
+	"openai:o3":          {Provider: "openai", Model: "o3", InputPerM: 2.00, CacheReadPerM: 0.50, CacheWritePerM: 2.00, OutputPerM: 8.00},
+	"openai:o3-mini":     {Provider: "openai", Model: "o3-mini", InputPerM: 1.10, CacheReadPerM: 0.55, CacheWritePerM: 1.10, OutputPerM: 4.40},
+	"openai:o4-mini":     {Provider: "openai", Model: "o4-mini", InputPerM: 1.10, CacheReadPerM: 0.275, CacheWritePerM: 1.10, OutputPerM: 4.40},
+	"openai:gpt-4o":      {Provider: "openai", Model: "gpt-4o", InputPerM: 2.50, CacheReadPerM: 1.25, CacheWritePerM: 2.50, OutputPerM: 10.00},
+	"openai:gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini", InputPerM: 0.15, CacheReadPerM: 0.075, CacheWritePerM: 0.15, OutputPerM: 0.60},
 	// Anthropic's Sonnet 5 launch price is $2 / $10 through 2026-08-31. This
 	// static table cannot schedule the published post-intro $3 / $15 change yet,
 	// so keep the intro rate here and update the row when catalog support exists.
@@ -53,14 +82,37 @@ var modelPrices = map[string]ModelPrice{
 	"anthropic:claude-sonnet-4.6": {Provider: "anthropic", Model: "claude-sonnet-4.6", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, OutputPerM: 15.00},
 	"anthropic:claude-sonnet-4.5": {Provider: "anthropic", Model: "claude-sonnet-4.5", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, OutputPerM: 15.00},
 	"anthropic:claude-haiku-4.5":  {Provider: "anthropic", Model: "claude-haiku-4.5", InputPerM: 1.00, CacheReadPerM: 0.10, CacheWritePerM: 1.25, OutputPerM: 5.00},
-	"deepseek:v4-pro":             {Provider: "deepseek", Model: "v4-pro", InputPerM: 1.74, CacheReadPerM: 0.0145, CacheWritePerM: 1.74, OutputPerM: 3.48},
-	"deepseek:v4-flash":           {Provider: "deepseek", Model: "v4-flash", InputPerM: 0.56, CacheReadPerM: 0.0112, CacheWritePerM: 0.56, OutputPerM: 1.12},
-	"minimax:m2.7":                {Provider: "minimax", Model: "m2.7", InputPerM: 0.30, CacheReadPerM: 0.06, CacheWritePerM: 0.375, OutputPerM: 1.20},
-	"minimax:m2.7-highspeed":      {Provider: "minimax", Model: "m2.7-highspeed", InputPerM: 0.60, CacheReadPerM: 0.06, CacheWritePerM: 0.375, OutputPerM: 2.40},
-	"google:gemini-3-flash":       {Provider: "google", Model: "gemini-3-flash", InputPerM: 0.50, CacheReadPerM: 0.05, CacheWritePerM: 0.50, OutputPerM: 3.00},
-	"google:gemini-3.1-pro":       {Provider: "google", Model: "gemini-3.1-pro", InputPerM: 2.00, CacheReadPerM: 0.20, CacheWritePerM: 2.00, OutputPerM: 12.00},
-	"google:gemini-2.5-pro":       {Provider: "google", Model: "gemini-2.5-pro", InputPerM: 1.25, CacheReadPerM: 0.31, CacheWritePerM: 1.25, OutputPerM: 10.00},
-	"google:gemini-2.5-flash":     {Provider: "google", Model: "gemini-2.5-flash", InputPerM: 0.30, CacheReadPerM: 0.03, CacheWritePerM: 0.30, OutputPerM: 2.50},
+	// Pre-4.5 generations the dashboard has always carried and the Go table
+	// did not (RUYI-664). Opus 4 and 4.1 sit on the original $15 / $75 tier —
+	// nearly three times Opus 4.5's — so an unanchored `claude-opus-4` rule
+	// would over-bill every later Opus 4.x by 3x. That is the same
+	// tier-borrowing trap as Fable 5 / 5.1, and it is why the rules below end
+	// at versionEnd.
+	"anthropic:claude-opus-4.1":  {Provider: "anthropic", Model: "claude-opus-4.1", InputPerM: 15.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75, OutputPerM: 75.00},
+	"anthropic:claude-opus-4":    {Provider: "anthropic", Model: "claude-opus-4", InputPerM: 15.00, CacheReadPerM: 1.50, CacheWritePerM: 18.75, OutputPerM: 75.00},
+	"anthropic:claude-sonnet-4":  {Provider: "anthropic", Model: "claude-sonnet-4", InputPerM: 3.00, CacheReadPerM: 0.30, CacheWritePerM: 3.75, OutputPerM: 15.00},
+	"anthropic:claude-haiku-3.5": {Provider: "anthropic", Model: "claude-haiku-3.5", InputPerM: 0.80, CacheReadPerM: 0.08, CacheWritePerM: 1.00, OutputPerM: 4.00},
+	// DeepSeek (api-docs.deepseek.com/quick_start/pricing). The official
+	// catalog lists exactly two current SKUs; `deepseek-chat` and
+	// `deepseek-reasoner` are aliases that route to v4-flash (non-thinking
+	// and thinking mode respectively) per the same page.
+	//
+	// Both rows carry the POST-promo standard rate ($1.74 / $3.48 pro,
+	// $0.56 / $1.12 flash) on purpose: the 75%-off promo ended 2026-05-31,
+	// and pricing at the promo rate would make the dashboard jump 4x after
+	// it. The frontend's copy of this table carried the promo flash price
+	// ($0.14 / $0.28) next to the post-promo pro rate — same table, two
+	// policies, no way to notice. The generated table now carries the rate
+	// below on both sides, and TestFrontendPricingMatchesServerOnSharedRows
+	// pins it.
+	"deepseek:v4-pro":         {Provider: "deepseek", Model: "v4-pro", InputPerM: 1.74, CacheReadPerM: 0.0145, CacheWritePerM: 1.74, OutputPerM: 3.48},
+	"deepseek:v4-flash":       {Provider: "deepseek", Model: "v4-flash", InputPerM: 0.56, CacheReadPerM: 0.0112, CacheWritePerM: 0.56, OutputPerM: 1.12},
+	"minimax:m2.7":            {Provider: "minimax", Model: "m2.7", InputPerM: 0.30, CacheReadPerM: 0.06, CacheWritePerM: 0.375, OutputPerM: 1.20},
+	"minimax:m2.7-highspeed":  {Provider: "minimax", Model: "m2.7-highspeed", InputPerM: 0.60, CacheReadPerM: 0.06, CacheWritePerM: 0.375, OutputPerM: 2.40},
+	"google:gemini-3-flash":   {Provider: "google", Model: "gemini-3-flash", InputPerM: 0.50, CacheReadPerM: 0.05, CacheWritePerM: 0.50, OutputPerM: 3.00},
+	"google:gemini-3.1-pro":   {Provider: "google", Model: "gemini-3.1-pro", InputPerM: 2.00, CacheReadPerM: 0.20, CacheWritePerM: 2.00, OutputPerM: 12.00},
+	"google:gemini-2.5-pro":   {Provider: "google", Model: "gemini-2.5-pro", InputPerM: 1.25, CacheReadPerM: 0.31, CacheWritePerM: 1.25, OutputPerM: 10.00},
+	"google:gemini-2.5-flash": {Provider: "google", Model: "gemini-2.5-flash", InputPerM: 0.30, CacheReadPerM: 0.03, CacheWritePerM: 0.30, OutputPerM: 2.50},
 	// xAI Grok (docs.x.ai/developers/pricing). Short-context tier: xAI bills
 	// a request at 2x once its prompt reaches 200K tokens, but a usage record
 	// aggregates every model call in a turn, so it cannot say which tier any
@@ -98,6 +150,82 @@ var modelPrices = map[string]ModelPrice{
 	// providers/moonshotai/models/kimi-k3.toml). Moonshot bills no separate
 	// cache write, so CacheWritePerM mirrors Input.
 	"moonshotai:kimi-k3": {Provider: "moonshotai", Model: "kimi-k3", InputPerM: 3.0, CacheReadPerM: 0.30, CacheWritePerM: 3.0, OutputPerM: 15.0},
+	// Kimi K2.6 (kimi.com/resources/kimi-k2-6-pricing). Only K2.6 is on the
+	// official price sheet today — earlier K2 variants are deliberately absent
+	// until Moonshot publishes their rates, rather than inheriting a
+	// neighbour's. CacheWrite mirrors input for the same reason K3's does:
+	// Moonshot bills no separate cache-write rate.
+	"moonshotai:kimi-k2.6": {Provider: "moonshotai", Model: "kimi-k2.6", InputPerM: 0.95, CacheReadPerM: 0.16, CacheWritePerM: 0.95, OutputPerM: 4.00},
+	// Zhipu GLM-5 (docs.bigmodel.cn/cn/guide/start/pricing, accessed
+	// 2026-10-07). Rates are the published INTERNATIONAL USD list: $1.00
+	// input / $3.20 output / $0.20 cache hit per 1M tokens.
+	//
+	// Two caveats this row cannot express, both recorded rather than hidden:
+	//   - The domestic CNY list is cheaper AND tiered by input length
+	//     (4/18 CNY below 32K, 6/22 CNY at or above, cache hit 1 / 1.5), so
+	//     one flat row over-reports domestic usage. That is tolerable for the
+	//     relative comparisons a run-level cost view feeds (medians, per-run
+	//     ratios), which cancel a constant factor; an ABSOLUTE budget cap
+	//     would need the domestic tiered rate instead.
+	//   - Cache storage is currently free ("限时免费") with no published
+	//     standard rate, and Zhipu publishes no separate cache-write rate, so
+	//     CacheWritePerM mirrors Input — the convention the xAI and Moonshot
+	//     rows use.
+	//
+	// This mirrors packages/views/runtimes/utils.ts, which has carried the
+	// whole glm family all along; the Go table was simply missing it.
+	"zhipu:glm-5": {Provider: "zhipu", Model: "glm-5", InputPerM: 1.00, CacheReadPerM: 0.20, CacheWritePerM: 1.00, OutputPerM: 3.20},
+	// The rest of the glm family (RUYI-664): same publisher, same page, same
+	// two caveats as the glm-5 row above — the rates are the INTERNATIONAL
+	// USD list, and Zhipu publishes no separate cache-write rate so
+	// CacheWritePerM mirrors Input.
+	//
+	// The two flash rows are all-zero on purpose, not missing: Zhipu serves
+	// them free, and a 0 here is the difference between "known-free" and
+	// "unknown". Under the four-state cost model an all-zero row with real
+	// tokens resolves to CostSourceZero, which is priced and belongs in a
+	// total, whereas leaving the id out of the table would make it
+	// CostSourceUnpriced — the state that surfaces as "cannot be priced".
+	// Same convention as alibaba:qwen3.8-max-preview.
+	"zhipu:glm-5.1":        {Provider: "zhipu", Model: "glm-5.1", InputPerM: 1.40, CacheReadPerM: 0.26, CacheWritePerM: 1.40, OutputPerM: 4.40},
+	"zhipu:glm-5-turbo":    {Provider: "zhipu", Model: "glm-5-turbo", InputPerM: 1.20, CacheReadPerM: 0.24, CacheWritePerM: 1.20, OutputPerM: 4.00},
+	"zhipu:glm-4.7":        {Provider: "zhipu", Model: "glm-4.7", InputPerM: 0.60, CacheReadPerM: 0.11, CacheWritePerM: 0.60, OutputPerM: 2.20},
+	"zhipu:glm-4.7-flashx": {Provider: "zhipu", Model: "glm-4.7-flashx", InputPerM: 0.07, CacheReadPerM: 0.01, CacheWritePerM: 0.07, OutputPerM: 0.40},
+	"zhipu:glm-4.7-flash":  {Provider: "zhipu", Model: "glm-4.7-flash", InputPerM: 0, CacheReadPerM: 0, CacheWritePerM: 0, OutputPerM: 0},
+	"zhipu:glm-4.6":        {Provider: "zhipu", Model: "glm-4.6", InputPerM: 0.60, CacheReadPerM: 0.11, CacheWritePerM: 0.60, OutputPerM: 2.20},
+	"zhipu:glm-4.5":        {Provider: "zhipu", Model: "glm-4.5", InputPerM: 0.60, CacheReadPerM: 0.11, CacheWritePerM: 0.60, OutputPerM: 2.20},
+	"zhipu:glm-4.5-x":      {Provider: "zhipu", Model: "glm-4.5-x", InputPerM: 2.20, CacheReadPerM: 0.45, CacheWritePerM: 2.20, OutputPerM: 8.90},
+	"zhipu:glm-4.5-air":    {Provider: "zhipu", Model: "glm-4.5-air", InputPerM: 0.20, CacheReadPerM: 0.03, CacheWritePerM: 0.20, OutputPerM: 1.10},
+	"zhipu:glm-4.5-airx":   {Provider: "zhipu", Model: "glm-4.5-airx", InputPerM: 1.10, CacheReadPerM: 0.22, CacheWritePerM: 1.10, OutputPerM: 4.50},
+	"zhipu:glm-4.5-flash":  {Provider: "zhipu", Model: "glm-4.5-flash", InputPerM: 0, CacheReadPerM: 0, CacheWritePerM: 0, OutputPerM: 0},
+	// Cursor Composer / Auto (cursor.com/docs/models-and-pricing,
+	// cursor.com/docs/models/cursor-composer-2,
+	// cursor.com/docs/models/cursor-composer-2-5). Cursor publishes no
+	// cache-write rate for any of these, and cacheWrite stays 0 for a reason:
+	// billing a reported cache_write_tokens off the input rate would invent
+	// spend that the vendor never charged.
+	//
+	// Every id here is generic (`auto`, `composer-*`), and generic ids
+	// collide across providers — more than one runtime reports `auto`
+	// (Cursor's own catalog defaults to it, see cursorStaticModels in
+	// server/pkg/agent/models.go; the frontend's provider-qualified-keys note
+	// in utils.ts calls out the same collision). That is why the frontend
+	// keys them `cursor/...` and why the rules below are pinned to the
+	// `cursor/` prefix rather than to the bare id: a rule that resolved bare
+	// `auto` would bill another provider's run at Cursor's rate. Only the
+	// legacy `cursor` key is unqualified, and only because it equals the
+	// provider name itself and therefore cannot collide.
+	"cursor:auto":              {Provider: "cursor", Model: "auto", InputPerM: 1.25, CacheReadPerM: 0.25, CacheWritePerM: 0, OutputPerM: 6.00},
+	"cursor:composer-2.5-fast": {Provider: "cursor", Model: "composer-2.5-fast", InputPerM: 3.00, CacheReadPerM: 0.50, CacheWritePerM: 0, OutputPerM: 15.00},
+	"cursor:composer-2.5":      {Provider: "cursor", Model: "composer-2.5", InputPerM: 0.50, CacheReadPerM: 0.20, CacheWritePerM: 0, OutputPerM: 2.50},
+	"cursor:composer-2-fast":   {Provider: "cursor", Model: "composer-2-fast", InputPerM: 1.50, CacheReadPerM: 0.35, CacheWritePerM: 0, OutputPerM: 7.50},
+	"cursor:composer-2":        {Provider: "cursor", Model: "composer-2", InputPerM: 0.50, CacheReadPerM: 0.20, CacheWritePerM: 0, OutputPerM: 2.50},
+	"cursor:composer-1.5":      {Provider: "cursor", Model: "composer-1.5", InputPerM: 3.50, CacheReadPerM: 0.35, CacheWritePerM: 0, OutputPerM: 17.50},
+	"cursor:composer-1":        {Provider: "cursor", Model: "composer-1", InputPerM: 1.25, CacheReadPerM: 0.125, CacheWritePerM: 0, OutputPerM: 10.00},
+	// Legacy fallback: when neither the result event nor the configured
+	// runtime model names a model, the daemon emits the literal `cursor`.
+	// Priced at the current Composer 2.5 Fast default.
+	"cursor:cursor": {Provider: "cursor", Model: "cursor", InputPerM: 3.00, CacheReadPerM: 0.50, CacheWritePerM: 0, OutputPerM: 15.00},
 	// Volcengine Ark (ark.cn-beijing.volces.com). `ark-code-latest` is a
 	// rolling alias whose target can be switched in the Volcengine console
 	// (across model families), so it is not a stable model identity; the
@@ -106,25 +234,35 @@ var modelPrices = map[string]ModelPrice{
 	// a guessed rate (same convention as xAI's `grok-composer-*`).
 }
 
-// claudeVersionEnd terminates a Claude family rule: at most one suffix that
-// the frontend resolver normalizes away, and then the END of the id. Appending
-// it keeps a rule from swallowing a later SKU in the same family — without it
+// versionEnd terminates a family rule: at most one suffix the frontend
+// resolver normalizes away, and then the END of the id. Appending it keeps a
+// rule from swallowing a later SKU in the same family — without it
 // `claude-fable-5` also matches `claude-fable-5-1`, whose cache reads are a
-// quarter of Fable 5's, so those reads bill at 4x.
+// quarter of Fable 5's, so those reads bill at 4x. The same trap is why
+// `gpt-5` must end here too: as a bare substring it would price `gpt-5-mini`
+// at five times its real rate.
 //
-// The admitted suffixes are exactly what `stripContextTag` and `stripDate`
-// remove in packages/views/runtimes/utils.ts before its exact-key lookup, so
-// both sides accept the same suffix forms. (Only the suffixes: the Claude
-// rules are still substring matches, so a malformed PREFIX is out of scope
-// here.) The trailing `$` is what makes that true and is not optional: these rules are substring matches, so an
-// alternative that merely starts a suffix still matches when arbitrary text
-// follows it (`claude-fable-5-1-latest-preview`, `claude-fable-5-1[1m]junk`),
-// which is the silent tier-borrowing this constant exists to prevent. The
-// bracket form requires a complete tag for the same reason.
+// It is NOT Anthropic-specific despite the Claude examples: the admitted
+// suffixes are exactly what `stripContextTag` and `stripDate` remove in
+// packages/views/runtimes/utils.ts before its exact-key lookup, and the
+// frontend strips them for every provider, OpenAI included. A server rule
+// anchored at a bare `$` therefore leaves a dated id (`gpt-5-2025-08-07`)
+// unpriced on this side while the dashboard prices it — a gap in the opposite
+// direction, and the harder one to notice because neither guard compares
+// dated ids.
+//
+// (Only the suffixes: most rules here are substring matches, so a malformed
+// PREFIX is out of scope.) The trailing `$` is what makes that true and is
+// not optional: these rules are substring matches, so an alternative that
+// merely starts a suffix still matches when arbitrary text follows it
+// (`claude-fable-5-1-latest-preview`, `claude-fable-5-1[1m]junk`), which is
+// the silent tier-borrowing this constant exists to prevent. The bracket form
+// requires a complete tag for the same reason.
 //
 // A date snapshot carrying a context tag (`claude-fable-5-20260401[1m]`) is
 // covered by the tag-stripping retry in PriceForModelAlias, so it does not
 // need a combined alternative here.
+//
 // Anything else — another version digit, a `-preview`-style qualifier — is a
 // distinct SKU at an unknown rate and stays unmapped until it gets a row of
 // its own, the same "every catalog SKU needs its own row" rule the frontend
@@ -133,7 +271,7 @@ var modelPrices = map[string]ModelPrice{
 // The bracket alternative is modeltag.Pattern, not a local literal: the tag
 // shape admitted here is by construction the same one the launch side strips
 // and PriceForModelAlias retries with (RUYI-267).
-const claudeVersionEnd = `(?:-20\d{6}|-20\d{2}-\d{2}-\d{2}|-latest|` + modeltag.Pattern + `)?$`
+const versionEnd = `(?:-20\d{6}|-20\d{2}-\d{2}-\d{2}|-latest|` + modeltag.Pattern + `)?$`
 
 var modelAliasRules = []struct {
 	re       *regexp.Regexp
@@ -154,13 +292,32 @@ var modelAliasRules = []struct {
 	{regexp.MustCompile(`(^|/|:)gpt-5[.-]4-mini($|[^a-z0-9])`), "openai:gpt-5.4-mini"},
 	{regexp.MustCompile(`(^|/|:)gpt-5[.-]3-codex$`), "openai:gpt-5.3-codex"},
 	{regexp.MustCompile(`(^|/|:)gpt-5[.-]2-codex$`), "openai:gpt-5.2-codex"},
+	// GPT-5 family, o-series and GPT-4o (RUYI-664). All end at versionEnd, and
+	// the `$` half is not decoration: `gpt-5` alone is a substring of
+	// `gpt-5-mini` / `gpt-5-nano` / `gpt-5-codex`, which are 5x, 25x and 1x its
+	// rate respectively. Dropping the anchor would silently price a nano run at
+	// the flagship rate. `gpt-4o` / `gpt-4o-mini` (16x) and `o3` / `o3-mini`
+	// (2x) are the same trap.
+	//
+	// The suffix half keeps parity with the dashboard, which strips a trailing
+	// date or `latest` before looking the key up — so `gpt-5-2025-08-07` prices
+	// on both sides instead of only in the UI.
+	{regexp.MustCompile(`(^|/|:)gpt-5-mini` + versionEnd), "openai:gpt-5-mini"},
+	{regexp.MustCompile(`(^|/|:)gpt-5-nano` + versionEnd), "openai:gpt-5-nano"},
+	{regexp.MustCompile(`(^|/|:)gpt-5-codex` + versionEnd), "openai:gpt-5-codex"},
+	{regexp.MustCompile(`(^|/|:)gpt-5` + versionEnd), "openai:gpt-5"},
+	{regexp.MustCompile(`(^|/|:)o3-mini` + versionEnd), "openai:o3-mini"},
+	{regexp.MustCompile(`(^|/|:)o3` + versionEnd), "openai:o3"},
+	{regexp.MustCompile(`(^|/|:)o4-mini` + versionEnd), "openai:o4-mini"},
+	{regexp.MustCompile(`(^|/|:)gpt-4o-mini` + versionEnd), "openai:gpt-4o-mini"},
+	{regexp.MustCompile(`(^|/|:)gpt-4o` + versionEnd), "openai:gpt-4o"},
 	{regexp.MustCompile(`claude-sonnet-5|claude-5-sonnet`), "anthropic:claude-sonnet-5"},
 	// Fable 5.1 shares Fable 5's $10 / $50 and $12.50 cache write but prices
 	// cache reads at 0.025x input ($0.25) instead of the standard 0.1x, so it
 	// needs its own row, and both rules end at their own version
-	// (claudeVersionEnd) so neither can swallow the other's ids.
-	{regexp.MustCompile(`claude-fable-5[-.]1` + claudeVersionEnd), "anthropic:claude-fable-5-1"},
-	{regexp.MustCompile(`claude-fable-5` + claudeVersionEnd), "anthropic:claude-fable-5"},
+	// (versionEnd) so neither can swallow the other's ids.
+	{regexp.MustCompile(`claude-fable-5[-.]1` + versionEnd), "anthropic:claude-fable-5-1"},
+	{regexp.MustCompile(`claude-fable-5` + versionEnd), "anthropic:claude-fable-5"},
 	{regexp.MustCompile(`claude-opus-5`), "anthropic:claude-opus-5"},
 	{regexp.MustCompile(`claude-opus-4[-.]8`), "anthropic:claude-opus-4.8"},
 	{regexp.MustCompile(`claude-opus-4[-.]7`), "anthropic:claude-opus-4.7"},
@@ -169,6 +326,15 @@ var modelAliasRules = []struct {
 	{regexp.MustCompile(`claude-sonnet-4[-.]6|claude-4[-.]6-sonnet`), "anthropic:claude-sonnet-4.6"},
 	{regexp.MustCompile(`claude-sonnet-4[-.]5|claude-4[-.]5-sonnet`), "anthropic:claude-sonnet-4.5"},
 	{regexp.MustCompile(`claude-haiku-4[-.]5`), "anthropic:claude-haiku-4.5"},
+	// Pre-4.5 Anthropic (RUYI-664). Every one of these ends at versionEnd, and
+	// that is load-bearing rather than tidy: `claude-opus-4` unanchored would
+	// match `claude-opus-4-1` through `claude-opus-4-8` and bill the whole 4.x
+	// range at $15 / $75 instead of $5 / $25 — a 3x over-bill on every Opus
+	// 4.5+ run. `claude-sonnet-4` has the same trap against sonnet-4.5 / 4.6.
+	{regexp.MustCompile(`claude-opus-4[-.]1` + versionEnd), "anthropic:claude-opus-4.1"},
+	{regexp.MustCompile(`claude-opus-4` + versionEnd), "anthropic:claude-opus-4"},
+	{regexp.MustCompile(`claude-sonnet-4` + versionEnd), "anthropic:claude-sonnet-4"},
+	{regexp.MustCompile(`claude-haiku-3[-.]5` + versionEnd), "anthropic:claude-haiku-3.5"},
 	{regexp.MustCompile(`deepseek-v4-pro`), "deepseek:v4-pro"},
 	{regexp.MustCompile(`deepseek-v4-flash|^deepseek-chat$|^deepseek-reasoner$`), "deepseek:v4-flash"},
 	{regexp.MustCompile(`minimax-m2[.]7.*highspeed|highspeed.*minimax-m2[.]7`), "minimax:m2.7-highspeed"},
@@ -204,6 +370,48 @@ var modelAliasRules = []struct {
 	// unmapped; `kimi-code/k3` (Kimi Code CLI) resolves via the `/k3$` form.
 	{regexp.MustCompile(`(^|/|:)kimi-k3$`), "moonshotai:kimi-k3"},
 	{regexp.MustCompile(`(^|/|:)k3$`), "moonshotai:kimi-k3"},
+	// Kimi K2.6 (RUYI-664). Placed after the K3 pair so `kimi-k3` keeps its
+	// own row, and ending at versionEnd so `kimi-k2.6-preview` stays unmapped.
+	{regexp.MustCompile(`(^|/|:)kimi-k2[-.]6` + versionEnd), "moonshotai:kimi-k2.6"},
+	// Zhipu GLM (RUYI-664). Every rule ends at versionEnd and every family is
+	// ordered most-specific-first, for the same reason the OpenAI and Anthropic
+	// families are: as bare substrings `glm-4.5` would swallow `glm-4.5-air`,
+	// `-airx`, `-x` and `-flash`, whose rates differ by up to 4x
+	// (`glm-4.5` $0.60 / $2.20 against `glm-4.5-x` $2.20 / $8.90).
+	{regexp.MustCompile(`(^|/|:)glm-5[-.]1` + versionEnd), "zhipu:glm-5.1"},
+	{regexp.MustCompile(`(^|/|:)glm-5-turbo` + versionEnd), "zhipu:glm-5-turbo"},
+	{regexp.MustCompile(`(^|/|:)glm-5` + versionEnd), "zhipu:glm-5"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]7-flashx` + versionEnd), "zhipu:glm-4.7-flashx"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]7-flash` + versionEnd), "zhipu:glm-4.7-flash"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]7` + versionEnd), "zhipu:glm-4.7"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]6` + versionEnd), "zhipu:glm-4.6"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]5-flash` + versionEnd), "zhipu:glm-4.5-flash"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]5-x` + versionEnd), "zhipu:glm-4.5-x"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]5-airx` + versionEnd), "zhipu:glm-4.5-airx"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]5-air` + versionEnd), "zhipu:glm-4.5-air"},
+	{regexp.MustCompile(`(^|/|:)glm-4[-.]5` + versionEnd), "zhipu:glm-4.5"},
+	// Cursor (RUYI-664). Every rule is pinned to the `cursor/` PREFIX rather
+	// than anchored on the bare id, and that is the whole design: `auto` and
+	// `composer-*` are generic across providers — more than one runtime
+	// reports `auto` (see the cursor row comment above and the
+	// provider-qualified-keys note in utils.ts) — so a rule that matched a
+	// bare `auto` would bill another provider's run at Cursor's rate. Pinning
+	// the prefix mirrors `pricingCandidates` in utils.ts, which tries the
+	// provider-qualified key before the bare one, and it is what lets
+	// PriceForModel("auto", "cursor") resolve while
+	// PriceForModel("auto", "codex") stays unpriced.
+	//
+	// The composer rules are ordered most-specific-first for the usual reason:
+	// `composer-2` as a prefix of `composer-2.5` (6x) and `composer-2-fast`
+	// (3x) would otherwise bill both at $0.50 / $2.50.
+	{regexp.MustCompile(`(^|/)cursor/auto` + versionEnd), "cursor:auto"},
+	{regexp.MustCompile(`(^|/)cursor/composer-2[-.]5-fast` + versionEnd), "cursor:composer-2.5-fast"},
+	{regexp.MustCompile(`(^|/)cursor/composer-2[-.]5` + versionEnd), "cursor:composer-2.5"},
+	{regexp.MustCompile(`(^|/)cursor/composer-2-fast` + versionEnd), "cursor:composer-2-fast"},
+	{regexp.MustCompile(`(^|/)cursor/composer-2` + versionEnd), "cursor:composer-2"},
+	{regexp.MustCompile(`(^|/)cursor/composer-1[-.]5` + versionEnd), "cursor:composer-1.5"},
+	{regexp.MustCompile(`(^|/)cursor/composer-1` + versionEnd), "cursor:composer-1"},
+	{regexp.MustCompile(`(^|/|:)cursor` + versionEnd), "cursor:cursor"},
 	// Volcengine Ark `ark-code-latest` is deliberately absent: it is a
 	// console-switchable rolling alias across model families, not a stable
 	// model identity, so it stays unmapped.
@@ -224,6 +432,38 @@ func matchModelAlias(model string) (ModelPrice, bool) {
 		}
 	}
 	return ModelPrice{}, false
+}
+
+// PriceForModel resolves a usage row's (model, provider) pair, and MUST be
+// preferred over PriceForModelAlias wherever a provider is known.
+//
+// Why the provider is not optional: some ids are generic across providers.
+// Cursor reports `auto` and `composer-*`; other runtimes expose `auto`
+// placeholders too (the provider-qualified-keys note in
+// packages/views/runtimes/utils.ts calls out exactly this collision). The
+// frontend therefore keys such ids as `cursor/auto` and tries the
+// provider-qualified form BEFORE the bare one. Pricing a bare `auto` here
+// would bill a non-Cursor run at Cursor's rate — a cross-provider misprice,
+// which is the same class of bug this whole table exists to prevent, just in
+// a new direction.
+//
+// The qualified-first order mirrors `pricingCandidates` in
+// packages/views/runtimes/utils.ts so both sides pick the same row.
+func PriceForModel(model, provider string) (ModelPrice, bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if p != "" && m != "" {
+		// qualify() in utils.ts leaves an already-qualified key alone, so a
+		// model that already carries its own provider does not get doubled.
+		qualified := m
+		if !strings.HasPrefix(m, p+"/") {
+			qualified = p + "/" + m
+		}
+		if price, ok := PriceForModelAlias(qualified); ok {
+			return price, true
+		}
+	}
+	return PriceForModelAlias(m)
 }
 
 func PriceForModelAlias(model string) (ModelPrice, bool) {
@@ -259,4 +499,78 @@ func tokenCostUSD(tokens int64, pricePerM float64) float64 {
 		return 0
 	}
 	return float64(tokens) * pricePerM / 1_000_000
+}
+
+// CostSource says where a usage row's converted cost came from.
+//
+// The whole point of this enum is one distinction: `unpriced` means "we do
+// not know what this cost", which is NOT "this cost nothing". A usage row
+// whose model has no rate and whose provider reported no price has an unknown
+// cost — rendering it as $0.00 tells the user the run was free, and worse,
+// feeds a 0 into any median or budget computed over it. Those two outcomes
+// are the reason the states are separate rather than two spellings of 0.
+type CostSource string
+
+const (
+	// CostSourceProvider: the runtime charged the turn itself
+	// (`providerTicks > 0`). Authoritative — no estimate can improve on it.
+	CostSourceProvider CostSource = "provider"
+	// CostSourceTable: no provider price, but the rate table knows the model.
+	// An estimate, and the only kind of cost most runtimes will ever have.
+	CostSourceTable CostSource = "table"
+	// CostSourceZero: priced, and genuinely free. Either nothing was consumed
+	// (no tokens at all) or the model's rates are all 0 (a free tier). Safe
+	// to show as $0.00 and safe to feed into a median.
+	CostSourceZero CostSource = "zero"
+	// CostSourceUnpriced: tokens were consumed, nobody reported a price, and
+	// the rate table does not know the model. MUST NOT be shown as a number
+	// and MUST NOT enter an aggregate — surface it as "cannot be priced"
+	// alongside the token count it applies to.
+	CostSourceUnpriced CostSource = "unpriced"
+)
+
+// UsageCost is one usage row converted to USD, with the state that says
+// whether the number means anything.
+type UsageCost struct {
+	USD    float64
+	Source CostSource
+}
+
+// Priceable reports whether `c` carries a real number a caller may display
+// and aggregate. `unpriced` is the one state that does not.
+func (c UsageCost) Priceable() bool {
+	return c.Source != CostSourceUnpriced
+}
+
+// EstimateUsageCost converts a usage row to USD, preferring the provider's
+// own price and falling back to the rate table.
+//
+// Precedence mirrors estimateCost in packages/views/runtimes/utils.ts so the
+// server-side derivation and the dashboard agree on one row. The two differ in
+// one place on purpose: the client has no "unpriced" state and returns a plain
+// number, leaving the caller to notice that a row with tokens priced to 0. The
+// enum here exists so that noticing is not optional.
+func EstimateUsageCost(model, provider string, providerTicks, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens int64) UsageCost {
+	if providerTicks > 0 {
+		return UsageCost{USD: float64(providerTicks) / CostUSDTicksPerUSD, Source: CostSourceProvider}
+	}
+	total := inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens
+	if total <= 0 {
+		// Nothing was consumed. This really is free, not unknown.
+		return UsageCost{USD: 0, Source: CostSourceZero}
+	}
+	price, ok := PriceForModel(model, provider)
+	if !ok {
+		return UsageCost{USD: 0, Source: CostSourceUnpriced}
+	}
+	usd := tokenCostUSD(inputTokens, price.InputPerM) +
+		tokenCostUSD(outputTokens, price.OutputPerM) +
+		tokenCostUSD(cacheReadTokens, price.CacheReadPerM) +
+		tokenCostUSD(cacheWriteTokens, price.CacheWritePerM)
+	if usd <= 0 {
+		// Rates are known and they are all 0 (a free tier). Known-free, not
+		// unknown — it belongs in a median as a real 0.
+		return UsageCost{USD: 0, Source: CostSourceZero}
+	}
+	return UsageCost{USD: usd, Source: CostSourceTable}
 }
