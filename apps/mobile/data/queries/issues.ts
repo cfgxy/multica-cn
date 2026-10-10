@@ -42,6 +42,40 @@ export const issueDetailOptions = (wsId: string | null, id: string) =>
   });
 
 /**
+ * Resolve a bare issue identifier ("MUL-123") to its issue, or `null`.
+ *
+ * Backs the RUYI-635 tail reference list: an identifier reference that
+ * resolves renders a tappable row; a miss renders as plain text. The lookup
+ * is EXACT — `GET /api/issues/{identifier}` parses `PREFIX-NUMBER` and 404s
+ * on a non-existent or wrong-workspace-prefix identifier, which maps to
+ * `null` here (mirrors `issueIdentifierOptions` in packages/core, kept
+ * mobile-owned because the api instance carries this app's auth). Any other
+ * failure (401/5xx/abort) propagates so the query retries instead of caching
+ * "no such issue".
+ */
+export const issueIdentifierOptions = (wsId: string | null, identifier: string) =>
+  queryOptions({
+    queryKey: issueKeys.identifier(wsId, identifier),
+    queryFn: async ({ signal }) => {
+      try {
+        return await api.getIssue(identifier, { signal });
+      } catch (err) {
+        if (
+          err instanceof Error &&
+          (err as { status?: number }).status === 404
+        ) {
+          return null;
+        }
+        throw err;
+      }
+    },
+    enabled: !!wsId && !!identifier,
+    // Identifier→issue mapping is effectively immutable; the same identifier
+    // can appear in many comments on one screen — don't refetch per mount.
+    staleTime: 5 * 60_000,
+  });
+
+/**
  * Single query over the full issue timeline (ASC, oldest first). Mirrors
  * web's `issueTimelineOptions` post-#2322 — server returns the whole list
  * in one shot, client-side pagination was deleted.

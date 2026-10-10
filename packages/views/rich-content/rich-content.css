@@ -35,3 +35,57 @@
   margin-top: 0.5rem;
   margin-bottom: 0.5rem;
 }
+
+/*
+ * Issue reference tail aggregation (RUYI-635).
+ *
+ * RichContent renders issue mentions as plain body text and lists every
+ * reference here instead: one deduplicated row per issue under a hairline
+ * divider. The block is part of the content flow (not a chrome overlay), so
+ * the compact density's `> :last-child` margin trim keeps it flush in chat
+ * bubbles with no extra rule.
+ */
+.rich-text-editor .issue-reference-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.rich-text-editor .issue-reference-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  color: var(--foreground);
+  text-decoration: none;
+  text-align: left;
+}
+
+.rich-text-editor a.issue-reference-row:hover .issue-reference-title,
+.rich-text-editor a.issue-reference-row:focus-visible .issue-reference-title {
+  text-decoration: underline;
+}
+
+.rich-text-editor .issue-reference-identifier {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.rich-text-editor .issue-reference-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rich-text-editor .issue-reference-degraded {
+  color: var(--muted-foreground);
+}
