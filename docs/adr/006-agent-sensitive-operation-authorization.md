@@ -2,7 +2,7 @@
 
 - 日期：2026年10月10日
 - 状态：accepted（Owner 五项决策卡裁定：决策1=A 授权面与平台执行器一体交付；决策2=B 只读+低风险写入，提示词恢复为首个白名单写操作，账单/支付类永不登记；决策3=B 跨空间时目标空间 Owner 二次确认强制；决策4=B 默认 24h 过期、发起方可声明更短、平台封顶；决策5=方案甲 按空间一行、目标行可操作、发起行只读投影、同事务双写、授权摘要详情不进 Issue 页）
-- 范围：`server/migrations/940_decision_requests.*`、`server/pkg/db/queries/decision_request.sql`、`server/internal/handler/decision_request.go` / `decision_request_execute.go` / `issue_decision.go`（授权卡分支）/ `decision_text_answer.go` / `issue_decision_batch.go`、`server/cmd/server/router.go`（路由挂载）、`server/internal/handler/workspace_delete.sql`（级联）、`packages/core`（类型/zod schema/api client/query hooks/WS 事件）、`packages/views`（决策中心授权区、信息流授权卡、四语言 locale）、`apps/mobile`（决策 tab 授权区、信息流授权卡）
+- 范围：`server/migrations/940_decision_requests.*`、`server/pkg/db/queries/decision_request.sql`、`server/pkg/db/queries/workspace_delete.sql`（级联）、`server/internal/handler/decision_request.go` / `decision_request_execute.go` / `issue_decision.go`（授权卡分支）/ `issue_decision_batch.go`、`server/cmd/server/router.go`（路由挂载）、`packages/core`（类型/zod schema/api client/query hooks/WS 事件）、`packages/views`（决策中心授权区、信息流授权卡、四语言 locale）、`apps/mobile`（决策 tab 授权区、信息流授权卡）
 - 关联：MUL-2600（决策卡 answer_source 结构化来源）、MUL-3292（决策卡人审闸门）；926 审计新增 `trigger_kind=decision_request`
 - 实施状态：已实现（服务端测试、三端 typecheck 与单测通过）；QA 验证与槽位迁移冒烟未执行，见 §9
 
@@ -43,7 +43,7 @@ Agent 在任务执行中会遇到需要人类授权的敏感操作：读取另�
 
 账单/支付类**永不登记**（决策 2B）：注册表是唯一门，未注册的 action_type 在创建即 400，不存在运行期扩权。
 
-执行机制（决策 1A 的执行器半边）：`advanceDecisionRequestAfterAnswer` 是全组唯一推进漏斗——组锁串行化竞争终步 → 全组 approved 时在同事务内调用 `executeDecisionRequestAction` → 组级行 `executed/execute_failed` 回写（`SetDecisionRequestExecution` + 卡面 `SetAuthorizationCardExecution`/`SyncDecisionCardsForGroup`）→ 926 审计。
+执行机制（决策 1A 的执行器半边）：`advanceDecisionRequestAfterAnswer` 是全组唯一推进漏斗——组锁串行化竞争终步 → 全组 approved 时在同事务内调用 `executeDecisionRequestAction` → 组级行 `executed/execute_failed` 回写（`SetDecisionRequestExecution` + 卡面 `SetAuthorizationCardExecution`/`SyncDecisionCardsForGroup`）→ 926 审计。**动作落点行 = 组内 `role='target'` 行（其 `workspace_id` 即目标空间，读档与包含性校验都锚定它）；单空间组无 target 行，落点回退 origin 行**——执行入参行锚错空间会让跨空间读静默返回发起空间档案、跨空间 restore 必然包含性失败。
 
 **内部执行上下文**（安全核心）：执行器复用人端点相同的 sqlc 查询与守卫（如 restore 的 `lockPromptTarget` FOR UPDATE 锁、手改 sha256 守卫、目标工作区包含性检查），但**不签发任何 mat_ 令牌、不经过 RequireHumanActor 面、无 HTTP surface**——授权唯一来源是这条已批准的请求行。Agent 不获得任何可复用凭据；每次执行都必须有当次的人类授权。
 

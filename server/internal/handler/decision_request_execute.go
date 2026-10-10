@@ -115,6 +115,18 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 			origin = row
 		}
 	}
+	// The action lands in the target space when the group has one (方案甲:
+	// the target row's workspace IS where the approvers' consent applies);
+	// single-space groups fall back to the origin row. Execution anchored on
+	// the origin row instead would silently read the requesting space's
+	// profile and make every cross-space restore fail containment.
+	landing := origin
+	for _, row := range rows {
+		if row.Role == decisionReqRoleTarget {
+			landing = row
+			break
+		}
+	}
 
 	// A denial anywhere settles the whole group as denied. No "already
 	// terminal" early return here: a deny that just won its CAS has NOT been
@@ -153,8 +165,9 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 
 	// Every step approved: run the whitelisted action in this same
 	// transaction (the group lock already serializes us against any other
-	// final-step approval).
-	resultJSON, execErr := h.executeDecisionRequestAction(r, qtx, origin)
+	// final-step approval). The landing row names the workspace the action
+	// executes in; its ActionParams are byte-identical to the origin row's.
+	resultJSON, execErr := h.executeDecisionRequestAction(r, qtx, landing)
 	status := decisionReqExecuted
 	executedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
 	var resultBytes []byte

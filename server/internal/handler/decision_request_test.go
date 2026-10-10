@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -452,6 +454,72 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 					tc.label, detail.Request.Status, detail.Request.ExecutedAt, detail.Request.ExecutionResult)
 			}
 		}
+		// The read payload must belong to the TARGET space: a silent
+		// origin-space profile would look like success while answering the
+		// wrong question.
+		_, detail := getDecisionRequestFor(t, ws2, targetID)
+		var payload struct {
+			Workspace struct {
+				ID string `json:"id"`
+			} `json:"workspace"`
+		}
+		if err := json.Unmarshal(detail.Request.ExecutionResult, &payload); err != nil {
+			t.Fatalf("decode execution result: %v (%s)", err, detail.Request.ExecutionResult)
+		}
+		if payload.Workspace.ID != ws2 {
+			t.Fatalf("payload workspace id = %s, want the target space %s (origin-space profile is silent misdirection)", payload.Workspace.ID, ws2)
+		}
+	})
+	t.Run("issue-referenced cross-space flow executes on the target row via the card funnel", func(t *testing.T) {
+		targetID, cardID := func() (string, string) {
+			w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+				"action_type": "workspace_info_read", "title": "cross-space card",
+				"target_workspace_id": ws2,
+				"origin_issue_id":     f.IssueID,
+			})
+			if w.Code != http.StatusCreated {
+				t.Fatalf("seed: %d %s", w.Code, w.Body.String())
+			}
+			resp := decodeDecisionRequestDetail(t, w)
+			if resp.Card == nil {
+				t.Fatal("seed: expected authorization link card on the origin issue")
+			}
+			for _, step := range resp.Steps {
+				if step.Role == "target" {
+					return step.ID, resp.Card.ID
+				}
+			}
+			t.Fatal("seed: no target step in a cross-space group")
+			return "", ""
+		}()
+		// Origin step rides the issue thread's authorization card.
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+cardID+"/answer", map[string]any{
+			"selected_indices": []int{0},
+		})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", cardID)
+		testHandler.AnswerIssueDecision(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("card answer: %d %s", w.Code, w.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approve: %d %s", w.Code, w.Body.String())
+		}
+		_, detail := getDecisionRequestFor(t, ws2, targetID)
+		if detail.Request.Status != "executed" {
+			t.Fatalf("target row = %s, want executed after card-driven origin step + target approval", detail.Request.Status)
+		}
+		var payload struct {
+			Workspace struct {
+				ID string `json:"id"`
+			} `json:"workspace"`
+		}
+		if err := json.Unmarshal(detail.Request.ExecutionResult, &payload); err != nil {
+			t.Fatalf("decode execution result: %v (%s)", err, detail.Request.ExecutionResult)
+		}
+		if payload.Workspace.ID != ws2 {
+			t.Fatalf("payload workspace id = %s, want target space %s", payload.Workspace.ID, ws2)
+		}
 	})
 	t.Run("a denial anywhere settles the whole group as denied", func(t *testing.T) {
 		originID, targetID := seed(t)
@@ -461,6 +529,42 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 		_, detail := getDecisionRequestFor(t, testWorkspaceID, originID)
 		if detail.Request.Status != "denied" {
 			t.Fatalf("origin row status after target denial = %s, want denied (group propagation)", detail.Request.Status)
+		}
+	})
+	t.Run("creation fans a WS event out to each space's own channel", func(t *testing.T) {
+		// The subscription intentionally outlives this subtest (the bus has no
+		// unsubscribe); all assertions run before it can observe later tests'
+		// events because this suite is sequential.
+		var seen []events.Event
+		testHandler.Bus.Subscribe(protocol.EventDecisionRequestUpdated, func(e events.Event) { seen = append(seen, e) })
+
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type": "workspace_info_read", "title": "ws fanout",
+			"target_workspace_id": ws2,
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed: %d %s", w.Code, w.Body.String())
+		}
+		if len(seen) != 2 {
+			t.Fatalf("creation published %d events, want one per space (origin + target)", len(seen))
+		}
+		channels := map[string]bool{}
+		for _, e := range seen {
+			channels[e.WorkspaceID] = true
+			payload, ok := e.Payload.(map[string]any)
+			if !ok {
+				t.Fatalf("event payload = %T, want map", e.Payload)
+			}
+			row, ok := payload["request"].(DecisionRequestResponse)
+			if !ok {
+				t.Fatalf("payload request = %T, want DecisionRequestResponse", payload["request"])
+			}
+			if row.WorkspaceID != e.WorkspaceID {
+				t.Fatalf("event on channel %s carries row of workspace %s — each space must receive only its own row", e.WorkspaceID, row.WorkspaceID)
+			}
+		}
+		if !channels[testWorkspaceID] || !channels[ws2] {
+			t.Fatalf("creation channels = %v, want both %s and %s", channels, testWorkspaceID, ws2)
 		}
 	})
 	t.Run("detail carries title-level references only — never issue content", func(t *testing.T) {
@@ -692,16 +796,55 @@ func TestDecisionRequestExecutorPromptRestore(t *testing.T) {
 			t.Fatalf("instructions = %q, want untouched by the failed execution", instructions)
 		}
 	})
-	t.Run("executor refuses a target outside the request's workspace", func(t *testing.T) {
+	t.Run("two-step approval restores a target living in the second workspace", func(t *testing.T) {
+		ws2 := secondWorkspaceWithOwner(t)
+		// A second-space agent as the restore target: after both spaces'
+		// owners approve, the restore must actually land in ws2 — the
+		// flagship cross-space write scenario.
+		ws2Agent := dbfx.Agent(t, "ruyi630-ws2-agent", "", testutil.Cols{"workspace_id": ws2})
+		seedPromptApplyState(t, ws2Agent, "marketplace text", "original ws2 human text")
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type": "prompt_restore", "title": "cross-space restore",
+			"target_workspace_id": ws2,
+			"params":              map[string]any{"target_type": "agent", "target_id": ws2Agent},
+		})
+		detail := decodeDecisionRequestDetail(t, w)
+		originID := detail.Request.ID
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == "target" {
+				targetID = step.ID
+			}
+		}
+		if w := answerDecisionRequestFor(t, testWorkspaceID, originID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("origin approve: %d", w.Code)
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approve: %d %s", w.Code, w.Body.String())
+		}
+		var status string
+		var execErr *string
+		dbfx.QueryRow(t, `SELECT status, execution_error FROM decision_requests WHERE request_group_id = $1 AND role = 'target'`, detail.Request.RequestGroupID).Scan(&status, &execErr)
+		if status != "executed" || execErr != nil {
+			t.Fatalf("target row status=%s err=%v, want executed in the target space", status, execErr)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, ws2Agent).Scan(&instructions)
+		if instructions != "original ws2 human text" {
+			t.Fatalf("ws2 agent instructions = %q, want restored to the previous text", instructions)
+		}
+	})
+	t.Run("executor refuses a target outside the landing (target) workspace", func(t *testing.T) {
 		ws2 := secondWorkspaceWithOwner(t)
 		seedPromptApplyState(t, f.AgentID, "marketplace text", "original")
-		// A second-space agent as the restore target: the request executes on
-		// the origin row's workspace, so the containment check must refuse.
-		ws2Agent := dbfx.Agent(t, "ruyi630-ws2-agent", "", testutil.Cols{"workspace_id": ws2})
+		// Cross-space request whose params point back into the ORIGIN space:
+		// the action lands in ws2 (the target row's workspace), so an
+		// origin-space target must fail containment — never execute across
+		// the boundary the approvers saw.
 		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
-			"action_type": "prompt_restore", "title": "cross-space probe",
+			"action_type": "prompt_restore", "title": "landing mismatch probe",
 			"target_workspace_id": ws2,
-			"params": map[string]any{"target_type": "agent", "target_id": ws2Agent},
+			"params":              map[string]any{"target_type": "agent", "target_id": f.AgentID},
 		})
 		detail := decodeDecisionRequestDetail(t, w)
 		originID := detail.Request.ID
@@ -721,7 +864,12 @@ func TestDecisionRequestExecutorPromptRestore(t *testing.T) {
 		var execErr *string
 		dbfx.QueryRow(t, `SELECT status, execution_error FROM decision_requests WHERE request_group_id = $1 AND role = 'target'`, detail.Request.RequestGroupID).Scan(&status, &execErr)
 		if status != "execute_failed" || execErr == nil || !strings.Contains(*execErr, "different workspace") {
-			t.Fatalf("target row status=%s err=%v, want execute_failed on workspace containment", status, execErr)
+			t.Fatalf("target row status=%s err=%v, want execute_failed on landing-workspace containment", status, execErr)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, f.AgentID).Scan(&instructions)
+		if instructions != "marketplace text" {
+			t.Fatalf("origin agent instructions = %q, want untouched by the refused execution", instructions)
 		}
 	})
 }

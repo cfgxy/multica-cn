@@ -623,10 +623,16 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	for _, row := range rows {
 		resp.Steps = append(resp.Steps, decisionRequestToResponse(row))
 	}
-	h.publish(protocol.EventDecisionRequestUpdated, uuidToString(workspaceID), "agent", authorID, map[string]any{
-		"request":          resp.Request,
-		"request_group_id": resp.Request.RequestGroupID,
-	})
+	// Fan the creation out to every row's own workspace channel: the target
+	// space's decision center learns of its step in real time, and each
+	// space's clients only ever receive their own row (no cross-space read).
+	for _, row := range rows {
+		rowResp := decisionRequestToResponse(row)
+		h.publish(protocol.EventDecisionRequestUpdated, uuidToString(row.WorkspaceID), "agent", authorID, map[string]any{
+			"request":          rowResp,
+			"request_group_id": rowResp.RequestGroupID,
+		})
+	}
 	slog.Info("decision request created", append(logger.RequestAttrs(r),
 		"group_id", uuidToString(groupID), "action_type", req.ActionType,
 		"cross_space", crossSpace, "created_by", authorID)...)
