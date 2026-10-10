@@ -238,10 +238,14 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
     if (match?.[1] === "comment" && match[2]) {
-      // In-page anchor, not navigation (RUYI-108): the chip resolves against
-      // the comments this surface already holds and jumps within it. Outside
-      // an issue that hosts a comment list it renders degraded — see
-      // CommentMentionCard for why every miss must look the same.
+      // In-page anchor first (RUYI-108): the chip resolves against the
+      // comments this surface already holds and jumps within it, fetch-free.
+      // On a local miss — the target lives in another issue, or in a part of
+      // this one not fetched — an issue-hosting surface probes the server
+      // anchor endpoint once (RUYI-643) and renders a real link to the owning
+      // issue's `#comment-<id>` deep link. Everything unreachable folds into
+      // the degraded chip — see CommentMentionCard for why every miss must
+      // look the same.
       return (
         <CommentMentionCard
           commentId={match[2]}
