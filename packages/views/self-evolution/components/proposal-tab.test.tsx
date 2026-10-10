@@ -2,15 +2,18 @@
 
 import { it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import type { PromptProposal, PromptProposalPreview } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { ProposalTab } from "./proposal-tab";
 
 /**
- * The legislation tab's wiring (RUYI-305 E2).
+ * The legislation tab's wiring (RUYI-305 E2, loop-first narrative RUYI-551).
  *
  * The state machine, permissions and gate semantics are enforced by the
  * server and covered by its handler tests. What only a mount can show is
@@ -18,7 +21,9 @@ import { ProposalTab } from "./proposal-tab";
  * statuses they are legal on, a non-owner sees no lifecycle controls at all
  * while creation stays available, and — the injection defense — the approve
  * button stays disabled until the full-text diff preview has rendered and
- * the reviewer ticked the confirmation.
+ * the reviewer ticked the confirmation. RUYI-551 adds the loop-first page
+ * header, the source filter (manual / daily retrospective / merged) and the
+ * empty-pool guidance link to the retrospective config.
  */
 
 const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
@@ -101,13 +106,32 @@ function proposal(overrides: Partial<PromptProposal> = {}): PromptProposal {
 
 afterEach(cleanup);
 
+function makeAdapter(
+  overrides: Partial<NavigationAdapter> = {},
+): NavigationAdapter {
+  return {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/test-workspace/self-evolution/proposals",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (p) => p,
+    ...overrides,
+  };
+}
+
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ProposalTab wsId="ws-1" />
-      </I18nProvider>
+      <WorkspaceSlugProvider slug="test-workspace">
+        <NavigationProvider value={makeAdapter()}>
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <ProposalTab wsId="ws-1" />
+          </I18nProvider>
+        </NavigationProvider>
+      </WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
 }
@@ -224,4 +248,74 @@ it("gates the batch approval behind per-id diffs and the same confirmation", asy
       { ids: ["prop-a", "prop-b"], confirmDiffPreviewed: true },
     ]),
   );
+});
+
+it("leads with the loop narrative and filters the list by source", async () => {
+  state.role = "member";
+  state.proposals = [
+    proposal({ id: "p-manual", source: "manual", clause_name: "manual clause" }),
+    proposal({ id: "p-retro", source: "retrospective", clause_name: "retro clause" }),
+    proposal({
+      id: "p-merged",
+      source: "manual",
+      clause_name: "merged clause",
+      merged_from: [{ issue_id: "i-1", run_id: "r-1" }],
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+
+  // Page header (RUYI-551): the automatic loop is the first sentence.
+  expect(screen.getByTestId("legislation-intro").textContent).toContain(
+    "enter the pool automatically",
+  );
+
+  // Unfiltered: every row (the merged row carries the merged marker).
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-merged").textContent).toContain("Merged");
+
+  // Source filter (manual / daily retrospective / merged): the segments
+  // drive exactly the matching subset. Radix Tabs needs the full pointer
+  // sequence, so these go through userEvent.
+  await userEvent.click(screen.getByRole("tab", { name: "Daily retrospective" }));
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-manual")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-merged")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "Manual" }));
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-retro")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-merged")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "Merged" }));
+  expect(screen.getByTestId("legislation-row-p-merged")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-manual")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-retro")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "All sources" }));
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-merged")).toBeTruthy();
+});
+
+it("points an empty unfiltered pool at the retrospective config and hides the link when filtered", async () => {
+  state.role = "member";
+  state.proposals = [];
+  const first = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
+  const link = screen.getByTestId("legislation-empty-retro-link") as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("/test-workspace/self-evolution/retrospective");
+  first.unmount();
+
+  // A filtered empty is an honest empty: filtering a manual-only pool by
+  // "Daily retrospective" yields no rows, but the config guidance stays out
+  // of the way — it only points at the config from the unfiltered view.
+  state.proposals = [proposal({ id: "p-manual", source: "manual", clause_name: "manual clause" })];
+  const second = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  await userEvent.click(screen.getByRole("tab", { name: "Daily retrospective" }));
+  await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
+  expect(screen.queryByTestId("legislation-empty-retro-link")).toBeNull();
+  second.unmount();
 });
