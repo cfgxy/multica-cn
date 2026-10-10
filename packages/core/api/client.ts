@@ -27,6 +27,7 @@ import type {
   IssueTableRowsResponse,
   Agent,
   MikaBootstrapResponse,
+  SchedulingPauseState,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
@@ -2070,6 +2071,54 @@ export class ApiClient {
   // surfaces can clear their live cards.
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
+  }
+
+  /**
+   * Freezes this agent's task claiming (RUYI-608). Queued tasks keep
+   * coalescing and running tasks drain; nothing new is claimed until
+   * {@link resumeAgentScheduling}. Idempotent — re-pausing a paused agent
+   * keeps the original freeze row. Workspace owner/admin ONLY: agent owners
+   * without the workspace role, plain members, and every machine credential
+   * (including the agent itself) get 403.
+   */
+  async pauseAgentScheduling(id: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts an agent-level scheduling freeze (RUYI-608). The server
+   * invalidates the runtime's cached empty-claim verdict, so queued tasks
+   * flow on the agent's next poll. No-op success when not paused; still
+   * returns the queue depth. A workspace-level freeze is NOT lifted here.
+   * Same owner/admin-only permission as pause.
+   */
+  async resumeAgentScheduling(id: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, { method: "DELETE" });
+  }
+
+  /**
+   * Freezes task claiming for EVERY agent in the workspace (RUYI-608).
+   * Workspace owner/admin only. See {@link pauseAgentScheduling} for the
+   * frozen-state semantics; an agent-level resume does not lift this.
+   */
+  async pauseWorkspaceScheduling(workspaceId: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts the workspace-level scheduling freeze (RUYI-608) and invalidates
+   * every runtime's empty-claim cache in the workspace, so all agents pick
+   * queued tasks back up on their next poll. No-op success when not paused.
+   * Workspace owner/admin only.
+   */
+  async resumeWorkspaceScheduling(workspaceId: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, { method: "DELETE" });
   }
 
   async listRuntimes(

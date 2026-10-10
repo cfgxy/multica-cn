@@ -5,6 +5,8 @@ import {
   AlertCircle,
   ArrowLeft,
   Bot,
+  CirclePause,
+  CirclePlay,
   Clock3,
   Lock,
   MessageSquare,
@@ -38,7 +40,7 @@ import {
   workspaceKeys,
 } from "@multica/core/workspace/queries";
 import { runtimeDisplayLabel, runtimeListOptions } from "@multica/core/runtimes";
-import { useAgentPermissions } from "@multica/core/permissions";
+import { useAgentPermissions, useCurrentMember } from "@multica/core/permissions";
 import { Button } from "@multica/ui/components/ui/button";
 import { CapabilityBanner } from "@multica/ui/components/common/capability-banner";
 import {
@@ -53,6 +55,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -220,6 +223,32 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
     }
   };
 
+  // Scheduling freeze controls (RUYI-608) — workspace owner/admin only, so
+  // they gate on the caller's workspace role rather than canEdit (which also
+  // admits a non-admin agent owner).
+  const { role: myRole } = useCurrentMember(wsId);
+  const isWorkspaceAdmin = myRole === "owner" || myRole === "admin";
+
+  const handlePauseScheduling = async (id: string) => {
+    try {
+      await api.pauseAgentScheduling(id);
+      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      toast.success(t(($) => $.detail.agent_paused_toast));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.detail.pause_failed_toast));
+    }
+  };
+
+  const handleResumeScheduling = async (id: string) => {
+    try {
+      const state = await api.resumeAgentScheduling(id);
+      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      toast.success(t(($) => $.detail.agent_resumed_toast, { count: state.queued_count }));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.detail.resume_failed_toast));
+    }
+  };
+
   // --- Loading ---
   if (!agent && (agentsLoading || detailQuery.isPending)) {
     return <DetailLoadingSkeleton />;
@@ -347,6 +376,10 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
         backHref={paths.agents()}
         canAssign={canAssign.allowed}
         canArchive={canEdit.allowed}
+        canPauseScheduling={isWorkspaceAdmin}
+        onPauseScheduling={
+          agent.scheduling_paused ? undefined : () => handlePauseScheduling(agent.id)
+        }
         dmPending={permissionsLoading}
         dmHref={`${paths.chat()}?agent=${agent.id}`}
         onDm={handleDm}
@@ -380,6 +413,33 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
               onClick={() => handleRestore(agent.id)}
             >
               {t(($) => $.detail.restore)}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {!isArchived && agent.scheduling_paused && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-6 py-2 text-caption text-amber-900 dark:text-amber-100">
+          <CirclePause className="h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            {agent.scheduling_paused_scope === "workspace"
+              ? t(($) => $.detail.paused_by_workspace_banner)
+              : t(($) => $.detail.paused_banner, {
+                  count: agent.scheduling_queued_count ?? 0,
+                })}
+            {agent.scheduling_paused_reason
+              ? ` ${agent.scheduling_paused_reason}`
+              : ""}
+          </span>
+          {isWorkspaceAdmin && agent.scheduling_paused_scope === "agent" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 border-amber-500/40 bg-background/70 text-caption"
+              onClick={() => handleResumeScheduling(agent.id)}
+            >
+              <CirclePlay className="mr-1.5 h-3.5 w-3.5" />
+              {t(($) => $.detail.resume_scheduling)}
             </Button>
           )}
         </div>
@@ -472,6 +532,8 @@ function DetailHeader({
   backHref,
   canAssign,
   canArchive,
+  canPauseScheduling,
+  onPauseScheduling,
   dmPending,
   dmHref,
   onDm,
@@ -484,6 +546,8 @@ function DetailHeader({
   backHref: string;
   canAssign: boolean;
   canArchive: boolean;
+  /** Workspace owner/admin only (RUYI-608) — narrower than canArchive. */
+  canPauseScheduling: boolean;
   dmPending: boolean;
   dmHref: string;
   /** Runs before the link navigates; calls preventDefault when a gate denies
@@ -493,11 +557,14 @@ function DetailHeader({
   /** Absent for Multica's built-in agents, which the server refuses to
    *  archive — the menu hides the action rather than offering a failure. */
   onArchive?: () => void;
+  /** Absent while a freeze is already in effect (agent- or workspace-level):
+   *  the menu hides the action rather than offering a guaranteed no-op. */
+  onPauseScheduling?: () => void;
 }) {
   const { t } = useT("agents");
   const timeAgo = useTimeAgo();
   const isArchived = !!agent.archived_at;
-  const hasMoreActions = !!onArchive;
+  const hasMoreActions = !!onArchive || (!!onPauseScheduling && canPauseScheduling);
 
   return (
     <header className="shrink-0 border-b bg-background px-4 pb-5 pt-3 sm:px-6">
@@ -590,11 +657,22 @@ function DetailHeader({
                   />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-auto">
-                  {onArchive && (
-                    <DropdownMenuItem variant="destructive" onClick={onArchive}>
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                      {t(($) => $.detail.more_archive)}
+                  {canPauseScheduling && onPauseScheduling && (
+                    <DropdownMenuItem onClick={onPauseScheduling}>
+                      <CirclePause className="h-3.5 w-3.5" aria-hidden="true" />
+                      {t(($) => $.detail.more_pause_scheduling)}
                     </DropdownMenuItem>
+                  )}
+                  {onArchive && (
+                    <>
+                      {canPauseScheduling && onPauseScheduling && (
+                        <DropdownMenuSeparator />
+                      )}
+                      <DropdownMenuItem variant="destructive" onClick={onArchive}>
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t(($) => $.detail.more_archive)}
+                      </DropdownMenuItem>
+                    </>
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>

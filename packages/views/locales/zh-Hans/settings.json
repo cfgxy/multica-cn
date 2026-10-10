@@ -49,42 +49,41 @@
       "cancelled": "决定不做。"
     }
   },
-    "quick_replies": {
-      "title": "快速回复",
-      "description": "Issue 评论框「快速回复」菜单的共享模板。所有成员可读，仅空间管理员可修改；选中后填入评论框，不会直接发送。",
-      "loading": "正在加载快速回复…",
-      "add": "新建快速回复",
-      "empty_title": "还没有快速回复",
-      "empty_hint": "把常用的评论写法存成模板，成员在评论框选中后一键填入。",
-      "reorder_failed": "排序保存失败",
-      "actions": {
-        "open": "打开\"{{name}}\"的操作菜单",
-        "edit": "编辑",
-        "delete": "删除",
-        "reorder": "拖动调整\"{{name}}\"的顺序"
-      },
-      "editor": {
-        "create_title": "新建快速回复",
-        "edit_title": "编辑快速回复",
-        "hint": "成员在评论框选中后，内容会填入输入框，可继续修改再发送。",
-        "name": "名称",
-        "name_placeholder": "例如：跟进发布",
-        "content": "内容",
-        "content_placeholder": "填入评论框的模板正文…",
-        "cancel": "取消",
-        "save": "保存",
-        "saving": "保存中…",
-        "save_failed": "保存失败"
-      },
-      "delete_dialog": {
-        "title": "删除快速回复",
-        "description": "确定删除\"{{name}}\"？所有成员的评论框都会立即不再显示它。",
-        "cancel": "取消",
-        "confirm": "删除",
-        "failed": "删除失败"
-      }
+  "quick_replies": {
+    "title": "快速回复",
+    "description": "Issue 评论框「快速回复」菜单的共享模板。所有成员可读，仅空间管理员可修改；选中后填入评论框，不会直接发送。",
+    "loading": "正在加载快速回复…",
+    "add": "新建快速回复",
+    "empty_title": "还没有快速回复",
+    "empty_hint": "把常用的评论写法存成模板，成员在评论框选中后一键填入。",
+    "reorder_failed": "排序保存失败",
+    "actions": {
+      "open": "打开\"{{name}}\"的操作菜单",
+      "edit": "编辑",
+      "delete": "删除",
+      "reorder": "拖动调整\"{{name}}\"的顺序"
+    },
+    "editor": {
+      "create_title": "新建快速回复",
+      "edit_title": "编辑快速回复",
+      "hint": "成员在评论框选中后，内容会填入输入框，可继续修改再发送。",
+      "name": "名称",
+      "name_placeholder": "例如：跟进发布",
+      "content": "内容",
+      "content_placeholder": "填入评论框的模板正文…",
+      "cancel": "取消",
+      "save": "保存",
+      "saving": "保存中…",
+      "save_failed": "保存失败"
+    },
+    "delete_dialog": {
+      "title": "删除快速回复",
+      "description": "确定删除\"{{name}}\"？所有成员的评论框都会立即不再显示它。",
+      "cancel": "取消",
+      "confirm": "删除",
+      "failed": "删除失败"
     }
-,
+  },
   "quick_actions": {
     "title": "快捷操作",
     "description": "预先配置好执行的智能体和提示词，之后在任意任务侧边栏一键触发。",
@@ -908,7 +907,13 @@
     "deleting": "删除中...",
     "toast_delete_failed": "删除工作区失败",
     "confirm_cancel": "取消",
-    "confirm_action": "确认"
+    "confirm_action": "确认",
+    "scheduling_pause_label": "暂停任务调度",
+    "scheduling_pause_hint": "暂停后，工作区内所有智能体不再认领新任务。队列任务继续合并，运行中任务正常结束。仅 Owner/管理员可操作，会记入审计日志。",
+    "scheduling_paused_note_other": "任务调度已暂停 — 全部智能体共有 {{count}} 个任务在队列中。",
+    "scheduling_paused_toast": "已暂停工作区调度",
+    "scheduling_resumed_toast_other": "工作区调度已恢复 — {{count}} 个任务开始流动",
+    "scheduling_toggle_failed_toast": "修改调度状态失败"
   },
   "delete_workspace_dialog": {
     "title": "删除工作区",

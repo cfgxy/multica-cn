@@ -1082,6 +1082,19 @@ WHERE id = (
                 AND issue_effective_status(ci.workspace_id, ci.status) = 'cancelled'
           )
       )
+      -- RUYI-608: a scheduling freeze on the agent's workspace (workspace-
+      -- level row, agent_id NULL) or on this agent (agent-level row) blocks
+      -- claiming. Evaluated inside the claim statement so freeze and claim
+      -- cannot both win — the same atomicity argument as the RUYI-384 fence
+      -- above. Enqueue and coalesce never read scheduling_pause: tasks keep
+      -- queueing (and coalescing) while frozen and flow on resume in this
+      -- query's existing created_at ASC order. A paused agent still finishes
+      -- dispatched/running work: complete/fail paths never consult this table.
+      AND NOT EXISTS (
+          SELECT 1 FROM scheduling_pause sp
+          WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = @agent_id)
+            AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
+      )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED

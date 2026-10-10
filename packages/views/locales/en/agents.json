@@ -89,7 +89,9 @@
     "fallback_runtime_local": "Local",
     "actions_aria": "Row actions",
     "task_count_one": "{{count}} task",
-    "task_count_other": "{{count}} tasks"
+    "task_count_other": "{{count}} tasks",
+    "paused_one": "Paused · {{count}} task",
+    "paused_other": "Paused · {{count}} tasks"
   },
   "activity_tooltip": {
     "created_today": "Created today",
@@ -135,7 +137,19 @@
     "archive_dialog_title": "Archive \"{{name}}\"?",
     "archive_dialog_description": "The agent won't be assignable or mentionable, and any active tasks will be cancelled. All history is preserved and you can restore it later.",
     "archive_dialog_cancel": "Cancel",
-    "archive_dialog_confirm": "Archive"
+    "archive_dialog_confirm": "Archive",
+    "pause_scheduling": "Pause scheduling",
+    "resume_scheduling": "Resume scheduling",
+    "paused_by_workspace": "Paused workspace-wide",
+    "pause_dialog_title": "Pause scheduling for {{name}}?",
+    "pause_dialog_description": "Queued tasks stay in the queue and running tasks finish normally, but no new task is claimed until you resume. The freeze is recorded in the audit log.",
+    "pause_dialog_cancel": "Cancel",
+    "pause_dialog_confirm": "Pause scheduling",
+    "agent_paused_toast": "Agent scheduling paused",
+    "agent_resumed_toast_one": "Scheduling resumed — {{count}} task flowing",
+    "agent_resumed_toast_other": "Scheduling resumed — {{count}} tasks flowing",
+    "pause_failed_toast": "Failed to pause scheduling",
+    "resume_failed_toast": "Failed to resume scheduling"
   },
   "detail": {
     "back_to_agents": "Agents",
@@ -167,7 +181,17 @@
     "runtime_required_toast": "Bind a runtime before running this agent.",
     "assign_work": "Assign work",
     "more_actions_aria": "Agent actions",
-    "updated": "Updated {{when}}"
+    "updated": "Updated {{when}}",
+    "paused_banner_one": "Scheduling paused — {{count}} task queued and waiting. Queued tasks keep coalescing; running tasks drain normally.",
+    "paused_banner_other": "Scheduling paused — {{count}} tasks queued and waiting. Queued tasks keep coalescing; running tasks drain normally.",
+    "paused_by_workspace_banner": "Scheduling paused workspace-wide. Resume it in workspace settings — an agent-level resume cannot lift a workspace freeze.",
+    "resume_scheduling": "Resume scheduling",
+    "more_pause_scheduling": "Pause scheduling",
+    "agent_paused_toast": "Agent scheduling paused",
+    "agent_resumed_toast_one": "Scheduling resumed — {{count}} task flowing",
+    "agent_resumed_toast_other": "Scheduling resumed — {{count}} tasks flowing",
+    "pause_failed_toast": "Failed to pause scheduling",
+    "resume_failed_toast": "Failed to resume scheduling"
   },
   "inspector": {
     "section_profile": "Profile",
