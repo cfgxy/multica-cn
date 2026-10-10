@@ -12,13 +12,14 @@ import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-b
  *     first tab switch);
  *   - the seed lands in a CLEAN draft (consumed after the mount reset) and
  *     reaches ManualCreatePanel as `initialDescription`;
+ *   - when the remembered mode is already manual, the seed reaches the panel
+ *     via a pre-paint REMOUNT — the panel's mount-only `useState(initialText)`
+ *     cannot absorb a late prop update;
  *   - an explicit agent prefill wins over the last-assignee memory
  *     (RUYI-79), while a description-only prefill leaves the memory seed
  *     intact;
  *   - the seed is consumed exactly once and absent seeds change nothing.
  */
-
-const seenManualProps: Array<{ initialDescription?: string }> = [];
 
 jest.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
@@ -80,20 +81,44 @@ jest.mock("@/components/ui/text", () => {
   return { Text };
 });
 
-jest.mock("@/components/issue/manual-create-panel", () => ({
-  ManualCreatePanel: jest.fn((props: { initialDescription?: string }) => {
-    seenManualProps.push(props);
-    const React = jest.requireActual<typeof import("react")>("react");
-    const { Text } = jest.requireActual<typeof import("react-native")>(
-      "react-native",
-    );
+jest.mock("@/components/issue/manual-create-panel", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { Text } = jest.requireActual<typeof import("react-native")>(
+    "react-native",
+  );
+  const state = { epoch: 0 };
+  const captures: Array<{ epoch: number; description: string | undefined }> =
+    [];
+  function ManualCreatePanelMock(props: { initialDescription?: string }) {
+    // Mount-faithful: mirrors useMentionInput's `useState(initialText)` — the
+    // description is captured once per mount and later prop changes are
+    // ignored. A transparent prop recorder would hide the RUYI-605 remount
+    // contract (lastMode "manual" mounts before the seed state exists, so
+    // the seed must arrive via a pre-paint remount, not a prop update).
+    const [captured] = React.useState(props.initialDescription);
+    const [epoch] = React.useState(() => {
+      state.epoch += 1;
+      return state.epoch;
+    });
+    captures.push({ epoch, description: captured });
     return React.createElement(
       Text,
       { testID: "manual-create-panel" },
-      props.initialDescription ?? "",
+      captured ?? "",
     );
-  }),
-}));
+  }
+  return {
+    __esModule: true,
+    ManualCreatePanel: Object.assign(jest.fn(ManualCreatePanelMock), {
+      __captures: captures,
+      __epochState: state,
+      __reset: () => {
+        captures.length = 0;
+        state.epoch = 0;
+      },
+    }),
+  };
+});
 
 jest.mock("@/components/issue/quick-create-panel", () => ({
   QuickCreatePanel: () => {
@@ -138,6 +163,18 @@ const tabsMock = jest.requireMock("@/components/ui/tabs") as {
 const { ManualCreatePanel } = jest.requireMock<
   typeof import("@/components/issue/manual-create-panel")
 >("@/components/issue/manual-create-panel");
+const manualPanelMock = ManualCreatePanel as jest.Mock & {
+  __captures: Array<{ epoch: number; description: string | undefined }>;
+  __epochState: { epoch: number };
+  __reset: () => void;
+};
+
+/** The description captured on the most recently mounted panel instance. */
+function latestManualCapture() {
+  return manualPanelMock.__captures.reduce<
+    { epoch: number; description: string | undefined } | null
+  >((acc, cur) => (cur.epoch > (acc?.epoch ?? 0) ? cur : acc), null);
+}
 const asyncStorage = jest.requireMock("@react-native-async-storage/async-storage")
   .default as { getItem: jest.Mock };
 const {
@@ -170,7 +207,7 @@ function resetTestState() {
   useQuickCreatePrefsStore.setState({ lastMode: "smart" });
   useNewIssueLastAssigneeStore.setState({ byServer: {} });
   asyncStorage.getItem.mockImplementation(async () => null);
-  seenManualProps.length = 0;
+  manualPanelMock.__reset();
   (ManualCreatePanel as jest.Mock).mockClear();
 }
 
@@ -201,6 +238,32 @@ describe("NewIssueModal inbox prefill (RUYI-605)", () => {
       (ManualCreatePanel as jest.Mock).mock.calls.at(-1)![0],
     ).toMatchObject({ initialDescription: "Deploy the staging build" });
     // One-shot: the seed is consumed by the visit.
+    expect(useNewIssuePrefillStore.getState().seed).toBeNull();
+  });
+
+  it("remounts the manual panel with the seed when the remembered mode is manual", async () => {
+    // Regression: with lastMode "manual" the panel mounts on the FIRST
+    // render, where the prefill state is still null — a late prop update
+    // cannot reach its mount-only useState(initialText). The seed must land
+    // via a pre-paint remount (key change), yielding two mount epochs with
+    // the seeded description captured on the second.
+    useQuickCreatePrefsStore.setState({ lastMode: "manual" });
+    seedNewIssuePrefill({
+      description: "Deploy the staging build",
+      agentId: "agent-1",
+    });
+
+    render(<NewIssueModal />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("manual-create-panel")).toBeTruthy();
+    });
+    expect(manualPanelMock.__epochState.epoch).toBe(2);
+    expect(latestManualCapture()?.description).toBe("Deploy the staging build");
+    expect(useNewIssueDraftStore.getState().assignee).toEqual({
+      type: "agent",
+      id: "agent-1",
+    });
     expect(useNewIssuePrefillStore.getState().seed).toBeNull();
   });
 
