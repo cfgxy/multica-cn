@@ -711,6 +711,10 @@ generate_slot_env() {
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
     printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
+    # E2E fixture dependency (RUYI-632): e2e/agent-mcp.spec.ts asserts the
+    # creator-only MCP Apps tab, which the composio_mcp_apps flag gates off by
+    # default. Slots exist to run the E2E/dev surface, so the flag ships on.
+    printf 'FF_COMPOSIO_MCP_APPS=true\n'
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
 }
@@ -734,6 +738,10 @@ ensure_slot_env() {
   if ! grep -q '^MULTICA_MCP_PORT=' "$SLOT_ENV_FILE"; then
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }MULTICA_MCP_PORT"
+  fi
+  if ! grep -q '^FF_COMPOSIO_MCP_APPS=' "$SLOT_ENV_FILE"; then
+    printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
+    appended="${appended:+$appended }FF_COMPOSIO_MCP_APPS"
   fi
   [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
@@ -1128,7 +1136,18 @@ start_web() {
   fi
 
   resource_env_args web
-  launch_detached web env "${RE_ARGS[@]}" make -C "$DIR" -s web-dev ENV_FILE="$SLOT_ENV_FILE"
+  # MULTICA_WEB_MODE=release serves the prebuilt production bundle instead of
+  # the dev server — the verifiable E2E entry (RUYI-632). The build must
+  # exist before up; building is e2e-release-entry.sh's job, not the slot's.
+  local web_target="web-dev"
+  if [ "${MULTICA_WEB_MODE:-dev}" = "release" ]; then
+    web_target="web-release"
+    if [ ! -f "$DIR/apps/web/.next/BUILD_ID" ]; then
+      die "MULTICA_WEB_MODE=release needs a production build first: bash scripts/e2e-release-entry.sh $SLOT build (runbook: e2e/README.md)"
+    fi
+    info "web mode: release (BUILD_ID $(cat "$DIR/apps/web/.next/BUILD_ID"))"
+  fi
+  launch_detached web env "${RE_ARGS[@]}" make -C "$DIR" -s "$web_target" ENV_FILE="$SLOT_ENV_FILE"
   info "web launching (pid $(cat "$(pid_file web)")), log: $(log_file web)"
 
   while [ "$waited" -lt 300 ]; do
