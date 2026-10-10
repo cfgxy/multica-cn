@@ -890,7 +890,7 @@ func waitForWaiterBlockedBy(t *testing.T, holderPID int, timeout time.Duration) 
 			WHERE datname = current_database()
 			  AND state = 'active'
 			  AND wait_event_type = 'Lock'
-			  AND wait_event IN ('transactionid', 'tuple')
+			  AND wait_event IN ('transactionid', 'tuple', 'advisory')
 			  AND $1::int = ANY(pg_blocking_pids(pid))
 		`, holderPID).Scan(&waiting); err != nil {
 			t.Fatalf("probe pg_stat_activity for waiters blocked by pid %d: %v", holderPID, err)
