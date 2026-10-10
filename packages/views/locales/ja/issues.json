@@ -638,6 +638,7 @@
       "source_unattributed": "責任メンバーを解決できません"
     },
     "usage_total_tooltip": "このタスクのトークン使用量 — クリックで実行ごとの内訳",
+      "unpriced_rows_other": "{{count}} 件は算出不可",
     "status_cancel_requested": "停止中",
     "stop_again_tooltip": "停止リクエストを再送信",
     "stop_again_aria": "停止リクエストを再送信",
@@ -674,6 +675,7 @@
     "empty": "このタスクでは、まだトークン使用量が記録された実行はありません。",
     "kpi_cost": "費用",
     "kpi_cost_hint_other": "失敗した {{count}} 回の実行が {{pct}}% を占めます",
+      "kpi_unpriced_other": "{{count}} 件は算出不可",
     "kpi_cache": "キャッシュ削減",
     "kpi_cache_hint": "ヒット率 {{pct}}% · 読み取り {{reads}}",
     "kpi_tokens": "トークン",
@@ -1162,6 +1164,7 @@
     "created": "作成日時",
     "finished": "終了日時",
     "usage": "使用量",
+      "unpriced_rows_other": "{{count}} 件は算出不可",
     "reason": "理由",
     "cancelled_by": "{{name}} が停止をリクエスト · {{time}}",
     "raw_error": "原始エラー",

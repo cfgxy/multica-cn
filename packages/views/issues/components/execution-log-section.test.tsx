@@ -497,8 +497,10 @@ describe("IssueUsageTotal pricing", () => {
       <IssueUsageTotal tasks={[task]} alone onOpen={() => {}} />,
     );
 
-    // No rate on file for this model yet.
-    expect(screen.getByText("$0.00")).toBeInTheDocument();
+    // No rate on file for this model yet: the header withholds the figure
+    // ("—", not a fake $0.00) and says why beside it (RUYI-664).
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.getByText("1 row unpriced")).toBeInTheDocument();
 
     act(() => {
       useCustomPricingStore.getState().setCustomPricing("acme/totally-made-up-model", {
@@ -509,8 +511,10 @@ describe("IssueUsageTotal pricing", () => {
       });
     });
 
-    // 1M input tokens at $7/M, without any refetch.
+    // 1M input tokens at $7/M, without any refetch — and priced now, so the
+    // caveat disappears with it.
     expect(screen.getByText("$7.00")).toBeInTheDocument();
+    expect(screen.queryByText("1 row unpriced")).not.toBeInTheDocument();
   });
 });
 
