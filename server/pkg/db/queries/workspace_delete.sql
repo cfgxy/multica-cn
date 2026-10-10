@@ -541,6 +541,11 @@ SET state = CASE
     last_error = NULL
 WHERE channel_media_pending_object.workspace_id = $1;
 
+-- Host-backpressure settings (RUYI-618): one optional row per workspace,
+-- plain UUID key without FK (same treatment as self_evolution_model_config),
+-- so it is swept explicitly with the workspace.
+DELETE FROM workspace_backpressure_settings WHERE workspace_id = $1;
+
 -- name: DeleteWorkspaceChatMessages :exec
 DELETE FROM chat_message
 WHERE chat_session_id IN (
@@ -784,6 +789,10 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
+),
+deleted_backpressure_settings AS (
+    DELETE FROM workspace_backpressure_settings
+    WHERE workspace_backpressure_settings.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;

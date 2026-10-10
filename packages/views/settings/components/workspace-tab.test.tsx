@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -26,6 +26,9 @@ const membersRef = vi.hoisted(() => ({
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: membersRef.current, isFetched: true }),
+  // The host-backpressure card's save mutation (RUYI-618): never fired by
+  // these tab tests, only hooked at mount.
+  useMutation: () => ({ mutateAsync: vi.fn(() => Promise.reject(new Error("not under test"))), isPending: false }),
   useQueryClient: () => ({
     setQueryData: vi.fn(),
     getQueryData: vi.fn(() => []),
@@ -136,7 +139,13 @@ describe("WorkspaceTab — automatic updates", () => {
     render(<WorkspaceTab />, { wrapper: I18nWrapper });
     const input = screen.getByPlaceholderText("TES") as HTMLInputElement;
     expect(input.value).toBe("TES");
-    expect(screen.queryByRole("button", { name: /^Save$/ })).toBeNull();
+    // The general card auto-saves: no explicit Save button inside it. (The
+    // host-backpressure card below has its own — nine coupled fields with
+    // cross-field hysteresis rules can't auto-save through invalid states.)
+    const generalCard = input.closest<HTMLElement>('[data-slot="card"]');
+    expect(
+      generalCard && within(generalCard).queryByRole("button", { name: /^Save$/ }),
+    ).toBeNull();
   });
 
   it("renders the workspace slug in the shared read-only input control", () => {

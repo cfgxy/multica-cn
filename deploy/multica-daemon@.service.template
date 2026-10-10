@@ -40,16 +40,9 @@ OOMPolicy=continue
 ManagedOOMPreference=omit
 # 显式锁定 kill 语义：systemd 默认即 control-group，写死防不同版本默认漂移。
 KillMode=control-group
-# 背压准入阈值（RUYI-393/396）：主机内存/swap 水位驱动的新 Run 准入暂停与恢复，
-# 数值经 make 变量渲染（默认 15/25/80/60 = 代码默认），环境变量名以
-# server/internal/daemon/config.go 为权威；按机覆盖与持久化见 Makefile daemon-install 注释。
-Environment=MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT=@BP_MEM_HIGH_PCT@
-Environment=MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT=@BP_MEM_RECOVERY_PCT@
-Environment=MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT=@BP_SWAP_HIGH_PCT@
-Environment=MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT=@BP_SWAP_RECOVERY_PCT@
-# 主机资源指标中继（RUYI-618）：指向本机 node-exporter（multica-node-exporter.service），
-# daemon 抓取解析后随心跳上报。置空 = 不采集，usage 页对相应 daemon 无系统资源序列。
-Environment=MULTICA_DAEMON_NODE_EXPORTER_URL=@NODE_EXPORTER_URL@
+# 背压准入阈值（RUYI-393/396）：主机内存/swap/PSI 水位驱动的新 Run 准入暂停与恢复。
+# 参数唯一权威源 = 空间设置（web UI，workspace 级），server 经心跳 ack 下发、daemon
+# 热生效（RUYI-618）；systemd env 注入已退役，勿在此注入任何 MULTICA_DAEMON_BACKPRESSURE_*。
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60

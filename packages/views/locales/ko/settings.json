@@ -49,42 +49,41 @@
       "cancelled": "진행하지 않기로 함."
     }
   },
-    "quick_replies": {
-      "title": "빠른 답장",
-      "description": "이슈 댓글 입력창의 빠른 답장 메뉴에 표시되는 공유 템플릿입니다. 모든 멤버가 읽을 수 있으며, 워크스페이스 관리자만 수정할 수 있습니다. 선택하면 입력창에 채워질 뿐 자동으로 전송되지 않습니다.",
-      "loading": "빠른 답장을 불러오는 중…",
-      "add": "새 빠른 답장",
-      "empty_title": "빠른 답장이 아직 없습니다",
-      "empty_hint": "반복적으로 쓰는 댓글 문구를 템플릿으로 저장하세요 — PR 충돌 해결, 테스트 보완, 완료 확인 등.",
-      "reorder_failed": "순서 저장에 실패했습니다",
-      "actions": {
-        "open": "\"{{name}}\" 작업 메뉴 열기",
-        "edit": "편집",
-        "delete": "삭제",
-        "reorder": "\"{{name}}\" 순서를 드래그로 변경"
-      },
-      "editor": {
-        "create_title": "새 빠른 답장",
-        "edit_title": "빠른 답장 편집",
-        "hint": "댓글 입력창에서 선택하면 입력란에 채워집니다. 전송 전에 자유롭게 수정할 수 있습니다.",
-        "name": "이름",
-        "name_placeholder": "예: PR 충돌 해결",
-        "content": "내용",
-        "content_placeholder": "입력창에 채워질 템플릿 본문…",
-        "cancel": "취소",
-        "save": "저장",
-        "saving": "저장 중…",
-        "save_failed": "저장에 실패했습니다"
-      },
-      "delete_dialog": {
-        "title": "빠른 답장 삭제",
-        "description": "\"{{name}}\"을(를) 삭제할까요? 모든 멤버의 댓글 메뉴에서 즉시 사라집니다.",
-        "cancel": "취소",
-        "confirm": "삭제",
-        "failed": "삭제에 실패했습니다"
-      }
+  "quick_replies": {
+    "title": "빠른 답장",
+    "description": "이슈 댓글 입력창의 빠른 답장 메뉴에 표시되는 공유 템플릿입니다. 모든 멤버가 읽을 수 있으며, 워크스페이스 관리자만 수정할 수 있습니다. 선택하면 입력창에 채워질 뿐 자동으로 전송되지 않습니다.",
+    "loading": "빠른 답장을 불러오는 중…",
+    "add": "새 빠른 답장",
+    "empty_title": "빠른 답장이 아직 없습니다",
+    "empty_hint": "반복적으로 쓰는 댓글 문구를 템플릿으로 저장하세요 — PR 충돌 해결, 테스트 보완, 완료 확인 등.",
+    "reorder_failed": "순서 저장에 실패했습니다",
+    "actions": {
+      "open": "\"{{name}}\" 작업 메뉴 열기",
+      "edit": "편집",
+      "delete": "삭제",
+      "reorder": "\"{{name}}\" 순서를 드래그로 변경"
+    },
+    "editor": {
+      "create_title": "새 빠른 답장",
+      "edit_title": "빠른 답장 편집",
+      "hint": "댓글 입력창에서 선택하면 입력란에 채워집니다. 전송 전에 자유롭게 수정할 수 있습니다.",
+      "name": "이름",
+      "name_placeholder": "예: PR 충돌 해결",
+      "content": "내용",
+      "content_placeholder": "입력창에 채워질 템플릿 본문…",
+      "cancel": "취소",
+      "save": "저장",
+      "saving": "저장 중…",
+      "save_failed": "저장에 실패했습니다"
+    },
+    "delete_dialog": {
+      "title": "빠른 답장 삭제",
+      "description": "\"{{name}}\"을(를) 삭제할까요? 모든 멤버의 댓글 메뉴에서 즉시 사라집니다.",
+      "cancel": "취소",
+      "confirm": "삭제",
+      "failed": "삭제에 실패했습니다"
     }
-,
+  },
   "quick_actions": {
     "title": "퀵 액션",
     "description": "실행할 에이전트와 프롬프트를 미리 설정한 뒤, 어떤 태스크의 사이드바에서든 한 번의 클릭으로 실행합니다.",
@@ -908,7 +907,27 @@
     "deleting": "삭제하는 중...",
     "toast_delete_failed": "워크스페이스를 삭제하지 못했습니다",
     "confirm_cancel": "취소",
-    "confirm_action": "확인"
+    "confirm_action": "확인",
+    "bp_title": "호스트 백프레셔",
+    "bp_description": "메모리가 워터마크를 넘으면 daemon 호스트에서 새 작업 클레임을 일시 중지합니다. 저장된 설정은 다음 하트비트로 이 워크스페이스의 모든 daemon에 전달됩니다. 재시작이 필요 없습니다.",
+    "bp_defaults_note": "코드 기본값 표시 중——이 워크스페이스에는 아직 저장된 설정이 없습니다.",
+    "bp_enabled": "백프레셔 사용",
+    "bp_enabled_hint": "끄면 워터마크와 관계없이 새 작업 클레임이 일시 중지되지 않습니다.",
+    "bp_mem_label": "메모리 워터마크 (가용 %)",
+    "bp_mem_hint": "높은 워터마크 아래로 내려가면 클레임이 중지되고, 이를 초과하는 회복 워터마크 위로 올라가면 재개됩니다.",
+    "bp_swap_label": "스왑 워터마크 (사용 %)",
+    "bp_swap_hint": "높은 워터마크가 0이면 스왑 조건을 비활성화합니다. 회복값은 그 아래여야 합니다.",
+    "bp_psi_label": "메모리 PSI avg10 워터마크 (%)",
+    "bp_psi_hint": "높은 워터마크가 0이면 PSI 조건을 비활성화합니다. 회복값은 그 아래여야 합니다.",
+    "bp_sampling_label": "샘플링",
+    "bp_sampling_hint": "호스트 샘플링 간격(초)과 스무딩 윈도우가 평균하는 샘플 수.",
+    "bp_high_aria": "높은 워터마크",
+    "bp_recovery_aria": "회복 워터마크",
+    "bp_interval_aria": "샘플링 간격(초)",
+    "bp_window_aria": "스무딩 윈도우(샘플 수)",
+    "bp_toast_saved": "백프레셔 설정이 저장되었습니다——daemon은 다음 하트비트에 반영합니다.",
+    "bp_toast_failed": "백프레셔 설정 저장에 실패했습니다.",
+    "bp_invalid": "잘못된 설정:"
   },
   "delete_workspace_dialog": {
     "title": "워크스페이스 삭제",

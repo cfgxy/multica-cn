@@ -5098,3 +5098,20 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   message: z.string().default(""),
   validated_at: z.string().optional(),
 });
+
+// Workspace host-backpressure settings (RUYI-618): the effective card the
+// settings form saves and every daemon receives on heartbeat acks. All
+// numeric fields default to the daemon code defaults so an old server
+// response degrades to "not customized" instead of a broken form.
+export const WorkspaceBackpressureSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  custom: z.boolean().default(false),
+});

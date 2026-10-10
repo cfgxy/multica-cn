@@ -311,7 +311,6 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 				RuntimeID:           rid,
 				SupportsBatchImport: true,
 				Backpressure:        d.backpressureReport(),
-				Resources:           d.hostResourceReport(),
 			}),
 		})
 		if err != nil {

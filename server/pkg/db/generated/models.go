@@ -2152,6 +2152,33 @@ type Workspace struct {
 	ActiveExecutionProfileID pgtype.UUID `json:"active_execution_profile_id"`
 }
 
+// Workspace-level host-backpressure gate settings (RUYI-618): the single authority for the watermarks that pause new task claims on daemon hosts; delivered to daemons over heartbeat acks. No row = daemon code defaults.
+type WorkspaceBackpressureSetting struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// Gate master switch: false pauses nothing regardless of the watermarks.
+	Enabled bool `json:"enabled"`
+	// MemAvailable%% below which new claims pause, percent of total (0,100].
+	MemHighPct float64 `json:"mem_high_pct"`
+	// MemAvailable%% above which claiming resumes; must exceed mem_high_pct (hysteresis).
+	MemRecoveryPct float64 `json:"mem_recovery_pct"`
+	// SwapUsed%% above which new claims pause; <=0 disables the swap condition.
+	SwapHighPct float64 `json:"swap_high_pct"`
+	// SwapUsed%% below which claiming resumes; must sit below swap_high_pct when enabled.
+	SwapRecoveryPct float64 `json:"swap_recovery_pct"`
+	// Memory PSI some-avg10%% above which new claims pause; <=0 disables the PSI condition.
+	PsiHighPct float64 `json:"psi_high_pct"`
+	// PSI some-avg10%% below which claiming resumes; must sit below psi_high_pct when enabled.
+	PsiRecoveryPct float64 `json:"psi_recovery_pct"`
+	// Proc sampling cadence for the watermark gate, in seconds (>=1).
+	SampleIntervalSeconds int32 `json:"sample_interval_seconds"`
+	// Smoothing window in samples before thresholds are evaluated on the mean (>=1).
+	WindowSize int32 `json:"window_size"`
+	// Member who last saved this row; plain UUID on purpose (rows survive member deletion).
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type WorkspaceInvitation struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

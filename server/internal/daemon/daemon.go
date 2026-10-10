@@ -30,7 +30,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -624,20 +623,20 @@ type Daemon struct {
 	// bpState is nil until the watcher's first sample lands (gate fails
 	// open); bpWakeup points at the batch poller's wakeup channel so a
 	// recovery can nudge it instead of waiting out a backoff interval.
-	bpMachine  *backpressureMachine
+	// bpRuntime carries the active parameters (RUYI-618): every heartbeat
+	// ack delivers the workspace's settings and applyBackpressureConfig
+	// swaps it in — the watcher re-reads it each cycle, so a save in the
+	// web UI lands within one beat without a restart. bpApplyMu serializes
+	// that swap; bpReload is the closed-per-swap channel the watcher
+	// selects on for an immediate resample.
+	bpRuntime  atomic.Pointer[backpressureRuntime]
+	bpReload   atomic.Pointer[chan struct{}]
+	bpApplyMu  sync.Mutex
 	bpSource   memSampleSource
 	bpState    atomic.Pointer[backpressureObservation]
 	bpDeferred atomic.Int64
 	bpWakeup   atomic.Pointer[chan struct{}]
 	bpLastWarn atomic.Int64
-
-	// Host resource relay (RUYI-618): latest node-exporter snapshot attached
-	// to heartbeats. hostSampler is nil when NodeExporterURL is empty, and
-	// hostResources stays nil until the first successful sample — heartbeats
-	// never fail or wait on the relay.
-	hostSampler   *HostResourceSampler
-	hostResources atomic.Pointer[protocol.DaemonResourceReport]
-	hostLastWarn  atomic.Int64
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -751,16 +750,17 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
 	}
-	// Host memory backpressure (RUYI-393): nil machine = disabled, the claim
-	// gate fails open and the watcher goroutine is never started.
+	// Host memory backpressure (RUYI-393): nil runtime config = disabled, the
+	// claim gate fails open and the watcher goroutine is never started. The
+	// workspace's saved settings (RUYI-618) replace these boot defaults on
+	// the first heartbeat ack.
 	if cfg.BackpressureEnabled {
-		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
 		d.bpSource = newMemSampleSource()
-	}
-	// Host resource relay (RUYI-618): nil sampler = disabled, heartbeats carry
-	// no resources field and no watcher goroutine runs.
-	if cfg.NodeExporterURL != "" {
-		d.hostSampler = NewHostResourceSampler(cfg.NodeExporterURL)
+		d.bpRuntime.Store(&backpressureRuntime{
+			enabled:  true,
+			interval: cfg.BackpressureSampleInterval,
+			machine:  newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize),
+		})
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2163,15 +2163,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
 	// and advances the hysteresis gate fed into the claim path below. nil
-	// machine = disabled by config, no goroutine.
-	if d.bpMachine != nil {
+	// runtime config = disabled by config, no goroutine.
+	if d.bpRuntime.Load() != nil {
 		go d.runBackpressureWatcher(ctx)
-	}
-
-	// Host resource relay (RUYI-618): samples the co-located node-exporter
-	// for the heartbeat-carried host series. nil sampler = disabled.
-	if d.hostSampler != nil {
-		go d.runHostResourceWatcher(ctx)
 	}
 
 	// Preflight succeeded and the background loops are up: the daemon has
@@ -4335,7 +4329,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport(), d.hostResourceReport())
+	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport())
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4378,6 +4372,12 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			"local_skills", resp.PendingLocalSkills != nil,
 			"local_skill_import", resp.PendingLocalSkillImport != nil,
 		)
+	}
+	// Workspace backpressure settings (RUYI-618) ride every ack. Applied
+	// synchronously — the swap is a few pointer writes and the ack path has
+	// no reason to outrun it.
+	if resp.BackpressureConfig != nil {
+		d.applyBackpressureConfig(runtimeID, resp.BackpressureConfig)
 	}
 	if resp.PendingUpdate != nil {
 		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
@@ -4480,7 +4480,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport(), d.hostResourceReport())
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport())
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {

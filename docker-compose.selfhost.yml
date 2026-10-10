@@ -253,6 +253,20 @@ services:
       - --storage.tsdb.retention.time=15d
     restart: unless-stopped
 
+  # Host-metrics exporter for the machine running this compose stack
+  # (observability profile). Prometheus scrapes it in-network; the `daemon`
+  # label that scopes its series to a workspace lives in
+  # deploy/prometheus/prometheus.yml, not here. No published ports.
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    profiles: ["observability"]
+    pid: "host"
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+    restart: unless-stopped
+
 volumes:
   pgdata:
   backend_uploads:

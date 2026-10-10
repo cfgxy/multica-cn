@@ -7,10 +7,12 @@ After=network-online.target
 User=@USER@
 Group=@GROUP@
 ExecStart=@BIN@ --web.listen-address=@LISTEN@
-# Host-wide metrics: one exporter per machine serves every multica-daemon@<profile>
-# on the host — each daemon scrapes the same endpoint and relays the samples
-# under its own daemon id. The daemon filters which series it relays; the
-# exporter only needs to be reachable on loopback.
+# Host-wide metrics (node-exporter native series): Prometheus scrapes this
+# endpoint directly via static targets (deploy/prometheus/prometheus.yml) and
+# the Usage panels read the series through the server proxy. Reachability:
+# default listen is :9100 on all interfaces so the Prometheus host can reach
+# it — firewall the port accordingly (loopback-only installs that only serve
+# the local compose stack may pin 127.0.0.1).
 ExecStartPost=/bin/sh -c 'sleep 1; curl -fsS http://@LISTEN@/metrics >/dev/null || echo "WARN: node-exporter not answering on @LISTEN@ yet"'
 Restart=on-failure
 RestartSec=10

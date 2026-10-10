@@ -472,3 +472,7 @@ export type {
   SelfEvolutionModelConfigResolved,
   SelfEvolutionModelConfigSave,
 } from "./self-evolution-model-config";
+export type {
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
+} from "./workspace-backpressure";

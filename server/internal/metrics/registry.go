@@ -15,9 +15,6 @@ type RegistryOptions struct {
 	Pool     *pgxpool.Pool
 	Realtime *realtime.Metrics
 	DaemonWS *daemonws.Metrics
-	// HostResources, when non-nil, is registered so the relayed daemon host
-	// resource snapshots (multica_daemon_* series) are exposed on /metrics.
-	HostResources prometheus.Collector
 	// TaskUsage, when non-nil, is registered so the task_usage_hourly
 	// aggregates (multica_task_usage_* series) are exposed on /metrics.
 	TaskUsage prometheus.Collector
@@ -76,9 +73,6 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 	if opts.DaemonWS != nil {
 		reg.MustRegister(NewDaemonWSCollector(opts.DaemonWS))
-	}
-	if opts.HostResources != nil {
-		reg.MustRegister(opts.HostResources)
 	}
 	if opts.TaskUsage != nil {
 		reg.MustRegister(opts.TaskUsage)
