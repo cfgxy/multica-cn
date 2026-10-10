@@ -681,7 +681,7 @@
     "hint": "Handled items disappear from this list",
     "modelUnconfigured": {
       "title": "Model service is not configured",
-      "description": "Scoring and the daily retrospective have no LLM to run on",
+      "description": "Quality scoring has no LLM to run on",
       "action": "Configure"
     },
     "modelError": {
@@ -764,7 +764,7 @@
   },
   "modelConfig": {
     "title": "Model service",
-    "description": "One LLM endpoint for this workspace's quality scoring and daily retrospective. The key is encrypted at rest and never shown again.",
+    "description": "One LLM endpoint dedicated to this workspace's quality scoring. The key is encrypted at rest and never shown again.",
     "baseUrl": "Base URL",
     "apiKey": "API key",
     "model": "Model",
@@ -792,6 +792,6 @@
   },
   "configPage": {
     "title": "Module configuration",
-    "description": "The model service below backs quality scoring and the daily retrospective; Langfuse is instance-level and read-only here."
+    "description": "The model service below backs quality scoring; Langfuse is instance-level and read-only here."
   }
 }
