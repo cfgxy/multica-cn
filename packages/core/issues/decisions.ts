@@ -117,11 +117,12 @@ export function stripDecisionOptionLetterPrefix(label: string): string {
 /**
  * The option control renders its own recommended badge (recommended_indices),
  * so a trailing "（推荐）"/"(推荐)" in the label would double it (RUYI-620).
- * Strip it only when it terminates the label — mid-label or leading
- * occurrences are content. Display-only — stored labels stay verbatim.
+ * Strip it only when it terminates the label — repeated trailing markers
+ * strip together; mid-label or leading occurrences are content.
+ * Display-only — stored labels stay verbatim.
  */
 export function stripDecisionOptionRecommendedSuffix(label: string): string {
-  return label.replace(/\s*[（(]\s*推荐\s*[)）]\s*$/, "");
+  return label.replace(/(?:\s*[（(]\s*推荐\s*[)）])+\s*$/, "");
 }
 
 /**
