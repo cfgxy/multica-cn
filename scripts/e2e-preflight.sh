@@ -132,7 +132,29 @@ else
   record WARN "feature flags" "GET :$WEB_PORT/api/config returned no feature_flags — check the web entry proxy"
 fi
 
-# 7. Port ownership — both ports must have a listener (belonging to this slot).
+# 7. Upload route reachability — POST /api/upload-file unauthenticated must
+#    reach the Go layer: auth answers 401 (or the handler 400s on the empty
+#    body). The UploadFile handler itself can never answer 404, so a 404 here
+#    means the request died at the web rewrite or a wrong API base — exactly
+#    how the chat-attachments cases were lost in QA round 4.
+for upload_label in "direct api:$API_PORT" "web proxy:$WEB_PORT"; do
+  upload_name="${upload_label%%:*}"; upload_port="${upload_label##*:}"
+  upload_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST "http://localhost:${upload_port}/api/upload-file" 2>/dev/null || true)"
+  case "$upload_code" in
+    401|400|403)
+      record PASS "upload route ($upload_name)" "POST :$upload_port/api/upload-file → $upload_code unauthenticated (route reachable)" ;;
+    404)
+      if [ "$upload_name" = "web proxy" ]; then
+        record FAIL "upload route ($upload_name)" "POST :$upload_port/api/upload-file → 404 — the web runtime rewrite dropped the path; check REMOTE_API_URL/NEXT_PUBLIC_API_URL in the web process env"
+      else
+        record FAIL "upload route ($upload_name)" "POST :$upload_port/api/upload-file → 404 — the Go router never 404s this path; the api binary predates the route or the port maps elsewhere"
+      fi ;;
+    *)
+      record WARN "upload route ($upload_name)" "POST :$upload_port/api/upload-file → ${upload_code:-no answer} (expected 401/400 unauth); note it before the run" ;;
+  esac
+done
+
+# 8. Port ownership — both ports must have a listener (belonging to this slot).
 for port_label in "api:$API_PORT" "web:$WEB_PORT"; do
   name="${port_label%%:*}"; port="${port_label##*:}"
   listener="$(ss -ltnpH "sport = :$port" 2>/dev/null | head -1 | sed -nE 's/.*pid=([0-9]+).*/\1/p' || true)"
