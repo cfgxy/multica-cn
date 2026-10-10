@@ -47,6 +47,9 @@ Environment=MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT=@BP_MEM_HIGH_PCT@
 Environment=MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT=@BP_MEM_RECOVERY_PCT@
 Environment=MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT=@BP_SWAP_HIGH_PCT@
 Environment=MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT=@BP_SWAP_RECOVERY_PCT@
+# 主机资源指标中继（RUYI-618）：指向本机 node-exporter（multica-node-exporter.service），
+# daemon 抓取解析后随心跳上报。置空 = 不采集，usage 页对相应 daemon 无系统资源序列。
+Environment=MULTICA_DAEMON_NODE_EXPORTER_URL=@NODE_EXPORTER_URL@
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60

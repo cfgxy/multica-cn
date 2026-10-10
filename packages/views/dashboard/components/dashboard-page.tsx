@@ -77,6 +77,8 @@ import {
 import { UsageTrendCard } from "./usage-trend-card";
 import { Leaderboard } from "./leaderboard";
 import { ErrorsTab } from "./errors-tab";
+import { UsageResourcesCard } from "./usage-resources-card";
+import { UsageTrafficCard } from "./usage-traffic-card";
 import { cn } from "@multica/ui/lib/utils";
 
 // Stable references — `data ?? []` would create a new empty array on
@@ -706,6 +708,13 @@ export function DashboardPage() {
                   deletedAgentCount={deletedAgentCount}
                   lessThanMinuteLabel={lessThanMinuteLabel}
                 />
+
+                {/* Live metric panels — hidden entirely (each renders null)
+                    when the deployment has no Prometheus backend. They run on
+                    their own relative windows, so they sit outside the
+                    calendar-window data flow above. */}
+                <UsageResourcesCard wsId={wsId} />
+                <UsageTrafficCard wsId={wsId} />
               </>
             )}
           </TabsContent>

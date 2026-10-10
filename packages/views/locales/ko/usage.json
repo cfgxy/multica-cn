@@ -109,5 +109,31 @@
   },
   "duration": {
     "less_than_minute": "1분 미만"
+  },
+  "metrics": {
+    "live_label": "실시간",
+    "window_label": "기간",
+    "window_1h": "1시간",
+    "window_6h": "6시간",
+    "window_24h": "24시간",
+    "window_7d": "7일",
+    "no_data": "이 기간 내 샘플이 없습니다.",
+    "error": "메트릭 백엔드를 사용할 수 없습니다.",
+    "resources": {
+      "title": "시스템 리소스",
+      "cpu": "CPU 코어",
+      "memory": "메모리 사용",
+      "disk": "디스크 I/O"
+    },
+    "traffic": {
+      "title": "모델 트래픽",
+      "by_label": "분류",
+      "dim_runtime": "런타임",
+      "dim_provider": "프로바이더",
+      "dim_model": "모델",
+      "tokens": "토큰/초",
+      "cost": "비용/시간",
+      "tasks": "작업/시간"
+    }
   }
 }

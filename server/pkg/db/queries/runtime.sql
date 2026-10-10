@@ -657,3 +657,14 @@ INSERT INTO agent_runtime (
     device_info, metadata, owner_id, profile_id, visibility, registration_source
 ) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
 RETURNING *;
+
+-- name: ListWorkspaceDaemonIDs :many
+-- Distinct daemon identities present in the workspace (RUYI-618): the
+-- Prometheus proxy scopes host-resource series to these via a label matcher,
+-- so a workspace only sees the hosts it owns. Legacy NULL daemon_id rows
+-- (pre-registration cloud runtimes) have no host to scope to and are skipped.
+SELECT DISTINCT daemon_id
+FROM agent_runtime
+WHERE workspace_id = $1
+  AND daemon_id IS NOT NULL
+  AND daemon_id <> '';

@@ -1,0 +1,28 @@
+[Unit]
+Description=Multica host metrics exporter (node-exporter, RUYI-618)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=@USER@
+Group=@GROUP@
+ExecStart=@BIN@ --web.listen-address=@LISTEN@
+# Host-wide metrics: one exporter per machine serves every multica-daemon@<profile>
+# on the host — each daemon scrapes the same endpoint and relays the samples
+# under its own daemon id. The daemon filters which series it relays; the
+# exporter only needs to be reachable on loopback.
+ExecStartPost=/bin/sh -c 'sleep 1; curl -fsS http://@LISTEN@/metrics >/dev/null || echo "WARN: node-exporter not answering on @LISTEN@ yet"'
+Restart=on-failure
+RestartSec=10
+# The exporter only reads /proc and /sys: a small fixed budget, far below the
+# daemon's, and no OOM special-casing — it is disposable by design.
+CPUQuota=@CPU_QUOTA@
+MemoryHigh=@MEMORY_HIGH@
+MemoryMax=@MEMORY_MAX@
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

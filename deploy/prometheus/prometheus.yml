@@ -1,0 +1,14 @@
+# Prometheus scrape configuration for the self-hosted Multica stack
+# (docker-compose.selfhost.yml, service `prometheus`). Multica's server
+# exposes its /metrics on the METRICS_ADDR it is configured to listen on —
+# this is the single scrape target: daemon-side host metrics and task-usage
+# aggregates are both relayed here through the server, so nothing ever
+# scrapes daemons directly.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: multica-server
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:9091"]

@@ -109,5 +109,31 @@
   },
   "duration": {
     "less_than_minute": "1分未満"
+  },
+  "metrics": {
+    "live_label": "ライブ",
+    "window_label": "期間",
+    "window_1h": "1時間",
+    "window_6h": "6時間",
+    "window_24h": "24時間",
+    "window_7d": "7日",
+    "no_data": "この期間内のサンプルはありません。",
+    "error": "メトリクスバックエンドを利用できません。",
+    "resources": {
+      "title": "システムリソース",
+      "cpu": "CPU コア",
+      "memory": "メモリ使用量",
+      "disk": "ディスク I/O"
+    },
+    "traffic": {
+      "title": "モデルトラフィック",
+      "by_label": "内訳",
+      "dim_runtime": "ランタイム",
+      "dim_provider": "プロバイダー",
+      "dim_model": "モデル",
+      "tokens": "トークン/秒",
+      "cost": "コスト/時",
+      "tasks": "タスク/時"
+    }
   }
 }

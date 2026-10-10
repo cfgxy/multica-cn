@@ -800,12 +800,17 @@ describe("DashboardPage — quick-range period navigation", () => {
     cleanup();
   });
 
-  // The StatWindow rides inside every dashboard query key (dashboardKeys.*),
+  // The StatWindow rides inside every rollup query key (dashboardKeys.*),
   // so reading windows off the captured keys asserts what the six endpoints
-  // are actually asked for rather than what the trigger label claims.
+  // are actually asked for rather than what the trigger label claims. The
+  // live metric panels (usage-resources / usage-traffic) are excluded: they
+  // deliberately run on their own relative windows, independent of the
+  // page's calendar window, so the one-window invariant below is about the
+  // rollups only.
   function askedWindows(): string[] {
     return queryKeys
       .filter((k) => k[0] === "dashboard")
+      .filter((k) => !String(k[2]).startsWith("usage-"))
       .map((k) => JSON.stringify(k[3]));
   }
 

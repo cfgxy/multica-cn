@@ -1757,6 +1757,35 @@ const DashboardUsageDailySchema = z.object({
 
 export const DashboardUsageDailyListSchema = z.array(DashboardUsageDailySchema);
 
+// Usage-panel proxy payloads (RUYI-618). `configured: false` means the
+// backend has no PROMETHEUS_URL — the UI hides the section, so everything
+// else is allowed to be absent. Series keys vary per panel and grow with
+// new charts, hence the open z.record instead of an enum.
+const UsageMetricPointSchema = z.object({
+  t: z.number(),
+  v: z.number(),
+});
+
+const UsageMetricSeriesSchema = z.object({
+  labels: z.record(z.string(), z.string()).default({}),
+  points: z.array(UsageMetricPointSchema).default([]),
+});
+
+export const DashboardUsageResourcesSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export const DashboardUsageTrafficSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  by: z.string().default("provider"),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
   provider: z.string().default(""),
