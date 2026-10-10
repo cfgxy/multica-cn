@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { runtimeDisplayLabel, runtimeDisplayName } from "./display";
 
@@ -10,7 +11,10 @@ describe("runtimeDisplayName", () => {
 
   it("trims the custom name", () => {
     expect(
-      runtimeDisplayName({ name: "Claude (host)", custom_name: "  Prod Box  " }),
+      runtimeDisplayName({
+        name: "Claude (host)",
+        custom_name: "  Prod Box  ",
+      }),
     ).toBe("Prod Box");
   });
 
@@ -142,4 +146,20 @@ describe("runtimeDisplayLabel", () => {
       }),
     ).toBe("box (Codex)");
   });
+});
+
+it("keeps the execution account visible even with a custom runtime name", () => {
+  expect(
+    runtimeDisplayLabel({
+      name: "Claude (tensor)",
+      custom_name: "My CLI",
+      provider: "claude",
+      execution_source: {
+        binding_id: "b",
+        linux_user: "mas_glite",
+        host: "10.10.0.31",
+        preferred: true,
+      },
+    }),
+  ).toBe("My CLI · mas_glite@10.10.0.31 (Claude)");
 });

@@ -5,6 +5,7 @@ import {
   User,
   SlidersHorizontal,
   Key,
+  KeyRound,
   ShieldCheck,
   Settings,
   Users,
@@ -40,9 +41,12 @@ import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
 import { ChatTab } from "./chat-tab";
 import { IssueTab } from "./issue-tab";
+import { ComputersTab } from "./computers-tab";
+import { CredentialsTab } from "./credentials-tab";
 import { TokensTab } from "./tokens-tab";
 import { AuthorizationsTab } from "./authorizations-tab";
 import { WorkspaceTab } from "./workspace-tab";
+import { WorkspaceLinuxUsersTab } from "./workspace-linux-users-tab";
 import { MembersTab } from "./members-tab";
 import { RepositoriesTab } from "./repositories-tab";
 import { GitHubTab } from "./github-tab";
@@ -64,7 +68,7 @@ import { CredentialsTab } from "./credentials-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
-const ACCOUNT_TAB_KEYS = ["profile", "preferences", "shortcuts", "issue", "chat", "notifications", "tokens", "authorizations"] as const;
+const ACCOUNT_TAB_KEYS = ["profile", "preferences", "shortcuts", "issue", "chat", "notifications", "tokens", "computers", "credentials", "authorizations"] as const;
 const ACCOUNT_TAB_ICONS = {
   profile: User,
   preferences: SlidersHorizontal,
@@ -73,12 +77,15 @@ const ACCOUNT_TAB_ICONS = {
   chat: MessageCircle,
   notifications: Bell,
   tokens: Key,
+  computers: Server,
+  credentials: KeyRound,
   authorizations: ShieldCheck,
 } as const;
 
 const WORKSPACE_TAB_KEYS = [
   "general",
   "voice",
+  "linux_users",
   "repositories",
   "github",
   "integrations",
@@ -98,6 +105,7 @@ const WORKSPACE_TAB_KEYS = [
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
   voice: "voice",
+  linux_users: "linux-users",
   repositories: "repositories",
   github: "github",
   integrations: "integrations",
@@ -117,6 +125,7 @@ const WORKSPACE_TAB_VALUES = {
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
   voice: Mic,
+  linux_users: Server,
   repositories: FolderGit2,
   github: GitHubMark,
   integrations: Plug,
@@ -303,8 +312,12 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="chat"><ChatTab /></TabsContent>
           <TabsContent value="notifications"><NotificationsTab /></TabsContent>
           <TabsContent value="tokens"><TokensTab /></TabsContent>
+          <TabsContent value="computers"><ComputersTab /></TabsContent>
+          <TabsContent value="credentials"><CredentialsTab /></TabsContent>
           <TabsContent value="authorizations"><AuthorizationsTab /></TabsContent>
           <TabsContent value="workspace"><WorkspaceTab /></TabsContent>
+          <TabsContent value="voice"><VoiceTab /></TabsContent>
+          <TabsContent value="linux-users"><WorkspaceLinuxUsersTab /></TabsContent>
           <TabsContent value="voice"><VoiceTab /></TabsContent>
           <TabsContent value="repositories"><RepositoriesTab /></TabsContent>
           <TabsContent value="github"><GitHubTab /></TabsContent>
