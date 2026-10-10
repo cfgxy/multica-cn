@@ -113,9 +113,14 @@ test.describe("Chat attachments", () => {
     );
     createdAgentId = agentIns.rows[0].id as string;
 
+    // explicitly_created_at is required by the member-visible session
+    // projection (GetPublicChatSessionInWorkspace): sessions created through
+    // the product always carry it via MarkChatSessionExplicitlyCreated, and
+    // upload-file resolves chat_session_id through that same gate. A raw
+    // insert without the marker is invisible to the upload route (404).
     const sessionIns = await pgc.query(
-      `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status)
-       VALUES ($1, $2, $3, 'E2E Chat Attachment Session', 'active')
+      `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, explicitly_created_at)
+       VALUES ($1, $2, $3, 'E2E Chat Attachment Session', 'active', now())
        RETURNING id`,
       [ws.id, createdAgentId, userId],
     );
