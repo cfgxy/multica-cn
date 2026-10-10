@@ -58,6 +58,7 @@
       "minimatch@5>brace-expansion": "2.1.4",
       "minimatch@9>brace-expansion": "2.1.4",
       "minimatch@10>brace-expansion": "5.0.9",
+      "@tailwindcss/node>lightningcss": "^1.33.0",
       "builder-util-runtime": "9.7.0"
     },
     "patchedDependencies": {
