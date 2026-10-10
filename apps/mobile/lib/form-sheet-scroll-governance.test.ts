@@ -43,6 +43,7 @@ vi.mock("react-native", () => ({
     get OS() {
       return state.platformOS;
     },
+    select: (specifics: Record<string, unknown>) => specifics[state.platformOS],
   },
 }));
 vi.mock("expo-router", () => ({
@@ -270,5 +271,64 @@ describe("formSheet 滚动治理（RUYI-637）", () => {
         count(text, /<(FlatList|ScrollView|SectionList)/g),
       );
     }
+  });
+
+  // RUYI-637 返工（QA FAIL 两项 P1）：Android 上 Material BottomSheetBehavior
+  // 默认由嵌套滚动驱动 sheet 升降（折叠档上滑先涨档再滚内容），且 sheet 内容
+  // 只按最大档高度测一次、折叠档下部被裁剪而非溢出滚动容器——前者对应缺陷 1
+  // 的手势抢占面，后者是缺陷 2「小档内容不可滚」的直接根因。跨端 prop
+  // `sheetExpandsWhenScrolledToEdge=false` 在 screens 4.23 Android 侧是死 prop，
+  // 由 pnpm patch 补齐接线（下方两条源码形态断言钉住原生契约，RN 原生手势
+  // 跑不进 node lane，机械能钉的只有接线本身）。
+  it("Android formSheet 路由声明 sheetExpandsWhenScrolledToEdge:false（内容滚动优先）", () => {
+    state.platformOS = "android";
+    renderLayout();
+    const formSheets = state.captured.filter(
+      (s) => s.options.presentation === "formSheet",
+    );
+    expect(formSheets.length, "android formSheet 路由数").toBeGreaterThan(0);
+    for (const { name, options } of formSheets) {
+      expect(options.sheetExpandsWhenScrolledToEdge, `android/${name}`).toBe(
+        false,
+      );
+    }
+  });
+
+  it("iOS 不受本单影响：sheetExpandsWhenScrolledToEdge 保持 screens 默认（滚动涨档性格不变）", () => {
+    state.platformOS = "ios";
+    renderLayout();
+    const formSheets = state.captured.filter(
+      (s) => s.options.presentation === "formSheet",
+    );
+    expect(formSheets.length, "ios formSheet 路由数").toBeGreaterThan(0);
+    for (const { name, options } of formSheets) {
+      expect(
+        options.sheetExpandsWhenScrolledToEdge,
+        `ios/${name}`,
+      ).toBeUndefined();
+    }
+  });
+
+  it("原生补丁：两条配置路径都把 sheetExpandsWhenScrolledToEdge 接到 isDraggableOnNestedScroll", () => {
+    const patch = source("../../patches/react-native-screens@4.23.0.patch");
+    // ScreenModalFragment.configureBehaviour（dialog 打开路径）与
+    // SheetDelegate.configureBottomSheetBehaviour（insets/键盘重配路径）
+    // 各一处，少一处就有路径漏掉该语义。
+    expect(
+      count(patch, /isDraggableOnNestedScroll = screen\.sheetExpandsWhenScrolledToEdge/g),
+    ).toBe(2);
+  });
+
+  it("原生补丁：折叠档内容按可见档位高度重测（小档可滚动的前提）", () => {
+    const patch = source("../../patches/react-native-screens@4.23.0.patch");
+    // 1. BottomSheetDialogRootView 提供测量期高度覆盖（EXACTLY 规格）。
+    expect(patch).toMatch(/contentHeightOverride/);
+    expect(patch).toMatch(/makeMeasureSpec\([^,]+, View\.MeasureSpec\.EXACTLY\)/);
+    // 2. 初始档位为折叠档时（打开即 0.6）在配置期应用覆盖——此路径无状态变化
+    //    回调，漏掉则短内容 sheet 打开即下部裁剪。
+    expect(patch).toMatch(/applyInitialDetentHeight/);
+    // 3. 档位停靠回调更新覆盖：折叠档→firstHeight（可见档位高），展开档→还原。
+    expect(patch).toMatch(/STATE_COLLAPSED ->[\s\S]*?firstHeight\(containerHeight\)/);
+    expect(patch).toMatch(/STATE_EXPANDED -> null/);
   });
 });
