@@ -12,7 +12,8 @@
   origin 集成分支 tip）→ upstream `c8d6a1fad03d20a020ca90d1e50257d9f060ee87`
   （2026-10-10 17:03:32 +0800）
 - 吸收提交数：38（安全 3 + CLI 13 + desktop 6 + selfhost 3 + test 13）
-- 累计 delta：382 files changed，+10999 / −8341（含 docs、让号重编、闸门与修复提交）
+- 累计 delta（分支累计，含 docs、让号重编、闸门与三笔修复提交）：383 files
+  changed，+11132 / −8342
 
 ### 提交清单（簇间可区分）
 
@@ -27,6 +28,8 @@
 | `73d85cf4be97705b10c14336182266218cf4372a` | C-test：测试簇 13 条（294 files，+3537 / −7806） |
 | `86cc29139ae0775106dc616ce4e99b5240ae57ce` | 方案 v2 §3.3 三条机械断言脚本化（`server/cmd/migrate/upstream_sync_mechanical_gates_test.go`） |
 | `447278afd742d32e58e89c37407d806243a38139` | 吸收测试 `App.auth-recovery` 补齐 fork mock 面（全量验证发现，见冲突裁决） |
+| `7f8fd7029fd0815e04813978ef57ba237b78d789` | 本执行日志批次一节落仓 |
+| `2024dcefd8d0c5a9caae4b8fcca47363ec8f4e2e` | 锁等待白名单补 `advisory` 事件，对齐上游 helper（全量验证发现，见冲突裁决） |
 
 ### 迁移编号处置：457/458 → 945/946
 
@@ -91,6 +94,13 @@ fork 未吸收的生产架构时，测试随宿主簇顺延至后续批次。
   - `mermaid-diagram.test.tsx`：上游删除 `readFileSync` import 是因其选择测试改写；
     fork RUYI-80 测试仍依赖，保留 import。
   - `.gitignore` 合并：fork 证据忽略块保留，追加上游 `perf-report/`。
+  - **helper 白名单消解失误（`2024dcefd8` 修复）**：吸收的竞态测试确定性加固
+    （autopilot 订阅保存 / subtree 退订 `LosesToConcurrentRevoke`）依赖
+    `waitForWaiterBlockedBy` 识别 advisory 锁等待，上游 helper 白名单含
+    `'advisory'` 而 fork 侧旧版仅 `transactionid`/`tuple`；冲突消解保留了
+    fork helper，helper 结构性看不到 `pg_advisory_xact_lock` 等待，两个测试
+    确定性误报 never-blocked。按上游补事件后即过——教训：吸收测试与其测试
+    基础设施（helper/mock 面）必须同簇整体吸收，不得按 hunk 拆开取舍。
 
 ### 顺延登记（batch-2 钩稽清单）
 
@@ -121,8 +131,10 @@ fork 未吸收的生产架构时，测试随宿主簇顺延至后续批次。
   「hides the more-actions trigger」1 例——该测试与其被测文件在本批 382 文件
   delta 之外、基线内容一致，且在吸收前 HEAD 确定性复现 4/4，定性为**基线预存红**
   （不在既有红口径清单，本单登记），不属本批引入。TS 阶段（[1/5][2/5]）两跑
-  证据齐备；[3/5] Go 全套、[5/5] Playwright E2E 因该预存红阻断 turbo 提前退出，
-  改为按 check.sh 同序对 dev1 槽位单独执行（结论见当轮 Issue 评论）。
+  证据齐备。[3/5] Go 全套首跑 82 包 ok、仅 handler 包 2 例失败（上述 helper
+  白名单误报）→ `2024dcefd8` 修复 → 复跑全套通过（exit 0，含 handler 包）；
+  `migrate up` 对 dev1 幂等 skip 至 945/946 后 Done。[5/5] Playwright E2E
+  对 dev1 单独执行，结论见当轮 Issue 评论。
 
 ### 遗留与授权项
 
