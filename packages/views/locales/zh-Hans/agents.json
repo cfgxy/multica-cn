@@ -86,7 +86,8 @@
     "fallback_runtime_cloud": "云端",
     "fallback_runtime_local": "本地",
     "actions_aria": "行操作",
-    "task_count_other": "{{count}} 个 task"
+    "task_count_other": "{{count}} 个 task",
+    "paused_other": "已暂停 · {{count}} 个任务"
   },
   "activity_tooltip": {
     "created_today": "今天创建",
@@ -126,7 +127,18 @@
     "archive_dialog_title": "归档\"{{name}}\"？",
     "archive_dialog_description": "归档后这个智能体将无法被分配或提及，进行中的 task 会被取消。所有历史会被保留，可以稍后恢复。",
     "archive_dialog_cancel": "取消",
-    "archive_dialog_confirm": "归档"
+    "archive_dialog_confirm": "归档",
+    "pause_scheduling": "暂停调度",
+    "resume_scheduling": "恢复调度",
+    "paused_by_workspace": "已按工作区暂停",
+    "pause_dialog_title": "暂停 {{name}} 的调度？",
+    "pause_dialog_description": "队列中的任务继续保留、正在运行的任务正常结束，但在恢复之前不会认领新任务。冻结操作会记入审计日志。",
+    "pause_dialog_cancel": "取消",
+    "pause_dialog_confirm": "暂停调度",
+    "agent_paused_toast": "已暂停该智能体的调度",
+    "agent_resumed_toast_other": "调度已恢复 — {{count}} 个任务开始流动",
+    "pause_failed_toast": "暂停调度失败",
+    "resume_failed_toast": "恢复调度失败"
   },
   "detail": {
     "back_to_agents": "智能体",
@@ -158,7 +170,15 @@
     "runtime_required_toast": "请先绑定运行时，再运行该智能体。",
     "assign_work": "分配工作",
     "more_actions_aria": "智能体操作",
-    "updated": "{{when}}更新"
+    "updated": "{{when}}更新",
+    "paused_banner_other": "调度已暂停 — {{count}} 个任务在队列中等待。队列任务继续合并，运行中任务正常结束。",
+    "paused_by_workspace_banner": "工作区级调度已暂停。请在工作区设置中恢复 — 智能体级恢复无法解除工作区冻结。",
+    "resume_scheduling": "恢复调度",
+    "more_pause_scheduling": "暂停调度",
+    "agent_paused_toast": "已暂停该智能体的调度",
+    "agent_resumed_toast_other": "调度已恢复 — {{count}} 个任务开始流动",
+    "pause_failed_toast": "暂停调度失败",
+    "resume_failed_toast": "恢复调度失败"
   },
   "inspector": {
     "section_profile": "资料",
