@@ -1357,6 +1357,15 @@ func resumeWasRejected(requestedResume, emitted string, failed bool, texts ...st
 			}
 		}
 	}
+	// RUYI-659: a resumed run that died before producing ANY session never
+	// let the CLI answer the resume at all — the pipe crashed first. The
+	// two-signal predicate (crash phrase × claude pipe wrapper) keeps
+	// controlled failures out; a crash AFTER a session was emitted leaves
+	// the pointer alone, because that conversation is real and may be
+	// perfectly healthy.
+	if emitted == "" && taskfailure.ClaudePipelineCrash(strings.Join(texts, "\n")) {
+		return true
+	}
 	// Claude answered with a different session than the one we asked to
 	// continue: the requested transcript did not load.
 	return emitted != "" && emitted != requestedResume
