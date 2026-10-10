@@ -161,9 +161,13 @@ test.describe("Agent MCP tab (creator-only)", () => {
     });
     await waitForPageText(page, "MCP Test Agent");
 
-    // The creator-only tab entry is present and opens the connection list.
-    // Agent detail tabs are <button role="tab"> (workbench redesign #5263) —
-    // byRole("button") never matches them.
+    // Capability entries live in the secondary nav under the top-level
+    // "Capabilities" tab (post-#5263 workbench evolution); MCP Apps renders
+    // there, and only for the agent owner with the composio flag enabled.
+    const capabilitiesTab = page.getByRole("tab", { name: "Capabilities" });
+    await expect(capabilitiesTab).toBeVisible({ timeout: 15000 });
+    await capabilitiesTab.click();
+
     const tab = page.getByRole("tab", { name: "MCP Apps" });
     await expect(tab).toBeVisible({ timeout: 15000 });
     await tab.click();
@@ -186,12 +190,14 @@ test.describe("Agent MCP tab (creator-only)", () => {
     });
     await waitForPageText(page, "MCP Test Agent");
 
-    // Other tabs render, but the creator-only MCP Apps entry must not.
-    // "Activity" stopped being a tab when the workbench redesign (#5263)
-    // folded it into Overview; "Settings" is an always-rendered top tab.
-    await expect(page.getByRole("tab", { name: "Settings" })).toBeVisible({
-      timeout: 15000,
-    });
+    // Open the Capabilities section: the creator-only MCP Apps entry must not
+    // appear even inside the secondary nav where owners see it. "Settings"
+    // stays an always-rendered top tab, so its presence proves the page
+    // rendered with the agent owned by someone else.
+    const capabilitiesTab = page.getByRole("tab", { name: "Capabilities" });
+    await expect(capabilitiesTab).toBeVisible({ timeout: 15000 });
+    await capabilitiesTab.click();
+    await expect(page.getByRole("tab", { name: "Settings" })).toBeVisible();
     await expect(page.getByRole("tab", { name: "MCP Apps" })).toHaveCount(0);
   });
 });

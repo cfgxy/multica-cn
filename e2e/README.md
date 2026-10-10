@@ -85,6 +85,16 @@ release entry 上复跑后，每个失败症状按且仅按以下三类归因：
 
 交叉比对义务：归因涉及 Comments 编辑器、错误呈现/i18n 时与 RUYI-561 改动面比对；涉及决策卡 UI 时与 RUYI-620 改动面比对，避免重复修复与撞分支。
 
+### 跨基线对照采样（存量/回归终判）
+
+「存量」要求同一探针在两个 production release 基线上行为一致；执行顺序：
+
+1. 统一由**测试链路分支的载体**驱动槽位（`scripts/dev-env.sh`、`scripts/e2e-release-entry.sh`、`scripts/e2e-preflight.sh` 都用本分支版本）——被测 checkout 自带的旧脚本可能缺 release entry，禁止用其驱动（QA 轮 4 掉坑点）。
+2. 先清理槽位 worktree 再切基线：临时 spec 与改动先还原/删除（`git -C <槽位worktree> checkout -- .`），否则 `use <SHA>` 撞脏文件。写命令带 `MULTICA_CALLER_OWNER=<issue-id>`。
+3. `use <基线SHA>` → `e2e-release-entry.sh <slot> build` → `MULTICA_WEB_MODE=release dev-env.sh <slot> up --components api,web` → 预检；预检 manifest 的 `git_sha` 必须逐字等于被测基线才算有效对照。
+4. 归因探针写成一次性 spec 临时拷入槽位 `e2e/` 跑（不进 commit）：`ATTR_PROBE_TAG=<main|target> pnpm exec playwright test e2e/<probe>.spec.ts`，探针把完整请求/响应体 dump 到 `attr-probe-out/<tag>-*.json`，采样后从槽位删除探针与 dump 目录，证据落回本载体。
+5. 槽位库 schema 是只升不降的在飞超集，老基线 server 对超集兼容；探针断言只依赖行为契约（状态码、total、错误码），不依赖新列新表。对照完成后 `use` 回目标基线或直接 `down` + `lock-release`。
+
 ## 5. 清理
 
 - E2E 合成工作区（`e2e-workspace-*`/`e2e-mcp-*`）：正式 `DELETE /api/workspaces/{id}` 逐个清理并复查库内残留为 0（QA 轮 4 先例：19 个全部 204）。
