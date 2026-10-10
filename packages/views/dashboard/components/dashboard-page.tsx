@@ -625,93 +625,101 @@ export function DashboardPage() {
           <TabsContent value="usage" className="space-y-5">
             {usageLoading ? (
               <DashboardSkeleton />
-            ) : usageHasNoData ? (
-              <DashboardEmpty />
             ) : (
               <>
-                {/* KPI row — same 3-divide-x card grid the runtime usage
-                    section uses, expanded to four tiles. */}
-                <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
-                  <KpiCard
-                    label={t(($) => $.kpi.cost_label, { days: windowLen })}
-                    value={<CurrencyNumberFlow value={totals.cost} locales={locales} />}
-                  />
-                  <KpiCard
-                    label={t(($) => $.kpi.tokens_label, { days: windowLen })}
-                    value={
-                      <CompactNumberFlow
+                {usageHasNoData ? (
+                  <DashboardEmpty />
+                ) : (
+                  <>
+                    {/* KPI row — same 3-divide-x card grid the runtime usage
+                        section uses, expanded to four tiles. */}
+                    <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+                      <KpiCard
+                        label={t(($) => $.kpi.cost_label, { days: windowLen })}
+                        value={<CurrencyNumberFlow value={totals.cost} locales={locales} />}
+                      />
+                      <KpiCard
+                        label={t(($) => $.kpi.tokens_label, { days: windowLen })}
                         value={
-                          totals.input +
-                          totals.output +
-                          totals.cacheRead +
-                          totals.cacheWrite
+                          <CompactNumberFlow
+                            value={
+                              totals.input +
+                              totals.output +
+                              totals.cacheRead +
+                              totals.cacheWrite
+                            }
+                            locales={locales}
+                          />
                         }
-                        locales={locales}
+                        hint={t(($) => $.kpi.tokens_hint, {
+                          input: formatTokens(totals.input),
+                          output: formatTokens(totals.output),
+                        })}
                       />
-                    }
-                    hint={t(($) => $.kpi.tokens_hint, {
-                      input: formatTokens(totals.input),
-                      output: formatTokens(totals.output),
-                    })}
-                  />
-                  <KpiCard
-                    label={t(($) => $.kpi.run_time_label, { days: windowLen })}
-                    value={
-                      <DurationNumberFlow
-                        seconds={runTimeTotals.totalSeconds}
-                        lessThanMinuteLabel={lessThanMinuteLabel}
-                        locales={locales}
+                      <KpiCard
+                        label={t(($) => $.kpi.run_time_label, { days: windowLen })}
+                        value={
+                          <DurationNumberFlow
+                            seconds={runTimeTotals.totalSeconds}
+                            lessThanMinuteLabel={lessThanMinuteLabel}
+                            locales={locales}
+                          />
+                        }
+                        hint={t(($) => $.kpi.run_time_hint, {
+                          tasks: runTimeTotals.taskCount,
+                        })}
                       />
-                    }
-                    hint={t(($) => $.kpi.run_time_hint, {
-                      tasks: runTimeTotals.taskCount,
-                    })}
-                  />
-                  <KpiCard
-                    label={t(($) => $.kpi.tasks_label, { days: windowLen })}
-                    value={
-                      <NumberFlow
-                        value={runTimeTotals.taskCount}
-                        locales={locales}
-                        format={{ maximumFractionDigits: 0 }}
-                        aria-label={String(runTimeTotals.taskCount)}
+                      <KpiCard
+                        label={t(($) => $.kpi.tasks_label, { days: windowLen })}
+                        value={
+                          <NumberFlow
+                            value={runTimeTotals.taskCount}
+                            locales={locales}
+                            format={{ maximumFractionDigits: 0 }}
+                            aria-label={String(runTimeTotals.taskCount)}
+                          />
+                        }
+                        // Deliberately sourced from `runTimeTotals`, not the
+                        // failure rollup: the tile's own value counts started tasks
+                        // only, so quoting the failure rollup's larger failure count
+                        // here would put two different denominators in one tile. The
+                        // Errors tab states its rate with the denominator spelled
+                        // out instead.
+                        hint={t(($) => $.kpi.tasks_hint, {
+                          failed: runTimeTotals.failedCount,
+                        })}
                       />
-                    }
-                    // Deliberately sourced from `runTimeTotals`, not the
-                    // failure rollup: the tile's own value counts started tasks
-                    // only, so quoting the failure rollup's larger failure count
-                    // here would put two different denominators in one tile. The
-                    // Errors tab states its rate with the denominator spelled
-                    // out instead.
-                    hint={t(($) => $.kpi.tasks_hint, {
-                      failed: runTimeTotals.failedCount,
-                    })}
-                  />
-                </div>
+                    </div>
 
-                <UsageTrendCard
-                  allowedDims={allowedDims}
-                  dailyCost={dailyCost}
-                  dailyTokens={dailyTokens}
-                  dailyTime={dailyTime}
-                  dailyTasks={dailyTasks}
-                  weeklyCost={weeklyCost}
-                  weeklyTokens={weeklyTokens}
-                  weeklyTime={weeklyTime}
-                  weeklyTasks={weeklyTasks}
-                  lessThanMinuteLabel={lessThanMinuteLabel}
-                />
+                    <UsageTrendCard
+                      allowedDims={allowedDims}
+                      dailyCost={dailyCost}
+                      dailyTokens={dailyTokens}
+                      dailyTime={dailyTime}
+                      dailyTasks={dailyTasks}
+                      weeklyCost={weeklyCost}
+                      weeklyTokens={weeklyTokens}
+                      weeklyTime={weeklyTime}
+                      weeklyTasks={weeklyTasks}
+                      lessThanMinuteLabel={lessThanMinuteLabel}
+                    />
 
-                <Leaderboard
-                  rows={visibleAgentRows}
-                  agents={agents}
-                  deletedAgentCount={deletedAgentCount}
-                  lessThanMinuteLabel={lessThanMinuteLabel}
-                />
+                    <Leaderboard
+                      rows={visibleAgentRows}
+                      agents={agents}
+                      deletedAgentCount={deletedAgentCount}
+                      lessThanMinuteLabel={lessThanMinuteLabel}
+                    />
+                  </>
+                )}
 
-                {/* Live metric panels — hidden entirely (each renders null)
-                    when the deployment has no Prometheus backend. They run on
-                    their own relative windows, so they sit outside the
+                {/* Live metric panels — mounted regardless of the task-usage
+                    state above: they read Prometheus, not the calendar rollups,
+                    so a workspace with no spend yet still has live host and
+                    traffic data to show (and its own panel-level empty state
+                    when it doesn't). Hidden entirely (each renders null) when
+                    the deployment has no Prometheus backend. They run on their
+                    own relative windows, so they sit outside the
                     calendar-window data flow above. */}
                 <UsageResourcesCard wsId={wsId} />
                 <UsageTrafficCard wsId={wsId} />
