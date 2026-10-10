@@ -426,6 +426,50 @@ If you already have a `pg_cron` job in production, the safe sequence to retire i
 
 External cron / systemd timer / Kubernetes `CronJob` setups that call `SELECT rollup_task_usage_hourly()` directly can be retired the same way — once `sys_cron_executions` shows steady SUCCESS rows from the in-process scheduler, the external job is redundant and can be removed.
 
+## Observability Stack (Prometheus)
+
+The Usage page has two live panels — **System resources** (per-daemon host CPU / memory / disk) and **Model traffic** (token / cost / task rates). They are backed by Prometheus: the server exposes everything on a single `/metrics` endpoint, and the panels proxy their queries through the backend, so the browser never talks to Prometheus directly. There is deliberately **no Grafana** in the stack — the web UI is the only consumer.
+
+Components and how the data flows:
+
+1. **node-exporter** (optional, per host) — collects host metrics with the industry-standard exporter instead of anything Multica-specific. `make daemon-install` sets it up automatically (`multica-node-exporter.service`, loopback only, small fixed resource budget); the daemon scrapes it and relays samples to the server with every heartbeat.
+2. **Server `/metrics`** — the single scrape target. It serves both the relayed `multica_daemon_*` host series and the `multica_task_usage_*` aggregates rolled up from task usage.
+3. **Prometheus** (optional, in the Docker stack) — scrapes the server every 15s. The panels read from it via the backend proxy endpoints (`/api/dashboard/usage/resources` and `/api/dashboard/usage/traffic`).
+
+### Enabling it (Docker Compose)
+
+Add to your `.env`:
+
+```bash
+PROMETHEUS_URL=http://prometheus:9090
+```
+
+Then bring up the observability profile (metrics on the server itself are on by default, listening inside the compose network on `:9091` — override with `METRICS_ADDR`, set it empty to turn the endpoint off):
+
+```bash
+docker compose --profile observability up -d
+```
+
+That starts the pinned Prometheus (`prom/prometheus`, data retained 15 days) with the bundled scrape config (`deploy/prometheus/prometheus.yml`). Once it has scraped for a minute or two, the two panels appear on the Usage page. Hide them again by clearing `PROMETHEUS_URL` and restarting the backend — an unset `PROMETHEUS_URL` means "no observability stack", which the UI treats as normal, not an error.
+
+### Enabling it (daemon hosts)
+
+Daemons report host metrics only when they have a node-exporter to scrape. `make daemon-install` / `daemon-update` handle this by default: they install `multica-node-exporter.service` (downloading the upstream binary to `~/.local/bin/node_exporter` if absent), and render `MULTICA_DAEMON_NODE_EXPORTER_URL=http://127.0.0.1:9100/metrics` into the daemon unit. To opt a host out, install with `NODE_EXPORTER_URL=` (empty) — the daemon then sends heartbeats without a resources payload and the panels simply have nothing to show for it. Tune the listen address with `NODE_EXPORTER_LISTEN` (defaults to `127.0.0.1:9100`, loopback only; the exporter is never published to the network).
+
+### Verifying
+
+```bash
+# Server metrics reachable from the compose network:
+docker compose exec prometheus wget -qO- backend:9091/metrics | head
+
+# Both metric families present:
+curl -s http://127.0.0.1:9091/metrics | grep -c '^multica_daemon_'
+curl -s http://127.0.0.1:9091/metrics | grep -c '^multica_task_usage_'
+
+# Prometheus sees the target as up:
+curl -s http://127.0.0.1:9099/api/v1/targets | grep -o '"health":"up"'
+```
+
 ## Stopping Services
 
 If you installed via the install script:

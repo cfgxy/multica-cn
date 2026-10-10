@@ -1012,6 +1012,38 @@ func (q *Queries) ListVisibleAgentRuntimes(ctx context.Context, arg ListVisibleA
 	return items, nil
 }
 
+const listWorkspaceDaemonIDs = `-- name: ListWorkspaceDaemonIDs :many
+SELECT DISTINCT daemon_id
+FROM agent_runtime
+WHERE workspace_id = $1
+  AND daemon_id IS NOT NULL
+  AND daemon_id <> ''
+`
+
+// Distinct daemon identities present in the workspace (RUYI-618): the
+// Prometheus proxy scopes host-resource series to these via a label matcher,
+// so a workspace only sees the hosts it owns. Legacy NULL daemon_id rows
+// (pre-registration cloud runtimes) have no host to scope to and are skipped.
+func (q *Queries) ListWorkspaceDaemonIDs(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.Text, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceDaemonIDs, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Text{}
+	for rows.Next() {
+		var daemon_id pgtype.Text
+		if err := rows.Scan(&daemon_id); err != nil {
+			return nil, err
+		}
+		items = append(items, daemon_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAgentRuntime = `-- name: LockAgentRuntime :one
 SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
 WHERE id = $1

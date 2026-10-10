@@ -130,6 +130,9 @@ import type {
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
   DashboardUsageDaily,
+  DashboardUsageResources,
+  DashboardUsageTraffic,
+  DashboardUsageTrafficDim,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
@@ -357,6 +360,8 @@ import {
   DashboardFailureByAgentListSchema,
   DashboardUsageByAgentListSchema,
   DashboardUsageDailyListSchema,
+  DashboardUsageResourcesSchema,
+  DashboardUsageTrafficSchema,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
@@ -2805,6 +2810,41 @@ export class ApiClient {
       DashboardUsageDailyListSchema,
       [],
       { endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  // System-resource panel (RUYI-618): Prometheus-proxied per-daemon series
+  // for the usage page. A 200 with configured=false is the "no observability
+  // stack" normal state, not an error.
+  async getDashboardUsageResources(
+    params: { window?: string },
+  ): Promise<DashboardUsageResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/resources?${search}`);
+    return parseWithFallback<DashboardUsageResources>(
+      raw,
+      DashboardUsageResourcesSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Model-traffic panel (RUYI-618): token/cost/task rates by runtime,
+  // provider, or model, aggregated server-side from the task-usage
+  // exposition.
+  async getDashboardUsageTraffic(
+    params: { window?: string; by?: DashboardUsageTrafficDim },
+  ): Promise<DashboardUsageTraffic> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    if (params.by) search.set("by", params.by);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/traffic?${search}`);
+    return parseWithFallback<DashboardUsageTraffic>(
+      raw,
+      DashboardUsageTrafficSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/traffic" },
     );
   }
 

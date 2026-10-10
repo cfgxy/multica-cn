@@ -1411,6 +1411,49 @@ export interface DashboardAgentRunTime {
   cancelled_count: number;
 }
 
+// One Prometheus sample on a usage-panel series: Unix seconds plus the
+// evaluated value (RUYI-618). The server proxy normalizes Prometheus's
+// string-encoded values to numbers already.
+export interface UsageMetricPoint {
+  t: number;
+  v: number;
+}
+
+// One labeled series from the usage-panel proxy endpoints. Which labels are
+// present depends on the query (resources carry daemon/mountpoint/mode,
+// traffic carries the chosen breakdown dimension).
+export interface UsageMetricSeries {
+  labels: Record<string, string>;
+  points: UsageMetricPoint[];
+}
+
+// System-resource panel payload (GET /api/dashboard/usage/resources).
+// `configured` is false when the server has no PROMETHEUS_URL — a normal
+// deployment without the observability stack, which the UI renders by
+// hiding the section. `series` is keyed by panel chart (cpu_cores,
+// memory_total_bytes, memory_available_bytes, swap_total_bytes,
+// swap_free_bytes, filesystem_size_bytes, filesystem_avail_bytes,
+// disk_read_bytes_per_second, disk_written_bytes_per_second).
+export interface DashboardUsageResources {
+  configured: boolean;
+  window?: string;
+  step_seconds?: number;
+  series?: Record<string, UsageMetricSeries[]>;
+}
+
+// Model-traffic panel payload (GET /api/dashboard/usage/traffic). Series are
+// rates (tokens/s, USD/s, tasks/s) aggregated server-side by the requested
+// dimension: runtime, provider, or model.
+export type DashboardUsageTrafficDim = "runtime" | "provider" | "model";
+
+export interface DashboardUsageTraffic {
+  configured: boolean;
+  window?: string;
+  by?: DashboardUsageTrafficDim;
+  step_seconds?: number;
+  series?: Record<string, UsageMetricSeries[]>;
+}
+
 // One (date) bucket of terminal-task run-time + counts for the workspace
 // dashboard. Powers the Time and Tasks metrics on the daily-trend toggle
 // — same toggle as Tokens / Cost, anchored on completed_at so day buckets

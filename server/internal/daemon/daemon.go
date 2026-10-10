@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -630,6 +631,14 @@ type Daemon struct {
 	bpWakeup   atomic.Pointer[chan struct{}]
 	bpLastWarn atomic.Int64
 
+	// Host resource relay (RUYI-618): latest node-exporter snapshot attached
+	// to heartbeats. hostSampler is nil when NodeExporterURL is empty, and
+	// hostResources stays nil until the first successful sample — heartbeats
+	// never fail or wait on the relay.
+	hostSampler   *HostResourceSampler
+	hostResources atomic.Pointer[protocol.DaemonResourceReport]
+	hostLastWarn  atomic.Int64
+
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
 	activeEnvRoots     map[string]int  // env root path -> reference count (handles reuse paths marked twice)
@@ -747,6 +756,11 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	if cfg.BackpressureEnabled {
 		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
 		d.bpSource = newMemSampleSource()
+	}
+	// Host resource relay (RUYI-618): nil sampler = disabled, heartbeats carry
+	// no resources field and no watcher goroutine runs.
+	if cfg.NodeExporterURL != "" {
+		d.hostSampler = NewHostResourceSampler(cfg.NodeExporterURL)
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2152,6 +2166,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// machine = disabled by config, no goroutine.
 	if d.bpMachine != nil {
 		go d.runBackpressureWatcher(ctx)
+	}
+
+	// Host resource relay (RUYI-618): samples the co-located node-exporter
+	// for the heartbeat-carried host series. nil sampler = disabled.
+	if d.hostSampler != nil {
+		go d.runHostResourceWatcher(ctx)
 	}
 
 	// Preflight succeeded and the background loops are up: the daemon has
@@ -4315,7 +4335,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport())
+	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport(), d.hostResourceReport())
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4460,7 +4480,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport())
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport(), d.hostResourceReport())
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
