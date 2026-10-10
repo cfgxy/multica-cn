@@ -24,6 +24,12 @@ const manyAgentsRef = vi.hoisted(() => ({ current: false }));
 // — what a plain member actually receives once the backend folds the agents
 // they may not view (MUL-5409).
 const restrictedBucketRef = vi.hoisted(() => ({ current: false }));
+// When set, per-agent rollup queries whose window equals this JSON are
+// answered with alternate fixtures — a stand-in for a server that answers
+// per-window. The leaderboard-follows-selection tests use it to prove the
+// rendered rows come from the SELECTED window's query, not the full-window
+// one.
+const lbWindowRef = vi.hoisted(() => ({ current: null as string | null }));
 
 // Kept out of the fixture ternary so the sentinel's shape reads at a glance.
 // Unlike the deleted-agents bucket this one carries real seconds / tasks: the
@@ -76,11 +82,51 @@ vi.mock("@tanstack/react-query", async () => {
         if (opts.queryKey[0] === "workspaces" && opts.queryKey[2] === "agents") {
           return {
             data: manyAgentsRef.current
-              ? Array.from({ length: 12 }, (_, i) => ({
-                  id: `bulk-${i}`,
-                  name: `Bulk Agent ${i}`,
-                }))
-              : [{ id: "agent-1", name: "Agent One" }],
+              ? [
+                  ...Array.from({ length: 12 }, (_, i) => ({
+                    id: `bulk-${i}`,
+                    name: `Bulk Agent ${i}`,
+                  })),
+                  { id: "sel-agent", name: "Selected Agent" },
+                ]
+              : [
+                  { id: "agent-1", name: "Agent One" },
+                  { id: "sel-agent", name: "Selected Agent" },
+                ],
+            isLoading: false,
+            isSuccess: true,
+          };
+        }
+        // The selected-window answer: a distinct agent, so a test can tell
+        // WHICH window's per-agent rows the leaderboard rendered.
+        if (
+          lbWindowRef.current !== null &&
+          JSON.stringify(opts.queryKey[3]) === lbWindowRef.current &&
+          (opts.queryKey[2] === "by-agent" || opts.queryKey[2] === "agent-runtime")
+        ) {
+          return {
+            data:
+              opts.queryKey[2] === "by-agent"
+                ? [
+                    {
+                      agent_id: "sel-agent",
+                      provider: "anthropic",
+                      model: "claude-sonnet-4-6",
+                      input_tokens: 7_000,
+                      output_tokens: 0,
+                      cache_read_tokens: 0,
+                      cache_write_tokens: 0,
+                      task_count: 3,
+                    },
+                  ]
+                : [
+                    {
+                      agent_id: "sel-agent",
+                      total_seconds: 60,
+                      task_count: 3,
+                      failed_count: 0,
+                    },
+                  ],
             isLoading: false,
             isSuccess: true,
           };
@@ -212,6 +258,65 @@ vi.mock("@tanstack/react-query", async () => {
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
+
+// The dashboard reaches the charts through the shared barrel, and recharts
+// paints nothing in jsdom. The barrel is stubbed with charts that expose the
+// selection seam as a button: clicking emits a span derived from the data the
+// chart was given. Without a handler the stubs render nothing — the same
+// inertness the runtime usage section (which passes no selection props)
+// relies on. `overhang` makes the emitted span cross the window edges by two
+// days, what a Mon–Sun calendar week straddling the stat window looks like.
+vi.mock("../../runtimes/components/charts", () => {
+  const addDays = (iso: string, n: number) => {
+    const d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const stub =
+    (testId: string, overhang: boolean) =>
+    ({
+      data,
+      onSelectionChange,
+    }: {
+      data: { date?: string; weekStart?: string; weekEnd?: string }[];
+      onSelectionChange?: (next: { start: string; end: string }) => void;
+    }) => {
+      if (!onSelectionChange) return null;
+      const first = data[0];
+      const last = data[data.length - 1];
+      const startDay = first?.date ?? first?.weekStart ?? "";
+      const endDay = last?.date ?? last?.weekEnd ?? "";
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            onSelectionChange({
+              start: overhang ? addDays(startDay, -2) : startDay,
+              end: overhang ? addDays(endDay, 2) : endDay,
+            })
+          }
+        >
+          {testId}
+        </button>
+      );
+    };
+  return {
+    DailyCostChart: stub("stub:daily-cost", false),
+    DailyTokensChart: stub("stub:daily-tokens", false),
+    DailyTimeChart: stub("stub:daily-time", false),
+    DailyTasksChart: stub("stub:daily-tasks", false),
+    WeeklyCostChart: stub("stub:weekly-cost", false),
+    WeeklyTokensChart: stub("stub:weekly-tokens", true),
+    WeeklyTimeChart: stub("stub:weekly-time", false),
+    WeeklyTasksChart: stub("stub:weekly-tasks", false),
+    DailyErrorsChart: stub("stub:daily-errors", false),
+    WeeklyErrorsChart: stub("stub:weekly-errors", false),
+    // errors-tab also pulls these two non-chart values from the barrel.
+    FAILURE_CLASS_COLOR: {},
+    formatRate: (failed: number, total: number) =>
+      total === 0 ? "0%" : `${Math.round((failed / total) * 100)}%`,
+  };
+});
 
 // The leaderboard renders ActorAvatar, which resolves avatar URLs through
 // the api singleton. Only the base-URL read is exercised here.
@@ -815,8 +920,11 @@ describe("DashboardPage — quick-range period navigation", () => {
 
     const current = askedWindows();
     expect(current.length).toBeGreaterThan(0);
-    // Six endpoints, one shared window — the boundary this page exists to
-    // keep, still true the moment the window starts moving.
+    // Eight useQuery sites, one shared window — the boundary this page exists
+    // to keep, still true the moment the window starts moving. The
+    // leaderboard's per-agent pair repeats the statWindow when nothing is
+    // selected, so the duplicate keys are a React Query dedupe, not extra
+    // fetches.
     expect(new Set(current).size).toBe(1);
     const currentWindow = JSON.parse(current[0]!);
 
@@ -839,5 +947,169 @@ describe("DashboardPage — quick-range period navigation", () => {
     // where › dies again — the forward direction has no future to show.
     expect(new Set(askedWindows())).toEqual(new Set(current));
     expect(screen.getByRole("button", { name: "Next period" })).toBeDisabled();
+  });
+});
+
+// The leaderboard follows the bar selection: clicking or dragging bars
+// narrows the per-agent rollups to the selected span — the rollups carry no
+// dates, so narrowing means re-querying, not filtering rows client-side.
+// Every other card (KPIs, trend charts, failures) keeps the full statWindow.
+// With no selection the leaderboard window IS the statWindow: same query
+// key, zero extra requests.
+describe("DashboardPage — the leaderboard follows the bar selection", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = true;
+    manyAgentsRef.current = false;
+    lbWindowRef.current = null;
+    tzRef.current = "UTC";
+    replaceSpy.mockClear();
+    cleanup();
+  });
+
+  afterEach(() => {
+    lbWindowRef.current = null;
+  });
+
+  function askedWindows(): string[] {
+    return queryKeys
+      .filter((k) => k[0] === "dashboard")
+      .map((k) => JSON.stringify(k[3]));
+  }
+
+  function windowsFor(kind: string): string[] {
+    return queryKeys
+      .filter((k) => k[0] === "dashboard" && k[2] === kind)
+      .map((k) => JSON.stringify(k[3]));
+  }
+
+  it("keeps one shared window everywhere and inert charts when nothing is selected", () => {
+    renderDashboard();
+
+    const current = askedWindows();
+    expect(current.length).toBeGreaterThan(0);
+    expect(new Set(current).size).toBe(1);
+    // Nothing selected, nothing scoping the leaderboard: no range chip.
+    expect(
+      screen.queryByRole("button", { name: "Clear selection" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("re-queries only the per-agent rollups on the selected span", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+    // The usage fixture carries one row at `today` (the window's last day),
+    // so the stub emits that single day as the selection.
+    const day = JSON.stringify({ start: full.end, end: full.end });
+    lbWindowRef.current = day;
+    queryKeys.length = 0;
+
+    await user.click(screen.getByRole("button", { name: "stub:daily-tokens" }));
+
+    // The per-agent rollups were asked for both the full window and the
+    // selected single day — the leaderboard's two queries moved, nothing
+    // else did.
+    expect(
+      new Set([...windowsFor("by-agent"), ...windowsFor("agent-runtime")]),
+    ).toEqual(new Set([JSON.stringify(full), day]));
+    // Date-bucketed series stay on the full window only.
+    expect(new Set(windowsFor("daily")).size).toBe(1);
+    expect(new Set(windowsFor("runtime-daily")).size).toBe(1);
+    expect(new Set(windowsFor("failures-daily")).size).toBe(1);
+    expect(new Set(windowsFor("failures-by-agent")).size).toBe(1);
+    expect(windowsFor("daily")).not.toContain(day);
+
+    // And the rows rendered come from the SELECTED window's answer, not the
+    // full-window one.
+    const board = within(screen.getByRole("list", { name: "Leaderboard" }));
+    expect(board.getByText("Selected Agent")).toBeInTheDocument();
+    expect(board.queryByText("Agent One")).not.toBeInTheDocument();
+  });
+
+  it("restores the full-window leaderboard when the selection is cleared", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+    lbWindowRef.current = JSON.stringify({ start: full.end, end: full.end });
+    await user.click(screen.getByRole("button", { name: "stub:daily-tokens" }));
+    expect(screen.getByText("Selected Agent")).toBeInTheDocument();
+
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+
+    expect(new Set(askedWindows()).size).toBe(1);
+    const board = within(screen.getByRole("list", { name: "Leaderboard" }));
+    expect(board.getByText("Agent One")).toBeInTheDocument();
+    expect(board.queryByText("Selected Agent")).not.toBeInTheDocument();
+  });
+
+  it("clamps an out-of-window span to the stat window", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+
+    // The weekly stub only renders on the Weekly cut.
+    const dims = within(screen.getByRole("group", { name: "Dimension" }));
+    await user.click(dims.getByRole("button", { name: "Weekly" }));
+
+    queryKeys.length = 0;
+    // It emits two days beyond each window edge — a Mon–Sun calendar week
+    // straddling the window start or end.
+    await user.click(screen.getByRole("button", { name: "stub:weekly-tokens" }));
+
+    // No query escapes the window the KPIs quote: the clamped selection
+    // collapsed onto the full window instead of trading past it.
+    for (const w of askedWindows().map((w) => JSON.parse(w))) {
+      expect(w.start >= full.start).toBe(true);
+      expect(w.end <= full.end).toBe(true);
+    }
+    expect(new Set(askedWindows()).size).toBe(1);
+  });
+
+  it("clears the selection when the stat window changes", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+    lbWindowRef.current = JSON.stringify({ start: full.end, end: full.end });
+    await user.click(screen.getByRole("button", { name: "stub:daily-tokens" }));
+    expect(screen.getByText("Selected Agent")).toBeInTheDocument();
+
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("button", { name: "Previous period" }));
+
+    // The shifted period's queries are all full-window again — a stale
+    // selection must not ride along to windows its bars no longer exist in.
+    expect(new Set(askedWindows()).size).toBe(1);
+  });
+
+  it("shares one selection across the Usage and Errors tabs", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    await openErrorsTab(user);
+    const full = JSON.parse(askedWindows()[0]!);
+    const day = JSON.stringify({ start: full.end, end: full.end });
+    lbWindowRef.current = day;
+    queryKeys.length = 0;
+
+    await user.click(screen.getByRole("button", { name: "stub:daily-errors" }));
+
+    // The selection is page state, not chart state: the Errors-tab chart
+    // drives the same per-agent re-query the Usage-tab charts do.
+    expect(windowsFor("by-agent")).toContain(day);
+    expect(windowsFor("daily")).not.toContain(day);
+
+    // Back on Usage the leaderboard is already on the selected span.
+    await user.click(screen.getByRole("tab", { name: "Usage" }));
+    expect(
+      within(screen.getByRole("list", { name: "Leaderboard" })).getByText(
+        "Selected Agent",
+      ),
+    ).toBeInTheDocument();
   });
 });
