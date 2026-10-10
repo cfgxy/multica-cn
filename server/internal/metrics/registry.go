@@ -18,6 +18,10 @@ type RegistryOptions struct {
 	// TaskUsage, when non-nil, is registered so the task_usage_hourly
 	// aggregates (multica_task_usage_* series) are exposed on /metrics.
 	TaskUsage prometheus.Collector
+	// TaskFailures, when non-nil, is registered so the terminal-task failure
+	// aggregates (multica_agent_task_failures_total /
+	// multica_agent_task_runs_total) are exposed on /metrics.
+	TaskFailures prometheus.Collector
 	Version   string
 	Commit    string
 }
@@ -76,6 +80,9 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 	if opts.TaskUsage != nil {
 		reg.MustRegister(opts.TaskUsage)
+	}
+	if opts.TaskFailures != nil {
+		reg.MustRegister(opts.TaskFailures)
 	}
 
 	return &Registry{

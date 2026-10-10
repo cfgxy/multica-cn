@@ -385,3 +385,57 @@ SELECT
     SUM(task_count)::bigint         AS task_count
 FROM task_usage_hourly
 GROUP BY workspace_id, runtime_id, LOWER(provider), model;
+
+-- name: SumTaskFailuresForMetrics :many
+-- Lifetime per-(workspace, agent, provider, model, failure_reason) terminal
+-- task counts for the Prometheus failure exposition (RUYI-618). Rows with
+-- failure_reason != '' feed multica_agent_task_failures_total; their
+-- failed + completed sum per (workspace, agent, provider, model) feeds the
+-- multica_agent_task_runs_total denominator, so a PromQL increase ratio
+-- reproduces the Errors tab's failure rate by construction — same WHERE
+-- shape as ListDashboardFailuresDaily, only without the window bounds.
+--
+-- The full-table lifetime sum is deliberate, mirroring
+-- SumTaskUsageTotalsForMetrics: a Prometheus counter must be monotonically
+-- non-decreasing — a trailing-window sum would shrink when old rows fell out
+-- of a window and read as a counter reset.
+--
+-- provider/model attribution: agent_task_queue carries no model column, so
+-- the LATERAL picks the task's primary task_usage row (largest token total,
+-- latest created_at as tiebreak). A task can hold several usage rows —
+-- joining without that LIMIT 1 would count one failed task once per
+-- (provider, model) it touched, breaking the totals the Errors tab quotes.
+-- Tasks that failed before any provider call have no usage row and surface
+-- under empty provider/model — honest: no model was involved.
+--
+-- failure_reason convention matches ListDashboardFailuresDaily: failed rows
+-- with an empty column collapse into 'unclassified' so they stay countable,
+-- completed rows carry '' (the success bucket the failures metric excludes
+-- and the runs metric includes). Rows appear only once they reach a terminal
+-- state, which the terminal partial indexes (migration 261) cover; the
+-- collector's TTL keeps this off the scrape path.
+SELECT
+    a.workspace_id::text AS workspace_id,
+    atq.agent_id::text   AS agent_id,
+    LOWER(COALESCE(primary_usage.provider, '')) AS provider,
+    COALESCE(primary_usage.model, '')           AS model,
+    CASE
+        WHEN atq.status = 'failed'
+            THEN COALESCE(NULLIF(atq.failure_reason, ''), 'unclassified')
+        ELSE ''
+    END AS failure_reason,
+    COUNT(*) FILTER (WHERE atq.status = 'failed')::bigint    AS failed_count,
+    COUNT(*) FILTER (WHERE atq.status = 'completed')::bigint AS completed_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN LATERAL (
+    SELECT tu.provider, tu.model
+    FROM task_usage tu
+    WHERE tu.task_id = atq.id
+    ORDER BY (tu.input_tokens + tu.output_tokens + tu.cache_read_tokens + tu.cache_write_tokens) DESC,
+             tu.created_at DESC
+    LIMIT 1
+) primary_usage ON true
+WHERE atq.status IN ('completed', 'failed')
+  AND atq.completed_at IS NOT NULL
+GROUP BY 1, 2, 3, 4, 5;
