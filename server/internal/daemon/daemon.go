@@ -9029,6 +9029,31 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			taskLog.Warn("failed to post silence alert comment", "error", err)
 		}
 	}
+	// recordForceStopSnapshot is the pre-mortem leg (RUYI-593): at the moment
+	// the watchdog decides to kill, take one atomic snapshot and deliver it
+	// three ways — a transcript event (via the shared batch, so its seq
+	// interleaves monotonically with the message stream), the structured kill
+	// log, and the terminal message wording (premortemSummary, read by the
+	// terminal branches after the drain tail has flushed). The kill itself is
+	// untouched: the caller fires it exactly where it always did.
+	var premortemSummary atomic.Value // string
+	recordForceStopSnapshot := func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool) {
+		mu.Lock()
+		pendingCount := len(watchTracker.pendingLocked())
+		ev := observer.collectPremortem(now, idleFor, threshold, toolInFlight, provider, toolCount.Load())
+		mu.Unlock()
+		emitWatchdogEvent(ev.input, ev.tool)
+		summary := premortemSummaryText(ev.input)
+		premortemSummary.Store(summary)
+		taskLog.Warn("watchdog force-stop pre-mortem",
+			"provider", provider,
+			"threshold", threshold.String(),
+			"idle_for", idleFor.Round(time.Millisecond).String(),
+			"tool_in_flight", toolInFlight,
+			"pending_tools", pendingCount,
+			"detail", summary,
+		)
+	}
 	var observe func(now time.Time, idleFor time.Duration, toolInFlight bool)
 	if observer.marksEnabled() || observer.silenceEnabled() {
 		observe = func(now time.Time, idleFor time.Duration, toolInFlight bool) {
@@ -9044,7 +9069,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 	if idleWindow > 0 {
-		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog, observe)
+		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog, observe, recordForceStopSnapshot)
 	}
 
 	// drainFinished closes after the drain goroutine has flushed the last
@@ -9304,6 +9329,17 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 
+	// watchdogTerminalError composes the terminal wording: the fixed watchdog
+	// sentence plus the pre-mortem snapshot summary (read after waitForDrain,
+	// so the snapshot event has already been written before the run reports).
+	watchdogTerminalError := func() string {
+		msg := idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+		if s, ok := premortemSummary.Load().(string); ok && s != "" {
+			msg += "; " + s
+		}
+		return msg
+	}
+
 	select {
 	case result := <-session.Result:
 		waitForDrain()
@@ -9315,7 +9351,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			// generic "agent_error" bucket the aborted path falls into.
 			result.Status = "idle_watchdog"
 			if result.Error == "" {
-				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+				result.Error = watchdogTerminalError()
 			}
 		}
 		return result, toolCount.Load(), nil
@@ -9332,7 +9368,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		if idleWatchdogFired.Load() {
 			return agent.Result{
 				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
+				Error:  watchdogTerminalError(),
 			}, toolCount.Load(), nil
 		}
 		// Distinguish external cancellation (e.g. server-initiated cancel
@@ -9405,7 +9441,7 @@ func idleWatchdogTickInterval(window time.Duration) time.Duration {
 //
 // Polling rate comes from idleWatchdogTickInterval, so a run is force-stopped
 // somewhere between its budget and budget + tick, never earlier.
-func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, observe func(now time.Time, idleFor time.Duration, toolInFlight bool)) {
+func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, observe func(now time.Time, idleFor time.Duration, toolInFlight bool), snapshot func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool)) {
 	ticker := time.NewTicker(idleWatchdogTickInterval(window))
 	defer ticker.Stop()
 	for {
@@ -9453,6 +9489,12 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 				"tool_in_flight", toolInFlight,
 			)
 			firedThreshold.Store(int64(threshold))
+			// Take the pre-mortem snapshot before firing so the transcript
+			// event, log record, and terminal summary all describe the exact
+			// kill decision (same now, same idleFor, same threshold).
+			if snapshot != nil {
+				snapshot(now, idleFor, threshold, toolInFlight)
+			}
 			fired.Store(true)
 			cancel()
 			return
