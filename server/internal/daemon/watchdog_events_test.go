@@ -262,9 +262,10 @@ func TestExecuteAndDrain_ToolInFlight_MarksBeforeKill(t *testing.T) {
 	if !checkedAt.Before(killAt) {
 		t.Fatalf("mark checked_at %v not before kill %v", checkedAt, killAt)
 	}
-	// Silence grading is off in this test: no warn/alert may appear.
+	// Silence grading is off in this test: no warn/alert may appear. The
+	// force-stop premortem is expected — this run ends in a kill.
 	for _, m := range watchdogEvents(t, rs.reportedMessages(t)) {
-		if ev := eventField(t, m, "event").(string); ev != "tool_in_flight" {
+		if ev := eventField(t, m, "event").(string); ev != "tool_in_flight" && ev != "force_stop_premortem" {
 			t.Fatalf("unexpected watchdog event %q with grading keys off", ev)
 		}
 	}
@@ -552,5 +553,205 @@ func TestWatchdogObserver_SilenceDisabledWhenZero(t *testing.T) {
 		if events := observer.collectEvents(time.Now(), idle, false); len(events) != 0 {
 			t.Fatalf("tiers are off; idle=%s produced %+v", idle, events)
 		}
+	}
+}
+
+// ─── Force-stop pre-mortem snapshot (round 2, direction 3) ─────────────────
+
+// recordingLogHandler captures slog records so the structured-log leg of the
+// pre-mortem can be asserted instead of trusted.
+type recordingLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingLogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.records = append(h.records, r)
+	h.mu.Unlock()
+	return nil
+}
+func (h *recordingLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingLogHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *recordingLogHandler) find(t *testing.T, msg string) (slog.Record, bool) {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Message == msg {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
+
+func recordAttr(r slog.Record, key string) (slog.Value, bool) {
+	var found slog.Value
+	var ok bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			found, ok = a.Value, true
+			return false
+		}
+		return true
+	})
+	return found, ok
+}
+
+// premortemEvents filters the reported watchdog events down to force-stop
+// pre-mortem snapshots.
+func premortemEvents(t *testing.T, msgs []TaskMessageData) []TaskMessageData {
+	t.Helper()
+	var out []TaskMessageData
+	for _, m := range watchdogEvents(t, msgs) {
+		if ev, _ := m.Input["event"].(string); ev == "force_stop_premortem" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// TestExecuteAndDrain_ForceStopPremortem_WithPendingTool drives the E4 shape:
+// a tool_use goes in, the backend hangs, the watchdog force-stops. The
+// snapshot must answer "which layer died" on all three legs — a transcript
+// event ahead of the terminal, the terminal wording itself, and a structured
+// log record — with the pending Bash call identified in each.
+func TestExecuteAndDrain_ForceStopPremortem_WithPendingTool(t *testing.T) {
+	rs := newRecordingServer(t)
+	logs := &recordingLogHandler{}
+	d := &Daemon{client: NewClient(rs.server.URL), logger: slog.Default()}
+	d.cfg.AgentIdleWatchdog = 300 * time.Millisecond
+	d.cfg.AgentToolWatchdog = 300 * time.Millisecond
+	d.cfg.AgentToolMarkAfter = 0 // marks off: keep the event stream to the premortem
+
+	result, _, err := d.executeAndDrain(context.Background(),
+		scriptedBackend{script: []scriptedEvent{
+			{after: 5 * time.Millisecond, msg: toolUse("Bash", "call-1")},
+		}, hang: true},
+		"p", agent.ExecOptions{}, slog.New(logs), "t-premortem", "", "test", new(atomic.Int32))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q", result.Status)
+	}
+
+	// Leg 1: transcript event, exactly one, with the forensic payload.
+	events := premortemEvents(t, rs.reportedMessages(t))
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 premortem event, got %d", len(events))
+	}
+	ev := events[0]
+	if got := eventField(t, ev, "provider"); got != "test" {
+		t.Fatalf("premortem provider = %v, want test", got)
+	}
+	if got := eventField(t, ev, "tool_in_flight"); got != true {
+		t.Fatalf("premortem tool_in_flight = %v, want true", got)
+	}
+	pending, ok := ev.Input["pending_tools"].([]any)
+	if !ok || len(pending) != 1 {
+		t.Fatalf("premortem pending_tools = %v, want exactly the one Bash call", ev.Input["pending_tools"])
+	}
+	call, ok := pending[0].(map[string]any)
+	if !ok || call["tool"] != "Bash" || call["call_id"] != "call-1" {
+		t.Fatalf("pending tool detail = %v, want Bash/call-1", pending)
+	}
+	// Shared seq counter: the snapshot must interleave monotonically with the
+	// message stream (Review leftover 2 — no second counter, no reordering).
+	toolUseSeq := -1
+	for _, m := range rs.reportedMessages(t) {
+		if m.Type == "tool_use" {
+			toolUseSeq = m.Seq
+		}
+	}
+	if ev.Seq <= toolUseSeq {
+		t.Fatalf("premortem seq %d must exceed tool_use seq %d", ev.Seq, toolUseSeq)
+	}
+
+	// Leg 2: the terminal wording answers "which layer died" without opening
+	// the transcript.
+	if !strings.Contains(result.Error, "force-stop snapshot") || !strings.Contains(result.Error, "Bash") {
+		t.Fatalf("terminal error should carry the premortem summary naming the pending tool, got %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "idle watchdog") {
+		t.Fatalf("terminal error should keep the base watchdog wording, got %q", result.Error)
+	}
+
+	// Leg 3: structured log record with the same facts.
+	rec, ok := logs.find(t, "watchdog force-stop pre-mortem")
+	if !ok {
+		t.Fatalf("expected a 'watchdog force-stop pre-mortem' structured log record")
+	}
+	if v, ok := recordAttr(rec, "provider"); !ok || v.String() != "test" {
+		t.Fatalf("premortem log provider attr = %v (ok=%v), want test", v, ok)
+	}
+	if v, ok := recordAttr(rec, "pending_tools"); !ok || v.Int64() != 1 {
+		t.Fatalf("premortem log pending_tools attr = %v (ok=%v), want 1", v, ok)
+	}
+}
+
+// TestExecuteAndDrain_ForceStopPremortem_NoPendingTool covers the pure
+// dead-channel form: no messages ever arrive, the snapshot reports an empty
+// pending set, and the terminal wording says so explicitly instead of leaving
+// the reader to guess.
+func TestExecuteAndDrain_ForceStopPremortem_NoPendingTool(t *testing.T) {
+	rs := newRecordingServer(t)
+	logs := &recordingLogHandler{}
+	d := &Daemon{client: NewClient(rs.server.URL), logger: slog.Default()}
+	d.cfg.AgentIdleWatchdog = 200 * time.Millisecond
+	d.cfg.AgentToolWatchdog = 200 * time.Millisecond
+
+	result, _, err := d.executeAndDrain(context.Background(),
+		scriptedBackend{hang: true},
+		"p", agent.ExecOptions{}, slog.New(logs), "t-premortem-empty", "", "codex", new(atomic.Int32))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q", result.Status)
+	}
+	events := premortemEvents(t, rs.reportedMessages(t))
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 premortem event, got %d", len(events))
+	}
+	if got := eventField(t, events[0], "provider"); got != "codex" {
+		t.Fatalf("premortem provider = %v, want codex", got)
+	}
+	if pending := events[0].Input["pending_tools"]; pending != nil {
+		if arr, ok := pending.([]any); !ok || len(arr) != 0 {
+			t.Fatalf("pending_tools = %v, want empty", pending)
+		}
+	}
+	if !strings.Contains(result.Error, "no pending tool calls") {
+		t.Fatalf("terminal error should say there were no pending tools, got %q", result.Error)
+	}
+	_, ok := logs.find(t, "watchdog force-stop pre-mortem")
+	if !ok {
+		t.Fatalf("expected a 'watchdog force-stop pre-mortem' structured log record")
+	}
+}
+
+// TestExecuteAndDrain_NoPremortemOnPlainCancel pins the scope: the snapshot
+// is a force-stop artifact. A user-initiated cancel must not mint one.
+func TestExecuteAndDrain_NoPremortemOnPlainCancel(t *testing.T) {
+	rs := newRecordingServer(t)
+	d := &Daemon{client: NewClient(rs.server.URL), logger: slog.Default()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = d.executeAndDrain(ctx,
+			scriptedBackend{hang: true},
+			"p", agent.ExecOptions{}, slog.Default(), "t-premortem-cancel", "", "test", new(atomic.Int32))
+	}()
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+	<-done
+
+	if events := premortemEvents(t, rs.reportedMessages(t)); len(events) != 0 {
+		t.Fatalf("plain cancel must not produce a premortem, got %d", len(events))
 	}
 }
