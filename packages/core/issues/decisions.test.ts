@@ -154,9 +154,17 @@ describe("stripDecisionOptionRecommendedSuffix", () => {
     expect(stripDecisionOptionRecommendedSuffix("方案一（推荐） ")).toBe("方案一");
   });
 
+  // RUYI-620: repeated trailing markers strip together so no residual
+  // "（推荐）" text survives next to the control's own badge.
+  it("strips repeated trailing markers in one pass", () => {
+    expect(stripDecisionOptionRecommendedSuffix("方案一（推荐）（推荐）")).toBe("方案一");
+    expect(stripDecisionOptionRecommendedSuffix("方案一（推荐） (推荐) ")).toBe("方案一");
+  });
+
   it("keeps non-suffix occurrences untouched", () => {
     expect(stripDecisionOptionRecommendedSuffix("（推荐）方案一")).toBe("（推荐）方案一");
     expect(stripDecisionOptionRecommendedSuffix("方案一（推荐）备注")).toBe("方案一（推荐）备注");
+    expect(stripDecisionOptionRecommendedSuffix("方案一（推荐）（推荐）备注")).toBe("方案一（推荐）（推荐）备注");
     expect(stripDecisionOptionRecommendedSuffix("推荐方案一")).toBe("推荐方案一");
     expect(stripDecisionOptionRecommendedSuffix("方案一")).toBe("方案一");
   });
