@@ -16,6 +16,14 @@
  *
  * Manual mode: `ManualCreatePanel` (the original form, extracted verbatim).
  * Smart mode: `QuickCreatePanel` (web AgentCreatePanel counterpart).
+ *
+ * RUYI-624: the agent detail page's "+ Assign work" entry pre-seeds
+ * `smartActor` in the draft store before pushing this screen — the web
+ * counterpart opens quick-create with `initialMode="agent"` and a seeded
+ * actor. The mount reset below would wipe that seed, so it is captured
+ * first and re-applied after the reset; while a seed survives, Smart mode
+ * is forced for this visit only (the remembered `lastMode` is untouched
+ * and takes over as soon as the user touches the switch themselves).
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View } from "react-native";
@@ -39,19 +47,37 @@ export default function NewIssueModal() {
   const setLastMode = useQuickCreatePrefsStore((s) => s.setLastMode);
   const resetDraft = useNewIssueDraftStore((s) => s.reset);
   const { t } = useT("common");
-  // RUYI-605: one-shot seed from the inbox quick-create outcome detail
-  // ("edit in the full form"). Mirrors web's create-issue registry entry:
-  // that open lands in the manual form (`initialMode="manual"`) without
-  // touching the remembered mode preference, so the override below applies
-  // to this visit only and the first tab switch falls back to `lastMode`.
+  // Two this-visit mode overrides, neither touching the remembered lastMode:
+  // RUYI-605 — one-shot seed from the inbox quick-create outcome detail
+  // ("edit in the full form", mirroring web's create-issue registry entry
+  // that opens the manual form without changing the mode preference);
+  // RUYI-624 — Smart forced while a pre-navigation assign-work actor seed is
+  // in effect. The two enter from different screens, but if both seeds are
+  // ever present the inbox prefill wins and forces Manual: its payload is a
+  // full description only the manual panel can render, and its explicit
+  // setAssignee below subsumes RUYI-624's manual-landing actor carry (that
+  // carry itself guards on `!assignee`). The first explicit tab switch
+  // clears both flags and lastMode takes over.
   const [prefill, setPrefill] = useState<QuickCreateEditSeed | null>(null);
   const [manualModeOverride, setManualModeOverride] = useState(false);
   const prefillTakenRef = useRef(false);
+  const [smartForced, setSmartForced] = useState(false);
+  const effectiveMode = manualModeOverride
+    ? "manual"
+    : smartForced
+      ? "smart"
+      : lastMode;
 
   // Reset before child passive effects seed Smart actor memory. Both panels
-  // still share one draft for the rest of this visit.
+  // still share one draft for the rest of this visit. An actor seeded by the
+  // assign-work entry survives the reset so the panel opens on that agent.
   useLayoutEffect(() => {
+    const seededActor = useNewIssueDraftStore.getState().smartActor;
     resetDraft();
+    if (seededActor) {
+      useNewIssueDraftStore.getState().setSmartActor(seededActor);
+      setSmartForced(true);
+    }
   }, [resetDraft]);
 
   // Consume the prefill AFTER the reset above (layout effects run in
@@ -67,6 +93,10 @@ export default function NewIssueModal() {
         id: taken.agentId,
       });
     }
+    // Precedence (see above): a taken prefill displaces the assign-work
+    // smart force for this visit — a smartForced left set by the mount
+    // effect would linger dormant behind the manual override.
+    setSmartForced(false);
     setPrefill(taken);
     setManualModeOverride(true);
   }, []);
@@ -90,7 +120,28 @@ export default function NewIssueModal() {
     };
   }, [resetDraft]);
 
-  const mode = manualModeOverride ? "manual" : lastMode;
+  const handleModeChange = (v: string) => {
+    // RUYI-624: web `switchToManual` parity. On a seeded (assign-work)
+    // visit, landing on Manual — after the CLI version gate blocked Smart
+    // or by explicit tap — carries the actor into the manual assignee slot
+    // when the user hasn't picked one (a landed memory backfill counts as
+    // picked). Unseeded visits stay memory-backfill-only: smartActor there
+    // is the panel's first-visible fallback, not an assignment intent.
+    // Going through setAssignee bumps assigneeVersion, so a still-pending
+    // RUYI-79 memory read can't replace the seed after the fact.
+    if (v === "manual" && smartForced) {
+      const { smartActor, assignee, setAssignee } =
+        useNewIssueDraftStore.getState();
+      if (smartActor && !assignee) {
+        setAssignee({ type: smartActor.type, id: smartActor.id });
+      }
+    }
+    // First explicit tab switch ends both this-visit overrides; the
+    // just-recorded lastMode takes over.
+    setSmartForced(false);
+    setManualModeOverride(false);
+    setLastMode(v as "smart" | "manual");
+  };
 
   return (
     <View className="flex-1 bg-background">
@@ -98,13 +149,7 @@ export default function NewIssueModal() {
           without scrolling. Keyboard avoidance stays inside each panel
           (behavior="padding" twice would double-offset). */}
       <View className="px-4 pt-3 pb-1">
-        <Tabs
-          value={mode}
-          onValueChange={(v) => {
-            setManualModeOverride(false);
-            setLastMode(v as "smart" | "manual");
-          }}
-        >
+        <Tabs value={effectiveMode} onValueChange={handleModeChange}>
           <TabsList className="w-full">
             <TabsTrigger value="smart" className="flex-1">
               <Text>{t("mobile.create_issue.mode_smart", "Smart")}</Text>
@@ -115,7 +160,7 @@ export default function NewIssueModal() {
           </TabsList>
         </Tabs>
       </View>
-      {mode === "smart" ? (
+      {effectiveMode === "smart" ? (
         <QuickCreatePanel />
       ) : (
         <ManualCreatePanel

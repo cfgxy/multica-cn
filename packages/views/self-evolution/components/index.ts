@@ -1,4 +1,13 @@
-export { SelfEvolutionPage } from "./self-evolution-page";
+export { SelfEvolutionOverviewPage } from "./overview-page";
+export { KnowledgePage } from "./knowledge-page";
+export { SkillsEvolutionPage } from "./skills-page";
+export { SkillEvolutionDetailPage } from "./skill-detail-page";
+export { QualityPage } from "./quality-page";
+export { QuizPage } from "./quiz-page";
+export { ProposalsPage } from "./proposals-page";
+export { VersionsPage } from "./versions-page";
+export { RetrospectivePage } from "./retrospective-page";
+export { SelfEvolutionConfigPage } from "./config-page";
 export { QualityTab } from "./quality-tab";
 export { QualityMeasureCard } from "./quality-measure-card";
 export { QualityPerplexitySheet } from "./quality-perplexity-sheet";

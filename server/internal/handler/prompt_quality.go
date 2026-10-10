@@ -12,6 +12,7 @@ import (
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquality"
+	"github.com/multica-ai/multica/server/internal/selfevconfig"
 )
 
 // Prompt quality dashboard read path (RUYI-184, self-evolution phase 2).
@@ -147,7 +148,7 @@ func (h *Handler) GetPromptQualityDashboard(w http.ResponseWriter, r *http.Reque
 		Since:       since.Format("2006-01-02"),
 		Versions:    promptQualityByVersion(rows),
 		Perplexity:  promptQualityScoresToResponse(scores),
-		DataSources: h.promptQualitySources(),
+		DataSources: h.promptQualitySources(r),
 	}
 
 	all := make([]promptquality.Result, 0, len(rows))
@@ -160,12 +161,45 @@ func (h *Handler) GetPromptQualityDashboard(w http.ResponseWriter, r *http.Reque
 }
 
 // promptQualitySources reports the optional inputs' state. The scoring model
-// is read from the handler's LLM client rather than the environment so the
-// answer matches what the scorer would actually do if asked right now.
-func (h *Handler) promptQualitySources() promptQualitySourcesResponse {
-	scoring := h.LLM != nil && h.LLM.Enabled()
-	sources := promptquality.DescribeSources(scoring)
+// is resolved per workspace (RUYI-551) rather than read from the environment,
+// so the answer matches what the scorer would actually do for THIS workspace
+// if asked right now. Without the resolver wired (deployment key absent) it
+// falls back to the deploy-wide read.
+func (h *Handler) promptQualitySources(r *http.Request) promptQualitySourcesResponse {
+	var facts promptquality.SourceFacts
+	if h.SelfEvolution != nil {
+		if state, err := h.SelfEvolution.ScoringState(r.Context(), parseUUID(h.resolveWorkspaceID(r))); err == nil {
+			scoring := promptquality.ScoringSource{
+				Status:          state.Status,
+				EffectiveSource: state.EffectiveSource,
+				Model:           state.Model,
+				ValidationError: state.ValidationError,
+			}
+			if state.LastValidatedAt.Valid {
+				scoring.LastValidatedAt = state.LastValidatedAt.Time.UTC().Format(httpTimeFormat)
+			}
+			facts.Scoring = scoring
+		} else {
+			// Store failure: report the deploy default honestly rather than
+			// failing the whole dashboard for a footer label.
+			facts.Scoring = h.deployScoringSource()
+		}
+	} else {
+		facts.Scoring = h.deployScoringSource()
+	}
+	sources := promptquality.DescribeSources(facts)
 	return promptQualitySourcesResponse{Degraded: sources.Degraded(), Items: sources.Items}
+}
+
+func (h *Handler) deployScoringSource() promptquality.ScoringSource {
+	if h.LLM != nil && h.LLM.Enabled() {
+		return promptquality.ScoringSource{
+			Status:          promptquality.StatusOK,
+			EffectiveSource: selfevconfig.SourceDeployDefault,
+			Model:           h.LLM.DefaultModel(),
+		}
+	}
+	return promptquality.ScoringSource{Status: promptquality.StatusUnconfigured}
 }
 
 // promptQualityByVersion splits the window per version, newest first. The

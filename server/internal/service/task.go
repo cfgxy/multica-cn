@@ -4637,7 +4637,14 @@ func startsWithAbsolutePath(s string) bool {
 // causing the new task to resume against a stale (or NULL) session.
 // durableWorkDir is terminal delivery metadata, not a resume pointer: it is
 // populated only after the daemon confirms a disposable worktree is gone.
-func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, error) {
+// The bool result is true only when THIS call executed the terminal
+// transaction and the row ended completed — a replayed terminal callback on an
+// already-finalized task returns (existing, false, nil). Callers must gate
+// completed-specific side effects (completion reconciliation) on it, or a
+// daemon restart that re-reports offline-finished runs re-runs reconciliation
+// for every historical task at once (MUL-4195 regression, 2026-10-09 queue
+// storm).
+func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, bool, error) {
 	var task db.AgentTaskQueue
 	// chatAssistantMsg is the single assistant outcome row written for a chat
 	// task inside the completion transaction below. It is broadcast (chat:done)
@@ -4752,7 +4759,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 					"current_status", existing.Status,
 					"agent_id", util.UUIDToString(existing.AgentID),
 				)
-				return &existing, nil
+				return &existing, false, nil
 			}
 			slog.Warn("complete task failed",
 				"task_id", util.UUIDToString(taskID),
@@ -4768,7 +4775,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 				"lookup_error", lookupErr,
 			)
 		}
-		return nil, fmt.Errorf("complete task: %w", err)
+		return nil, false, fmt.Errorf("complete task: %w", err)
 	}
 
 	if guardConverged {
@@ -4777,7 +4784,8 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		// broadcast, notifications) — the cancel/ack path owns this row now.
 		slog.Info("task completion converged to cancelled (cancel race lost)",
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
-		return &task, nil
+		// Not a completion: the cancel path owns this row and its side effects.
+		return &task, false, nil
 	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
@@ -4893,7 +4901,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
 
-	return &task, nil
+	return &task, true, nil
 }
 
 // chatNoResponseFallback is the non-empty English body stored on a no_response
@@ -5552,14 +5560,24 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // etc.) are intentionally excluded — those are real problems that the user
 // should see, not infrastructure flakiness.
 //
-// The one agent_error.* exception is provider_network: a mid-stream provider
-// disconnect (e.g. Claude Code's "API Error: Connection closed mid-response")
-// is transient infrastructure flakiness, not an agent decision. Unattended
-// issue runs otherwise terminate on it, while interactive chat only survives
-// because the CLI's own in-process retry happens to recover first — so we make
-// the platform retry it directly (MUL-4910). It is resume-safe (not in
+// The agent_error.* members are the transient provider/process failures, the
+// one agent_error.* family the allowlist admits. provider_network covers a
+// mid-stream provider disconnect (e.g. Claude Code's "API Error: Connection
+// closed mid-response"): transient infrastructure flakiness, not an agent
+// decision. Unattended issue runs otherwise terminate on it, while interactive
+// chat only survives because the CLI's own in-process retry happens to recover
+// first — so we make the platform retry it directly (MUL-4910).
+// process_failure, provider_capacity_or_rate_limit, and provider_server_error
+// join for the same class of reason (RUYI-601): a crashed agent subprocess or
+// a provider 429/5xx is infrastructure flakiness too, and a delegated task
+// that dies on one must continue on the SAME agent — the auto-retry is what
+// keeps the delegated_from lineage alive, so a budget-exhausted failure still
+// hands coordination back to the delegating task instead of stranding the
+// work after a single crash. All four are resume-safe (not in
 // resumeUnsafeFailureReason), so the retry child inherits the session and
 // continues the truncated conversation rather than restarting from scratch.
+// They retry immediately with the task's default budget (first run + one
+// retry); no bespoke backoff schedule.
 // skill_bundle_unavailable is retryable for the same reason: the agent process
 // never started, so there is nothing to be idempotent about, and every bundle
 // that did download is already cached on disk — a retry resumes from there
@@ -5573,13 +5591,16 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // occurrence waited for a human. Resume-safe, so the retry inherits the
 // session; the session was never the problem.
 var retryableReasons = map[string]bool{
-	string(taskfailure.ReasonRuntimeOffline):         true,
-	string(taskfailure.ReasonRuntimeRecovery):        true,
-	string(taskfailure.ReasonTimeout):                true,
-	"codex_semantic_inactivity":                      true,
-	string(taskfailure.ReasonAgentProviderNetwork):   true,
-	string(taskfailure.ReasonSkillBundleUnavailable): true,
-	string(taskfailure.ReasonDeliveryGuard):          true,
+	string(taskfailure.ReasonRuntimeOffline):                   true,
+	string(taskfailure.ReasonRuntimeRecovery):                  true,
+	string(taskfailure.ReasonTimeout):                          true,
+	"codex_semantic_inactivity":                                true,
+	string(taskfailure.ReasonAgentProviderNetwork):             true,
+	string(taskfailure.ReasonAgentProcessFailure):              true,
+	string(taskfailure.ReasonAgentProviderCapacityOrRateLimit): true,
+	string(taskfailure.ReasonAgentProviderServerError):         true,
+	string(taskfailure.ReasonSkillBundleUnavailable):           true,
+	string(taskfailure.ReasonDeliveryGuard):                    true,
 }
 
 // runtime_offline retries start deferred, not queued: their positive fire_at

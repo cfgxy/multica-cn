@@ -90,6 +90,52 @@ describe("DecisionInboxRow graying (inbox read style)", () => {
   });
 });
 
+// RUYI-622: the row's typography tokens must mirror the tasks-tab issue row
+// (issue-row-inbox.tsx) — muted text-xs identifier, semibold text-sm title on
+// open rows, text-xs secondary line — so the two bottom-tab lists read as one
+// visual language. Decided rows keep the inbox read-style fade on top of the
+// same token set.
+describe("DecisionInboxRow typography (tasks-tab alignment)", () => {
+  it("renders the identifier like the tasks-tab row: text-xs muted, not bold", async () => {
+    await render(<DecisionInboxRow row={makeRow()} onPress={jest.fn()} />);
+
+    const id = screen.getByText("RUYI-530");
+    expect(id.props.className).toContain("text-xs");
+    expect(id.props.className).toContain("text-muted-foreground");
+    expect(id.props.className).not.toContain("text-sm");
+    expect(id.props.className).not.toContain("font-semibold");
+  });
+
+  it("gives an open row's title the tasks-tab weight (font-semibold)", async () => {
+    await render(<DecisionInboxRow row={makeRow()} onPress={jest.fn()} />);
+
+    const title = screen.getByText("决策中心优化");
+    expect(title.props.className).toContain("text-sm");
+    expect(title.props.className).toContain("font-semibold");
+    expect(title.props.className).not.toContain("font-medium");
+  });
+
+  it("keeps the decided title on the same token set, only the fade differs", async () => {
+    await render(
+      <DecisionInboxRow row={makeRow({ status: "answered" })} onPress={jest.fn()} />,
+    );
+
+    const title = screen.getByText("决策中心优化");
+    expect(title.props.className).toContain("text-sm");
+    expect(title.props.className).toContain("text-muted-foreground");
+    expect(title.props.className).not.toContain("font-semibold");
+  });
+
+  it("renders the secondary line at text-xs like the tasks-tab row", async () => {
+    await render(<DecisionInboxRow row={makeRow()} onPress={jest.fn()} />);
+
+    const question = screen.getByText("按哪条路径推进？");
+    expect(question.props.className).toContain("text-xs");
+    expect(question.props.className).not.toContain("text-sm");
+    expect(question.props.className).toContain("text-muted-foreground");
+  });
+});
+
 describe("DecisionInboxRow creator avatar", () => {
   it("passes the card creator's actor identity to the avatar", async () => {
     await render(

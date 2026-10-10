@@ -43,6 +43,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Recycle guard (RUYI-594): scan-before-recycle + evidence for destroy/gc.
+# shellcheck source=scripts/lib-recycle-guard.sh
+source "$REPO_ROOT/scripts/lib-recycle-guard.sh"
+
 SLOTS_FILE="$REPO_ROOT/scripts/slots.json"
 SLOT_HOME="${MULTICA_SLOTS_HOME:-$HOME/.multica/slots}"
 LOCK_DIR="$SLOT_HOME/.lock.d"
@@ -386,6 +390,12 @@ require_lease() {
     # shellcheck disable=SC1090
     . "$SLOT_MANIFEST"
     current="${ISSUE:-}"
+    # No live lease: fall back to the manifest's last known phase. gc writes
+    # its own lease while collecting, so a guard-blocked destroy (RUYI-594)
+    # leaves a `gc`-owned lock behind — the retry on the next cycle must see
+    # the slot's real qa phase, not silently become a dev slot gc skips
+    # forever.
+    phase="${PHASE:-}"
   fi
 
   if [ -n "$current" ] && [ "$current" != "$owner" ]; then
@@ -1289,7 +1299,11 @@ start_daemon() {
   MULTICA_BIN="$DIR/server/bin/multica"
 
   resource_env_args daemon
+  # RUYI-606: the slot daemon gets its own supervisor run store. The shared
+  # default (~/.multica/supervisor-runs) is where production workers live;
+  # enumerating them at startup is the RUYI-592 cross-daemon kill blind spot.
   "${CLEAN_ENV[@]}" MULTICA_WORKSPACES_ROOT="$SLOT_WORKSPACES_ROOT" \
+    MULTICA_SUPERVISOR_RUNS_DIR="$SLOT_DIR/supervisor-runs" \
     "${RE_ARGS[@]}" "$MULTICA_BIN" daemon start --profile "$SLOT_PROFILE" 2>&1 | sed 's/^/    /' || true
 
   status="$("${CLEAN_ENV[@]}" MULTICA_WORKSPACES_ROOT="$SLOT_WORKSPACES_ROOT" \
@@ -1925,7 +1939,12 @@ cmd_down() {
 # A slot worktree may hold a QA session's uncommitted work or a checked-out
 # branch; neither may vanish behind destroy's back. Detached + clean trees hold
 # no unique commits (they live in the source repository), so they are the only
-# removable shape.
+# removable shape — and the recycle guard (RUYI-594) proves it per tree before
+# destroy proceeds: sole-reference commits block, stash blocks or is noted by
+# topology, and git that cannot be read blocks too (fail-closed — an
+# unreadable tree used to scan as "empty output"). Every scan, pass or not,
+# lands an evidence file under ~/.multica/recycle-evidence/ answering "what
+# did the guard see" after the fact.
 slot_worktrees_removable() {
   local wt
   [ -d "$SLOT_WORKTREE_ROOT" ] || return 0
@@ -1938,6 +1957,25 @@ slot_worktrees_removable() {
     fi
     if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | head -n 1)" ]; then
       warn "worktree $wt has uncommitted changes; destroy refuses to remove it."
+      return 1
+    fi
+    RG_TOOL="dev-env destroy"
+    if recycle_guard_scan_worktree "$wt" slot-worktree 0; then
+      if [ -n "$RG_NOTES" ]; then
+        local note
+        while IFS= read -r note; do info "worktree $wt: $note"; done <<< "$RG_NOTES"
+      fi
+      if [ -n "$RG_EVIDENCE_FILE" ]; then
+        info "recycle evidence: $RG_EVIDENCE_FILE"
+      fi
+    else
+      warn "recycle guard blocks removing worktree $wt:"
+      local reason
+      while IFS= read -r reason; do warn "  $reason"; done <<< "$RG_REASONS"
+      warn "  preserve the work (push, branch, or bundle), then re-run destroy once with MULTICA_RECYCLE_OVERRIDE=1"
+      if [ -n "$RG_EVIDENCE_FILE" ]; then
+        warn "  evidence: $RG_EVIDENCE_FILE"
+      fi
       return 1
     fi
   done
@@ -2296,6 +2334,32 @@ cmd_orphans() {
   fi
 }
 
+# Dry-run companion of the destroy-path guard (RUYI-594): the same scan, the
+# same evidence files (marked dry_run: true), nothing deleted — the report
+# answers "what would the guard say" before any real recycle is attempted.
+recycle_guard_gc_dry_scan() {
+  local wt any_blocked=0 line
+  [ -d "$SLOT_WORKTREE_ROOT" ] || return 0
+  for wt in "$SLOT_WORKTREE_ROOT"/*/; do
+    [ -d "$wt" ] || continue
+    [ -e "$wt/.git" ] || continue
+    RG_TOOL="dev-env gc --dry-run"
+    if recycle_guard_scan_worktree "$wt" slot-worktree 1; then
+      info "guard: $RG_VERDICT — $wt ($RG_COUNTS)"
+      [ -n "$RG_EVIDENCE_FILE" ] && info "  evidence: $RG_EVIDENCE_FILE"
+    else
+      info "guard: blocked — $wt"
+      while IFS= read -r line; do info "  $line"; done <<< "$RG_REASONS"
+      info "  evidence: $RG_EVIDENCE_FILE"
+      any_blocked=1
+    fi
+  done
+  if [ "$any_blocked" = 1 ]; then
+    info "destroy of $slot would be REFUSED by the recycle guard: preserve the listed work, then re-run destroy once with MULTICA_RECYCLE_OVERRIDE=1"
+  fi
+  return 0
+}
+
 # Expired qa slots are collected on every gc (and opportunistically on every
 # `up`): a busy slot slides its expiry forward on each use/up, a forgotten one
 # dies ttl_hours_qa after its last use. dev slots have no TTL — they are
@@ -2310,6 +2374,10 @@ cmd_gc() {
     esac
     shift
   done
+
+  # Evidence housekeeping: the TTL sweep is the only deleter of recycle
+  # evidence, on either track.
+  recycle_guard_sweep
 
   local names slot
   names="$(node -e '
@@ -2339,6 +2407,7 @@ cmd_gc() {
       [ -n "$reason" ] || exit 0
       if [ "$dry_run" = 1 ]; then
         printf '%s would be collected: %s\n' "$slot" "$reason"
+        recycle_guard_gc_dry_scan
       else
         printf '%s: %s\n' "$slot" "$reason"
         if ! MULTICA_SLOT_GC_INTERNAL=1 MULTICA_CALLER_OWNER="${MULTICA_CALLER_OWNER:-gc}" \
