@@ -2,7 +2,7 @@
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
-       w.active_execution_profile_id
+       w.active_execution_profile_id, w.revision
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
@@ -46,6 +46,11 @@ VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: UpdateWorkspace :one
+-- Partial update via COALESCE: NULL args leave the column unchanged.
+-- expected_revision (RUYI-666): when set, the write only lands if the
+-- workspace still carries that revision; a stale value yields 0 rows and the
+-- handler answers 409 revision_conflict with the actual revision. Same
+-- contract as UpdateProject / UpdateAgent / UpdateExecutionProfile.
 UPDATE workspace SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
@@ -54,8 +59,10 @@ UPDATE workspace SET
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),
-    updated_at = now()
+    updated_at = now(),
+    revision = revision + 1
 WHERE id = $1
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
 RETURNING *;
 
 -- name: IncrementIssueCounter :one
