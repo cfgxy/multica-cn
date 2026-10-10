@@ -910,10 +910,8 @@
     "confirm_action": "确认",
     "scheduling_pause_label": "暂停任务调度",
     "scheduling_pause_hint": "暂停后，工作区内所有智能体不再认领新任务。队列任务继续合并，运行中任务正常结束。仅 Owner/管理员可操作，会记入审计日志。",
-    "scheduling_paused_note_one": "任务调度已暂停 — 全部智能体共有 {{count}} 个任务在队列中。",
     "scheduling_paused_note_other": "任务调度已暂停 — 全部智能体共有 {{count}} 个任务在队列中。",
     "scheduling_paused_toast": "已暂停工作区调度",
-    "scheduling_resumed_toast_one": "工作区调度已恢复 — {{count}} 个任务开始流动",
     "scheduling_resumed_toast_other": "工作区调度已恢复 — {{count}} 个任务开始流动",
     "scheduling_toggle_failed_toast": "修改调度状态失败"
   },

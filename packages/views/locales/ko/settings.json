@@ -910,10 +910,8 @@
     "confirm_action": "확인",
     "scheduling_pause_label": "작업 스케줄링 일시 중지",
     "scheduling_pause_hint": "일시 중지 중에는 이 워크스페이스의 어떤 에이전트도 새 작업을 할당받지 않습니다. 대기 작업은 계속 병합되고 실행 중인 작업은 정상적으로 완료됩니다. 소유자/관리자만 가능하며 감사 로그에 기록됩니다.",
-    "scheduling_paused_note_one": "작업 스케줄링이 일시 중지됨 — 모든 에이전트에 걸쳐 {{count}}개의 작업이 대기 중입니다.",
     "scheduling_paused_note_other": "작업 스케줄링이 일시 중지됨 — 모든 에이전트에 걸쳐 {{count}}개의 작업이 대기 중입니다.",
     "scheduling_paused_toast": "워크스페이스 스케줄링이 일시 중지되었습니다",
-    "scheduling_resumed_toast_one": "워크스페이스 스케줄링 재개 — {{count}}개의 작업이 흐릅니다",
     "scheduling_resumed_toast_other": "워크스페이스 스케줄링 재개 — {{count}}개의 작업이 흐릅니다",
     "scheduling_toggle_failed_toast": "스케줄링 상태 변경 실패"
   },

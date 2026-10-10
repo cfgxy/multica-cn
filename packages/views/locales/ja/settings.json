@@ -910,10 +910,8 @@
     "toast_logo_failed": "ワークスペースのロゴをアップロードできませんでした",
     "scheduling_pause_label": "タスクのスケジューリングを一時停止",
     "scheduling_pause_hint": "一時停止中は、このワークスペース内のどのエージェントも新しいタスクを取得しません。キューのタスクは統合され続け、実行中のタスクは通常どおり完了します。オーナー/管理者のみ操作可能。監査ログに記録されます。",
-    "scheduling_paused_note_one": "タスクのスケジューリングは一時停止中 — すべてのエージェントで {{count}} 件のタスクがキューにあります。",
     "scheduling_paused_note_other": "タスクのスケジューリングは一時停止中 — すべてのエージェントで {{count}} 件のタスクがキューにあります。",
     "scheduling_paused_toast": "ワークスペースのスケジューリングを一時停止しました",
-    "scheduling_resumed_toast_one": "ワークスペースのスケジューリングを再開 — {{count}} 件のタスクが流れます",
     "scheduling_resumed_toast_other": "ワークスペースのスケジューリングを再開 — {{count}} 件のタスクが流れます",
     "scheduling_toggle_failed_toast": "スケジューリング状態の変更に失敗しました"
   },

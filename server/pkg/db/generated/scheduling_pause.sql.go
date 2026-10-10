@@ -75,6 +75,44 @@ func (q *Queries) CountQueuedTasksForAgent(ctx context.Context, agentID pgtype.U
 	return count, err
 }
 
+const countQueuedTasksPerWorkspace = `-- name: CountQueuedTasksPerWorkspace :many
+SELECT a.workspace_id, count(*) AS queued_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+JOIN scheduling_pause sp ON sp.workspace_id = a.workspace_id AND sp.agent_id IS NULL
+WHERE a.workspace_id = ANY($1::uuid[]) AND atq.status = 'queued'
+GROUP BY a.workspace_id
+`
+
+type CountQueuedTasksPerWorkspaceRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	QueuedCount int64       `json:"queued_count"`
+}
+
+// Per-workspace frozen-backlog depth in one query — the workspaces-list DTO
+// enrichment reads this instead of CountQueuedTasksByWorkspace in a loop.
+// The scheduling_pause join scopes the count to frozen workspaces, mirroring
+// the detail endpoint (no freeze row → zero, not a live queue depth).
+func (q *Queries) CountQueuedTasksPerWorkspace(ctx context.Context, workspaceIds []pgtype.UUID) ([]CountQueuedTasksPerWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, countQueuedTasksPerWorkspace, workspaceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountQueuedTasksPerWorkspaceRow{}
+	for rows.Next() {
+		var i CountQueuedTasksPerWorkspaceRow
+		if err := rows.Scan(&i.WorkspaceID, &i.QueuedCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteAgentSchedulingPause = `-- name: DeleteAgentSchedulingPause :exec
 DELETE FROM scheduling_pause
 WHERE workspace_id = $1 AND agent_id = $2
@@ -223,6 +261,41 @@ ORDER BY created_at ASC
 
 func (q *Queries) ListSchedulingPausesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]SchedulingPause, error) {
 	rows, err := q.db.Query(ctx, listSchedulingPausesByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SchedulingPause{}
+	for rows.Next() {
+		var i SchedulingPause
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.Reason,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaceSchedulingPauses = `-- name: ListWorkspaceSchedulingPauses :many
+SELECT id, workspace_id, agent_id, reason, created_by, created_at FROM scheduling_pause
+WHERE agent_id IS NULL AND workspace_id = ANY($1::uuid[])
+`
+
+// Workspace-level freeze rows for a set of workspaces — the workspaces-list
+// DTO enrichment reads this once instead of GetWorkspaceSchedulingPause in
+// a loop (no N+1).
+func (q *Queries) ListWorkspaceSchedulingPauses(ctx context.Context, workspaceIds []pgtype.UUID) ([]SchedulingPause, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceSchedulingPauses, workspaceIds)
 	if err != nil {
 		return nil, err
 	}
