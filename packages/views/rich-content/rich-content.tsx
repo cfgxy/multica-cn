@@ -50,10 +50,6 @@ import {
   markdownUrlTransform,
 } from "@multica/ui/markdown";
 import {
-  dedupeIssueReferences,
-  extractIssueReferences,
-} from "@multica/core/markdown";
-import {
   resolveClickIntent,
   useAppOrigin,
   useOptionalNavigation,
@@ -61,7 +57,7 @@ import {
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
-import { IssueReferenceFooter } from "./issue-reference-footer";
+import { IssueReferenceTail } from "./issue-reference-footer";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -555,17 +551,6 @@ export const RichContent = memo(function RichContent({
   // it from the raw pre-preprocess text would mis-match every rewritten node.
   const closedFences = useMemo(() => computeClosedFenceOffsets(processed), [processed]);
 
-  // RUYI-635 tail aggregation. Scanned from the RAW content, not `processed`:
-  // the extractor shares its skip rules (code, links, URLs) with the
-  // preprocessor, so scanning the source finds exactly the references the body
-  // would have chipped, while fences the highlighter already turned into HTML
-  // stay out of scope. Raw-dedup keeps the first occurrence of each token;
-  // cross-form collapse by resolved issue id happens in the footer.
-  const issueReferences = useMemo(
-    () => dedupeIssueReferences(extractIssueReferences(content)),
-    [content],
-  );
-
   const wrapperRef = useRef<HTMLDivElement>(null);
   const hover = useLinkHover(wrapperRef);
 
@@ -606,9 +591,7 @@ export const RichContent = memo(function RichContent({
         )}
       >
         {markdown}
-        {issueReferences.length > 0 && (
-          <IssueReferenceFooter references={issueReferences} />
-        )}
+        <IssueReferenceTail content={content} />
         <LinkHoverCard {...hover} />
       </div>
     </AttachmentDownloadProvider>

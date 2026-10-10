@@ -29,6 +29,10 @@ import { AppLink } from "../navigation";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueStatusCategory } from "@multica/core/issues";
+import {
+  dedupeIssueReferences,
+  extractIssueReferences,
+} from "@multica/core/markdown";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import type { IssueReference } from "@multica/core/markdown";
 import type { Issue } from "@multica/core/types";
@@ -115,4 +119,27 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
   );
 }
 
-export { IssueReferenceFooter };
+/**
+ * The full tail block, from raw content to rendered rows. Scans the RAW
+ * markdown (not a preprocessed copy): the extractor shares its skip rules
+ * (code, links, URLs) with the preprocessors, so scanning the source finds
+ * exactly the references the body would have chipped, while fences the
+ * highlighter already turned into HTML stay out of scope. Raw-dedup keeps the
+ * first occurrence of each token; cross-form collapse by resolved issue id
+ * happens in the footer.
+ *
+ * RichContent and the issue body's ContentEditor host (RUYI-635 rework: the
+ * body renders through the editor, so its tail list is the host's job) both
+ * mount this — one extraction and one dedup policy, no per-surface fork.
+ * Nothing renders when there are no references.
+ */
+function IssueReferenceTail({ content }: { content: string }) {
+  const references = useMemo(
+    () => dedupeIssueReferences(extractIssueReferences(content)),
+    [content],
+  );
+  if (references.length === 0) return null;
+  return <IssueReferenceFooter references={references} />;
+}
+
+export { IssueReferenceFooter, IssueReferenceTail };
