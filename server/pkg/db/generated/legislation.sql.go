@@ -1380,6 +1380,31 @@ func (q *Queries) RestorePromptProposal(ctx context.Context, arg RestorePromptPr
 	return i, err
 }
 
+const retrospectiveIssueExistsInWorkspace = `-- name: RetrospectiveIssueExistsInWorkspace :one
+SELECT EXISTS (
+    SELECT 1 FROM issue
+    WHERE issue.workspace_id = $1
+      AND issue.id = $2
+) AS issue_exists
+`
+
+type RetrospectiveIssueExistsInWorkspaceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// RUYI-674: membership is a filter, not a gate. An id outside the scanned
+// set still gets its drafts accepted when it names a real issue of this
+// workspace (no watermark — the next pass may rescan it); only ids that
+// exist nowhere are dropped as unattributable. Callers must pre-validate
+// the id as a UUID before probing.
+func (q *Queries) RetrospectiveIssueExistsInWorkspace(ctx context.Context, arg RetrospectiveIssueExistsInWorkspaceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, retrospectiveIssueExistsInWorkspace, arg.WorkspaceID, arg.IssueID)
+	var issue_exists bool
+	err := row.Scan(&issue_exists)
+	return issue_exists, err
+}
+
 const reworkPromptProposal = `-- name: ReworkPromptProposal :one
 UPDATE prompt_proposal SET status = 'draft',
     audit_log = prompt_proposal.audit_log || $1::jsonb, updated_at = now()

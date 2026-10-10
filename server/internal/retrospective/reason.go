@@ -34,11 +34,12 @@ const (
 	ReasonAgentNoReport      = "agent_no_report"      // run finished without a final message
 	ReasonAgentRunFailed     = "agent_run_failed"     // the platform task reported failure (raw text: server log only)
 
-	// Membership violations — not actionable (agent misbehavior); the whole
-	// report is rejected and nothing is recorded. Carries the offending
-	// issue id as the only whitelisted param.
-	ReasonReportOutOfScope = "report_out_of_scope" // analyzed_issue_ids names an issue outside the window
-	ReasonDraftOutOfScope  = "draft_out_of_scope"  // a draft references an issue outside the window
+	// Membership violations — deprecated by RUYI-674: membership is a
+	// filter now, so no new run row ever carries these codes. They stay
+	// here because they are wire surface of rows finished before the
+	// rework — the UI's key table still localizes them for history.
+	ReasonReportOutOfScope = "report_out_of_scope" // analyzed_issue_ids named an issue outside the window
+	ReasonDraftOutOfScope  = "draft_out_of_scope"  // a draft referenced an issue outside the window
 
 	// Reconciler backstops — not actionable; the next run retries.
 	ReasonTaskNotCompleted  = "task_not_completed"  // linked task went terminal without the completion hook seeing it
