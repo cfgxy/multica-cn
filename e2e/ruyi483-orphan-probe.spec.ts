@@ -14,30 +14,17 @@ const DATABASE_URL =
   process.env.DATABASE_URL ??
   "postgres://multica:multica@localhost:5432/multica?sslmode=disable";
 
-function findCommentPmIdx(needle: string): number {
-  const fk = (el: Element | null) => {
-    let cur: Element | null = el;
-    for (let k = 0; cur && k < 8; k++) {
-      const key = Object.keys(cur).find((c) => c.startsWith("__reactFiber$"));
-      if (key) return { el: cur, key };
-      cur = cur.parentElement;
-    }
-    return null;
-  };
-  const chain = (start: Element) => {
-    const hit = fk(start);
-    if (!hit) return "";
-    const names: string[] = [];
-    let f = (hit.el as any)[hit.key];
-    for (let i = 0; f && i < 60; i++) {
-      const n = f.type?.name ?? f.elementType?.name;
-      if (typeof n === "string" && !names.includes(n)) names.push(n);
-      f = f.return;
-    }
-    return names.join("<");
-  };
+// Locate the comment composer's ProseMirror index by its placeholder —
+// React component names (the old fiber-walk needle "CommentInput") are
+// minified away in production builds, so that probe found nothing on the
+// release entry. The placeholder attribute survives minification and is the
+// same anchor comments.spec.ts uses.
+function findCommentPmIdx(): number {
   return Array.from(document.querySelectorAll(".ProseMirror")).findIndex(
-    (el) => chain(el).includes(needle),
+    (el) =>
+      (el.getAttribute("data-placeholder") ??
+        el.querySelector("[data-placeholder]")?.getAttribute("data-placeholder")) ===
+      "Leave a comment...",
   );
 }
 
@@ -80,12 +67,13 @@ test.describe("RUYI-483 orphan-attachment probe v2", () => {
       if ((await shell.count()) === 0) break;
     }
     await expect(shell).toHaveCount(0);
-    const commentIdx = await page.evaluate(findCommentPmIdx, "CommentInput");
+    const commentIdx = await page.evaluate(findCommentPmIdx);
     if (commentIdx < 0) {
       const pmDump = await page.evaluate(() =>
         Array.from(document.querySelectorAll(".ProseMirror")).map((el, i) => ({
           i,
-          ph: el.querySelector("[data-placeholder]")?.getAttribute("data-placeholder") ?? null,
+          ph: el.getAttribute("data-placeholder") ??
+            el.querySelector("[data-placeholder]")?.getAttribute("data-placeholder") ?? null,
           y: Math.round(el.getBoundingClientRect().y),
         })));
       console.info("[probe] PMs@no-comment:", JSON.stringify(pmDump));

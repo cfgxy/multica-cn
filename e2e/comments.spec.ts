@@ -40,7 +40,11 @@ test.describe("Comments", () => {
     const editor = page
       .locator('.ProseMirror[data-placeholder="Leave a comment..."], .ProseMirror:has([data-placeholder="Leave a comment..."])')
       .first();
-    await expect(editor).toBeVisible();
+    // The editor chunk is compiled on demand by the dev server on first
+    // activation; a cold compile routinely exceeds the 5s default window.
+    // The release entry (e2e-release-entry.sh) is the primary fix — this
+    // margin just keeps dev-mode runs from flaking.
+    await expect(editor).toBeVisible({ timeout: 15000 });
     await editor.click({ force: true });
     await editor.fill(commentText);
 
