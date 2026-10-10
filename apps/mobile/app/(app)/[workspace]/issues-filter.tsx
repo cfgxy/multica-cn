@@ -171,7 +171,7 @@ export default function IssuesFilterRoute() {
           </Pressable>
         ) : null}
       </View>
-      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+      <ScrollView className="flex-1" showsVerticalScrollIndicator={false} nestedScrollEnabled>
         {statusLocked ? (
           // Non-全部 tabs own their status window server-side; show it as a
           // locked hint instead of offering a contradictory multi-select.

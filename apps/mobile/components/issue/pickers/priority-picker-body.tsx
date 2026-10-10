@@ -33,7 +33,7 @@ export function PriorityPickerBody({ value, onChange }: Props) {
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
 
   return (
-    <ScrollView showsVerticalScrollIndicator={false}>
+    <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
       <View className="px-4 pt-3 pb-2">
         <Text className="text-lg font-semibold text-foreground">
           {t("detail.prop_priority", "Priority")}
