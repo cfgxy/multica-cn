@@ -9191,108 +9191,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
-	retriedFreshSession := false
-	var usageEntriesOverride []TaskUsageEntry
-	var usageEntriesOverridden bool
-	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
-		retriedFreshSession = true
-		priorSessionID := task.PriorSessionID
-		firstResult := result
-		firstUsage := normalizePriorSessionUsage(provider, task, result.Usage)
-		firstTools := tools
-		if !result.ResumeRejectedTransient {
-			retiredSessionID = task.PriorSessionID
-		}
-		taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
-
-		// Rebuild cold-session context before the single retry. The prior
-		// provider transcript is gone (missing, account-mismatched, or —
-		// GH #5975 — carrying history the provider now refuses), so the
-		// fresh process must NOT be told it is resuming a conversation:
-		//   - taskCtx.PriorSessionResumed=false + re-injecting the runtime
-		//     brief rewrites the on-disk AGENTS.md so it no longer claims
-		//     "You're resuming the prior session" (which file-based backends
-		//     like Kiro load themselves).
-		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
-		//     comment-reading path instead of the warm resumed one.
-		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
-		//     continuity notice for this surface, so the agent knows not to
-		//     assume continuity it no longer has. This is now the ONLY injector
-		//     on the retry path: the backend's own copy is suppressed below,
-		//     because before MUL-5722 both fired and the turn carried the same
-		//     paragraph twice.
-		// task and taskCtx are local (runTask takes task by value), so these
-		// mutations only affect the retry.
-		execOpts.ResumeSessionID = ""
-		task.PriorSessionID = ""
-		task.PriorSessionResumeUnavailable = true
-		execOpts.ResumeContinuityNotice = ""
-		execOpts.PriorContextBriefSHA256 = provenanceTextHash(task.PriorContextBrief)
-		execOpts.PriorSessionResumeUnavailable = true
-		execOpts.SessionGate, continuationSource = sessionGateProvenance(task)
-		execOpts.SyntheticContinuation = strings.TrimSpace(task.PriorContextBrief) != ""
-		execOpts.SyntheticContinuationSource = continuationSource
-		taskCtx.PriorSessionResumed = false
-		var freshBrief string
-		var briefErr error
-		if snapPlan != nil {
-			freshBrief, briefErr = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
-		} else {
-			freshBrief, briefErr = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
-		}
-		if briefErr != nil {
-			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
-		} else {
-			runtimeBrief = freshBrief
-			if providerNeedsInlineSystemPrompt(provider) {
-				execOpts.SystemPrompt = runtimeBrief
-			}
-		}
-		freshPrompt := BuildPrompt(task, provider, promptOptions...)
-		// The previous supervised worker exited with its budget stop recorded
-		// in its manifest; planSupervisedRun steps to the next generation so
-		// this retry launches a fresh unit instead of reentering the old one.
-		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
-		if execOpts.Supervision != nil {
-			execOpts.Supervision.RuntimeID = task.RuntimeID
-		}
-
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
-		if retryErr != nil {
-			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
-			if errors.Is(retryErr, agent.ErrCancellationUnconfirmed) {
-				return TaskResult{}, retryErr
-			}
-		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
-			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original poisoned result",
-				"retry_status", retryResult.Status,
-				"retry_error", retryResult.Error,
-			)
-		}
-		// The poisoned prior session id lives ONLY on firstResult (classified
-		// unrecoverable, so GetLastTaskSession excludes it). reconcile never
-		// grafts it onto the retry result: a retry that establishes a new
-		// session wins with its own id; a retry that fails without a new
-		// session keeps firstResult so the bad session stays excluded rather
-		// than being relabeled resumable by a benign-looking second error.
-		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
-		usageEntriesOverridden = true
-		usageEntriesOverride = append(
-			usageEntriesOverride,
-			taskUsageEntries(provider, priorSessionID, firstResult, firstUsage)...,
-		)
-		usageEntriesOverride = append(
-			usageEntriesOverride,
-			taskUsageEntries(provider, retryResult.SessionID, retryResult, retryResult.Usage)...,
-		)
-	}
-
-	// ACP providers report billing usage cumulatively for a resumed session. The
-	// resumed attempt is normalized before it is merged with a fresh retry, so a
-	// fresh session's independent usage is never reduced by the old baseline.
-	if !retriedFreshSession {
-		result.Usage = normalizePriorSessionUsage(provider, task, result.Usage)
-	}
+	// The fresh-session retry loop includes the normal resume refusal and the
+	// bounded Claude pipe-crash recovery path.
+	result, tools, retryRetired := d.freshSessionRetryLoop(ctx, backend, promptOptions, execOpts, taskLog, &task, taskCtx, env, runtimeBrief, &msgSeq, result, tools, provider)
+	retiredSessionID = retryRetired
 
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
 	// it held died with its namespace. A completed run drops the snapshot
@@ -9601,6 +9503,144 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Usage:         usageEntries,
 			FailureReason: failureReason,
 		}, nil
+	}
+}
+
+func (d *Daemon) freshSessionRetryLoop(
+	ctx context.Context,
+	backend agent.Backend,
+	promptOptions []PromptOption,
+	execOpts agent.ExecOptions,
+	taskLog *slog.Logger,
+	task *Task,
+	taskCtx execenv.TaskContextForEnv,
+	env *execenv.Environment,
+	runtimeBrief string,
+	msgSeq *atomic.Int32,
+	result agent.Result,
+	tools int32,
+	provider string,
+) (agent.Result, int32, string) {
+	firstResult := result
+	firstUsage := result.Usage
+	firstTools := tools
+	mergedUsage := firstUsage
+	retiredSessionID := ""
+
+	// crashStreak counts CONSECUTIVE attempts whose failure names a pipe
+	// crash. Any non-crash outcome resets it: the budget exists to bound one
+	// transient failure mode, not to tax unrelated retries.
+	crashStreak := 0
+	noteCrash := func(r agent.Result) {
+		if r.Status == "failed" && taskfailure.ClaudePipelineCrash(r.Error) {
+			crashStreak++
+		} else {
+			crashStreak = 0
+		}
+	}
+	noteCrash(result)
+
+	for attempt := 1; ; attempt++ {
+		gate := result
+		crashRetry := d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1
+		if !d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1 {
+			gate.ResumeRejected = false
+		}
+		if !shouldRetryWithFreshSession(gate, task.PriorSessionID, tools, provider) {
+			if !(crashRetry &&
+				crashStreak < maxPipeCrashConsecutiveFailures &&
+				result.Status == "failed" &&
+				result.SessionID == "" &&
+				tools == 0) {
+				return result, tools, retiredSessionID
+			}
+		}
+		if task.PriorSessionID != "" && !result.ResumeRejectedTransient {
+			retiredSessionID = task.PriorSessionID
+		}
+		if crashRetry {
+			d.reportPipeCrashRetryNotice(task.ID, taskLog, msgSeq, crashStreak)
+		} else {
+			taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
+		}
+
+		// Rebuild cold-session context before the retry. The prior provider
+		// transcript is gone (missing, account-mismatched, — GH #5975 —
+		// carrying history the provider now refuses, or the CLI keeps dying
+		// on it), so the fresh process must NOT be told it is resuming a
+		// conversation:
+		//   - taskCtx.PriorSessionResumed=false + re-injecting the runtime
+		//     brief rewrites the on-disk AGENTS.md so it no longer claims
+		//     "You're resuming the prior session" (which file-based backends
+		//     like Kiro load themselves).
+		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
+		//     comment-reading path instead of the warm resumed one.
+		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
+		//     continuity notice for this surface, so the agent knows not to
+		//     assume continuity it no longer has. This is now the ONLY injector
+		//     on the retry path: the backend's own copy is suppressed below,
+		//     because before MUL-5722 both fired and the turn carried the same
+		//     paragraph twice.
+		// task is runTask's local copy and taskCtx a value parameter, so these
+		// mutations only affect the retries.
+		execOpts.ResumeSessionID = ""
+		task.PriorSessionID = ""
+		task.PriorSessionResumeUnavailable = true
+		execOpts.ResumeContinuityNotice = ""
+		taskCtx.PriorSessionResumed = false
+		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
+		} else {
+			runtimeBrief = freshBrief
+			if providerNeedsInlineSystemPrompt(provider) {
+				execOpts.SystemPrompt = runtimeBrief
+			}
+		}
+		freshPrompt := BuildPrompt(*task, provider, promptOptions...)
+		// The previous supervised worker exited with its budget stop recorded
+		// in its manifest; planSupervisedRun steps to the next generation so
+		// this retry launches a fresh unit instead of reentering the old one.
+		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, attempt+1)
+
+		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, msgSeq)
+		if retryErr != nil {
+			taskLog.Error("fresh session also failed to start; keeping the original result", "error", retryErr)
+		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
+			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original result",
+				"retry_status", retryResult.Status,
+				"retry_error", retryResult.Error,
+			)
+		}
+		// The abandoned prior session id lives ONLY on firstResult (classified
+		// unrecoverable, so GetLastTaskSession excludes it). reconcile never
+		// grafts it onto the retry result: a retry that establishes a new
+		// session wins with its own id; a retry that fails without a new
+		// session keeps firstResult so the bad session stays excluded rather
+		// than being relabeled resumable by a benign-looking second error.
+		result, tools = reconcileFreshRetryResult(firstResult, mergedUsage, firstTools, retryResult, retryTools, retryErr)
+		mergedUsage = result.Usage
+		noteCrash(result)
+	}
+}
+
+// reportPipeCrashRetryNotice posts the progress message that makes an
+// automatic pipe-crash retry visible in the task timeline (RUYI-659). A
+// recovery the user cannot see reads as flapping, so the message states what
+// was detected, which attempt this is, and where the automatic budget stops.
+// Best effort: a failed report costs a timeline row, never the retry itself.
+func (d *Daemon) reportPipeCrashRetryNotice(taskID string, taskLog *slog.Logger, msgSeq *atomic.Int32, crashStreak int) {
+	if d.client == nil {
+		return
+	}
+	content := fmt.Sprintf(
+		"检测到 Claude CLI 管道崩溃（会话未能建立），自动换新会话重试（第 %d 次，最多 %d 次；连续 %d 次失败将停止自动重试并转人工处理）",
+		crashStreak, maxPipeCrashConsecutiveFailures-1, maxPipeCrashConsecutiveFailures,
+	)
+	s := msgSeq.Add(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.client.ReportTaskMessages(ctx, taskID, []TaskMessageData{{Seq: int(s), Type: "text", Content: content}}); err != nil {
+		taskLog.Debug("failed to report pipe-crash retry notice", "error", err)
 	}
 }
 
