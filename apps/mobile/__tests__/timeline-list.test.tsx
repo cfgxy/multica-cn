@@ -103,6 +103,7 @@ jest.mock("@/data/api", () => ({
     listIssueDecisions: () => Promise.resolve([]),
     answerIssueDecision: () => Promise.resolve({}),
     cancelIssueDecision: () => Promise.resolve({}),
+    listIssuePullRequests: () => Promise.resolve({ pull_requests: [] }),
     listMembers: () => Promise.resolve([]),
     listAgents: () => Promise.resolve([]),
     listSquads: () => Promise.resolve([]),
@@ -127,12 +128,26 @@ jest.mock("@/components/issue/decision-batch-bar", () => ({
     ),
 }));
 
+jest.mock("@/components/issue/pull-request-card", () => ({
+  PullRequestCard: ({ pr }: { pr: { id: string } }) =>
+    mockReact.createElement(mockText, null, `pull-request-card:${pr.id}`),
+}));
+
 // Decision cards reach the list through the component's own useQuery; tests
 // swap this bag to control what interleaveDecisions merges into the rows.
 const mockDecisionsData: { data: IssueDecision[] } = { data: [] };
 
+// Same seam for linked pull requests (RUYI-634); keyed apart from the
+// decisions bag by the github query key segment.
+const mockPullRequestsData: { data: { pull_requests: unknown[] } } = {
+  data: { pull_requests: [] },
+};
+
 jest.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: mockDecisionsData.data }),
+  useQuery: (opts: { queryKey: unknown[] }) =>
+    (opts.queryKey as string[]).includes("pull-requests")
+      ? { data: mockPullRequestsData.data }
+      : { data: mockDecisionsData.data },
   // passthrough: the decisions options builder (RUYI-345) just labels an
   // options object; the stubbed useQuery above never runs its queryFn.
   queryOptions: (opts: unknown) => opts,
@@ -490,5 +505,94 @@ describe("decision batch bar placement (RUYI-534)", () => {
 
     expect(screen.queryByTestId("timeline-row-decision-batch-bar")).toBeNull();
     expect(screen.getByText("decision-card:d-1")).toBeTruthy();
+  });
+});
+
+describe("pull request cards in the timeline (RUYI-634)", () => {
+  function decisionCard(id: string, createdAt: string): IssueDecision {
+    return {
+      id,
+      issue_id: issue.id,
+      source_comment_id: null,
+      question: "q",
+      options: [{ label: "A" }, { label: "B" }],
+      multi_select: false,
+      recommended_indices: [],
+      status: "open",
+      selected_indices: [],
+      answered_by_type: null,
+      answered_by_id: null,
+      answered_at: null,
+      answer_comment_id: null,
+      created_by_type: "agent",
+      created_by_id: "a-1",
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+  }
+
+  function linkedPr(id: string, prCreatedAt: string) {
+    return {
+      id,
+      workspace_id: "ws-1",
+      repo_owner: "cfgxy",
+      repo_name: "multica-cn",
+      number: 313,
+      title: `pr ${id}`,
+      state: "open",
+      html_url: `https://github.com/cfgxy/multica-cn/pull/${id}`,
+      branch: null,
+      author_login: null,
+      author_avatar_url: null,
+      merged_at: null,
+      closed_at: null,
+      pr_created_at: prCreatedAt,
+      pr_updated_at: prCreatedAt,
+    };
+  }
+
+  afterEach(() => {
+    mockDecisionsData.data = [];
+    mockPullRequestsData.data = { pull_requests: [] };
+  });
+
+  it("interleaves linked PR cards by pr_created_at and keeps the batch bar last", async () => {
+    mockDecisionsData.data = [
+      decisionCard("d-1", "2026-09-05T08:00:00Z"),
+      decisionCard("d-2", "2026-09-05T12:00:00Z"),
+    ];
+    mockPullRequestsData.data = {
+      pull_requests: [
+        linkedPr("pr-new", "2026-09-05T13:00:00Z"),
+        linkedPr("pr-old", "2026-09-05T08:30:00Z"),
+      ],
+    };
+
+    await renderTimeline([
+      comment("root-a", "2026-09-05T09:00:00Z"),
+      comment("root-b", "2026-09-05T10:00:00Z"),
+    ]);
+
+    expect(
+      screen.getAllByTestId(/timeline-row-/).map((node) => node.props.testID),
+    ).toEqual([
+      "timeline-row-d-1",
+      "timeline-row-pull-request-pr-old",
+      "timeline-row-root-a",
+      "timeline-row-root-b",
+      "timeline-row-d-2",
+      "timeline-row-pull-request-pr-new",
+      "timeline-row-decision-batch-bar",
+    ]);
+    expect(screen.getByText("pull-request-card:pr-old")).toBeTruthy();
+    expect(screen.getByText("pull-request-card:pr-new")).toBeTruthy();
+  });
+
+  it("renders no PR card when the issue has no linked pull requests", async () => {
+    mockPullRequestsData.data = { pull_requests: [] };
+
+    await renderTimeline([comment("root-a", "2026-09-05T09:00:00Z")]);
+
+    expect(screen.queryByText(/pull-request-card:/)).toBeNull();
   });
 });
