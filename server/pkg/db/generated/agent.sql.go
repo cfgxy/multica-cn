@@ -351,6 +351,29 @@ func (q *Queries) ArchiveAgentsByRuntime(ctx context.Context, arg ArchiveAgentsB
 	return items, nil
 }
 
+const armFailedTaskRetryReevaluation = `-- name: ArmFailedTaskRetryReevaluation :exec
+UPDATE agent_task_queue
+SET fire_at = $1
+WHERE id = $2 AND status = 'failed'
+`
+
+type ArmFailedTaskRetryReevaluationParams struct {
+	FireAt pgtype.Timestamptz `json:"fire_at"`
+	ID     pgtype.UUID        `json:"id"`
+}
+
+// RUYI-579 W3: a retryable task failed while a successor held the pending
+// slot, so the retry was skipped. Arm a future re-evaluation on the FAILED
+// parent (status stays failed — the user keeps seeing the failure): the
+// runtime sweeper re-runs the retry decision after fire_at, by which time
+// the successor has usually reached a terminal state. Harmless no-op when
+// the row is no longer failed (re-rerun, cancel) — the WHERE clause is the
+// guard.
+func (q *Queries) ArmFailedTaskRetryReevaluation(ctx context.Context, arg ArmFailedTaskRetryReevaluationParams) error {
+	_, err := q.db.Exec(ctx, armFailedTaskRetryReevaluation, arg.FireAt, arg.ID)
+	return err
+}
+
 const cancelAgentTask = `-- name: CancelAgentTask :one
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
@@ -2376,6 +2399,22 @@ func (q *Queries) ClearAgentVoiceRuntime(ctx context.Context, id pgtype.UUID) (A
 		&i.VoiceRuntimeID,
 	)
 	return i, err
+}
+
+const clearFailedTaskRetryReevaluation = `-- name: ClearFailedTaskRetryReevaluation :exec
+UPDATE agent_task_queue
+SET fire_at = NULL
+WHERE id = $1 AND status = 'failed' AND fire_at <= now()
+`
+
+// RUYI-579 W3: retire a failed task's retry re-evaluation marker. The
+// `fire_at <= now()` predicate is the concurrency guard: a re-evaluation
+// pass that re-armed the row (successor still pending) wrote a FUTURE
+// fire_at, and this statement must not erase that newer marker — only the
+// expired one this pass was started by.
+func (q *Queries) ClearFailedTaskRetryReevaluation(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearFailedTaskRetryReevaluation, id)
+	return err
 }
 
 const completeAgentTask = `-- name: CompleteAgentTask :one
@@ -7243,6 +7282,107 @@ type ListChatFinalizeDeferredExpiredParams struct {
 // queries so one tick can't monopolise the DB.
 func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListChatFinalizeDeferredExpiredParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listChatFinalizeDeferredExpired, arg.GraceSecs, arg.MaxPerTick)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.PromptVersions,
+			&i.CancelRequestedByUserID,
+			&i.CancelRequestedAt,
+			&i.CancelReason,
+			&i.CancelActorType,
+			&i.CancelActorID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFailedTasksForRetryReevaluation = `-- name: ListFailedTasksForRetryReevaluation :many
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id FROM agent_task_queue
+WHERE status = 'failed'
+  AND fire_at IS NOT NULL AND fire_at <= now()
+  AND failure_reason = ANY($1::text[])
+ORDER BY fire_at
+LIMIT $2
+`
+
+type ListFailedTasksForRetryReevaluationParams struct {
+	FailureReasons []string `json:"failure_reasons"`
+	MaxPerTick     int32    `json:"max_per_tick"`
+}
+
+// RUYI-579 W3: failed tasks whose deferred retry decision is due for a
+// re-run. Only rows the auto-retry path recognises at all (the reason
+// allowlist is passed in from the Go side so the two lists cannot drift);
+// budget and eligibility are re-checked per row by MaybeRetryFailedTask.
+// Backed by idx_agent_task_queue_failed_retry_reeval (migration 936), a
+// partial index whose row set is near-empty in steady state.
+func (q *Queries) ListFailedTasksForRetryReevaluation(ctx context.Context, arg ListFailedTasksForRetryReevaluationParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listFailedTasksForRetryReevaluation, arg.FailureReasons, arg.MaxPerTick)
 	if err != nil {
 		return nil, err
 	}

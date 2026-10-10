@@ -210,10 +210,16 @@ export function VoiceInstanceSettingsCard({
       {
         onSuccess: (res) => {
           setKeyValue("");
-          if (res.probe?.status === "invalid") {
+          if (res.probe?.status === "unreachable") {
             // Saved is saved (§4.5): the probe never blocks the write — it
             // only downgrades the toast and flips the badge via the
-            // invalidated instance queries.
+            // invalidated instance queries. Unreachable says nothing about
+            // the key (RUYI-619): "could not verify", not "invalid".
+            // RUYI-626 merge: the shared probe_unreachable key carries the
+            // device-test copy on mobile; the server-probe save flow here
+            // uses its own save-flavored wording.
+            toast.warning(t(($) => $.voice_instance.key_saved_probe_unreachable));
+          } else if (res.probe?.status === "invalid") {
             toast.warning(
               t(($) => $.voice_instance.probe_invalid, {
                 status: res.probe?.http_status ?? "",
@@ -472,7 +478,7 @@ export function VoiceInstanceSettingsCard({
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("runtimes");
   if (status === "configured") {
@@ -486,6 +492,15 @@ function CredentialBadge({
     return (
       <Badge variant="outline" className="text-destructive">
         {t(($) => $.voice_instance.badge_invalid)}
+      </Badge>
+    );
+  }
+  if (status === "unreachable") {
+    // Could not verify (network unreachable): a warning, not a verdict on
+    // the key (RUYI-619).
+    return (
+      <Badge variant="outline" className="text-amber-600 dark:text-amber-400">
+        {t(($) => $.voice_instance.badge_unreachable)}
       </Badge>
     );
   }

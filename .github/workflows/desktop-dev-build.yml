@@ -108,14 +108,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist-staged
-          find apps/desktop/dist -maxdepth 1 -type f \( -name '*.exe' -o -name '*.exe.blockmap' \) -exec cp {} dist-staged/ \;
-          ( cd dist-staged && sha256sum -- *.exe > SHA256SUMS.txt )
-          count=$(find dist-staged -name '*.exe' | wc -l)
+          # package.mjs 多目标构建按架构作用域化 electron-builder 输出目录
+          # （-c.directories.output=dist/<platform>-<arch>），安装包位于
+          # apps/desktop/dist 下一层，不在 dist 第一层。
+          shopt -s nullglob
+          exes=(apps/desktop/dist/win-*/*.exe)
+          count=${#exes[@]}
           if [[ "$count" -lt 2 ]]; then
             echo "::error::expected x64 + arm64 installers, found $count exe files"
             exit 1
           fi
+          mkdir -p dist-staged
+          cp "${exes[@]}" dist-staged/
+          blockmaps=(apps/desktop/dist/win-*/*.exe.blockmap)
+          if [[ "${#blockmaps[@]}" -gt 0 ]]; then
+            cp "${blockmaps[@]}" dist-staged/
+          fi
+          ( cd dist-staged && sha256sum -- *.exe > SHA256SUMS.txt )
           ls -la dist-staged
 
       - name: Upload Desktop dev artifacts (win)
@@ -127,6 +136,9 @@ jobs:
 
   publish-release:
     needs: build
+    # 发布通道仅限 main：分支 dispatch 等其余 ref 的构建只产 artifact，
+    # 防止未合并分支的安装包混入 desktop-dev-v* 开发发布序列。
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
