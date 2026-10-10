@@ -29,6 +29,22 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@multica/core/platform", () => ({
   CoreProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
   setCurrentWorkspace: vi.fn(),
+  // Fork's App.tsx (RUYI-59 wiring) reads this binding from the mocked
+  // module when mounting; upstream's App does not.
+  defaultStorage: {
+    getItem: (key: string) => localStorage.getItem(key),
+    setItem: (key: string, value: string) => localStorage.setItem(key, value),
+    removeItem: (key: string) => localStorage.removeItem(key),
+  },
+}));
+
+// Fork-only server-switcher wiring (RUYI-59): stubbed so the auth-recovery
+// assertions stay isolated from server-store side effects; the wiring has its
+// own dedicated tests.
+vi.mock("./platform/desktop-servers", () => ({
+  ensureServerStore: vi.fn(),
+  resolveEffectiveRuntimeConfig: (config: unknown) => config,
+  getStartupServerTarget: () => null,
 }));
 
 vi.mock("@multica/core/i18n", () => ({
