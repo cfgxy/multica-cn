@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Alert, ActivityIndicator, Linking, ScrollView, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -25,6 +26,7 @@ import {
   getInboxDisplayTitle,
 } from "@/lib/inbox-display";
 import { useTypeLabels } from "@/components/inbox/detail-label";
+import { IssueLimitRecoveryDialog } from "@/components/billing/issue-limit-recovery";
 import { timeAgo } from "@/lib/time-ago";
 import { useT } from "@/lib/use-t";
 
@@ -89,7 +91,10 @@ export default function InboxNoticeDetail() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("inbox");
-  const { t: tModals } = useT("modals");
+  // RUYI-605 delta: an issue-limit rejection from the retry path opens the
+  // shared recovery dialog (desktop IssueLimitUpgradeDialog semantics)
+  // instead of the bare title alert.
+  const [issueLimitOpen, setIssueLimitOpen] = useState(false);
   const { data: items, isLoading } = useQuery(inboxListOptions(wsId));
 
   // Read the raw workspace-scoped cache: deduplication can replace a row,
@@ -187,14 +192,9 @@ export default function InboxNoticeDetail() {
         return;
       }
       if (code === "issue_limit_reached") {
-        // Same key + fallback web routes to its upgrade prompt; mobile keeps
-        // the alert treatment quick-create-panel already established.
-        Alert.alert(
-          tModals(
-            "create_issue.issue_limit.title",
-            "This workspace has reached its issue limit",
-          ),
-        );
+        // Same key as web's upgrade prompt; the shared dialog carries the
+        // per-state description and the cloud-authorized billing action.
+        setIssueLimitOpen(true);
         return;
       }
       Alert.alert(
@@ -304,6 +304,10 @@ export default function InboxNoticeDetail() {
           ) : null}
         </ScrollView>
       )}
+      <IssueLimitRecoveryDialog
+        visible={issueLimitOpen}
+        onClose={() => setIssueLimitOpen(false)}
+      />
     </View>
   );
 }
