@@ -1000,6 +1000,7 @@ type DaemonHeartbeatRequest struct {
 	RuntimeID           string                             `json:"runtime_id"`
 	SupportsBatchImport bool                               `json:"supports_batch_import,omitempty"`
 	Backpressure        *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
+	Resources           *protocol.DaemonResourceReport     `json:"resources,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -1130,7 +1131,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	authMs = time.Since(start).Milliseconds()
 
-	ack, m, err := h.processHeartbeat(r.Context(), rt, req.SupportsBatchImport, req.Backpressure)
+	ack, m, err := h.processHeartbeat(r.Context(), rt, req.SupportsBatchImport, req.Backpressure, req.Resources)
 	updateMs = m.UpdateMs
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
@@ -1184,7 +1185,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // and tells the daemon to drop the stale runtime and re-register. Other DB
 // errors still propagate as errors so they keep their existing Warn logging
 // and the daemon does not mistake a hiccup for a deletion.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport, resources *protocol.DaemonResourceReport) (*protocol.DaemonHeartbeatAckPayload, error) {
 	runtimeUUID, err := util.ParseUUID(runtimeID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid runtime_id: %w", err)
@@ -1203,7 +1204,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	if !identity.AllowsWorkspace(uuidToString(rt.WorkspaceID)) {
 		return nil, fmt.Errorf("runtime not in connection workspace")
 	}
-	ack, _, err := h.processHeartbeat(ctx, rt, supportsBatchImport, backpressure)
+	ack, _, err := h.processHeartbeat(ctx, rt, supportsBatchImport, backpressure, resources)
 	return ack, err
 }
 
@@ -1315,7 +1316,7 @@ type heartbeatMetrics struct {
 // the WebSocket daemon:heartbeat path: records liveness and pulls any pending
 // actions queued for the runtime. Auth and request decoding live in the
 // caller because they differ between transports.
-func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
+func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport, resources *protocol.DaemonResourceReport) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
 	var m heartbeatMetrics
 	runtimeID := uuidToString(rt.ID)
 
@@ -1324,6 +1325,13 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 	// are paused, so a lost beat would leave the UI showing stale state.
 	// Best-effort: a storage failure must never fail the heartbeat.
 	h.recordBackpressure(ctx, rt.ID, backpressure)
+
+	// Host resource relay (RUYI-618): publish the node-exporter snapshot to
+	// the in-memory exposition store. Best-effort and nil-safe — a disabled
+	// relay or disabled-metrics deployment sees a plain no-op here.
+	if h.HostResources != nil {
+		h.HostResources.RecordHostResources(rt.DaemonID.String, resources)
+	}
 
 	updateStart := time.Now()
 	if err := h.recordHeartbeat(ctx, rt); err != nil {

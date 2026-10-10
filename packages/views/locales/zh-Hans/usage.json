@@ -109,5 +109,31 @@
   },
   "duration": {
     "less_than_minute": "<1分钟"
+  },
+  "metrics": {
+    "live_label": "实时",
+    "window_label": "时间窗",
+    "window_1h": "1小时",
+    "window_6h": "6小时",
+    "window_24h": "24小时",
+    "window_7d": "7天",
+    "no_data": "该时间窗内没有采样数据。",
+    "error": "指标后端暂不可用。",
+    "resources": {
+      "title": "系统资源",
+      "cpu": "CPU 核数",
+      "memory": "内存使用",
+      "disk": "磁盘 I/O"
+    },
+    "traffic": {
+      "title": "模型流量",
+      "by_label": "维度",
+      "dim_runtime": "运行时",
+      "dim_provider": "提供商",
+      "dim_model": "模型",
+      "tokens": "Tokens/秒",
+      "cost": "费用/小时",
+      "tasks": "任务/小时"
+    }
   }
 }

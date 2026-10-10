@@ -204,6 +204,16 @@ BP_MEM_HIGH_PCT ?= 15
 BP_MEM_RECOVERY_PCT ?= 25
 BP_SWAP_HIGH_PCT ?= 80
 BP_SWAP_RECOVERY_PCT ?= 60
+# 主机资源指标中继（RUYI-618）：daemon 伴随 node-exporter 采集主机指标，daemon
+# 抓取解析后随心跳上报、server 单点 exposition。NODE_EXPORTER_URL 置空 = 不装
+# node-exporter、daemon 不采集中继（usage 页隐藏系统资源板块）。
+NODE_EXPORTER_URL ?= http://127.0.0.1:9100/metrics
+NODE_EXPORTER_LISTEN ?= 127.0.0.1:9100
+NODE_EXPORTER_VERSION ?= 1.9.1
+NODE_EXPORTER_BIN ?= $(HOME)/.local/bin/node_exporter
+NODE_EXPORTER_CPU_QUOTA ?= 20%
+NODE_EXPORTER_MEMORY_HIGH ?= 64M
+NODE_EXPORTER_MEMORY_MAX ?= 128M
 # 运行用户/组：以执行 make 的普通用户为准（make 层展开，避免 shell 单引号吞掉命令替换）
 USER ?= $(shell id -un)
 GROUP ?= $(shell id -gn)
@@ -220,7 +230,17 @@ DAEMON_UNIT_RENDER = sed \
 	  -e 's|@BP_MEM_HIGH_PCT@|$(BP_MEM_HIGH_PCT)|g' \
 	  -e 's|@BP_MEM_RECOVERY_PCT@|$(BP_MEM_RECOVERY_PCT)|g' \
 	  -e 's|@BP_SWAP_HIGH_PCT@|$(BP_SWAP_HIGH_PCT)|g' \
-	  -e 's|@BP_SWAP_RECOVERY_PCT@|$(BP_SWAP_RECOVERY_PCT)|g'
+	  -e 's|@BP_SWAP_RECOVERY_PCT@|$(BP_SWAP_RECOVERY_PCT)|g' \
+	  -e 's|@NODE_EXPORTER_URL@|$(NODE_EXPORTER_URL)|g'
+
+NODE_EXPORTER_UNIT_RENDER = sed \
+	  -e 's|@USER@|$(USER)|g' \
+	  -e 's|@GROUP@|$(GROUP)|g' \
+	  -e 's|@BIN@|$(NODE_EXPORTER_BIN)|g' \
+	  -e 's|@LISTEN@|$(subst :,\:,$(NODE_EXPORTER_LISTEN))|g' \
+	  -e 's|@CPU_QUOTA@|$(NODE_EXPORTER_CPU_QUOTA)|g' \
+	  -e 's|@MEMORY_HIGH@|$(NODE_EXPORTER_MEMORY_HIGH)|g' \
+	  -e 's|@MEMORY_MAX@|$(NODE_EXPORTER_MEMORY_MAX)|g'
 
 # 渲染参数持久化写回（install/update 安装成功后调用；在 recipe 内展开为多行 shell）
 define DAEMON_RENDER_PERSIST
@@ -233,7 +253,39 @@ printf '%s\n' \
 	  'BP_MEM_HIGH_PCT ?= $(BP_MEM_HIGH_PCT)' \
 	  'BP_MEM_RECOVERY_PCT ?= $(BP_MEM_RECOVERY_PCT)' \
 	  'BP_SWAP_HIGH_PCT ?= $(BP_SWAP_HIGH_PCT)' \
-	  'BP_SWAP_RECOVERY_PCT ?= $(BP_SWAP_RECOVERY_PCT)' > $(DAEMON_RENDER_MK)
+	  'BP_SWAP_RECOVERY_PCT ?= $(BP_SWAP_RECOVERY_PCT)' \
+	  'NODE_EXPORTER_URL ?= $(NODE_EXPORTER_URL)' \
+	  'NODE_EXPORTER_LISTEN ?= $(NODE_EXPORTER_LISTEN)' > $(DAEMON_RENDER_MK)
+endef
+
+# node-exporter 收敛（RUYI-618）：NODE_EXPORTER_URL 非空时安装启用
+# multica-node-exporter.service（二进制缺失自动从上游 release 下载到
+# NODE_EXPORTER_BIN），daemon 经 NODE_EXPORTER_URL 抓取主机指标并随心跳上报。
+# 置空 NODE_EXPORTER_URL 整体跳过（unit 不卸载，daemon 不采集）。
+define ENSURE_NODE_EXPORTER
+if [ -n "$(NODE_EXPORTER_URL)" ]; then \
+	  if [ ! -x "$(NODE_EXPORTER_BIN)" ]; then \
+		    arch=$$(uname -m); \
+		    case $$arch in x86_64) goarch=amd64;; aarch64|arm64) goarch=arm64;; *) echo "ERROR: node_exporter 不支持架构 $$arch（可手动安装到 $(NODE_EXPORTER_BIN)）"; exit 1;; esac; \
+		    tmp=$$(mktemp -d); \
+		    if curl -fsSL "https://github.com/prometheus/node_exporter/releases/download/v$(NODE_EXPORTER_VERSION)/node_exporter-$(NODE_EXPORTER_VERSION).linux-$$goarch.tar.gz" -o "$$tmp/ne.tar.gz" \
+		      && tar -xzf "$$tmp/ne.tar.gz" -C "$$tmp" \
+		      && install -m755 "$$tmp/node_exporter-$(NODE_EXPORTER_VERSION).linux-$$goarch/node_exporter" "$(NODE_EXPORTER_BIN)"; then \
+		      rm -rf "$$tmp"; \
+		    else \
+		      rm -rf "$$tmp"; \
+		      echo "ERROR: node_exporter 下载失败（可手动安装到 $(NODE_EXPORTER_BIN)，或 make daemon-install NODE_EXPORTER_URL= 跳过）"; \
+		      exit 1; \
+		    fi; \
+	  fi; \
+	  $(NODE_EXPORTER_UNIT_RENDER) deploy/multica-node-exporter.service.template > /tmp/multica-node-exporter.service; \
+	  sudo install -m644 /tmp/multica-node-exporter.service /etc/systemd/system/multica-node-exporter.service; \
+	  sudo systemctl daemon-reload; \
+	  sudo systemctl enable --now multica-node-exporter.service; \
+	  echo "== node-exporter 已就绪：$(NODE_EXPORTER_URL) =="; \
+else \
+	  echo "node-exporter：跳过（NODE_EXPORTER_URL 置空，daemon 不采集主机指标）"; \
+fi
 endef
 
 # DeerFlow 配置收敛（RUYI-548）：daemon 安装/更新两条链路共用——目标实例 config.json
@@ -314,6 +366,8 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
 		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
 	@loginctl show-user $(USER) -p Linger || true
+	# node-exporter 收敛（RUYI-618）：先于 daemon 启动，daemon 起来即可抓取
+	@$(call ENSURE_NODE_EXPORTER)
 	# deerflow 配置收敛（RUYI-548）：目标实例 config.json 缺 backends.deerflow.home 时自动补写（先于启动）
 	@$(call DEERFLOW_CONVERGE_SCOPE,$(PROFILE))
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
@@ -352,6 +406,8 @@ daemon-update: daemon-build ## Re-render and converge multica-daemon@.service fr
 	@loginctl enable-linger $(USER) 2>/dev/null || sudo loginctl enable-linger $(USER) || \
 		echo "WARN: enable-linger 失败——supervised 启动将依赖活动会话；请手工执行: sudo loginctl enable-linger $(USER)"
 	@loginctl show-user $(USER) -p Linger || true
+	# node-exporter 收敛（RUYI-618）：与 install 同一套收敛，幂等
+	@$(call ENSURE_NODE_EXPORTER)
 	# deerflow 配置收敛（RUYI-548）：带 PROFILE 只收敛该实例；不带则收敛 default + 全部 enabled 实例（先于重启）
 	@$(call DEERFLOW_CONVERGE_SCOPE,$(if $(filter command line,$(origin PROFILE)),$(PROFILE),ALL))
 	sudo systemctl daemon-reload
@@ -381,6 +437,8 @@ daemon-uninstall: ## Remove daemon systemd units (default + all @profile instanc
 	@units="$$(systemctl list-unit-files 'multica-daemon@*.service' --no-legend 2>/dev/null | awk '{print $$1}'; \
 	        ls /etc/systemd/system/multi-user.target.wants/ 2>/dev/null | grep '^multica-daemon@' || true)"; \
 	for u in $$units; do sudo systemctl disable --now "$$u" >/dev/null 2>&1 || true; done
+	@echo "== 停止并禁用 multica-node-exporter（RUYI-618）=="
+	@sudo systemctl disable --now multica-node-exporter.service >/dev/null 2>&1 || true
 	@echo "== 停掉手动后台启动的 daemon（如有）=="
 	@$(HOME)/.local/bin/multica daemon stop >/dev/null 2>&1 || true; \
 	for cfg in $(HOME)/.multica/profiles/*/config.json; do \
@@ -391,13 +449,14 @@ daemon-uninstall: ## Remove daemon systemd units (default + all @profile instanc
 	@echo "== 删除单元文件与 guard 脚本 =="
 	@sudo rm -f /etc/systemd/system/multica-daemon.service \
 	            /etc/systemd/system/multica-daemon@.service \
+	            /etc/systemd/system/multica-node-exporter.service \
 	            /etc/systemd/system/multica-oom-guard.service \
 	            /usr/local/sbin/multica-oom-guard.sh
 	@sudo systemctl daemon-reload
 	@sudo systemctl reset-failed 2>/dev/null || true
 	@if [ "$(PURGE)" = 1 ]; then rm -f $(HOME)/.local/bin/multica && echo "== 已删除 $(HOME)/.local/bin/multica（PURGE=1）=="; fi
 	@echo "== 卸载完成 =="
-	@echo "   已移除: multica-daemon.service / multica-daemon@.service 及全部实例 / multica-oom-guard / guard 脚本"
+	@echo "   已移除: multica-daemon.service / multica-daemon@.service 及全部实例 / multica-node-exporter / multica-oom-guard / guard 脚本"
 	@echo "   已保留: ~/.multica/（各 profile 连接配置与 token、daemon-render.mk 渲染参数）、~/multica_workspaces*/$(if $(PURGE),,、CLI 二进制 ~/.local/bin/multica)"
 
 # ---------- MCP (local stdio server, client installers) ----------

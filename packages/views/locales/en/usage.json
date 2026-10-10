@@ -109,5 +109,31 @@
   },
   "duration": {
     "less_than_minute": "<1m"
+  },
+  "metrics": {
+    "live_label": "Live",
+    "window_label": "Window",
+    "window_1h": "1h",
+    "window_6h": "6h",
+    "window_24h": "24h",
+    "window_7d": "7d",
+    "no_data": "No samples in this window.",
+    "error": "Metric backend unavailable.",
+    "resources": {
+      "title": "System resources",
+      "cpu": "CPU cores",
+      "memory": "Memory used",
+      "disk": "Disk I/O"
+    },
+    "traffic": {
+      "title": "Model traffic",
+      "by_label": "Breakdown",
+      "dim_runtime": "Runtime",
+      "dim_provider": "Provider",
+      "dim_model": "Model",
+      "tokens": "Tokens/s",
+      "cost": "Cost/h",
+      "tasks": "Tasks/h"
+    }
   }
 }

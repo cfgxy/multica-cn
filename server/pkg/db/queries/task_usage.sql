@@ -353,3 +353,35 @@ WHERE a.workspace_id = $1
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
+
+-- name: SumTaskUsageTotalsForMetrics :many
+-- Lifetime per-(workspace, runtime, provider, model) token/cost/task sums for
+-- the Prometheus usage exposition (RUYI-618). The full-table lifetime sum is
+-- deliberate: the collector publishes it as a Prometheus counter, and a
+-- counter must be monotonically non-decreasing — a trailing-window sum would
+-- shrink when old hours fall out and produce rate() spikes on every window
+-- edge. Rates are computed in the query layer (PromQL rate()), not here.
+--
+-- Cost follows the migration-213 consumer contract: authoritative
+-- cost_usd_ticks plus the rate-table estimate over the uncosted tokens, where
+-- a NULL uncosted_* column (rollup not yet recomputed) falls back to ALL
+-- tokens being uncosted — same COALESCE shape as ListDashboardUsageDaily. The
+-- estimate itself is applied in Go (metrics.UsageCollector) via
+-- PriceForModelAlias, because sqlc cannot call the Go rate table.
+SELECT
+    workspace_id::text              AS workspace_id,
+    runtime_id::text                AS runtime_id,
+    LOWER(provider)                 AS provider,
+    model,
+    SUM(input_tokens)::bigint       AS input_tokens,
+    SUM(output_tokens)::bigint      AS output_tokens,
+    SUM(cache_read_tokens)::bigint  AS cache_read_tokens,
+    SUM(cache_write_tokens)::bigint AS cache_write_tokens,
+    SUM(cost_usd_ticks)::bigint     AS cost_usd_ticks,
+    SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
+    SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
+    SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(task_count)::bigint         AS task_count
+FROM task_usage_hourly
+GROUP BY workspace_id, runtime_id, LOWER(provider), model;

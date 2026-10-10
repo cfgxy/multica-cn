@@ -74,7 +74,16 @@ services:
       MULTICA_BACKUP_PG_DUMP: ${MULTICA_BACKUP_PG_DUMP:-pg_dump}
       MULTICA_BACKUP_TIMEOUT: ${MULTICA_BACKUP_TIMEOUT:-2h}
       PORT: "8080"
-      METRICS_ADDR: ${METRICS_ADDR:-}
+      # Metrics endpoint (Prometheus exposition). Listens inside the compose
+      # network by default and is NOT published to the host — Prometheus
+      # reaches it via the service network. Set METRICS_ADDR="" to turn the
+      # endpoint off entirely.
+      METRICS_ADDR: ${METRICS_ADDR:-:9091}
+      # Prometheus the dashboard's live panels (system resources / model
+      # traffic) proxy their queries to. Empty = panels hidden. Set to
+      # http://prometheus:9090 together with `--profile observability`
+      # (see SELF_HOSTING.md, "Observability stack").
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set to a strong random value — generate one with 'openssl rand -hex 32'}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
@@ -226,7 +235,26 @@ services:
       NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
     restart: unless-stopped
 
+  # Optional Prometheus for the dashboard's live metric panels. Opt-in via
+  # the `observability` profile so a default `up` stays lean; enable with:
+  #   PROMETHEUS_URL=http://prometheus:9090 in .env, then
+  #   docker compose --profile observability up -d
+  # No Grafana — the panels in the web UI are the only consumer.
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.13.4}
+    profiles: ["observability"]
+    depends_on:
+      - backend
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    restart: unless-stopped
+
 volumes:
   pgdata:
   backend_uploads:
   backend_backups:
+  promdata:

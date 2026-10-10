@@ -39,6 +39,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -291,6 +292,18 @@ type RouterOptions struct {
 	// any test that happened to have the variable set. nil means unset, which
 	// is what tests and NewRouter get.
 	LLMMaxRetries *llm.RetryOverride
+
+	// HostResources receives per-daemon host resource snapshots relayed by
+	// daemon heartbeats. main.go builds one store shared between the Handler
+	// (write path) and the metrics registry (read path); nil keeps the
+	// heartbeat handler skipping the relay, which is what deployments with
+	// the metrics listener disabled get.
+	HostResources handler.HostResourceRecorder
+
+	// Prometheus backs the usage page's system-resource and model-traffic
+	// panels. main.go builds it from PROMETHEUS_URL; nil (or an empty URL)
+	// keeps both proxy endpoints reporting configured=false.
+	Prometheus *promquery.Client
 }
 
 func buildChannelSupervisor(
@@ -1379,6 +1392,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
+	}
+	if opts.HostResources != nil {
+		h.HostResources = opts.HostResources
+	}
+	if opts.Prometheus != nil {
+		h.Prometheus = opts.Prometheus
 	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
@@ -2775,6 +2794,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
+				// Observability panels (RUYI-618): Prometheus-proxied
+				// system-resource and model-traffic series for the usage
+				// page. Both report configured=false when PROMETHEUS_URL
+				// is unset — the browser never talks to Prometheus.
+				r.Get("/usage/resources", h.GetDashboardUsageResources)
+				r.Get("/usage/traffic", h.GetDashboardUsageTraffic)
 			})
 
 			// Runtimes

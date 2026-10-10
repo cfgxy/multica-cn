@@ -1,0 +1,13 @@
+# Prometheus scrape configuration for local development
+# (docker-compose.yml, service `prometheus`, profile `observability`). The
+# dev stack only runs PostgreSQL in compose — the server itself runs on the
+# host (make dev) — so the target is the host gateway, i.e. the METRICS_ADDR
+# the dev server listens on (start it with METRICS_ADDR=:9091 make dev).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: multica-server-dev
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:9091"]

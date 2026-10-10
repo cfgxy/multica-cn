@@ -17,5 +17,26 @@ services:
     mem_limit: 2g
     cpus: 4
 
+  # Optional Prometheus for developing the dashboard's live metric panels
+  # (RUYI-618). Opt-in profile, off by default:
+  #   METRICS_ADDR=:9091 make dev          # server exposes /metrics
+  #   docker compose --profile observability up -d prometheus
+  # It scrapes the host-side server through the gateway; the dashboard
+  # panels then need PROMETHEUS_URL=http://127.0.0.1:9099 on the server env.
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v3.13.4}
+    profiles: ["observability"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:9099:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata-dev:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=1d
+
 volumes:
   pgdata:
+  promdata-dev:

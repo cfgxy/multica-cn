@@ -766,6 +766,91 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 	return items, nil
 }
 
+const sumTaskUsageTotalsForMetrics = `-- name: SumTaskUsageTotalsForMetrics :many
+SELECT
+    workspace_id::text              AS workspace_id,
+    runtime_id::text                AS runtime_id,
+    LOWER(provider)                 AS provider,
+    model,
+    SUM(input_tokens)::bigint       AS input_tokens,
+    SUM(output_tokens)::bigint      AS output_tokens,
+    SUM(cache_read_tokens)::bigint  AS cache_read_tokens,
+    SUM(cache_write_tokens)::bigint AS cache_write_tokens,
+    SUM(cost_usd_ticks)::bigint     AS cost_usd_ticks,
+    SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
+    SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
+    SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(task_count)::bigint         AS task_count
+FROM task_usage_hourly
+GROUP BY workspace_id, runtime_id, LOWER(provider), model
+`
+
+type SumTaskUsageTotalsForMetricsRow struct {
+	WorkspaceID              string `json:"workspace_id"`
+	RuntimeID                string `json:"runtime_id"`
+	Provider                 string `json:"provider"`
+	Model                    string `json:"model"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheReadTokens          int64  `json:"cache_read_tokens"`
+	CacheWriteTokens         int64  `json:"cache_write_tokens"`
+	CostUsdTicks             int64  `json:"cost_usd_ticks"`
+	UncostedInputTokens      int64  `json:"uncosted_input_tokens"`
+	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
+	TaskCount                int64  `json:"task_count"`
+}
+
+// Lifetime per-(workspace, runtime, provider, model) token/cost/task sums for
+// the Prometheus usage exposition (RUYI-618). The full-table lifetime sum is
+// deliberate: the collector publishes it as a Prometheus counter, and a
+// counter must be monotonically non-decreasing — a trailing-window sum would
+// shrink when old hours fall out and produce rate() spikes on every window
+// edge. Rates are computed in the query layer (PromQL rate()), not here.
+//
+// Cost follows the migration-213 consumer contract: authoritative
+// cost_usd_ticks plus the rate-table estimate over the uncosted tokens, where
+// a NULL uncosted_* column (rollup not yet recomputed) falls back to ALL
+// tokens being uncosted — same COALESCE shape as ListDashboardUsageDaily. The
+// estimate itself is applied in Go (metrics.UsageCollector) via
+// PriceForModelAlias, because sqlc cannot call the Go rate table.
+func (q *Queries) SumTaskUsageTotalsForMetrics(ctx context.Context) ([]SumTaskUsageTotalsForMetricsRow, error) {
+	rows, err := q.db.Query(ctx, sumTaskUsageTotalsForMetrics)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SumTaskUsageTotalsForMetricsRow{}
+	for rows.Next() {
+		var i SumTaskUsageTotalsForMetricsRow
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.RuntimeID,
+			&i.Provider,
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.CostUsdTicks,
+			&i.UncostedInputTokens,
+			&i.UncostedOutputTokens,
+			&i.UncostedCacheReadTokens,
+			&i.UncostedCacheWriteTokens,
+			&i.TaskCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertTaskUsage = `-- name: UpsertTaskUsage :exec
 INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
