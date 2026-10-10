@@ -43,7 +43,7 @@ export default function DecisionsFilterRoute() {
           </Pressable>
         ) : null}
       </View>
-      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+      <ScrollView className="flex-1" showsVerticalScrollIndicator={false} nestedScrollEnabled>
         <View className="flex-row items-center gap-3 px-4 py-2.5">
           <Text className="flex-1 text-sm text-foreground">
             {t("mobile.filters.recommended_only", "Recommended only")}
