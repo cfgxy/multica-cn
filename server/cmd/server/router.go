@@ -41,6 +41,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/selfevconfig"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -1282,6 +1283,35 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Warn("runtime credential encryption disabled: MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY is not set — saving voice instance API keys will fail (503) and instances stay \"not configured\". Generate a key with `openssl rand -base64 32`, add it to the server environment, and restart to enable credential storage")
 	}
 
+	// Self-evolution per-workspace model config (RUYI-551): the box seals the
+	// API key a workspace owner saves on the module config card
+	// (self_evolution_model_config.api_key_encrypted). Dedicated deployment
+	// key, same isolation reasoning as the VCS / runtime / plugin boxes.
+	// Without it, config writes return 503 so a misconfigured self-host fails
+	// closed rather than storing plaintext; the deploy-wide MULTICA_LLM_*
+	// default keeps serving every workspace until the key is added.
+	if seKey, err := secretbox.LoadKey("MULTICA_SELF_EVOLUTION_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(seKey)
+		if err != nil {
+			slog.Error("self-evolution: secretbox.New failed; per-workspace model config disabled", "error", err)
+		} else {
+			// The deploy model string is read off the client once so the
+			// status cards can show which model the deploy default would
+			// actually use.
+			deployModel := ""
+			if h.LLM != nil {
+				deployModel = h.LLM.DefaultModel()
+			}
+			h.SelfEvolution = selfevconfig.NewResolver(queries, box, h.LLM, deployModel)
+			slog.Info("self-evolution model config encryption enabled")
+		}
+	} else {
+		// Same warn-loudly reasoning as RUYI-540 for the runtime credential
+		// key: a missing deployment key silently degrades the module config
+		// card (every save 503s), so say so and give the exact fix.
+		slog.Warn("self-evolution per-workspace model config disabled: MULTICA_SELF_EVOLUTION_SECRET_KEY is not set — saving a workspace model service config will fail (503) and every workspace falls back to the deploy-wide MULTICA_LLM_* default. Generate a key with `openssl rand -base64 32`, add it to the server environment, and restart to enable per-workspace model configs")
+	}
+
 	// Voice credential connectivity probe (RUYI-425 §4.3/§4.5): where the
 	// lightweight models.list probe is pointed after a credential save.
 	// MULTICA_GEMINI_PROBE_BASE_URL exists so air-gapped deployments and
@@ -2321,12 +2351,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		// Self-evolution workspace overview (RUYI-284): one read-only
 		// aggregate across the six data planes the tabs serve. Member-visible
-		// like the reads it mirrors; there is deliberately no write method on
-		// this tree — the overview is a lens, not a surface.
+		// like the reads it mirrors. RUYI-551 adds the one sanctioned write
+		// surface on this tree — the per-workspace model service config —
+		// which is owner-only and fails closed when the deployment key is
+		// absent; the overview aggregate itself stays a lens, not a surface.
 		r.Route("/api/self-evolution", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Use(middleware.RequireWorkspaceMember(queries))
 			r.Get("/overview", h.GetSelfEvolutionOverview)
+			r.Get("/model-config", h.GetSelfEvolutionModelConfig)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
+				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
+				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+			})
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---
@@ -2599,6 +2638,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)
+					// Voice direct-session handoff (RUYI-626): mints the
+					// live_session row behind the same rule-3 gate as the
+					// gateway path, then hands the provider websocket URL,
+					// the credential and the setup parameters to the mobile
+					// client, which dials Google itself.
+					r.Post("/voice-direct-session", h.StartVoiceDirectSession)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
 					r.Get("/skills", h.ListAgentSkills)
@@ -2759,6 +2804,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
 
+			// Voice direct-session completion (RUYI-626): the mobile client
+			// relays the transcript / resumption handle it collected from
+			// its own provider websocket so the live_session row reaches
+			// the same terminal state (transcript, summary write-back) the
+			// gateway path produces. Caller ownership is enforced in the
+			// handler; replays after the row is terminal are idempotent.
+			r.Post("/api/voice-sessions/{sessionId}/complete", h.CompleteVoiceDirectSession)
+
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
@@ -2797,6 +2850,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// instance payload only carries the credential_status badge.
 					r.Put("/credentials/{credentialKey}", h.PutRuntimeCredential)
 					r.Delete("/credentials/{credentialKey}", h.DeleteRuntimeCredential)
+					// Client-reported credential connectivity probe
+					// (RUYI-626): on the direct path the device runs the
+					// models.list probe itself, so the credential_status
+					// badge is recorded from the client's reported outcome.
+					r.Post("/credential-probe", h.ReportCredentialProbe)
 				})
 			})
 

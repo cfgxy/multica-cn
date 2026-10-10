@@ -75,6 +75,28 @@ if [ -n "$(git -C "$target" status --porcelain --untracked-files=all)" ]; then
   exit 1
 fi
 
+# Recycle guard (RUYI-594): the same scan the daemon and slot destroy run,
+# so every removal path shares one notion of "safe to delete". Blocks
+# sole-reference commits and carriers git cannot read (fail-closed); notes
+# stash/unpushed content that survives in the shared repository; and writes
+# an evidence file either way under ~/.multica/recycle-evidence/.
+# shellcheck source=lib-recycle-guard.sh
+source "$script_dir/lib-recycle-guard.sh"
+RG_TOOL="remove-worktree.sh"
+if ! recycle_guard_scan_worktree "$target" worktree 0; then
+  echo "Recycle guard blocks removing worktree: $target" >&2
+  printf '%s\n' "$RG_REASONS" | sed 's/^/  /' >&2
+  echo "  Preserve the work (push, branch, or bundle), then re-run once with MULTICA_RECYCLE_OVERRIDE=1." >&2
+  echo "Evidence: $RG_EVIDENCE_FILE" >&2
+  exit 1
+fi
+if [ -n "$RG_NOTES" ]; then
+  printf 'Guard notes:\n%s\n' "$RG_NOTES" | sed 's/^/  /'
+fi
+if [ -n "$RG_EVIDENCE_FILE" ]; then
+  echo "Recycle evidence: $RG_EVIDENCE_FILE"
+fi
+
 worktree_env="$target/.env.worktree"
 if [ -f "$worktree_env" ]; then
   db_name="$(bash -c 'set -a; . "$1"; printf "%s" "${POSTGRES_DB:-}"' _ "$worktree_env")"

@@ -17,14 +17,15 @@
  * because its query options call core's unconfigured api singleton.
  *
  * Option rows render the same index letters as DecisionBatchBar (RUYI-588)
- * and strip the label's embedded "A：" prefix so the letter shows once.
+ * and strip the label's embedded letter prefix / trailing （推荐） marker
+ * (decisionOptionDisplayLabel) so letter and badge each show once (RUYI-620).
  */
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { buildActorNameResolver } from "@multica/core/workspace/hooks";
-import { stripDecisionOptionLetterPrefix, upsertDecisionInCache } from "@multica/core/issues/decisions";
+import { decisionOptionDisplayLabel, upsertDecisionInCache } from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { agentListOptions } from "@/data/queries/agents";
@@ -185,7 +186,7 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
                 >
                   {OPTION_LETTERS[idx] ?? idx + 1}
                 </Text>
-                <Text className="flex-1">{stripDecisionOptionLetterPrefix(opt.label)}</Text>
+                <Text className="flex-1">{decisionOptionDisplayLabel(opt.label)}</Text>
                 {recommended.has(idx) && (
                   <Text className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
                     {t("decisions.recommended", "Recommended")}
