@@ -53,6 +53,7 @@ import {
   ExecutionLogSection,
   TaskCommentCoverage,
   IssueUsageTotal,
+  groupPastRunsByDay,
 } from "./execution-log-section";
 import type { TaskUsage } from "@multica/core/types";
 import { act, waitFor, within } from "@testing-library/react";
@@ -774,5 +775,147 @@ describe("run retry gates", () => {
       expect(mockState.retryIssueRun).toHaveBeenCalledWith("issue-1", "run-failed-rerun"),
     );
     expect(screen.queryByText("Run this task again?")).not.toBeInTheDocument();
+  });
+});
+
+// ─── Past-run day groups (issue trend: cost + tokens together) ─────────────
+
+// The past-runs list is the issue's trend: runs laid out in time, one day at
+// a time. Every day header reads BOTH dimensions — tokens AND cost — because
+// each answers what the other only suggests (did spend rise because more
+// tokens burned, or because the model got dearer). The cost keeps the same
+// three states a run row has: a day whose usage could not be priced is not a
+// day that was free.
+describe("past-run day groups", () => {
+  const dayA = "2026-06-08T08:04:00Z";
+  const dayB = "2026-06-05T10:00:00Z";
+
+  describe("groupPastRunsByDay", () => {
+    it("buckets terminal runs by local calendar day, newest day first", () => {
+      const groups = groupPastRunsByDay([
+        makeTask({ id: "a", status: "completed", completed_at: dayA }),
+        makeTask({ id: "b", status: "completed", completed_at: dayB }),
+        makeTask({ id: "c", status: "completed", completed_at: dayB }),
+      ]);
+
+      expect(groups).toHaveLength(2);
+      expect(groups[0]!.tasks.map((t) => t.id)).toEqual(["a"]);
+      expect(groups[1]!.tasks.map((t) => t.id)).toEqual(["b", "c"]);
+      // Day identity is local midnight of that day, so a label can be
+      // derived from it without re-parsing timestamps.
+      const day = new Date(dayA);
+      day.setHours(0, 0, 0, 0);
+      expect(groups[0]!.dayMs).toBe(day.getTime());
+    });
+
+    it("falls back to created_at when a terminal run never completed", () => {
+      const groups = groupPastRunsByDay([
+        makeTask({ id: "a", status: "failed", completed_at: null }),
+      ]);
+      const day = new Date(makeTask({}).created_at);
+      day.setHours(0, 0, 0, 0);
+      expect(groups[0]!.dayMs).toBe(day.getTime());
+    });
+
+    it("summarizes each day with the same three states a run row has", () => {
+      const priced = groupPastRunsByDay([
+        makeTask({ status: "completed", completed_at: dayA, usage: [usageSlice()] }),
+      ]);
+      expect(priced[0]!.summary?.priced).toBe(true);
+      expect(priced[0]!.summary?.tokens).toBe(892_000);
+
+      // An unpriced day still counts its tokens — that is exactly why the
+      // caveat stays meaningful next to them.
+      const unpriced = groupPastRunsByDay([
+        makeTask({
+          status: "completed",
+          completed_at: dayA,
+          usage: [usageSlice({ model: "acme/acme-sigma-7" })],
+        }),
+      ]);
+      expect(unpriced[0]!.summary?.priced).toBe(false);
+      expect(unpriced[0]!.summary?.tokens).toBe(892_000);
+      expect(unpriced[0]!.summary?.unpricedRows).toBe(1);
+
+      const silent = groupPastRunsByDay([
+        makeTask({ status: "completed", completed_at: dayA }),
+      ]);
+      expect(silent[0]!.summary).toBeNull();
+    });
+  });
+
+  describe("day headers in the past list", () => {
+    function renderSection(tasks: AgentTask[]) {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      queryClient.setQueryData(issueKeys.tasks("issue-1"), tasks);
+      return renderWithI18n(
+        <QueryClientProvider client={queryClient}>
+          <ExecutionLogSection issueId="issue-1" identifier="MUL-1" />
+        </QueryClientProvider>,
+      );
+    }
+
+    // Derive the label the component renders for a timestamp, so the
+    // assertion holds in every timezone the suite might run in.
+    function dayLabelOf(iso: string): string {
+      const day = new Date(iso);
+      day.setHours(0, 0, 0, 0);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      if (day.getTime() === today.getTime()) return "Today";
+      if (day.getTime() === yesterday.getTime()) return "Yesterday";
+      return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(day);
+    }
+
+    it("reads cost and tokens together in every day header", () => {
+      renderSection([
+        makeTask({ id: "a", status: "completed", completed_at: dayA, usage: [usageSlice()] }),
+        makeTask({ id: "b", status: "completed", completed_at: dayB, usage: [usageSlice()] }),
+      ]);
+      fireEvent.click(screen.getByText(/Show past runs/));
+
+      for (const iso of [dayA, dayB]) {
+        const section = screen
+          .getByText(dayLabelOf(iso))
+          .closest("section");
+        expect(section).not.toBeNull();
+        // Both dimensions, right in the trend: the day's run count, the
+        // day's tokens, and the day's cost — never one alone.
+        expect(section!.textContent).toContain("1 run");
+        expect(section!.textContent).toContain("892K");
+        expect(section!.textContent).toContain("$2.00");
+      }
+    });
+
+    it("keeps the three states per day: unpriced is not free, silent is not zero", () => {
+      renderSection([
+        makeTask({
+          id: "a",
+          status: "completed",
+          completed_at: dayA,
+          usage: [usageSlice({ model: "acme/acme-sigma-7" })],
+        }),
+        makeTask({ id: "b", status: "completed", completed_at: dayB }),
+      ]);
+      fireEvent.click(screen.getByText(/Show past runs/));
+
+      const unpricedDay = screen
+        .getByText(dayLabelOf(dayA))
+        .closest("section")!;
+      expect(unpricedDay.textContent).toContain("892K"); // tokens are real
+      expect(unpricedDay.textContent).toContain("1 row unpriced"); // the caveat rides
+      expect(unpricedDay.textContent).not.toContain("$0.00"); // and never a fake zero
+
+      const silentDay = screen
+        .getByText(dayLabelOf(dayB))
+        .closest("section")!;
+      expect(silentDay.textContent).toContain("1 run");
+      expect(silentDay.textContent).not.toContain("892K");
+      expect(silentDay.textContent).not.toContain("$");
+    });
   });
 });
