@@ -118,7 +118,17 @@ export default function NewIssueModal() {
       {mode === "smart" ? (
         <QuickCreatePanel />
       ) : (
-        <ManualCreatePanel initialDescription={prefill?.description} />
+        <ManualCreatePanel
+          // The seed lands via a REMOUNT, not a prop update: when lastMode is
+          // already "manual" the panel mounts on the first render, where the
+          // prefill state is still null, and useMentionInput's mount-only
+          // useState(initialText) would ignore the later prop. Keying on the
+          // taken seed re-creates the panel in the same pre-paint commit with
+          // the seed as its initial description; seedless visits keep the
+          // stable "blank" key and never remount.
+          key={prefill ? "prefilled" : "blank"}
+          initialDescription={prefill?.description}
+        />
       )}
     </View>
   );
