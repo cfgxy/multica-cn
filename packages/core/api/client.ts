@@ -77,6 +77,9 @@ import type {
   PromptVersion,
   PromptQualityDashboard,
   SelfEvolutionOverview,
+  SelfEvolutionConfigValidation,
+  SelfEvolutionModelConfig,
+  SelfEvolutionModelConfigSave,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -595,6 +598,8 @@ import {
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
   SelfEvolutionOverviewSchema,
+  SelfEvolutionConfigValidationSchema,
+  SelfEvolutionModelConfigSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
   PromptGovernanceVersionListSchema,
@@ -3627,6 +3632,82 @@ export class ApiClient {
     return parseWithFallback(raw, SelfEvolutionOverviewSchema, EMPTY_SELF_EVOLUTION_OVERVIEW, {
       endpoint: "GET /api/self-evolution/overview",
     });
+  }
+
+  /**
+   * The workspace's model-service config view (RUYI-551): the stored
+   * override (key never echoed — only `has_api_key`), the resolved state a
+   * run would use right now, and whether the deployment can take saves at
+   * all. Available member-up on the server.
+   */
+  async getSelfEvolutionModelConfig(): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config");
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "GET /api/self-evolution/model-config" });
+  }
+
+  /**
+   * Save the workspace's model-service override. Validation is mandatory
+   * whenever credentials are present: a 422 carries the classified, masked
+   * reason and nothing was persisted.
+   */
+  async putSelfEvolutionModelConfig(save: SelfEvolutionModelConfigSave): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: save.base_url,
+        api_key: save.api_key,
+        model: save.model,
+        ...(save.scoring_enabled === undefined ? {} : { scoring_enabled: save.scoring_enabled }),
+      }),
+    });
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "PUT /api/self-evolution/model-config" });
+  }
+
+  /** Drop the workspace override — the "restore deploy default" action. */
+  async deleteSelfEvolutionModelConfig(): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config", {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "DELETE /api/self-evolution/model-config" });
+  }
+
+  /**
+   * Validate a model-service config. An all-empty payload revalidates the
+   * stored config (the status card's re-check); a payload carrying values
+   * previews a not-yet-saved config without touching the store.
+   */
+  async validateSelfEvolutionModelConfig(save?: Partial<SelfEvolutionModelConfigSave>): Promise<SelfEvolutionConfigValidation> {
+    const hasBody = save && (save.base_url || save.model || save.api_key);
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hasBody ? {
+        base_url: save?.base_url ?? "",
+        api_key: save?.api_key ?? "",
+        model: save?.model ?? "",
+      } : {}),
+    });
+    return parseWithFallback(raw, SelfEvolutionConfigValidationSchema, {
+      ok: false,
+      error_kind: "other",
+      message: "",
+    }, { endpoint: "POST /api/self-evolution/model-config/validate" });
   }
 
   /**

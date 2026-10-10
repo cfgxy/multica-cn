@@ -7,8 +7,13 @@ import "testing"
 // marks an external source required, the seven cards become conditional on it
 // and this fails.
 func TestOnlyThePlatformsOwnDataIsRequired(t *testing.T) {
-	for _, scoring := range []bool{true, false} {
-		for _, item := range DescribeSources(scoring).Items {
+	for _, facts := range []SourceFacts{
+		{Scoring: ScoringSource{Status: StatusOK}},
+		{Scoring: ScoringSource{Status: StatusUnconfigured}},
+		{Scoring: ScoringSource{Status: StatusError}},
+		{Scoring: ScoringSource{Status: StatusDisabled}},
+	} {
+		for _, item := range DescribeSources(facts).Items {
 			if item.Required && item.Kind != SourcePlatform {
 				t.Errorf("%s is marked required; no external source may gate the dashboard", item.Kind)
 			}
@@ -20,7 +25,7 @@ func TestLangfuseOffIsADegradedLabelNotAMissingSource(t *testing.T) {
 	t.Setenv("LANGFUSE_PUBLIC_KEY", "")
 	t.Setenv("LANGFUSE_SECRET_KEY", "")
 
-	sources := DescribeSources(true)
+	sources := DescribeSources(SourceFacts{Scoring: ScoringSource{Status: StatusOK, EffectiveSource: "deploy_default"}})
 	langfuse, ok := sources.ByKind(SourceLangfuse)
 	if !ok {
 		t.Fatal("langfuse absent from the source list; the footer cannot say it is off")
@@ -66,7 +71,7 @@ func TestScoringModelOffDegradesOnItsOwn(t *testing.T) {
 	t.Setenv("LANGFUSE_PUBLIC_KEY", "pk-present")
 	t.Setenv("LANGFUSE_SECRET_KEY", "sk-present")
 
-	sources := DescribeSources(false)
+	sources := DescribeSources(SourceFacts{Scoring: ScoringSource{Status: StatusDisabled}})
 	scoring, ok := sources.ByKind(SourceScoring)
 	if !ok {
 		t.Fatal("scoring model absent from the source list")
@@ -76,6 +81,62 @@ func TestScoringModelOffDegradesOnItsOwn(t *testing.T) {
 	}
 	if langfuse, _ := sources.ByKind(SourceLangfuse); langfuse.Degraded {
 		t.Error("an unconfigured scoring model degraded langfuse too")
+	}
+}
+
+// RUYI-551: the scoring source carries the four-state closed loop. The
+// deploy-injected default never claims 配置错误 — it never promised a check
+// (Plan A), so its status is ok with no validation data; only a module
+// config with a recorded failed validation renders as error, and an error is
+// not "degraded" (off) — it is configured and failing, which the banner
+// renders differently.
+func TestScoringStatusVocabularyFlowsThrough(t *testing.T) {
+	t.Setenv("LANGFUSE_PUBLIC_KEY", "")
+	t.Setenv("LANGFUSE_SECRET_KEY", "")
+
+	cases := []struct {
+		name        string
+		scoring     ScoringSource
+		available   bool
+		degraded    bool
+	}{
+		{"module config ok", ScoringSource{Status: StatusOK, EffectiveSource: "module_config", Model: "ui-m", LastValidatedAt: "2026-10-08T00:00:00Z"}, true, false},
+		{"deploy default ok", ScoringSource{Status: StatusOK, EffectiveSource: "deploy_default", Model: "env-m"}, true, false},
+		{"unconfigured", ScoringSource{Status: StatusUnconfigured}, false, true},
+		{"disabled", ScoringSource{Status: StatusDisabled, EffectiveSource: "module_config"}, false, true},
+		{"validation error", ScoringSource{Status: StatusError, EffectiveSource: "module_config", ValidationError: "credentials rejected"}, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sources := DescribeSources(SourceFacts{Scoring: tc.scoring})
+			scoring, ok := sources.ByKind(SourceScoring)
+			if !ok {
+				t.Fatal("scoring absent")
+			}
+			if scoring.Status != tc.scoring.Status || scoring.EffectiveSource != tc.scoring.EffectiveSource {
+				t.Fatalf("status/source = %q/%q, want %q/%q", scoring.Status, scoring.EffectiveSource, tc.scoring.Status, tc.scoring.EffectiveSource)
+			}
+			if scoring.Available != tc.available || scoring.Degraded != tc.degraded {
+				t.Fatalf("available/degraded = %v/%v, want %v/%v", scoring.Available, scoring.Degraded, tc.available, tc.degraded)
+			}
+			if scoring.Model != tc.scoring.Model || scoring.ValidationError != tc.scoring.ValidationError {
+				t.Fatalf("model/validation_error = %q/%q", scoring.Model, scoring.ValidationError)
+			}
+			if scoring.LastValidatedAt != tc.scoring.LastValidatedAt {
+				t.Fatalf("last_validated_at = %q", scoring.LastValidatedAt)
+			}
+		})
+	}
+
+	// The platform and langfuse sources are system-level: they carry the
+	// vocabulary too, but nothing workspace-scoped.
+	sources := DescribeSources(SourceFacts{Scoring: ScoringSource{Status: StatusOK}})
+	if platform, _ := sources.ByKind(SourcePlatform); platform.Status != StatusOK || platform.EffectiveSource != SourceSystem {
+		t.Fatalf("platform = %+v, want ok/system", platform)
+	}
+	langfuse, _ := sources.ByKind(SourceLangfuse)
+	if langfuse.Status != StatusUnconfigured || langfuse.EffectiveSource != SourceSystem {
+		t.Fatalf("langfuse = %+v, want unconfigured/system", langfuse)
 	}
 }
 

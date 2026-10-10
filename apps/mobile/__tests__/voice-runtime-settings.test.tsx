@@ -259,6 +259,31 @@ describe("VoiceRuntimeSettingsScreen", () => {
     alertSpy.mockRestore();
   });
 
+  it("alerts could-not-verify wording when the probe reports unreachable, never invalid (RUYI-619)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    // RUYI-626: unreachable comes from the DEVICE probe (the direct path
+    // dials Google from the user's network); the PUT response's server-side
+    // probe is ignored. A network verdict is not a credential verdict.
+    mockProbeVoiceCredential.mockResolvedValue({ status: "unreachable" });
+    await render(<VoiceRuntimeSettingsScreen />);
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Enter a new key to update"),
+      "qaFAKE-offline-key",
+    );
+    await fireEvent.press(screen.getByLabelText("Update key"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Key saved, but this device couldn't reach Google to verify it — voice may not work on this network",
+      );
+    });
+    expect(alertSpy).not.toHaveBeenCalledWith(
+      "Key saved, but the connectivity check failed (HTTP )",
+    );
+    alertSpy.mockRestore();
+  });
+
   it("seeds the name field with the display name when no alias is set (RUYI-540)", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     // Instances created from the register form only set `name` (the server
