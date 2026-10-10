@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { lazy, Suspense, useState, useRef } from "react";
 import { CalendarClock, CalendarDays, ChevronRight, FolderOpen, GitBranch, Maximize2, Minimize2, MoreHorizontal, Pencil, Search, X as XIcon, UserMinus } from "lucide-react";
 
 /**
@@ -46,7 +46,14 @@ import {
 import { Popover, PopoverTrigger, PopoverContent } from "@multica/ui/components/ui/popover";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Button } from "@multica/ui/components/ui/button";
-import { EmojiPicker } from "@multica/ui/components/common/emoji-picker";
+// The full emoji-mart picker is ~1MB of emoji data. Load it only when the
+// picker actually renders — same pattern as quick-emoji-picker.tsx and
+// avatar-upload-control.tsx — so it stays out of the eager bundles.
+const EmojiPicker = lazy(() =>
+  import("@multica/ui/components/common/emoji-picker").then((m) => ({
+    default: m.EmojiPicker,
+  })),
+);
 import { ContentEditor, type ContentEditorRef, TitleEditor } from "../editor";
 import { PriorityIcon } from "../issues/components/priority-icon";
 import { ActorAvatar } from "../common/actor-avatar";
@@ -462,12 +469,14 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
               }
             />
             <PopoverContent align="start" className="w-auto p-0">
-              <EmojiPicker
-                onSelect={(emoji) => {
-                  updateIcon(emoji);
-                  setIconPickerOpen(false);
-                }}
-              />
+              <Suspense fallback={<div className="p-4 text-body text-muted-foreground">Loading...</div>}>
+                <EmojiPicker
+                  onSelect={(emoji) => {
+                    updateIcon(emoji);
+                    setIconPickerOpen(false);
+                  }}
+                />
+              </Suspense>
             </PopoverContent>
           </Popover>
           <TitleEditor

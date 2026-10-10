@@ -30,6 +30,10 @@ func seedExitedManifest(t *testing.T, mgr *supervisor.Manager, runID, taskID str
 		StdoutLog: filepath.Join(mgr.Dir(runID), "worker-stdout.log"),
 		StderrLog: filepath.Join(mgr.Dir(runID), "worker-stderr.log"),
 		Exit:      exit,
+		// Fixture daemons run with an empty profile, so their identity is the
+		// "default" every seeded run must carry to pass the RUYI-607
+		// ownership guard.
+		Owner: supervisor.OwnerIdentity(""),
 	}
 	if exit != nil {
 		man.State = supervisor.StateExited

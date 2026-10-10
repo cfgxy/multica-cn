@@ -252,6 +252,36 @@ describe("VoiceRuntimeSettingsScreen", () => {
     alertSpy.mockRestore();
   });
 
+  it("alerts could-not-verify wording when the probe reports unreachable, never invalid (RUYI-619)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockPutMutate.mockImplementation(
+      (_action: unknown, opts?: { onSuccess?: (res: unknown) => void }) =>
+        opts?.onSuccess?.({
+          runtime_id: "rt-1",
+          credential_key: "api_key",
+          credential_status: "unreachable",
+          probe: { status: "unreachable" },
+        }),
+    );
+    await render(<VoiceRuntimeSettingsScreen />);
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Enter a new key to update"),
+      "qaFAKE-offline-key",
+    );
+    await fireEvent.press(screen.getByLabelText("Update key"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Key saved, but connectivity could not be verified (target unreachable)",
+      );
+    });
+    expect(alertSpy).not.toHaveBeenCalledWith(
+      "Key saved, but the connectivity check failed (HTTP )",
+    );
+    alertSpy.mockRestore();
+  });
+
   it("seeds the name field with the display name when no alias is set (RUYI-540)", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     // Instances created from the register form only set `name` (the server

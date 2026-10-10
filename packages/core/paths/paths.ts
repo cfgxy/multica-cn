@@ -36,6 +36,18 @@ function workspaceScoped(slug: string) {
     root: () => `${ws}/issues`,
     usage: () => `${ws}/usage`,
     selfEvolution: () => `${ws}/self-evolution`,
+    // RUYI-551: the module's URL-driven sub-navigation — 10 routes (9 sub-nav
+    // pages + the skill detail route, which stays out of the nav) in 4 groups.
+    selfEvolutionKnowledge: () => `${ws}/self-evolution/knowledge`,
+    selfEvolutionSkills: () => `${ws}/self-evolution/skills`,
+    selfEvolutionSkillDetail: (id: string) =>
+      `${ws}/self-evolution/skills/${encode(id)}`,
+    selfEvolutionQuality: () => `${ws}/self-evolution/quality`,
+    selfEvolutionQuiz: () => `${ws}/self-evolution/quiz`,
+    selfEvolutionProposals: () => `${ws}/self-evolution/proposals`,
+    selfEvolutionVersions: () => `${ws}/self-evolution/versions`,
+    selfEvolutionRetrospective: () => `${ws}/self-evolution/retrospective`,
+    selfEvolutionConfig: () => `${ws}/self-evolution/config`,
     issues: () => `${ws}/issues`,
     issueDetail: (id: string) => `${ws}/issues/${encode(id)}`,
     projects: () => `${ws}/projects`,
