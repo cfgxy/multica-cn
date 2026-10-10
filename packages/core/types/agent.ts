@@ -57,6 +57,12 @@ export interface AgentInvocationTargetInput {
 export type RuntimeVisibility = "private" | "public";
 
 export interface RuntimeDevice {
+  execution_source?: {
+    binding_id: string;
+    linux_user: string;
+    host: string;
+    preferred: boolean;
+  } | null;
   id: string;
   workspace_id: string;
   daemon_id: string | null;

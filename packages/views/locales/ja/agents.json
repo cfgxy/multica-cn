@@ -372,7 +372,9 @@
     "credential_configured": "設定済み ✓",
     "credential_invalid": "キー無効",
     "credential_unreachable": "検証不可",
-    "credential_not_configured": "未設定"
+    "credential_not_configured": "未設定",
+    "runtime_credentials_help": "モデル認証には、選択したランタイムの OS ユーザー設定を使用します。CLI のインストールだけでは API キーは設定されません。",
+    "runtime_select": "ランタイムを選択"
   },
   "conversation_starters": {
     "label": "会話の開始例",

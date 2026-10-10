@@ -6,6 +6,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import { useWelcomeStore } from "@multica/core/onboarding";
 import enCommon from "../locales/en/common.json";
 import enOnboarding from "../locales/en/onboarding.json";
+import enSettings from "../locales/en/settings.json";
 import {
   NavigationProvider,
   type NavigationAdapter,
@@ -87,7 +88,7 @@ function TestProviders({ children }: { children: ReactNode }) {
       <I18nProvider
         locale="en"
         resources={{
-          en: { common: enCommon, onboarding: enOnboarding },
+          en: { common: enCommon, onboarding: enOnboarding, settings: enSettings },
         }}
       >
         <NavigationProvider value={navigationAdapter}>
@@ -110,6 +111,25 @@ beforeEach(() => {
 });
 
 describe("WelcomeAfterOnboarding", () => {
+  it("offers the new workspace connection once, with settings available later", () => {
+    useWelcomeStore.getState().setConnectionWorkspace("ws-1");
+    renderWelcome();
+    expect(screen.getByRole("dialog", { name: "Connect a Linux User?" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Connect account" }));
+    expect(mockPush).toHaveBeenCalledWith("/test-ws/settings?tab=linux-users");
+    expect(useWelcomeStore.getState().connectionWorkspaceId).toBeNull();
+  });
+
+  it("keeps the existing runtime welcome ahead of the connection prompt", async () => {
+    mockCreateIssue.mockResolvedValueOnce({ id: "issue-install", workspace_id: "ws-1" });
+    useWelcomeStore.getState().setConnectionWorkspace("ws-1");
+    useWelcomeStore.getState().set({ workspaceId: "ws-1", choice: "skip" });
+    renderWelcome();
+    expect(screen.queryByRole("dialog", { name: "Connect a Linux User?" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /got it/i }));
+    expect(await screen.findByRole("dialog", { name: "Connect a Linux User?" })).toBeInTheDocument();
+  });
+
   it("renders nothing when no skip signal is present", () => {
     const { container } = renderWelcome();
     expect(container.firstChild).toBeNull();
