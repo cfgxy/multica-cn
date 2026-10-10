@@ -680,7 +680,7 @@
     "hint": "처리하면 목록에서 사라집니다",
     "modelUnconfigured": {
       "title": "모델 서비스가 설정되지 않음",
-      "description": "품질 스코어링과 매일의 회고에 사용할 LLM이 없습니다",
+      "description": "품질 스코어링에 사용할 LLM이 없습니다",
       "action": "설정하기"
     },
     "modelError": {
@@ -763,7 +763,7 @@
   },
   "modelConfig": {
     "title": "모델 서비스",
-    "description": "이 워크스페이스의 품질 스코어링과 매일의 회고가 공유하는 LLM 엔드포인트. 키는 암호화되어 저장되며 다시 표시되지 않습니다.",
+    "description": "이 워크스페이스의 품질 스코어링 전용 LLM 엔드포인트. 키는 암호화되어 저장되며 다시 표시되지 않습니다.",
     "baseUrl": "Base URL",
     "apiKey": "API 키",
     "model": "모델",
@@ -791,6 +791,6 @@
   },
   "configPage": {
     "title": "모듈 설정",
-    "description": "아래 모델 서비스가 품질 스코어링과 매일의 회고를 지원합니다. Langfuse는 인스턴스 수준 설정이므로 여기서는 읽기 전용입니다."
+    "description": "아래 모델 서비스가 품질 스코어링을 지원합니다. Langfuse는 인스턴스 수준 설정이므로 여기서는 읽기 전용입니다."
   }
 }
