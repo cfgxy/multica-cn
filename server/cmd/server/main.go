@@ -566,8 +566,12 @@ func main() {
 			Realtime:  realtime.M,
 			DaemonWS:  daemonws.M,
 			TaskUsage: obsmetrics.NewUsageCollector(queries),
-			Version:   version,
-			Commit:    commit,
+			// Failure counters for the backpressure/observability surface
+			// (RUYI-618): window failure counts and rates per agent, model
+			// and failure class, queryable via PromQL.
+			TaskFailures: obsmetrics.NewTaskFailureCollector(queries),
+			Version:      version,
+			Commit:       commit,
 		})
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
