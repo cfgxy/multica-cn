@@ -36,6 +36,7 @@ import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
+import { WorkspaceBackpressureCard } from "./workspace-backpressure-card";
 import { useT } from "../../i18n";
 import {
   SettingsCard,
@@ -462,6 +463,10 @@ export function WorkspaceTab() {
               </div>
             )}
         </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={t(($) => $.workspace.bp_title)}>
+        <WorkspaceBackpressureCard wsId={workspace.id} canManage={isOwner} />
       </SettingsSection>
 
       {/* Danger Zone — gated on the member query settling so the owner-only

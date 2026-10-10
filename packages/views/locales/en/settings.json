@@ -49,42 +49,41 @@
       "cancelled": "Decided not to do."
     }
   },
-    "quick_replies": {
-      "title": "Quick Replies",
-      "description": "Shared templates for the issue comment composer's quick-reply menu. Readable by every member; editable by workspace admins only. Selecting one fills the composer — it never sends on its own.",
-      "loading": "Loading quick replies…",
-      "add": "New quick reply",
-      "empty_title": "No quick replies yet",
-      "empty_hint": "Save recurring comment patterns as templates — conflict resolution, test follow-ups, sign-offs.",
-      "reorder_failed": "Failed to save the new order",
-      "actions": {
-        "open": "Open actions menu for \"{{name}}\"",
-        "edit": "Edit",
-        "delete": "Delete",
-        "reorder": "Drag to reorder \"{{name}}\""
-      },
-      "editor": {
-        "create_title": "New quick reply",
-        "edit_title": "Edit quick reply",
-        "hint": "Selecting this reply in the composer fills the input box; members can edit before sending.",
-        "name": "Name",
-        "name_placeholder": "e.g. Resolve PR conflicts",
-        "content": "Content",
-        "content_placeholder": "Template body filled into the composer…",
-        "cancel": "Cancel",
-        "save": "Save",
-        "saving": "Saving…",
-        "save_failed": "Failed to save"
-      },
-      "delete_dialog": {
-        "title": "Delete quick reply",
-        "description": "Delete \"{{name}}\"? It disappears from every member's composer menu immediately.",
-        "cancel": "Cancel",
-        "confirm": "Delete",
-        "failed": "Failed to delete"
-      }
+  "quick_replies": {
+    "title": "Quick Replies",
+    "description": "Shared templates for the issue comment composer's quick-reply menu. Readable by every member; editable by workspace admins only. Selecting one fills the composer — it never sends on its own.",
+    "loading": "Loading quick replies…",
+    "add": "New quick reply",
+    "empty_title": "No quick replies yet",
+    "empty_hint": "Save recurring comment patterns as templates — conflict resolution, test follow-ups, sign-offs.",
+    "reorder_failed": "Failed to save the new order",
+    "actions": {
+      "open": "Open actions menu for \"{{name}}\"",
+      "edit": "Edit",
+      "delete": "Delete",
+      "reorder": "Drag to reorder \"{{name}}\""
+    },
+    "editor": {
+      "create_title": "New quick reply",
+      "edit_title": "Edit quick reply",
+      "hint": "Selecting this reply in the composer fills the input box; members can edit before sending.",
+      "name": "Name",
+      "name_placeholder": "e.g. Resolve PR conflicts",
+      "content": "Content",
+      "content_placeholder": "Template body filled into the composer…",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…",
+      "save_failed": "Failed to save"
+    },
+    "delete_dialog": {
+      "title": "Delete quick reply",
+      "description": "Delete \"{{name}}\"? It disappears from every member's composer menu immediately.",
+      "cancel": "Cancel",
+      "confirm": "Delete",
+      "failed": "Failed to delete"
     }
-,
+  },
   "quick_actions": {
     "title": "Quick Actions",
     "description": "Preset an agent and a prompt once, then trigger it from any issue's sidebar with a single click.",
@@ -910,7 +909,27 @@
     "deleting": "Deleting...",
     "toast_delete_failed": "Failed to delete workspace",
     "confirm_cancel": "Cancel",
-    "confirm_action": "Confirm"
+    "confirm_action": "Confirm",
+    "bp_title": "Host backpressure",
+    "bp_description": "Pause new task claims on daemon hosts when memory crosses the watermarks. Saved settings reach every daemon in this workspace on the next heartbeat — no restart needed.",
+    "bp_defaults_note": "Showing the code defaults — nothing saved for this workspace yet.",
+    "bp_enabled": "Enable backpressure",
+    "bp_enabled_hint": "When off, new task claims are never paused regardless of the watermarks.",
+    "bp_mem_label": "Memory watermarks (% available)",
+    "bp_mem_hint": "Claims pause below the high watermark and resume above the recovery watermark, which must exceed it.",
+    "bp_swap_label": "Swap watermarks (% used)",
+    "bp_swap_hint": "A high watermark of 0 disables the swap condition; the recovery value must sit below it.",
+    "bp_psi_label": "Memory PSI avg10 watermarks (%)",
+    "bp_psi_hint": "A high watermark of 0 disables the PSI condition; the recovery value must sit below it.",
+    "bp_sampling_label": "Sampling",
+    "bp_sampling_hint": "How often the host is sampled (seconds) and how many samples the smoothing window averages.",
+    "bp_high_aria": "High watermark",
+    "bp_recovery_aria": "Recovery watermark",
+    "bp_interval_aria": "Sample interval in seconds",
+    "bp_window_aria": "Smoothing window in samples",
+    "bp_toast_saved": "Backpressure settings saved — daemons pick them up on the next heartbeat.",
+    "bp_toast_failed": "Failed to save backpressure settings.",
+    "bp_invalid": "Invalid settings:"
   },
   "delete_workspace_dialog": {
     "title": "Delete workspace",

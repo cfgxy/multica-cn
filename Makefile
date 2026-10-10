@@ -181,8 +181,8 @@ daemon-build: ## Build the runtime daemon CLI with release version metadata
 
 # 部署参数：以「执行 make 的普通用户」为 daemon 运行用户（内部自动 sudo，勿用 sudo make）。
 # 换机器按规格覆盖：make daemon-install CPU_QUOTA=400% MEMORY_HIGH=8G MEMORY_MAX=12G
-# 背压按机覆盖（GTI 校准值示例，覆盖值自动持久化、update 重渲染自动还原）：
-#   make daemon-install BP_MEM_HIGH_PCT=30 BP_MEM_RECOVERY_PCT=40 BP_SWAP_HIGH_PCT=60 BP_SWAP_RECOVERY_PCT=45
+# 背压准入阈值不在本文件：参数唯一权威源 = 空间设置（web UI），经心跳下发到 daemon
+# 热生效（RUYI-618）；systemd env 注入已退役，杜绝双源漂移。
 # PROFILE 决定 daemon 读取的 multica 配置（systemd 实例名即 profile 名）：
 #   make daemon-install                → multica-daemon@default，读 ~/.multica/
 #   make daemon-install PROFILE=idata  → multica-daemon@idata，读 ~/.multica/profiles/idata/
@@ -198,17 +198,11 @@ DAEMON_RENDER_MK ?= $(HOME)/.multica/daemon-render.mk
 CPU_QUOTA ?= 600%
 MEMORY_HIGH ?= 24G
 MEMORY_MAX ?= 28G
-# 背压准入阈值（RUYI-393）：默认 = 代码默认（server/internal/daemon/config.go 的
-# DefaultBackpressure* 常量；swap 双阈值 <=0 可关断 swap 条件，同代码语义）。
-BP_MEM_HIGH_PCT ?= 15
-BP_MEM_RECOVERY_PCT ?= 25
-BP_SWAP_HIGH_PCT ?= 80
-BP_SWAP_RECOVERY_PCT ?= 60
-# 主机资源指标中继（RUYI-618）：daemon 伴随 node-exporter 采集主机指标，daemon
-# 抓取解析后随心跳上报、server 单点 exposition。NODE_EXPORTER_URL 置空 = 不装
-# node-exporter、daemon 不采集中继（usage 页隐藏系统资源板块）。
-NODE_EXPORTER_URL ?= http://127.0.0.1:9100/metrics
-NODE_EXPORTER_LISTEN ?= 127.0.0.1:9100
+# 主机资源指标（RUYI-618）：daemon 伴随 node-exporter（multica-node-exporter.service）
+# 由 Prometheus 以静态 targets 直抓，资源指标口径 = node-exporter 原生指标；daemon
+# 不经手资源指标。NODE_EXPORTER_LISTEN 置空 = 不安装 node-exporter（该主机不进面板）。
+# 监听默认全接口 :9100（Prometheus 需可达），用防火墙把端口收敛到 Prometheus 主机。
+NODE_EXPORTER_LISTEN ?= :9100
 NODE_EXPORTER_VERSION ?= 1.9.1
 NODE_EXPORTER_BIN ?= $(HOME)/.local/bin/node_exporter
 NODE_EXPORTER_CPU_QUOTA ?= 20%
@@ -226,12 +220,7 @@ DAEMON_UNIT_RENDER = sed \
 	  -e 's|@BIN@|$(HOME)/.local/bin/multica|g' \
 	  -e 's|@CPU_QUOTA@|$(CPU_QUOTA)|g' \
 	  -e 's|@MEMORY_HIGH@|$(MEMORY_HIGH)|g' \
-	  -e 's|@MEMORY_MAX@|$(MEMORY_MAX)|g' \
-	  -e 's|@BP_MEM_HIGH_PCT@|$(BP_MEM_HIGH_PCT)|g' \
-	  -e 's|@BP_MEM_RECOVERY_PCT@|$(BP_MEM_RECOVERY_PCT)|g' \
-	  -e 's|@BP_SWAP_HIGH_PCT@|$(BP_SWAP_HIGH_PCT)|g' \
-	  -e 's|@BP_SWAP_RECOVERY_PCT@|$(BP_SWAP_RECOVERY_PCT)|g' \
-	  -e 's|@NODE_EXPORTER_URL@|$(NODE_EXPORTER_URL)|g'
+	  -e 's|@MEMORY_MAX@|$(MEMORY_MAX)|g'
 
 NODE_EXPORTER_UNIT_RENDER = sed \
 	  -e 's|@USER@|$(USER)|g' \
@@ -250,20 +239,17 @@ printf '%s\n' \
 	  'CPU_QUOTA ?= $(CPU_QUOTA)' \
 	  'MEMORY_HIGH ?= $(MEMORY_HIGH)' \
 	  'MEMORY_MAX ?= $(MEMORY_MAX)' \
-	  'BP_MEM_HIGH_PCT ?= $(BP_MEM_HIGH_PCT)' \
-	  'BP_MEM_RECOVERY_PCT ?= $(BP_MEM_RECOVERY_PCT)' \
-	  'BP_SWAP_HIGH_PCT ?= $(BP_SWAP_HIGH_PCT)' \
-	  'BP_SWAP_RECOVERY_PCT ?= $(BP_SWAP_RECOVERY_PCT)' \
-	  'NODE_EXPORTER_URL ?= $(NODE_EXPORTER_URL)' \
 	  'NODE_EXPORTER_LISTEN ?= $(NODE_EXPORTER_LISTEN)' > $(DAEMON_RENDER_MK)
 endef
 
-# node-exporter 收敛（RUYI-618）：NODE_EXPORTER_URL 非空时安装启用
+# node-exporter 收敛（RUYI-618）：NODE_EXPORTER_LISTEN 非空时安装启用
 # multica-node-exporter.service（二进制缺失自动从上游 release 下载到
-# NODE_EXPORTER_BIN），daemon 经 NODE_EXPORTER_URL 抓取主机指标并随心跳上报。
-# 置空 NODE_EXPORTER_URL 整体跳过（unit 不卸载，daemon 不采集）。
+# NODE_EXPORTER_BIN）。资源指标由 Prometheus 静态 targets 直抓该端口，
+# daemon 不经手；将主机加入面板 = 在 deploy/prometheus/prometheus.yml 的
+# node-exporter job 加一条带 daemon 标签的静态 target。
+# 置空 NODE_EXPORTER_LISTEN 整体跳过（unit 不卸载）。
 define ENSURE_NODE_EXPORTER
-if [ -n "$(NODE_EXPORTER_URL)" ]; then \
+if [ -n "$(NODE_EXPORTER_LISTEN)" ]; then \
 	  if [ ! -x "$(NODE_EXPORTER_BIN)" ]; then \
 		    arch=$$(uname -m); \
 		    case $$arch in x86_64) goarch=amd64;; aarch64|arm64) goarch=arm64;; *) echo "ERROR: node_exporter 不支持架构 $$arch（可手动安装到 $(NODE_EXPORTER_BIN)）"; exit 1;; esac; \
@@ -274,7 +260,7 @@ if [ -n "$(NODE_EXPORTER_URL)" ]; then \
 		      rm -rf "$$tmp"; \
 		    else \
 		      rm -rf "$$tmp"; \
-		      echo "ERROR: node_exporter 下载失败（可手动安装到 $(NODE_EXPORTER_BIN)，或 make daemon-install NODE_EXPORTER_URL= 跳过）"; \
+		      echo "ERROR: node_exporter 下载失败（可手动安装到 $(NODE_EXPORTER_BIN)，或 make daemon-install NODE_EXPORTER_LISTEN= 跳过）"; \
 		      exit 1; \
 		    fi; \
 	  fi; \
@@ -282,9 +268,9 @@ if [ -n "$(NODE_EXPORTER_URL)" ]; then \
 	  sudo install -m644 /tmp/multica-node-exporter.service /etc/systemd/system/multica-node-exporter.service; \
 	  sudo systemctl daemon-reload; \
 	  sudo systemctl enable --now multica-node-exporter.service; \
-	  echo "== node-exporter 已就绪：$(NODE_EXPORTER_URL) =="; \
+	  echo "== node-exporter 已就绪：$(NODE_EXPORTER_LISTEN) =="; \
 else \
-	  echo "node-exporter：跳过（NODE_EXPORTER_URL 置空，daemon 不采集主机指标）"; \
+	  echo "node-exporter：跳过（NODE_EXPORTER_LISTEN 置空）"; \
 fi
 endef
 

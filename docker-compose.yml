@@ -37,6 +37,21 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=1d
 
+  # Host-metrics exporter for local development of the "System resources"
+  # panel (observability profile): exposes the compose host's node_* series
+  # in-network at node-exporter:9100. Label it in
+  # deploy/prometheus/prometheus.dev.yml to scope it to a workspace.
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    profiles: ["observability"]
+    pid: "host"
+    mem_limit: 128m
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - --path.rootfs=/host
+    restart: unless-stopped
+
 volumes:
   pgdata:
   promdata-dev:

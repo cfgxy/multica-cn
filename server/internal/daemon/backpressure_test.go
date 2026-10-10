@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ===== sampler fixtures =====
@@ -402,6 +404,16 @@ func writePressureFixture(t *testing.T, dir string, avg10 float64) {
 	}
 }
 
+// setBackpressureRuntime installs a gate config directly — the boot-defaults
+// shape. The heartbeat path goes through applyBackpressureConfig instead.
+func setBackpressureRuntime(d *Daemon, th backpressureThresholds, windowSize int) {
+	d.bpRuntime.Store(&backpressureRuntime{
+		enabled:  true,
+		interval: DefaultBackpressureSampleInterval,
+		machine:  newBackpressureMachine(th, windowSize),
+	})
+}
+
 func newBackpressureTestDaemon(t *testing.T) (*Daemon, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -412,7 +424,7 @@ func newBackpressureTestDaemon(t *testing.T) (*Daemon, string) {
 		SwapsPath:    filepath.Join(dir, "swaps"),
 		PressurePath: filepath.Join(dir, "pressure"),
 	}
-	d.bpMachine = newBackpressureMachine(bpTestThresholds(), 1)
+	setBackpressureRuntime(d, bpTestThresholds(), 1)
 	return d, dir
 }
 
@@ -560,7 +572,7 @@ func fixtureDir(d *Daemon) string {
 
 func TestBackpressureGate_PSITripAndRecover(t *testing.T) {
 	d, dir := newBackpressureTestDaemon(t)
-	d.bpMachine = newBackpressureMachine(bpPSITestThresholds(), 1)
+	setBackpressureRuntime(d, bpPSITestThresholds(), 1)
 
 	d.backpressureTick()
 	if d.backpressureBlocked() {
@@ -652,19 +664,10 @@ func TestValidateBackpressureThresholds(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
+func TestLoadConfig_BackpressureDefaultsEnvPathRetired(t *testing.T) {
 	stageFakeAgent(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("SHELL", filepath.Join(t.TempDir(), "missing-shell"))
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", "")
 
 	overrides := Overrides{
 		ServerURL:      "http://localhost:0",
@@ -688,55 +691,131 @@ func TestLoadConfig_BackpressureDefaultsAndEnvOverrides(t *testing.T) {
 		t.Fatalf("default sampler mismatch: interval=%s window=%d", cfg.BackpressureSampleInterval, cfg.BackpressureWindowSize)
 	}
 
-	// Env overrides take effect.
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", "20")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "30")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", "0") // disables the swap condition
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", "60")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", "30")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", "10s")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", "3")
-	cfg, err = LoadConfig(overrides)
-	if err != nil {
-		t.Fatalf("LoadConfig overrides: %v", err)
-	}
-	if cfg.BackpressureMemHighPct != 20 || cfg.BackpressureMemRecoveryPct != 30 {
-		t.Fatalf("env threshold overrides not applied: %+v", cfg)
-	}
-	if cfg.BackpressureSwapHighPct != 0 {
-		t.Fatalf("swap condition disable override not applied: %v", cfg.BackpressureSwapHighPct)
-	}
-	if cfg.BackpressurePSIHighPct != 60 || cfg.BackpressurePSIRecoveryPct != 30 {
-		t.Fatalf("env PSI overrides not applied: %+v", cfg)
-	}
-	if cfg.BackpressureSampleInterval != 10*time.Second || cfg.BackpressureWindowSize != 3 {
-		t.Fatalf("env sampler overrides not applied: interval=%s window=%d", cfg.BackpressureSampleInterval, cfg.BackpressureWindowSize)
-	}
-
-	// The kill switch disables the whole gate.
+	// The MULTICA_DAEMON_BACKPRESSURE_* env path is retired (RUYI-618): the
+	// workspace settings delivered on heartbeat acks are the single runtime
+	// authority, so even garbage env values must be ignored silently instead
+	// of failing the boot or bending the defaults — that is what keeps a
+	// stale systemd drop-in from silently fighting the workspace config.
 	t.Setenv("MULTICA_DAEMON_BACKPRESSURE", "false")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", "not-a-number")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "1")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", "999")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", "-5s")
+	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", "0")
 	cfg, err = LoadConfig(overrides)
 	if err != nil {
-		t.Fatalf("LoadConfig disabled: %v", err)
+		t.Fatalf("retired env path must not fail config load: %v", err)
 	}
-	if cfg.BackpressureEnabled {
-		t.Fatal("kill switch must disable backpressure")
+	if !cfg.BackpressureEnabled || cfg.BackpressureMemHighPct != 15 ||
+		cfg.BackpressureMemRecoveryPct != 25 || cfg.BackpressureSampleInterval != 5*time.Second ||
+		cfg.BackpressureWindowSize != 6 {
+		t.Fatalf("retired env path must not change defaults: %+v", cfg)
+	}
+}
+
+// ===== workspace settings hot-apply (RUYI-618) =====
+
+func TestApplyBackpressureConfig_HotSwapChangesGate(t *testing.T) {
+	d, dir := newBackpressureTestDaemon(t) // 40% available: healthy against 15/25
+	d.backpressureTick()
+	if d.backpressureBlocked() {
+		t.Fatal("precondition: fixture host must start healthy")
 	}
 
-	// Inverted hysteresis fails fast at config load.
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE", "true")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "10")
-	if _, err = LoadConfig(overrides); err == nil {
-		t.Fatal("recovery below high must fail config load")
+	// The workspace tightens the watermarks past the current sample. The new
+	// machine takes effect on the next tick — no restart, no env reload.
+	tight := &protocol.DaemonBackpressureConfig{
+		Enabled:               true,
+		MemHighPct:            45,
+		MemRecoveryPct:        55,
+		SampleIntervalSeconds: 2,
+		WindowSize:            3,
+	}
+	d.applyBackpressureConfig("rt-1", tight)
+	rt := d.bpRuntime.Load()
+	if rt == nil || !rt.enabled || rt.interval != 2*time.Second || rt.machine.windowSize != 3 || rt.machine.thresholds.MemHighPct != 45 {
+		t.Fatalf("applied runtime config mismatch: %+v", rt)
+	}
+	d.backpressureTick()
+	if !d.backpressureBlocked() {
+		t.Fatal("tightened workspace watermark must trip the gate on the next sample")
 	}
 
-	// Same discipline for PSI: an inverted band fails at load with the field
-	// named, so a misconfigured env var is diagnosable without a debugger.
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", "")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", "50")
-	t.Setenv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", "70")
-	_, err = LoadConfig(overrides)
-	if err == nil || !strings.Contains(err.Error(), "psi recovery watermark") {
-		t.Fatalf("inverted PSI band must fail config load naming the field, got %v", err)
+	// Relaxing the card clears the pause the same way.
+	loose := &protocol.DaemonBackpressureConfig{
+		Enabled:               true,
+		MemHighPct:            15,
+		MemRecoveryPct:        25,
+		SampleIntervalSeconds: 2,
+		WindowSize:            3,
+	}
+	writeWatermarkFixtures(t, dir, 60, 10)
+	d.applyBackpressureConfig("rt-1", loose)
+	d.backpressureTick()
+	if d.backpressureBlocked() {
+		t.Fatal("relaxed workspace watermark must release the gate on the next sample")
+	}
+}
+
+func TestApplyBackpressureConfig_InvalidConfigIgnored(t *testing.T) {
+	d, _ := newBackpressureTestDaemon(t)
+	before := d.bpRuntime.Load()
+	if before == nil {
+		t.Fatal("precondition: boot config must be present")
+	}
+
+	// Inverted hysteresis — exactly what the server refuses with 422, but a
+	// buggy or malicious server must not be able to corrupt a running gate
+	// either.
+	d.applyBackpressureConfig("rt-1", &protocol.DaemonBackpressureConfig{
+		Enabled: true, MemHighPct: 80, MemRecoveryPct: 20,
+		SampleIntervalSeconds: 5, WindowSize: 6,
+	})
+	if d.bpRuntime.Load() != before {
+		t.Fatal("invalid config must not replace the active gate")
+	}
+}
+
+func TestApplyBackpressureConfig_DisabledReleasesClaims(t *testing.T) {
+	d, dir := newBackpressureTestDaemon(t)
+	writeWatermarkFixtures(t, dir, 5, 10) // below the 15% high watermark
+	d.backpressureTick()
+	if !d.backpressureBlocked() {
+		t.Fatal("precondition: starved fixture must latch the gate")
+	}
+	wakeup := make(chan struct{}, 1)
+	d.bpWakeup.Store(&wakeup)
+
+	// Disabled card: still a structurally valid config (validation runs even
+	// for disabled), and it must release the latched pause immediately.
+	d.applyBackpressureConfig("rt-1", &protocol.DaemonBackpressureConfig{
+		Enabled: false, MemHighPct: 15, MemRecoveryPct: 25,
+		SampleIntervalSeconds: 5, WindowSize: 6,
+	})
+	if d.backpressureBlocked() {
+		t.Fatal("disabling the gate must release a latched pause immediately")
+	}
+	select {
+	case <-wakeup:
+	default:
+		t.Fatal("disabled gate must wake the batch poller")
+	}
+	// The report key disappears entirely while disabled: upstream consumers
+	// see an unpressured daemon, not a stale one.
+	if d.backpressureReport() != nil {
+		t.Fatal("disabled gate must stop reporting backpressure state")
+	}
+}
+
+func TestApplyBackpressureConfig_IdenticalDeliveryIsNoOp(t *testing.T) {
+	d, _ := newBackpressureTestDaemon(t)
+	// The server sends the card on every heartbeat; a repeat must not churn
+	// the log or rebuild the machine.
+	cfg := protocol.DefaultDaemonBackpressureConfig()
+	d.applyBackpressureConfig("rt-1", cfg)
+	first := d.bpRuntime.Load()
+	d.applyBackpressureConfig("rt-1", cfg)
+	if d.bpRuntime.Load() != first {
+		t.Fatal("identical repeat delivery must keep the same runtime config")
 	}
 }

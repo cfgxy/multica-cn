@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,9 +16,17 @@ import (
 // stubPrometheus is a fake Prometheus /api/v1/query_range endpoint that
 // records the queries it was asked and replies with one canned series.
 type stubPrometheus struct {
-	mu     sync.Mutex
-	srv    *httptest.Server
-	client *promquery.Client
+	mu      sync.Mutex
+	queries []string
+	srv     *httptest.Server
+	client  *promquery.Client
+}
+
+// asked returns the PromQL queries the stub served so far.
+func (s *stubPrometheus) asked() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.queries...)
 }
 
 func newStubPrometheus(t *testing.T) *stubPrometheus {
@@ -26,6 +35,7 @@ func newStubPrometheus(t *testing.T) *stubPrometheus {
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.queries = append(s.queries, r.URL.Query().Get("query"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
 			{"metric":{"daemon":"d1"},"values":[[1760000000,"1"],[1760000015,"2"]]}
@@ -111,6 +121,22 @@ func TestDashboardUsageResources_ScopesToWorkspaceDaemons(t *testing.T) {
 	}
 	if !body.Configured || body.Window != "6h" {
 		t.Fatalf("header mismatch: %+v", body)
+	}
+	// The panel reads node-exporter's native series (RUYI-618 data-source
+	// rework): every query must target node_* metrics via the workspace
+	// daemon matcher, and the retired relayed multica_daemon_* family must
+	// not be referenced anywhere.
+	asked := stub.asked()
+	if len(asked) != 9 {
+		t.Fatalf("expected 9 resource queries, got %d", len(asked))
+	}
+	for _, q := range asked {
+		if !strings.Contains(q, "daemon=~") {
+			t.Fatalf("query missing daemon matcher: %s", q)
+		}
+		if !strings.Contains(q, "node_") || strings.Contains(q, "multica_daemon_") {
+			t.Fatalf("query must use node-exporter native metrics only: %s", q)
+		}
 	}
 	// One matcher per resource query — nine queries — each restricted to the
 	// workspace daemon. A cross-workspace daemon id must not appear.

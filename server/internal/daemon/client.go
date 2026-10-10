@@ -663,9 +663,8 @@ type (
 
 // SendHeartbeat reports this runtime as alive and pulls pending actions.
 // backpressure (RUYI-393) optionally carries the host memory-watermark report;
-// resources (RUYI-618) optionally carries the node-exporter host snapshot.
-// Servers that predate either field ignore them; nil omits the key.
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, backpressure *protocol.DaemonBackpressureReport, resources *protocol.DaemonResourceReport) (*HeartbeatResponse, error) {
+// servers that predate the field ignore it, and a nil report omits the key.
+func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, backpressure *protocol.DaemonBackpressureReport) (*HeartbeatResponse, error) {
 	var resp HeartbeatResponse
 	body := map[string]any{
 		"runtime_id":            runtimeID,
@@ -673,9 +672,6 @@ func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, backpressu
 	}
 	if backpressure != nil {
 		body["backpressure"] = backpressure
-	}
-	if resources != nil {
-		body["resources"] = resources
 	}
 	if err := c.postJSON(ctx, "/api/daemon/heartbeat", body, &resp); err != nil {
 		return nil, err

@@ -1,9 +1,18 @@
 # Prometheus scrape configuration for the self-hosted Multica stack
-# (docker-compose.selfhost.yml, service `prometheus`). Multica's server
-# exposes its /metrics on the METRICS_ADDR it is configured to listen on —
-# this is the single scrape target: daemon-side host metrics and task-usage
-# aggregates are both relayed here through the server, so nothing ever
-# scrapes daemons directly.
+# (docker-compose.selfhost.yml, service `prometheus`).
+#
+# Two static-target families:
+#   1. the Multica server's /metrics — the model-traffic aggregates
+#      (multica_task_usage_*), reachable inside the compose network;
+#   2. node-exporter on every daemon host — the Usage page's "System
+#      resources" panels query node-exporter's native series directly
+#      (node_cpu_seconds_total, node_memory_*, node_filesystem_*,
+#      node_disk_*), so Prometheus scrapes each daemon host itself.
+#
+# Every daemon-host target MUST carry a `daemon` label equal to that host's
+# daemon id (`multica daemon status` prints it): the panels scope resource
+# series to the workspace's daemons through that label. Targets without a
+# matching label are scraped fine but never shown on any panel.
 global:
   scrape_interval: 15s
 
@@ -12,3 +21,19 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["backend:9091"]
+
+  - job_name: node-exporter
+    static_configs:
+      # The machine running this compose stack (the bundled node-exporter
+      # service). Set the daemon label to the daemon id of the daemon on
+      # this host, if one runs here.
+      - targets: ["node-exporter:9100"]
+        labels:
+          daemon: "replace-with-your-daemon-id"
+      # Remote daemon hosts: one entry per machine, labeled with its daemon
+      # id. The node-exporter there is installed by `make daemon-install`
+      # (multica-node-exporter.service, listen NODE_EXPORTER_LISTEN, default
+      # :9100 — firewall it to your Prometheus host).
+      # - targets: ["daemon-host-1.example:9100"]
+      #   labels:
+      #     daemon: "<that-host-daemon-id>"

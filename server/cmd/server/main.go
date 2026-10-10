@@ -20,7 +20,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
-	"github.com/multica-ai/multica/server/internal/hostmetrics"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -561,20 +560,14 @@ func main() {
 	var channelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
 	var larkMetrics *obsmetrics.LarkMetrics
-	// One store shared by the heartbeat write path (Handler) and the metrics
-	// read path (registry): each daemon heartbeat replaces that daemon's last
-	// snapshot, and the collector exposes it as multica_daemon_* series.
-	hostResourceStore := hostmetrics.NewStore(hostmetrics.DefaultSnapshotTTL)
-	hostResourceCollector := hostmetrics.NewCollector(hostResourceStore)
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
-			Pool:          pool,
-			Realtime:      realtime.M,
-			DaemonWS:      daemonws.M,
-			HostResources: hostResourceCollector,
-			TaskUsage:     obsmetrics.NewUsageCollector(queries),
-			Version:       version,
-			Commit:        commit,
+			Pool:      pool,
+			Realtime:  realtime.M,
+			DaemonWS:  daemonws.M,
+			TaskUsage: obsmetrics.NewUsageCollector(queries),
+			Version:   version,
+			Commit:    commit,
 		})
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
@@ -624,7 +617,6 @@ func main() {
 		WecomRelayOutbound:  wecomRelayOutbound,
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
-		HostResources:       hostResourceStore,
 		Prometheus:          promquery.NewClientFromEnv(),
 		LLMMaxRetries:       llmMaxRetries,
 	})

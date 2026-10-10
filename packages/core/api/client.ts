@@ -80,6 +80,8 @@ import type {
   SelfEvolutionConfigValidation,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -605,6 +607,7 @@ import {
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionModelConfigSchema,
+  WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
   PromptGovernanceVersionListSchema,
@@ -6669,5 +6672,53 @@ export class ApiClient {
       EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
       { endpoint: "POST /api/telegram/binding/redeem" },
     );
+  }
+
+  /**
+   * The workspace's effective host-backpressure card (RUYI-618): the saved
+   * settings when an owner ever saved the form, the daemon code defaults
+   * (custom=false) otherwise.
+   */
+  async getWorkspaceBackpressureSettings(): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings");
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      enabled: true,
+      mem_high_pct: 15,
+      mem_recovery_pct: 25,
+      swap_high_pct: 80,
+      swap_recovery_pct: 60,
+      psi_high_pct: 50,
+      psi_recovery_pct: 20,
+      sample_interval_seconds: 5,
+      window_size: 6,
+      custom: false,
+    }, { endpoint: "GET /api/workspace/backpressure-settings" });
+  }
+
+  /**
+   * Save the workspace's backpressure card (owner-only server-side). A 422
+   * carries the shared hysteresis-validation message and nothing persisted —
+   * surface it through the mutation error so the form can show the reason.
+   */
+  async putWorkspaceBackpressureSettings(save: WorkspaceBackpressureSettingsSave): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: save.enabled,
+        mem_high_pct: save.mem_high_pct,
+        mem_recovery_pct: save.mem_recovery_pct,
+        swap_high_pct: save.swap_high_pct,
+        swap_recovery_pct: save.swap_recovery_pct,
+        psi_high_pct: save.psi_high_pct,
+        psi_recovery_pct: save.psi_recovery_pct,
+        sample_interval_seconds: save.sample_interval_seconds,
+        window_size: save.window_size,
+      }),
+    });
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      ...save,
+      custom: true,
+    }, { endpoint: "PUT /api/workspace/backpressure-settings" });
   }
 }

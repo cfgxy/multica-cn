@@ -50,7 +50,6 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/llm"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // randomID returns a random 16-byte hex string used as a request ID for
@@ -186,13 +185,6 @@ type DaemonPendingWorkNotifier interface {
 	NotifyPendingWork(runtimeID, kind string)
 }
 
-// HostResourceRecorder accepts the node-exporter host snapshot a daemon
-// relays through heartbeats (RUYI-618). Implemented by *hostmetrics.Store;
-// nil on the Handler disables the relay.
-type HostResourceRecorder interface {
-	RecordHostResources(daemonID string, report *protocol.DaemonResourceReport)
-}
-
 type Handler struct {
 	Queries                *db.Queries
 	DB                     dbExecutor
@@ -201,11 +193,6 @@ type Handler struct {
 	DaemonHub              *daemonws.Hub
 	DaemonProfileRefresh   RuntimeProfileRefreshNotifier
 	DaemonWorkspaceRefresh WorkspaceSetRefreshNotifier
-	// HostResources receives daemon host resource snapshots relayed through
-	// heartbeats (RUYI-618) into the Prometheus exposition. Optional: nil
-	// when the metrics listener is disabled, which turns the relay into a
-	// per-beat no-op.
-	HostResources HostResourceRecorder
 	// Prometheus serves the usage page's system-resource and model-traffic
 	// panels (RUYI-618) by proxying PromQL range queries. Optional: nil or
 	// an unconfigured client (PROMETHEUS_URL unset) makes both endpoints
