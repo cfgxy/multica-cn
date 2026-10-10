@@ -801,6 +801,7 @@
     "kind_tool": "도구",
     "kind_thinking": "사고",
     "kind_error": "오류",
+    "kind_watchdog": "워치독",
     "group_calls_other": "호출 {{count}}회",
     "step_running": "진행 중",
     "step_input": "입력",
