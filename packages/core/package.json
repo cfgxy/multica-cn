@@ -41,6 +41,7 @@
     "./issues/canonical-id": "./issues/canonical-id.ts",
     "./issues/queries": "./issues/queries.ts",
     "./issues/decisions": "./issues/decisions.ts",
+    "./issues/decision-requests": "./issues/decision-requests.ts",
     "./issues/mutations": "./issues/mutations.ts",
     "./issues/timeline-sort": "./issues/timeline-sort.ts",
     "./issues/timeline-query": "./issues/timeline-query.ts",

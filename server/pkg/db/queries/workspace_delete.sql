@@ -525,6 +525,13 @@ deleted_channel_chat_run_intents AS (
 -- comment is a plain comment row and is swept with the rest of comment.
 deleted_issue_decisions AS (
     DELETE FROM issue_decisions WHERE workspace_id = $1
+),
+-- Authorization requests (RUYI-630) are workspace-scoped rows with no FK and
+-- no dependents outside this database: the executor only reads them, and
+-- audit_event rows reference them by trigger_ref strings, not by FK. The
+-- linked issue_decisions card is swept by the CTE above. Cascade directly.
+deleted_decision_requests AS (
+    DELETE FROM decision_requests WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from

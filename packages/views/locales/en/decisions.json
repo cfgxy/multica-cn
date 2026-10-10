@@ -56,5 +56,32 @@
     "title": "No decision cards match these filters",
     "hint": "Adjust or clear the filters to see the cards in this view.",
     "clear_button": "Clear filters"
+  },
+  "requests": {
+    "section_title": "Authorization requests",
+    "action_workspace_info_read": "Read workspace info",
+    "action_prompt_restore": "Restore prompt",
+    "risk_read": "Read-only",
+    "risk_write_low": "Low-risk write",
+    "status_pending": "Pending",
+    "status_approved": "Approved",
+    "status_denied": "Denied",
+    "status_expired": "Expired",
+    "status_revoked": "Revoked",
+    "status_executed": "Executed",
+    "status_execute_failed": "Execution failed",
+    "origin_label": "Requested by {{agent}}",
+    "source_issue": "From issue: {{title}}",
+    "approve": "Approve",
+    "deny": "Deny",
+    "cancel": "Revoke request",
+    "projection_hint": "This row is a read-only projection — act in the target workspace",
+    "executed_failed": "Execution failed: {{reason}}",
+    "steps_title": "Per-workspace steps",
+    "step_origin": "Origin",
+    "step_target": "Target",
+    "detail_error": "Failed to load step details",
+    "answer_failed": "Failed to record your answer",
+    "cancel_failed": "Failed to revoke"
   }
 }

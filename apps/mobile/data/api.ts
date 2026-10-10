@@ -102,6 +102,8 @@ import type {
   User,
   Workspace,
   WorkspaceSubscriptionSummary,
+  DecisionRequest,
+  DecisionRequestsList,
 } from "@multica/core/types";
 import {
   parseTimelineTruncatedKinds,
@@ -150,9 +152,12 @@ import {
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
 } from "@multica/core/api/schemas";
+import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
   BatchDecisionAnswersSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
   WorkspaceDecisionInboxSchema,
@@ -2084,6 +2089,56 @@ class ApiClient {
     });
     if (!inbox) throw new Error("Invalid decision inbox response");
     return inbox;
+  }
+
+  // --- Agent authorization requests (RUYI-630) ---
+  // Mirrors packages/core/api/client.ts listDecisionRequests /
+  // answerDecisionRequest / cancelDecisionRequest: mobile-owned fetch
+  // wrapper, shared zod schemas, same endpoints and query-string contract.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests${query}`,
+    );
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async answerDecisionRequest(
+    workspaceId: string,
+    requestId: string,
+    decision: "approve" | "deny",
+  ): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    );
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(
+    workspaceId: string,
+    requestId: string,
+  ): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
   }
 
   // --- Labels ---

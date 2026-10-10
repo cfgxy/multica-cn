@@ -24,6 +24,11 @@ const (
 	// created, answered, cancelled — the payload's status field says which.
 	EventDecisionUpdated = "decision:updated"
 
+	// Decision request events (RUYI-630): the per-space row lifecycle of the
+	// sensitive-operation authorization channel. Emitted to each involved
+	// workspace's own channel; payloads never bridge spaces.
+	EventDecisionRequestUpdated = "decision_request:updated"
+
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"
@@ -43,7 +48,7 @@ const (
 	EventTaskCompleted             = "task:completed" // running → completed
 	EventTaskFailed                = "task:failed"    // running → failed
 	EventTaskMessage               = "task:message"
-	EventTaskCancelled             = "task:cancelled" // * → cancelled
+	EventTaskCancelled             = "task:cancelled"        // * → cancelled
 	EventTaskCancelRequested       = "task:cancel_requested" // in-flight → cancel_requested (RUYI-292 two-phase cancel acceptance)
 
 	// Inbox events

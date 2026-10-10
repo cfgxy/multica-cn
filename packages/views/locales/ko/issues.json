@@ -1058,8 +1058,7 @@
       "cancel_requested": "정지 중",
       "completed": "완료",
       "failed": "실패",
-      "cancelled": "취소됨",
-      "cancel_requested": "정지 중"
+      "cancelled": "취소됨"
     },
     "runs": {
       "title": "에이전트 실행 기록",
@@ -1180,6 +1179,15 @@
     "answer_failed": "답변 제출 실패",
     "cancel_failed": "카드 취소 실패",
     "batch_title": "일괄 답변",
-    "batch_submit": "모두 제출"
+    "batch_submit": "모두 제출",
+    "auth_title": "승인 요청",
+    "auth_state_approved": "승인됨",
+    "auth_state_denied": "거부됨",
+    "auth_state_executed": "실행됨",
+    "auth_state_execute_failed": "실행 실패",
+    "auth_approve_default": "승인",
+    "auth_deny_default": "거부",
+    "auth_execute_failed": "실행 실패: {{reason}}",
+    "auth_answer_failed": "승인 작업에 실패했습니다"
   }
 }

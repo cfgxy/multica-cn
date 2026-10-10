@@ -487,6 +487,9 @@ deleted_channel_chat_run_intents AS (
 ),
 deleted_issue_decisions AS (
     DELETE FROM issue_decisions WHERE workspace_id = $1
+),
+deleted_decision_requests AS (
+    DELETE FROM decision_requests WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -530,6 +533,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // instead of being handed to a reconciler.
 // Decision cards (RUYI-345) are issue-scoped with no FK; the answer echo
 // comment is a plain comment row and is swept with the rest of comment.
+// Authorization requests (RUYI-630) are workspace-scoped rows with no FK and
+// no dependents outside this database: the executor only reads them, and
+// audit_event rows reference them by trigger_ref strings, not by FK. The
+// linked issue_decisions card is swept by the CTE above. Cascade directly.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler

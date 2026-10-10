@@ -1051,9 +1051,76 @@ export const IssueDecisionSchema = z.object({
   created_by_id: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
+  // RUYI-630 authorization-card face — present only on authorization cards.
+  decision_kind: z.enum(["question", "authorization"]).optional(),
+  visible_tier: z.string().optional(),
+  operator_tier: z.string().optional(),
+  named_approver_ids: z.array(z.string()).optional(),
+  approve_label: z.string().nullable().optional(),
+  deny_label: z.string().nullable().optional(),
+  expires_at: z.string().nullable().optional(),
+  answer_source: z.enum(["card_click", "text_token", "batch"]).nullable().optional(),
+  auth_state: z.string().nullable().optional(),
+  request_group_id: z.string().nullable().optional(),
+  action_type: z.string().nullable().optional(),
+  executed_at: z.string().nullable().optional(),
+  execution_result: z.unknown().optional(),
+  execution_error: z.string().nullable().optional(),
 }).loose();
 
 export const IssueDecisionsListSchema = z.array(IssueDecisionSchema);
+
+// Agent authorization requests (RUYI-630). Mirrors
+// handler.DecisionRequestResponse / DecisionRequestDetailResponse: one row
+// per involved space, the target-space row operable, the origin row a
+// read-only projection when an issue reference exists.
+export const DecisionRequestSchema = z.object({
+  id: z.string(),
+  request_group_id: z.string(),
+  workspace_id: z.string(),
+  role: z.enum(["origin", "target"]),
+  operable: z.boolean(),
+  status: z.enum(["pending", "approved", "denied", "expired", "revoked", "executed", "execute_failed"]),
+  action_type: z.string(),
+  action_params: z.unknown().optional(),
+  risk_tier: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  origin_workspace_id: z.string(),
+  origin_agent_id: z.string(),
+  origin_task_id: z.string().nullable().optional(),
+  origin_issue_id: z.string().nullable().optional(),
+  origin_issue_title: z.string().nullable().optional(),
+  operator_tier: z.string(),
+  named_approver_ids: z.array(z.string()),
+  approve_label: z.string().nullable().optional(),
+  deny_label: z.string().nullable().optional(),
+  expires_at: z.string(),
+  answered_by_type: z.string().nullable().optional(),
+  answered_by_id: z.string().nullable().optional(),
+  answered_at: z.string().nullable().optional(),
+  answer_source: z.enum(["card_click", "text_token", "batch"]).nullable().optional(),
+  executed_at: z.string().nullable().optional(),
+  execution_result: z.unknown().optional(),
+  execution_error: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const DecisionRequestDetailSchema = z.object({
+  request: DecisionRequestSchema,
+  steps: z.array(DecisionRequestSchema),
+  card: IssueDecisionSchema.nullable().optional(),
+}).loose();
+
+export const DecisionRequestsListSchema = z.object({
+  items: z.array(DecisionRequestSchema),
+  counts: z.object({
+    pending: z.number().int(),
+    closed: z.number().int(),
+    executed: z.number().int(),
+  }),
+});
 
 // Workspace decision inbox (RUYI-494). Mirrors
 // handler.WorkspaceDecisionInboxResponse: one row per card with issue context

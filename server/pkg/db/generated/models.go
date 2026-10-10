@@ -711,6 +711,42 @@ type DaemonToken struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type DecisionRequest struct {
+	ID                 pgtype.UUID        `json:"id"`
+	RequestGroupID     pgtype.UUID        `json:"request_group_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Role               string             `json:"role"`
+	Operable           bool               `json:"operable"`
+	Status             string             `json:"status"`
+	ActionType         string             `json:"action_type"`
+	ActionParams       []byte             `json:"action_params"`
+	RiskTier           string             `json:"risk_tier"`
+	Title              string             `json:"title"`
+	Detail             string             `json:"detail"`
+	OriginWorkspaceID  pgtype.UUID        `json:"origin_workspace_id"`
+	OriginAgentID      pgtype.UUID        `json:"origin_agent_id"`
+	OriginTaskID       pgtype.UUID        `json:"origin_task_id"`
+	OriginIssueID      pgtype.UUID        `json:"origin_issue_id"`
+	OriginIssueTitle   pgtype.Text        `json:"origin_issue_title"`
+	OperatorTier       string             `json:"operator_tier"`
+	NamedApproverIds   []byte             `json:"named_approver_ids"`
+	ApproveLabel       pgtype.Text        `json:"approve_label"`
+	DenyLabel          pgtype.Text        `json:"deny_label"`
+	ExpiresAt          pgtype.Timestamptz `json:"expires_at"`
+	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
+	AnswerSource       pgtype.Text        `json:"answer_source"`
+	ExecutedAt         pgtype.Timestamptz `json:"executed_at"`
+	ExecutionResult    []byte             `json:"execution_result"`
+	ExecutionError     pgtype.Text        `json:"execution_error"`
+	TerminalCallbackAt pgtype.Timestamptz `json:"terminal_callback_at"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DingtalkBotIdentity struct {
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
 	InstallationID   pgtype.UUID        `json:"installation_id"`
@@ -918,25 +954,40 @@ type Issue struct {
 }
 
 type IssueDecision struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	IssueID            pgtype.UUID        `json:"issue_id"`
-	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
-	Question           string             `json:"question"`
-	Options            []byte             `json:"options"`
-	MultiSelect        bool               `json:"multi_select"`
-	RecommendedIndices []byte             `json:"recommended_indices"`
-	Status             string             `json:"status"`
-	SelectedIndices    []byte             `json:"selected_indices"`
-	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
-	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
-	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
-	AnswerCommentID    pgtype.UUID        `json:"answer_comment_id"`
-	CreatedByType      string             `json:"created_by_type"`
-	CreatedByID        pgtype.UUID        `json:"created_by_id"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	ClientRequestID    pgtype.Text        `json:"client_request_id"`
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	IssueID               pgtype.UUID        `json:"issue_id"`
+	SourceCommentID       pgtype.UUID        `json:"source_comment_id"`
+	Question              string             `json:"question"`
+	Options               []byte             `json:"options"`
+	MultiSelect           bool               `json:"multi_select"`
+	RecommendedIndices    []byte             `json:"recommended_indices"`
+	Status                string             `json:"status"`
+	SelectedIndices       []byte             `json:"selected_indices"`
+	AnsweredByType        pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID          pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt            pgtype.Timestamptz `json:"answered_at"`
+	AnswerCommentID       pgtype.UUID        `json:"answer_comment_id"`
+	CreatedByType         string             `json:"created_by_type"`
+	CreatedByID           pgtype.UUID        `json:"created_by_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	ClientRequestID       pgtype.Text        `json:"client_request_id"`
+	DecisionKind          string             `json:"decision_kind"`
+	VisibleTier           string             `json:"visible_tier"`
+	OperatorTier          string             `json:"operator_tier"`
+	NamedApproverIds      []byte             `json:"named_approver_ids"`
+	ApproveLabel          pgtype.Text        `json:"approve_label"`
+	DenyLabel             pgtype.Text        `json:"deny_label"`
+	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerSource          pgtype.Text        `json:"answer_source"`
+	AuthState             pgtype.Text        `json:"auth_state"`
+	PendingRequestGroupID pgtype.UUID        `json:"pending_request_group_id"`
+	PendingActionType     pgtype.Text        `json:"pending_action_type"`
+	PendingActionParams   []byte             `json:"pending_action_params"`
+	ExecutionResult       []byte             `json:"execution_result"`
+	ExecutionError        pgtype.Text        `json:"execution_error"`
+	ExecutedAt            pgtype.Timestamptz `json:"executed_at"`
 }
 
 type IssueDependency struct {
