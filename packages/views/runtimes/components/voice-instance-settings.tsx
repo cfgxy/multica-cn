@@ -215,7 +215,10 @@ export function VoiceInstanceSettingsCard({
             // only downgrades the toast and flips the badge via the
             // invalidated instance queries. Unreachable says nothing about
             // the key (RUYI-619): "could not verify", not "invalid".
-            toast.warning(t(($) => $.voice_instance.probe_unreachable));
+            // RUYI-626 merge: the shared probe_unreachable key carries the
+            // device-test copy on mobile; the server-probe save flow here
+            // uses its own save-flavored wording.
+            toast.warning(t(($) => $.voice_instance.key_saved_probe_unreachable));
           } else if (res.probe?.status === "invalid") {
             toast.warning(
               t(($) => $.voice_instance.probe_invalid, {
