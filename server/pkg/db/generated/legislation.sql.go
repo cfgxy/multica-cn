@@ -989,6 +989,15 @@ const listPromptProposals = `-- name: ListPromptProposals :many
 SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory FROM prompt_proposal
 WHERE prompt_proposal.workspace_id = $1
   AND ($2 = '' OR prompt_proposal.status = $2)
+  AND (
+    $3 = '' OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(prompt_proposal.audit_log) a
+      WHERE a->>'action' = 'created' AND a->>'actor_id' = $3
+    ) OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(prompt_proposal.merged_from) m
+      WHERE m->>'run_id' = $3
+    )
+  )
 ORDER BY prompt_proposal.created_at DESC
 LIMIT 200
 `
@@ -996,11 +1005,16 @@ LIMIT 200
 type ListPromptProposalsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Column2     interface{} `json:"column_2"`
+	Column3     interface{} `json:"column_3"`
 }
 
 // Optional status filter: pass ” for the whole pool.
+// Optional run_id filter (RUYI-673): pass ” for the whole pool. A proposal
+// belongs to a retrospective run when the run created it (the audit_log's
+// "created" entry carries the run id as actor_id) or merged into it
+// (merged_from cites the run id) — the two places upsertDraft writes it.
 func (q *Queries) ListPromptProposals(ctx context.Context, arg ListPromptProposalsParams) ([]PromptProposal, error) {
-	rows, err := q.db.Query(ctx, listPromptProposals, arg.WorkspaceID, arg.Column2)
+	rows, err := q.db.Query(ctx, listPromptProposals, arg.WorkspaceID, arg.Column2, arg.Column3)
 	if err != nil {
 		return nil, err
 	}
