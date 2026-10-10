@@ -5031,3 +5031,41 @@ export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
   knowledge: { dirs: 0, entries: 0 },
   skills: { count: 0, invocations: 0 },
 };
+
+// ---- Self-evolution model-service config (RUYI-551) ----
+
+const SelfEvolutionModelConfigOverrideSchema = z.object({
+  base_url: z.string().default(""),
+  model: z.string().default(""),
+  has_api_key: z.boolean().default(false),
+  scoring_enabled: z.boolean().default(true),
+  last_validated_at: z.string().optional(),
+  last_validation_ok: z.boolean().nullish(),
+  last_validation_error: z.string().default(""),
+});
+
+const SelfEvolutionModelConfigResolvedSchema = z.object({
+  status: z.enum(["ok", "unconfigured", "error", "disabled"]).default("unconfigured"),
+  source: z.enum(["module_config", "deploy_default", ""]).default(""),
+  model: z.string().optional(),
+});
+
+export const SelfEvolutionModelConfigSchema = z.object({
+  override: SelfEvolutionModelConfigOverrideSchema.nullable().default(null),
+  resolved: SelfEvolutionModelConfigResolvedSchema.default({
+    status: "unconfigured",
+    source: "",
+  }),
+  scoring_enabled: z.boolean().default(true),
+  // A deployment without the per-workspace key still answers GETs truthfully
+  // (deploy default, saves refused) — the flag tells the card which story to
+  // tell instead of the read failing.
+  encryption_ready: z.boolean().default(true),
+});
+
+export const SelfEvolutionConfigValidationSchema = z.object({
+  ok: z.boolean().default(false),
+  error_kind: z.string().default(""),
+  message: z.string().default(""),
+  validated_at: z.string().optional(),
+});

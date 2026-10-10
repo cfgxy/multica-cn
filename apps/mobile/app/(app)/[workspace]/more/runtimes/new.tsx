@@ -102,6 +102,7 @@ export default function NewVoiceRuntimeScreen() {
       // instance in place — the settings page can retry — so navigation
       // still proceeds (desktop closes the dialog in this branch too).
       let probeInvalid = false;
+      let probeUnreachable = false;
       let keySaveFailed = false;
       let keySaveDetail: string | null = null;
       if (apiKey.trim() !== "") {
@@ -112,6 +113,7 @@ export default function NewVoiceRuntimeScreen() {
             value: apiKey.trim(),
           });
           probeInvalid = result.probe?.status === "invalid";
+          probeUnreachable = result.probe?.status === "unreachable";
         } catch (err) {
           keySaveFailed = true;
           // RUYI-540: surface the server's readable message (e.g. the
@@ -123,9 +125,11 @@ export default function NewVoiceRuntimeScreen() {
       Alert.alert(
         probeInvalid
           ? t("voice_instance_create.created_probe_invalid")
-          : keySaveFailed
-            ? t("voice_instance_create.key_save_failed")
-            : t("voice_instance_create.created"),
+          : probeUnreachable
+            ? t("voice_instance_create.created_probe_unreachable")
+            : keySaveFailed
+              ? t("voice_instance_create.key_save_failed")
+              : t("voice_instance_create.created"),
         keySaveDetail ?? undefined,
       );
       router.replace({

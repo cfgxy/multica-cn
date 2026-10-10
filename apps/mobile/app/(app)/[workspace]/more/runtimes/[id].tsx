@@ -201,9 +201,12 @@ export default function VoiceRuntimeSettingsScreen() {
       {
         onSuccess: (res) => {
           setKeyValue("");
-          if (res.probe?.status === "invalid") {
+          if (res.probe?.status === "unreachable") {
             // Saved is saved (§4.5): the probe never blocks the write — it
-            // only downgrades the alert and flips the badge.
+            // only downgrades the alert and flips the badge. Unreachable
+            // says nothing about the key (RUYI-619).
+            Alert.alert(t("voice_instance.probe_unreachable"));
+          } else if (res.probe?.status === "invalid") {
             Alert.alert(
               t("voice_instance.probe_invalid", {
                 status: res.probe?.http_status ?? "",
@@ -492,7 +495,7 @@ export default function VoiceRuntimeSettingsScreen() {
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("runtimes");
   return (
@@ -502,14 +505,18 @@ function CredentialBadge({
           ? "text-xs text-success"
           : status === "invalid"
             ? "text-xs text-destructive"
-            : "text-xs text-muted-foreground"
+            : status === "unreachable"
+              ? "text-xs text-warning"
+              : "text-xs text-muted-foreground"
       }
     >
       {status === "configured"
         ? t("voice_instance.badge_configured")
         : status === "invalid"
           ? t("voice_instance.badge_invalid")
-          : t("voice_instance.badge_not_configured")}
+          : status === "unreachable"
+            ? t("voice_instance.badge_unreachable")
+            : t("voice_instance.badge_not_configured")}
     </Text>
   );
 }

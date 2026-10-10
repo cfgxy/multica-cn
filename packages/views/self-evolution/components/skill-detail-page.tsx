@@ -3,8 +3,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
-import { toast } from "sonner";
-import { useWorkspacePaths } from "@multica/core/paths";
 import {
   skillEffectOptions,
   skillUsageOptions,
@@ -12,12 +10,10 @@ import {
   skillVersionsOptions,
   useRestoreSkillVersion,
 } from "@multica/core/self-evolution";
-import { skillCatalogOptions, skillListOptions } from "@multica/core/workspace/queries";
-import type { SkillCatalogEntry, SkillVersionSummary } from "@multica/core/types";
+import { skillCatalogOptions } from "@multica/core/workspace/queries";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@multica/ui/components/ui/alert-dialog";
-import { Input } from "@multica/ui/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@multica/ui/components/ui/sheet";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -25,29 +21,50 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/
 import { useT, useLocale } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { PromptDiffView } from "../../market/prompt-diff-view";
-import { useCatalogSkillImport } from "../../skills/lib/use-catalog-skill-import";
+import { useWorkspaceId } from "@multica/core/hooks";
+import { useWorkspacePaths } from "@multica/core/paths";
+import { skillListOptions } from "@multica/core/workspace/queries";
+import { SelfEvolutionShell } from "./self-evolution-shell";
 
-export function SkillTab({ wsId }: { wsId: string }) {
+/**
+ * The skill-evolution detail route (RUYI-551 §2.4, fig 6): one skill's full
+ * evolution trail — versions with sources and per-version use, the version
+ * drawer (content + diff + restore), the cost comparison, and the use-group
+ * vs control-group table. Editing content and assignment stay on the
+ * existing /skills management page — this surface only shows and rolls back
+ * evolution, and says so with an explicit outbound link.
+ */
+export function SkillEvolutionDetailPage({ skillId }: { skillId: string }) {
+  const wsId = useWorkspaceId();
+  return (
+    <SelfEvolutionShell>
+      <SkillEvolutionDetailBody wsId={wsId} skillId={skillId} />
+    </SelfEvolutionShell>
+  );
+}
+
+export function SkillEvolutionDetailBody({
+  wsId,
+  skillId,
+}: {
+  wsId: string;
+  skillId: string;
+}) {
   const { t } = useT("self-evolution");
   const locale = useLocale();
   const paths = useWorkspacePaths();
-  const [selectedId, setSelectedId] = useState("");
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [comparisonVersion, setComparisonVersion] = useState<number | null>(null);
   const [confirmRestore, setConfirmRestore] = useState(false);
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("all");
   const skills = useQuery(skillListOptions(wsId));
   const catalog = useQuery(skillCatalogOptions(wsId));
-  const { importSkill, importingKey } = useCatalogSkillImport(wsId);
-  const currentId = selectedId || skills.data?.[0]?.id || "";
-  const currentSkill = skills.data?.find((s) => s.id === currentId);
-  const versions = useQuery(skillVersionsOptions(wsId, currentId));
-  const usage = useQuery(skillUsageOptions(wsId, currentId));
-  const effect = useQuery(skillEffectOptions(wsId, currentId));
-  const detail = useQuery(skillVersionOptions(wsId, currentId, selectedVersion ?? 0));
-  const previous = useQuery(skillVersionOptions(wsId, currentId, (selectedVersion ?? 0) - 1));
-  const restore = useRestoreSkillVersion(wsId, currentId);
+  const currentSkill = skills.data?.find((s) => s.id === skillId);
+  const versions = useQuery(skillVersionsOptions(wsId, skillId));
+  const usage = useQuery(skillUsageOptions(wsId, skillId));
+  const effect = useQuery(skillEffectOptions(wsId, skillId));
+  const detail = useQuery(skillVersionOptions(wsId, skillId, selectedVersion ?? 0));
+  const previous = useQuery(skillVersionOptions(wsId, skillId, (selectedVersion ?? 0) - 1));
+  const restore = useRestoreSkillVersion(wsId, skillId);
   const latestVersion = versions.data?.[0]?.version;
   const olderVersions = versions.data?.slice(1) ?? [];
   const baselineVersion = olderVersions.some((v) => v.version === comparisonVersion)
@@ -55,10 +72,13 @@ export function SkillTab({ wsId }: { wsId: string }) {
   const currentUsage = usage.data?.versions.find((v) => v.version === latestVersion);
   const baselineUsage = usage.data?.versions.find((v) => v.version === baselineVersion);
 
-  // Catalog-derived classification (RUYI-288): source badges for authored
-  // skills, plus the not-yet-imported runtime sightings. Authored skills
-  // stay the only selector options — versions and quality comparisons key
-  // off real skill rows; sightings join them through import.
+  const authoredSource = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of catalog.data ?? []) {
+      if (entry.kind === "skill") map.set(entry.id ?? "", entry.source);
+    }
+    return map;
+  }, [catalog.data]);
   const catalogSourceLabel = (source: string) => {
     switch (source) {
       case "workspace": return t(($) => $.skills.catalogSourceWorkspace);
@@ -67,36 +87,10 @@ export function SkillTab({ wsId }: { wsId: string }) {
       default: return source;
     }
   };
-  const authoredSource = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const entry of catalog.data ?? []) {
-      if (entry.kind === "skill") map.set(entry.id ?? "", entry.source);
-    }
-    return map;
-  }, [catalog.data]);
-  const currentSourceLabel = useMemo(() => {
-    const source = authoredSource.get(currentId) ?? "workspace";
+  const sourceBadge = (() => {
+    const source = authoredSource.get(skillId) ?? "workspace";
     return source === "workspace" ? "" : catalogSourceLabel(source);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authoredSource, currentId, t]);
-  const discoveries = useMemo(
-    () => (catalog.data ?? []).filter(
-      (e): e is SkillCatalogEntry & { runtime_id: string; key: string } =>
-        e.kind === "discovery" && !!e.runtime_id && !!e.key,
-    ),
-    [catalog.data],
-  );
-  const trimmedSearch = search.trim().toLowerCase();
-  const matchesSearch = (name: string) =>
-    !trimmedSearch || name.toLowerCase().includes(trimmedSearch);
-  const matchesSource = (source: string) =>
-    sourceFilter === "all" || source === sourceFilter;
-  const selectableSkills = (skills.data ?? []).filter(
-    (s) => matchesSearch(s.name) && matchesSource(authoredSource.get(s.id) ?? "workspace"),
-  );
-  const visibleDiscoveries = discoveries.filter(
-    (d) => matchesSearch(d.name) && matchesSource("runtime"),
-  );
+  })();
   const sourceLabel = (source: string) => {
     switch (source) {
       case "create": return t(($) => $.skills.sources.create);
@@ -106,80 +100,22 @@ export function SkillTab({ wsId }: { wsId: string }) {
       default: return source;
     }
   };
-  const windowLabel = (mode: string, days: number, uses: number) => {
-    switch (mode) {
-      case "uses": return t(($) => $.skills.windowModeUses, { uses });
-      case "none": return t(($) => $.skills.windowModeNone);
-      default: return t(($) => $.skills.windowModeDays, { days });
-    }
-  };
-  const handleImport = async (entry: SkillCatalogEntry) => {
-    try {
-      await importSkill(entry);
-      toast.success(t(($) => $.skills.discoveryImportedToast));
-    } catch {
-      toast.error(t(($) => $.skills.discoveryImportFailedToast));
-    }
-  };
 
   if (skills.isPending) return <div className="space-y-4"><Skeleton className="h-9 w-56" /><Skeleton className="h-48 w-full" /></div>;
   if (skills.isError) return <p role="alert" className="text-body text-destructive">{t(($) => $.skills.error)} <Button variant="outline" size="sm" onClick={() => skills.refetch()}>{t(($) => $.skills.retry)}</Button></p>;
-  if (!skills.data?.length) return (
-    <div className="space-y-4">
-      <div className="space-y-3 text-body"><p>{t(($) => $.skills.empty)}</p><AppLink href={paths.skills()}>{t(($) => $.skills.manage)}</AppLink></div>
-      <CatalogDiscoveries entries={discoveries} importingKey={importingKey} onImport={handleImport} locale={locale} />
-    </div>
-  );
+  if (!currentSkill) return <p className="text-body text-muted-foreground">{t(($) => $.skills.empty)}</p>;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <label className="space-y-1.5 text-caption text-muted-foreground">
-          <span>{t(($) => $.skills.choose)}</span>
-          <Select items={selectableSkills.map((s) => ({ value: s.id, label: s.name }))} value={currentId} onValueChange={(id) => { if (typeof id === "string") { setSelectedId(id); setSelectedVersion(null); setComparisonVersion(null); } }}>
-            <SelectTrigger className="w-56 max-w-full" size="sm"><SelectValue>{currentSkill?.name ?? t(($) => $.skills.choose)}</SelectValue></SelectTrigger>
-            <SelectContent>{selectableSkills.map((skill) => <SelectItem key={skill.id} value={skill.id}>{skill.name}</SelectItem>)}</SelectContent>
-          </Select>
-        </label>
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="space-y-1.5 text-caption text-muted-foreground">
-            <span>{t(($) => $.skills.catalogSearchLabel)}</span>
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t(($) => $.skills.catalogSearchPlaceholder)} className="h-9 w-44" />
-          </label>
-          <label className="space-y-1.5 text-caption text-muted-foreground">
-            <span>{t(($) => $.skills.catalogSourceFilter)}</span>
-            <Select items={[
-              { value: "all", label: t(($) => $.skills.catalogSourceAll) },
-              { value: "workspace", label: t(($) => $.skills.catalogSourceWorkspace) },
-              { value: "runtime", label: t(($) => $.skills.catalogSourceRuntime) },
-              { value: "plugin", label: t(($) => $.skills.catalogSourcePlugin) },
-            ]} value={sourceFilter} onValueChange={(value) => { if (typeof value === "string") setSourceFilter(value); }}>
-              <SelectTrigger className="w-36" size="sm"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t(($) => $.skills.catalogSourceAll)}</SelectItem>
-                <SelectItem value="workspace">{t(($) => $.skills.catalogSourceWorkspace)}</SelectItem>
-                <SelectItem value="runtime">{t(($) => $.skills.catalogSourceRuntime)}</SelectItem>
-                <SelectItem value="plugin">{t(($) => $.skills.catalogSourcePlugin)}</SelectItem>
-              </SelectContent>
-            </Select>
-          </label>
-          <Button size="sm" variant="outline" render={<AppLink href={paths.skills()} />}>{t(($) => $.skills.manage)}</Button>
-        </div>
-      </div>
-
-      <p className="text-caption text-muted-foreground">{t(($) => $.skills.catalogSelectableHint)}</p>
-
+    <div className="flex min-w-0 flex-col gap-6 overflow-y-auto">
       <div className="flex flex-wrap items-center gap-3 border-b pb-4">
-        <h2 className="text-title font-semibold">{currentSkill?.name}</h2>
-        {currentSourceLabel && <Badge variant="secondary">{currentSourceLabel}</Badge>}
+        <h2 className="text-title font-semibold">{currentSkill.name}</h2>
+        {sourceBadge && <Badge variant="secondary">{sourceBadge}</Badge>}
         {versions.data?.[0] && <Badge variant="secondary">{t(($) => $.skills.version, { version: versions.data[0].version })}</Badge>}
-        <p className="w-full text-body text-muted-foreground">{currentSkill?.description}</p>
+        <Button size="sm" variant="outline" className="ml-auto" render={<AppLink href={paths.skills()} />}>
+          {t(($) => $.skills.manage)}
+        </Button>
+        <p className="w-full text-body text-muted-foreground">{currentSkill.description}</p>
       </div>
-
-      <CatalogDiscoveries entries={visibleDiscoveries} importingKey={importingKey} onImport={handleImport} locale={locale} />
-      {discoveries.length > 0 && visibleDiscoveries.length === 0 && (
-        <p className="text-caption text-muted-foreground">{t(($) => $.skills.catalogNoMatch)}</p>
-      )}
 
       <div className="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <section className="min-w-0 space-y-3" aria-label={t(($) => $.skills.history)}>
@@ -187,7 +123,7 @@ export function SkillTab({ wsId }: { wsId: string }) {
           {versions.isPending ? <Skeleton className="h-40 w-full" /> : versions.isError ?
             <p role="alert" className="text-body text-destructive">{t(($) => $.skills.error)} <Button size="sm" onClick={() => versions.refetch()}>{t(($) => $.skills.retry)}</Button></p> :
             !versions.data?.length ? <p className="text-body text-muted-foreground">{t(($) => $.skills.noVersions)}</p> :
-            <div className="divide-y border-y">{versions.data.map((v: SkillVersionSummary) => (
+            <div className="divide-y border-y">{versions.data.map((v) => (
               <button key={v.id} type="button" className="flex w-full min-w-0 items-center gap-3 py-3 text-left text-body hover:bg-muted/50" onClick={() => setSelectedVersion(v.version)}>
                 <Badge variant="outline">{t(($) => $.skills.version, { version: v.version })}</Badge>
                 <span className="min-w-0 flex-1 truncate">{sourceLabel(v.source)}</span>
@@ -230,26 +166,22 @@ export function SkillTab({ wsId }: { wsId: string }) {
               </div>
               {latestVersion === undefined || baselineVersion === undefined ?
                 <p className="text-caption text-muted-foreground">{t(($) => $.skills.noComparison)}</p> :
-                <div className="min-w-0 overflow-x-auto">
-                  <div className="min-w-[28rem] space-y-2 text-caption">
-                  <div className="grid grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,6rem))_minmax(0,7rem)] gap-2 border-b pb-2 text-muted-foreground">
-                    <span>{t(($) => $.skills.metric)}</span><span>{`v${baselineVersion}`}</span><span>{`v${latestVersion}`}</span><span>{t(($) => $.skills.change)}</span>
-                  </div>
-                  <SkillComparisonRow label={t(($) => $.skills.tokenMetric)}
-                    before={baselineUsage?.median_total_tokens} after={currentUsage?.median_total_tokens}
-                    beforeSamples={baselineUsage?.token_samples ?? (baselineUsage ? undefined : 0)}
-                    afterSamples={currentUsage?.token_samples ?? (currentUsage ? undefined : 0)}
-                    unit="token" insufficient={t(($) => $.skills.insufficientCost)}
-                    noData={t(($) => $.skills.noCostData)} notCollected={t(($) => $.skills.notCollected)} />
-                  <SkillComparisonRow label={t(($) => $.skills.retryMetric)}
-                    before={baselineUsage?.runs && baselineUsage.retried_runs !== undefined ? baselineUsage.retried_runs / baselineUsage.runs * 100 : null}
-                    after={currentUsage?.runs && currentUsage.retried_runs !== undefined ? currentUsage.retried_runs / currentUsage.runs * 100 : null}
-                    beforeSamples={baselineUsage?.runs ?? (baselineUsage ? undefined : 0)}
-                    afterSamples={currentUsage?.runs ?? (currentUsage ? undefined : 0)}
-                    unit="%" insufficient={t(($) => $.skills.insufficientCost)}
-                    noData={t(($) => $.skills.noComparisonData)} notCollected={t(($) => $.skills.notCollected)} />
-                  </div>
-                </div>}
+                <ComparisonTable
+                  columns={[`v${baselineVersion}`, `v${latestVersion}`]}
+                  rows={[
+                    { label: t(($) => $.skills.tokenMetric),
+                      before: baselineUsage?.median_total_tokens, after: currentUsage?.median_total_tokens,
+                      beforeSamples: baselineUsage?.token_samples ?? (baselineUsage ? undefined : 0),
+                      afterSamples: currentUsage?.token_samples ?? (currentUsage ? undefined : 0),
+                      unit: "token" },
+                    { label: t(($) => $.skills.retryMetric),
+                      before: baselineUsage?.runs && baselineUsage.retried_runs !== undefined ? baselineUsage.retried_runs / baselineUsage.runs * 100 : null,
+                      after: currentUsage?.runs && currentUsage.retried_runs !== undefined ? currentUsage.retried_runs / currentUsage.runs * 100 : null,
+                      beforeSamples: baselineUsage?.runs ?? (baselineUsage ? undefined : 0),
+                      afterSamples: currentUsage?.runs ?? (currentUsage ? undefined : 0),
+                      unit: "%" },
+                  ]}
+                />}
               <p className="text-caption text-muted-foreground">{t(($) => $.skills.comparisonCaveat)}</p>
             </div>
             <div className="space-y-3 border-t pt-4">
@@ -297,10 +229,10 @@ export function SkillTab({ wsId }: { wsId: string }) {
                     <span className="text-muted-foreground"> · {sourceLabel(event.source)} · {new Date(event.created_at).toLocaleDateString(locale)}</span></p>
                   <p className="text-muted-foreground">{t(($) => $.skills.eventBefore, { count: event.before?.runs ?? 0 })}
                     {event.before?.median_total_tokens != null ? ` · ${t(($) => $.skills.medianTokens, { count: event.before.median_total_tokens })}` : ""}
-                    {` · ${windowLabel(event.before_mode, event.window_days, event.window_uses)}`}</p>
+                    {` · ${windowLabel(event.before_mode, event.window_days, event.window_uses, t)}`}</p>
                   <p className="text-muted-foreground">{t(($) => $.skills.eventAfter, { count: event.after?.runs ?? 0 })}
                     {event.after?.median_total_tokens != null ? ` · ${t(($) => $.skills.medianTokens, { count: event.after.median_total_tokens })}` : ""}
-                    {` · ${windowLabel(event.after_mode, event.window_days, event.window_uses)}`}</p>
+                    {` · ${windowLabel(event.after_mode, event.window_days, event.window_uses, t)}`}</p>
                 </div>
               ))}</div>}
             <h4 className="text-body font-medium">{t(($) => $.skills.recent)}</h4>
@@ -317,7 +249,7 @@ export function SkillTab({ wsId }: { wsId: string }) {
       </div>
 
       <Sheet open={selectedVersion !== null} onOpenChange={(open) => { if (!open) setSelectedVersion(null); }}>
-        <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-lg">
+        <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-lg" data-testid="skill-version-drawer">
           <SheetHeader><SheetTitle>{t(($) => $.skills.version, { version: selectedVersion ?? 0 })}</SheetTitle><SheetDescription>{detail.data?.created_at ? new Date(detail.data.created_at).toLocaleString(locale) : ""}</SheetDescription></SheetHeader>
           {detail.isPending ? <Skeleton className="h-40 w-full" /> : detail.isError ? <p role="alert" className="text-destructive">{t(($) => $.skills.error)}</p> : detail.data?.id ? <div className="space-y-5 px-4 py-4 text-body">
             <p>{sourceLabel(detail.data.source)} · {detail.data.name}</p>
@@ -339,6 +271,49 @@ export function SkillTab({ wsId }: { wsId: string }) {
   );
 }
 
+type SelfEvolutionT = ReturnType<typeof useT<"self-evolution">>["t"];
+
+function windowLabel(mode: string, days: number, uses: number, t: SelfEvolutionT) {
+  switch (mode) {
+    case "uses": return t(($) => $.skills.windowModeUses, { uses });
+    case "none": return t(($) => $.skills.windowModeNone);
+    default: return t(($) => $.skills.windowModeDays, { days });
+  }
+}
+
+function ComparisonTable({
+  columns,
+  rows,
+}: {
+  columns: [string, string] | string[];
+  rows: {
+    label: string;
+    before?: number | null;
+    after?: number | null;
+    beforeSamples?: number;
+    afterSamples?: number;
+    unit: string;
+  }[];
+}) {
+  const { t } = useT("self-evolution");
+  const [left, right] = columns;
+  return (
+    <div className="min-w-0 overflow-x-auto">
+      <div className="min-w-[28rem] space-y-2 text-caption">
+        <div className="grid grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,6rem))_minmax(0,7rem)] gap-2 border-b pb-2 text-muted-foreground">
+          <span>{t(($) => $.skills.metric)}</span><span>{left}</span><span>{right}</span><span>{t(($) => $.skills.change)}</span>
+        </div>
+        {rows.map((row) => (
+          <SkillComparisonRow key={row.label} {...row}
+            insufficient={t(($) => $.skills.insufficientCost)}
+            noData={row.unit === "%" ? t(($) => $.skills.noComparisonData) : t(($) => $.skills.noCostData)}
+            notCollected={t(($) => $.skills.notCollected)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SkillComparisonRow({ label, before, after, beforeSamples, afterSamples, unit, insufficient, noData, notCollected }: {
   label: string; before?: number | null; after?: number | null;
   beforeSamples?: number; afterSamples?: number; unit: string;
@@ -351,7 +326,7 @@ function SkillComparisonRow({ label, before, after, beforeSamples, afterSamples,
   };
   const comparable = beforeSamples !== undefined && beforeSamples >= 5
     && afterSamples !== undefined && afterSamples >= 5 && before != null && after != null;
-  const delta = comparable ? `${after - before > 0 ? "+" : ""}${Math.round(after - before).toLocaleString()} ${unit}` :
+  const delta = comparable ? `${after! - before! > 0 ? "+" : ""}${Math.round(after! - before!).toLocaleString()} ${unit}` :
     beforeSamples === undefined || afterSamples === undefined ? notCollected :
       beforeSamples === 0 || afterSamples === 0 ? noData : insufficient;
   return <div className="grid grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,6rem))_minmax(0,7rem)] gap-2 break-words">
@@ -362,49 +337,4 @@ function SkillComparisonRow({ label, before, after, beforeSamples, afterSamples,
 
 function skillSnapshotText(version: { content: string; files: { path: string; content: string }[] }) {
   return [version.content, ...version.files.map((file) => `${file.path}\n${file.content}`)].join("\n\n");
-}
-
-/**
- * Runtime-discovered skills that are not imported yet (RUYI-288). Metadata
- * only: each row explains its state — importable, or already covered by an
- * authored skill of the same name — and the import action reuses the existing
- * runtime-local import flow, after which the skill shows up as a real
- * selectable row with its own version trail.
- */
-function CatalogDiscoveries({ entries, importingKey, onImport, locale }: {
-  entries: (SkillCatalogEntry & { runtime_id: string; key: string })[];
-  importingKey: string | null;
-  onImport: (entry: SkillCatalogEntry) => void;
-  locale: string;
-}) {
-  const { t } = useT("self-evolution");
-  if (entries.length === 0) return null;
-  return (
-    <section className="space-y-2" aria-label={t(($) => $.skills.discoveriesTitle)}>
-      <h3 className="text-body font-medium">{t(($) => $.skills.discoveriesTitle)}</h3>
-      <div className="divide-y rounded-lg border bg-card">
-        {entries.map((entry) => (
-          <div key={`${entry.runtime_id}:${entry.key}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <span className="truncate text-body font-medium">{entry.name}</span>
-                {entry.matching_skill_id
-                  ? <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">{t(($) => $.skills.discoveryExists)}</Badge>
-                  : <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">{t(($) => $.skills.catalogSourceRuntime)}</Badge>}
-              </div>
-              <p className="truncate text-caption text-muted-foreground">
-                {entry.description || entry.source_path}
-                {` · ${t(($) => $.skills.discoveryLastSeen, { date: new Date(entry.last_seen_at ?? Date.now()).toLocaleString(locale) })}`}
-              </p>
-            </div>
-            {entry.matching_skill_id ? null : (
-              <Button variant="outline" size="sm" disabled={importingKey !== null} onClick={() => onImport(entry)}>
-                {importingKey === entry.key ? t(($) => $.skills.discoveryImporting) : t(($) => $.skills.discoveryImport)}
-              </Button>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }

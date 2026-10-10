@@ -1,16 +1,6 @@
 {
   "title": "자기 진화",
   "description": "에이전트와 스쿼드 프롬프트가 시간에 따라 어떻게 바뀌었는지, 무엇이 그 변화를 만들었는지 확인합니다.",
-  "tabs": {
-    "overview": "개요",
-    "quality": "품질",
-    "quiz": "퀴즈",
-    "skills": "Skill",
-    "proposals": "입법 제안",
-    "retrospective": "일일 회고",
-    "knowledge": "지식",
-    "versions": "버전"
-  },
   "overview": {
     "loading": "개요를 불러오는 중",
     "error": "개요를 불러오지 못했습니다",
@@ -56,7 +46,8 @@
       "empty": "등록된 skill이 아직 없습니다.",
       "count": "skill {{count}}개",
       "invocations": "누적 명시 호출 {{count}}회"
-    }
+    },
+    "viewAll": "보기"
   },
   "skills": {
     "choose": "skill 선택",
@@ -511,6 +502,7 @@
     "empty": "실행 기록이 아직 없습니다.",
     "saveOk": "회고 설정을 저장했습니다.",
     "triggerOk": "회고 런이 시작되었습니다.",
+    "rerun": "다시 실행",
     "agentTitle": "실행 에이전트",
     "agentDescription": "매일의 총회고는 선택한 에이전트의 한 번의 런으로 실행됩니다: 기간 내 완료된 Issue를 읽고 개선 초안을 추출합니다. Issue 생성이나 댓글 없이 진행됩니다.",
     "agentLabel": "실행 에이전트",
@@ -643,5 +635,162 @@
     "compareTitle": "v{{from}} → v{{to}} 비교",
     "secretBlocked": "저장되지 않음: 프롬프트에 자격 증명이 포함된 것으로 보입니다.",
     "findingLine": "{{line}}행"
+  },
+  "nav": {
+    "label": "자기진화 섹션",
+    "overview": "개요",
+    "groupKnowledgeAssets": "지식 자산",
+    "groupMeasures": "측정",
+    "groupLoop": "진화 루프",
+    "groupConfig": "설정",
+    "knowledge": "지식",
+    "skills": "스킬 진화",
+    "quality": "품질",
+    "quiz": "퀴즈",
+    "proposals": "제안",
+    "versions": "버전",
+    "retrospective": "매일의 회고",
+    "config": "모듈 설정"
+  },
+  "configSource": {
+    "prefix": "적용 출처: ",
+    "module": "모듈 설정",
+    "deploy": "배포 기본값",
+    "system": "시스템 수준"
+  },
+  "sources": {
+    "states": {
+      "ok": "사용 가능",
+      "unconfigured": "미설정",
+      "error": "설정 오류",
+      "disabled": "비활성화"
+    },
+    "reason": "원인:",
+    "impact": "영향:"
+  },
+  "secretField": {
+    "placeholder": "새 값 입력",
+    "keepExisting": "비워 두면 기존 값 유지"
+  },
+  "segToolbar": {
+    "filters": "필터"
+  },
+  "attention": {
+    "title": "주의 필요",
+    "hint": "처리하면 목록에서 사라집니다",
+    "modelUnconfigured": {
+      "title": "모델 서비스가 설정되지 않음",
+      "description": "품질 스코어링과 매일의 회고에 사용할 LLM이 없습니다",
+      "action": "설정하기"
+    },
+    "modelError": {
+      "title": "모델 서비스 검증 실패",
+      "action": "설정 확인"
+    },
+    "discoveries": {
+      "title": "가져오기 대기 중인 스킬 발견 {{count}}건",
+      "action": "확인"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "항목",
+    "dirs": "디렉터리",
+    "external": "외부 소스",
+    "addSource": "외부 소스 추가",
+    "entryDrawerSubtitle": "{{dir}}의 미러",
+    "attrDir": "디렉터리",
+    "attrMirror": "미러 상태",
+    "attrAdoption": "채택 상태",
+    "attrSource": "소스 키",
+    "attrUpdated": "마지막 확인",
+    "attrKind": "종류",
+    "attrEntries": "항목 수",
+    "attrCreated": "등록일",
+    "scanHistory": "스캔 이력",
+    "viewEntries": "항목 보기",
+    "unregisterConfirm": "\"{{label}}\"을(를) 등록 해제할까요? 미러된 항목은 유지되지만 더 이상 갱신되지 않습니다.",
+    "emptyExternal": "아직 등록된 외부 소스가 없습니다.",
+    "jumpToDirs": "디렉터리로 이동",
+    "colKey": "키",
+    "colActions": "작업",
+    "colSource": "소스",
+    "colPath": "경로",
+    "colHealth": "상태",
+    "colLastScan": "마지막 스캔"
+  },
+  "skillsSeg": {
+    "managed": "관리 중인 스킬",
+    "discoveries": "발견",
+    "colSkill": "스킬",
+    "colSource": "소스",
+    "colLatestVersion": "최신 버전",
+    "colInvocations30d": "최근 30일",
+    "invocationsValue": "{{count}}회 호출",
+    "emptyDiscoveries": "런타임 발견이 아직 없습니다 — 런타임에서 관찰된 스킬이 여기에 표시되어 가져오기를 기다립니다."
+  },
+  "qualityCards": {
+    "title": "데이터 소스 상태",
+    "scoringModel": "스코어링 모델",
+    "langfuse": "Langfuse",
+    "banner": "일부 데이터 소스가 저하되었습니다 — 최근 수치는 불완전할 수 있습니다.",
+    "viewSources": "데이터 소스 상태 보기",
+    "reasons": {
+      "okValidated": "연결 확인 통과 ({{date}}).",
+      "okModule": "모듈 설정 저장됨 (미재검증).",
+      "okDeploy": "배포 시 주입된 기본값 감지 (사전 검증 없음).",
+      "error": "연결 확인에 실패했습니다.",
+      "errorDetail": "연결 확인 실패: {{error}}",
+      "disabled": "소스는 정상이지만 워크스페이스 스위치가 꺼져 있습니다.",
+      "unconfigured": "이 소스에 대한 설정이 없습니다.",
+      "langfuseOk": "배포 시 주입된 내보내기 자격 증명 감지 (시스템 수준).",
+      "langfuseMissing": "이 배포에는 Langfuse 내보내기 자격 증명이 없습니다."
+    },
+    "impacts": {
+      "ok": "모든 지표가 정상 수집 중입니다.",
+      "error": "마지막 성공 데이터를 시각과 함께 보관 중; 신규 수집은 실패 중.",
+      "disabled": "새 데이터 수집 중단; 이력은 조회 가능.",
+      "unconfigured": "해당 지표에는 데이터가 없으며 안내 상태가 표시됩니다.",
+      "langfuseOk": "대화 내보내기를 실행할 수 있습니다.",
+      "langfuseMissing": "대화 내보내기가 수행되지 않습니다."
+    },
+    "actions": {
+      "configure": "설정하기",
+      "viewConfig": "설정 보기",
+      "viewError": "오류 보기",
+      "enable": "활성화",
+      "deployNotes": "배포 측에서만 설정 가능"
+    }
+  },
+  "modelConfig": {
+    "title": "모델 서비스",
+    "description": "이 워크스페이스의 품질 스코어링과 매일의 회고가 공유하는 LLM 엔드포인트. 키는 암호화되어 저장되며 다시 표시되지 않습니다.",
+    "baseUrl": "Base URL",
+    "apiKey": "API 키",
+    "model": "모델",
+    "consumersTitle": "이 엔드포인트의 소비자",
+    "scoringConsumer": "품질 스코어링",
+    "saveAndValidate": "검증 후 저장",
+    "busy": "처리 중…",
+    "revalidate": "다시 확인",
+    "lastValidated": "마지막 검증 {{date}}",
+    "neverValidated": "검증되지 않음",
+    "validationOk": "연결 확인에 통과했습니다.",
+    "validationFailed": "검증 실패 — 아무것도 저장되지 않았습니다",
+    "saveOk": "모델 서비스가 저장되었습니다.",
+    "restoreDefault": "배포 기본값으로 복원",
+    "restoreConfirm": "이 워크스페이스의 재정의를 제거하고 배포 기본값을 다시 적용합니다. 계속할까요?",
+    "restoreOk": "배포 기본값으로 복원되었습니다.",
+    "encryptionNotReady": "이 배포에는 워크스페이스 단위 암호화 키가 없어 저장할 수 없습니다 — 배포 기본값이 적용됩니다.",
+    "errorKind": {
+      "credentials": "자격 증명이 무효 또는 만료",
+      "model": "모델을 사용할 수 없거나 거부됨",
+      "connection": "연결 실패 또는 시간 초과",
+      "notConfigured": "필수 필드 누락",
+      "other": "기타 오류"
+    }
+  },
+  "configPage": {
+    "title": "모듈 설정",
+    "description": "아래 모델 서비스가 품질 스코어링과 매일의 회고를 지원합니다. Langfuse는 인스턴스 수준 설정이므로 여기서는 읽기 전용입니다."
   }
 }
