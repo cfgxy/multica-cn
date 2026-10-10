@@ -1108,6 +1108,14 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 	if run.FinishedAt.Valid {
 		resp["finished_at"] = run.FinishedAt.Time.UTC().Format(httpTimeFormat)
 	}
+	// RUYI-663: the platform task enqueued for this run, so the UI can offer
+	// the run's execution transcript. Null when no task exists — runs that
+	// failed before enqueue, and rows written before the column (935).
+	if run.TaskID.Valid {
+		resp["task_id"] = uuidToString(run.TaskID)
+	} else {
+		resp["task_id"] = nil
+	}
 	return resp
 }
 

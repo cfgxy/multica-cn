@@ -35,6 +35,10 @@ import {
 import type { RetrospectiveRun } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { runErrorLine } from "./retrospective-run-error";
+import {
+  RetrospectiveRunDetailSheet,
+  retrospectiveStatusLabel,
+} from "./retrospective-run-detail";
 
 /**
  * The daily retrospective tab (RUYI-305 E3).
@@ -63,6 +67,9 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const [windowDays, setWindowDays] = useState(7);
   const [agentId, setAgentId] = useState("");
   const [loaded, setLoaded] = useState(false);
+  // The open detail sheet is keyed by run id (not the object) so a refetch —
+  // a running run reaching its terminal state — updates the sheet in place.
+  const [detailRunId, setDetailRunId] = useState<string | null>(null);
 
   useEffect(() => {
     if (config.data && !loaded) {
@@ -89,15 +96,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   };
 
   const runsList: RetrospectiveRun[] = runs.data ?? [];
-
-  const statusLabel = (s: string) => {
-    switch (s) {
-      case "succeeded": return t(($) => $.retrospective.status.succeeded);
-      case "failed": return t(($) => $.retrospective.status.failed);
-      case "running": return t(($) => $.retrospective.status.running);
-      default: return s;
-    }
-  };
+  const detailRun = runsList.find((r) => r.id === detailRunId) ?? null;
 
   // Archived agents stay listed when one is the saved selection (the server
   // still reports it), but only live agents are selectable going forward.
@@ -258,7 +257,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   <Badge
                     variant={run.status === "succeeded" ? "default" : run.status === "failed" ? "destructive" : "secondary"}
                   >
-                    {statusLabel(run.status)}
+                    {retrospectiveStatusLabel(run.status, t)}
                   </Badge>
                   <span className="text-muted-foreground text-caption">
                     {new Date(run.window_start).toLocaleString()} –{" "}
@@ -277,8 +276,16 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                     {t(($) => $.retrospective.errorLabel)}: {errorLine}
                   </div>
                 ) : null}
-                {canManage && run.status === "failed" ? (
-                  <div className="mt-2">
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    data-testid="retrospective-run-detail"
+                    onClick={() => setDetailRunId(run.id)}
+                  >
+                    {t(($) => $.retrospective.viewDetail)}
+                  </Button>
+                  {canManage && run.status === "failed" ? (
                     <Button
                       size="sm"
                       variant="outline"
@@ -292,14 +299,23 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                     >
                       {t(($) => $.retrospective.rerun)}
                     </Button>
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
               </li>
               );
             })}
           </ul>
         )}
       </div>
+
+      <RetrospectiveRunDetailSheet
+        run={detailRun}
+        agentId={config.data?.agent_id ?? ""}
+        agentName={selectedAgent?.name ?? ""}
+        onOpenChange={(open) => {
+          if (!open) setDetailRunId(null);
+        }}
+      />
     </div>
   );
 }
