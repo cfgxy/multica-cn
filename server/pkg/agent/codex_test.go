@@ -1478,13 +1478,6 @@ func TestCodexRawItemAgentMessageFinalAnswerWaitsForTurnCompleted(t *testing.T) 
 		t.Fatal("turn/completed should finish the turn")
 	}
 }
-
-// TestCodexDeliverableOutputExcludesNarration pins Result.Output to the turn's
-// deliverable. Codex used to concatenate every agent message, so a tool-using
-// run shipped its intermediate narration to Slack and Lark along with the answer
-// (GH #6006). The wiring mirrors executeOnce: onMessage tracks the last agent
-// message, onFinalAnswer captures the phase-labelled one, and
-// codexDeliverableOutput picks between them.
 func TestCodexDeliverableOutputExcludesNarration(t *testing.T) {
 	t.Parallel()
 

@@ -281,7 +281,11 @@ func foldResolvedThreads(comments []db.Comment) ([]db.Comment, map[string]foldSt
 // the all-time max observed is ~1.1k, so 2000 leaves ~2x headroom while still
 // preventing a runaway response if some user manages to accumulate a wild
 // number of rows on a single issue.
-const commentHardCap = 2000
+//
+// This and the thread-completion budgets below are variables only so the cap
+// tests can run the same windowing without seeding thousands of rows per
+// scenario; nothing outside tests assigns them.
+var commentHardCap = 2000
 
 // HeaderCommentsTruncated tells browser and CLI callers that a defensive
 // comment-list cap omitted rows. It is deliberately separate from the timeline
@@ -292,7 +296,7 @@ const HeaderCommentsTruncated = "X-Comments-Truncated"
 // commentProbeLimit reads one row past the cap so a truncated read can be told
 // apart from an issue holding exactly commentHardCap comments. The difference
 // matters: exact-cap reads are complete and must not advertise data loss.
-const commentProbeLimit = commentHardCap + 1
+func commentProbeLimit() int32 { return int32(commentHardCap) + 1 }
 
 // Budgets for thread completion (completeCommentThreads).
 //
@@ -306,7 +310,7 @@ const commentProbeLimit = commentHardCap + 1
 // general write path saves the exact comment being replied to, so chains can run
 // far deeper than the two levels the UI usually renders. Without a budget the
 // completion pass would defeat the row cap it is meant to preserve.
-const (
+var (
 	commentThreadContextBudget = 2000
 	commentThreadMaxDepth      = 64
 )
@@ -872,7 +876,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 			AnchorID:    anchor,
 			IssueID:     issue.ID,
 			WorkspaceID: issue.WorkspaceID,
-			ReplyLimit:  commentHardCap,
+			ReplyLimit:  int32(commentHardCap),
 		})
 		if err != nil {
 			return fetchCommentsResult{}, err
@@ -1028,7 +1032,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				IssueID:     issue.ID,
 				WorkspaceID: issue.WorkspaceID,
 				Since:       args.Since,
-				RowLimit:    commentProbeLimit,
+				RowLimit:    commentProbeLimit(),
 			})
 			if err != nil {
 				return fetchCommentsResult{}, err
@@ -1058,7 +1062,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 		rows, err := h.Queries.ListRootCommentsForIssue(ctx, db.ListRootCommentsForIssueParams{
 			IssueID:     issue.ID,
 			WorkspaceID: issue.WorkspaceID,
-			RowLimit:    commentProbeLimit,
+			RowLimit:    commentProbeLimit(),
 		})
 		if err != nil {
 			return fetchCommentsResult{}, err
@@ -1092,7 +1096,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 			IssueID:     issue.ID,
 			WorkspaceID: issue.WorkspaceID,
 			CreatedAt:   args.Since,
-			Limit:       commentProbeLimit,
+			Limit:       commentProbeLimit(),
 		})
 		if err != nil {
 			return fetchCommentsResult{}, err
@@ -1106,7 +1110,7 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 	comments, err := h.Queries.ListCommentsForIssue(ctx, db.ListCommentsForIssueParams{
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
-		Limit:       commentProbeLimit,
+		Limit:       commentProbeLimit(),
 	})
 	if err != nil {
 		return fetchCommentsResult{}, err

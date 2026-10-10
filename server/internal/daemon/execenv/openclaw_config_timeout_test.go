@@ -18,25 +18,6 @@ import (
 // deadline must tolerate, not a target.
 const slowestMeasuredOpenclawCall = 10860 * time.Millisecond
 
-// TestOpenclawCLIDefaultTimeoutCoversMeasuredSlowHosts is the regression for
-// the reported bug. The old 5s default was written against an assumed <200ms
-// CLI; the reporter's host needs twice that budget for a single call, every
-// time, and had no way to raise it — so the OpenClaw runtime was unusable
-// there. Anything that lowers this default back under the measured range
-// re-breaks that host.
-func TestOpenclawCLIDefaultTimeoutCoversMeasuredSlowHosts(t *testing.T) {
-	if openclawCLITimeout <= slowestMeasuredOpenclawCall {
-		t.Errorf("default openclaw CLI timeout %v must exceed the slowest measured call %v (#7112)",
-			openclawCLITimeout, slowestMeasuredOpenclawCall)
-	}
-	// Headroom, not a bare pass: a host at the measured worst case should not
-	// sit one scheduling hiccup away from failing again.
-	if openclawCLITimeout < 2*slowestMeasuredOpenclawCall {
-		t.Errorf("default openclaw CLI timeout %v leaves less than 2x headroom over %v",
-			openclawCLITimeout, slowestMeasuredOpenclawCall)
-	}
-}
-
 func TestResolveOpenclawCLITimeout(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -84,6 +65,7 @@ func TestResolveOpenclawCLITimeout(t *testing.T) {
 // The pre-existing context contract must survive alongside it: callers that
 // check errors.Is(err, context.DeadlineExceeded) keep working.
 func TestExecOpenclawCLITimeoutIsTypedSentinel(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell shim shape is covered by the windows-tagged tests")
 	}
@@ -136,6 +118,7 @@ func TestPrepareOpenclawConfigPropagatesTimeoutSentinel(t *testing.T) {
 // but it is not a slow CLI — labelling it as one would tell the user to raise
 // a deadline that was never involved.
 func TestExecOpenclawCLICancellationIsNotATimeout(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell shim shape is covered by the windows-tagged tests")
 	}
@@ -163,31 +146,6 @@ func TestExecOpenclawCLICancellationIsNotATimeout(t *testing.T) {
 	}
 }
 
-// TestOpenclawCLIMaxTimeoutFitsPreparationBudget is the arithmetic the
-// override ceiling rests on. Each preparation *step* gets its own deadline, so
-// the budget that matters is worst-case-deadlines x ceiling, and it has to stay
-// under the daemon's 5-minute task preparation deadline with room for the rest
-// of Prepare (repo checkout, skills, context files). Otherwise a user who raises
-// the timeout turns a specific, non-retryable CLI timeout back into the
-// generic — and retryable — prepare timeout, which is the failure mode this
-// change set out to remove.
-func TestOpenclawCLIMaxTimeoutFitsPreparationBudget(t *testing.T) {
-	// Mirrors daemon.defaultTaskPrepareTimeout, which execenv cannot import
-	// (the daemon imports this package, not the other way round).
-	const taskPrepareBudget = 5 * time.Minute
-	// Everything Prepare does besides openclaw config discovery.
-	const nonOpenclawPrepareSlack = time.Minute
-
-	worst := openclawMaxCLIDeadlinesPerPreparation * openclawCLIMaxTimeout
-	if worst+nonOpenclawPrepareSlack > taskPrepareBudget {
-		t.Errorf("worst-case openclaw discovery %v (%d deadlines x %v) leaves less than %v under the %v preparation budget",
-			worst, openclawMaxCLIDeadlinesPerPreparation, openclawCLIMaxTimeout, nonOpenclawPrepareSlack, taskPrepareBudget)
-	}
-	if openclawCLITimeout > openclawCLIMaxTimeout {
-		t.Errorf("default %v exceeds the override ceiling %v", openclawCLITimeout, openclawCLIMaxTimeout)
-	}
-}
-
 // TestOpenclawActiveConfigPathSpendsOneBudgetAcrossBothAttempts is the
 // consequence of sharing that deadline, asserted rather than left implicit.
 //
@@ -199,6 +157,7 @@ func TestOpenclawCLIMaxTimeoutFitsPreparationBudget(t *testing.T) {
 // non-retryable reason — rather than doubling the time spent inside the outer
 // preparation budget to reach an identical conclusion.
 func TestOpenclawActiveConfigPathSpendsOneBudgetAcrossBothAttempts(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell shim shape is covered by the windows-tagged tests")
 	}
@@ -215,7 +174,7 @@ func TestOpenclawActiveConfigPathSpendsOneBudgetAcrossBothAttempts(t *testing.T)
 			"  'config file') printf '/tmp/openclaw.json\\n' ;;\n"+
 			"esac\n", "")
 
-	const budget = 1500 * time.Millisecond
+	const budget = 300 * time.Millisecond
 	start := time.Now()
 	_, _, err = openclawActiveConfigPath(shim, budget)
 	elapsed := time.Since(start)

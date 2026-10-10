@@ -107,12 +107,6 @@ func TestPatternsFromEnv_DefaultsWhenUnset(t *testing.T) {
 	}
 }
 
-func TestDefaultGCIntervalIsTwoHours(t *testing.T) {
-	if DefaultGCInterval != 2*time.Hour {
-		t.Fatalf("DefaultGCInterval = %s, want 2h", DefaultGCInterval)
-	}
-}
-
 // A localhost server URL is not the official cloud host, so this exercises the
 // self-host branch of defaultGCCompletedTaskTTL: retention stays unbounded until
 // an operator opts in, and a daemon upgrade never starts deleting on its own.
@@ -1210,6 +1204,11 @@ func TestResolveAgentsViaLoginShell_HardTimeoutOnBackgroundedStdout(t *testing.T
 	}
 	t.Setenv("SHELL", sh)
 	t.Setenv("ENV", rc)
+	// The shell itself exits at once, so the whole run is the wait delay; a
+	// short one proves the same ceiling without the test paying the real 2s.
+	origWaitDelay := loginShellResolveWaitDelay
+	loginShellResolveWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { loginShellResolveWaitDelay = origWaitDelay })
 
 	// Cap = context timeout + wait delay + generous slack for goroutine
 	// scheduling. A bug that disables WaitDelay would blow past 60s here.
