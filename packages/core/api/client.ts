@@ -58,6 +58,7 @@ import type {
   InboxWorkspaceUnread,
   IssueSubscriber,
   Comment,
+  CommentAnchor,
   CommentTriggerPreview,
   IssueTriggerPreview,
   IssueTriggerPreviewParams,
@@ -1809,6 +1810,19 @@ export class ApiClient {
 
   async resolveComment(commentId: string): Promise<Comment> {
     return this.fetch(`/api/comments/${commentId}/resolve`, { method: "POST" });
+  }
+
+  /**
+   * Resolve which issue hosts a comment and how to label a jump to it
+   * (RUYI-643). Backs cross-issue `mention://comment/<id>` chips: the local
+   * render context only knows the current issue's comments, so a miss there
+   * probes this endpoint. 404 covers every miss uniformly — unknown, deleted,
+   * or hosted by another workspace.
+   */
+  async getCommentAnchor(commentId: string, options?: { signal?: AbortSignal }): Promise<CommentAnchor> {
+    return this.fetch<CommentAnchor>(`/api/comments/${commentId}/anchor`, {
+      signal: options?.signal,
+    });
   }
 
   async unresolveComment(commentId: string): Promise<Comment> {
