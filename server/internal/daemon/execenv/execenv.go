@@ -208,6 +208,7 @@ type TaskContextForEnv struct {
 	// download instruction). Task-static: safe for the prompt-cache prefix.
 	QuickCreateAttachments []QuickCreateAttachmentForEnv
 	QuizPrompt             string // item under test for prompt-quiz runs; rendered verbatim into the prompt and issue_context.md
+	RetrospectivePrompt    string // daily-retrospective window prompt (RUYI-552 direction 3); rendered verbatim into the prompt and issue_context.md
 	HandoffNote            string // assignment handoff instruction; rendered into issue_context.md (MUL-3375)
 	IsSquadLeader          bool   // true when THIS TASK runs the agent in the squad-leader role (may exit silently on no_action); derived from the claim's is_leader_task / squad_id, never sniffed from instructions text (MUL-5811)
 	// WorkspaceContext is the workspace-level system prompt (workspace.context

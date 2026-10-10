@@ -469,6 +469,7 @@
     "key_cleared": "키가 제거되었습니다",
     "key_update_failed": "키 업데이트 실패",
     "probe_invalid": "키는 저장되었지만 연결 확인에 실패했습니다 (HTTP {{status}})",
+    "probe_unreachable": "키는 저장되었지만 연결을 확인할 수 없습니다(대상에 접근할 수 없음)",
     "model_label": "모델",
     "model_placeholder": "gemini-3.8-live",
     "advanced_label": "고급 매개변수 (JSON)",
@@ -488,6 +489,7 @@
     "model_saved": "모델이 업데이트되었습니다",
     "badge_configured": "구성됨 ✓",
     "badge_invalid": "키 무효",
+    "badge_unreachable": "검증 불가",
     "badge_not_configured": "미구성"
   },
   "voice_instance_create": {
@@ -502,6 +504,7 @@
     "creating": "등록 중…",
     "created": "음성 인스턴스가 등록되었습니다",
     "created_probe_invalid": "등록되었지만 연결 확인에 실패했습니다. API 키를 확인하세요",
+    "created_probe_unreachable": "등록되었지만 연결을 확인할 수 없습니다. 대상에 접근할 수 없는 것 같습니다",
     "create_failed": "음성 인스턴스 등록 실패",
     "key_save_failed": "등록되었지만 API 키 저장에 실패했습니다. 인스턴스 설정에서 추가하세요"
   },
@@ -521,6 +524,15 @@
     "advanced": {
       "expand": "보기",
       "collapse": "숨기기"
+    },
+    "delete": {
+      "action": "인스턴스 삭제",
+      "hint": "이 인스턴스와 저장된 API 키, 프로필을 삭제합니다. 되돌릴 수 없습니다.",
+      "confirm_title": "인스턴스를 삭제할까요?",
+      "confirm_message": "\"{{name}}\"과(와) 저장된 API 키가 영구 삭제됩니다. 되돌릴 수 없습니다.",
+      "cancel": "취소",
+      "confirm": "삭제",
+      "failed": "인스턴스 삭제 실패"
     }
   }
 }

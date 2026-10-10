@@ -11,6 +11,7 @@ import {
   normalizeGitVersion,
   parsePackageArgs,
   resolveBuildMatrix,
+  resolvePackageVersion,
   stripLeadingSeparator,
 } from "./package.mjs";
 
@@ -503,5 +504,39 @@ describe("electron-builder.yml packaging config", () => {
     expect(publish.provider).toBe("github");
     expect(publish.owner).toBe("cfgxy");
     expect(publish.repo).toBe("multica");
+  });
+});
+
+// The dev-build workflow (desktop-dev-build.yml) injects DESKTOP_PACKAGE_VERSION
+// to pin the packaged version to the unified dev scheme
+// (X.Y.Z-dev.YYYYMMDD-N) instead of whatever `git describe` sees on the
+// runner. resolvePackageVersion is that override's single entry point.
+describe("resolvePackageVersion", () => {
+  it("prefers DESKTOP_PACKAGE_VERSION over git describe", () => {
+    expect(
+      resolvePackageVersion({ DESKTOP_PACKAGE_VERSION: "0.4.32-dev.20261008-1" }),
+    ).toBe("0.4.32-dev.20261008-1");
+    expect(resolvePackageVersion({ DESKTOP_PACKAGE_VERSION: "1.2.3" })).toBe(
+      "1.2.3",
+    );
+  });
+
+  it("rejects an override that is not a valid semver-ish version", () => {
+    expect(() =>
+      resolvePackageVersion({ DESKTOP_PACKAGE_VERSION: "not-a-version" }),
+    ).toThrow(/DESKTOP_PACKAGE_VERSION/);
+    expect(() =>
+      resolvePackageVersion({ DESKTOP_PACKAGE_VERSION: "0.4.32; rm -rf /" }),
+    ).toThrow(/DESKTOP_PACKAGE_VERSION/);
+  });
+
+  it("falls back to deriveVersion when the override is unset", () => {
+    // Same contract as deriveVersion(): a value normalized from git describe,
+    // or null when no repo/tags are reachable — but never an override echo or
+    // a throw from parsing the override itself.
+    expect(resolvePackageVersion({})).toBe(deriveVersion());
+    expect(resolvePackageVersion({ DESKTOP_PACKAGE_VERSION: "" })).toBe(
+      deriveVersion(),
+    );
   });
 });

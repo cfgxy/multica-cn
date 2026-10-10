@@ -1,16 +1,6 @@
 {
   "title": "自进化",
   "description": "查看智能体与小队 prompt 随时间的变化，以及变化的来源。",
-  "tabs": {
-    "overview": "总览",
-    "quality": "质量",
-    "quiz": "题库测验",
-    "skills": "Skill",
-    "proposals": "立法提案",
-    "retrospective": "每日总复盘",
-    "knowledge": "知识库",
-    "versions": "版本"
-  },
   "overview": {
     "loading": "正在加载总览",
     "error": "总览加载失败",
@@ -56,7 +46,8 @@
       "empty": "暂无注册 skill。",
       "count": "共 {{count}} 个 skill",
       "invocations": "累计显式调用 {{count}} 次"
-    }
+    },
+    "viewAll": "查看"
   },
   "skills": {
     "choose": "选择 skill",
@@ -489,7 +480,7 @@
   },
   "retrospective": {
     "title": "每日总复盘",
-    "description": "底座内置定时任务读取窗口内已完成 Issue 的真实执行内容，提炼 Prompt 改进草案批量入立法池。运行不产生任何 Issue 评论。",
+    "description": "选定一个执行智能体：由它的一轮 Run 定时读取窗口内已完成 Issue 的真实执行内容，提炼 Prompt 改进草案批量入立法池。运行全程不创建 Issue、不产生任何 Issue 评论。",
     "enabled": "启用定时运行",
     "includeInReview": "同时扫描 in_review 的 Issue",
     "windowDays": "回看窗口（天）",
@@ -509,9 +500,35 @@
     "duplicates": "去重跳过",
     "errorLabel": "错误",
     "empty": "还没有运行记录。",
-    "llmUnavailable": "LLM 未配置——运行会记录一条指明缺失配置的失败记录。",
     "saveOk": "总复盘配置已保存。",
-    "triggerOk": "总复盘运行已结束。"
+    "triggerOk": "总复盘运行已启动。",
+    "rerun": "重跑",
+    "agentTitle": "执行智能体",
+    "agentDescription": "每日总复盘由所选智能体的一轮 Run 执行：读取回看窗口内已完成 Issue 并提炼改进草案，全程不创建 Issue、不产生评论。",
+    "agentLabel": "执行智能体",
+    "agentPlaceholder": "选择智能体",
+    "agentArchivedSuffix": "（已归档）",
+    "agentArchivedHint": "该智能体已归档；请改选其他智能体，否则运行会失败。",
+    "agentTriggerBlocked": "未配置可用的执行智能体：请先在上方配置中选择一个智能体再运行。",
+    "emptyDescription": "定时或手动触发后，这里会显示每次运行的记录。",
+    "run_errors": {
+      "agent_not_configured": "未配置执行智能体：请在上方配置中选择一个智能体，保存后重试。",
+      "agent_missing": "配置的执行智能体不存在：请在上方配置中重新选择并保存。",
+      "agent_archived": "配置的执行智能体已归档：请在上方配置中重新选择并保存。",
+      "agent_runtime_missing": "配置的执行智能体没有可用运行时：请先为该智能体配置运行时，再重试。",
+      "window_scan_failed": "扫描回看窗口失败，本轮已终止；下一轮会自动重试。",
+      "watermark_check_failed": "检查已分析记录失败，本轮已终止；下一轮会自动重试。",
+      "scan_scope_record_failed": "记录本轮扫描范围失败，本轮已终止；下一轮会自动重试。",
+      "task_enqueue_failed": "复盘任务入列失败，本轮已终止；下一轮会自动重试。",
+      "agent_report_invalid": "智能体的最终输出不是有效的复盘报告，本轮结果已丢弃；下一轮会重新扫描同一窗口。",
+      "agent_no_report": "智能体运行已结束，但未产出复盘报告；下一轮会重新扫描同一窗口。",
+      "agent_run_failed": "智能体运行失败，未产出报告；下一轮会重新扫描同一窗口。",
+      "report_out_of_scope": "智能体分析了本轮窗口之外的 Issue（{{issue_id}}），整份报告已拒绝，未记录任何数据。",
+      "draft_out_of_scope": "智能体在草案中引用了本轮窗口之外的 Issue（{{issue_id}}），整份报告已拒绝，未记录任何数据。",
+      "task_not_completed": "关联的智能体运行未正常完成（失败、被取消或已过期），本轮已按失败收口；下一轮会重新扫描同一窗口。",
+      "task_never_enqueued": "复盘任务未能入列（工作空间或智能体已不可用），本轮已终止；下一轮会自动重试。"
+    },
+    "run_error_fallback": "本轮运行失败，暂无详细信息；下一轮会自动重试。"
   },
   "knowledge": {
     "title": "知识库",
@@ -618,5 +635,162 @@
     "compareTitle": "比较 v{{from}} → v{{to}}",
     "secretBlocked": "未保存：提示词疑似包含凭据。",
     "findingLine": "第 {{line}} 行"
+  },
+  "nav": {
+    "label": "自进化分区",
+    "overview": "总览",
+    "groupKnowledgeAssets": "知识资产",
+    "groupMeasures": "度量",
+    "groupLoop": "演进闭环",
+    "groupConfig": "配置",
+    "knowledge": "知识库",
+    "skills": "技能演进",
+    "quality": "质量度量",
+    "quiz": "题库测验",
+    "proposals": "立法提案",
+    "versions": "版本",
+    "retrospective": "每日总复盘",
+    "config": "模块配置"
+  },
+  "configSource": {
+    "prefix": "生效来源：",
+    "module": "模块配置",
+    "deploy": "部署默认",
+    "system": "系统级"
+  },
+  "sources": {
+    "states": {
+      "ok": "已配置可用",
+      "unconfigured": "未配置",
+      "error": "配置错误",
+      "disabled": "功能关闭"
+    },
+    "reason": "原因：",
+    "impact": "影响："
+  },
+  "secretField": {
+    "placeholder": "输入新值",
+    "keepExisting": "留空保持现有值"
+  },
+  "segToolbar": {
+    "filters": "筛选"
+  },
+  "attention": {
+    "title": "需要关注",
+    "hint": "处理后自动从列表消失",
+    "modelUnconfigured": {
+      "title": "模型服务未配置",
+      "description": "质量评分与每日总复盘没有可用的 LLM",
+      "action": "去配置"
+    },
+    "modelError": {
+      "title": "模型服务校验失败",
+      "action": "查看配置"
+    },
+    "discoveries": {
+      "title": "有 {{count}} 条技能发现待导入",
+      "action": "查看"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "知识条目",
+    "dirs": "知识目录",
+    "external": "外部来源",
+    "addSource": "添加外部来源",
+    "entryDrawerSubtitle": "{{dir}} 的镜像",
+    "attrDir": "所属目录",
+    "attrMirror": "镜像状态",
+    "attrAdoption": "采纳状态",
+    "attrSource": "来源键",
+    "attrUpdated": "最近确认",
+    "attrKind": "类型",
+    "attrEntries": "条目数",
+    "attrCreated": "注册时间",
+    "scanHistory": "扫描历史",
+    "viewEntries": "查看条目",
+    "unregisterConfirm": "注销「{{label}}」？其镜像条目会保留，但不再更新。",
+    "emptyExternal": "尚未注册任何外部来源。",
+    "jumpToDirs": "前往知识目录",
+    "colKey": "键",
+    "colActions": "操作",
+    "colSource": "来源",
+    "colPath": "路径",
+    "colHealth": "健康",
+    "colLastScan": "最近扫描"
+  },
+  "skillsSeg": {
+    "managed": "已管理 Skill",
+    "discoveries": "待导入发现",
+    "colSkill": "技能",
+    "colSource": "来源",
+    "colLatestVersion": "最新版本",
+    "colInvocations30d": "近 30 天",
+    "invocationsValue": "{{count}} 次调用",
+    "emptyDiscoveries": "暂无运行时发现——在运行时观察到的技能会出现在这里等待导入。"
+  },
+  "qualityCards": {
+    "title": "数据源状态",
+    "scoringModel": "评分模型",
+    "langfuse": "Langfuse",
+    "banner": "部分数据源降级——近期数据可能不完整。",
+    "viewSources": "查看数据源状态",
+    "reasons": {
+      "okValidated": "连通性校验通过（{{date}}）。",
+      "okModule": "已保存模块配置（尚未重新校验）。",
+      "okDeploy": "检测到部署注入的默认值（未主动校验）。",
+      "error": "连通性校验失败。",
+      "errorDetail": "连通性校验失败：{{error}}",
+      "disabled": "来源健康，但已被本工作区开关停用。",
+      "unconfigured": "未检测到该来源的任何配置。",
+      "langfuseOk": "检测到部署注入的导出凭据（系统级）。",
+      "langfuseMissing": "本部署未配置 Langfuse 导出凭据。"
+    },
+    "impacts": {
+      "ok": "全维度正常采集。",
+      "error": "保留最近一次成功数据并标注时间；新采集正在失败。",
+      "disabled": "停止采集新数据，历史保留可查。",
+      "unconfigured": "相关维度无数据，页面进引导态。",
+      "langfuseOk": "对话导出可以运行。",
+      "langfuseMissing": "不进行对话导出。"
+    },
+    "actions": {
+      "configure": "去配置",
+      "viewConfig": "查看配置",
+      "viewError": "查看错误",
+      "enable": "启用",
+      "deployNotes": "仅部署侧可配"
+    }
+  },
+  "modelConfig": {
+    "title": "模型服务",
+    "description": "本工作区质量评分与每日总复盘共用的 LLM 端点。Key 加密存储，保存后不再回显。",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "model": "模型",
+    "consumersTitle": "此端点的消费方",
+    "scoringConsumer": "质量评分",
+    "saveAndValidate": "校验并保存",
+    "busy": "处理中…",
+    "revalidate": "重新校验",
+    "lastValidated": "最近校验 {{date}}",
+    "neverValidated": "尚未校验",
+    "validationOk": "连通性校验通过。",
+    "validationFailed": "校验未通过，未保存任何更改",
+    "saveOk": "模型服务已保存。",
+    "restoreDefault": "恢复部署默认",
+    "restoreConfirm": "将移除本工作区的覆盖配置，恢复为部署注入的默认值。确定继续？",
+    "restoreOk": "已恢复部署默认。",
+    "encryptionNotReady": "本部署未配置工作区级加密密钥，无法保存工作区覆盖——当前生效部署默认值。",
+    "errorKind": {
+      "credentials": "凭据无效或已过期",
+      "model": "模型不可用或被拒绝",
+      "connection": "连接失败或超时",
+      "notConfigured": "必填字段缺失",
+      "other": "其他错误"
+    }
+  },
+  "configPage": {
+    "title": "模块配置",
+    "description": "下方模型服务支撑质量评分与每日总复盘；Langfuse 为实例级配置，此处只读。"
   }
 }

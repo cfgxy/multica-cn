@@ -58,7 +58,7 @@ func TestAutopilotRunOnlyTaskTerminalEventsUpdateRun(t *testing.T) {
 		{
 			name: "completed",
 			finalize: func(task db.AgentTaskQueue) {
-				if _, err := taskSvc.CompleteTask(ctx, task.ID, []byte(`{"output":"done"}`), "", "", "", false, "", ""); err != nil {
+				if _, _, err := taskSvc.CompleteTask(ctx, task.ID, []byte(`{"output":"done"}`), "", "", "", false, "", ""); err != nil {
 					t.Fatalf("CompleteTask: %v", err)
 				}
 			},

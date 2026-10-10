@@ -306,7 +306,7 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Seed the 5 default quick replies in the same transaction (RUYI-435), so
+	// Seed the default quick replies in the same transaction (RUYI-435), so
 	// a new workspace's composer menu is never empty on first open.
 	if err := quickreply.Ensure(r.Context(), qtx, ws.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to seed quick replies: "+err.Error())

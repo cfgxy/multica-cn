@@ -33,8 +33,13 @@ interface AuthState {
   isServerSwitching: boolean;
   initialize: () => Promise<void>;
   setServerSwitching: (isSwitching: boolean) => void;
-  sendCode: (email: string) => Promise<void>;
-  verifyCode: (email: string, code: string) => Promise<User>;
+  /** RUYI-568: opts.signal 让登录屏能取消在途请求（改邮箱/离开屏幕）。 */
+  sendCode: (email: string, opts?: { signal?: AbortSignal }) => Promise<void>;
+  verifyCode: (
+    email: string,
+    code: string,
+    opts?: { signal?: AbortSignal },
+  ) => Promise<User>;
   logout: () => Promise<void>;
   /** Overwrite the in-memory user — call after PATCH /api/me so name/avatar
    *  edits land without a refetch. Server response is the source of truth. */
@@ -105,12 +110,12 @@ export const useAuthStore = create<AuthState>((set) => {
 
     setServerSwitching: (isSwitching) => set({ isServerSwitching: isSwitching }),
 
-  sendCode: async (email) => {
-    await api.sendCode(email);
+  sendCode: async (email, opts) => {
+    await api.sendCode(email, opts);
   },
 
-  verifyCode: async (email, code) => {
-    const { token, user } = await api.verifyCode(email, code);
+  verifyCode: async (email, code, opts) => {
+    const { token, user } = await api.verifyCode(email, code, opts);
     const { activeServerId } = useServerStore.getState();
     await setToken(activeServerId, token);
     api.setToken(token);

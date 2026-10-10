@@ -61,6 +61,12 @@ describe("runtimeCredentialStatus", () => {
       runtimeCredentialStatus(makeRuntime({ credential_status: "invalid" })),
     ).toBe("invalid");
   });
+
+  it("passes the unreachable state through (RUYI-619)", () => {
+    expect(
+      runtimeCredentialStatus(makeRuntime({ credential_status: "unreachable" })),
+    ).toBe("unreachable");
+  });
 });
 
 describe("agentSlotChoices", () => {

@@ -223,7 +223,9 @@
       "unsaved_title": "Unsaved changes",
       "unsaved_keep": "Keep editing",
       "unsaved_discard": "Discard",
-      "unsaved_body": "Your edits to the instructions haven't been saved yet."
+      "unsaved_body": "Your edits to the instructions haven't been saved yet.",
+      "instructions_empty": "No instructions yet",
+      "instructions_edit": "Edit instructions"
     },
     "execution": {
       "add_member": "Add member",

@@ -8,6 +8,7 @@
  */
 import { useLocalSearchParams } from "expo-router";
 import { View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Text } from "@/components/ui/text";
 import { ActorFilterPickerBody } from "@/components/issues/actor-filter-picker-body";
 import { useTasksViewStore } from "@/data/stores/tasks-view-store";
@@ -23,11 +24,13 @@ export default function TasksActorPickerRoute() {
   const creatorRefs = useTasksViewStore((s) => s.creatorRefs);
 
   const isCreator = actorKind === "creator";
+  const insets = useSafeAreaInsets();
   const selected = isCreator ? creatorRefs : assigneeRefs;
 
   return (
     <View className="flex-1">
-      <View className="px-4 pt-4 pb-3">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {isCreator
             ? t("filters.section_creator", "Creator")

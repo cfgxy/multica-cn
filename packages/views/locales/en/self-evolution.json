@@ -1,16 +1,6 @@
 {
   "title": "Self-Evolution",
   "description": "How agent and squad prompts change over time, and what changed them.",
-  "tabs": {
-    "overview": "Overview",
-    "quality": "Quality",
-    "quiz": "Quiz",
-    "skills": "Skills",
-    "proposals": "Legislation",
-    "retrospective": "Retrospective",
-    "knowledge": "Knowledge",
-    "versions": "Versions"
-  },
   "overview": {
     "loading": "Loading the overview",
     "error": "Failed to load the overview",
@@ -56,7 +46,8 @@
       "empty": "No registered skills yet.",
       "count": "{{count}} skills",
       "invocations": "{{count}} explicit invocations in total"
-    }
+    },
+    "viewAll": "View"
   },
   "skills": {
     "choose": "Skill",
@@ -490,7 +481,7 @@
   },
   "retrospective": {
     "title": "Daily retrospective",
-    "description": "A built-in scheduler reads the real execution content of completed issues inside the window, distills prompt improvement drafts and drops them into the legislation pool. Runs never post issue comments.",
+    "description": "Pick an execution agent: a scheduled run of that agent reads the real execution content of completed issues inside the lookback window and distills prompt-improvement drafts into the legislation pool. Runs never create issues or post issue comments.",
     "enabled": "Scheduled run enabled",
     "includeInReview": "Also scan in_review issues",
     "windowDays": "Lookback window (days)",
@@ -510,9 +501,35 @@
     "duplicates": "Duplicates skipped",
     "errorLabel": "Error",
     "empty": "No runs yet.",
-    "llmUnavailable": "The LLM is not configured — a run records a failed entry naming the missing configuration.",
     "saveOk": "Retrospective config saved.",
-    "triggerOk": "Retrospective run finished."
+    "triggerOk": "Retrospective run started.",
+    "rerun": "Run again",
+    "agentTitle": "Execution agent",
+    "agentDescription": "The daily retrospective runs as a single run of the selected agent: it reads completed issues inside the lookback window and distills improvement drafts — no issues created, no comments posted.",
+    "agentLabel": "Execution agent",
+    "agentPlaceholder": "Select an agent",
+    "agentArchivedSuffix": " (archived)",
+    "agentArchivedHint": "This agent is archived; pick another one or runs will fail.",
+    "agentTriggerBlocked": "No execution agent configured: select an agent in the configuration above, then run again.",
+    "emptyDescription": "Runs appear here after a scheduled or manual trigger.",
+    "run_errors": {
+      "agent_not_configured": "No execution agent is configured: select an agent in the configuration above, save, then run again.",
+      "agent_missing": "The configured execution agent no longer exists: pick another agent in the configuration above, then save.",
+      "agent_archived": "The configured execution agent is archived: pick another agent in the configuration above, then save.",
+      "agent_runtime_missing": "The configured execution agent has no runtime: assign a runtime to the agent in the agent settings, then run again.",
+      "window_scan_failed": "Scanning the lookback window failed; this run stopped. The next run will retry automatically.",
+      "watermark_check_failed": "Checking which issues were already analyzed failed; this run stopped. The next run will retry automatically.",
+      "scan_scope_record_failed": "Recording the scanned issue list failed; this run stopped. The next run will retry automatically.",
+      "task_enqueue_failed": "Queueing the agent run failed; this run stopped. The next run will retry automatically.",
+      "agent_report_invalid": "The agent's final message was not a valid retrospective report; this run's result was discarded. The next run will re-scan the same window.",
+      "agent_no_report": "The agent run finished without producing a retrospective report. The next run will re-scan the same window.",
+      "agent_run_failed": "The agent's run failed before it could report. The next run will re-scan the same window.",
+      "report_out_of_scope": "The agent analyzed Issue {{issue_id}}, which is outside this run's window; the whole report was rejected and nothing was recorded.",
+      "draft_out_of_scope": "The agent referenced Issue {{issue_id}}, which is outside this run's window, in a draft; the whole report was rejected and nothing was recorded.",
+      "task_not_completed": "The agent's platform run did not complete (failed, cancelled, or expired); this run was closed as failed. The next run will re-scan the same window.",
+      "task_never_enqueued": "The agent's run never reached the queue (the workspace or agent became unavailable); this round was closed. The next run will retry automatically."
+    },
+    "run_error_fallback": "This run failed. No detail is available; the next run will retry automatically."
   },
   "knowledge": {
     "title": "Knowledge library",
@@ -619,5 +636,162 @@
     "compareTitle": "Compare v{{from}} → v{{to}}",
     "secretBlocked": "Not saved: the prompt appears to contain credentials.",
     "findingLine": "line {{line}}"
+  },
+  "nav": {
+    "label": "Self-evolution sections",
+    "overview": "Overview",
+    "groupKnowledgeAssets": "Knowledge assets",
+    "groupMeasures": "Measures",
+    "groupLoop": "Evolution loop",
+    "groupConfig": "Configuration",
+    "knowledge": "Knowledge",
+    "skills": "Skill evolution",
+    "quality": "Quality",
+    "quiz": "Quiz",
+    "proposals": "Proposals",
+    "versions": "Versions",
+    "retrospective": "Daily retrospective",
+    "config": "Module config"
+  },
+  "configSource": {
+    "prefix": "Source: ",
+    "module": "Module config",
+    "deploy": "Deploy default",
+    "system": "System-level"
+  },
+  "sources": {
+    "states": {
+      "ok": "Available",
+      "unconfigured": "Unconfigured",
+      "error": "Config error",
+      "disabled": "Switched off"
+    },
+    "reason": "Why:",
+    "impact": "Impact:"
+  },
+  "secretField": {
+    "placeholder": "Enter a new value",
+    "keepExisting": "Leave empty to keep the existing value"
+  },
+  "segToolbar": {
+    "filters": "Filters"
+  },
+  "attention": {
+    "title": "Needs attention",
+    "hint": "Handled items disappear from this list",
+    "modelUnconfigured": {
+      "title": "Model service is not configured",
+      "description": "Scoring and the daily retrospective have no LLM to run on",
+      "action": "Configure"
+    },
+    "modelError": {
+      "title": "Model service validation failed",
+      "action": "Review config"
+    },
+    "discoveries": {
+      "title": "{{count}} skill discoveries awaiting import",
+      "action": "Review"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "Entries",
+    "dirs": "Directories",
+    "external": "External sources",
+    "addSource": "Add external source",
+    "entryDrawerSubtitle": "Mirror of {{dir}}",
+    "attrDir": "Directory",
+    "attrMirror": "Mirror",
+    "attrAdoption": "Adoption",
+    "attrSource": "Source key",
+    "attrUpdated": "Last confirmed",
+    "attrKind": "Kind",
+    "attrEntries": "Entries",
+    "attrCreated": "Registered",
+    "scanHistory": "Scan history",
+    "viewEntries": "View entries",
+    "unregisterConfirm": "Unregister \"{{label}}\"? Its mirrored entries are kept but stop updating.",
+    "emptyExternal": "No external sources registered yet.",
+    "jumpToDirs": "Go to Directories",
+    "colKey": "Key",
+    "colActions": "Actions",
+    "colSource": "Source",
+    "colPath": "Path",
+    "colHealth": "Health",
+    "colLastScan": "Last scan"
+  },
+  "skillsSeg": {
+    "managed": "Managed skills",
+    "discoveries": "Discoveries",
+    "colSkill": "Skill",
+    "colSource": "Source",
+    "colLatestVersion": "Latest version",
+    "colInvocations30d": "Last 30 days",
+    "invocationsValue": "{{count}} invocations",
+    "emptyDiscoveries": "No runtime discoveries yet — skills observed in runtimes show up here for import."
+  },
+  "qualityCards": {
+    "title": "Data sources",
+    "scoringModel": "Scoring model",
+    "langfuse": "Langfuse",
+    "banner": "Some data sources are degraded — recent numbers may be incomplete.",
+    "viewSources": "View data sources",
+    "reasons": {
+      "okValidated": "Connectivity check passed at {{date}}.",
+      "okModule": "Module config saved (not yet revalidated).",
+      "okDeploy": "A deployment-injected default is in effect (not proactively validated).",
+      "error": "The connectivity check failed.",
+      "errorDetail": "The connectivity check failed: {{error}}",
+      "disabled": "The source is healthy but the workspace switch is off.",
+      "unconfigured": "No configuration found for this source.",
+      "langfuseOk": "Deployment-injected export credentials detected (system-level).",
+      "langfuseMissing": "No Langfuse export credentials in this deployment."
+    },
+    "impacts": {
+      "ok": "All dimensions collect normally.",
+      "error": "The last successful data is kept and marked with its time; new collection is failing.",
+      "disabled": "No new data is collected; history stays queryable.",
+      "unconfigured": "Affected dimensions have no data and show a guidance state.",
+      "langfuseOk": "Conversation export can run.",
+      "langfuseMissing": "No conversation export."
+    },
+    "actions": {
+      "configure": "Configure",
+      "viewConfig": "View config",
+      "viewError": "View error",
+      "enable": "Enable",
+      "deployNotes": "Deployment config only"
+    }
+  },
+  "modelConfig": {
+    "title": "Model service",
+    "description": "One LLM endpoint for this workspace's quality scoring and daily retrospective. The key is encrypted at rest and never shown again.",
+    "baseUrl": "Base URL",
+    "apiKey": "API key",
+    "model": "Model",
+    "consumersTitle": "Consumers of this endpoint",
+    "scoringConsumer": "Quality scoring",
+    "saveAndValidate": "Validate and save",
+    "busy": "Working…",
+    "revalidate": "Re-check",
+    "lastValidated": "Last validated {{date}}",
+    "neverValidated": "Never validated",
+    "validationOk": "Connectivity check passed.",
+    "validationFailed": "Validation failed — nothing was saved",
+    "saveOk": "Model service saved.",
+    "restoreDefault": "Restore deploy default",
+    "restoreConfirm": "This removes this workspace's override; the deployment default applies again. Continue?",
+    "restoreOk": "Restored the deployment default.",
+    "encryptionNotReady": "This deployment has no per-workspace encryption key, so saving is unavailable — the deploy default applies.",
+    "errorKind": {
+      "credentials": "invalid or expired credentials",
+      "model": "model unavailable or refused",
+      "connection": "connection failed or timed out",
+      "notConfigured": "required fields missing",
+      "other": "other error"
+    }
+  },
+  "configPage": {
+    "title": "Module configuration",
+    "description": "The model service below backs quality scoring and the daily retrospective; Langfuse is instance-level and read-only here."
   }
 }

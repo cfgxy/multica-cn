@@ -11,6 +11,7 @@
 import { View } from "react-native";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { Text } from "@/components/ui/text";
+import type { AgentActivityState } from "@/lib/issue-agent-activity";
 
 export interface StackActor {
   type: "member" | "agent" | null | undefined;
@@ -23,9 +24,16 @@ interface Props {
   max?: number;
   /** Avatar diameter in pt. Default 24 (tight enough for a header row). */
   size?: number;
+  /**
+   * Unified agent-activity treatment applied to every visible avatar
+   * (RUYI-554): running → breathing, queued → grayed. Callers bucket the
+   * stack up-front (running wins over queued — same rule the badge uses),
+   * so one value covers the whole stack.
+   */
+  activity?: AgentActivityState;
 }
 
-export function AvatarStack({ actors, max = 3, size = 24 }: Props) {
+export function AvatarStack({ actors, max = 3, size = 24, activity }: Props) {
   const deduped = dedupe(actors);
   const visible = deduped.slice(0, max);
   const overflow = deduped.length - visible.length;
@@ -38,7 +46,7 @@ export function AvatarStack({ actors, max = 3, size = 24 }: Props) {
           size={size}
           offset={i === 0 ? 0 : -size / 3}
         >
-          <ActorAvatar type={actor.type} id={actor.id} size={size} />
+          <ActorAvatar type={actor.type} id={actor.id} size={size} activity={activity} />
         </Ring>
       ))}
       {overflow > 0 ? (

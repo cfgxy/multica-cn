@@ -1,10 +1,9 @@
 /**
- * Combined regression for the RUYI-350 (update_issue) / RUYI-351 (relations)
- * / RUYI-353 (bulk_update_issues) union on final main (RUYI-399).
+ * Combined regression for the update_issue / relations /
+ * bulk_update_issues union.
  *
- * The three features repeatedly merge-conflicted in apps/mcp. Per-tool tests
- * pin each tool in isolation; this file pins the CROSS-tool contracts the
- * conflict resolutions could have broken:
+ * Per-tool tests pin each tool in isolation; this file pins the CROSS-tool
+ * contracts spanning all of them:
  *   - the four tools coexist in tools/list with correct annotations;
  *   - every expected_revision input shares one floor (the server rejects <1);
  *   - the three parent write paths (update_issue, bulk item,
@@ -54,7 +53,7 @@ function propertiesOf(name: string): Record<
 
 // ---- Part A: registration surface --------------------------------------
 
-describe("four-tool registration union (RUYI-399)", () => {
+describe("four-tool registration union", () => {
   it("registers each of the four tools exactly once (no duplicates, no shadowing)", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
@@ -128,7 +127,7 @@ describe("four-tool registration union (RUYI-399)", () => {
 
 // ---- Part B: shared wire contract --------------------------------------
 
-describe("parent write paths agree on one wire contract (RUYI-399)", () => {
+describe("parent write paths agree on one wire contract", () => {
   it("update_issue, bulk item and set_parent all PUT the same body for the same re-parent", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const backend = new FakeRestBackend();
@@ -201,7 +200,7 @@ describe("parent write paths agree on one wire contract (RUYI-399)", () => {
 
 // ---- Part C: stateful end-to-end union scenarios ------------------------
 
-describe("combined scenarios over the MCP wire (RUYI-399)", () => {
+describe("combined scenarios over the MCP wire", () => {
   it("update_issue → relations view → bulk → manage_issue_relations keeps one consistent state", async () => {
     const backend = new FakeRestBackend();
     const { client, cleanup } = await connectViaMcp(backend);

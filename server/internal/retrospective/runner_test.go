@@ -1,20 +1,25 @@
 package retrospective
 
-// Tests for the daily retrospective runner (RUYI-305 E3): window scanning,
-// the per-issue idempotency watermark, pool merge, the current-clause
-// pre-check, and the boundary the product cares about most — the run
-// writes nothing into issues (no comments, no reports); every outcome
-// lands in prompt_proposal and retrospective_run only.
+// Tests for the daily retrospective runner (RUYI-552 direction 3): the run
+// triggers exactly one no-issue platform task for the configured agent,
+// records the scanned window on the run row, and the completion processor
+// turns the agent's final JSON report into legislation-pool drafts — with
+// the boundary the product cares about most enforced twice: no issue is
+// ever created and no comment is ever written; every outcome lands in
+// prompt_proposal, retrospective_issue_watermark and retrospective_run only.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -33,6 +38,7 @@ func TestMain(m *testing.M) {
 	}
 	if err := pool.Ping(ctx); err != nil {
 		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
+		pool.Close()
 		os.Exit(0)
 	}
 	testPool = pool
@@ -41,54 +47,59 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// fakeLLM replies with a fixed script: one JSON document per GenerateJSON
-// call, in order. It also counts calls so tests can assert model spend.
-type fakeLLM struct {
-	replies []string
-	calls   int
-}
-
-func (f *fakeLLM) GenerateJSON(ctx context.Context, model, systemPrompt, userPrompt string, temperature float64, maxCompletionTokens int64) (string, error) {
-	if f.calls >= len(f.replies) {
-		return `{"drafts":[]}`, nil
-	}
-	r := f.replies[f.calls]
-	f.calls++
-	return r, nil
-}
-
-func (f *fakeLLM) Enabled() bool { return true }
-
-func draftJSON(changeKind, clauseName, clauseText string) string {
-	return fmt.Sprintf(`{"drafts":[{"carrier_scope":"workspace","target_section":"沟通规范","change_kind":%q,"clause_name":%q,"clause_text":%q,`+
-		`"gate_answers":{"layer":"workspace=跨项目协作机制","retention":"每轮输出都适用","cost":"少量常驻","conflict":"无同主题条款","dedup":"无重复"},`+
-		`"evidence_ref":"issue 标题","evidence_note":"依据说明"}]}`, changeKind, clauseName, clauseText)
-}
-
 var fixtureCounter = time.Now().UnixNano()
 
-// retroFixture builds one workspace with the retrospective enabled, two done
-// issues inside the window, and returns the workspace id.
-func retroFixture(t *testing.T, carrierContext string) string {
+// retroAgentFixture inserts one online runtime plus one agent bound to it,
+// both in the given workspace, and returns the agent id.
+func retroAgentFixture(t *testing.T, wsID, suffix string) (agentID, runtimeID string) {
+	t.Helper()
+	var ownerID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO "user" (name, email) VALUES ($1, $2) RETURNING id`,
+		"Retro Agent Owner "+suffix, "retrospective-agent-owner-"+suffix+"@multica.test").Scan(&ownerID); err != nil {
+		t.Fatalf("create agent owner: %v", err)
+	}
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, 'retro-test-daemon', $2, 'cloud', 'retrospective_test', 'online', '', '{}'::jsonb, now(), 'private', $3)
+		RETURNING id`, wsID, "retro runtime "+suffix, ownerID).Scan(&runtimeID); err != nil {
+		t.Fatalf("create runtime: %v", err)
+	}
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, visibility, permission_mode, max_concurrent_tasks, owner_id, runtime_id)
+		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, 'private', 'private', 1, $3, $4)
+		RETURNING id`, wsID, "retro agent "+suffix, ownerID, runtimeID).Scan(&agentID); err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	return agentID, runtimeID
+}
+
+// retroFixture builds one workspace whose retrospective is enabled and bound
+// to a runnable agent, plus two done issues inside the window, and returns
+// (workspace id, agent id). Cleanup removes everything the fixtures created.
+func retroFixture(t *testing.T) (wsID, agentID string) {
 	t.Helper()
 	fixtureCounter++
 	suffix := fmt.Sprintf("retro%d", fixtureCounter)
 
-	var wsID string
+	var wsIDStr string
 	if err := testPool.QueryRow(context.Background(), `
 		INSERT INTO workspace (name, slug, description, issue_prefix, context)
-		VALUES ($1, $2, '', '', $3) RETURNING id`,
-		"retrospective ws "+suffix, "retrospective-"+suffix, carrierContext).Scan(&wsID); err != nil {
+		VALUES ($1, $2, '', '', '') RETURNING id`,
+		"retrospective ws "+suffix, "retrospective-"+suffix).Scan(&wsIDStr); err != nil {
 		t.Fatalf("create workspace: %v", err)
 	}
+	wsID = wsIDStr
+	agentID, _ = retroAgentFixture(t, wsID, suffix)
 	if _, err := testPool.Exec(context.Background(), `
-		INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days)
-		VALUES ($1, true, false, 7)`, wsID); err != nil {
+		INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, agent_id)
+		VALUES ($1, true, false, 7, $2)`, wsID, agentID); err != nil {
 		t.Fatalf("create config: %v", err)
 	}
 	t.Cleanup(func() {
 		ctx := context.Background()
 		for _, stmt := range []string{
+			`DELETE FROM agent_task_queue WHERE workspace_id = $1`,
 			`DELETE FROM retrospective_issue_watermark WHERE workspace_id = $1`,
 			`DELETE FROM retrospective_run WHERE workspace_id = $1`,
 			`DELETE FROM retrospective_config WHERE workspace_id = $1`,
@@ -96,6 +107,8 @@ func retroFixture(t *testing.T, carrierContext string) string {
 			`DELETE FROM prompt_structure_baseline WHERE workspace_id = $1`,
 			`DELETE FROM comment WHERE workspace_id = $1`,
 			`DELETE FROM issue WHERE workspace_id = $1`,
+			`DELETE FROM agent WHERE workspace_id = $1`,
+			`DELETE FROM agent_runtime WHERE workspace_id = $1`,
 			`DELETE FROM member WHERE workspace_id = $1`,
 			`DELETE FROM "user" WHERE email LIKE 'retrospective-%' AND email LIKE '%` + suffix + `%'`,
 			`DELETE FROM workspace WHERE id = $1`,
@@ -103,7 +116,7 @@ func retroFixture(t *testing.T, carrierContext string) string {
 			testPool.Exec(ctx, stmt, wsID)
 		}
 	})
-	return wsID
+	return wsID, agentID
 }
 
 // retroIssue inserts one done issue (inside the window) with one discussion
@@ -139,172 +152,574 @@ func retroIssue(t *testing.T, wsID, title, comment string) string {
 	return issueID
 }
 
-func newTestRunner(llm LLMClient) *Runner {
-	return &Runner{DB: testPool, Queries: db.New(testPool), LLM: llm}
+type recordedEnqueue struct {
+	params EnqueueParams
 }
 
-func runRecord(t *testing.T, wsID string) (status, errMsg string) {
+// newTestRunner wires a Runner over the test pool whose enqueuer records
+// every call and answers with a valid task id (the run row stores it; the
+// task row itself is not needed by the code under test).
+func newTestRunner(t *testing.T) (*Runner, *[]recordedEnqueue) {
+	t.Helper()
+	calls := &[]recordedEnqueue{}
+	runner := &Runner{
+		DB:      testPool,
+		Queries: db.New(testPool),
+		Enqueue: func(ctx context.Context, params EnqueueParams) (string, error) {
+			*calls = append(*calls, recordedEnqueue{params: params})
+			return "f47ac10b-58cc-4372-a567-0e02b2c3d479", nil
+		},
+	}
+	return runner, calls
+}
+
+func runRecord(t *testing.T, wsID string) (status, errMsg, detail string) {
 	t.Helper()
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT status, error FROM retrospective_run WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`,
-		wsID).Scan(&status, &errMsg); err != nil {
+		SELECT status, error, detail::text FROM retrospective_run WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`,
+		wsID).Scan(&status, &errMsg, &detail); err != nil {
 		t.Fatalf("read run record: %v", err)
 	}
-	return status, errMsg
+	return status, errMsg, detail
 }
 
-// TestRunWorkspaceIdempotentAndSilent: the first run analyzes both issues and
-// lands drafts in the pool; an immediate second run over the overlapping
-// window re-derives nothing (watermarks); and no run ever writes a comment
-// row — the issue surface stays untouched.
-func TestRunWorkspaceIdempotentAndSilent(t *testing.T) {
-	wsID := retroFixture(t, "# 规范\n\n## 沟通规范\n")
-	issueA := retroIssue(t, wsID, "复盘测试 A", "讨论内容甲")
-	issueB := retroIssue(t, wsID, "复盘测试 B", "讨论内容乙")
-
-	var commentsBefore int
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM comment WHERE workspace_id = $1`, wsID).Scan(&commentsBefore); err != nil {
-		t.Fatal(err)
+// runReasonOf reads the latest run's structured failure verdict. Fails the
+// test when the run carries no reason — failure paths must always write one
+// (RUYI-561), and the legacy `error` text column must stay empty on rows
+// this code finishes.
+func runReasonOf(t *testing.T, wsID string) runReason {
+	t.Helper()
+	_, errMsg, detail := runRecord(t, wsID)
+	var d struct {
+		Reason *runReason `json:"reason"`
 	}
-
-	llm := &fakeLLM{replies: []string{
-		draftJSON("add_clause", "同步纪律", "- **同步纪律**：各成员开工前回报当日计划。"),
-		draftJSON("add_clause", "证据留存", "- **证据留存**：结论必须附可复核证据。"),
-	}}
-	runner := newTestRunner(llm)
-
-	stats, err := runner.RunWorkspace(context.Background(), wsID, "manual")
-	if err != nil {
-		t.Fatalf("first run: %v", err)
+	if err := json.Unmarshal([]byte(detail), &d); err != nil {
+		t.Fatalf("parse run detail %s: %v", detail, err)
 	}
-	if status, errMsg := runRecord(t, wsID); status != "succeeded" {
-		t.Fatalf("first run record: %q / %q", status, errMsg)
+	if d.Reason == nil || d.Reason.Code == "" {
+		t.Fatalf("run has no structured reason (error column %q, detail %s)", errMsg, detail)
 	}
-	if stats.IssuesScanned != 2 || stats.IssuesAnalyzed != 2 {
-		t.Fatalf("first run stats: scanned=%d analyzed=%d, want 2/2", stats.IssuesScanned, stats.IssuesAnalyzed)
+	if errMsg != "" {
+		t.Fatalf("error column must stay empty on coded failures, got %q", errMsg)
 	}
-	if stats.ProposalsCreated != 2 {
-		t.Fatalf("first run created %d proposals, want 2", stats.ProposalsCreated)
-	}
-	if status, errMsg := runRecord(t, wsID); status != "succeeded" || errMsg != "" {
-		t.Fatalf("first run record: %q / %q", status, errMsg)
-	}
-	for _, issueID := range []string{issueA, issueB} {
-		var n int
-		if err := testPool.QueryRow(context.Background(),
-			`SELECT COUNT(*) FROM retrospective_issue_watermark WHERE workspace_id = $1 AND issue_id = $2`,
-			wsID, issueID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		if n != 1 {
-			t.Fatalf("issue %s watermark count = %d, want 1", issueID, n)
-		}
-	}
-
-	// Overlapping window, second run: everything is watermarked.
-	stats2, err := runner.RunWorkspace(context.Background(), wsID, "manual")
-	if err != nil {
-		t.Fatalf("second run: %v", err)
-	}
-	if stats2.IssuesScanned != 2 || stats2.IssuesAnalyzed != 0 {
-		t.Fatalf("second run stats: scanned=%d analyzed=%d, want 2/0", stats2.IssuesScanned, stats2.IssuesAnalyzed)
-	}
-	if stats2.ProposalsCreated != 0 || stats2.ProposalsMerged != 0 {
-		t.Fatalf("second run created new work: %+v", stats2)
-	}
-
-	var commentsAfter int
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM comment WHERE workspace_id = $1`, wsID).Scan(&commentsAfter); err != nil {
-		t.Fatal(err)
-	}
-	if commentsAfter != commentsBefore {
-		t.Fatalf("run wrote issue comments: before=%d after=%d", commentsBefore, commentsAfter)
-	}
+	return *d.Reason
 }
 
-// TestRunWorkspaceMergeAndPrecheck pins the two dedup layers: a draft whose
-// clause already lives in the carrier is skipped before insert; a same-topic
-// draft from a second issue merges into the live pool row (anchors
-// accumulate) instead of creating a duplicate.
-func TestRunWorkspaceMergeAndPrecheck(t *testing.T) {
-	carrier := "# 规范\n\n## 沟通规范\n\n- **同步纪律**：各成员开工前回报当日计划。\n"
-	wsID := retroFixture(t, carrier)
-	retroIssue(t, wsID, "复盘测试 C", "讨论内容丙") // drafts the live clause → precheck skip
-	retroIssue(t, wsID, "复盘测试 D", "讨论内容丁") // drafts the new clause
-	retroIssue(t, wsID, "复盘测试 E", "讨论内容戊") // drafts the same new clause → merge
-
-	llm := &fakeLLM{replies: []string{
-		draftJSON("add_clause", "同步纪律", "- **同步纪律**：各成员开工前回报当日计划。"),
-		draftJSON("add_clause", "评审纪律", "- **评审纪律**：改动需评审后落库。"),
-		draftJSON("add_clause", "评审纪律", "- **评审纪律**：改动需评审后落库。"),
-	}}
-	runner := newTestRunner(llm)
-
-	stats, err := runner.RunWorkspace(context.Background(), wsID, "manual")
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if status, errMsg := runRecord(t, wsID); status != "succeeded" {
-		t.Fatalf("run record: %q / %q", status, errMsg)
-	}
-	if stats.DuplicatesSkipped != 1 {
-		t.Fatalf("duplicates_skipped = %d, want 1 (the live-clause precheck)", stats.DuplicatesSkipped)
-	}
-	if stats.ProposalsCreated != 1 || stats.ProposalsMerged != 1 {
-		t.Fatalf("created=%d merged=%d, want 1/1", stats.ProposalsCreated, stats.ProposalsMerged)
-	}
-
-	var anchors, mergedFrom string
+func counts(t *testing.T, wsID string) (issues, comments, proposals int) {
+	t.Helper()
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT evidence_anchors::text, merged_from::text FROM prompt_proposal
-		WHERE workspace_id = $1 AND clause_name = '评审纪律'`, wsID).Scan(&anchors, &mergedFrom); err != nil {
-		t.Fatalf("read merged proposal: %v", err)
+		SELECT
+			(SELECT count(*) FROM issue WHERE workspace_id = $1),
+			(SELECT count(*) FROM comment WHERE workspace_id = $1),
+			(SELECT count(*) FROM prompt_proposal WHERE workspace_id = $1)`, wsID).
+		Scan(&issues, &comments, &proposals); err != nil {
+		t.Fatalf("read counts: %v", err)
 	}
-	if mergedFrom == `[]` {
-		t.Fatalf("merged row has no merge record: %s", mergedFrom)
+	return issues, comments, proposals
+}
+
+const stubTaskID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+// reportJSON builds one agent final-message report listing the given issue
+// as analyzed with a single add_clause draft.
+func reportJSON(issueID, clauseName string) string {
+	return fmt.Sprintf(`{"analyzed_issue_ids":[%q],"drafts":[{"issue_id":%q,"carrier_scope":"workspace","target_section":"沟通规范","change_kind":"add_clause","clause_name":%q,"clause_text":"- **新条款**：测试条款内容","gate_answers":{"layer":"workspace=跨项目协作机制","retention":"每轮输出都适用","cost":"少量常驻","conflict":"无同主题条款","dedup":"无重复"},"evidence_ref":"issue 标题","evidence_note":"依据说明"}]}`,
+		issueID, issueID, clauseName)
+}
+
+// TestRunWorkspaceEnqueuesExactlyOneNoIssueTask: the trigger scans the
+// window, records the membership on the run row, and hands the enqueuer
+// exactly one params set naming the configured agent — with the context
+// parsing back through ParseTaskContext, and zero issue/comment writes.
+func TestRunWorkspaceEnqueuesExactlyOneNoIssueTask(t *testing.T) {
+	wsID, agentID := retroFixture(t)
+	issueA := retroIssue(t, wsID, "修复了发布脚本", "根因是路径拼接")
+	_ = retroIssue(t, wsID, "优化了查询", "")
+	runner, calls := newTestRunner(t)
+
+	issuesBefore, commentsBefore, _ := counts(t, wsID)
+
+	stats, err := runner.RunWorkspace(context.Background(), wsID, "manual")
+	if err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
 	}
-	// Three issues ran; three watermarks — the skipped and merged issues are
-	// still never re-analyzed.
-	var n int
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM retrospective_issue_watermark WHERE workspace_id = $1`, wsID).Scan(&n); err != nil {
-		t.Fatal(err)
+	if stats.IssuesScanned != 2 {
+		t.Fatalf("IssuesScanned = %d, want 2", stats.IssuesScanned)
 	}
-	if n != 3 {
-		t.Fatalf("watermarks = %d, want 3", n)
+	if n := len(*calls); n != 1 {
+		t.Fatalf("expected exactly one enqueue, got %d", n)
+	}
+	params := (*calls)[0].params
+	if params.AgentID != agentID {
+		t.Fatalf("enqueue agent mismatch: %+v", params)
+	}
+	if params.RunID != stats.RunID || params.WorkspaceID != wsID {
+		t.Fatalf("enqueue run/workspace mismatch: %+v", params)
+	}
+	parsed, ok := ParseTaskContext(params.Context)
+	if !ok {
+		t.Fatalf("task context does not parse back")
+	}
+	if parsed.WorkspaceID != wsID || len(parsed.Issues) != 2 {
+		t.Fatalf("task context payload wrong: %+v", parsed)
+	}
+	prompt, ok := PromptFromContext(params.Context)
+	if !ok || !strings.Contains(prompt, "Do NOT create, update, or comment on any issue") {
+		t.Fatalf("prompt must parse and carry the no-issue boundary")
+	}
+
+	issuesAfter, commentsAfter, _ := counts(t, wsID)
+	if issuesAfter != issuesBefore || commentsAfter != commentsBefore {
+		t.Fatalf("trigger touched the issue surface: issues %d→%d comments %d→%d",
+			issuesBefore, issuesAfter, commentsBefore, commentsAfter)
+	}
+
+	status, errMsg, detail := runRecord(t, wsID)
+	if status != "running" || errMsg != "" {
+		t.Fatalf("run should be running with no error, got %q / %q", status, errMsg)
+	}
+	for _, id := range []string{issueA} {
+		if !strings.Contains(detail, id) {
+			t.Fatalf("run detail must record membership, missing %s in %s", id, detail)
+		}
 	}
 }
 
-// TestRunWorkspaceLLMDisabled: an unconfigured LLM is not a crash — the run
-// records a failed run naming the missing configuration, and nothing enters
-// the pool.
-func TestRunWorkspaceLLMDisabled(t *testing.T) {
-	wsID := retroFixture(t, "# 规范\n")
-	retroIssue(t, wsID, "复盘测试 F", "讨论内容己")
+// TestRunWorkspaceEmptyWindowFinishesImmediately: nothing completed in the
+// window → succeed without spending an agent run.
+func TestRunWorkspaceEmptyWindowFinishesImmediately(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	runner, calls := newTestRunner(t)
 
-	runner := newTestRunner(nil)
-	stats, err := runner.RunWorkspace(context.Background(), wsID, "manual")
+	stats, err := runner.RunWorkspace(context.Background(), wsID, "schedule")
 	if err != nil {
-		t.Fatalf("disabled LLM run must not error: %v", err)
+		t.Fatalf("RunWorkspace: %v", err)
 	}
-	if stats.IssuesScanned != 1 {
-		t.Fatalf("scanned=%d, want 1", stats.IssuesScanned)
+	if stats.IssuesScanned != 0 {
+		t.Fatalf("IssuesScanned = %d, want 0", stats.IssuesScanned)
 	}
-	status, errMsg := runRecord(t, wsID)
+	if n := len(*calls); n != 0 {
+		t.Fatalf("empty window must not enqueue, got %d calls", n)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "succeeded" {
+		t.Fatalf("empty-window run should succeed immediately, got %q", status)
+	}
+}
+
+// TestRunWorkspaceNoAgent: a legacy row enabled without an agent (only
+// possible before migration 935) records a failed run carrying the
+// actionable agent_not_configured reason and reports ErrNoAgent instead of
+// dispatching anything.
+func TestRunWorkspaceNoAgent(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	_ = retroIssue(t, wsID, "有活干但没人干", "")
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE retrospective_config SET agent_id = NULL WHERE workspace_id = $1`, wsID); err != nil {
+		t.Fatalf("clear agent: %v", err)
+	}
+	runner, calls := newTestRunner(t)
+
+	_, err := runner.RunWorkspace(context.Background(), wsID, "schedule")
+	if err == nil || err.Error() != ErrNoAgent.Error() {
+		t.Fatalf("expected ErrNoAgent, got %v", err)
+	}
+	if n := len(*calls); n != 0 {
+		t.Fatalf("no agent must not enqueue, got %d calls", n)
+	}
+	status, _, _ := runRecord(t, wsID)
 	if status != "failed" {
-		t.Fatalf("run status = %q, want failed", status)
+		t.Fatalf("run should fail, got %q", status)
 	}
-	if errMsg == "" {
-		t.Fatal("failed run must name the reason")
+	if reason := runReasonOf(t, wsID); reason.Code != ReasonAgentNotConfigured || reason.IssueID != "" {
+		t.Fatalf("want actionable %s reason without params, got %+v", ReasonAgentNotConfigured, reason)
 	}
-	var proposals int
+}
+
+// TestRunWorkspaceAgentGateReasons: each way a configured agent can become
+// unusable records its own actionable reason on the failed run — missing,
+// archived, runtime-less — so the UI can name the exact fix.
+func TestRunWorkspaceAgentGateReasons(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate string // SQL making the configured agent unusable
+		want   string
+	}{
+		{"configured agent vanished", `UPDATE retrospective_config SET agent_id = '00000000-0000-4000-8000-000000000001' WHERE workspace_id = $1`, ReasonAgentMissing},
+		{"configured agent archived", `UPDATE agent SET archived_at = now() WHERE id = (SELECT agent_id FROM retrospective_config WHERE workspace_id = $1)`, ReasonAgentArchived},
+		{"configured agent lost its runtime", `UPDATE agent SET runtime_id = NULL WHERE id = (SELECT agent_id FROM retrospective_config WHERE workspace_id = $1)`, ReasonAgentRuntimeMissing},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wsID, _ := retroFixture(t)
+			_ = retroIssue(t, wsID, "有人干但干不了", "")
+			if _, err := testPool.Exec(context.Background(), tc.mutate, wsID); err != nil {
+				t.Fatalf("mutate agent: %v", err)
+			}
+			runner, calls := newTestRunner(t)
+
+			_, err := runner.RunWorkspace(context.Background(), wsID, "schedule")
+			if err == nil || err.Error() != ErrNoAgent.Error() {
+				t.Fatalf("expected ErrNoAgent, got %v", err)
+			}
+			if n := len(*calls); n != 0 {
+				t.Fatalf("unusable agent must not enqueue, got %d calls", n)
+			}
+			status, _, _ := runRecord(t, wsID)
+			if status != "failed" {
+				t.Fatalf("run should fail, got %q", status)
+			}
+			if reason := runReasonOf(t, wsID); reason.Code != tc.want || reason.IssueID != "" {
+				t.Fatalf("want %s without params, got %+v", tc.want, reason)
+			}
+		})
+	}
+}
+
+// TestProcessTaskTerminalLandsDrafts: the agent's JSON report becomes a
+// prompt_proposal draft, the issue gets its watermark, the run finishes
+// succeeded — and the issue surface is untouched.
+func TestProcessTaskTerminalLandsDrafts(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	issueA := retroIssue(t, wsID, "发布脚本修复", "根因是路径拼接")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+	if n := len(*calls); n != 1 {
+		t.Fatalf("expected one enqueue, got %d", n)
+	}
+
+	issuesBefore, commentsBefore, proposalsBefore := counts(t, wsID)
+
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "发布脚本复核条款"), "")
+	if err != nil {
+		t.Fatalf("ProcessTaskTerminal: %v", err)
+	}
+	if out.ProposalsCreated != 1 || out.IssuesAnalyzed != 1 {
+		t.Fatalf("stats wrong: %+v", out)
+	}
+	issuesAfter, commentsAfter, proposalsAfter := counts(t, wsID)
+	if issuesAfter != issuesBefore || commentsAfter != commentsBefore {
+		t.Fatalf("completion touched the issue surface: issues %d→%d comments %d→%d",
+			issuesBefore, issuesAfter, commentsBefore, commentsAfter)
+	}
+	if proposalsAfter != proposalsBefore+1 {
+		t.Fatalf("expected one new proposal, got %d→%d", proposalsBefore, proposalsAfter)
+	}
+	var watermark int
 	if err := testPool.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM prompt_proposal WHERE workspace_id = $1`, wsID).Scan(&proposals); err != nil {
-		t.Fatal(err)
+		`SELECT count(*) FROM retrospective_issue_watermark WHERE workspace_id = $1 AND issue_id = $2`,
+		wsID, issueA).Scan(&watermark); err != nil || watermark != 1 {
+		t.Fatalf("watermark missing (%v, %d)", err, watermark)
 	}
-	if proposals != 0 {
-		t.Fatalf("disabled-LLM run created %d proposals", proposals)
+	status, errMsg, detail := runRecord(t, wsID)
+	if status != "succeeded" || errMsg != "" {
+		t.Fatalf("run should be succeeded, got %q / %q", status, errMsg)
 	}
+	if !strings.Contains(detail, "analyzed_issue_ids") {
+		t.Fatalf("run detail must record analyzed ids, got %s", detail)
+	}
+}
+
+// TestProcessTaskTerminalRejectsOutOfScopeIssues: a report analyzing an
+// issue outside the recorded window is rejected whole — nothing lands.
+func TestProcessTaskTerminalRejectsOutOfScopeIssues(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	inScope := retroIssue(t, wsID, "窗口内修复", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+
+	_, _, proposalsBefore := counts(t, wsID)
+
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	outOfScope := inScope + issueSuffixStub()
+	_, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(outOfScope, "越权条款"), "")
+	// The rejection is the run's verdict, recorded on the run row — not a
+	// processing error, same contract as the taskErr path.
+	if err != nil {
+		t.Fatalf("rejection should record a failed run, not error: %v", err)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run should fail with the out-of-scope verdict, got %q", status)
+	}
+	reason := runReasonOf(t, wsID)
+	if reason.Code != ReasonReportOutOfScope {
+		t.Fatalf("want %s, got %+v", ReasonReportOutOfScope, reason)
+	}
+	if reason.IssueID != outOfScope {
+		t.Fatalf("reason must carry the offending issue id %q, got %+v", outOfScope, reason)
+	}
+	_, _, proposalsAfter := counts(t, wsID)
+	if proposalsAfter != proposalsBefore {
+		t.Fatalf("rejected report must not land drafts: %d→%d", proposalsBefore, proposalsAfter)
+	}
+}
+
+func issueSuffixStub() string {
+	fixtureCounter++
+	return fmt.Sprintf("00000000-0000-4000-8000-%012d", fixtureCounter)
+}
+
+// TestProcessTaskTerminalDedupAgainstLiveClauses: a draft whose clause
+// already exists in the carrier is counted as a duplicate and still
+// watermarks the issue.
+func TestProcessTaskTerminalDedupAgainstLiveClauses(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	// The carrier must contain the clause the draft duplicates.
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
+		"# 平台协作规范\n\n## 沟通规范\n\n- **行文基调**：专业、正式、准确、简明扼要。\n"); err != nil {
+		t.Fatalf("seed carrier: %v", err)
+	}
+	issueA := retroIssue(t, wsID, "行文基调修复", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	dup := strings.Replace(reportJSON(issueA, "行文基调"), "新条款", "行文基调", 1)
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, dup, "")
+	if err != nil {
+		t.Fatalf("ProcessTaskTerminal: %v", err)
+	}
+	if out.DuplicatesSkipped != 1 || out.ProposalsCreated != 0 {
+		t.Fatalf("expected the live clause to be skipped: %+v", out)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "succeeded" {
+		t.Fatalf("dedup-only report still succeeds, got %q", status)
+	}
+	var watermark int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM retrospective_issue_watermark WHERE workspace_id = $1 AND issue_id = $2`,
+		wsID, issueA).Scan(&watermark); err != nil || watermark != 1 {
+		t.Fatalf("watermark missing after dedup (%v, %d)", err, watermark)
+	}
+}
+
+// TestProcessTaskTerminalFirstVerdictWins: a second terminal report after
+// the run already finished is a no-op.
+func TestProcessTaskTerminalFirstVerdictWins(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	issueA := retroIssue(t, wsID, "首个裁决胜出", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	if _, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "先到条款"), ""); err != nil {
+		t.Fatalf("first terminal: %v", err)
+	}
+	_, _, proposalsBefore := counts(t, wsID)
+	if _, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "后到条款"), "late failure"); err != nil {
+		t.Fatalf("second terminal should be a silent no-op, got %v", err)
+	}
+	_, _, proposalsAfter := counts(t, wsID)
+	if proposalsAfter != proposalsBefore {
+		t.Fatalf("late verdict must not land anything: %d→%d", proposalsBefore, proposalsAfter)
+	}
+}
+
+// TestProcessTaskTerminalFailurePath: a daemon-reported failure finishes the
+// run failed without landing anything.
+func TestProcessTaskTerminalFailurePath(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	_ = retroIssue(t, wsID, "失败路径", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	_, _, proposalsBefore := counts(t, wsID)
+	if _, err := runner.ProcessTaskTerminal(context.Background(), task, "", "runtime crashed mid-run"); err != nil {
+		t.Fatalf("ProcessTaskTerminal: %v", err)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("run should record the failure, got %q", status)
+	}
+	// The daemon's raw failure text must stay out of the run row (RUYI-561):
+	// the coded reason is all the UI gets.
+	if reason := runReasonOf(t, wsID); reason.Code != ReasonAgentRunFailed || reason.IssueID != "" {
+		t.Fatalf("want %s without params, got %+v", ReasonAgentRunFailed, reason)
+	}
+	_, _, proposalsAfter := counts(t, wsID)
+	if proposalsAfter != proposalsBefore {
+		t.Fatalf("failure must not land drafts: %d→%d", proposalsBefore, proposalsAfter)
+	}
+}
+
+// TestProcessTaskTerminalMergeIntoExistingProposal: a draft matching a
+// pending proposal on carrier + section + name merges evidence instead of
+// creating a second row.
+func TestProcessTaskTerminalMergeIntoExistingProposal(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	issueA := retroIssue(t, wsID, "合并验证", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+
+	// Seed a pending proposal that the incoming draft will match.
+	var proposalID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO prompt_proposal (workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text,
+			gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup,
+			evidence_anchors, status, source, created_by_type, created_by_id)
+		VALUES ($1, 'workspace', $1, '沟通规范', 'add_clause', '合并条款', '- **合并条款**：已有草案',
+			'已有草案层次', '每轮适用', '少量常驻', '无冲突', '无重复',
+			'[{"issue_id": null, "ref": "seed", "note": "已有证据"}]'::jsonb, 'draft', 'retrospective', 'system', $1)
+		RETURNING id`, wsID).Scan(&proposalID); err != nil {
+		t.Fatalf("seed proposal: %v", err)
+	}
+
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "合并条款"), "")
+	if err != nil {
+		t.Fatalf("ProcessTaskTerminal: %v", err)
+	}
+	if out.ProposalsMerged != 1 || out.ProposalsCreated != 0 {
+		t.Fatalf("expected merge not create: %+v", out)
+	}
+	var anchors string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT evidence_anchors::text FROM prompt_proposal WHERE id = $1`, proposalID).Scan(&anchors); err != nil {
+		t.Fatalf("read anchors: %v", err)
+	}
+	if !strings.Contains(anchors, issueA) {
+		t.Fatalf("merge must append the new evidence anchor, got %s", anchors)
+	}
+}
+
+// TestReconcileStaleRuns: a running run whose task failed is failed by the
+// bulk backstop; a running run that never got enqueued ages out too.
+func TestReconcileStaleRuns(t *testing.T) {
+	wsID, agentID := retroFixture(t)
+	_ = retroIssue(t, wsID, "对账窗口", "")
+	runner, _ := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+
+	// Point the run at a task row in terminal-failed state. runtime_id is
+	// NOT NULL by the active_requires_runtime check until completed_at is
+	// set, so the row reuses the fixture agent's runtime.
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+	var runTaskID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT task_id::text FROM retrospective_run WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`, wsID).Scan(&runTaskID); err != nil {
+		t.Fatalf("read run task id: %v", err)
+	}
+	if runTaskID == "" || runTaskID == "NULL" {
+		t.Fatalf("run should carry the enqueued task id, got %q", runTaskID)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO agent_task_queue (id, agent_id, runtime_id, issue_id, status, created_at)
+		VALUES ($1, $2, $3, NULL, 'failed', now())`, stubTaskID, agentID, runtimeID); err != nil {
+		t.Fatalf("insert failed task row: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, stubTaskID)
+	})
+
+	n, err := runner.ReconcileStaleRuns(context.Background())
+	if err != nil {
+		t.Fatalf("ReconcileStaleRuns: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected one reconciled run, got %d", n)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "failed" {
+		t.Fatalf("stale run should be failed, got %q", status)
+	}
+	if reason := runReasonOf(t, wsID); reason.Code != ReasonTaskNotCompleted || reason.IssueID != "" {
+		t.Fatalf("stale run should carry %s, got %+v", ReasonTaskNotCompleted, reason)
+	}
+}
+
+// TestParseRunOutputBoundaries: the report parser accepts plain and fenced
+// JSON and rejects everything else with a readable error.
+func TestParseRunOutputBoundaries(t *testing.T) {
+	issueID := "11111111-1111-4111-8111-111111111111"
+	good := reportJSON(issueID, "解析条款")
+	if _, err := ParseRunOutput(good); err != nil {
+		t.Fatalf("plain JSON rejected: %v", err)
+	}
+	fenced := "```json\n" + good + "\n```"
+	if _, err := ParseRunOutput(fenced); err != nil {
+		t.Fatalf("fenced JSON rejected: %v", err)
+	}
+	if _, err := ParseRunOutput("这不是 JSON"); err == nil {
+		t.Fatalf("garbage accepted")
+	}
+}
+
+// TestPromptFromContextContract: the rendered prompt states the no-issue /
+// no-comment boundary, carries the workspace and run ids, the window, the
+// issue list, and the JSON output contract.
+func TestPromptFromContextContract(t *testing.T) {
+	issueID := "22222222-2222-4222-8222-222222222222"
+	ctx := TaskContext{
+		Kind:        TaskKind,
+		RunID:       "33333333-3333-4333-8333-333333333333",
+		WorkspaceID: "44444444-4444-4444-8444-444444444444",
+		WindowStart: "2026-10-01T00:00:00Z",
+		WindowEnd:   "2026-10-08T00:00:00Z",
+		Issues:      []TaskContextIssue{{ID: issueID, Title: "修复了发布脚本"}},
+	}
+	prompt, ok := PromptFromContext(mustJSON(t, ctx))
+	if !ok {
+		t.Fatalf("PromptFromContext rejected its own context")
+	}
+	for _, want := range []string{
+		"Do NOT create, update, or comment on any issue",
+		ctx.WorkspaceID,
+		ctx.RunID,
+		issueID,
+		"修复了发布脚本",
+		"analyzed_issue_ids",
+		"issue_id",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q", want)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return b
 }

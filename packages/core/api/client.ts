@@ -77,6 +77,9 @@ import type {
   PromptVersion,
   PromptQualityDashboard,
   SelfEvolutionOverview,
+  SelfEvolutionConfigValidation,
+  SelfEvolutionModelConfig,
+  SelfEvolutionModelConfigSave,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -595,6 +598,8 @@ import {
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
   SelfEvolutionOverviewSchema,
+  SelfEvolutionConfigValidationSchema,
+  SelfEvolutionModelConfigSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
   PromptGovernanceVersionListSchema,
@@ -2777,10 +2782,21 @@ export class ApiClient {
   // ---------------------------------------------------------------------------
 
   async getDashboardUsageDaily(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardUsageDaily[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.tz) search.set("tz", params.tz);
     const raw = await this.fetch<unknown>(`/api/dashboard/usage/daily?${search}`);
@@ -2793,10 +2809,21 @@ export class ApiClient {
   }
 
   async getDashboardUsageByAgent(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardUsageByAgent[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.tz) search.set("tz", params.tz);
     const raw = await this.fetch<unknown>(`/api/dashboard/usage/by-agent?${search}`);
@@ -2809,10 +2836,21 @@ export class ApiClient {
   }
 
   async getDashboardAgentRunTime(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardAgentRunTime[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     // `tz` aligns the "last N days" cutoff with the viewer's calendar,
     // matching the per-agent token card.
@@ -2827,10 +2865,21 @@ export class ApiClient {
   }
 
   async getDashboardRunTimeDaily(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardRunTimeDaily[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     // `tz` cuts the day buckets in the viewer's calendar so Time / Tasks
     // align with the Cost / Tokens charts.
@@ -2845,10 +2894,21 @@ export class ApiClient {
   }
 
   async getDashboardFailuresDaily(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardFailureDaily[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     // `tz` cuts the day buckets in the viewer's calendar so the Errors chart
     // shares an x-axis with the other four metrics.
@@ -2863,10 +2923,21 @@ export class ApiClient {
   }
 
   async getDashboardFailuresByAgent(
-    params: { days?: number; project_id?: string | null; tz?: string },
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
   ): Promise<DashboardFailureByAgent[]> {
     const search = new URLSearchParams();
-    if (params.days) search.set("days", String(params.days));
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
     if (params.project_id) search.set("project_id", params.project_id);
     if (params.tz) search.set("tz", params.tz);
     const raw = await this.fetch<unknown>(`/api/dashboard/failures/by-agent?${search}`);
@@ -3561,6 +3632,82 @@ export class ApiClient {
     return parseWithFallback(raw, SelfEvolutionOverviewSchema, EMPTY_SELF_EVOLUTION_OVERVIEW, {
       endpoint: "GET /api/self-evolution/overview",
     });
+  }
+
+  /**
+   * The workspace's model-service config view (RUYI-551): the stored
+   * override (key never echoed — only `has_api_key`), the resolved state a
+   * run would use right now, and whether the deployment can take saves at
+   * all. Available member-up on the server.
+   */
+  async getSelfEvolutionModelConfig(): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config");
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "GET /api/self-evolution/model-config" });
+  }
+
+  /**
+   * Save the workspace's model-service override. Validation is mandatory
+   * whenever credentials are present: a 422 carries the classified, masked
+   * reason and nothing was persisted.
+   */
+  async putSelfEvolutionModelConfig(save: SelfEvolutionModelConfigSave): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: save.base_url,
+        api_key: save.api_key,
+        model: save.model,
+        ...(save.scoring_enabled === undefined ? {} : { scoring_enabled: save.scoring_enabled }),
+      }),
+    });
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "PUT /api/self-evolution/model-config" });
+  }
+
+  /** Drop the workspace override — the "restore deploy default" action. */
+  async deleteSelfEvolutionModelConfig(): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config", {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "DELETE /api/self-evolution/model-config" });
+  }
+
+  /**
+   * Validate a model-service config. An all-empty payload revalidates the
+   * stored config (the status card's re-check); a payload carrying values
+   * previews a not-yet-saved config without touching the store.
+   */
+  async validateSelfEvolutionModelConfig(save?: Partial<SelfEvolutionModelConfigSave>): Promise<SelfEvolutionConfigValidation> {
+    const hasBody = save && (save.base_url || save.model || save.api_key);
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hasBody ? {
+        base_url: save?.base_url ?? "",
+        api_key: save?.api_key ?? "",
+        model: save?.model ?? "",
+      } : {}),
+    });
+    return parseWithFallback(raw, SelfEvolutionConfigValidationSchema, {
+      ok: false,
+      error_kind: "other",
+      message: "",
+    }, { endpoint: "POST /api/self-evolution/model-config/validate" });
   }
 
   /**

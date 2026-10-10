@@ -14,6 +14,7 @@
  */
 import { useMemo } from "react";
 import { ScrollView, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import type { AgentTask } from "@multica/core/types";
@@ -67,10 +68,12 @@ export default function IssueRunsRoute() {
       return PAST_STATUS_ORDER[a.status] - PAST_STATUS_ORDER[b.status];
     });
   }, [allTasks]);
+  const insets = useSafeAreaInsets();
 
   return (
     <View className="flex-1">
-      <View className="px-4 pt-4 pb-3">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("mobile.runs.title", "Agent Runs")}
         </Text>
