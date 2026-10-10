@@ -240,7 +240,10 @@ func (h *Handler) writeWorkspaceSchedulingState(w http.ResponseWriter, ctx conte
 
 // applySchedulingToAgentResponse fills the freeze fields on one agent
 // response: scope resolution mirrors GetSchedulingPauseForAgent (an
-// agent-level row is the more specific answer when both levels hold).
+// agent-level row is the more specific answer when both levels hold), and
+// the queued depth mirrors what the agents-list batch fill reports for the
+// same agent — list and detail must agree (RUYI-608 QA P1: the detail
+// projection dropped the count).
 func (h *Handler) applySchedulingToAgentResponse(ctx context.Context, resp *AgentResponse, workspaceID, agentID pgtype.UUID) {
 	scope, paused, err := h.schedulingScopeForAgent(ctx, workspaceID, agentID)
 	if err != nil {
@@ -249,6 +252,12 @@ func (h *Handler) applySchedulingToAgentResponse(ctx context.Context, resp *Agen
 	}
 	resp.SchedulingPaused = paused
 	resp.SchedulingPausedScope = scope
+	q, err := h.Queries.CountQueuedTasksForAgent(ctx, agentID)
+	if err != nil {
+		slog.Warn("agent scheduling enrichment failed", "agent_id", uuidToString(agentID), "error", err)
+		return
+	}
+	resp.SchedulingQueuedCount = q
 }
 
 // applySchedulingToAgentResponses batch-fills the freeze fields for a whole
@@ -340,4 +349,51 @@ func (h *Handler) applySchedulingToWorkspaceResponse(ctx context.Context, resp *
 		return
 	}
 	resp.SchedulingQueuedCount = q
+}
+
+// applySchedulingToWorkspaceResponses batch-fills the workspace-level freeze
+// fields for the workspaces list with two queries — the row-level semantics
+// mirror applySchedulingToWorkspaceResponse exactly (the flag means the
+// workspace-level switch is on; agent-level freezes are not aggregated and
+// the queued count is scoped to the freeze row), so list and detail answer
+// identically for the same workspace (RUYI-608 QA P1: the list projection
+// was never wired and answered false/0 while frozen).
+func (h *Handler) applySchedulingToWorkspaceResponses(ctx context.Context, resp []WorkspaceResponse) {
+	if len(resp) == 0 {
+		return
+	}
+	ids := make([]pgtype.UUID, 0, len(resp))
+	byID := make(map[string]*WorkspaceResponse, len(resp))
+	for i := range resp {
+		byID[resp[i].ID] = &resp[i]
+		ids = append(ids, parseUUID(resp[i].ID))
+	}
+
+	rows, err := h.Queries.ListWorkspaceSchedulingPauses(ctx, ids)
+	if err != nil {
+		slog.Warn("workspaces scheduling enrichment failed", "error", err)
+		return
+	}
+	for _, row := range rows {
+		ws, ok := byID[uuidToString(row.WorkspaceID)]
+		if !ok {
+			continue
+		}
+		ws.SchedulingPaused = true
+		ws.SchedulingPausedReason = row.Reason
+		if row.CreatedAt.Valid {
+			ws.SchedulingPausedAt = strPtrOrNil(row.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00"))
+		}
+	}
+
+	counts, err := h.Queries.CountQueuedTasksPerWorkspace(ctx, ids)
+	if err != nil {
+		slog.Warn("workspaces scheduling enrichment failed", "error", err)
+		return
+	}
+	for _, c := range counts {
+		if ws, ok := byID[uuidToString(c.WorkspaceID)]; ok {
+			ws.SchedulingQueuedCount = c.QueuedCount
+		}
+	}
 }

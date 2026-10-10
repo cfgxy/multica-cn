@@ -87,7 +87,6 @@
     "fallback_runtime_local": "本地",
     "actions_aria": "行操作",
     "task_count_other": "{{count}} 个 task",
-    "paused_one": "已暂停 · {{count}} 个任务",
     "paused_other": "已暂停 · {{count}} 个任务"
   },
   "activity_tooltip": {
@@ -137,7 +136,6 @@
     "pause_dialog_cancel": "取消",
     "pause_dialog_confirm": "暂停调度",
     "agent_paused_toast": "已暂停该智能体的调度",
-    "agent_resumed_toast_one": "调度已恢复 — {{count}} 个任务开始流动",
     "agent_resumed_toast_other": "调度已恢复 — {{count}} 个任务开始流动",
     "pause_failed_toast": "暂停调度失败",
     "resume_failed_toast": "恢复调度失败"
@@ -173,13 +171,11 @@
     "assign_work": "分配工作",
     "more_actions_aria": "智能体操作",
     "updated": "{{when}}更新",
-    "paused_banner_one": "调度已暂停 — {{count}} 个任务在队列中等待。队列任务继续合并，运行中任务正常结束。",
     "paused_banner_other": "调度已暂停 — {{count}} 个任务在队列中等待。队列任务继续合并，运行中任务正常结束。",
     "paused_by_workspace_banner": "工作区级调度已暂停。请在工作区设置中恢复 — 智能体级恢复无法解除工作区冻结。",
     "resume_scheduling": "恢复调度",
     "more_pause_scheduling": "暂停调度",
     "agent_paused_toast": "已暂停该智能体的调度",
-    "agent_resumed_toast_one": "调度已恢复 — {{count}} 个任务开始流动",
     "agent_resumed_toast_other": "调度已恢复 — {{count}} 个任务开始流动",
     "pause_failed_toast": "暂停调度失败",
     "resume_failed_toast": "恢复调度失败"
