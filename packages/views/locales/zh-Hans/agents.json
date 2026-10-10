@@ -478,6 +478,7 @@
     "voice_empty": "暂无支持语音的实例",
     "credential_configured": "已配置 ✓",
     "credential_invalid": "凭据失效",
+    "credential_unreachable": "无法验证",
     "credential_not_configured": "未配置"
   },
   "conversation_starters": {
@@ -1067,7 +1068,13 @@
       "forbidden_title": "无权访问此智能体",
       "runtime_unbound_banner": "该智能体尚未绑定运行时——绑定后才能运行。",
       "forbidden_body": "你没有查看此智能体的权限，请其所有者与你共享后再试。",
-      "instructions_empty": "暂无指令"
+      "instructions_empty": "暂无指令",
+      "instructions_edit": "编辑指令",
+      "instructions_saved": "指令已保存",
+      "unsaved_title": "有未保存的修改",
+      "unsaved_body": "你对指令的修改尚未保存。",
+      "unsaved_keep": "继续编辑",
+      "unsaved_discard": "放弃"
     },
     "run_history": {
       "load_more": "加载更多",

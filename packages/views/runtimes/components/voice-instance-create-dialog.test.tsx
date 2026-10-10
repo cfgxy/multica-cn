@@ -221,6 +221,37 @@ describe("VoiceInstanceCreateDialog", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("warns with could-not-verify wording when the probe reports unreachable (RUYI-619)", async () => {
+    const { toast } = await import("sonner");
+    mockPutCredential.mockResolvedValue({
+      runtime_id: "rt-new-1",
+      credential_key: "api_key",
+      credential_status: "unreachable",
+      probe: { status: "unreachable" },
+    });
+    const onClose = vi.fn();
+    renderDialog({ onClose });
+
+    fireEvent.change(await screen.findByLabelText("Name"), {
+      target: { value: "Offline Probe" },
+    });
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "qaFAKE-key" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Register" }));
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        "Registered, but connectivity could not be verified — the target may be unreachable",
+      ),
+    );
+    expect(toast.warning).not.toHaveBeenCalledWith(
+      "Registered, but the connectivity check failed — check the API key",
+    );
+    // Registration still lands (§4.5).
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("offers the one-click default profile when the workspace has none", async () => {
     mockListProfiles.mockResolvedValue([]);
     mockCreateProfile.mockResolvedValue(

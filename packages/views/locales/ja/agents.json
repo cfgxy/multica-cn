@@ -371,6 +371,7 @@
     "voice_empty": "音声対応インスタンスがありません",
     "credential_configured": "設定済み ✓",
     "credential_invalid": "キー無効",
+    "credential_unreachable": "検証不可",
     "credential_not_configured": "未設定"
   },
   "conversation_starters": {
@@ -1067,7 +1068,13 @@
       "forbidden_title": "このエージェントへのアクセス権がありません",
       "runtime_unbound_banner": "このエージェントにはランタイムが未バインドです — 実行にはバインドが必要です。",
       "forbidden_body": "このエージェントを表示する権限がありません。所有者に共有を依頼してください。",
-      "instructions_empty": "指示はまだありません"
+      "instructions_empty": "指示はまだありません",
+      "instructions_edit": "指示を編集",
+      "instructions_saved": "指示を保存しました",
+      "unsaved_title": "未保存の変更があります",
+      "unsaved_body": "指示への変更はまだ保存されていません。",
+      "unsaved_keep": "編集を続ける",
+      "unsaved_discard": "破棄"
     },
     "run_history": {
       "load_more": "さらに読み込む",

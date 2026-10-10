@@ -1237,6 +1237,7 @@ type LiveSession struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	Summary           string             `json:"summary"`
+	Mode              string             `json:"mode"`
 }
 
 // One workspace-published skill or MCP marketplace listing (RUYI-99). Merged with the embedded static catalog at read time. A withdrawn row is a tombstone that keeps its (kind, name_key) reserved; only source_workspace_id may republish it. source_workspace_id is authority only and must not be returned by any API.
@@ -1823,6 +1824,19 @@ type SeatCapacityOutbox struct {
 	DeadLetteredAt pgtype.Timestamptz `json:"dead_lettered_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Self-evolution module model-service config per workspace (RUYI-551): gateway base_url/model, secretbox-encrypted API key, scoring switch, last validation outcome. Module config outranks the deploy default.
+type SelfEvolutionModelConfig struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	BaseUrl             pgtype.Text        `json:"base_url"`
+	ApiKeyEncrypted     []byte             `json:"api_key_encrypted"`
+	Model               pgtype.Text        `json:"model"`
+	ScoringEnabled      bool               `json:"scoring_enabled"`
+	LastValidatedAt     pgtype.Timestamptz `json:"last_validated_at"`
+	LastValidationOk    pgtype.Bool        `json:"last_validation_ok"`
+	LastValidationError string             `json:"last_validation_error"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Skill struct {

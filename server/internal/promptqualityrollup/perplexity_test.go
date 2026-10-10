@@ -312,6 +312,92 @@ func TestScoreBacklogIsANoOpWhenTheModelIsOff(t *testing.T) {
 	}
 }
 
+// RUYI-551: a workspace-resolved generator outranks the deploy-wide one —
+// the override is the one that scores, the deploy generator stays idle.
+func TestGeneratorForServesWorkspaceOverride(t *testing.T) {
+	s := newPerplexityScenario(t)
+	v := s.version(14, "## Agent Identity\nDo the thing.")
+	s.daily(v, 5)
+	wsOverride := &stubGenerator{enabled: true, reply: scoreReply()}
+	s.p.GeneratorFor = func(_ context.Context, _ pgtype.UUID) promptperplexity.Generator {
+		return wsOverride
+	}
+
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
+	if err != nil {
+		t.Fatalf("ScoreBacklog: %v", err)
+	}
+	if out.Scored != 1 {
+		t.Fatalf("outcome = %+v, want one scored via the override", out)
+	}
+	if wsOverride.calls == 0 || s.gen.calls != 0 {
+		t.Fatalf("override calls=%d deploy calls=%d, want the override used", wsOverride.calls, s.gen.calls)
+	}
+}
+
+// An override that resolves to nothing enabled falls back to the deploy
+// generator instead of silently unscored.
+func TestGeneratorForFallsBackWhenOverrideDisabled(t *testing.T) {
+	s := newPerplexityScenario(t)
+	v := s.version(15, "## Agent Identity\nDo the thing.")
+	s.daily(v, 5)
+	s.p.GeneratorFor = func(_ context.Context, _ pgtype.UUID) promptperplexity.Generator {
+		return &stubGenerator{enabled: false}
+	}
+
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
+	if err != nil {
+		t.Fatalf("ScoreBacklog: %v", err)
+	}
+	if out.Scored != 1 || s.gen.calls == 0 {
+		t.Fatalf("outcome = %+v deploy calls=%d, want the deploy generator serving", out, s.gen.calls)
+	}
+}
+
+// RUYI-551: with a resolver present, a disabled deploy client no longer gates
+// the whole pass — workspaces whose resolution yields an enabled generator
+// still score.
+func TestScoreBacklogAllResolvesPerWorkspaceWhenDeployIsOff(t *testing.T) {
+	s := newPerplexityScenario(t)
+	// ScoreBacklogAll spends one deployment-wide budget across every
+	// workspace the backlog query lists, and a shared dev database carries
+	// agent daily rows whose workspaces and versions are long gone — those
+	// burn the budget on guaranteed resolution failures before the fixture
+	// workspace is ever reached. Evict the fixture workspace's stale rows,
+	// then require a fixture-only backlog: the same environment contract
+	// that lets the suite exit green without a reachable database.
+	if _, err := testPool.Exec(context.Background(),
+		`DELETE FROM prompt_quality_daily WHERE workspace_id = $1`, testWorkspaceID); err != nil {
+		t.Fatalf("clear stale daily rows: %v", err)
+	}
+	s.gen.enabled = false
+	v := s.version(16, "## Agent Identity\nDo the thing.")
+	s.daily(v, 5)
+	wsOverride := &stubGenerator{enabled: true, reply: scoreReply()}
+	s.p.GeneratorFor = func(_ context.Context, _ pgtype.UUID) promptperplexity.Generator {
+		return wsOverride
+	}
+
+	backlog, err := s.p.Queries.ListPromptPerplexityBacklogWorkspaces(context.Background())
+	if err != nil {
+		t.Fatalf("list backlog workspaces: %v", err)
+	}
+	for _, ws := range backlog {
+		if ws != mustUUID(s.t, testWorkspaceID) {
+			t.Skipf("database carries agent backlog rows from other workspaces (%v and others); "+
+				"the deployment-wide ScoreBacklogAll budget is unassertable on shared-database state", ws)
+		}
+	}
+
+	out, err := s.p.ScoreBacklogAll(context.Background())
+	if err != nil {
+		t.Fatalf("ScoreBacklogAll: %v", err)
+	}
+	if out.Scored == 0 || wsOverride.calls == 0 {
+		t.Fatalf("outcome = %+v override calls=%d, want per-workspace resolution scoring", out, wsOverride.calls)
+	}
+}
+
 func TestScoreBacklogScoresAVersionThatHasRunsBehindIt(t *testing.T) {
 	s := newPerplexityScenario(t)
 	v := s.version(12, "## Agent Identity\nDo the thing.")

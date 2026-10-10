@@ -353,10 +353,24 @@ export default function Tasks() {
 
   // Actor lists feed the assignee/creator chip labels; they're cached from
   // the picker sheet in the common case. A chip renders once its name
-  // resolves (no raw-uuid flash while lists load).
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+  // resolves (no raw-uuid flash while lists load). RUYI-623: nothing else
+  // on the four home tabs renders from these queries (rows, header and the
+  // other tabs all read their own sources), so they stay disabled until an
+  // actor filter chip actually needs a name — the common no-filter home
+  // visit skips three background fetch/refetch cycles.
+  const needsActorNames = assigneeRefs.length > 0 || creatorRefs.length > 0;
+  const { data: members = [] } = useQuery({
+    ...memberListOptions(wsId),
+    enabled: !!wsId && needsActorNames,
+  });
+  const { data: agents = [] } = useQuery({
+    ...agentListOptions(wsId),
+    enabled: !!wsId && needsActorNames,
+  });
+  const { data: squads = [] } = useQuery({
+    ...squadListOptions(wsId),
+    enabled: !!wsId && needsActorNames,
+  });
   const refName = (ref: TaskActorRef): string | null => {
     if (ref.type === "member") {
       return (

@@ -51,6 +51,13 @@
 //     sends no end-user chat content; it does send instruction text the
 //     workspace authored, after email addresses are masked and a credential
 //     scan has refused the whole call on any finding.
+//   - Model-config save-time validation ping (RUYI-551) —
+//     server/internal/selfevconfig/resolver.go. When a workspace owner saves
+//     a per-workspace model service, sends one minimal completion to the just
+//     saved base URL with the just saved key — the fixed health-check phrase
+//     ("reply with pong"), no workspace content — to prove connectivity
+//     before anything persists. Failure text is masked before storage or
+//     display.
 //
 // The first two consumers send private chat content, which is why an
 // unconfigured deployment making zero upstream requests is a contract rather
