@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import {
   CHILDREN_BY_PARENTS_CHUNK_SIZE,
+  commentAnchorOptions,
   PROJECT_GANTT_MAX_ISSUES,
   PROJECT_GANTT_PAGE_LIMIT,
   childrenByParentsOptions,
@@ -572,6 +573,87 @@ describe("issueIdentifierOptions", () => {
       WS_ID,
       "identifier",
       "MUL-7",
+    ]);
+  });
+});
+
+describe("commentAnchorOptions", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  function installFakeAnchorApi(
+    getCommentAnchor: (
+      id: string,
+      options?: { signal?: AbortSignal },
+    ) => Promise<unknown>,
+  ) {
+    setApiInstance({ getCommentAnchor } as unknown as ApiClient);
+  }
+
+  const ANCHOR = {
+    issue_id: "issue-2",
+    identifier: "RUYI-587",
+    author_type: "member",
+    author_id: "user-1",
+    created_at: "2026-09-08T10:00:00Z",
+    excerpt: "回传记录",
+  };
+
+  it("returns the anchor payload on a hit", async () => {
+    const getCommentAnchor = vi.fn().mockResolvedValue(ANCHOR);
+    installFakeAnchorApi(getCommentAnchor);
+
+    const data = await qc.fetchQuery(commentAnchorOptions("comment-1"));
+
+    expect(data).toEqual(ANCHOR);
+    expect(getCommentAnchor.mock.calls[0]?.[0]).toBe("comment-1");
+  });
+
+  it("maps a 404 to null — the single degraded reading for unknown/deleted/foreign targets", async () => {
+    const getCommentAnchor = vi
+      .fn()
+      .mockRejectedValue(new ApiError("comment not found", 404, "Not Found"));
+    installFakeAnchorApi(getCommentAnchor);
+
+    const data = await qc.fetchQuery(commentAnchorOptions("comment-404"));
+
+    expect(data).toBeNull();
+  });
+
+  it("propagates non-404 failures instead of caching them as unreachable", async () => {
+    const getCommentAnchor = vi
+      .fn()
+      .mockRejectedValue(new ApiError("boom", 500, "Internal Server Error"));
+    installFakeAnchorApi(getCommentAnchor);
+
+    await expect(
+      qc.fetchQuery(commentAnchorOptions("comment-500")),
+    ).rejects.toThrow("boom");
+  });
+
+  it("passes the query's abort signal down so unmount cancels the lookup", async () => {
+    const getCommentAnchor = vi.fn().mockResolvedValue(ANCHOR);
+    installFakeAnchorApi(getCommentAnchor);
+
+    await qc.fetchQuery(commentAnchorOptions("comment-1"));
+
+    expect(getCommentAnchor.mock.calls[0]?.[1]?.signal).toBeInstanceOf(
+      AbortSignal,
+    );
+  });
+
+  it("keys the query by comment id only (workspace is implied by the session)", () => {
+    expect(commentAnchorOptions("comment-1").queryKey).toEqual([
+      "comment-anchor",
+      "comment-1",
     ]);
   });
 });
