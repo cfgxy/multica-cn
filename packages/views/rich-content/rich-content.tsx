@@ -50,6 +50,10 @@ import {
   markdownUrlTransform,
 } from "@multica/ui/markdown";
 import {
+  dedupeIssueReferences,
+  extractIssueReferences,
+} from "@multica/core/markdown";
+import {
   resolveClickIntent,
   useAppOrigin,
   useOptionalNavigation,
@@ -57,6 +61,7 @@ import {
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
+import { IssueReferenceFooter } from "./issue-reference-footer";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -113,6 +118,12 @@ function useIsFenceClosed(offset: number | undefined): boolean {
  * "open issue links in new tab" preference — is owned by the AppLink inside
  * IssueMentionCard; the wrapper only shields surrounding click handlers
  * (e.g. collapsed-comment expanders) from mention clicks.
+ *
+ * RUYI-635: markdown `mention://issue/…` links no longer reach this path —
+ * they render as plain body text and aggregate into the tail footer. The chip
+ * survives for the one remaining inline surface: a bare pasted in-app issue
+ * URL, where the author wrote a link and the unfurl keeps it navigable in
+ * place (see unfurlableEntityLink below).
  */
 function IssueMentionLink({ issueId, label }: { issueId: string; label?: string }) {
   return (
@@ -127,14 +138,12 @@ function IssueMentionLink({ issueId, label }: { issueId: string; label?: string 
  * Resolves it against the current workspace and renders a navigable mention on
  * a hit.
  *
- * Two entry points reach this, and they need DIFFERENT misses, which is why the
- * fallback is a prop rather than baked in:
- *   - the autolink preprocessor, which routes bare prose through
- *     `mention://issue/<identifier>` — a miss must go back to being the plain
- *     text the author typed;
- *   - a bare in-app issue URL, whose miss must stay the original anchor. The
- *     author wrote a link; degrading it to text would strip a working link off
- *     an issue this workspace simply cannot see.
+ * RUYI-635 narrowed this to ONE entry point: a bare in-app issue URL, whose
+ * miss must stay the original anchor — the author wrote a link; degrading it
+ * to text would strip a working link off an issue this workspace simply cannot
+ * see. (The autolink preprocessor's `mention://issue/<identifier>` form used
+ * to reach here too, but mentions now render as plain body text and aggregate
+ * into the tail footer instead.)
  *
  * A miss covers not-found, still-loading, and cross-workspace alike.
  */
@@ -222,17 +231,18 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       /^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/,
     );
     if (match?.[1] === "issue" && match[2]) {
+      // RUYI-635: issue mentions read as plain text in the body — a bare
+      // identifier shows the identifier, a UUID mention shows its authored
+      // label — and every reference aggregates into the tail list rendered by
+      // IssueReferenceFooter below. No resolution, no chip: the body must not
+      // flicker while references resolve.
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
-      if (isIssueIdentifier(match[2])) {
-        return (
-          <IdentifierIssueMentionLink
-            identifier={match[2]}
-            fallback={match[2]}
-          />
-        );
-      }
-      return <IssueMentionLink issueId={match[2]} label={childrenToLabel(children)} />;
+      return (
+        <span data-issue-mention-text="">
+          {isIssueIdentifier(match[2]) ? match[2] : childrenToLabel(children)}
+        </span>
+      );
     }
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
@@ -545,6 +555,17 @@ export const RichContent = memo(function RichContent({
   // it from the raw pre-preprocess text would mis-match every rewritten node.
   const closedFences = useMemo(() => computeClosedFenceOffsets(processed), [processed]);
 
+  // RUYI-635 tail aggregation. Scanned from the RAW content, not `processed`:
+  // the extractor shares its skip rules (code, links, URLs) with the
+  // preprocessor, so scanning the source finds exactly the references the body
+  // would have chipped, while fences the highlighter already turned into HTML
+  // stay out of scope. Raw-dedup keeps the first occurrence of each token;
+  // cross-form collapse by resolved issue id happens in the footer.
+  const issueReferences = useMemo(
+    () => dedupeIssueReferences(extractIssueReferences(content)),
+    [content],
+  );
+
   const wrapperRef = useRef<HTMLDivElement>(null);
   const hover = useLinkHover(wrapperRef);
 
@@ -585,6 +606,9 @@ export const RichContent = memo(function RichContent({
         )}
       >
         {markdown}
+        {issueReferences.length > 0 && (
+          <IssueReferenceFooter references={issueReferences} />
+        )}
         <LinkHoverCard {...hover} />
       </div>
     </AttachmentDownloadProvider>
