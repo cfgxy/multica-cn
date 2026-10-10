@@ -52,7 +52,7 @@ import { useChatAgentRequestResetOnWorkspaceChange } from "@/data/stores/chat-ag
  *   - `headerShown: false` — every sheet body draws its own header (title
  *     + optional right action). The native Stack header would double up.
  */
-const SHEET_OPTIONS: NativeStackNavigationOptions = {
+const SHEET_OPTIONS_BASE: NativeStackNavigationOptions = {
   presentation: "formSheet",
   sheetGrabberVisible: true,
   sheetAllowedDetents: [0.6, 0.95],
@@ -71,8 +71,8 @@ const SHEET_OPTIONS: NativeStackNavigationOptions = {
  * （RUYI-476 在 project picker 验证的配方，本单推广到全部长内容路由）。
  * 短内容 sheet 不用此常量——保持 SHEET_OPTIONS 两段式打开性格。
  */
-const LONG_CONTENT_SHEET_OPTIONS: NativeStackNavigationOptions = {
-  ...SHEET_OPTIONS,
+const LONG_CONTENT_SHEET_OPTIONS_BASE: NativeStackNavigationOptions = {
+  ...SHEET_OPTIONS_BASE,
   sheetInitialDetentIndex: "last" as const,
 };
 
@@ -132,6 +132,23 @@ function RealtimeSubscriptions() {
  * membership, deep links to wrong slugs, etc.).
  */
 export default function WorkspaceLayout() {
+  // RUYI-637 返工：Android 上嵌套滚动手势优先驱动内容（上滑滚内容、内容在顶
+  // 时下滑收层），不再先拖 sheet 升降档——label picker 内容区收层与
+  // edit-profile 小档滚出首屏外字段（Voice）共用这一个开关。screens 4.23 的
+  // Android 侧原本不消费该 prop，原生接线由 pnpm patch 补齐（见
+  // patches/react-native-screens@4.23.0.patch 与 form-sheet-scroll-governance
+  // 的源码形态断言）。iOS 保持 screens 默认（滚动涨档性格不变）。
+  // 平台分支在渲染期求值而非模块级 Platform.select：真机上 Platform.OS 恒定
+  // 二者等价，治理测试需要在同一模块上切换 platformOS。
+  const sheetExpandsWhenScrolledToEdge = Platform.select({ android: false });
+  const SHEET_OPTIONS: NativeStackNavigationOptions = {
+    ...SHEET_OPTIONS_BASE,
+    sheetExpandsWhenScrolledToEdge,
+  };
+  const LONG_CONTENT_SHEET_OPTIONS: NativeStackNavigationOptions = {
+    ...LONG_CONTENT_SHEET_OPTIONS_BASE,
+    sheetExpandsWhenScrolledToEdge,
+  };
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
   const isServerSwitching = useAuthStore((s) => s.isServerSwitching);
   const shouldResolveMembership = shouldResolveWorkspaceMembership(
