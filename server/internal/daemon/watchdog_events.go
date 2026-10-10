@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -310,4 +311,66 @@ func (o *watchdogObserver) collectToolMarks(now time.Time) []watchdogEvent {
 		})
 	}
 	return events
+}
+
+// collectPremortem snapshots the run at the moment the watchdog decides to
+// force-stop: provider identity, which budget tripped, how long the run had
+// been silent, and the unpaired tool calls that describe which layer the run
+// died in. Runs under the drain mutex via the caller; the snapshot rides the
+// transcript as a watchdog event, and its one-line rendering (see
+// premortemSummaryText) rides the terminal message and the structured kill
+// log — three delivery legs for one fact set, taken atomically.
+func (o *watchdogObserver) collectPremortem(now time.Time, idleFor, threshold time.Duration, toolInFlight bool, provider string, toolCount int32) watchdogEvent {
+	pending := o.tracker.pendingLocked()
+	details := make([]map[string]any, 0, len(pending))
+	for _, tr := range pending {
+		d := map[string]any{
+			"tool":       tr.Tool,
+			"pending_ms": now.Sub(tr.IssuedAt).Milliseconds(),
+			"mark_count": tr.Marks,
+		}
+		if tr.CallID != "" {
+			d["call_id"] = tr.CallID
+		}
+		details = append(details, d)
+	}
+	return watchdogEvent{input: watchdogEventInput("force_stop_premortem", now, map[string]any{
+		"provider":       provider,
+		"threshold":      threshold.String(),
+		"idle_ms":        idleFor.Milliseconds(),
+		"tool_in_flight": toolInFlight,
+		"tool_count":     toolCount,
+		"pending_tools":  details,
+	})}
+}
+
+// premortemSummaryText renders the one-line "which layer died" summary from a
+// premortem payload. It rides the terminal task message — the blocked-issue
+// text has to answer that question without anyone opening the transcript.
+func premortemSummaryText(input map[string]any) string {
+	provider, _ := input["provider"].(string)
+	idleMs, _ := input["idle_ms"].(int64)
+	threshold, _ := input["threshold"].(string)
+	pending, _ := input["pending_tools"].([]map[string]any)
+	var calls string
+	if len(pending) == 0 {
+		calls = "no pending tool calls"
+	} else {
+		parts := make([]string, 0, len(pending))
+		for _, d := range pending {
+			tool, _ := d["tool"].(string)
+			callID, _ := d["call_id"].(string)
+			pms, _ := d["pending_ms"].(int64)
+			marks, _ := d["mark_count"].(int)
+			s := tool + " ("
+			if callID != "" {
+				s += "call " + callID + ", "
+			}
+			s += fmt.Sprintf("in flight %dms, %d marks)", pms, marks)
+			parts = append(parts, s)
+		}
+		calls = fmt.Sprintf("%d pending tool call(s): %s", len(pending), strings.Join(parts, "; "))
+	}
+	return fmt.Sprintf("force-stop snapshot: provider %q, %s; idle %dms of %s budget",
+		provider, calls, idleMs, threshold)
 }
