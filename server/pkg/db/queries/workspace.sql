@@ -259,5 +259,11 @@ cleared_vcs_connections AS (
 ),
 cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
+),
+cleared_scheduling_pauses AS (
+    -- RUYI-608: scheduling_pause carries no FK (house rule). A surviving
+    -- freeze row for a deleted workspace would be inert (no agents left to
+    -- gate) but permanently unattributable litter; sweep both levels here.
+    DELETE FROM scheduling_pause WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;

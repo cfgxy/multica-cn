@@ -79,6 +79,7 @@
     "breadcrumb_workspace_fallback": "ワークスペース",
     "empty_title": "まだタスクがありません",
     "empty_hint": "タスクを作成して始めましょう。",
+    "scheduling_paused_banner_other": "タスクのスケジューリングは一時停止中 — このワークスペースで {{count}} 件のタスクがキューにあります。ワークスペース設定から再開できます。",
     "move_failed": "タスクを移動できませんでした"
   },
   "status": {
@@ -1059,8 +1060,7 @@
       "cancel_requested": "停止中",
       "completed": "完了",
       "failed": "失敗",
-      "cancelled": "キャンセル済み",
-      "cancel_requested": "停止中"
+      "cancelled": "キャンセル済み"
     },
     "runs": {
       "title": "エージェントの実行履歴",
