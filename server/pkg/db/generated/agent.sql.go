@@ -11336,3 +11336,30 @@ func (q *Queries) UpdateAgentTaskSession(ctx context.Context, arg UpdateAgentTas
 	_, err := q.db.Exec(ctx, updateAgentTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
 	return err
 }
+
+const updateQueuedTaskPriorityForIssue = `-- name: UpdateQueuedTaskPriorityForIssue :execrows
+UPDATE agent_task_queue
+SET priority = $1
+WHERE issue_id = $2 AND status = 'queued'
+`
+
+type UpdateQueuedTaskPriorityForIssueParams struct {
+	Priority int32       `json:"priority"`
+	IssueID  pgtype.UUID `json:"issue_id"`
+}
+
+// RUYI-648: an issue's priority is snapshotted onto its queue rows at enqueue
+// time (priorityToInt(issue.Priority) at every CreateAgentTask* path) and the
+// claim ordering reads the row's column, so an issue edited after enqueueing
+// left its queued rows on the stale value and the agent kept serving the old
+// urgency. The priority_changed handler replays the new value onto the rows
+// still competing for a claim; rows a daemon already claimed
+// (dispatched/running/waiting_local_directory/deferred) and terminal rows
+// keep the snapshot their ordering decision was made on.
+func (q *Queries) UpdateQueuedTaskPriorityForIssue(ctx context.Context, arg UpdateQueuedTaskPriorityForIssueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateQueuedTaskPriorityForIssue, arg.Priority, arg.IssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
