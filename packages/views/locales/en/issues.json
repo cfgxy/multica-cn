@@ -767,7 +767,9 @@
     "note_unpriced_one": "{{count}} run has no recorded usage and is not counted in the total.",
     "note_unpriced_other": "{{count}} runs have no recorded usage and are not counted in the total.",
     "note_unmapped": "No price on file for {{models}}; their tokens are counted but their cost is not.",
-    "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure."
+    "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure.",
+    "kpi_unpriced_one": "{{count}} row could not be priced",
+    "kpi_unpriced_other": "{{count}} rows could not be priced"
   },
   "terminate_dialog": {
     "title": "Stop this task?",
@@ -1252,7 +1254,9 @@
     "raw_error": "Raw error",
     "lineage": "Run chain",
     "lineage_rerun": "Manual rerun",
-    "lineage_system_retry": "System retry"
+    "lineage_system_retry": "System retry",
+    "unpriced_rows_one": "{{count}} row unpriced",
+    "unpriced_rows_other": "{{count}} rows unpriced"
   },
   "decisions": {
     "title": "Decision card",

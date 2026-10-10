@@ -738,7 +738,8 @@
     "total": "合計",
     "note_unpriced_other": "{{count}} 回の実行は使用量が記録されておらず、合計に含まれません。",
     "note_unmapped": "{{models}} は価格が未登録です。トークンは集計されますが費用は含まれません。",
-    "note_estimate": "費用は公開モデル料金からの概算です（プロバイダーが独自の費用を返した分を除く）。"
+    "note_estimate": "費用は公開モデル料金からの概算です（プロバイダーが独自の費用を返した分を除く）。",
+    "kpi_unpriced_other": "{{count}} 件は算出不可"
   },
   "terminate_dialog": {
     "title": "この作業を停止しますか？",
@@ -1210,7 +1211,8 @@
     "raw_error": "原始エラー",
     "lineage": "実行チェーン",
     "lineage_rerun": "手動再実行",
-    "lineage_system_retry": "システム再試行"
+    "lineage_system_retry": "システム再試行",
+    "unpriced_rows_other": "{{count}} 件は算出不可"
   },
   "decisions": {
     "title": "意思決定カード",

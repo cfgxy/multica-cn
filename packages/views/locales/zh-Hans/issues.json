@@ -738,7 +738,8 @@
     "total": "合计",
     "note_unpriced_other": "有 {{count}} 次运行没有用量记录，不计入合计。",
     "note_unmapped": "{{models}} 没有维护价格，token 已计入，费用未计入。",
-    "note_estimate": "费用按各模型公开价目估算；供应商回报实际费用时以回报值为准。"
+    "note_estimate": "费用按各模型公开价目估算；供应商回报实际费用时以回报值为准。",
+    "kpi_unpriced_other": "有 {{count}} 条算不出"
   },
   "terminate_dialog": {
     "title": "确定停止该 task？",
@@ -1210,7 +1211,8 @@
     "raw_error": "原始错误",
     "lineage": "运行链",
     "lineage_rerun": "手动重跑",
-    "lineage_system_retry": "系统重试"
+    "lineage_system_retry": "系统重试",
+    "unpriced_rows_other": "有 {{count}} 条算不出"
   },
   "decisions": {
     "title": "决策卡片",
