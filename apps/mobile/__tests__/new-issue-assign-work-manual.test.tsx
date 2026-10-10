@@ -405,12 +405,17 @@ function resetTestState() {
   mockMutateAsync.mockResolvedValue({ id: "issue-1" });
 }
 
+/**
+ * RNTL v14's `render` is async — `screen` only becomes usable once its
+ * internal `act` settles, so the call must be awaited (a bare call raced
+ * the first query and died with "`render` function has not been called").
+ */
 /** Seed the pre-navigation actor and wait for the forced Smart panel. */
 async function renderSeededVisit() {
   await act(async () => {
     useNewIssueDraftStore.getState().setSmartActor(seededActor);
   });
-  render(<NewIssueModal />);
+  await render(<NewIssueModal />);
   await waitFor(() =>
     expect(screen.getByText("agent:agent-second")).toBeTruthy(),
   );
@@ -553,7 +558,7 @@ describe("NewIssueModal assign-work manual fallback (RUYI-624 rework)", () => {
     });
     await useNewIssueLastAssigneeStore.persist.rehydrate();
 
-    render(<NewIssueModal />);
+    await render(<NewIssueModal />);
     await waitFor(() =>
       expect(useNewIssueDraftStore.getState().assignee).toEqual(
         firstAgentAssignee,
@@ -568,7 +573,7 @@ describe("NewIssueModal assign-work manual fallback (RUYI-624 rework)", () => {
   });
 
   it("unseeded visit with no memory: the smart panel's fallback actor is not an assignment intent", async () => {
-    render(<NewIssueModal />);
+    await render(<NewIssueModal />);
     // Smart mode auto-picks the first visible agent into smartActor —
     // pinned by the seed-lifecycle suite; it must NOT become the manual
     // assignee when the user only flips tabs.
