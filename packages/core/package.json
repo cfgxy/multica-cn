@@ -202,7 +202,8 @@
     "./runtimes/date-utils": "./runtimes/date-utils.ts",
     "./runtimes/usage": "./runtimes/usage.ts",
     "./dashboard/window": "./dashboard/window.ts",
-    "./dashboard/aggregate": "./dashboard/aggregate.ts"
+    "./dashboard/aggregate": "./dashboard/aggregate.ts",
+    "./computers": "./computers/index.ts"
   },
   "dependencies": {
     "@formatjs/intl-localematcher": "catalog:",

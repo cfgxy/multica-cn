@@ -38,8 +38,16 @@ describe("runtime machine grouping", () => {
   it("groups multiple provider runtimes by daemon id", () => {
     const machines = buildRuntimeMachines(
       [
-        makeRuntime({ id: "rt-claude", provider: "claude", name: "Claude (dev.local)" }),
-        makeRuntime({ id: "rt-codex", provider: "codex", name: "Codex (dev.local)" }),
+        makeRuntime({
+          id: "rt-claude",
+          provider: "claude",
+          name: "Claude (dev.local)",
+        }),
+        makeRuntime({
+          id: "rt-codex",
+          provider: "codex",
+          name: "Codex (dev.local)",
+        }),
       ],
       { now: NOW, localDaemonId: "daemon-1" },
     );
@@ -83,10 +91,22 @@ describe("runtime machine grouping", () => {
   it("uses a machine-wide custom name as the machine title, over the local name", () => {
     const machines = buildRuntimeMachines(
       [
-        makeRuntime({ id: "rt-claude", provider: "claude", custom_name: "Bohan's MacBook" }),
-        makeRuntime({ id: "rt-codex", provider: "codex", custom_name: "Bohan's MacBook" }),
+        makeRuntime({
+          id: "rt-claude",
+          provider: "claude",
+          custom_name: "Bohan's MacBook",
+        }),
+        makeRuntime({
+          id: "rt-codex",
+          provider: "codex",
+          custom_name: "Bohan's MacBook",
+        }),
       ],
-      { now: NOW, localDaemonId: "daemon-1", localMachineName: "dev-machine.local" },
+      {
+        now: NOW,
+        localDaemonId: "daemon-1",
+        localMachineName: "dev-machine.local",
+      },
     );
 
     expect(machines).toHaveLength(1);
@@ -96,7 +116,11 @@ describe("runtime machine grouping", () => {
   it("ignores a one-off per-runtime custom name for the machine title", () => {
     const machines = buildRuntimeMachines(
       [
-        makeRuntime({ id: "rt-claude", provider: "claude", custom_name: "just this one" }),
+        makeRuntime({
+          id: "rt-claude",
+          provider: "claude",
+          custom_name: "just this one",
+        }),
         makeRuntime({ id: "rt-codex", provider: "codex" }),
       ],
       { now: NOW, localDaemonId: "daemon-1" },
@@ -455,7 +479,10 @@ describe("runtimeRowLabel", () => {
   it("shows a per-runtime alias that differs from the machine title", () => {
     expect(
       runtimeRowLabel(
-        makeRuntime({ name: "Codex (dev.local)", custom_name: "just this one" }),
+        makeRuntime({
+          name: "Codex (dev.local)",
+          custom_name: "just this one",
+        }),
         "Dev Box",
       ),
     ).toBe("just this one");
@@ -496,4 +523,58 @@ describe("runtimeRowLabel", () => {
       ),
     ).toBe("Codex");
   });
+});
+
+it("separates Linux accounts on the same host and makes usernames searchable", () => {
+  const machines = buildRuntimeMachines(
+    [
+      makeRuntime({
+        id: "mas",
+        daemon_id: "mas-daemon",
+        execution_source: {
+          binding_id: "mas",
+          linux_user: "mas",
+          host: "tensor",
+          preferred: false,
+        },
+      }),
+      makeRuntime({
+        id: "glite",
+        daemon_id: "glite-daemon",
+        execution_source: {
+          binding_id: "glite",
+          linux_user: "mas_glite",
+          host: "tensor",
+          preferred: true,
+        },
+      }),
+    ],
+    {
+      now: NOW,
+      currentUserId: "user-1",
+      localMachineName: "dev-machine.local",
+    },
+  );
+  expect(machines.map((machine) => machine.title)).toEqual(
+    expect.arrayContaining([
+      "dev-machine.local · mas@tensor",
+      "dev-machine.local · mas_glite@tensor",
+    ]),
+  );
+  expect(machines.every((machine) => !machine.isCurrent)).toBe(true);
+  expect(filterRuntimeMachines(machines, "mas_glite", "all")).toHaveLength(1);
+});
+
+it("disambiguates old daemons with the same hostname without guessing an OS username", () => {
+  const machines = buildRuntimeMachines(
+    [
+      makeRuntime({ daemon_id: "aaaaaaaa-1111" }),
+      makeRuntime({ id: "other", daemon_id: "bbbbbbbb-2222" }),
+    ],
+    { now: NOW },
+  );
+  expect(new Set(machines.map((machine) => machine.title)).size).toBe(2);
+  expect(machines.map((machine) => machine.title).join(" ")).toContain(
+    "aaaaaaaa",
+  );
 });
