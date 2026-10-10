@@ -138,6 +138,19 @@ var postConsolidationStems = []string{
 	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
 	"937_live_session_mode",                          // RUYI-626
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
+	"947_computer_management",                        // RUYI-670 (ported from trustbe-cn 536+538-540+545+546+554-556)
+	"948_computer_binding_account",                   // RUYI-670 (from trustbe-cn 537)
+	"949_computer_operation_id",                      // RUYI-670 (from trustbe-cn 541)
+	"950_computer_operation_active",                  // RUYI-670 (from trustbe-cn 542)
+	"951_computer_runtime_asset_key",                 // RUYI-670 (from trustbe-cn 543)
+	"952_computer_operation_history",                 // RUYI-670 (from trustbe-cn 544)
+	"953_model_key_directory_name",                   // RUYI-670 (from trustbe-cn 547)
+	"954_user_model_key_grant_position",              // RUYI-670 (from trustbe-cn 548)
+	"955_model_key_source_identity",                  // RUYI-670 (from trustbe-cn 549)
+	"956_model_key_directory_entry_identity",         // RUYI-670 (from trustbe-cn 550)
+	"957_user_model_key_grant_identity",              // RUYI-670 (from trustbe-cn 551)
+	"958_runtime_config_template_identity",           // RUYI-670 (from trustbe-cn 552)
+	"959_computer_runtime_model_config_identity",     // RUYI-670 (from trustbe-cn 553)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

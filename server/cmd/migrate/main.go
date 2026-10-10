@@ -323,6 +323,18 @@ var concurrentIndexCleanups = map[string][]string{
 	"919_issue_dependency_relationships":                        {"uq_issue_dependency_edge"},
 	"927_issue_decision_workspace_inbox":                        {"idx_issue_decisions_workspace_status"},
 	"936_agent_task_queue_failed_retry_reeval_index":            {"idx_agent_task_queue_failed_retry_reeval"},
+	"948_computer_binding_account":                              {"computer_binding_account"},
+	"949_computer_operation_id":                                 {"computer_operation_id"},
+	"950_computer_operation_active":                             {"computer_operation_active"},
+	"951_computer_runtime_asset_key":                            {"computer_runtime_asset_key"},
+	"952_computer_operation_history":                            {"computer_operation_history"},
+	"953_model_key_directory_name":                              {"idx_model_key_directory_entry_name"},
+	"954_user_model_key_grant_position":                         {"idx_user_model_key_grant_user_position"},
+	"955_model_key_source_identity":                             {"idx_model_key_source_identity"},
+	"956_model_key_directory_entry_identity":                    {"idx_model_key_directory_entry_identity"},
+	"957_user_model_key_grant_identity":                         {"idx_user_model_key_grant_identity"},
+	"958_runtime_config_template_identity":                      {"idx_runtime_config_template_identity"},
+	"959_computer_runtime_model_config_identity":                {"idx_computer_runtime_model_config_identity"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

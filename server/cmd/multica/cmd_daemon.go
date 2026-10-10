@@ -274,6 +274,9 @@ func openBoundedErrLog(path string) (*os.File, error) {
 // Default profile uses the standard port (19514). Named profiles get a
 // deterministic offset derived from the profile name.
 func healthPortForProfile(profile string) int {
+	if cfg, err := cli.LoadCLIConfigForProfile(profile); err == nil && cfg.HealthPort >= 1024 && cfg.HealthPort <= 65535 {
+		return cfg.HealthPort
+	}
 	if profile == "" {
 		return daemon.DefaultHealthPort
 	}
