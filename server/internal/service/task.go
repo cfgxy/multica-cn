@@ -7787,6 +7787,30 @@ func commentEventFields(c db.Comment) map[string]any {
 	}
 }
 
+// AddDaemonTaskSystemComment posts a system comment on the issue behind a
+// daemon task, attributed to the task's agent — the service-side half of the
+// daemon task-comment endpoint (RUYI-593). The strong-stop path has always
+// reached humans this way (FailTask's fixed wording); this exposes the same
+// channel to pre-terminal watchdog alerts. Same redact-then-sanitize pipeline
+// as FailTask, and best-effort by contract: a task with no issue backing
+// (autopilot / quick-create) has no thread to comment on and returns nil, so
+// the daemon's alert loop is never disturbed by delivery problems here.
+func (s *TaskService) AddDaemonTaskSystemComment(ctx context.Context, taskID pgtype.UUID, content string) error {
+	content = util.SanitizeTextForPostgres(redact.Text(content))
+	if content == "" {
+		return nil
+	}
+	task, err := s.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !task.IssueID.Valid || !task.AgentID.Valid {
+		return nil
+	}
+	s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "system", task.TriggerCommentID, task.ID)
+	return nil
+}
+
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
 	if content == "" {
 		return

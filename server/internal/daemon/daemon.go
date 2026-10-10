@@ -9017,14 +9017,29 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		mu.Unlock()
 	}
 	observer := newWatchdogObserver(d.cfg, watchTracker)
+	// postSilenceAlertComment is the ALERT tier's human-reachable leg: the
+	// transcript event alone is agent-visible, so the alert also lands as an
+	// issue comment through the daemon task-comment endpoint. Best-effort and
+	// bounded: a comment failure is logged and swallowed — it must never
+	// disturb the run or the watchdog.
+	postSilenceAlertComment := func(content string) {
+		commentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.client.AddTaskComment(commentCtx, taskID, content); err != nil {
+			taskLog.Warn("failed to post silence alert comment", "error", err)
+		}
+	}
 	var observe func(now time.Time, idleFor time.Duration, toolInFlight bool)
-	if observer.marksEnabled() {
+	if observer.marksEnabled() || observer.silenceEnabled() {
 		observe = func(now time.Time, idleFor time.Duration, toolInFlight bool) {
 			mu.Lock()
-			events := observer.collectToolMarks(now)
+			events := observer.collectEvents(now, idleFor, toolInFlight)
 			mu.Unlock()
 			for _, ev := range events {
 				emitWatchdogEvent(ev.input, ev.tool)
+				if ev.comment != "" {
+					postSilenceAlertComment(ev.comment)
+				}
 			}
 		}
 	}
@@ -9109,6 +9124,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// slow downstream call (mu.Lock contention, batch resize)
 				// can't be misattributed to backend silence.
 				lastActivityAt.Store(time.Now().UnixNano())
+				// A backend message means the run recovered from any silent
+				// segment: re-arm the warn/alert escalation so the next
+				// silence escalates on its own again.
+				mu.Lock()
+				observer.observeActivity()
+				mu.Unlock()
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend

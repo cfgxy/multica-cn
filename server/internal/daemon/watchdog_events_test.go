@@ -329,3 +329,228 @@ func TestExecuteAndDrain_ToolInFlight_MarkBacksOffWhileToolWindowDisabled(t *tes
 		}
 	}
 }
+
+// ─── No-tool silence tiers (round 2, direction 2) ──────────────────────────
+
+// silenceEvents filters the reported watchdog events down to the two-tier
+// no-tool silence escalation, in seq order.
+func silenceEvents(t *testing.T, msgs []TaskMessageData) []TaskMessageData {
+	t.Helper()
+	var out []TaskMessageData
+	for _, m := range watchdogEvents(t, msgs) {
+		if ev, _ := m.Input["event"].(string); ev == "silence_warn" || ev == "silence_alert" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// TestExecuteAndDrain_NoToolSilence_WarnsThenAlertsWithComment drives a run
+// that starts healthy and then goes dead-channel silent: the warn tier marks
+// the transcript once, the alert tier follows exactly once and posts exactly
+// one human-reachable task comment, and the run still trips the idle
+// watchdog on its own budget — proof the observation tier never feeds the
+// silence clock (each event resetting lastActivityAt would defer the kill
+// forever and this run would come back "cancelled" instead).
+func TestExecuteAndDrain_NoToolSilence_WarnsThenAlertsWithComment(t *testing.T) {
+	rs := newRecordingServer(t)
+	d := &Daemon{client: NewClient(rs.server.URL), logger: slog.Default()}
+	d.cfg.AgentIdleWatchdog = 500 * time.Millisecond
+	d.cfg.AgentToolWatchdog = 500 * time.Millisecond
+	d.cfg.AgentToolMarkAfter = 0 // marks off: this test isolates the silence tiers
+	d.cfg.AgentSilenceWarnAfter = 60 * time.Millisecond
+	d.cfg.AgentSilenceAlertAfter = 140 * time.Millisecond
+
+	result, _, err := d.executeAndDrain(context.Background(),
+		scriptedBackend{script: []scriptedEvent{
+			{after: 5 * time.Millisecond, msg: agent.Message{Type: agent.MessageText, Content: "starting"}},
+		}, hang: true},
+		"p", agent.ExecOptions{}, slog.Default(), "t-silence", "", "test", new(atomic.Int32))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected the idle watchdog to still fire, got status=%q err=%q", result.Status, result.Error)
+	}
+
+	msgs := rs.reportedMessages(t)
+	events := silenceEvents(t, msgs)
+	var warns, alerts []TaskMessageData
+	for _, ev := range events {
+		switch ev.Input["event"] {
+		case "silence_warn":
+			warns = append(warns, ev)
+		case "silence_alert":
+			alerts = append(alerts, ev)
+		}
+	}
+	if len(warns) != 1 {
+		t.Fatalf("expected exactly 1 silence_warn, got %d (%+v)", len(warns), events)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("expected exactly 1 silence_alert, got %d (%+v)", len(alerts), events)
+	}
+	if warns[0].Seq >= alerts[0].Seq {
+		t.Fatalf("expected warn before alert, got seq warn=%d alert=%d", warns[0].Seq, alerts[0].Seq)
+	}
+	if got := eventField(t, warns[0], "state"); got != "no_tool_silence" {
+		t.Fatalf("warn state = %v, want no_tool_silence", got)
+	}
+	if _, ok := alerts[0].Input["checked_at"]; !ok {
+		t.Fatalf("alert event missing checked_at (input=%v)", alerts[0].Input)
+	}
+	if marks := toolInFlightMarks(t, rs); len(marks) != 0 {
+		t.Fatalf("marks are off; got %d tool_in_flight events", len(marks))
+	}
+
+	comments := rs.commentBodies(t)
+	if len(comments) != 1 {
+		t.Fatalf("expected exactly 1 alert comment, got %d (%q)", len(comments), comments)
+	}
+	if !strings.Contains(comments[0], "no output") {
+		t.Fatalf("alert comment should tell a human what happened, got %q", comments[0])
+	}
+}
+
+// TestExecuteAndDrain_NoToolSilence_DisabledWhenZero pins the rollback
+// contract for the two silence keys: both at zero, a silent run produces no
+// silence events and no comments — the watchdog is byte-for-byte on its
+// pre-round behavior.
+func TestExecuteAndDrain_NoToolSilence_DisabledWhenZero(t *testing.T) {
+	rs := newRecordingServer(t)
+	d := &Daemon{client: NewClient(rs.server.URL), logger: slog.Default()}
+	d.cfg.AgentIdleWatchdog = 150 * time.Millisecond
+	d.cfg.AgentToolWatchdog = 150 * time.Millisecond
+	d.cfg.AgentSilenceWarnAfter = 0
+	d.cfg.AgentSilenceAlertAfter = 0
+
+	result, _, err := d.executeAndDrain(context.Background(),
+		scriptedBackend{hang: true},
+		"p", agent.ExecOptions{}, slog.Default(), "t-silence-off", "", "test", new(atomic.Int32))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "idle_watchdog" {
+		t.Fatalf("expected status=idle_watchdog, got %q", result.Status)
+	}
+	if events := silenceEvents(t, rs.reportedMessages(t)); len(events) != 0 {
+		t.Fatalf("silence tiers are off; got %d events (%+v)", len(events), events)
+	}
+	if comments := rs.commentBodies(t); len(comments) != 0 {
+		t.Fatalf("silence tiers are off; got %d comments", len(comments))
+	}
+}
+
+// TestExecuteAndDrain_NoToolSilence_ReArmsAfterActivity runs a run that goes
+// silent, recovers, and goes silent twice more: each silent segment escalates
+// warn → alert on its own, and every alert posts its own comment. The exact
+// number of segments depends on tick timing, but warn count, alert count, and
+// comment count must stay equal — once per segment, in every segment.
+func TestExecuteAndDrain_NoToolSilence_ReArmsAfterActivity(t *testing.T) {
+	rs := newRecordingServer(t)
+	d := &Daemon{client: NewClient(rs.server.URL), logger: slog.Default()}
+	d.cfg.AgentIdleWatchdog = 500 * time.Millisecond
+	d.cfg.AgentToolWatchdog = 500 * time.Millisecond
+	d.cfg.AgentSilenceWarnAfter = 100 * time.Millisecond
+	d.cfg.AgentSilenceAlertAfter = 150 * time.Millisecond
+
+	// Three activity bursts ~500ms apart; ticks land every 250ms, so each
+	// segment crosses both thresholds exactly once before the next burst.
+	result, _, err := d.executeAndDrain(context.Background(),
+		scriptedBackend{script: []scriptedEvent{
+			{after: 5 * time.Millisecond, msg: agent.Message{Type: agent.MessageText, Content: "burst 1"}},
+			{after: 500 * time.Millisecond, msg: agent.Message{Type: agent.MessageText, Content: "burst 2"}},
+			{after: 1000 * time.Millisecond, msg: agent.Message{Type: agent.MessageText, Content: "burst 3"}},
+		}, hang: true},
+		"p", agent.ExecOptions{}, slog.Default(), "t-silence-rearm", "", "test", new(atomic.Int32))
+	_ = result
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	events := silenceEvents(t, rs.reportedMessages(t))
+	var warns, alerts int
+	var lastWarnSeq, lastAlertSeq int
+	for _, ev := range events {
+		switch ev.Input["event"] {
+		case "silence_warn":
+			warns++
+			lastWarnSeq = ev.Seq
+		case "silence_alert":
+			alerts++
+			lastAlertSeq = ev.Seq
+		}
+	}
+	if warns < 2 || alerts < 2 {
+		t.Fatalf("expected the escalation to re-arm across ≥2 segments, got %d warns / %d alerts (%+v)", warns, alerts, events)
+	}
+	if warns != alerts {
+		t.Fatalf("warn and alert must fire once per segment: %d warns vs %d alerts", warns, alerts)
+	}
+	comments := rs.commentBodies(t)
+	if len(comments) != alerts {
+		t.Fatalf("every alert posts one comment: %d alerts vs %d comments", alerts, len(comments))
+	}
+	// Within every segment warn precedes alert; a cheap global check on the
+	// last pair keeps this honest without reconstructing segments.
+	if lastWarnSeq >= lastAlertSeq {
+		t.Fatalf("expected warn before alert within the last segment (warn seq=%d, alert seq=%d)", lastWarnSeq, lastAlertSeq)
+	}
+}
+
+// TestWatchdogObserver_SilenceTierLifecycle pins the escalation state machine
+// directly: thresholds gate each tier, each tier fires once per silent
+// segment, activity re-arms both, and a tool in flight suppresses the whole
+// escalation (a run inside a tool call is not silent).
+func TestWatchdogObserver_SilenceTierLifecycle(t *testing.T) {
+	base := time.Now()
+	observer := newWatchdogObserver(Config{
+		AgentSilenceWarnAfter:  time.Hour,
+		AgentSilenceAlertAfter: 2 * time.Hour,
+	}, newToolCallTracker())
+
+	if events := observer.collectEvents(base.Add(30*time.Minute), 30*time.Minute, false); len(events) != 0 {
+		t.Fatalf("below both thresholds, expected no events, got %+v", events)
+	}
+
+	events := observer.collectEvents(base.Add(90*time.Minute), 90*time.Minute, false)
+	if len(events) != 1 || events[0].input["event"] != "silence_warn" {
+		t.Fatalf("at 90m only the warn tier should fire, got %+v", events)
+	}
+
+	events = observer.collectEvents(base.Add(150*time.Minute), 150*time.Minute, false)
+	if len(events) != 1 || events[0].input["event"] != "silence_alert" {
+		t.Fatalf("at 150m only the alert tier should fire (warn does not repeat), got %+v", events)
+	}
+	if events[0].comment == "" {
+		t.Fatalf("alert event must carry the human comment text")
+	}
+
+	if events := observer.collectEvents(base.Add(3*time.Hour), 3*time.Hour, false); len(events) != 0 {
+		t.Fatalf("both tiers already fired for this segment; expected nothing, got %+v", events)
+	}
+
+	// Activity re-arms both tiers for the next silent segment.
+	observer.observeActivity()
+	events = observer.collectEvents(base.Add(4*time.Hour).Add(90*time.Minute), 90*time.Minute, false)
+	if len(events) != 1 || events[0].input["event"] != "silence_warn" {
+		t.Fatalf("after activity the warn tier should fire again, got %+v", events)
+	}
+
+	// A tool in flight suppresses the escalation entirely.
+	observer.observeActivity()
+	if events := observer.collectEvents(base.Add(9*time.Hour), 8*time.Hour, true); len(events) != 0 {
+		t.Fatalf("tool in flight must suppress silence tiers, got %+v", events)
+	}
+}
+
+// TestWatchdogObserver_SilenceDisabledWhenZero keeps the zero contract on the
+// observer itself, independent of the drain wiring.
+func TestWatchdogObserver_SilenceDisabledWhenZero(t *testing.T) {
+	observer := newWatchdogObserver(Config{}, newToolCallTracker())
+	for _, idle := range []time.Duration{time.Minute, time.Hour, 24 * time.Hour} {
+		if events := observer.collectEvents(time.Now(), idle, false); len(events) != 0 {
+			t.Fatalf("tiers are off; idle=%s produced %+v", idle, events)
+		}
+	}
+}

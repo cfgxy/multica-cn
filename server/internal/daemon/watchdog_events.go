@@ -159,10 +159,12 @@ func watchdogEventInput(event string, checkedAt time.Time, extra map[string]any)
 }
 
 // watchdogEvent is one ready-to-report observation event: the typed payload
-// for Input and the tool name to surface on the message.
+// for Input, the tool name to surface on the message, and — for the alert
+// tier only — the human-reachable comment text the caller posts out-of-band.
 type watchdogEvent struct {
-	input map[string]any
-	tool  string
+	input   map[string]any
+	tool    string
+	comment string
 }
 
 // watchdogObserver carries the observation knobs and turns watchdog ticks
@@ -178,17 +180,101 @@ type watchdogObserver struct {
 
 	markAfter time.Duration
 	markEvery time.Duration
+
+	silenceWarnAfter  time.Duration
+	silenceAlertAfter time.Duration
+
+	// warned / silenceAlertFired track the two tiers for the current silent
+	// segment. Both re-arm on the next backend message (observeActivity), so
+	// a run that recovers and goes silent again gets a fresh warn→alert
+	// escalation instead of staying permanently muted after its first alert.
+	warned            bool
+	silenceAlertFired bool
 }
 
 func newWatchdogObserver(cfg Config, tracker *toolCallTracker) *watchdogObserver {
 	return &watchdogObserver{
-		tracker:   tracker,
-		markAfter: cfg.AgentToolMarkAfter,
-		markEvery: cfg.AgentToolMarkEvery,
+		tracker:           tracker,
+		markAfter:         cfg.AgentToolMarkAfter,
+		markEvery:         cfg.AgentToolMarkEvery,
+		silenceWarnAfter:  cfg.AgentSilenceWarnAfter,
+		silenceAlertAfter: cfg.AgentSilenceAlertAfter,
 	}
 }
 
 func (o *watchdogObserver) marksEnabled() bool { return o.markAfter > 0 }
+
+func (o *watchdogObserver) silenceEnabled() bool {
+	return o.silenceWarnAfter > 0 || o.silenceAlertAfter > 0
+}
+
+// observeActivity re-arms the silence escalation after a backend message.
+func (o *watchdogObserver) observeActivity() {
+	o.warned = false
+	o.silenceAlertFired = false
+}
+
+// collectEvents snapshots every event due at this tick: in-flight tool marks
+// plus the no-tool silence escalation. The caller emits the returned events
+// outside the lock.
+func (o *watchdogObserver) collectEvents(now time.Time, idleFor time.Duration, toolInFlight bool) []watchdogEvent {
+	events := o.collectToolMarks(now)
+	return append(events, o.collectSilenceEvents(now, idleFor, toolInFlight)...)
+}
+
+// silenceThresholdLabel renders the sibling tier's threshold in event
+// payloads; an off tier says so explicitly instead of "0s".
+func silenceThresholdLabel(d time.Duration) string {
+	if d <= 0 {
+		return "off"
+	}
+	return d.String()
+}
+
+// silenceAlertComment is the human-reachable text posted to the issue thread
+// when the alert tier trips. The transcript is agent-visible; a dead-channel
+// run has to reach a person who can stop it.
+func silenceAlertComment(idleFor, threshold time.Duration) string {
+	return fmt.Sprintf(
+		"⏰ Agent has produced no output for %s (alert threshold %s). The run is still alive; if this silence is unexpected, check the task transcript or stop the task.",
+		idleFor.Round(time.Second), threshold,
+	)
+}
+
+// collectSilenceEvents runs the two-tier no-tool silence escalation: warn
+// once when the silence crosses warnAfter, alert once when it crosses
+// alertAfter, each exactly once per silent segment (observeActivity re-arms
+// them). A run inside a tool call is not silent — the tool budget governs
+// that regime — so the escalation is suppressed there. Pure observation:
+// nothing here stops the run or moves the silence clock.
+func (o *watchdogObserver) collectSilenceEvents(now time.Time, idleFor time.Duration, toolInFlight bool) []watchdogEvent {
+	if toolInFlight {
+		return nil
+	}
+	var events []watchdogEvent
+	if o.silenceWarnAfter > 0 && !o.warned && idleFor >= o.silenceWarnAfter {
+		o.warned = true
+		events = append(events, watchdogEvent{input: watchdogEventInput("silence_warn", now, map[string]any{
+			"state":     "no_tool_silence",
+			"silent_ms": idleFor.Milliseconds(),
+			"threshold": o.silenceWarnAfter.String(),
+			"alert_at":  silenceThresholdLabel(o.silenceAlertAfter),
+		})})
+	}
+	if o.silenceAlertAfter > 0 && !o.silenceAlertFired && idleFor >= o.silenceAlertAfter {
+		o.silenceAlertFired = true
+		events = append(events, watchdogEvent{
+			input: watchdogEventInput("silence_alert", now, map[string]any{
+				"state":       "no_tool_silence",
+				"silent_ms":   idleFor.Milliseconds(),
+				"threshold":   o.silenceAlertAfter.String(),
+				"watchdog_at": silenceThresholdLabel(o.silenceWarnAfter),
+			}),
+			comment: silenceAlertComment(idleFor, o.silenceAlertAfter),
+		})
+	}
+	return events
+}
 
 // collectToolMarks snapshots tool_in_flight events for every call that has
 // been unpaired for markAfter, then repeats on the backed-off

@@ -4935,6 +4935,35 @@ type TaskFailRequest struct {
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
 }
 
+// AddTaskComment posts a daemon-authored system comment on the task's issue —
+// the ALERT tier's human-reachable leg (RUYI-593). Same channel the
+// strong-stop path uses (FailTask's fixed wording lands as a system comment
+// through the service), opened to pre-terminal watchdog alerts. Best-effort
+// downstream: the service redacts/sanitizes and swallows non-infra problems,
+// and the daemon logs failures without retrying.
+func (h *Handler) AddTaskComment(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+
+	// Verify the caller owns this task's workspace.
+	if _, _, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID); !ok {
+		return
+	}
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.TaskService.AddDaemonTaskSystemComment(r.Context(), parseUUID(taskID), req.Content); err != nil {
+		slog.Warn("add task comment failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
