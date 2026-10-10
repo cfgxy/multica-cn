@@ -134,7 +134,16 @@ fork 未吸收的生产架构时，测试随宿主簇顺延至后续批次。
   证据齐备。[3/5] Go 全套首跑 82 包 ok、仅 handler 包 2 例失败（上述 helper
   白名单误报）→ `2024dcefd8` 修复 → 复跑全套通过（exit 0，含 handler 包）；
   `migrate up` 对 dev1 幂等 skip 至 945/946 后 Done。[5/5] Playwright E2E
-  对 dev1 单独执行，结论见当轮 Issue 评论。
+  对 dev1：首跑 34/45——8 例失败为 web dev server 触发槽位看门狗
+  `RESOURCE_KILL_WEB`（RSS 9498MB > 8192MB 配额，登记在案的保护行为）后的
+  连接拒绝级联；重启补跑 11 例又 7 过，残留 6 例失败全部落在本批 delta
+  之外（被测生产代码与 spec 均与基线同源）：issue-table:174 为 dev1 库
+  多轮测试数据污染（分组断言多出 30 行）、navigation:12 为 dev 模式下
+  逐路由标题（MUL-6222）不生效、quick-actions 为空库无 agent fixture、
+  ruyi483-race 为计时敏感探针超时、settings×2 为第二次 RESOURCE_KILL_WEB
+  （15:45:41Z）级联。合计 41/45 通过；残留失败均属已登记红口径家族
+  （空库无 fixture / E2E 超时型 / 看门狗保护），无本批引入的新失败。
+  seeded fixture 层仍为后续单候选。
 
 ### 遗留与授权项
 
