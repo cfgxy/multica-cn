@@ -162,7 +162,9 @@ test.describe("Agent MCP tab (creator-only)", () => {
     await waitForPageText(page, "MCP Test Agent");
 
     // The creator-only tab entry is present and opens the connection list.
-    const tab = page.getByRole("button", { name: "MCP Apps" });
+    // Agent detail tabs are <button role="tab"> (workbench redesign #5263) —
+    // byRole("button") never matches them.
+    const tab = page.getByRole("tab", { name: "MCP Apps" });
     await expect(tab).toBeVisible({ timeout: 15000 });
     await tab.click();
 
@@ -185,9 +187,11 @@ test.describe("Agent MCP tab (creator-only)", () => {
     await waitForPageText(page, "MCP Test Agent");
 
     // Other tabs render, but the creator-only MCP Apps entry must not.
-    await expect(page.getByRole("button", { name: "Activity" })).toBeVisible({
+    // "Activity" stopped being a tab when the workbench redesign (#5263)
+    // folded it into Overview; "Settings" is an always-rendered top tab.
+    await expect(page.getByRole("tab", { name: "Settings" })).toBeVisible({
       timeout: 15000,
     });
-    await expect(page.getByRole("button", { name: "MCP Apps" })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "MCP Apps" })).toHaveCount(0);
   });
 });
