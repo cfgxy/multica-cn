@@ -2493,8 +2493,21 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 	base := carried
 	switch {
 	case !plan.continues:
-		// A fresh fork: carried is the checkout the snapshot was captured
-		// against, so the increment is the snapshot's own delta.
+		// A fresh fork. With delivery-guard branch-base anchoring, a new branch
+		// may be checked out at the origin's tip rather than the checkout the
+		// snapshot was captured against, so carried is no longer guaranteed to
+		// be the snapshot's parent. Diffing against carried would then propose
+		// the whole tree distance between the two checkouts — mainline
+		// movement dressed up as pending reversals, plus local un-pushed work
+		// no task branch should carry (RUYI-380). The snapshot's own parent is
+		// the honest base in both worlds: the increment is exactly the user's
+		// edit set.
+		if _, err := runGit(worktreePath, "diff", "--quiet", snapshot+"^", snapshot); err == nil {
+			// The user has no edits of their own; the carried-vs-snapshot
+			// difference above is all mainline drift. Nothing to replay.
+			return replayResult{}, nil
+		}
+		base = snapshot + "^"
 	case plan.priorState == "":
 		// A healed refusal (healGuardRefusal leaves priorState empty). The
 		// healed tip carries the branch's task work that the user's directory
@@ -2542,10 +2555,11 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 			"(the agent would have seen a different tree than you have): %s: %w", strings.TrimSpace(out), pickErr)
 	}
 	if !plan.continues {
-		// Unreachable by construction: a fresh branch is checked out at the
-		// increment's own parent, so there is nothing for git to disagree with.
-		// If it ever happens the tree is not one the user would recognise, and
-		// the old fail-closed rule is the right one.
+		// Reachable since branch-base anchoring: a user edit colliding with
+		// mainline movement between the checkout the snapshot was captured
+		// against and the branch's anchor. A conflicted fresh checkout is not
+		// a tree the user would recognise, so fail closed rather than hand the
+		// agent a merge it never agreed to.
 		abortCherryPick(worktreePath, logger)
 		return replayResult{}, fmt.Errorf("execenv: could not replay your local edits onto a fresh task worktree: %s: %w",
 			strings.TrimSpace(out), pickErr)
