@@ -469,6 +469,7 @@
     "key_cleared": "キーを削除しました",
     "key_update_failed": "キーの更新に失敗しました",
     "probe_invalid": "キーは保存されましたが、接続確認に失敗しました（HTTP {{status}}）",
+    "probe_unreachable": "キーは保存されましたが、接続を確認できませんでした（ターゲットに到達できません）",
     "model_label": "モデル",
     "model_placeholder": "gemini-3.8-live",
     "advanced_label": "詳細パラメータ（JSON）",
@@ -488,6 +489,7 @@
     "model_saved": "モデルを更新しました",
     "badge_configured": "設定済み ✓",
     "badge_invalid": "キー無効",
+    "badge_unreachable": "検証不可",
     "badge_not_configured": "未設定"
   },
   "voice_instance_create": {
@@ -502,6 +504,7 @@
     "creating": "登録中…",
     "created": "音声インスタンスを登録しました",
     "created_probe_invalid": "登録されましたが、接続確認に失敗しました。API キーを確認してください",
+    "created_probe_unreachable": "登録されましたが、接続を確認できませんでした。ターゲットに到達できない可能性があります",
     "create_failed": "音声インスタンスの登録に失敗しました",
     "key_save_failed": "登録されましたが、API キーの保存に失敗しました。インスタンス設定から追加してください"
   },
@@ -521,6 +524,15 @@
     "advanced": {
       "expand": "表示",
       "collapse": "閉じる"
+    },
+    "delete": {
+      "action": "インスタンスを削除",
+      "hint": "このインスタンス、保存された API キー、所属プロファイルを削除します。元に戻せません。",
+      "confirm_title": "インスタンスを削除しますか？",
+      "confirm_message": "「{{name}}」と保存された API キーは完全に削除されます。元に戻せません。",
+      "cancel": "キャンセル",
+      "confirm": "削除",
+      "failed": "インスタンスの削除に失敗しました"
     }
   }
 }

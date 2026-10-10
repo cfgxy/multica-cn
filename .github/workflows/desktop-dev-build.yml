@@ -1,0 +1,185 @@
+name: Desktop Dev Build
+
+# 日常 Windows 测试包（RUYI-573）：desktop/server 相关代码 merge 进 main 后
+# 自动构建 Windows 安装包并发布预发布 Release `desktop-dev-v<版本>`，版本
+# `X.Y.Z-dev.YYYYMMDD-N`（N 为当天序号）。补齐此前「PC 端改完代码合进 main
+# 却没有 Windows 测试包」的缺口。
+#
+# 边界（与 Owner 拆分策略一致）：
+# - 日常只出 Windows；Linux/macOS 只在正式 Release 通道出现
+#   （desktop-release.yml 的 vX.Y.Z tag）。
+# - desktop 安装包内嵌 Go CLI（server/ 交叉编译），server 变更同样影响
+#   交付物，故路径过滤纳入 server/**。
+# - dev 通道不写 desktop-release.yml 的 vX.Y.Z tag 空间，两条通道互不覆盖。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - "packages/**"
+      - "server/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/desktop-dev-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# dev 通道串行：dev-version.sh 的序号推算与发布要求同一时刻只有一个构建
+# 在推号；排队而非取消，保证每次有效变更都留下一个完整的 dev Release。
+concurrency:
+  group: desktop-dev-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.dev-version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 版本基线取 git 已到达的最新 vX.Y.Z tag（scripts/package.mjs 的
+          # 既有版本推导同源），需要完整历史。
+          fetch-depth: 0
+
+      # 开发版本 = <可达最高正式 vX.Y.Z tag>-dev.YYYYMMDD-N，与桌面正式版本
+      # 线（v0.4.x …）保持同源；由 scripts/dev-version.sh 从 GitHub Releases
+      # 推算当天序号，经 DESKTOP_PACKAGE_VERSION 注入 scripts/package.mjs。
+      - name: Resolve dev version
+        id: dev-version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # v* 命名空间残留旧手动通道的 describe 形态 tag（如 v0.4.32-203-gbbc74a995），
+          # git describe 按拓扑最近匹配会取到这类非 semver 名而 fail-closed；
+          # 改取 HEAD 可达的最高正式 vX.Y.Z tag 作基线。
+          base=$(git tag --list 'v[0-9]*' --merged HEAD --sort=-v:refname \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 | sed 's/^v//' || true)
+          if [[ -z "$base" ]]; then
+            base="0.0.0"
+          fi
+          build_date=$(TZ=Asia/Shanghai date +%Y%m%d)
+          kv=$(bash scripts/dev-version.sh next --base "$base" --date "$build_date" --prefix desktop-dev-v)
+          version=$(sed -n 's/^version=//p' <<<"$kv")
+          tag=$(sed -n 's/^tag=//p' <<<"$kv")
+          echo "DESKTOP_PACKAGE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Desktop dev version: $version (base $base, date $build_date)"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Deliberately independent from the minimum patch in server/go.mod:
+          # releases follow the newest 1.26 patch available to setup-go.
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --publish never：dev 通道由下一步统一发 GitHub Release，不走
+      # electron-builder 的 publisher（避免与正式 Release 混写）。
+      - name: Package Desktop installers (win)
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: node scripts/package.mjs --win --x64 --arm64 --publish never
+
+      - name: Collect installers with checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          # package.mjs 多目标构建按架构作用域化 electron-builder 输出目录
+          # （-c.directories.output=dist/<platform>-<arch>），安装包位于
+          # apps/desktop/dist 下一层，不在 dist 第一层。
+          shopt -s nullglob
+          exes=(apps/desktop/dist/win-*/*.exe)
+          count=${#exes[@]}
+          if [[ "$count" -lt 2 ]]; then
+            echo "::error::expected x64 + arm64 installers, found $count exe files"
+            exit 1
+          fi
+          mkdir -p dist-staged
+          cp "${exes[@]}" dist-staged/
+          blockmaps=(apps/desktop/dist/win-*/*.exe.blockmap)
+          if [[ "${#blockmaps[@]}" -gt 0 ]]; then
+            cp "${blockmaps[@]}" dist-staged/
+          fi
+          ( cd dist-staged && sha256sum -- *.exe > SHA256SUMS.txt )
+          ls -la dist-staged
+
+      - name: Upload Desktop dev artifacts (win)
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-dev-win
+          path: dist-staged
+          if-no-files-found: error
+
+  publish-release:
+    needs: build
+    # 发布通道仅限 main：分支 dispatch 等其余 ref 的构建只产 artifact，
+    # 防止未合并分支的安装包混入 desktop-dev-v* 开发发布序列。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-dev-win
+          path: dist
+
+      - name: Publish dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ needs.build.outputs.version && format('desktop-dev-v{0}', needs.build.outputs.version) || '' }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAG_NAME" ]]; then
+            echo "::error::TAG_NAME 为空，无法发布"
+            exit 1
+          fi
+          if gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::dev tag '$TAG_NAME' 已存在 Release，序号推算与现状冲突，中止发布"
+            exit 1
+          fi
+          cat > release-notes.md <<EOF
+          Multica Desktop 开发测试构建（Windows）。
+
+          | | |
+          |---|---|
+          | Version | $VERSION |
+          | Commit | \`${{ github.sha }}\` |
+          | Workflow run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+          开发测试通道：版本 X.Y.Z-dev.YYYYMMDD-N，同日连续发版序号递增；预发布 Release 不占用正式 vX.Y.Z 通道。安装包未签名，首次运行按系统提示放行。
+          EOF
+          gh release create "$TAG_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Multica Desktop dev $VERSION (win)" \
+            --notes-file release-notes.md \
+            --latest=false

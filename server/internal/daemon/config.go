@@ -73,6 +73,9 @@ const (
 	DefaultGCHermesMemoryTTL              = 90 * 24 * time.Hour // 90 days — reclaim per-agent Hermes memory stores untouched this long (long: reclaiming these is visible amnesia, and they are a few markdown files)
 	DefaultGCHermesSessionTTL             = 14 * 24 * time.Hour // 14 days — reclaim per-conversation Hermes session stores untouched this long (matches Codex: these hold transcripts, and losing an idle one restarts the thread rather than the agent's notes)
 	DefaultGCRepoTTL                      = 30 * 24 * time.Hour // 30 days — evict a bare repo cache no task has checked out this long
+	// DefaultGCGuardEvidenceTTL bounds the recycle guard's own evidence
+	// sweeper — the only deleter of recycle-evidence files (RUYI-594).
+	DefaultGCGuardEvidenceTTL = 30 * 24 * time.Hour
 	// DefaultGCTaskTempLegacyTTL is 0 — disabled. Per-task temp dirs left by a
 	// daemon predating the temp dir execution lock carry no liveness signal at
 	// all, and age cannot supply one: a task may legitimately run for weeks
@@ -155,6 +158,8 @@ type Config struct {
 	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
 	GCRepoTTL                      time.Duration         // evict a cached bare repo under .repos once no task has created a worktree from it for this long, it has no worktrees left, and it is no longer attached to any watched workspace (default: 30d, set 0 to disable)
 	GCRepoMaintenanceEnabled       bool                  // run reflog expiry and git gc after stale agent refs are removed (default: true; disable independently as an operational kill switch)
+	GCGuardEnabled                 bool                  // scan every recycle path for unpushed commits before deleting and write recycle evidence (default: true; disabling is the operational kill switch that restores pre-guard behaviour)
+	GCGuardEvidenceTTL             time.Duration         // how long recycle-evidence files are kept before the guard's sweeper removes them (default: 30d; nothing else deletes evidence)
 	GCCodexSessionTTL              time.Duration         // reclaim a per-issue Codex session store (~/.codex/multica-sessions/<agent>/<issue>) untouched for at least this long, so a done/abandoned issue's conversation history does not accumulate forever (default: 14d, set 0 to disable)
 	GCHermesMemoryTTL              time.Duration         // reclaim a per-agent Hermes memory store (<profile dir>/hermes-state/<agent>/<profile>) untouched for at least this long, so a deleted agent's memory does not sit on disk forever (default: 90d, set 0 to disable)
 	GCHermesSessionTTL             time.Duration         // reclaim a per-conversation Hermes session store (<profile dir>/hermes-sessions/<agent>/<profile>/<conversation>) untouched for at least this long, so a done or abandoned conversation's transcript does not accumulate forever (default: 14d, set 0 to disable)
@@ -641,6 +646,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 	gcRepoMaintenanceEnabled := boolFromEnv("MULTICA_GC_REPO_MAINTENANCE_ENABLED", true)
+	gcGuardEnabled := boolFromEnv("MULTICA_GC_GUARD_ENABLED", true)
+	gcGuardEvidenceTTL, err := durationFromEnv("MULTICA_GC_GUARD_EVIDENCE_TTL", DefaultGCGuardEvidenceTTL)
+	if err != nil {
+		return Config{}, err
+	}
 	gcArtifactPatterns := patternsFromEnv("MULTICA_GC_ARTIFACT_PATTERNS", DefaultGCArtifactPatterns)
 
 	// Auto-update config: default -> env override -> CLI override.
@@ -694,6 +704,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		GCArtifactPatterns:              gcArtifactPatterns,
 		GCRepoTTL:                       gcRepoTTL,
 		GCRepoMaintenanceEnabled:        gcRepoMaintenanceEnabled,
+		GCGuardEnabled:                  gcGuardEnabled,
+		GCGuardEvidenceTTL:              gcGuardEvidenceTTL,
 		GCCodexSessionTTL:               gcCodexSessionTTL,
 		GCHermesMemoryTTL:               gcHermesMemoryTTL,
 		GCHermesSessionTTL:              gcHermesSessionTTL,

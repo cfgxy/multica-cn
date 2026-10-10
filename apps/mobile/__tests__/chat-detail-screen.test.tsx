@@ -309,8 +309,12 @@ jest.mock("@/components/ui/header", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
+    // Slots as static children args, not one array — screen-created slot
+    // elements legitimately carry no key, and the real Header renders each
+    // slot in its own JSX position (an array here only manufactures
+    // "unique key prop" console warnings, RUYI-533 follow-up).
     Header: ({ left, center, right }) =>
-      React.createElement(View, { testID: "header" }, [left, center, right]),
+      React.createElement(View, { testID: "header" }, left, center, right),
   };
 });
 

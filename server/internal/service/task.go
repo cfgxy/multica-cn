@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -78,6 +79,12 @@ type TaskService struct {
 	// state for a self-hosted deployment with no MULTICA_LLM_* configuration.
 	// Wired in router.go from the same *llm.Client that backs chat auto-titling.
 	QuickActions ChatQuickActionsLLM
+	// RetrospectiveTerminal hands a finished daily-retrospective agent run
+	// (RUYI-552 direction 3) to the retrospective Runner so its drafts land
+	// in the legislation pool. Optional: nil skips the hook (tests, or a
+	// build that never wired the runner). output is the run's final message
+	// ("" on the fail path); taskErr distinguishes success from failure.
+	RetrospectiveTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*retrospective.RunStats, error)
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built
@@ -4630,7 +4637,14 @@ func startsWithAbsolutePath(s string) bool {
 // causing the new task to resume against a stale (or NULL) session.
 // durableWorkDir is terminal delivery metadata, not a resume pointer: it is
 // populated only after the daemon confirms a disposable worktree is gone.
-func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, error) {
+// The bool result is true only when THIS call executed the terminal
+// transaction and the row ended completed — a replayed terminal callback on an
+// already-finalized task returns (existing, false, nil). Callers must gate
+// completed-specific side effects (completion reconciliation) on it, or a
+// daemon restart that re-reports offline-finished runs re-runs reconciliation
+// for every historical task at once (MUL-4195 regression, 2026-10-09 queue
+// storm).
+func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, result []byte, sessionID, workDir, branchName string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) (*db.AgentTaskQueue, bool, error) {
 	var task db.AgentTaskQueue
 	// chatAssistantMsg is the single assistant outcome row written for a chat
 	// task inside the completion transaction below. It is broadcast (chat:done)
@@ -4745,7 +4759,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 					"current_status", existing.Status,
 					"agent_id", util.UUIDToString(existing.AgentID),
 				)
-				return &existing, nil
+				return &existing, false, nil
 			}
 			slog.Warn("complete task failed",
 				"task_id", util.UUIDToString(taskID),
@@ -4761,7 +4775,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 				"lookup_error", lookupErr,
 			)
 		}
-		return nil, fmt.Errorf("complete task: %w", err)
+		return nil, false, fmt.Errorf("complete task: %w", err)
 	}
 
 	if guardConverged {
@@ -4770,7 +4784,8 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		// broadcast, notifications) — the cancel/ack path owns this row now.
 		slog.Info("task completion converged to cancelled (cancel race lost)",
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
-		return &task, nil
+		// Not a completion: the cancel path owns this row and its side effects.
+		return &task, false, nil
 	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
@@ -4834,6 +4849,28 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		s.notifyQuickCreateCompleted(ctx, task, qc, result)
 	}
 
+	// Daily-retrospective agent runs (RUYI-552 direction 3): hand the run's
+	// final message to the retrospective Runner, whose drafts land in the
+	// legislation pool. The run linked no issue and must have posted no
+	// comment — this hook is the only consumer of its output. The JSON
+	// report is parsed as-is downstream: no UnescapeBackslashEscapes here,
+	// which would corrupt the string escapes inside the JSON envelope.
+	if s.RetrospectiveTerminal != nil {
+		if _, ok := s.parseRetrospectiveContext(task); ok {
+			output := ""
+			var payload protocol.TaskCompletedPayload
+			if err := json.Unmarshal(result, &payload); err == nil {
+				output = payload.Output
+			}
+			if _, err := s.RetrospectiveTerminal(ctx, task, output, ""); err != nil {
+				slog.Warn("retrospective terminal hook failed",
+					"task_id", util.UUIDToString(task.ID),
+					"error", err,
+				)
+			}
+		}
+	}
+
 	// For chat tasks, broadcast chat:done AFTER commit. The single assistant
 	// outcome row (message or no_response) and the resume pointer were already
 	// persisted inside the transaction above. Unread is derived from the read
@@ -4864,7 +4901,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
 
-	return &task, nil
+	return &task, true, nil
 }
 
 // chatNoResponseFallback is the non-empty English body stored on a no_response
@@ -5514,6 +5551,20 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			}
 		}
 	}
+	// Daily-retrospective agent runs (RUYI-552 direction 3): a daemon-reported
+	// failure is one of the terminal verdicts the Runner accepts. Skipped when
+	// an auto-retry is pending — the retry child reports the final outcome, and
+	// the Runner's status guard makes whichever verdict arrives first win.
+	if retried == nil && s.RetrospectiveTerminal != nil {
+		if _, ok := s.parseRetrospectiveContext(task); ok {
+			if _, err := s.RetrospectiveTerminal(ctx, task, "", errMsg); err != nil {
+				slog.Warn("retrospective terminal hook (fail) failed",
+					"task_id", util.UUIDToString(task.ID),
+					"error", err,
+				)
+			}
+		}
+	}
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
 
@@ -5533,14 +5584,24 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // etc.) are intentionally excluded — those are real problems that the user
 // should see, not infrastructure flakiness.
 //
-// The one agent_error.* exception is provider_network: a mid-stream provider
-// disconnect (e.g. Claude Code's "API Error: Connection closed mid-response")
-// is transient infrastructure flakiness, not an agent decision. Unattended
-// issue runs otherwise terminate on it, while interactive chat only survives
-// because the CLI's own in-process retry happens to recover first — so we make
-// the platform retry it directly (MUL-4910). It is resume-safe (not in
+// The agent_error.* members are the transient provider/process failures, the
+// one agent_error.* family the allowlist admits. provider_network covers a
+// mid-stream provider disconnect (e.g. Claude Code's "API Error: Connection
+// closed mid-response"): transient infrastructure flakiness, not an agent
+// decision. Unattended issue runs otherwise terminate on it, while interactive
+// chat only survives because the CLI's own in-process retry happens to recover
+// first — so we make the platform retry it directly (MUL-4910).
+// process_failure, provider_capacity_or_rate_limit, and provider_server_error
+// join for the same class of reason (RUYI-601): a crashed agent subprocess or
+// a provider 429/5xx is infrastructure flakiness too, and a delegated task
+// that dies on one must continue on the SAME agent — the auto-retry is what
+// keeps the delegated_from lineage alive, so a budget-exhausted failure still
+// hands coordination back to the delegating task instead of stranding the
+// work after a single crash. All four are resume-safe (not in
 // resumeUnsafeFailureReason), so the retry child inherits the session and
 // continues the truncated conversation rather than restarting from scratch.
+// They retry immediately with the task's default budget (first run + one
+// retry); no bespoke backoff schedule.
 // skill_bundle_unavailable is retryable for the same reason: the agent process
 // never started, so there is nothing to be idempotent about, and every bundle
 // that did download is already cached on disk — a retry resumes from there
@@ -5554,13 +5615,16 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 // occurrence waited for a human. Resume-safe, so the retry inherits the
 // session; the session was never the problem.
 var retryableReasons = map[string]bool{
-	string(taskfailure.ReasonRuntimeOffline):         true,
-	string(taskfailure.ReasonRuntimeRecovery):        true,
-	string(taskfailure.ReasonTimeout):                true,
-	"codex_semantic_inactivity":                      true,
-	string(taskfailure.ReasonAgentProviderNetwork):   true,
-	string(taskfailure.ReasonSkillBundleUnavailable): true,
-	string(taskfailure.ReasonDeliveryGuard):          true,
+	string(taskfailure.ReasonRuntimeOffline):                   true,
+	string(taskfailure.ReasonRuntimeRecovery):                  true,
+	string(taskfailure.ReasonTimeout):                          true,
+	"codex_semantic_inactivity":                                true,
+	string(taskfailure.ReasonAgentProviderNetwork):             true,
+	string(taskfailure.ReasonAgentProcessFailure):              true,
+	string(taskfailure.ReasonAgentProviderCapacityOrRateLimit): true,
+	string(taskfailure.ReasonAgentProviderServerError):         true,
+	string(taskfailure.ReasonSkillBundleUnavailable):           true,
+	string(taskfailure.ReasonDeliveryGuard):                    true,
 }
 
 // runtime_offline retries start deferred, not queued: their positive fire_at
@@ -7690,6 +7754,8 @@ func (s *TaskService) broadcastTaskFailedEvent(ctx context.Context, task db.Agen
 // For issue tasks, it comes from the issue. For chat tasks, from the chat session.
 // For autopilot tasks, from the autopilot via its run.
 // For quiz runs, from the workspace of the quiz item the context names.
+// For retrospective runs, from the workspace the context payload carries —
+// the run is linkless by construction (RUYI-552: it must not touch issues).
 // Returns "" when none of the links resolve — callers treat that as "not found".
 func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentTaskQueue) string {
 	if task.IssueID.Valid {
@@ -7729,6 +7795,13 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 		if wsID, err := s.Queries.GetPromptQuizItemWorkspace(ctx, itemID); err == nil {
 			return util.UUIDToString(wsID)
 		}
+	}
+	// Retrospective agent runs (RUYI-552 direction 3) are the third linkless
+	// kind: the context payload itself carries the owning workspace id, so no
+	// extra lookup — without this the daemon's /start /progress /complete
+	// /fail calls would 404 exactly like quiz runs did on RUYI-286.
+	if retroCtx, ok := s.parseRetrospectiveContext(task); ok {
+		return retroCtx.WorkspaceID
 	}
 	return ""
 }
@@ -8070,6 +8143,24 @@ func (s *TaskService) parseQuizContext(task db.AgentTaskQueue) (pgtype.UUID, boo
 		return pgtype.UUID{}, false
 	}
 	return itemID, true
+}
+
+// parseRetrospectiveContext returns the retrospective run payload if the
+// task's context JSONB is one — kind == retrospective.TaskKind and a valid
+// workspace id, the shape retrospective.TaskContext writes. Otherwise the
+// bool is false so callers can short-circuit. Tasks linked to an issue /
+// chat / autopilot are never retrospective runs even if they happen to
+// carry a context blob — same up-front filter as the quick-create and quiz
+// parsers, whose payloads this stays disjoint from: quick-create tags
+// "type", quiz tags kind=prompt_quiz, retrospective tags kind=retrospective.
+func (s *TaskService) parseRetrospectiveContext(task db.AgentTaskQueue) (retrospective.TaskContext, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return retrospective.TaskContext{}, false
+	}
+	if len(task.Context) == 0 {
+		return retrospective.TaskContext{}, false
+	}
+	return retrospective.ParseTaskContext(task.Context)
 }
 
 func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) (bool, error) {

@@ -4854,11 +4854,18 @@ export const PromptProposalBatchOutcomeSchema = z.object({
   body: z.string(),
 });
 
-export const RetrospectiveConfigSchema = z.object({
-  enabled: z.boolean(),
-  include_in_review: z.boolean(),
-  window_days: z.number(),
-});
+// RUYI-552: the config response carries the selected execution agent (plus a
+// best-effort display name). Loose like RetrospectiveRunSchema — the server
+// keeps adding status detail here.
+export const RetrospectiveConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    include_in_review: z.boolean(),
+    window_days: z.number(),
+    agent_id: z.string().nullable(),
+    agent_name: z.string().nullable(),
+  })
+  .loose();
 
 export const RetrospectiveRunSchema = z.object({
   id: z.string(),
@@ -4872,6 +4879,9 @@ export const RetrospectiveRunSchema = z.object({
   proposals_merged: z.number(),
   duplicates_skipped: z.number(),
   error: z.string(),
+  // Raw JSONB passthrough (server sends an object; the client keeps it
+  // untyped). Null-safe: rows predating the column serialize null.
+  detail: z.unknown().nullable().optional(),
   created_at: z.string(),
 }).loose();
 
@@ -5021,3 +5031,41 @@ export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
   knowledge: { dirs: 0, entries: 0 },
   skills: { count: 0, invocations: 0 },
 };
+
+// ---- Self-evolution model-service config (RUYI-551) ----
+
+const SelfEvolutionModelConfigOverrideSchema = z.object({
+  base_url: z.string().default(""),
+  model: z.string().default(""),
+  has_api_key: z.boolean().default(false),
+  scoring_enabled: z.boolean().default(true),
+  last_validated_at: z.string().optional(),
+  last_validation_ok: z.boolean().nullish(),
+  last_validation_error: z.string().default(""),
+});
+
+const SelfEvolutionModelConfigResolvedSchema = z.object({
+  status: z.enum(["ok", "unconfigured", "error", "disabled"]).default("unconfigured"),
+  source: z.enum(["module_config", "deploy_default", ""]).default(""),
+  model: z.string().optional(),
+});
+
+export const SelfEvolutionModelConfigSchema = z.object({
+  override: SelfEvolutionModelConfigOverrideSchema.nullable().default(null),
+  resolved: SelfEvolutionModelConfigResolvedSchema.default({
+    status: "unconfigured",
+    source: "",
+  }),
+  scoring_enabled: z.boolean().default(true),
+  // A deployment without the per-workspace key still answers GETs truthfully
+  // (deploy default, saves refused) — the flag tells the card which story to
+  // tell instead of the read failing.
+  encryption_ready: z.boolean().default(true),
+});
+
+export const SelfEvolutionConfigValidationSchema = z.object({
+  ok: z.boolean().default(false),
+  error_kind: z.string().default(""),
+  message: z.string().default(""),
+  validated_at: z.string().optional(),
+});

@@ -939,30 +939,53 @@ func (h *Handler) GetPromptStructureBaselineHandler(w http.ResponseWriter, r *ht
 
 // GetRetrospectiveConfig — GET /api/retrospective/config
 func (h *Handler) GetRetrospectiveConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := h.Queries.GetRetrospectiveConfig(r.Context(), parseUUID(h.resolveWorkspaceID(r)))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"enabled": false, "include_in_review": false, "window_days": 1,
-			})
-			return
-		}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	cfg, err := h.Queries.GetRetrospectiveConfig(r.Context(), workspaceID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to read retrospective config")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":           cfg.Enabled,
-		"include_in_review": cfg.IncludeInReview,
-		"window_days":       cfg.WindowDays,
-	})
+	var agentName string
+	if err == nil && cfg.AgentID.Valid {
+		// Best-effort display name: an agent archived after saving still
+		// shows by name; failure leaves the id as the only handle.
+		if a, agentErr := h.Queries.GetAgent(r.Context(), cfg.AgentID); agentErr == nil {
+			agentName = a.Name
+		}
+	}
+	var cfgPtr *db.RetrospectiveConfig
+	if err == nil {
+		cfgPtr = &cfg
+	}
+	writeJSON(w, http.StatusOK, retrospectiveConfigResponse(cfgPtr, agentName))
+}
+
+// retrospectiveConfigResponse projects the saved config (RUYI-552 direction
+// 3): the selected agent rides flat, the name resolved best-effort for the
+// selector's display label.
+func retrospectiveConfigResponse(cfg *db.RetrospectiveConfig, agentName string) map[string]any {
+	enabled, include, days := false, false, int32(1)
+	var agentID string
+	if cfg != nil {
+		enabled, include, days = cfg.Enabled, cfg.IncludeInReview, cfg.WindowDays
+		agentID = uuidToString(cfg.AgentID)
+	}
+	return map[string]any{
+		"enabled":           enabled,
+		"include_in_review": include,
+		"window_days":       days,
+		"agent_id":          agentID,
+		"agent_name":        agentName,
+	}
 }
 
 // UpdateRetrospectiveConfig — PUT /api/retrospective/config (owner-only)
 func (h *Handler) UpdateRetrospectiveConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled         *bool `json:"enabled"`
-		IncludeInReview *bool `json:"include_in_review"`
-		WindowDays      *int  `json:"window_days"`
+		Enabled         *bool   `json:"enabled"`
+		IncludeInReview *bool   `json:"include_in_review"`
+		WindowDays      *int    `json:"window_days"`
+		AgentID         *string `json:"agent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -971,8 +994,10 @@ func (h *Handler) UpdateRetrospectiveConfig(w http.ResponseWriter, r *http.Reque
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	current, err := h.Queries.GetRetrospectiveConfig(r.Context(), workspaceID)
 	enabled, include, days := false, false, 1
+	var agentID pgtype.UUID
 	if err == nil {
 		enabled, include, days = current.Enabled, current.IncludeInReview, int(current.WindowDays)
+		agentID = current.AgentID
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to read retrospective config")
 		return
@@ -990,21 +1015,61 @@ func (h *Handler) UpdateRetrospectiveConfig(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "window_days must be between 1 and 30")
 		return
 	}
+	if req.AgentID != nil {
+		// "" clears the selection; non-empty must resolve to a runnable
+		// agent in this workspace (exists, not archived, has a runtime).
+		if *req.AgentID == "" {
+			agentID = pgtype.UUID{}
+		} else {
+			parsed, parseErr := util.ParseUUID(*req.AgentID)
+			if parseErr != nil {
+				writeError(w, http.StatusBadRequest, "agent_id is not a valid UUID")
+				return
+			}
+			agent, agentErr := h.Queries.GetAgent(r.Context(), parsed)
+			if agentErr != nil || uuidToString(agent.WorkspaceID) != uuidToString(workspaceID) {
+				writeError(w, http.StatusBadRequest, "agent not found in this workspace")
+				return
+			}
+			if agent.ArchivedAt.Valid {
+				writeError(w, http.StatusBadRequest, "agent is archived")
+				return
+			}
+			if !agent.RuntimeID.Valid {
+				writeError(w, http.StatusBadRequest, "agent has no runtime")
+				return
+			}
+			agentID = parsed
+		}
+	}
+	if enabled && !agentID.Valid {
+		writeError(w, http.StatusBadRequest, "enabling the retrospective requires a selected agent")
+		return
+	}
+	requestUserID := requestUserID(r)
+	var originator pgtype.UUID
+	if parsed, err := util.ParseUUID(requestUserID); err == nil {
+		originator = parsed
+	}
 	cfg, err := h.Queries.UpsertRetrospectiveConfig(r.Context(), db.UpsertRetrospectiveConfigParams{
 		WorkspaceID:     workspaceID,
 		Enabled:         enabled,
 		IncludeInReview: include,
 		WindowDays:      int32(days),
+		AgentID:         agentID,
+		UpdatedBy:       originator,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save retrospective config")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":           cfg.Enabled,
-		"include_in_review": cfg.IncludeInReview,
-		"window_days":       cfg.WindowDays,
-	})
+	var agentName string
+	if cfg.AgentID.Valid {
+		if a, agentErr := h.Queries.GetAgent(r.Context(), cfg.AgentID); agentErr == nil {
+			agentName = a.Name
+		}
+	}
+	writeJSON(w, http.StatusOK, retrospectiveConfigResponse(&cfg, agentName))
 }
 
 // ListRetrospectiveRuns — GET /api/retrospective/runs
@@ -1034,7 +1099,11 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 		"proposals_merged":   run.ProposalsMerged,
 		"duplicates_skipped": run.DuplicatesSkipped,
 		"error":              run.Error,
-		"created_at":         run.CreatedAt.Time.UTC().Format(httpTimeFormat),
+		// Raw JSONB (carries issue_ids: the window membership recorded at
+		// trigger, validated all-or-nothing at completion); json.RawMessage
+		// so it embeds as an object, not base64.
+		"detail":     json.RawMessage(run.Detail),
+		"created_at": run.CreatedAt.Time.UTC().Format(httpTimeFormat),
 	}
 	if run.FinishedAt.Valid {
 		resp["finished_at"] = run.FinishedAt.Time.UTC().Format(httpTimeFormat)
@@ -1043,22 +1112,26 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 }
 
 // TriggerRetrospectiveRun — POST /api/retrospective/run (owner-only, manual)
-// Runs one workspace pass synchronously; the run record carries the outcome.
+// Enqueues one retrospective run through the platform's own agent-task
+// trigger (RUYI-552 direction 3): the selected agent's single Run reads the
+// window and submits improvement drafts — no Issue is created and no comment
+// is posted anywhere. The run record carries the outcome; agent execution is
+// asynchronous from this caller's point of view.
 func (h *Handler) TriggerRetrospectiveRun(w http.ResponseWriter, r *http.Request) {
-	if h.LLM == nil || !h.LLM.Enabled() {
-		writeError(w, http.StatusConflict, "LLM 未配置，无法运行复盘")
+	if h.RetrospectiveRunner == nil {
+		writeError(w, http.StatusInternalServerError, "retrospective runner is not wired")
 		return
 	}
-	workspaceID := h.resolveWorkspaceID(r)
-	runner := &retrospective.Runner{
-		DB:      h.TxStarter,
-		Queries: h.Queries,
-		LLM:     h.LLM,
-	}
-	stats, err := runner.RunWorkspace(r.Context(), workspaceID, "manual")
+	stats, err := h.RetrospectiveRunner.RunWorkspace(r.Context(), h.resolveWorkspaceID(r), "manual")
 	if err != nil {
 		if errors.Is(err, retrospective.ErrNoConfig) {
 			writeError(w, http.StatusBadRequest, "retrospective is not enabled for this workspace")
+			return
+		}
+		if errors.Is(err, retrospective.ErrNoAgent) {
+			// Same contract the old llm_not_configured error had: the UI
+			// localizes off the code; the sentence is fallback text.
+			writeErrorCode(w, http.StatusConflict, "agent_not_configured", "未配置可用的执行智能体：请先在每日总复盘配置中选择一个智能体")
 			return
 		}
 		// The run record holds the failure; still report it to the caller.
@@ -1072,4 +1145,42 @@ func (h *Handler) TriggerRetrospectiveRun(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"run": stats})
+}
+
+// RetrospectiveTaskEnqueuer adapts the Handler into the Runner's enqueue
+// port: it persists the no-issue agent_task_queue row via the fenced INSERT
+// and wakes the daemon through the task service (same notify path as
+// mention-triggered tasks), keeping trigger-audit semantics intact.
+func (h *Handler) RetrospectiveTaskEnqueuer() retrospective.TaskEnqueuer {
+	return func(ctx context.Context, params retrospective.EnqueueParams) (string, error) {
+		var originator pgtype.UUID
+		if params.OriginatorUserID != "" {
+			if parsed, err := util.ParseUUID(params.OriginatorUserID); err == nil {
+				originator = parsed
+			}
+		}
+		runID, runErr := util.ParseUUID(params.RunID)
+		if runErr != nil {
+			return "", fmt.Errorf("retrospective task enqueue: invalid run id: %w", runErr)
+		}
+		task, err := h.Queries.CreateRetrospectiveTask(ctx, db.CreateRetrospectiveTaskParams{
+			AgentID:           util.MustParseUUID(params.AgentID),
+			RuntimeID:         util.MustParseUUID(params.RuntimeID),
+			OriginatorUserID:  originator,
+			AccountableUserID: originator,
+			Priority:          params.Priority,
+			RunID:             runID,
+			Context:           params.Context,
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", fmt.Errorf("retrospective task enqueue refused: agent or workspace is gone")
+			}
+			return "", err
+		}
+		if h.TaskService != nil {
+			h.TaskService.NotifyTaskEnqueued(ctx, task)
+		}
+		return uuidToString(task.ID), nil
+	}
 }

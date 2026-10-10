@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -46,7 +48,7 @@ func newTestSupervisor(t *testing.T) *supervisor.Supervisor {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	sup, err := supervisor.New(mgr, nil, "/tmp/fake-daemon", nil)
+	sup, err := supervisor.New(mgr, nil, "/tmp/fake-daemon", "test", nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -248,13 +250,16 @@ const reconcileTestRunID = "77770000-0000-0000-0000-000000000007"
 // one live supervised run seeded into a temp run store, a shimmed systemctl
 // reporting that unit active, an httptest server answering ListInFlightTasks
 // per runtime, and workspaces registered so allRuntimeIDs sees the runtimes.
-func newReconcileHarness(t *testing.T, runtimeIDs []string, respond func(runtimeID string) (int, string)) (*Daemon, *supervisor.Manager, string, string) {
+func newReconcileHarness(t *testing.T, runtimeIDs []string, respond func(runtimeID string) (int, string), activeUnits ...string) (*Daemon, *supervisor.Manager, string, string) {
 	t.Helper()
+	if len(activeUnits) == 0 {
+		activeUnits = []string{supervisor.UnitName(reconcileTestRunID)}
+	}
 	binDir := t.TempDir()
 	killLog := filepath.Join(t.TempDir(), "kills.log")
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_KILL_LOG", killLog)
-	t.Setenv("FAKE_ACTIVE_UNITS", supervisor.UnitName(reconcileTestRunID))
+	t.Setenv("FAKE_ACTIVE_UNITS", strings.Join(activeUnits, " "))
 	writeSystemctlShim(t, binDir)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,11 +277,12 @@ func newReconcileHarness(t *testing.T, runtimeIDs []string, respond func(runtime
 	if err := mgr.WriteManifest(&supervisor.Manifest{
 		Version: 1, RunID: reconcileTestRunID, TaskID: testTaskID, Runtime: "claude",
 		Unit: supervisor.UnitName(reconcileTestRunID), State: supervisor.StateRunning, StartedAt: time.Now().UTC(),
+		Owner: supervisor.OwnerIdentity(""),
 	}); err != nil {
 		t.Fatalf("seed manifest: %v", err)
 	}
 	sys := supervisor.NewSystemdCtl(nil)
-	sup, err := supervisor.New(mgr, sys, "/tmp/fake-daemon", nil)
+	sup, err := supervisor.New(mgr, sys, "/tmp/fake-daemon", supervisor.OwnerIdentity(""), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -350,6 +356,133 @@ func TestReconcileSupervisedRunsKillSafety(t *testing.T) {
 	})
 }
 
+// RUYI-607 regression: a dev/QA daemon starting on this host used to sweep
+// the SHARED legacy run store, find a production run's live unit absent from
+// its own server's in-flight list, and SIGKILL it via StopOrphan. Two gates
+// must hold in one startup pass: the legacy-store migration only adopts runs
+// this daemon can prove it launched (task in ITS in-flight set), and the
+// reconcile matrix never acts on runs its identity does not own. Zero kills,
+// own run adopted with owner stamped, foreign run left untouched.
+func TestReconcileSupervisedRunsLegacyStoreOwnership(t *testing.T) {
+	foreignTask := "01deb00f-0000-0000-0000-00000000dead"
+	foreignRun := "99990000-0000-0000-0000-000000000009"
+	ownRun := "88880000-0000-0000-0000-000000000008"
+
+	legacy := t.TempDir()
+	seedLegacySharedRun(t, legacy, foreignRun, foreignTask, "")
+	seedLegacySharedRun(t, legacy, ownRun, testTaskID, "")
+
+	d, mgr, _, killLog := newReconcileHarness(t, []string{"rt-1"}, func(string) (int, string) {
+		return http.StatusOK, `[{"id":"` + testTaskID + `"}]`
+	}, supervisor.UnitName(reconcileTestRunID), supervisor.UnitName(foreignRun), supervisor.UnitName(ownRun))
+	d.supervisedRunsBase = legacy
+	d.reconcileSupervisedRuns(context.Background())
+
+	if kills := killLogEntries(t, killLog); kills != nil {
+		t.Fatalf("foreign live unit must survive another daemon's startup reconcile, shim recorded %q", kills)
+	}
+
+	// Own in-flight run: adopted out of the shared store, owner stamped.
+	own, err := mgr.ReadManifest(ownRun)
+	if err != nil {
+		t.Fatalf("own in-flight run not adopted from legacy store: %v", err)
+	}
+	if own.Owner != supervisor.OwnerIdentity("") || own.TaskID != testTaskID {
+		t.Fatalf("adopted run not stamped with this daemon's identity: %+v", own)
+	}
+	if _, err := os.Stat(filepath.Join(legacy, ownRun)); !os.IsNotExist(err) {
+		t.Fatalf("adopted run must leave the legacy store, stat err = %v", err)
+	}
+
+	// Foreign run: untouched in the shared store, never adopted into ours.
+	// (Our store may still hold a quarantine shell for its live unit — the
+	// pre-RUYI-349 unknown-unit record that proves it was seen, not killed.)
+	foreignData, err := os.ReadFile(filepath.Join(legacy, foreignRun, "manifest.json"))
+	if err != nil {
+		t.Fatalf("foreign run must stay in the legacy store: %v", err)
+	}
+	var foreignMan supervisor.Manifest
+	if err := json.Unmarshal(foreignData, &foreignMan); err != nil {
+		t.Fatal(err)
+	}
+	if foreignMan.Owner != "" || foreignMan.TaskID != foreignTask {
+		t.Fatalf("foreign run manifest was mutated: %+v", foreignMan)
+	}
+	if _, err := mgr.ReadManifest(foreignRun); err == nil {
+		t.Fatalf("foreign run must never be adopted into this daemon's run store")
+	}
+}
+
+// RUYI-607 acceptance: kill/skip decisions must be visible in the daemon
+// log. A foreign-owner manifest sitting in THIS daemon's own run store with
+// its unit live is the exact shape the identity gate exists for — its task
+// is absent from the in-flight list, so without the gate the matrix would
+// issue StopOrphan and kill. One reconcile pass must log decision=foreign_skip
+// with a reason echoing the foreign owner, kill nothing, and leave the
+// manifest untouched.
+func TestReconcileSupervisedRunsForeignSkipLogged(t *testing.T) {
+	foreignTask := "01deb00f-0000-0000-0000-00000000beef"
+	foreignRun := "99990000-0000-0000-0000-000000000006"
+	foreignOwner := supervisor.OwnerIdentity("prod-profile")
+
+	d, mgr, _, killLog := newReconcileHarness(t, []string{"rt-1"}, func(string) (int, string) {
+		return http.StatusOK, `[{"id":"` + testTaskID + `"}]`
+	}, supervisor.UnitName(reconcileTestRunID), supervisor.UnitName(foreignRun))
+	var logs bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&logs, nil))
+	if err := mgr.WriteManifest(&supervisor.Manifest{
+		Version: 1, RunID: foreignRun, TaskID: foreignTask, Runtime: "claude",
+		Unit: supervisor.UnitName(foreignRun), State: supervisor.StateRunning,
+		StartedAt: time.Now().UTC(), Owner: foreignOwner,
+	}); err != nil {
+		t.Fatalf("seed foreign manifest: %v", err)
+	}
+
+	d.reconcileSupervisedRuns(context.Background())
+
+	if kills := killLogEntries(t, killLog); kills != nil {
+		t.Fatalf("foreign-owned live unit must never be killed on this daemon's startup reconcile, shim recorded %q", kills)
+	}
+	// Substring checks avoid quoting forms: slog TextHandler escapes inner
+	// quotes, so assert on pieces that survive any handler encoding.
+	logged := logs.String()
+	if !strings.Contains(logged, "decision=foreign_skip") {
+		t.Fatalf("reconcile pass must log the foreign_skip decision, log captured:\n%s", logged)
+	}
+	if !strings.Contains(logged, foreignRun) || !strings.Contains(logged, "manifest owner ") || !strings.Contains(logged, foreignOwner) {
+		t.Fatalf("foreign_skip log must name run %s and echo foreign owner %q in its reason, log captured:\n%s", foreignRun, foreignOwner, logged)
+	}
+	man, err := mgr.ReadManifest(foreignRun)
+	if err != nil || man == nil {
+		t.Fatalf("foreign manifest must survive the pass: %v (man %+v)", err, man)
+	}
+	if man.Exit != nil || man.State != supervisor.StateRunning {
+		t.Fatalf("foreign_skip must leave the manifest untouched, got %+v", man)
+	}
+}
+
+// seedLegacySharedRun writes a pre-RUYI-607 shared-store run directory: flat
+// under the store root, manifest carrying no owner stamp (owner "").
+func seedLegacySharedRun(t *testing.T, root, runID, taskID, owner string) {
+	t.Helper()
+	dir := filepath.Join(root, runID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"version": 1, "run_id": runID, "task_id": taskID, "runtime": "claude",
+		"unit": supervisor.UnitName(runID), "state": "running",
+		"started_at": time.Now().UTC().Format(time.RFC3339),
+		"owner":      owner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // wireShimmedSupervisor replaces d.supervisor with one that probes a shimmed
 // systemctl: units listed in activeUnits answer "active", everything else
 // answers "inactive". Unlike newTestSupervisor (nil systemd, so liveness
@@ -367,7 +500,7 @@ func wireShimmedSupervisor(t *testing.T, d *Daemon, activeUnits ...string) *supe
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	sup, err := supervisor.New(mgr, supervisor.NewSystemdCtl(nil), "/tmp/fake-daemon", nil)
+	sup, err := supervisor.New(mgr, supervisor.NewSystemdCtl(nil), "/tmp/fake-daemon", "test", nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

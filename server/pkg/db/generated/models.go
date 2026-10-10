@@ -1716,6 +1716,10 @@ type RetrospectiveConfig struct {
 	IncludeInReview bool               `json:"include_in_review"`
 	WindowDays      int32              `json:"window_days"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	// Agent the retrospective executes as: one run of this agent reviews the window's completed issues and reports drafts; the run never creates an issue or comments.
+	AgentID pgtype.UUID `json:"agent_id"`
+	// Member who last saved this config; the honest human originator attributed to the runs it triggers.
+	UpdatedBy pgtype.UUID `json:"updated_by"`
 }
 
 // Per-issue retrospective idempotency watermark (RUYI-305 E3): an analyzed issue is never analyzed again, window overlap cannot duplicate drafts.
@@ -1744,6 +1748,8 @@ type RetrospectiveRun struct {
 	Detail            []byte             `json:"detail"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	FinishedAt        pgtype.Timestamptz `json:"finished_at"`
+	// Platform task enqueued for this run (agent_task_queue.id); terminal task states reconcile onto the run row through it.
+	TaskID pgtype.UUID `json:"task_id"`
 }
 
 type RuntimeCredential struct {
@@ -1804,6 +1810,19 @@ type SeatCapacityOutbox struct {
 	DeadLetteredAt pgtype.Timestamptz `json:"dead_lettered_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Self-evolution module model-service config per workspace (RUYI-551): gateway base_url/model, secretbox-encrypted API key, scoring switch, last validation outcome. Module config outranks the deploy default.
+type SelfEvolutionModelConfig struct {
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	BaseUrl             pgtype.Text        `json:"base_url"`
+	ApiKeyEncrypted     []byte             `json:"api_key_encrypted"`
+	Model               pgtype.Text        `json:"model"`
+	ScoringEnabled      bool               `json:"scoring_enabled"`
+	LastValidatedAt     pgtype.Timestamptz `json:"last_validated_at"`
+	LastValidationOk    pgtype.Bool        `json:"last_validation_ok"`
+	LastValidationError string             `json:"last_validation_error"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Skill struct {

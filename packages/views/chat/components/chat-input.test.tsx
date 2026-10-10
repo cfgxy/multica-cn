@@ -167,6 +167,7 @@ vi.mock("../../editor", async () => ({
       // call after the nullish short-circuit, so a missing member throws and
       // aborts the whole delivery before insertMarkdownAtEnd ever runs.
       hasImageWithSrc: () => false,
+      hasSettledUploadLink: () => false,
       insertMarkdownAtEnd: (md: string) => {
         insertMarkdownSpy(md);
         valueRef.current = `${valueRef.current}\n\n${md}`.trim();

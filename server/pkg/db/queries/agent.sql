@@ -765,7 +765,7 @@ WHERE id = @id AND status = 'failed' AND fire_at <= now();
 -- re-run. Only rows the auto-retry path recognises at all (the reason
 -- allowlist is passed in from the Go side so the two lists cannot drift);
 -- budget and eligibility are re-checked per row by MaybeRetryFailedTask.
--- Backed by idx_agent_task_queue_failed_retry_reeval (migration 934), a
+-- Backed by idx_agent_task_queue_failed_retry_reeval (migration 936), a
 -- partial index whose row set is near-empty in steady state.
 SELECT * FROM agent_task_queue
 WHERE status = 'failed'

@@ -10,6 +10,7 @@
  */
 import { useRef } from "react";
 import { Pressable, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
@@ -60,8 +61,10 @@ function DueDateHeader({
   onClear: () => void;
 }) {
   const { t } = useT("issues");
+  // 顶部让出系统状态栏（RUYI-563）。
+  const insets = useSafeAreaInsets();
   return (
-    <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
+    <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
       <Text className="text-base font-semibold text-foreground">
         {t("detail.prop_due_date", "Due date")}
       </Text>

@@ -109,16 +109,16 @@ type APIClient interface {
 	// "file" for file_key-backed video/file/audio).
 	DownloadMessageResource(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResource, error)
 
-	// BatchGetUsers resolves a set of user open_ids to their display names
-	// via GET /open-apis/contact/v3/users/batch. The enricher uses it to
-	// label recent-context / quoted / forwarded speakers (and the sender
-	// who @-mentioned the Bot) with real names instead of positional
-	// "User 1 / User 2". Returns an open_id -> name map; ids the API does
-	// not return (restricted contact scope, deactivated user, …) are
-	// simply absent from the map, and the caller falls back to a
-	// positional label. openIDs beyond Lark's 50-per-call cap are dropped
-	// by the client.
-	BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error)
+	// GetUserName resolves ONE user open_id to its display name via
+	// GET /open-apis/contact/v3/users/{open_id}?user_id_type=open_id —
+	// the same single-user lookup CC Connect performs, migrated here so
+	// the contact scope story matches a proven-working Feishu app (the
+	// batch endpoint's documented API-level scope gate differs). An
+	// error covers transport failures, Lark business codes (permission
+	// denial among them — the caller feeds those to the authorization
+	// hint), and code=0 responses whose user carries no name (every
+	// name-field scope missing). The caller caches and degrades.
+	GetUserName(ctx context.Context, creds InstallationCredentials, openID string) (string, error)
 
 	// AddMessageReaction adds an emoji reaction to an existing message.
 	// The standard use-case is the "Typing" indicator that signals the
@@ -514,9 +514,9 @@ func (s *stubAPIClient) DownloadMessageResource(ctx context.Context, creds Insta
 	return DownloadedResource{}, ErrAPIClientNotConfigured
 }
 
-func (s *stubAPIClient) BatchGetUsers(ctx context.Context, creds InstallationCredentials, openIDs []string) (map[string]string, error) {
-	s.log.Warn("lark stub client: BatchGetUsers called", "count", len(openIDs))
-	return nil, ErrAPIClientNotConfigured
+func (s *stubAPIClient) GetUserName(ctx context.Context, creds InstallationCredentials, openID string) (string, error) {
+	s.log.Warn("lark stub client: GetUserName called", "open_id", openID)
+	return "", ErrAPIClientNotConfigured
 }
 
 func (s *stubAPIClient) AddMessageReaction(ctx context.Context, p AddReactionParams) (string, error) {

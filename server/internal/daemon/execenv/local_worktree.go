@@ -1310,6 +1310,12 @@ func worktreeIsDirty(worktreePath string) (bool, error) {
 // deletes its directory. The branch is deliberately left alone — it is the
 // task's deliverable.
 func removeLocalWorktreeDir(gitRoot, worktreePath string, logger *slog.Logger) error {
+	// Recycle guard (RUYI-594): record what the worktree held before it goes
+	// away. Removal never blocks here — a linked worktree's commits and
+	// stashes live in the surviving shared .git, so this is the L1 claim's
+	// evidence, not a gate. Best-effort: scan or write failures log and the
+	// removal proceeds.
+	GuardWorktreeEvidence(gitRoot, worktreePath, logger)
 	var removeErr error
 	if out, err := runGit(gitRoot, "worktree", "remove", "--force", worktreePath); err != nil {
 		removeErr = err

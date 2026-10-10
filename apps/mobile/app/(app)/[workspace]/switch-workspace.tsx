@@ -30,6 +30,7 @@ import {
   ScrollView,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Image as ExpoImage } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -52,6 +53,7 @@ export default function SwitchWorkspaceRoute() {
   const { data, isLoading } = useQuery(workspaceListOptions());
   const unreadWsIds = useWorkspaceUnreadIds(activeSlug);
   const { t } = useT("workspace");
+  const insets = useSafeAreaInsets();
 
   const onSelect = (ws: Workspace) => {
     if (ws.slug === activeSlug) return;
@@ -75,7 +77,8 @@ export default function SwitchWorkspaceRoute() {
 
   return (
     <View className="flex-1">
-      <View className="px-4 pt-4 pb-3">
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("mobile.switch.title", "Switch workspace")}
         </Text>
@@ -140,16 +143,16 @@ function WorkspaceRow({
         avatarUrl={workspace.avatar_url}
         size={24}
       />
-      {/* Unread dot BEFORE the name, per RUYI-44 spec. Data and predicate
-          are web-identical (account-level unread summary +
-          unreadWorkspaceIds in @multica/core/inbox/unread); only placement
-          differs — web puts the dot on the row's right edge, the mobile
-          sheet puts it ahead of the name. Rendered only when there IS
-          unread so rows without unread keep their rhythm. */}
-      {hasUnread ? <View className="h-2 w-2 rounded-full bg-brand" /> : null}
+      {/* Unread state is typographic (RUYI-554): an unread workspace's
+          name gets medium weight instead of the old leading blue dot
+          (RUYI-44's dot is retired from mobile). Data and predicate stay
+          web-identical (account-level unread summary + unreadWorkspaceIds
+          in @multica/core/inbox/unread). Active keeps semibold + checkmark,
+          so the two states stay distinguishable. */}
       <Text
         className={cn(
           "flex-1 text-sm text-foreground",
+          hasUnread && "font-medium",
           active && "font-semibold",
         )}
         numberOfLines={1}

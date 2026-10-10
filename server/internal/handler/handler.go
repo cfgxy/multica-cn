@@ -38,7 +38,9 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/selfevconfig"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -266,7 +268,7 @@ type Handler struct {
 	// revocation gate (RUYI-420). Admin and user handlers also call
 	// Invalidate on the write paths so a revoke is effective immediately
 	// rather than at the gate TTL. Nil disables gate checks entirely.
-	OAuthGate                    *auth.OAuthGate
+	OAuthGate *auth.OAuthGate
 	// Voice-session dual auth (RUYI-449). The voice route sits outside the
 	// Auth middleware group so the mobile websocket upgrade — which cannot
 	// set headers and carries no cookie jar — can authenticate via the
@@ -432,6 +434,19 @@ type Handler struct {
 	// misconfigured self-host deployment fails closed rather than storing
 	// plaintext. Wired in cmd/server/router.go after New.
 	RuntimeCredentialBox *secretbox.Box
+	// SelfEvolution resolves the per-workspace model service config for the
+	// self-evolution module (RUYI-551: module config > deploy default). Nil
+	// when MULTICA_SELF_EVOLUTION_SECRET_KEY is unset; the model-config write
+	// handlers return 503 in that case so a misconfigured self-host fails
+	// closed rather than storing plaintext, and every workspace keeps running
+	// on the deploy-wide default. Wired in cmd/server/router.go after New.
+	SelfEvolution *selfevconfig.Resolver
+	// RetrospectiveRunner is the daily retrospective's trigger+completion
+	// engine (RUYI-552 direction 3): RunWorkspace backs the manual trigger,
+	// ProcessTaskTerminal the task terminal path. Wired in
+	// cmd/server/main.go together with the scheduler job and the task
+	// service hook, so all three share one instance.
+	RetrospectiveRunner *retrospective.Runner
 	// VoiceProbeBaseURL is the connectivity-probe target for voice instance
 	// credentials (RUYI-425 §4.3/§4.5 stage 2): a lightweight models.list
 	// against the provider right after a credential save. Wired from
