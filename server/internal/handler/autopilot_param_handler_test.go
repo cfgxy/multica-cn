@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -382,5 +383,112 @@ func TestWebhookParamsSkippedOnInvalid(t *testing.T) {
 	}
 	if snap.Params["city"] != "上海" {
 		t.Fatalf("snapshot city = %#v, want 上海", snap.Params["city"])
+	}
+}
+
+// TestAutopilotParamsContractRoundTrip (RUYI-641 stage B) pins the calling
+// contract's discoverability: GET /params enumerates every definition with the
+// fields a caller needs (name, param_type, required, default_value,
+// enum_options), and a /trigger body constructed ONLY from that enumeration —
+// required values caller-supplied, everything else coerced from default_value
+// through param_type — is accepted and snapshots exactly the constructed set.
+// A caller never needs the edit UI to integrate.
+func TestAutopilotParamsContractRoundTrip(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createWebhookTestAgent(t, "ParamsContract Agent")
+	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
+	cleanupAutopilotParams(t, apID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM autopilot_run WHERE autopilot_id = $1`, apID)
+	})
+
+	set := []service.AutopilotParamInput{
+		cityParam(), // required string, no default
+		{Name: "retries", ParamType: "number", DefaultValue: strPtr("3")},
+		{Name: "level", ParamType: "enum", EnumOptions: []string{"low", "high"}, DefaultValue: strPtr("low")},
+	}
+	if w := putAutopilotParams(t, apID, set); w.Code != http.StatusOK {
+		t.Fatalf("seed params: got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// The read surface alone must carry every field needed to construct a call.
+	listed := listAutopilotParams(t, apID)
+	byName := make(map[string]AutopilotParamResponse, len(listed.Params))
+	for _, p := range listed.Params {
+		if p.Name == "" || p.ParamType == "" {
+			t.Fatalf("contract entry missing name/type: %#v", p)
+		}
+		byName[p.Name] = p
+	}
+	city, ok := byName["city"]
+	if !ok || !city.Required || city.DefaultValue != nil {
+		t.Fatalf("city contract = %#v, want required with no default", city)
+	}
+	retries := byName["retries"]
+	if retries.Required || retries.DefaultValue == nil || *retries.DefaultValue != "3" {
+		t.Fatalf("retries contract = %#v, want optional default \"3\"", retries)
+	}
+	level := byName["level"]
+	if len(level.EnumOptions) != 2 || level.DefaultValue == nil || *level.DefaultValue != "low" {
+		t.Fatalf("level contract = %#v, want enum low/high defaulting to low", level)
+	}
+
+	// Build the trigger body purely from the enumerated contract.
+	params := map[string]any{"city": "北京"}
+	for _, p := range listed.Params {
+		if p.Required || p.DefaultValue == nil {
+			continue
+		}
+		switch p.ParamType {
+		case "number":
+			n, err := strconv.ParseFloat(*p.DefaultValue, 64)
+			if err != nil {
+				t.Fatalf("coerce %s default %q: %v", p.Name, *p.DefaultValue, err)
+			}
+			params[p.Name] = n
+		case "boolean":
+			params[p.Name] = *p.DefaultValue == "true"
+		default:
+			params[p.Name] = *p.DefaultValue
+		}
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/autopilots/"+apID+"/trigger", map[string]any{"params": params})
+	req = withURLParam(req, "id", apID)
+	testHandler.TriggerAutopilot(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("contract-built trigger: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var runResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &runResp); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	runID, _ := runResp["id"].(string)
+	if runID == "" {
+		t.Fatalf("run response missing id: %#v", runResp)
+	}
+	var payload []byte
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT trigger_payload FROM autopilot_run WHERE id = $1`, runID).Scan(&payload); err != nil {
+		t.Fatalf("load run payload: %v", err)
+	}
+	var snap struct {
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(payload, &snap); err != nil {
+		t.Fatalf("decode snapshot: %v body=%s", err, string(payload))
+	}
+	if snap.Params["city"] != "北京" {
+		t.Fatalf("snapshot city = %#v, want 北京", snap.Params["city"])
+	}
+	// Defaulted values resolved through their contract types: number → JSON 3.
+	if snap.Params["retries"] != float64(3) {
+		t.Fatalf("snapshot retries = %#v, want number 3", snap.Params["retries"])
+	}
+	if snap.Params["level"] != "low" {
+		t.Fatalf("snapshot level = %#v, want \"low\"", snap.Params["level"])
 	}
 }

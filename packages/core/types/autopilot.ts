@@ -149,7 +149,7 @@ export interface AutopilotQuotaUsage {
 }
 
 export interface AutopilotSubscriberInput {
-  user_type: string;
+  user_type: "member";
   user_id: string;
 }
 
