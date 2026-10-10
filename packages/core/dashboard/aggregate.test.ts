@@ -22,7 +22,7 @@ import {
   mergeAgentDashboardRows,
   RESTRICTED_AGENTS_ROW_ID,
   sortAgentFailures,
-} from "./utils";
+} from "./aggregate";
 
 describe("aggregateDailyCost", () => {
   it("collapses multiple rows per day into one stack and sorts by date asc", () => {
