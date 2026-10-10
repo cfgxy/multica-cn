@@ -48,6 +48,7 @@ import {
   issueKeys,
   issueTimelineOptions,
 } from "@/data/queries/issues";
+import { githubKeys } from "@/data/queries/github";
 import { useDeleteIssue } from "@/data/mutations/issues";
 import { pinListOptions } from "@/data/queries/pins";
 import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
@@ -127,6 +128,10 @@ export default function IssueDetail() {
       qc.invalidateQueries({
         queryKey: coreIssueKeys.decisions(id),
       }),
+      // Timeline PR cards (RUYI-634) read the same github cache as the
+      // pull-requests modal; the PR list has no WS subscription on mobile,
+      // so refresh is its only in-place freshness path.
+      qc.invalidateQueries({ queryKey: githubKeys.pullRequests(id) }),
     ]);
   }, [detail, qc, wsId, id]);
 
