@@ -208,6 +208,8 @@ import type {
   CronPreviewResponse,
   GetAutopilotResponse,
   AutopilotCollaboratorsResponse,
+  AutopilotParamsResponse,
+  AutopilotParamInput,
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
@@ -5994,6 +5996,20 @@ export class ApiClient {
 
   async deleteAutopilot(id: string): Promise<void> {
     await this.fetch(`/api/autopilots/${id}`, { method: "DELETE" });
+  }
+
+  // Parameter definitions (RUYI-641): read by any member who can view the
+  // autopilot; replaced as a whole set by writers. A validation rejection is
+  // a 400 whose error message names the offending parameter (never a value).
+  async listAutopilotParams(id: string): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`);
+  }
+
+  async replaceAutopilotParams(id: string, params: AutopilotParamInput[]): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`, {
+      method: "PUT",
+      body: JSON.stringify({ params }),
+    });
   }
 
   // Grant a workspace member explicit write access to the autopilot. Both

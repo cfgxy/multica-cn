@@ -2551,6 +2551,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateAutopilot)
 					r.Delete("/", h.DeleteAutopilot)
 					r.Post("/trigger", h.TriggerAutopilot)
+					r.Get("/params", h.ListAutopilotParams)
+					r.Put("/params", h.ReplaceAutopilotParams)
 					r.Get("/runs", h.ListAutopilotRuns)
 					r.Get("/runs/{runId}", h.GetAutopilotRun)
 					r.Get("/deliveries", h.ListAutopilotDeliveries)
