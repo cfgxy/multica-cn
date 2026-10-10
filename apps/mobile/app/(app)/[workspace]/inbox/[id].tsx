@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Alert, ActivityIndicator, Linking, ScrollView, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -13,6 +14,8 @@ import { inboxListOptions } from "@/data/queries/inbox";
 import { useRetrySourceContextQuickCreate } from "@/data/mutations/inbox";
 import { ApiError } from "@/data/api";
 import { getQuickCreateRetryPlan } from "@/lib/quick-create-retry";
+import { getQuickCreateEditSeed } from "@/lib/quick-create-edit";
+import { seedNewIssuePrefill } from "@/data/stores/new-issue-prefill-store";
 import {
   appConfigOptions,
   workspaceSubscriptionSummaryOptions,
@@ -23,6 +26,7 @@ import {
   getInboxDisplayTitle,
 } from "@/lib/inbox-display";
 import { useTypeLabels } from "@/components/inbox/detail-label";
+import { IssueLimitRecoveryDialog } from "@/components/billing/issue-limit-recovery";
 import { timeAgo } from "@/lib/time-ago";
 import { useT } from "@/lib/use-t";
 
@@ -87,7 +91,10 @@ export default function InboxNoticeDetail() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("inbox");
-  const { t: tModals } = useT("modals");
+  // RUYI-605 delta: an issue-limit rejection from the retry path opens the
+  // shared recovery dialog (desktop IssueLimitUpgradeDialog semantics)
+  // instead of the bare title alert.
+  const [issueLimitOpen, setIssueLimitOpen] = useState(false);
   const { data: items, isLoading } = useQuery(inboxListOptions(wsId));
 
   // Read the raw workspace-scoped cache: deduplication can replace a row,
@@ -135,6 +142,20 @@ export default function InboxNoticeDetail() {
   // never resends the prompt.
   const retryPlan = item ? getQuickCreateRetryPlan(item) : null;
   const retryMutation = useRetrySourceContextQuickCreate();
+  // RUYI-605: "edit in the full form" recovery — every quick-create outcome
+  // (failed AND unconfirmed) gets the button, mirroring web's detail pane
+  // (packages/views/inbox/components/inbox-page.tsx, isQuickCreateOutcome
+  // gate with no original_prompt requirement). Tapping hands the stored
+  // prompt + agent to the new-issue screen via the one-shot prefill store.
+  const editSeed = item ? getQuickCreateEditSeed(item) : null;
+
+  const onEditAdvanced = () => {
+    if (!editSeed || !wsSlug) return;
+    seedNewIssuePrefill(editSeed);
+    // Same navigation shape as the app header's create entry
+    // (components/ui/app-header-actions.tsx).
+    router.push(`/${wsSlug}/new-issue`);
+  };
 
   const onRetry = async () => {
     if (!retryPlan || retryMutation.isPending) return;
@@ -171,14 +192,9 @@ export default function InboxNoticeDetail() {
         return;
       }
       if (code === "issue_limit_reached") {
-        // Same key + fallback web routes to its upgrade prompt; mobile keeps
-        // the alert treatment quick-create-panel already established.
-        Alert.alert(
-          tModals(
-            "create_issue.issue_limit.title",
-            "This workspace has reached its issue limit",
-          ),
-        );
+        // Same key as web's upgrade prompt; the shared dialog carries the
+        // per-state description and the cloud-authorized billing action.
+        setIssueLimitOpen(true);
         return;
       }
       Alert.alert(
@@ -267,11 +283,31 @@ export default function InboxNoticeDetail() {
             </Button>
           ) : null}
 
+          {/* RUYI-605: recover the original input in the manual form. The
+              button is neutral on purpose — for unconfirmed outcomes this is
+              result re-editing, not failure recovery. */}
+          {editSeed ? (
+            <Button
+              size="sm"
+              onPress={onEditAdvanced}
+              accessibilityLabel={t(
+                "detail.edit_advanced",
+                "Edit as advanced form",
+              )}
+            >
+              <Text>{t("detail.edit_advanced", "Edit as advanced form")}</Text>
+            </Button>
+          ) : null}
+
           {isQuotaNotice ? (
             <BillingRecovery recovery={recovery} billingUrl={billingUrl} />
           ) : null}
         </ScrollView>
       )}
+      <IssueLimitRecoveryDialog
+        visible={issueLimitOpen}
+        onClose={() => setIssueLimitOpen(false)}
+      />
     </View>
   );
 }
