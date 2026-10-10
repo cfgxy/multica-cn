@@ -124,13 +124,23 @@ func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Requ
 
 	items := make([]WorkspaceDecisionInboxItem, 0, len(rows))
 	for _, row := range rows {
+		card := issueDecisionFromInboxRow(row)
+		// RUYI-630: authorization cards never aggregate into the decision
+		// inbox — their authorization summary lives in the decision-requests
+		// surface, and the inbox entry would only duplicate the entry point.
+		if card.DecisionKind == "authorization" {
+			continue
+		}
+		if !h.decisionCardVisibleToCaller(r, uuidToString(workspaceID), card) {
+			continue
+		}
 		items = append(items, WorkspaceDecisionInboxItem{
-				IssueDecisionResponse: decisionToResponse(issueDecisionFromInboxRow(row)),
-				WorkspaceID:           uuidToString(row.WorkspaceID),
-				IssueNumber:           row.IssueNumber,
-				IssueIdentifier:       row.IssueIdentifier,
-				IssueTitle:            row.IssueTitle,
-			})
+			IssueDecisionResponse: decisionToResponse(card),
+			WorkspaceID:           uuidToString(row.WorkspaceID),
+			IssueNumber:           row.IssueNumber,
+			IssueIdentifier:       row.IssueIdentifier,
+			IssueTitle:            row.IssueTitle,
+		})
 	}
 	resp := WorkspaceDecisionInboxResponse{
 		Items: items,

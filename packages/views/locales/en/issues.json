@@ -1095,8 +1095,7 @@
       "cancel_requested": "Stopping",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Cancelled",
-      "cancel_requested": "Stopping"
+      "cancelled": "Cancelled"
     },
     "runs": {
       "title": "Agent Runs",
@@ -1220,6 +1219,15 @@
     "answer_failed": "Failed to submit answer",
     "cancel_failed": "Failed to cancel card",
     "batch_title": "Batch answer",
-    "batch_submit": "Submit all"
+    "batch_submit": "Submit all",
+    "auth_title": "Authorization request",
+    "auth_state_approved": "Approved",
+    "auth_state_denied": "Denied",
+    "auth_state_executed": "Executed",
+    "auth_state_execute_failed": "Execution failed",
+    "auth_approve_default": "Approve",
+    "auth_deny_default": "Deny",
+    "auth_execute_failed": "Execution failed: {{reason}}",
+    "auth_answer_failed": "Failed to record your answer"
   }
 }

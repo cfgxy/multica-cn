@@ -129,7 +129,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"quick_reply": workspaceDelete,
 	// Decision cards (RUYI-345) own nothing outside the database; the answer
 	// echo is a plain comment row swept with the rest of comment.
-	"issue_decisions":            workspaceDelete,
+	"issue_decisions": workspaceDelete,
+	// Authorization request rows (RUYI-630) are swept with their workspace on
+	// both roles (origin projection and operable target row share the table);
+	// the 926 audit rows they spawned are workspaceDeleteSettle like the rest
+	// of agent_audit_log, and the linked issue_decisions card is swept by the
+	// CTE above. Cascade directly.
+	"decision_requests":          workspaceDelete,
 	"lark_binding_token":         workspaceDelete,
 	"lark_chat_session_binding":  workspaceDelete,
 	"lark_inbound_audit":         workspaceDelete,

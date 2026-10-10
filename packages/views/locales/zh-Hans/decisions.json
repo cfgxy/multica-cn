@@ -55,5 +55,32 @@
     "title": "没有符合筛选条件的决策卡",
     "hint": "调整或清除筛选，查看此视图中的决策卡。",
     "clear_button": "清除筛选"
+  },
+  "requests": {
+    "section_title": "授权请求",
+    "action_workspace_info_read": "读取工作区信息",
+    "action_prompt_restore": "恢复提示词",
+    "risk_read": "只读",
+    "risk_write_low": "低风险写入",
+    "status_pending": "待授权",
+    "status_approved": "已同意",
+    "status_denied": "已拒绝",
+    "status_expired": "已过期",
+    "status_revoked": "已撤销",
+    "status_executed": "已执行",
+    "status_execute_failed": "执行失败",
+    "origin_label": "{{agent}} 发起",
+    "source_issue": "来自 Issue：{{title}}",
+    "approve": "同意",
+    "deny": "拒绝",
+    "cancel": "撤销请求",
+    "projection_hint": "此行是状态投影，请在目标空间操作",
+    "executed_failed": "执行失败：{{reason}}",
+    "steps_title": "各空间步骤",
+    "step_origin": "发起空间",
+    "step_target": "目标空间",
+    "detail_error": "步骤详情加载失败",
+    "answer_failed": "授权操作失败",
+    "cancel_failed": "撤销失败"
   }
 }

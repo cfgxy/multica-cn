@@ -4,6 +4,7 @@ import type { Agent } from "./agent";
 import type { InboxItem } from "./inbox";
 import type { Comment, Reaction } from "./comment";
 import type { TimelineEntry } from "./activity";
+import type { DecisionRequest } from "./decision";
 import type { IssueDecision } from "./decision";
 import type { Workspace, MemberWithUser, Invitation } from "./workspace";
 import type { Project } from "./project";
@@ -59,6 +60,7 @@ export type WSEventType =
   | "issue_reaction:added"
   | "issue_reaction:removed"
   | "decision:updated"
+  | "decision_request:updated"
   | "chat:message"
   | "chat:done"
   | "chat:quick_actions"
@@ -227,6 +229,16 @@ export interface DecisionUpdatedPayload {
   decision: IssueDecision;
   issue_id: string;
   issue_title?: string;
+}
+
+// Authorization request lifecycle event (RUYI-630) — created/answered/
+// executed/failed/expired/revoked all publish the row's fresh state; the
+// request_group_id ties the per-space rows together. The info-stream
+// authorization card separately arrives as a decision:updated payload from
+// the same server transition.
+export interface DecisionRequestUpdatedPayload {
+  request: DecisionRequest;
+  request_group_id: string;
 }
 
 export interface CommentCreatedPayload {
@@ -587,6 +599,7 @@ export interface WSEventPayloadMap {
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "decision:updated": DecisionUpdatedPayload;
+  "decision_request:updated": DecisionRequestUpdatedPayload;
   "comment:created": CommentCreatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;

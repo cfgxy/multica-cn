@@ -11,37 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const answerIssueDecision = `-- name: AnswerIssueDecision :one
+const answerAuthorizationDecisionCard = `-- name: AnswerAuthorizationDecisionCard :one
 UPDATE issue_decisions SET
     status = 'answered',
-    selected_indices = $1::jsonb,
-    answered_by_type = $2,
+    auth_state = $1::text,
+    selected_indices = $2::jsonb,
+    answered_by_type = 'member',
     answered_by_id = $3,
     answered_at = now(),
-    answer_comment_id = $4,
+    answer_source = 'card_click',
     updated_at = now()
-WHERE id = $5 AND workspace_id = $6 AND status = 'open'
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
+WHERE id = $4 AND workspace_id = $5
+  AND status = 'open' AND auth_state = 'pending'
+  AND (expires_at IS NULL OR expires_at > now())
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
 `
 
-type AnswerIssueDecisionParams struct {
+type AnswerAuthorizationDecisionCardParams struct {
+	AuthState       string      `json:"auth_state"`
 	SelectedIndices []byte      `json:"selected_indices"`
-	AnsweredByType  pgtype.Text `json:"answered_by_type"`
 	AnsweredByID    pgtype.UUID `json:"answered_by_id"`
-	AnswerCommentID pgtype.UUID `json:"answer_comment_id"`
 	ID              pgtype.UUID `json:"id"`
 	WorkspaceID     pgtype.UUID `json:"workspace_id"`
 }
 
-// CAS on status: only an open card can be answered. A concurrent answer (or a
-// cancel racing an answer) loses here with sql.ErrNoRows instead of silently
-// overwriting the first decision.
-func (q *Queries) AnswerIssueDecision(ctx context.Context, arg AnswerIssueDecisionParams) (IssueDecision, error) {
-	row := q.db.QueryRow(ctx, answerIssueDecision,
+// RUYI-630: CAS for the authorization link card. Distinct from
+// AnswerIssueDecision so the question-card CAS stays byte-for-byte on its
+// old semantics: this one additionally requires the authorization face to
+// still be pending and inside its window, and records the structured
+// answer_source. Index 0 = approve, index 1 = deny (options carry the
+// custom labels); auth_state lands approved/denied accordingly.
+func (q *Queries) AnswerAuthorizationDecisionCard(ctx context.Context, arg AnswerAuthorizationDecisionCardParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, answerAuthorizationDecisionCard,
+		arg.AuthState,
 		arg.SelectedIndices,
-		arg.AnsweredByType,
 		arg.AnsweredByID,
-		arg.AnswerCommentID,
 		arg.ID,
 		arg.WorkspaceID,
 	)
@@ -66,6 +70,101 @@ func (q *Queries) AnswerIssueDecision(ctx context.Context, arg AnswerIssueDecisi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
+	)
+	return i, err
+}
+
+const answerIssueDecision = `-- name: AnswerIssueDecision :one
+UPDATE issue_decisions SET
+    status = 'answered',
+    selected_indices = $1::jsonb,
+    answered_by_type = $2,
+    answered_by_id = $3,
+    answered_at = now(),
+    answer_comment_id = $4,
+    answer_source = $5::text,
+    updated_at = now()
+WHERE id = $6 AND workspace_id = $7 AND status = 'open'
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
+`
+
+type AnswerIssueDecisionParams struct {
+	SelectedIndices []byte      `json:"selected_indices"`
+	AnsweredByType  pgtype.Text `json:"answered_by_type"`
+	AnsweredByID    pgtype.UUID `json:"answered_by_id"`
+	AnswerCommentID pgtype.UUID `json:"answer_comment_id"`
+	AnswerSource    string      `json:"answer_source"`
+	ID              pgtype.UUID `json:"id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+}
+
+// CAS on status: only an open card can be answered. A concurrent answer (or a
+// cancel racing an answer) loses here with sql.ErrNoRows instead of silently
+// overwriting the first decision. RUYI-630 adds the structured answer_source
+// the server stamps per channel (card_click / text_token / batch); the field
+// is record-only on question cards but is the authorization-grade truth on
+// authorization cards, which answer through AnswerAuthorizationDecisionCard.
+func (q *Queries) AnswerIssueDecision(ctx context.Context, arg AnswerIssueDecisionParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, answerIssueDecision,
+		arg.SelectedIndices,
+		arg.AnsweredByType,
+		arg.AnsweredByID,
+		arg.AnswerCommentID,
+		arg.AnswerSource,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i IssueDecision
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.SourceCommentID,
+		&i.Question,
+		&i.Options,
+		&i.MultiSelect,
+		&i.RecommendedIndices,
+		&i.Status,
+		&i.SelectedIndices,
+		&i.AnsweredByType,
+		&i.AnsweredByID,
+		&i.AnsweredAt,
+		&i.AnswerCommentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
 	)
 	return i, err
 }
@@ -75,7 +174,7 @@ UPDATE issue_decisions SET
     status = 'cancelled',
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND status = 'open'
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
 `
 
 type CancelIssueDecisionParams struct {
@@ -108,6 +207,21 @@ func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
 	)
 	return i, err
 }
@@ -137,6 +251,109 @@ func (q *Queries) CountWorkspaceIssueDecisionsByStatus(ctx context.Context, work
 	return i, err
 }
 
+const createAuthorizationDecisionCard = `-- name: CreateAuthorizationDecisionCard :one
+INSERT INTO issue_decisions (
+    id, workspace_id, issue_id, source_comment_id,
+    question, options, multi_select, recommended_indices,
+    decision_kind, visible_tier, operator_tier, named_approver_ids,
+    approve_label, deny_label, expires_at, auth_state,
+    pending_request_group_id, pending_action_type, pending_action_params,
+    created_by_type, created_by_id
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6::jsonb, false, '[0,1]'::jsonb,
+    'authorization', $7::text, $8::text, $9::jsonb,
+    $10, $11, $12, 'pending',
+    $13, $14, $15::jsonb,
+    $16, $17
+)
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
+`
+
+type CreateAuthorizationDecisionCardParams struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
+	Question         string             `json:"question"`
+	Options          []byte             `json:"options"`
+	VisibleTier      string             `json:"visible_tier"`
+	OperatorTier     string             `json:"operator_tier"`
+	NamedApproverIds []byte             `json:"named_approver_ids"`
+	ApproveLabel     pgtype.Text        `json:"approve_label"`
+	DenyLabel        pgtype.Text        `json:"deny_label"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	RequestGroupID   pgtype.UUID        `json:"request_group_id"`
+	ActionType       pgtype.Text        `json:"action_type"`
+	ActionParams     []byte             `json:"action_params"`
+	CreatedByType    string             `json:"created_by_type"`
+	CreatedByID      pgtype.UUID        `json:"created_by_id"`
+}
+
+// RUYI-630: the issue-thread authorization link card. Created only by the
+// decision-request flow (the public card-create endpoint stays
+// question-only); options are exactly [approve, deny] with the custom
+// labels baked in.
+func (q *Queries) CreateAuthorizationDecisionCard(ctx context.Context, arg CreateAuthorizationDecisionCardParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, createAuthorizationDecisionCard,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.SourceCommentID,
+		arg.Question,
+		arg.Options,
+		arg.VisibleTier,
+		arg.OperatorTier,
+		arg.NamedApproverIds,
+		arg.ApproveLabel,
+		arg.DenyLabel,
+		arg.ExpiresAt,
+		arg.RequestGroupID,
+		arg.ActionType,
+		arg.ActionParams,
+		arg.CreatedByType,
+		arg.CreatedByID,
+	)
+	var i IssueDecision
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.SourceCommentID,
+		&i.Question,
+		&i.Options,
+		&i.MultiSelect,
+		&i.RecommendedIndices,
+		&i.Status,
+		&i.SelectedIndices,
+		&i.AnsweredByType,
+		&i.AnsweredByID,
+		&i.AnsweredAt,
+		&i.AnswerCommentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
+	)
+	return i, err
+}
+
 const createIssueDecision = `-- name: CreateIssueDecision :one
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
@@ -147,7 +364,7 @@ INSERT INTO issue_decisions (
     $5, $6::jsonb, $7, $8::jsonb,
     $9, $10, $11
 )
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
 `
 
 type CreateIssueDecisionParams struct {
@@ -199,12 +416,153 @@ func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisi
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
+	)
+	return i, err
+}
+
+const expireDueDecisionCards = `-- name: ExpireDueDecisionCards :many
+UPDATE issue_decisions SET
+    auth_state = 'expired',
+    updated_at = now()
+WHERE decision_kind = 'authorization'
+  AND status = 'open' AND auth_state = 'pending'
+  AND expires_at IS NOT NULL AND expires_at <= now()
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
+`
+
+// RUYI-630: lazy expiry for authorization link cards (standalone expiry
+// guard mirroring the group sweep; a card whose group row expired but that
+// was missed by the same-transaction sweep still converges here).
+func (q *Queries) ExpireDueDecisionCards(ctx context.Context) ([]IssueDecision, error) {
+	rows, err := q.db.Query(ctx, expireDueDecisionCards)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueDecision{}
+	for rows.Next() {
+		var i IssueDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAuthorizationCardForGroup = `-- name: GetAuthorizationCardForGroup :one
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at FROM issue_decisions
+WHERE pending_request_group_id = $1
+  AND workspace_id = $2
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetAuthorizationCardForGroupParams struct {
+	RequestGroupID pgtype.UUID `json:"request_group_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-630: the link card of a group in one workspace (the origin step's
+// surface). Used by the decision-request detail summary; at most one card
+// per group per workspace.
+func (q *Queries) GetAuthorizationCardForGroup(ctx context.Context, arg GetAuthorizationCardForGroupParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, getAuthorizationCardForGroup, arg.RequestGroupID, arg.WorkspaceID)
+	var i IssueDecision
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.SourceCommentID,
+		&i.Question,
+		&i.Options,
+		&i.MultiSelect,
+		&i.RecommendedIndices,
+		&i.Status,
+		&i.SelectedIndices,
+		&i.AnsweredByType,
+		&i.AnsweredByID,
+		&i.AnsweredAt,
+		&i.AnswerCommentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
 	)
 	return i, err
 }
 
 const getIssueDecision = `-- name: GetIssueDecision :one
-SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id FROM issue_decisions
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at FROM issue_decisions
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -236,12 +594,27 @@ func (q *Queries) GetIssueDecision(ctx context.Context, arg GetIssueDecisionPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
 	)
 	return i, err
 }
 
 const getIssueDecisionByIdempotencyKey = `-- name: GetIssueDecisionByIdempotencyKey :one
-SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id FROM issue_decisions
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at FROM issue_decisions
 WHERE workspace_id = $1 AND created_by_type = $2 AND created_by_id = $3
   AND client_request_id = $4
 `
@@ -285,12 +658,27 @@ func (q *Queries) GetIssueDecisionByIdempotencyKey(ctx context.Context, arg GetI
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
 	)
 	return i, err
 }
 
 const listIssueDecisionsForIssue = `-- name: ListIssueDecisionsForIssue :many
-SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id FROM issue_decisions
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at FROM issue_decisions
 WHERE issue_id = $1 AND workspace_id = $2
 ORDER BY created_at ASC, id ASC
 `
@@ -329,6 +717,21 @@ func (q *Queries) ListIssueDecisionsForIssue(ctx context.Context, arg ListIssueD
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -341,7 +744,7 @@ func (q *Queries) ListIssueDecisionsForIssue(ctx context.Context, arg ListIssueD
 }
 
 const listWorkspaceIssueDecisions = `-- name: ListWorkspaceIssueDecisions :many
-SELECT d.id, d.workspace_id, d.issue_id, d.source_comment_id, d.question, d.options, d.multi_select, d.recommended_indices, d.status, d.selected_indices, d.answered_by_type, d.answered_by_id, d.answered_at, d.answer_comment_id, d.created_by_type, d.created_by_id, d.created_at, d.updated_at, d.client_request_id,
+SELECT d.id, d.workspace_id, d.issue_id, d.source_comment_id, d.question, d.options, d.multi_select, d.recommended_indices, d.status, d.selected_indices, d.answered_by_type, d.answered_by_id, d.answered_at, d.answer_comment_id, d.created_by_type, d.created_by_id, d.created_at, d.updated_at, d.client_request_id, d.decision_kind, d.visible_tier, d.operator_tier, d.named_approver_ids, d.approve_label, d.deny_label, d.expires_at, d.answer_source, d.auth_state, d.pending_request_group_id, d.pending_action_type, d.pending_action_params, d.execution_result, d.execution_error, d.executed_at,
        i.number AS issue_number,
        i.title AS issue_title,
        COALESCE(ws.issue_prefix || '-' || i.number::text, '')::text AS issue_identifier
@@ -361,28 +764,43 @@ type ListWorkspaceIssueDecisionsParams struct {
 }
 
 type ListWorkspaceIssueDecisionsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	IssueID            pgtype.UUID        `json:"issue_id"`
-	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
-	Question           string             `json:"question"`
-	Options            []byte             `json:"options"`
-	MultiSelect        bool               `json:"multi_select"`
-	RecommendedIndices []byte             `json:"recommended_indices"`
-	Status             string             `json:"status"`
-	SelectedIndices    []byte             `json:"selected_indices"`
-	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
-	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
-	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
-	AnswerCommentID    pgtype.UUID        `json:"answer_comment_id"`
-	CreatedByType      string             `json:"created_by_type"`
-	CreatedByID        pgtype.UUID        `json:"created_by_id"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	ClientRequestID    pgtype.Text        `json:"client_request_id"`
-	IssueNumber        int32              `json:"issue_number"`
-	IssueTitle         string             `json:"issue_title"`
-	IssueIdentifier    string             `json:"issue_identifier"`
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	IssueID               pgtype.UUID        `json:"issue_id"`
+	SourceCommentID       pgtype.UUID        `json:"source_comment_id"`
+	Question              string             `json:"question"`
+	Options               []byte             `json:"options"`
+	MultiSelect           bool               `json:"multi_select"`
+	RecommendedIndices    []byte             `json:"recommended_indices"`
+	Status                string             `json:"status"`
+	SelectedIndices       []byte             `json:"selected_indices"`
+	AnsweredByType        pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID          pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt            pgtype.Timestamptz `json:"answered_at"`
+	AnswerCommentID       pgtype.UUID        `json:"answer_comment_id"`
+	CreatedByType         string             `json:"created_by_type"`
+	CreatedByID           pgtype.UUID        `json:"created_by_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	ClientRequestID       pgtype.Text        `json:"client_request_id"`
+	DecisionKind          string             `json:"decision_kind"`
+	VisibleTier           string             `json:"visible_tier"`
+	OperatorTier          string             `json:"operator_tier"`
+	NamedApproverIds      []byte             `json:"named_approver_ids"`
+	ApproveLabel          pgtype.Text        `json:"approve_label"`
+	DenyLabel             pgtype.Text        `json:"deny_label"`
+	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerSource          pgtype.Text        `json:"answer_source"`
+	AuthState             pgtype.Text        `json:"auth_state"`
+	PendingRequestGroupID pgtype.UUID        `json:"pending_request_group_id"`
+	PendingActionType     pgtype.Text        `json:"pending_action_type"`
+	PendingActionParams   []byte             `json:"pending_action_params"`
+	ExecutionResult       []byte             `json:"execution_result"`
+	ExecutionError        pgtype.Text        `json:"execution_error"`
+	ExecutedAt            pgtype.Timestamptz `json:"executed_at"`
+	IssueNumber           int32              `json:"issue_number"`
+	IssueTitle            string             `json:"issue_title"`
+	IssueIdentifier       string             `json:"issue_identifier"`
 }
 
 // Workspace decision inbox rows (RUYI-494). One row PER CARD — issues are
@@ -420,9 +838,106 @@ func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorks
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
 			&i.IssueNumber,
 			&i.IssueTitle,
 			&i.IssueIdentifier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setAuthorizationCardExecution = `-- name: SetAuthorizationCardExecution :many
+UPDATE issue_decisions SET
+    auth_state = $1::text,
+    executed_at = $2,
+    execution_result = $3,
+    execution_error = $4,
+    updated_at = now()
+WHERE pending_request_group_id = $5
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
+`
+
+type SetAuthorizationCardExecutionParams struct {
+	AuthState       string             `json:"auth_state"`
+	ExecutedAt      pgtype.Timestamptz `json:"executed_at"`
+	ExecutionResult []byte             `json:"execution_result"`
+	ExecutionError  pgtype.Text        `json:"execution_error"`
+	RequestGroupID  pgtype.UUID        `json:"request_group_id"`
+}
+
+// RUYI-630: write the executor outcome onto the authorization link cards of
+// a group (all of them — every reader sees the same execution truth).
+func (q *Queries) SetAuthorizationCardExecution(ctx context.Context, arg SetAuthorizationCardExecutionParams) ([]IssueDecision, error) {
+	rows, err := q.db.Query(ctx, setAuthorizationCardExecution,
+		arg.AuthState,
+		arg.ExecutedAt,
+		arg.ExecutionResult,
+		arg.ExecutionError,
+		arg.RequestGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueDecision{}
+	for rows.Next() {
+		var i IssueDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -439,7 +954,7 @@ UPDATE issue_decisions SET
     answer_comment_id = $1,
     updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
 `
 
 type SetIssueDecisionAnswerCommentParams struct {
@@ -474,6 +989,107 @@ func (q *Queries) SetIssueDecisionAnswerComment(ctx context.Context, arg SetIssu
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
 	)
 	return i, err
+}
+
+const syncDecisionCardsForGroup = `-- name: SyncDecisionCardsForGroup :many
+UPDATE issue_decisions SET
+    auth_state = $1::text,
+    executed_at = $2,
+    execution_result = $3,
+    execution_error = $4,
+    updated_at = now()
+WHERE pending_request_group_id = $5
+  AND status = 'open' AND auth_state = 'pending'
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
+`
+
+type SyncDecisionCardsForGroupParams struct {
+	AuthState       string             `json:"auth_state"`
+	ExecutedAt      pgtype.Timestamptz `json:"executed_at"`
+	ExecutionResult []byte             `json:"execution_result"`
+	ExecutionError  pgtype.Text        `json:"execution_error"`
+	RequestGroupID  pgtype.UUID        `json:"request_group_id"`
+}
+
+// RUYI-630: propagate a group-level state onto the authorization link cards
+// of that group. For pending cards auth_state follows the group state;
+// execution outcome fields ride along. Cards already answered by their own
+// step (auth_state approved/denied) are left untouched except that the
+// caller passes execution outcomes separately when needed.
+func (q *Queries) SyncDecisionCardsForGroup(ctx context.Context, arg SyncDecisionCardsForGroupParams) ([]IssueDecision, error) {
+	rows, err := q.db.Query(ctx, syncDecisionCardsForGroup,
+		arg.AuthState,
+		arg.ExecutedAt,
+		arg.ExecutionResult,
+		arg.ExecutionError,
+		arg.RequestGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueDecision{}
+	for rows.Next() {
+		var i IssueDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

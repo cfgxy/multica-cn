@@ -270,3 +270,59 @@ describe("DecisionCard", () => {
     );
   });
 });
+
+describe("DecisionCard authorization face (RUYI-630)", () => {
+  const authCard = card({
+    decision_kind: "authorization",
+    action_type: "prompt_restore",
+    approve_label: "Restore",
+    deny_label: "Keep",
+  });
+
+  it("renders the two fixed buttons with custom labels and no option rows, submit or cancel", async () => {
+    await renderCard(authCard);
+    expect(screen.getByTestId("decision-auth-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-auth-deny")).toBeTruthy();
+    expect(screen.getByText("Restore")).toBeTruthy();
+    expect(screen.getByText("Keep")).toBeTruthy();
+    expect(screen.queryByTestId("decision-option-0")).toBeNull();
+    expect(screen.queryByTestId("decision-submit")).toBeNull();
+    expect(screen.queryByTestId("decision-cancel")).toBeNull();
+  });
+
+  it("answers through the issue decision endpoint with the approve index", async () => {
+    await renderCard(authCard);
+    await pressPressable("decision-auth-approve");
+    expect(mockAnswer).toHaveBeenCalledWith("issue-1", "d-1", [0]);
+  });
+
+  it("hides the buttons and shows the answered state once answered", async () => {
+    await renderCard(
+      card({
+        ...authCard,
+        status: "answered",
+        auth_state: "approved",
+        answered_by_type: "member",
+        answered_by_id: "member-1",
+        answered_at: "2026-10-02T04:00:00Z",
+      }),
+    );
+    expect(screen.queryByTestId("decision-auth-approve")).toBeNull();
+    expect(screen.queryByTestId("decision-auth-deny")).toBeNull();
+    // The answered line is one merged text node ("Owner · 2h" — timeAgo is
+    // mocked), and the directory-backed name resolves asynchronously.
+    await waitFor(() => expect(screen.getByText("Owner · 2h")).toBeTruthy());
+  });
+
+  it("shows the execution failure line on execute_failed", async () => {
+    await renderCard(
+      card({
+        ...authCard,
+        status: "answered",
+        auth_state: "approved",
+        execution_error: "modified",
+      }),
+    );
+    expect(screen.getByText("Execution failed: {{reason}}")).toBeTruthy();
+  });
+});

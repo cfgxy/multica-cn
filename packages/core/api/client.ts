@@ -2,6 +2,9 @@ import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
+  DecisionRequest,
+  DecisionRequestDetail,
+  DecisionRequestsList,
   IssueDecision,
   BatchDecisionAnswerResult,
   BatchIssueDecisionAnswer,
@@ -339,6 +342,9 @@ import {
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
   IssueDecisionsListSchema,
+  DecisionRequestDetailSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   WorkspaceDecisionInboxSchema,
   BatchDecisionAnswersSchema,
@@ -1728,6 +1734,56 @@ export class ApiClient {
     });
     if (!inbox) throw new Error("Invalid decision inbox response");
     return inbox;
+  }
+
+  // Agent authorization requests (RUYI-630). Listing/detail are the
+  // decision-center's summary surface; answering/cancelling are human acts —
+  // the server refuses agent callers regardless of what the client sends.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async getDecisionRequest(workspaceId: string, requestId: string): Promise<DecisionRequestDetail> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}`);
+    const detail = parseWithFallback(raw, DecisionRequestDetailSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests/:requestId",
+    });
+    if (!detail) throw new Error("Invalid decision request response");
+    return detail;
+  }
+
+  async answerDecisionRequest(workspaceId: string, requestId: string, decision: "approve" | "deny"): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(workspaceId: string, requestId: string): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {

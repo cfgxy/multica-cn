@@ -1058,8 +1058,7 @@
       "cancel_requested": "正在停止",
       "completed": "已完成",
       "failed": "失败",
-      "cancelled": "已取消",
-      "cancel_requested": "正在停止"
+      "cancelled": "已取消"
     },
     "runs": {
       "title": "Agent 运行记录",
@@ -1180,6 +1179,15 @@
     "answer_failed": "提交答案失败",
     "cancel_failed": "取消卡片失败",
     "batch_title": "批量作答",
-    "batch_submit": "全部提交"
+    "batch_submit": "全部提交",
+    "auth_title": "授权请求",
+    "auth_state_approved": "已同意",
+    "auth_state_denied": "已拒绝",
+    "auth_state_executed": "已执行",
+    "auth_state_execute_failed": "执行失败",
+    "auth_approve_default": "同意",
+    "auth_deny_default": "拒绝",
+    "auth_execute_failed": "执行失败：{{reason}}",
+    "auth_answer_failed": "授权操作失败"
   }
 }
