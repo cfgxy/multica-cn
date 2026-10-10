@@ -103,3 +103,34 @@ describe("task transcript timeline", () => {
     expect(items[0]?.created_at).toBe("2026-06-09T09:00:00.000Z");
   });
 });
+
+describe("watchdog events (RUYI-593)", () => {
+  it("passes watchdog events through with their typed payload, never merged or dropped", () => {
+    const timeline = buildTimeline([
+      message(1, "text", "working"),
+      {
+        ...message(2, "watchdog"),
+        tool: "Bash",
+        input: { event: "tool_in_flight", state: "tool_in_flight", pending_ms: 2820000, mark_count: 2 },
+      },
+      message(3, "text", "still working"),
+    ]);
+    expect(timeline).toHaveLength(3);
+    const wd = timeline[1];
+    expect(wd?.type).toBe("watchdog");
+    expect(wd?.tool).toBe("Bash");
+    expect(wd?.input).toMatchObject({ event: "tool_in_flight", mark_count: 2 });
+    // Adjacent text rows must not absorb the watchdog row into a merge.
+    expect(timeline[0]?.content).toBe("working");
+    expect(timeline[2]?.content).toBe("still working");
+  });
+
+  it("redacts watchdog string fields like any other row", () => {
+    // 36+ chars after the ghp_ prefix, matching redactSecrets' GitHub token pattern.
+    const timeline = buildTimeline([
+      message(1, "watchdog", "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn leaked"),
+    ]);
+    expect(timeline[0]?.content).toContain("[REDACTED GITHUB TOKEN]");
+    expect(timeline[0]?.content).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+  });
+});

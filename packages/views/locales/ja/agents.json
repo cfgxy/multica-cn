@@ -793,6 +793,7 @@
     "kind_tool": "ツール",
     "kind_thinking": "思考",
     "kind_error": "エラー",
+    "kind_watchdog": "ウォッチドッグ",
     "group_calls_other": "{{count}} 回の呼び出し",
     "step_running": "実行中",
     "step_input": "入力",

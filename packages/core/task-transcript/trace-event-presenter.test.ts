@@ -14,7 +14,9 @@ import {
   traceEventSummary,
   traceToolArgSummary,
   unwrapToolOutput,
+  watchdogEventSummary,
 } from "./trace-event-presenter";
+import type { TraceEvent } from "./trace-event-presenter";
 
 describe("traceEventSummary truncation", () => {
   it("truncates a long summary with the single-character ellipsis", () => {
@@ -590,5 +592,111 @@ describe("traceToolArgSummary / traceEventHasDetail — Codex changes[]", () => 
     expect(traceEventHasDetail({ type: "tool_result", tool: "patch_apply", output: "" })).toBe(
       false,
     );
+  });
+});
+
+describe("watchdog events (RUYI-593)", () => {
+  const inFlight: TraceEvent = {
+    type: "watchdog",
+    tool: "Bash",
+    input: {
+      event: "tool_in_flight",
+      state: "tool_in_flight",
+      checked_at: "2026-10-10T03:00:00Z",
+      pending_ms: 2820000,
+      mark_count: 2,
+      call_id: "call-1",
+    },
+  };
+  const warn: TraceEvent = {
+    type: "watchdog",
+    input: {
+      event: "silence_warn",
+      state: "no_tool_silence",
+      checked_at: "2026-10-10T03:00:00Z",
+      silent_ms: 960000,
+      threshold: "15m0s",
+      alert_at: "1h0m0s",
+    },
+  };
+  const alert: TraceEvent = {
+    type: "watchdog",
+    input: {
+      event: "silence_alert",
+      state: "no_tool_silence",
+      checked_at: "2026-10-10T04:00:00Z",
+      silent_ms: 3660000,
+      threshold: "1h0m0s",
+      watchdog_at: "15m0s",
+    },
+  };
+  const premortem: TraceEvent = {
+    type: "watchdog",
+    input: {
+      event: "force_stop_premortem",
+      checked_at: "2026-10-10T05:00:00Z",
+      provider: "codex",
+      threshold: "2h0m0s",
+      idle_ms: 7320000,
+      tool_in_flight: true,
+      tool_count: 3,
+      pending_tools: [{ tool: "Bash", call_id: "call-1", pending_ms: 2820000, mark_count: 2 }],
+    },
+  };
+
+  it("classifies watchdog events as their own kind, never generic", () => {
+    expect(traceEventKind({ type: "watchdog" })).toBe("watchdog");
+  });
+
+  it("labels watchdog rows Watchdog", () => {
+    expect(traceEventLabel(inFlight)).toBe("Watchdog");
+    expect(traceEventLabel({ type: "watchdog" })).toBe("Watchdog");
+  });
+
+  it("summarizes an in-flight mark with tool, call, age, and mark count", () => {
+    expect(watchdogEventSummary(inFlight)).toBe("Bash call-1 in flight 47m (mark 2)");
+  });
+
+  it("summarizes silence tiers with the silence age and the sibling threshold", () => {
+    expect(watchdogEventSummary(warn)).toBe("no output for 16m (alert at 1h0m0s)");
+    expect(watchdogEventSummary(alert)).toBe("no output for 1h1m (alert threshold 1h0m0s)");
+  });
+
+  it("summarizes the premortem naming the pending calls, or their absence", () => {
+    expect(watchdogEventSummary(premortem)).toBe(
+      'codex force-stopped after 2h2m idle: 1 pending tool call: Bash (call call-1, in flight 47m, 2 marks)',
+    );
+    expect(
+      watchdogEventSummary({
+        type: "watchdog",
+        input: { ...premortem.input, pending_tools: [], tool_in_flight: false },
+      }),
+    ).toBe("codex force-stopped after 2h2m idle: no pending tool calls");
+  });
+
+  it("keeps the summary out of the generic content fallback", () => {
+    // traceEventSummary routes watchdog payloads; content is empty on these
+    // events, so without the branch the row would read blank.
+    expect(traceEventSummary(inFlight)).toBe("Bash call-1 in flight 47m (mark 2)");
+  });
+
+  it("falls back to the raw event name for unknown watchdog payloads", () => {
+    expect(watchdogEventSummary({ type: "watchdog", input: { event: "future_thing" } })).toBe(
+      "future_thing",
+    );
+    expect(watchdogEventSummary({ type: "watchdog" })).toBe("");
+  });
+
+  it("copies watchdog events with their diagnostic input, not a blank body", () => {
+    const text = traceEventCopyText(inFlight);
+    expect(text).toContain("[Watchdog]");
+    expect(text).toContain("tool_in_flight");
+    expect(text).toContain("2820000");
+  });
+
+  it("details watchdog events as the input JSON", () => {
+    const detail = traceEventDetail(premortem);
+    expect(detail.kind).toBe("text");
+    expect((detail as { kind: "text"; text: string }).text).toContain("force_stop_premortem");
   });
 });

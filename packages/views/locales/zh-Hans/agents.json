@@ -900,6 +900,7 @@
     "kind_tool": "工具",
     "kind_thinking": "思考",
     "kind_error": "错误",
+    "kind_watchdog": "看门狗",
     "group_calls_other": "{{count}} 次调用",
     "step_running": "进行中",
     "step_input": "输入",
