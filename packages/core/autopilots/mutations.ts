@@ -9,6 +9,7 @@ import type {
   GetAutopilotResponse,
   CreateAutopilotTriggerRequest,
   UpdateAutopilotTriggerRequest,
+  AutopilotParamInput,
 } from "../types";
 
 export function useCreateAutopilot() {
@@ -172,6 +173,22 @@ export function useRotateAutopilotTriggerWebhookToken() {
       api.rotateAutopilotTriggerWebhookToken(autopilotId, triggerId),
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: autopilotKeys.detail(wsId, vars.autopilotId) });
+    },
+  });
+}
+
+// Whole-set replacement of the parameter definitions (RUYI-641). The server
+// validates the set as a unit — duplicate names, enum defaults, template
+// references — so a rejection leaves the stored set untouched. Settled
+// invalidation refetches the authoritative set for the dialog.
+export function useReplaceAutopilotParams() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ autopilotId, params }: { autopilotId: string; params: AutopilotParamInput[] }) =>
+      api.replaceAutopilotParams(autopilotId, params),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({ queryKey: autopilotKeys.params(wsId, vars.autopilotId) });
     },
   });
 }

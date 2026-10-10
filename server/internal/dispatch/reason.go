@@ -81,6 +81,11 @@ const (
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	// ReasonParamInvalid (RUYI-641): the dispatch was refused because the
+	// trigger-time parameters miss the autopilot's definitions — a required
+	// parameter without value or default, a type mismatch, or an unknown name.
+	// A caller-fixable contract error, recorded as the run's skip reason.
+	ReasonParamInvalid ReasonCode = "param_invalid"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )
