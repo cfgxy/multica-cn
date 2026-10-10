@@ -52,7 +52,6 @@ import { projectListOptions } from "@multica/core/projects/queries";
 import {
   useCreateAutopilot,
   useCreateAutopilotTrigger,
-  useReplaceAutopilotParams,
   useUpdateAutopilot,
   useUpdateAutopilotTrigger,
 } from "@multica/core/autopilots/mutations";
@@ -293,7 +292,6 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const createTrigger = useCreateAutopilotTrigger();
   const updateAutopilot = useUpdateAutopilot();
   const updateTrigger = useUpdateAutopilotTrigger();
-  const replaceAutopilotParams = useReplaceAutopilotParams();
   const [submitting, setSubmitting] = useState(false);
 
   // After a successful webhook-kind create, we don't close the dialog —
@@ -402,6 +400,20 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           toast.error(formatSchedulePartialFailureToast(t, "create", triggerErrMessage));
         }
       } else {
+        // The whole edit is one PATCH. Params ride along (key present = whole-set
+        // swap) ONLY when the section actually changed, so the server validates
+        // the templates it will keep against the parameter set it will keep —
+        // atomically. Splitting template and params into two calls cannot work:
+        // PATCH-first rejects a template that references a newly added parameter
+        // against the stored set, and params-first rejects a set that drops a
+        // parameter the stored template still names. A rejection (duplicate
+        // name, dangling template token, …) throws into the shared catch below,
+        // so the dialog stays open with the server's reason toasted.
+        const nextParams = paramDrafts
+          .filter((d) => d.name.trim() !== "")
+          .map(draftToParamInput);
+        const paramsChanged =
+          JSON.stringify(nextParams) !== initialParamsWireRef.current;
         await updateAutopilot.mutateAsync({
           id: props.autopilotId,
           title: title.trim(),
@@ -414,20 +426,8 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             user_type: "member" as const,
             user_id,
           })),
+          ...(paramsChanged ? { params: nextParams } : {}),
         });
-        // The PUT is a whole-set swap: only call it when the section actually
-        // changed. A rejection (duplicate name, dangling template token, …)
-        // throws into the shared catch below, so the dialog stays open with
-        // the server's reason toasted.
-        const nextParams = paramDrafts
-          .filter((d) => d.name.trim() !== "")
-          .map(draftToParamInput);
-        if (JSON.stringify(nextParams) !== initialParamsWireRef.current) {
-          await replaceAutopilotParams.mutateAsync({
-            autopilotId: props.autopilotId,
-            params: nextParams,
-          });
-        }
         let triggerOk = true;
         let triggerErrMessage: string | null = null;
         // Skip the schedule sync when the autopilot's first trigger is a
