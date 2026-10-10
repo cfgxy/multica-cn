@@ -24,6 +24,19 @@ const manyAgentsRef = vi.hoisted(() => ({ current: false }));
 // — what a plain member actually receives once the backend folds the agents
 // they may not view (MUL-5409).
 const restrictedBucketRef = vi.hoisted(() => ({ current: false }));
+// The empty-usage suite: every calendar rollup answers successfully with zero
+// rows — a workspace with agents but no completed tasks, the exact shape of
+// the QA repro where the page used to swap itself for the empty state and the
+// live Prometheus panels never mounted.
+const emptyUsageRef = vi.hoisted(() => ({ current: false }));
+// Arms the live metric panels for that suite: `false` keeps a panel pending,
+// "empty" serves configured=true with no series, "data" adds one sample.
+const metricPanelsRef = vi.hoisted(() => ({
+  current: {
+    resources: false as false | "empty" | "data",
+    traffic: false as false | "empty" | "data",
+  },
+}));
 
 // Kept out of the fixture ternary so the sentinel's shape reads at a glance.
 // Unlike the deleted-agents bucket this one carries real seconds / tasks: the
@@ -70,6 +83,47 @@ vi.mock("@tanstack/react-query", async () => {
     useQueryClient: () => ({ invalidateQueries: vi.fn() }),
     useQuery: (opts: { queryKey: unknown[] }) => {
       queryKeys.push(opts.queryKey);
+      const kind = opts.queryKey[2];
+      // Live Prometheus panels: relative-window queries the page must fire
+      // even when every calendar rollup comes back empty. Unarmed panels
+      // stay pending, exactly as an unmocked query would on mount.
+      if (kind === "usage-resources" || kind === "usage-traffic") {
+        const armed =
+          kind === "usage-resources"
+            ? metricPanelsRef.current.resources
+            : metricPanelsRef.current.traffic;
+        if (!armed) return { data: undefined, isLoading: true };
+        return {
+          data: {
+            configured: true,
+            series:
+              armed === "data"
+                ? {
+                    cpu_cores: [
+                      { labels: { daemon: "daemon-1" }, points: [{ t: 1, v: 2.5 }] },
+                    ],
+                    tokens_per_second: [
+                      { labels: { provider: "anthropic" }, points: [{ t: 1, v: 12 }] },
+                    ],
+                  }
+                : {},
+          },
+          isLoading: false,
+          isSuccess: true,
+        };
+      }
+      // Empty-usage suite: every calendar rollup succeeds with zero rows, the
+      // way a workspace that has agents but no completed tasks answers.
+      if (emptyUsageRef.current) {
+        if (opts.queryKey[0] === "workspaces" && kind === "agents") {
+          return {
+            data: [{ id: "agent-1", name: "Agent One" }],
+            isLoading: false,
+            isSuccess: true,
+          };
+        }
+        return { data: [], isLoading: false, isSuccess: true };
+      }
       if (dashboardDataRef.current) {
         // ["workspaces", wsId, "agents"] — needed so the Errors breakdown can
         // resolve agent-1 to a name and render its drill-down link.
@@ -85,7 +139,6 @@ vi.mock("@tanstack/react-query", async () => {
             isSuccess: true,
           };
         }
-        const kind = opts.queryKey[2];
         // Bulk fixture: 12 agents, every per-agent metric strictly descending
         // so both caps (leaderboard top 10, offenders top 8) are testable by
         // rank without the ties an equal-valued fixture would create. The
@@ -784,6 +837,77 @@ describe("DashboardPage — leaderboard density", () => {
       gridTemplateColumns:
         "minmax(10rem, 1.6fr) minmax(6rem, 1fr) 5rem 5rem 5rem 4rem",
     });
+  });
+});
+
+// The live Prometheus panels answer "how is the fleet doing right now", a
+// question the calendar-day task rollups don't. When those rollups come back
+// empty the page used to replace its whole body with the empty state — panels
+// unmounted, hooks unfired, so a healthy deployment looked dead (QA P1,
+// RUYI-618). Empty usage must decide the usage sections' presentation only.
+describe("DashboardPage — live metric panels survive an empty usage workspace", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = false;
+    emptyUsageRef.current = true;
+    metricPanelsRef.current = { resources: "data", traffic: "data" };
+    tzRef.current = "UTC";
+    cleanup();
+  });
+
+  afterEach(() => {
+    emptyUsageRef.current = false;
+    metricPanelsRef.current = { resources: false, traffic: false };
+  });
+
+  it("mounts both panels and fires their queries when usage is empty", () => {
+    renderDashboard();
+
+    // The usage sections still speak the truth — no spend yet — but the page
+    // must not stop there: the panels have their own data source.
+    expect(screen.getByText("No usage yet")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-resources-card")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-traffic-card")).toBeInTheDocument();
+    // Mounting is the contract the QA repro tests: with the panels inside the
+    // empty branch, these two queries were never issued at all.
+    expect(
+      queryKeys.some((k) => k[0] === "dashboard" && k[2] === "usage-resources"),
+    ).toBe(true);
+    expect(
+      queryKeys.some((k) => k[0] === "dashboard" && k[2] === "usage-traffic"),
+    ).toBe(true);
+  });
+
+  it("keeps the traffic panel on its own empty state, not the page's", () => {
+    metricPanelsRef.current = { resources: "data", traffic: "empty" };
+    renderDashboard();
+
+    const traffic = screen.getByTestId("usage-traffic-card");
+    expect(
+      within(traffic).getByText("No samples in this window."),
+    ).toBeInTheDocument();
+    // The page-level empty state renders above the panels, not instead of them.
+    expect(screen.getByText("No usage yet")).toBeInTheDocument();
+  });
+
+  it("keeps the panels below the usage sections when usage has data", () => {
+    dashboardDataRef.current = true;
+    emptyUsageRef.current = false;
+    renderDashboard();
+
+    // Baseline order for a workspace with spend: leaderboard, then the two
+    // live panels. The empty-state fix must not reshuffle this page.
+    const leaderboard = screen.getByRole("list", { name: "Leaderboard" });
+    const resources = screen.getByTestId("usage-resources-card");
+    const traffic = screen.getByTestId("usage-traffic-card");
+    expect(
+      leaderboard.compareDocumentPosition(resources) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      resources.compareDocumentPosition(traffic) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 });
 
