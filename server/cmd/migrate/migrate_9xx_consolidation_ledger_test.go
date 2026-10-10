@@ -136,6 +136,7 @@ var postConsolidationStems = []string{
 	"934_self_evolution_model_config",                // RUYI-551
 	"935_retrospective_agent",                        // RUYI-552 (934 issued to the same issue's direction-2 attempt and deleted unreleased)
 	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
+	"937_live_session_mode",                          // RUYI-626
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

@@ -485,7 +485,7 @@
     "key_cleared": "Key removed",
     "key_update_failed": "Failed to update key",
     "probe_invalid": "Key saved, but the connectivity check failed (HTTP {{status}})",
-    "probe_unreachable": "Key saved, but connectivity could not be verified (target unreachable)",
+    "probe_unreachable": "Couldn't reach Google from this device — check the network. This does not mean the key is invalid.",
     "model_label": "Model",
     "model_placeholder": "gemini-3.8-live",
     "advanced_label": "Advanced params (JSON)",
@@ -506,7 +506,12 @@
     "badge_configured": "Key configured",
     "badge_invalid": "Key invalid",
     "badge_unreachable": "Can't verify",
-    "badge_not_configured": "No key"
+    "badge_not_configured": "No key",
+    "probe_test": "Test connection",
+    "probe_running": "Testing…",
+    "probe_ok": "Connection OK — the key works from this device",
+    "key_saved_unreachable": "Key saved, but this device couldn't reach Google to verify it — voice may not work on this network",
+    "key_saved_probe_unreachable": "Key saved, but connectivity could not be verified (target unreachable)"
   },
   "voice_instance_create": {
     "action": "Add voice instance",
@@ -522,7 +527,8 @@
     "created_probe_invalid": "Registered, but the connectivity check failed — check the API key",
     "created_probe_unreachable": "Registered, but connectivity could not be verified — the target may be unreachable",
     "create_failed": "Failed to register the voice instance",
-    "key_save_failed": "Registered, but saving the API key failed — add it from the instance settings"
+    "key_save_failed": "Registered, but saving the API key failed — add it from the instance settings",
+    "created_unreachable": "Registered, but this device couldn't reach Google to verify the key — voice may not work on this network"
   },
   "mobile": {
     "list_loading": "Loading…",

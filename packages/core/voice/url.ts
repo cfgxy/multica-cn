@@ -31,3 +31,20 @@ export function buildVoiceSessionUrl(
       : null;
   return workspace ? `${base}?${workspace}` : base;
 }
+
+/**
+ * Direct-mode (RUYI-626) provider endpoint: the same v1beta BidiGenerateContent
+ * route the gateway dials (demo LiveProtocol.kt). The provider API key never
+ * rides this URL — direct transports pass it as the connect's x-goog-api-key
+ * header, mirroring the gateway's dial.
+ */
+export const PROVIDER_VOICE_WS_PATH =
+  "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+export const DEFAULT_PROVIDER_VOICE_WS_BASE = "wss://generativelanguage.googleapis.com";
+
+export function buildProviderVoiceSessionUrl(
+  base: string = DEFAULT_PROVIDER_VOICE_WS_BASE,
+): string {
+  return base.replace(/\/+$/, "") + PROVIDER_VOICE_WS_PATH;
+}

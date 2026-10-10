@@ -42,6 +42,7 @@ interface CommentInputProps {
 function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: CommentInputProps) {
   const { t } = useT("issues");
   const { t: tEditor } = useT("editor");
+  const { t: tVoice } = useT("voice");
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   // Sending mid-upload would strip the pending image's blob URL out of the
@@ -317,7 +318,10 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   // Voice occupies the send slot only when there is nothing to send and the
   // composer is not busy — the chat composer's eligibility set (RUYI-449)
   // minus the chat-only run/agent states an issue comment doesn't have.
-  const voiceEligible =
+  // RUYI-626 stage 1: direct connect ships mobile-only — the desktop/web
+  // entry renders as a disabled mic that says so (never silent).
+  const voiceEligible = false;
+  const voiceSlot =
     !!assignedAgentId &&
     isEmpty &&
     !submitting &&
@@ -487,8 +491,13 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
             chat composer (RUYI-449). Text, an in-flight upload, or a
             submitting composer swap it back to the send arrow, so voice never
             displaces text. Issues without an assigned agent never see it. */}
-        {voiceEligible ? (
-          <VoiceButton onStart={voice.start} />
+        {voiceSlot ? (
+          <VoiceButton
+            onStart={voice.start}
+            disabledReason={
+              voiceEligible ? null : tVoice(($) => $.button.disabled_stage1)
+            }
+          />
         ) : (
           <SubmitButton
             onClick={submit}
