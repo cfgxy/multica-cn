@@ -12,7 +12,7 @@
  * regression that reintroduces a Chat-only renderer fails here.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 
@@ -66,6 +66,17 @@ vi.mock("../issues/components/issue-mention-card", () => ({
   IssueMentionCard: ({ issueId, fallbackLabel }: { issueId: string; fallbackLabel?: string }) => (
     <span data-testid="issue-mention">{fallbackLabel ?? issueId}</span>
   ),
+}));
+
+// RUYI-635: the tail footer needs query/navigation infra this parity fixture
+// does not exercise — its behaviours are pinned in issue-reference-footer and
+// issue-mention-aggregation tests. A stub keeps the aggregation block present
+// in the surface comparison without dragging those providers in.
+vi.mock("./issue-reference-footer", () => ({
+  IssueReferenceFooter: ({ references }: { references: unknown[] }) =>
+    references.length > 0 ? (
+      <div data-issue-reference-footer="" data-count={references.length} />
+    ) : null,
 }));
 
 vi.mock("../projects/components/project-chip", () => ({
@@ -470,8 +481,14 @@ describe("semantic parity beyond Mermaid", () => {
       );
       // Ordinary language -> lowlight static code
       expect(container.querySelector("code.hljs")).not.toBeNull();
-      // Mention chip
-      expect(within(container).getByTestId("issue-mention")).toBeInTheDocument();
+      // RUYI-635: the issue mention reads as plain text in the body and
+      // aggregates into the tail footer — the same on both surfaces.
+      expect(
+        container.querySelector("[data-issue-mention-text]")?.textContent,
+      ).toBe("MUL-7");
+      expect(
+        container.querySelector("[data-issue-reference-footer]"),
+      ).not.toBeNull();
       // Highlight
       expect(container.querySelector("mark")?.textContent).toBe("highlighted");
       // Plain link

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import type { Issue } from "@multica/core/types";
+import type { IssueReference } from "@multica/core/markdown";
 import { renderWithI18n } from "../test/i18n";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
@@ -21,6 +22,33 @@ vi.mock("../issues/hooks", () => ({
     if (identifier === "MUL-8") return resolvedIssues.other;
     return null;
   },
+}));
+
+// Footer resolution seam (RUYI-635): mention-form references aggregate into
+// the tail footer, so its hook must resolve without a QueryClient here.
+vi.mock(
+  "../issues/hooks/use-issue-reference-resolutions",
+  () => ({
+    useIssueReferenceResolutions: (references: IssueReference[]) =>
+      new Map(
+        references.map((ref) => [
+          `${ref.form}:${ref.ref}`,
+          ref.ref === resolvedIssues.current?.id
+            ? resolvedIssues.current
+            : ref.ref === "MUL-8"
+              ? resolvedIssues.other
+              : null,
+        ]),
+      ),
+  }),
+);
+
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "ws-1",
+}));
+
+vi.mock("@multica/core/issue-statuses/hooks", () => ({
+  useIssueStatuses: () => ({ colorOf: () => "#123456" }),
 }));
 
 vi.mock("../issues/components/issue-chip", () => ({
@@ -78,25 +106,24 @@ const CURRENT_CONTEXT: CurrentIssueRenderContextValue = {
   id: CURRENT_ID,
   identifier: "MUL-7",
 };
-const CONTENT = [
-  `See [MUL-7](mention://issue/${CURRENT_ID})`,
-  "MUL-8",
-  `${APP_ORIGIN}/acme/issues/${OTHER_ID}.`,
-].join(" and ");
 
 /**
- * The self-reference written every other way it can be written, since a
- * reference reaches the mention card through a different resolution path per
- * form: the autolink preprocessor for bare prose, and the entity-link unfurl
- * for a pasted URL — which itself splits on whether "copy link" produced a
- * UUID or an identifier.
+ * RUYI-635 split inline issue-reference rendering in two, and the
+ * current-issue marker split with it:
  *
- * Each pairs the self-reference with an other-issue reference on the SAME
- * path, so a failure here means the current-issue check stopped applying, not
- * that the path stopped resolving at all.
+ *   - Mention forms — `[MUL-7](mention://issue/<uuid>)` and the autolinked
+ *     bare identifier — read as plain body text and aggregate into the tail
+ *     footer. No chip renders, so "This issue" marking no longer applies to
+ *     them, provider or not.
+ *   - Pasted in-app issue URLs keep their chip (the author wrote a link), and
+ *     a URL pointing at the issue being viewed still marks itself "This issue"
+ *     through CurrentIssueRenderContext → IssueMentionCard.
+ *
+ * Each fixture pairs the self-reference with an other-issue reference on the
+ * SAME path, so a failure means the current-issue check broke, not that the
+ * path stopped resolving at all.
  */
-const SELF_REFERENCE_FORMS: ReadonlyArray<readonly [string, string]> = [
-  ["a bare identifier", "See MUL-7 and MUL-8."],
+const URL_FORMS: ReadonlyArray<readonly [string, string]> = [
   [
     "a UUID URL",
     `See ${APP_ORIGIN}/acme/issues/${CURRENT_ID} and ${APP_ORIGIN}/acme/issues/${OTHER_ID}.`,
@@ -107,8 +134,16 @@ const SELF_REFERENCE_FORMS: ReadonlyArray<readonly [string, string]> = [
   ],
 ];
 
+const MENTION_CONTENT = `See [MUL-7](mention://issue/${CURRENT_ID}) and MUL-8.`;
+
 function makeIssue(id: string, identifier: string): Issue {
-  return { id, identifier } as unknown as Issue;
+  return {
+    id,
+    identifier,
+    title: `Issue ${identifier}`,
+    status: "in_progress",
+    status_category: "started",
+  } as unknown as Issue;
 }
 
 function adapter(): NavigationAdapter {
@@ -125,7 +160,7 @@ function adapter(): NavigationAdapter {
 
 function renderContent(
   context?: CurrentIssueRenderContextValue,
-  content = CONTENT,
+  content = MENTION_CONTENT,
 ) {
   return renderWithI18n(
     <NavigationProvider value={adapter()}>
@@ -146,26 +181,26 @@ beforeEach(() => {
 });
 
 describe("RichContent current-issue rendering", () => {
-  it("marks only the current UUID mention in a paragraph with two other references as current", () => {
-    renderContent(CURRENT_CONTEXT);
+  it("renders mention forms as plain text and aggregates them into the footer, without the current-issue chip", () => {
+    const { container } = renderContent(CURRENT_CONTEXT);
 
-    const chips = screen.getAllByTestId("issue-chip");
-    expect(chips).toHaveLength(3);
-    expect(chips.map((chip) => chip.getAttribute("data-issue-id"))).toEqual([
-      CURRENT_ID,
-      OTHER_ID,
-      OTHER_ID,
+    expect(screen.queryByTestId("issue-chip")).toBeNull();
+    const mentions = Array.from(
+      container.querySelectorAll("[data-issue-mention-text]"),
+    );
+    expect(mentions.map((m) => m.textContent)).toEqual(["MUL-7", "MUL-8"]);
+
+    const rows = Array.from(container.querySelectorAll("a.issue-reference-row"));
+    expect(rows.map((row) => row.getAttribute("href"))).toEqual([
+      `/acme/issues/${CURRENT_ID}`,
+      `/acme/issues/${OTHER_ID}`,
     ]);
-    expect(chips.map((chip) => chip.getAttribute("data-current"))).toEqual([
-      "true",
-      "false",
-      "false",
-    ]);
-    expect(chips[0]).toHaveTextContent("This issue · MUL-7");
+    expect(rows[0]!.textContent).toContain("MUL-7");
+    expect(rows[0]!.textContent).toContain("Issue MUL-7");
   });
 
-  it.each(SELF_REFERENCE_FORMS)(
-    "marks the current issue written as %s, and only it, as current",
+  it.each(URL_FORMS)(
+    "keeps the chip for a pasted self-reference written as %s, and only it, marked current",
     (_form, content) => {
       renderContent(CURRENT_CONTEXT, content);
 
@@ -182,11 +217,11 @@ describe("RichContent current-issue rendering", () => {
     },
   );
 
-  it("keeps every chip on regular content without a current-issue provider", () => {
-    renderContent();
+  it("keeps pasted URL chips unmarked without a current-issue provider", () => {
+    renderContent(undefined, URL_FORMS[0]![1]);
 
     const chips = screen.getAllByTestId("issue-chip");
-    expect(chips).toHaveLength(3);
+    expect(chips).toHaveLength(2);
     for (const chip of chips) {
       expect(chip).toHaveAttribute("data-current", "false");
     }
