@@ -384,6 +384,8 @@
     "title": "Prompt legislation proposals",
     "description": "Clause-level drafts for the four prompt carriers. Submitting sends a proposal to the workspace owner; approval runs the legislation gate and enacts only on a clean pass.",
     "filterAll": "All",
+    "runFilterLabel": "Run",
+    "runFilterAll": "All runs",
     "status": {
       "draft": "Draft",
       "pending_owner": "Pending owner",
@@ -487,6 +489,8 @@
     "windowDays": "Lookback window (days)",
     "save": "Save config",
     "runs": "Runs",
+    "runTitle": "Daily retrospective {{stamp}}",
+    "viewResults": "View results",
     "trigger": "Run now",
     "status": {
       "succeeded": "Succeeded",

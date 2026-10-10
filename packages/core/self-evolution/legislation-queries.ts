@@ -3,18 +3,25 @@ import { api } from "../api";
 import type { PromptProposalDraftRequest, RetrospectiveConfig } from "../types";
 
 /**
- * Prompt legislation pool keys (RUYI-305 E2). The status filter lives in the
- * key so switching filters refetches rather than reusing the unfiltered page.
+ * Prompt legislation pool keys (RUYI-305 E2). The status and run filters
+ * live in the key so switching filters refetches rather than reusing the
+ * unfiltered page. runId (RUYI-673) scopes the pool to one retrospective
+ * run's batch; "" means the whole pool.
  */
 export const promptProposalKeys = {
   all: (wsId: string) => ["prompt-proposals", wsId] as const,
-  list: (wsId: string, status: string) => [...promptProposalKeys.all(wsId), status] as const,
+  list: (wsId: string, status: string, runId = "") =>
+    [...promptProposalKeys.all(wsId), status, runId] as const,
 };
 
-export function promptProposalListOptions(wsId: string, status: string) {
+export function promptProposalListOptions(wsId: string, status: string, runId = "") {
   return queryOptions({
-    queryKey: promptProposalKeys.list(wsId, status),
-    queryFn: () => api.listPromptProposals(status ? { status } : undefined),
+    queryKey: promptProposalKeys.list(wsId, status, runId),
+    queryFn: () =>
+      api.listPromptProposals({
+        status: status || undefined,
+        runId: runId || undefined,
+      }),
     enabled: !!wsId,
   });
 }
