@@ -505,6 +505,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		VCSIntegrationEnabled:            os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                        strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                           appURLFromEnv(),
+		SelfTriggerSuppressionEnabled:    envBool("MULTICA_SELF_TRIGGER_SUPPRESSION_ENABLED", true),
 		TrustedProxies:                   parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
 		CloudURL:                         strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
 		CloudTimeout:                     35 * time.Second,
