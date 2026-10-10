@@ -147,33 +147,33 @@ export function UsageTrendCard({
         ) : weekly ? (
           metric === "cost" ? (
             <WeeklyCostChart data={weeklyCost}
-          selection={selection}
-          onSelectionChange={onSelectionChange} />
+              selection={selection}
+              onSelectionChange={onSelectionChange} />
           ) : metric === "tokens" ? (
             <WeeklyTokensChart data={weeklyTokens}
-          selection={selection}
-          onSelectionChange={onSelectionChange} />
+              selection={selection}
+              onSelectionChange={onSelectionChange} />
           ) : metric === "time" ? (
             <WeeklyTimeChart
               data={weeklyTime}
-          selection={selection}
-          onSelectionChange={onSelectionChange}
+              selection={selection}
+              onSelectionChange={onSelectionChange}
               formatY={(s) => formatDuration(s, lessThanMinuteLabel)}
               formatTooltip={(s) => formatDuration(s, lessThanMinuteLabel)}
             />
           ) : (
             <WeeklyTasksChart data={weeklyTasks}
-          selection={selection}
-          onSelectionChange={onSelectionChange} />
+              selection={selection}
+              onSelectionChange={onSelectionChange} />
           )
         ) : metric === "cost" ? (
           <DailyCostChart data={dailyCost}
-          selection={selection}
-          onSelectionChange={onSelectionChange} />
+            selection={selection}
+            onSelectionChange={onSelectionChange} />
         ) : metric === "tokens" ? (
           <DailyTokensChart data={dailyTokens}
-          selection={selection}
-          onSelectionChange={onSelectionChange} />
+            selection={selection}
+            onSelectionChange={onSelectionChange} />
         ) : metric === "time" ? (
           <DailyTimeChart
             data={dailyTime}
@@ -184,8 +184,8 @@ export function UsageTrendCard({
           />
         ) : (
           <DailyTasksChart data={dailyTasks}
-          selection={selection}
-          onSelectionChange={onSelectionChange} />
+            selection={selection}
+            onSelectionChange={onSelectionChange} />
         )}
       </div>
     </div>
