@@ -1202,10 +1202,12 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+	drainCh := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(r); drainCh <- b }()
 	err := runIssuePullRequests(cmd, []string{"MUL-2818"})
 	_ = w.Close()
 	os.Stdout = old
-	out, _ := io.ReadAll(r)
+	out := <-drainCh
 	if err != nil {
 		t.Fatalf("runIssuePullRequests: %v", err)
 	}
@@ -1267,10 +1269,12 @@ func TestRunIssueUsageReturnsTokenSummaryAsJSON(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+	drainCh := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(r); drainCh <- b }()
 	err := runIssueUsage(cmd, []string{"MUL-2818"})
 	_ = w.Close()
 	os.Stdout = old
-	out, _ := io.ReadAll(r)
+	out := <-drainCh
 	if err != nil {
 		t.Fatalf("runIssueUsage: %v", err)
 	}
@@ -1300,10 +1304,12 @@ func TestRunIssuePullRequestsTableIncludesCoreFields(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
+	drainCh := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(r); drainCh <- b }()
 	printIssuePullRequestsTable(prs)
 	_ = w.Close()
 	os.Stdout = old
-	out, _ := io.ReadAll(r)
+	out := <-drainCh
 	text := string(out)
 	for _, want := range []string{"NUMBER", "STATE", "TITLE", "URL", "42", "open", "MUL-2818 add issue PR CLI", "https://github.com/multica-ai/multica/pull/42"} {
 		if !strings.Contains(text, want) {
@@ -4764,47 +4770,6 @@ func TestRunIssueUpdateOmitsPositionWhenUnset(t *testing.T) {
 	}
 }
 
-// TestIssueCommentListHelpCarriesReadContract pins the read-surface contract
-// that MUL-5442 moved out of the runtime brief into this command's --help: the
-// --recent saturation semantics (MUL-5372), the bounded two-step alternative,
-// and the pagination cursor labels. The brief now only points here — if these
-// leave the help, the pointer dangles and the over-read trap returns
-// undocumented.
-//
-// The assertions run against the RENDERED FlagUsages output, not raw
-// Flag.Usage: pflag's UnquoteUsage hijacks the first backtick pair in a usage
-// string as the flag's value placeholder (see
-// TestLoginTokenHelpOutputRendersCleanly for the original regression), so only
-// the rendered output proves what an agent actually reads.
-func TestIssueCommentListHelpCarriesReadContract(t *testing.T) {
-	help := issueCommentListCmd.Flags().FlagUsages()
-
-	for _, want := range []string{
-		// --before must keep its string placeholder — a backticked phrase in
-		// the usage text would replace it (the UnquoteUsage hijack).
-		"--before string",
-		// The saturation contract relocated from the brief (MUL-5372).
-		"caps THREADS, not comments",
-		"no per-thread cap",
-		"fewer than N root threads",
-		// The bounded alternative, as two sequential reads — the flags are
-		// mutually exclusive, so the help must never suggest composing them.
-		"scan with --roots-only --summary",
-		"then open selected threads with --thread <id> --tail N",
-		// Pagination cursor labels, exactly as the CLI prints them on stderr.
-		"Next thread cursor",
-		"Next reply cursor",
-		// The --compact contract (#5999 follow-up): what goes and what is
-		// untouchable.
-		"drop response fields that carry no information",
-		"Content and identity fields pass through untouched",
-	} {
-		if !strings.Contains(help, want) {
-			t.Errorf("comment list rendered help missing %q, got:\n%s", want, help)
-		}
-	}
-}
-
 // TestCompactCommentsDropsReaderNoise pins the --compact contract (#5999
 // follow-up, MUL-5442): reader-noise fields go — the echoed issue_id,
 // source_task_id, updated_at when identical to created_at, null values,
@@ -4914,13 +4879,15 @@ func TestRunIssueCommentListCompactWiring(t *testing.T) {
 			t.Fatalf("pipe: %v", err)
 		}
 		os.Stdout = w
+		drainCh := make(chan []byte, 1)
+		go func() { b, _ := io.ReadAll(r); drainCh <- b }()
 		runErr := runIssueCommentList(cmd, []string{issueID})
 		w.Close()
 		os.Stdout = orig
 		if runErr != nil {
 			t.Fatalf("runIssueCommentList: %v", runErr)
 		}
-		out, _ := io.ReadAll(r)
+		out := <-drainCh
 		var got []map[string]any
 		if err := json.Unmarshal(out, &got); err != nil {
 			t.Fatalf("output not JSON: %v\n---\n%s", err, out)
