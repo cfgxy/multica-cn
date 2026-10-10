@@ -23,6 +23,17 @@ func TestCORSAllowedHeaders_IncludeClientCapabilities(t *testing.T) {
 	}
 }
 
+// Computer provisioning runs long remote operations (credential writes, runtime
+// installs, model-config saves) that clients request with the standard
+// Prefer: respond-async header. Browsers preflight that header on every such
+// call, so a missing AllowedHeaders entry turns each async operation into a
+// failed CORS preflight (RUYI-670).
+func TestCORSAllowedHeaders_IncludePrefer(t *testing.T) {
+	if !slices.Contains(corsAllowedHeaders, "Prefer") {
+		t.Fatalf("Prefer missing from CORS allowed headers: %v", corsAllowedHeaders)
+	}
+}
+
 // Workspace subscription checkout and portal requests use Idempotency-Key to
 // make retries safe. Browsers preflight that custom request header, so omitting
 // it from AllowedHeaders prevents the billing request from reaching the server.

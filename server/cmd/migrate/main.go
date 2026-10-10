@@ -360,6 +360,22 @@ var concurrentIndexCleanups = map[string][]string{
 	"1004_task_usage_session_attribution_index":                 {"uq_task_usage_task_session_provider_model"},
 	"1013_runtime_cost_budget_pkey_index":                       {"runtime_cost_budget_pkey_uidx"},
 	"1015_runtime_cost_budget_scope_index":                      {"idx_runtime_cost_budget_scope"},
+	"948_computer_binding_account":                              {"computer_binding_account"},
+	"949_computer_operation_id":                                 {"computer_operation_id"},
+	"950_computer_operation_active":                             {"computer_operation_active"},
+	"951_computer_runtime_asset_key":                            {"computer_runtime_asset_key"},
+	"952_computer_operation_history":                            {"computer_operation_history"},
+	"953_model_key_directory_name":                              {"idx_model_key_directory_entry_name"},
+	"954_user_model_key_grant_position":                         {"idx_user_model_key_grant_user_position"},
+	"955_model_key_source_identity":                             {"idx_model_key_source_identity"},
+	"956_model_key_directory_entry_identity":                    {"idx_model_key_directory_entry_identity"},
+	"957_user_model_key_grant_identity":                         {"idx_user_model_key_grant_identity"},
+	"958_runtime_config_template_identity":                      {"idx_runtime_config_template_identity"},
+	"959_computer_runtime_model_config_identity":                {"idx_computer_runtime_model_config_identity"},
+	"988_computer_id_index":                                     {"computer_pkey_uidx"},
+	"989_computer_credential_user_id_index":                     {"computer_credential_pkey_uidx"},
+	"990_computer_binding_id_index":                             {"computer_binding_pkey_uidx"},
+	"991_computer_audit_id_index":                               {"computer_audit_pkey_uidx"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
