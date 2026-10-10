@@ -479,7 +479,9 @@
     "credential_configured": "已配置 ✓",
     "credential_invalid": "凭据失效",
     "credential_unreachable": "无法验证",
-    "credential_not_configured": "未配置"
+    "credential_not_configured": "未配置",
+    "runtime_credentials_help": "模型认证使用所选运行时对应系统用户的配置。安装 CLI 不会自动配置 API key。",
+    "runtime_select": "选择运行时"
   },
   "conversation_starters": {
     "label": "对话开场建议",

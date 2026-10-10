@@ -26,7 +26,9 @@ const TEST_RESOURCES = {
 
 const ME = "user-me";
 
-const MEMBERS = [{ user_id: ME, name: "Me", role: "member" }] as unknown as MemberWithUser[];
+const MEMBERS = [
+  { user_id: ME, name: "Me", role: "member" },
+] as unknown as MemberWithUser[];
 
 function makeRuntime(overrides: Partial<RuntimeDevice>): RuntimeDevice {
   return {
@@ -54,7 +56,9 @@ const RUNTIMES = [
   makeRuntime({ id: "rt-b", name: "Claude (b.local)", provider: "codex" }),
 ];
 
-function renderPicker(props: Partial<React.ComponentProps<typeof RuntimePicker>> = {}) {
+function renderPicker(
+  props: Partial<React.ComponentProps<typeof RuntimePicker>> = {},
+) {
   const onSelect = vi.fn();
   const utils = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -72,7 +76,9 @@ function renderPicker(props: Partial<React.ComponentProps<typeof RuntimePicker>>
 }
 
 function trigger(container: HTMLElement): HTMLButtonElement {
-  const element = container.querySelector<HTMLButtonElement>('[data-slot="popover-trigger"]');
+  const element = container.querySelector<HTMLButtonElement>(
+    '[data-slot="popover-trigger"]',
+  );
   if (!element) throw new Error("runtime picker trigger not rendered");
   return element;
 }
@@ -106,7 +112,12 @@ describe("RuntimePicker (creation studio)", () => {
     const { container, onSelect } = renderPicker({
       runtimes: [
         ...RUNTIMES,
-        makeRuntime({ id: "rt-other", name: "Claude (other.local)", owner_id: "user-other", visibility: "public" }),
+        makeRuntime({
+          id: "rt-other",
+          name: "Claude (other.local)",
+          owner_id: "user-other",
+          visibility: "public",
+        }),
       ],
       disabled: true,
     });
@@ -184,4 +195,29 @@ describe("RuntimePicker (creation studio)", () => {
     // would drop the count to 2.
     expect(screen.getAllByRole("button", { name: /^Claude/ }).length).toBe(3);
   });
+});
+
+it("seeds the associated Linux runtime and keeps its account visible after selection", () => {
+  const managed = makeRuntime({
+    id: "managed",
+    daemon_id: "managed-daemon",
+    execution_source: {
+      binding_id: "binding",
+      linux_user: "mas_glite",
+      host: "tensor",
+      preferred: true,
+    },
+  });
+  const { onSelect, unmount } = renderPicker({
+    runtimes: [RUNTIMES[0]!, managed],
+    selectedRuntimeId: "",
+  });
+  expect(onSelect).toHaveBeenCalledWith("managed");
+  unmount();
+  const selected = renderPicker({
+    runtimes: [RUNTIMES[0]!, managed],
+    selectedRuntimeId: "managed",
+  });
+  expect(trigger(selected.container).textContent).toContain("mas_glite@tensor");
+  expect(selected.onSelect).not.toHaveBeenCalled();
 });

@@ -1,5 +1,7 @@
 "use client";
 
+import { defaultAgentRuntime } from "@multica/core/runtimes";
+
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -38,7 +40,7 @@ export function ManualCreateAgentPage() {
   const form = useCreateAgentForm();
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const duplicateAgent = duplicateId
-    ? agents.find((agent) => agent.id === duplicateId) ?? null
+    ? (agents.find((agent) => agent.id === duplicateId) ?? null)
     : null;
 
   // True when a duplicate had to fall back to another runtime, which drops the
@@ -58,7 +60,8 @@ export function ManualCreateAgentPage() {
     runtimesSettled: form.runtimesSettled,
     runtimes: form.runtimes,
     currentUserId: form.currentUserId,
-    fallbackRuntimeId: form.usableRuntimes[0]?.id ?? "",
+    fallbackRuntimeId:
+      defaultAgentRuntime(form.runtimes, form.currentUserId)?.id ?? "",
     nameSuffix: t(($) => $.create_dialog.duplicate_copy_suffix),
     onSeed: (duplicated, runtimeReset) => {
       // Only the forced fallback gets the notice; a later manual runtime switch

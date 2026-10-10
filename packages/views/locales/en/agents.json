@@ -494,7 +494,9 @@
     "credential_configured": "Configured ✓",
     "credential_invalid": "Key invalid",
     "credential_unreachable": "Can't verify",
-    "credential_not_configured": "Not configured"
+    "credential_not_configured": "Not configured",
+    "runtime_credentials_help": "Model authentication uses the selected runtime’s OS user configuration. Installing a CLI does not configure its API key.",
+    "runtime_select": "Select a runtime"
   },
   "conversation_starters": {
     "label": "Conversation starters",
