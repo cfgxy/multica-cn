@@ -406,6 +406,17 @@ wt="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
 [ -z "$(git -C "$wt" symbolic-ref -q HEAD || true)" ] || fail "worktree must be detached, not on a branch"
 grep -q "^CODE_SHA=$sha2" "$manifest" || fail "manifest must record the loaded revision"
 
+# RUYI-632: a worktree binding materializes .env.worktree so the E2E harness
+# (e2e/env.ts) derives a deterministic API base instead of inheriting whatever
+# the launching shell happened to export.
+[ -f "$wt/.env.worktree" ] || fail "use <sha> must materialize .env.worktree in the slot worktree for the E2E harness"
+[ "$(stat -c %a "$wt/.env.worktree")" = 600 ] || fail ".env.worktree must be 600 (it mirrors the slot env secrets)"
+grep -q '^NEXT_PUBLIC_API_URL=http://localhost:21801$' "$wt/.env.worktree" || fail ".env.worktree must pin the E2E API base to the slot backend"
+cmp -s "$wt/.env.worktree" "$MULTICA_SLOTS_HOME/dev1/env" || fail ".env.worktree must mirror the slot env file byte-for-byte"
+# Bind mode (use without a sha points DIR at REPO_ROOT) must not write the
+# checkout root's own env file.
+[ ! -e "$repo/.env.worktree" ] || fail "bind-mode use must not touch the main checkout's .env.worktree"
+
 # The lease lives next to the manifest and names the caller.
 [ -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "use must write a slot lease"
 grep -q "OWNER_ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "lease must name the calling issue"
@@ -617,15 +628,19 @@ fi
 # MCP process.
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "slot env must carry MCP_URL pointing at the slot MCP port"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "slot env must carry the slot MCP port for the mcp-dev target"
+# composio_mcp_apps gates the creator MCP Apps tab off by default; the E2E
+# surface (e2e/agent-mcp.spec.ts) needs it on, so slots ship it enabled (RUYI-632).
+grep -q '^FF_COMPOSIO_MCP_APPS=true$' "$slot_env" || fail "slot env must enable FF_COMPOSIO_MCP_APPS for the E2E surface"
 
 # Env files generated before RUYI-428 predate the MCP lines: `use` upgrades
 # them in place (append only) instead of regenerating, so the stored account
 # password — the one the shared instance's role was provisioned with — survives.
-sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d' "$slot_env"
+sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^FF_COMPOSIO_MCP_APPS=/d' "$slot_env"
 password_before="$(grep '^POSTGRES_PASSWORD=' "$slot_env")"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "use must accept a pre-MCP legacy env"
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "legacy env must gain MCP_URL via the in-place upgrade"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "legacy env must gain MULTICA_MCP_PORT via the in-place upgrade"
+grep -q '^FF_COMPOSIO_MCP_APPS=true$' "$slot_env" || fail "legacy env must gain FF_COMPOSIO_MCP_APPS via the in-place upgrade"
 [ "$(grep '^POSTGRES_PASSWORD=' "$slot_env")" = "$password_before" ] || fail "the in-place upgrade must not rotate the stored password"
 
 lines_before="$(wc -l < "$psql_log")"
