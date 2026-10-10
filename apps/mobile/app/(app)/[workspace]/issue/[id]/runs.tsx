@@ -78,7 +78,7 @@ export default function IssueRunsRoute() {
           {t("mobile.runs.title", "Agent Runs")}
         </Text>
       </View>
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled>
         <View className="px-4 gap-3 pb-4">
           {active.length > 0 ? (
             <Section title={t("mobile.runs.section_active", "Active")}>

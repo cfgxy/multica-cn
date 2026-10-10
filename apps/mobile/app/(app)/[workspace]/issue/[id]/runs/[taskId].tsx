@@ -118,6 +118,7 @@ export default function RunDetailRoute() {
         <ModalCloseButton />
       </View>
       <ScrollView
+        nestedScrollEnabled
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} />

@@ -140,6 +140,7 @@ export function AssigneePickerBody({ value, query, onChange }: Props) {
   // from the native search and the rows render at y=0, overlapping the header.
   return (
     <FlatList
+      nestedScrollEnabled
       ref={listRef}
       data={rows}
       className="flex-1"

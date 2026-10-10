@@ -30,6 +30,7 @@ export default function SkillPickerRoute() {
 
   return (
     <FlatList<(typeof rows)[number]>
+      nestedScrollEnabled
       ref={listRef}
       data={rows}
       keyExtractor={({ skill }) => skill.id}
