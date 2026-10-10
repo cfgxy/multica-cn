@@ -149,8 +149,46 @@ export interface AutopilotQuotaUsage {
 }
 
 export interface AutopilotSubscriberInput {
-  user_type: "member";
+  user_type: string;
   user_id: string;
+}
+
+// ── Autopilot parameters (RUYI-641) ─────────────────────────────────────────
+// Parameter definitions are the autopilot's calling contract: callers pass
+// values at trigger time, schedules fall back to defaults, and templates
+// (`{{name}}`) interpolate the resolved values. Server-canonical enum —
+// render unknown values through a generic fallback.
+
+export type AutopilotParamType = "string" | "text" | "number" | "boolean" | "enum";
+
+export interface AutopilotParam {
+  id: string;
+  autopilot_id: string;
+  name: string;
+  param_type: AutopilotParamType;
+  description: string;
+  required: boolean;
+  default_value: string | null;
+  enum_options: string[];
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutopilotParamsResponse {
+  params: AutopilotParam[];
+}
+
+// Wire input for create / whole-set replace. The server rejects unknown or
+// duplicate names, the reserved `date` token, enum defaults outside the
+// options, and removal of a name a template still references.
+export interface AutopilotParamInput {
+  name: string;
+  param_type: AutopilotParamType;
+  description?: string;
+  required?: boolean;
+  default_value?: string | null;
+  enum_options?: string[];
 }
 
 export interface CreateAutopilotRequest {
@@ -164,6 +202,9 @@ export interface CreateAutopilotRequest {
   execution_mode: AutopilotExecutionMode;
   issue_title_template?: string;
   subscribers?: AutopilotSubscriberInput[];
+  // Optional initial parameter definitions, validated in the create
+  // transaction. Omit for a zero-parameter autopilot.
+  params?: AutopilotParamInput[];
 }
 
 export interface UpdateAutopilotRequest {
@@ -180,6 +221,10 @@ export interface UpdateAutopilotRequest {
   // When present, fully replaces the autopilot's subscriber template;
   // omit to leave it untouched.
   subscribers?: AutopilotSubscriberInput[];
+  // When the key is present, fully replaces the parameter definitions;
+  // omit to leave them untouched. Same set-level semantics as
+  // PUT /api/autopilots/:id/params.
+  params?: AutopilotParamInput[];
 }
 
 export interface CreateAutopilotTriggerRequest {

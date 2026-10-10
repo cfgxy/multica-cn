@@ -42,6 +42,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"audit_event":                 workspaceDeleteSettle,
 	"autopilot":                   workspaceDelete,
 	"autopilot_collaborator":      workspaceDelete,
+	"autopilot_param":             workspaceDelete,
 	"autopilot_quota_period":      workspaceDelete,
 	"autopilot_quota_reservation": workspaceDelete,
 	"autopilot_rule_version":      workspaceDelete,

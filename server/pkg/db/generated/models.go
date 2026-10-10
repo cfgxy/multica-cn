@@ -299,6 +299,21 @@ type AutopilotCollaborator struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type AutopilotParam struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AutopilotID  pgtype.UUID        `json:"autopilot_id"`
+	Name         string             `json:"name"`
+	ParamType    string             `json:"param_type"`
+	Description  string             `json:"description"`
+	Required     bool               `json:"required"`
+	DefaultValue pgtype.Text        `json:"default_value"`
+	EnumOptions  []string           `json:"enum_options"`
+	Position     int32              `json:"position"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AutopilotQuotaPeriod struct {
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
 	PeriodStart         pgtype.Timestamptz `json:"period_start"`
