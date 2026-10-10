@@ -383,6 +383,8 @@
     "title": "Prompt 立法提案",
     "description": "针对四个 Prompt 载体的条款级草案。提交后进入 Owner 审批；批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
     "filterAll": "全部",
+    "runFilterLabel": "运行批次",
+    "runFilterAll": "全部运行",
     "status": {
       "draft": "草稿",
       "pending_owner": "待 Owner 审批",
@@ -486,6 +488,8 @@
     "windowDays": "回看窗口（天）",
     "save": "保存配置",
     "runs": "运行记录",
+    "runTitle": "每日复盘{{stamp}}",
+    "viewResults": "查看成果",
     "trigger": "立即运行",
     "status": {
       "succeeded": "成功",

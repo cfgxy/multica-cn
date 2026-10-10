@@ -4667,9 +4667,11 @@ export class ApiClient {
     });
   }
 
-  async listPromptProposals(params?: { status?: string }): Promise<PromptProposal[]> {
+  async listPromptProposals(params?: { status?: string; runId?: string }): Promise<PromptProposal[]> {
     const query = new URLSearchParams();
     if (params?.status) query.set("status", params.status);
+    // RUYI-673: scope the pool to one retrospective run's batch.
+    if (params?.runId) query.set("run_id", params.runId);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals${suffix}`);
     return parseWithFallback(raw, PromptProposalListSchema, [], {

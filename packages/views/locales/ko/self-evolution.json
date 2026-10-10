@@ -383,6 +383,8 @@
     "title": "프롬프트 입법 제안",
     "description": "네 가지 프롬프트 캐리어에 대한 조항 수준 초안. 제출하면 워크스페이스 오너의 승인으로 넘어가며, 승인 시 샌드박스에서 전문을 합성해 입법 게이트를 실행하고 통과한 경우에만 발효됩니다.",
     "filterAll": "전체",
+    "runFilterLabel": "실행 배치",
+    "runFilterAll": "전체 실행",
     "status": {
       "draft": "초안",
       "pending_owner": "승인 대기",
@@ -486,6 +488,8 @@
     "windowDays": "조회 기간(일)",
     "save": "설정 저장",
     "runs": "실행 기록",
+    "runTitle": "일일 회고 {{stamp}}",
+    "viewResults": "성과 보기",
     "trigger": "지금 실행",
     "status": {
       "succeeded": "성공",
