@@ -484,7 +484,7 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
         />
         {/* RUYI-346: 智能体与小队管理（P0）。创建走 modal；agent 域
-            skills/env/webhooks 与 squad 域 add-member 走 formSheet
+            skills/env 与 squad 域 add-member 走 formSheet
             （body 自绘 header）。squad 详情用原生 header，body 内以
             Stack.Screen 动态写 title。 */}
         <Stack.Screen
@@ -515,10 +515,6 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="more/agents/[id]/env"
-          options={SHEET_OPTIONS}
-        />
-        <Stack.Screen
-          name="more/agents/[id]/webhooks"
           options={SHEET_OPTIONS}
         />
         {/* RUYI-425 §4.3: voice runtime instances — list from the More

@@ -253,7 +253,7 @@ export function EnvEditor({ agentId, canManage, keyCount }: Props) {
       >
         <Text className="text-sm font-medium text-primary-foreground">
           {saving
-            ? t("webhooks.form_saving", "Saving…")
+            ? t("tab_body.common.saving", "Saving…")
             : t("tab_body.common.save", "Save")}
         </Text>
       </Pressable>
