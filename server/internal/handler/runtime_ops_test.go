@@ -73,10 +73,20 @@ func insertOpsChannelCommand(t *testing.T, workspaceID, runtimeID, daemonID, kin
 	`, workspaceID, runtimeID, daemonID, kind, testUserID).Scan(&commandID); err != nil {
 		t.Fatalf("insert ops command: %v", err)
 	}
+	cleanupOpsChannelCommand(t, commandID)
+	return commandID
+}
+
+// cleanupOpsChannelCommand registers removal of one command row plus its
+// audit trail. Every ops audit event (submitted/finalized/expired/timeout)
+// carries the command id in details, so the audit delete is an exact match
+// rather than a workspace-wide sweep that could eat unrelated rows.
+func cleanupOpsChannelCommand(t *testing.T, commandID string) {
+	t.Helper()
 	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM audit_event WHERE details->>'command_id' = $1`, commandID)
 		testPool.Exec(context.Background(), `DELETE FROM daemon_ops_command WHERE id = $1`, commandID)
 	})
-	return commandID
 }
 
 func opsSubmitRequest(userID, runtimeID string, body map[string]any) *http.Request {
@@ -220,6 +230,9 @@ func TestSubmitOpsCommand_IdempotentReplayAndConflict(t *testing.T) {
 	if firstID == "" {
 		t.Fatalf("first submit missing id: %s", w.Body.String())
 	}
+	// The submit path inserts server-side, so the row (and its
+	// ops.command_submitted audit event) must be torn down explicitly.
+	cleanupOpsChannelCommand(t, firstID)
 
 	w = httptest.NewRecorder()
 	testHandler.SubmitRuntimeOpsCommand(w, opsSubmitRequest(testUserID, runtimeID, body))
@@ -283,6 +296,12 @@ func TestSubmitOpsCommand_WakesDaemonOnFreshSubmission(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
+	created := decodeOpsResponse(t, w)
+	commandID, _ := created["id"].(string)
+	if commandID == "" {
+		t.Fatalf("submit missing id: %s", w.Body.String())
+	}
+	cleanupOpsChannelCommand(t, commandID)
 	want := runtimeID + ":" + protocol.PendingWorkKindOpsCommand
 	if len(recorder.hints) != 1 || recorder.hints[0] != want {
 		t.Fatalf("pending-work hints = %v, want [%s]", recorder.hints, want)
