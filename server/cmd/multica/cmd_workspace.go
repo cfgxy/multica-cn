@@ -192,6 +192,7 @@ func init() {
 	workspaceUpdateCmd.Flags().String("context", "", "New workspace context (decodes \\n, \\r, \\t, \\\\; pipe via --context-stdin to preserve literal backslashes)")
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
+	workspaceUpdateCmd.Flags().Int64("expected-revision", 0, "Optimistic lock (RUYI-666): apply only if the server-side revision still equals this value, from the last get/update response; a stale value fails with revision_conflict")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workspaceMcpListCmd.Flags().String("output", "json", "Output format: table or json")
@@ -566,6 +567,10 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 		}
 		body["issue_prefix"] = v
 	}
+	if cmd.Flags().Changed("expected-revision") {
+		v, _ := cmd.Flags().GetInt64("expected-revision")
+		body["expected_revision"] = v
+	}
 	return body, nil
 }
 
@@ -596,6 +601,9 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 
 	var ws map[string]any
 	if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &ws); err != nil {
+		if _, guarded := body["expected_revision"]; guarded {
+			err = guardedWriteOutcome(err, "re-read the current revision with 'multica workspace get' and re-apply with the fresh value")
+		}
 		return fmt.Errorf("update workspace: %w", err)
 	}
 
