@@ -13,6 +13,10 @@
  *   3. X-Request-ID per request + structured logger (debug + tracing)
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
+import type {
+  VoiceDirectSessionHandoff,
+  VoiceSessionCompleteRequest,
+} from "@multica/core/voice";
 import i18n from "i18next";
 import type {
   Agent,
@@ -912,6 +916,47 @@ class ApiClient {
       `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
       { method: "DELETE" },
     );
+  }
+
+  // POST /api/agents/:id/voice-direct-session (RUYI-626) — the §4.4 rule-3
+  // gate plus the live_session row, then the provider hand-off (decrypted
+  // key, provider websocket URL, setup inputs). Deliberately NOT routed
+  // through parseWithFallback: the 409 gate rejection carries
+  // `VOICE_UNAVAILABLE:<reason>` in `body.code` and must surface as an
+  // ApiError the voice layer maps to its degrade copy.
+  async startVoiceDirectSession(
+    agentId: string,
+  ): Promise<VoiceDirectSessionHandoff> {
+    return this.fetch<VoiceDirectSessionHandoff>(
+      `/api/agents/${agentId}/voice-direct-session`,
+      { method: "POST" },
+    );
+  }
+
+  // POST /api/voice-sessions/:id/complete (RUYI-626) — the terminal
+  // write-back with the client-collected transcript and resumption handle.
+  // Idempotent server-side, so a client retry never double-writes.
+  async completeVoiceDirectSession(
+    sessionId: string,
+    record: VoiceSessionCompleteRequest,
+  ): Promise<void> {
+    await this.fetch<void>(`/api/voice-sessions/${sessionId}/complete`, {
+      method: "POST",
+      body: JSON.stringify(record),
+    });
+  }
+
+  // POST /api/runtimes/:id/credential-probe (RUYI-626) — the device-side
+  // connectivity verdict feeds the same credential_probe metadata badge the
+  // server-side probe writes; unreachable never gates a session start.
+  async reportCredentialProbe(
+    runtimeId: string,
+    probe: { status: "ok" | "invalid" | "unreachable"; http_status?: number },
+  ): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}/credential-probe`, {
+      method: "POST",
+      body: JSON.stringify(probe),
+    });
   }
 
   // DELETE /api/runtimes/:id — direct instance delete (RUYI-566). The
