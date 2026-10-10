@@ -2292,8 +2292,17 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 		Params map[string]json.RawMessage `json:"params"`
 	}
 	if r.Body != nil {
+		// Bound the read like every other inbound body surface: a missing cap
+		// would let an authenticated caller buffer an arbitrarily large body
+		// just to have it rejected by parameter validation afterwards.
+		r.Body = http.MaxBytesReader(w, r.Body, maxTriggerBodyBytes)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "failed to read request body")
 			return
 		}

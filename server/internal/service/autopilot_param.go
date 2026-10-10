@@ -43,10 +43,12 @@ const (
 	maxAutopilotEnumValueLen    = maxAutopilotEnumOptionLen
 )
 
-// autopilotParamNameRE constrains the name to identifier syntax: the name
+// autopilotParamNameRE constrains the name to identifier syntax, capped at 50
+// chars to mirror the autopilot_param.name CHECK constraint — the name
 // doubles as a {{name}} template token, so anything the token regex could
-// capture but a template author cannot write unambiguously is rejected.
-var autopilotParamNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+// capture but a template author cannot write unambiguously is rejected before
+// a save ever reaches the database.
+var autopilotParamNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,49}$`)
 
 // AutopilotParamInput is one parameter definition as submitted by a client.
 type AutopilotParamInput struct {
@@ -207,45 +209,48 @@ func ResolveAutopilotParamValues(defs []db.AutopilotParam, raw map[string]json.R
 }
 
 // coerceAutopilotParamJSONValue converts one raw JSON value to the
-// definition's type. Coercion is strict: no string→number, number→string or
-// "true"-string→boolean acceptance, because a caller that sends the wrong
-// JSON type almost certainly means something different by it.
+// definition's type. Coercion is strict: no string→number, number→string,
+// "true"-string→boolean or null→zero-value acceptance, because a caller that
+// sends the wrong JSON type almost certainly means something different by it.
 func coerceAutopilotParamJSONValue(def db.AutopilotParam, rawVal json.RawMessage) (any, error) {
 	switch def.ParamType {
 	case AutopilotParamTypeString, AutopilotParamTypeText:
-		var s string
-		if err := json.Unmarshal(rawVal, &s); err != nil {
+		// Pointer targets: encoding/json turns a JSON null into a nil pointer
+		// with no error, and a silent zero value ("", 0, false) would defeat
+		// both the required check and the strict-type contract below.
+		var s *string
+		if err := json.Unmarshal(rawVal, &s); err != nil || s == nil {
 			return nil, paramErrf("parameter %q: expected a string value", def.Name)
 		}
 		limit := maxAutopilotStringValueLen
 		if def.ParamType == AutopilotParamTypeText {
 			limit = maxAutopilotTextValueLen
 		}
-		if len(s) > limit {
+		if len(*s) > limit {
 			return nil, paramErrf("parameter %q: value too long (max %d chars)", def.Name, limit)
 		}
-		return s, nil
+		return *s, nil
 	case AutopilotParamTypeNumber:
-		var f float64
-		if err := json.Unmarshal(rawVal, &f); err != nil {
+		var f *float64
+		if err := json.Unmarshal(rawVal, &f); err != nil || f == nil {
 			return nil, paramErrf("parameter %q: expected a number value", def.Name)
 		}
-		return f, nil
+		return *f, nil
 	case AutopilotParamTypeBoolean:
-		var b bool
-		if err := json.Unmarshal(rawVal, &b); err != nil {
+		var b *bool
+		if err := json.Unmarshal(rawVal, &b); err != nil || b == nil {
 			return nil, paramErrf("parameter %q: expected a boolean value", def.Name)
 		}
-		return b, nil
+		return *b, nil
 	case AutopilotParamTypeEnum:
-		var s string
-		if err := json.Unmarshal(rawVal, &s); err != nil {
+		var s *string
+		if err := json.Unmarshal(rawVal, &s); err != nil || s == nil {
 			return nil, paramErrf("parameter %q: expected a string value", def.Name)
 		}
-		if len(s) > maxAutopilotEnumValueLen || !slices.Contains(def.EnumOptions, s) {
+		if len(*s) > maxAutopilotEnumValueLen || !slices.Contains(def.EnumOptions, *s) {
 			return nil, paramErrf("parameter %q: value is not one of the allowed options", def.Name)
 		}
-		return s, nil
+		return *s, nil
 	default:
 		return nil, paramErrf("parameter %q: unknown param_type %q", def.Name, def.ParamType)
 	}

@@ -19,6 +19,12 @@ import (
 // PATCHing, because the set carries cross-field invariants (unique names,
 // enum defaults, template references) that only hold for the set as a whole.
 
+// maxTriggerBodyBytes bounds the manual /trigger request body read. The
+// legitimate maximum is the parameter contract at full width — 50 parameters
+// × 20k-char text values — plus JSON overhead; 1 MiB covers it with room and
+// still stops an authenticated caller from buffering an unbounded body.
+const maxTriggerBodyBytes = 1024 * 1024
+
 type AutopilotParamResponse struct {
 	ID           string   `json:"id"`
 	AutopilotID  string   `json:"autopilot_id"`

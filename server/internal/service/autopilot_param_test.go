@@ -55,6 +55,9 @@ func TestValidateAutopilotParamInputs(t *testing.T) {
 		{Name: "port", ParamType: "number", DefaultValue: strPtr("8080")},
 		{Name: "verbose", ParamType: "boolean"},
 		{Name: "level", ParamType: "enum", EnumOptions: []string{"debug", "info"}, DefaultValue: strPtr("info")},
+		// Exactly 50 chars: the cap mirrors the autopilot_param.name CHECK
+		// constraint, so the boundary must pass here and fail one char up.
+		{Name: strings.Repeat("n", 50), ParamType: "string"},
 	}
 	if err := ValidateAutopilotParamInputs(valid); err != nil {
 		t.Fatalf("valid set rejected: %v", err)
@@ -68,6 +71,7 @@ func TestValidateAutopilotParamInputs(t *testing.T) {
 		{"name starting with digit", []AutopilotParamInput{{Name: "1env", ParamType: "string"}}},
 		{"empty name", []AutopilotParamInput{{Name: "", ParamType: "string"}}},
 		{"reserved date", []AutopilotParamInput{{Name: "date", ParamType: "string"}}},
+		{"name longer than 50 chars", []AutopilotParamInput{{Name: strings.Repeat("a", 51), ParamType: "string"}}},
 		{"duplicate names", []AutopilotParamInput{
 			{Name: "env", ParamType: "string"},
 			{Name: "env", ParamType: "string"},
@@ -215,6 +219,12 @@ func TestResolveAutopilotParamValues(t *testing.T) {
 			"number gets string":  `{"port":"8080"}`,
 			"boolean gets string": `{"verbose":"true"}`,
 			"enum outside options": `{"level":"trace"}`,
+			// JSON null must reject like any other wrong-typed value, not slip
+			// through encoding/json as the type's zero value ("", 0, false).
+			"string gets null":  `{"env":null}`,
+			"number gets null":  `{"port":null}`,
+			"boolean gets null": `{"verbose":null}`,
+			"enum gets null":    `{"level":null}`,
 		} {
 			t.Run(name, func(t *testing.T) {
 				_, err := ResolveAutopilotParamValues(defs, rawParams(t, body))
