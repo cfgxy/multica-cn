@@ -665,6 +665,14 @@ type AgentTaskResponse struct {
 	InitiatorName  string `json:"initiator_name,omitempty"`  // display name of the initiator
 	InitiatorEmail string `json:"initiator_email,omitempty"` // member email; empty for agent initiators
 	Kind           string `json:"kind"`                      // discriminator: "comment" | "autopilot" | "chat" | "quick_create" | "direct" — used by the activity row to label tasks that have no linked issue
+	// RetrospectiveRunID / RetrospectiveWindowEnd (RUYI-673) ride only on
+	// daily-retrospective tasks (kind="retrospective"): the retrospective_run
+	// row the task serves and the window end (= trigger moment) the UI stamps
+	// into the readable title. Parsed from the task's context JSONB; empty
+	// (omitempty keeps them off the wire) when the context does not carry a
+	// valid retrospective payload.
+	RetrospectiveRunID     string `json:"retrospective_run_id,omitempty"`
+	RetrospectiveWindowEnd string `json:"retrospective_window_end,omitempty"`
 	// Attribution is the resolved accountable-human provenance for this run
 	// (MUL-4302 §9): the source label + precise flag, the initiator (accountable)
 	// and originator refs, the evidence pointer, and lineage. Always present (the
@@ -968,7 +976,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	if t.BranchName.Valid {
 		branchName = t.BranchName.String
 	}
-	return AgentTaskResponse{
+	resp := AgentTaskResponse{
 		ID:                      uuidToString(t.ID),
 		AgentID:                 uuidToString(t.AgentID),
 		RuntimeID:               uuidToString(t.RuntimeID),
@@ -1011,6 +1019,17 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		// hydrated separately on user-facing surfaces (MUL-4302 §9).
 		Attribution: taskAttributionBase(t),
 	}
+	// RUYI-673: retrospective runs carry their run id + window end in the
+	// task's context JSONB (written by the runner at enqueue). ParseTaskContext
+	// validates the payload shape (kind + uuids), so a legacy or corrupt blob
+	// degrades to empty fields rather than a bad title.
+	if resp.Kind == retrospective.TaskKind {
+		if tc, ok := retrospective.ParseTaskContext(t.Context); ok {
+			resp.RetrospectiveRunID = tc.RunID
+			resp.RetrospectiveWindowEnd = tc.WindowEnd
+		}
+	}
+	return resp
 }
 
 // relativeWorkDir produces a privacy-safe display form of the daemon-reported
