@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 func worktreeTestLogger() *slog.Logger {
@@ -1840,10 +1842,14 @@ func TestBranchRecordPinsTheDeliveredCommitNotTheLiveRef(t *testing.T) {
 }
 
 // The run itself can destroy the proof: an agent that resets its worktree back
-// to the user's own HEAD leaves the branch sitting on a plain user commit.
-// Recording that as the checkpoint would make a branch the user later recreates
-// there look like this conversation's, so the turn refuses to record it and
-// keeps the worktree instead.
+// to the user's own HEAD leaves the branch sitting on a plain user commit —
+// taking the user's uncommitted edit with it, since that edit rode in the
+// turn's baseline. Recording that as the checkpoint would make a branch the
+// user later recreates there look like this conversation's, and re-anchoring
+// the delivery onto the base would launder the loss into a legal ancestry
+// (RUYI-579 W2's content gate refuses exactly that), so the turn refuses to
+// record it and keeps the worktree — with the user's edit in it — for the
+// retry to replay.
 func TestFinalizeRefusesToRecordADeliveryThatResetPastItsBaseline(t *testing.T) {
 	repo := newTestRepo(t)
 	writeFile(t, filepath.Join(repo, "tracked.txt"), "user work in progress\n")
@@ -1863,6 +1869,10 @@ func TestFinalizeRefusesToRecordADeliveryThatResetPastItsBaseline(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "no longer contains") {
 		t.Errorf("error does not explain what is missing: %v", err)
+	}
+	var guardErr *DeliveryGuardError
+	if !errors.As(err, &guardErr) || guardErr.Kind != taskfailure.GuardKindAncestorBreak {
+		t.Errorf("refusal = %v, want a %s guard error", err, taskfailure.GuardKindAncestorBreak)
 	}
 	if outcome.Branch != "" {
 		t.Errorf("outcome named branch %q for a delivery it refused to record", outcome.Branch)
@@ -3164,34 +3174,38 @@ func guardMarkerRef(branch string) string {
 }
 
 // A guard refusal is a dedicated failure, not the generic unknown bucket, and
-// it pins the refused tip where the retry's prepare can find it. The fixture
-// is the RUYI-471 shape: the session resets the turn's baseline checkpoint
-// away and re-lands its own work on the older base.
+// it pins the refused tip where the retry's prepare can find it. The classic
+// trigger — a session resetting the turn's baseline away — is now repaired at
+// finalize itself (RUYI-579 W2), so the contract lives on with the refusal
+// shape the daemon does not own: a delivery that is not the branch's tip.
 func TestGuardRefusalWrapsDeliveryGuardErrorAndMarksBranch(t *testing.T) {
 	repo := newTestRepo(t)
 	writeFile(t, filepath.Join(repo, "notes.txt"), "wip\n")
 	wt := prepareTurn(t, repo, "mul-6881", turnOneTask)
 
+	// The run wanders off its branch and delivers there.
+	gitRun(t, wt.Path, "checkout", "--quiet", "--detach", "HEAD")
 	writeFile(t, filepath.Join(wt.Path, "agent-output.txt"), "work\n")
-	gitRun(t, wt.Path, "reset", "--hard", "HEAD~1")
-	writeFile(t, filepath.Join(wt.Path, "fix.txt"), "session work\n")
 	gitRun(t, wt.Path, "add", "-A")
 	gitRun(t, wt.Path, "commit", "-m", "session fix")
+	delivered := gitRun(t, wt.Path, "rev-parse", "HEAD")
 
 	outcome, err := wt.Finalize(worktreeTestLogger())
 	if err == nil {
-		t.Fatal("Finalize delivered a branch that no longer contains the turn's base commit")
+		t.Fatal("Finalize delivered a commit the branch does not point at")
 	}
 	var guardErr *DeliveryGuardError
 	if !errors.As(err, &guardErr) {
 		t.Fatalf("refusal is not a DeliveryGuardError: %v", err)
 	}
+	if guardErr.Kind != taskfailure.GuardKindBranchMismatch {
+		t.Errorf("refusal kind = %q, want %q", guardErr.Kind, taskfailure.GuardKindBranchMismatch)
+	}
 	if outcome.Branch != "" || outcome.PreservedPath != wt.Path {
 		t.Errorf("outcome = %+v, want an empty branch and the preserved worktree", outcome)
 	}
-	refusedTip := gitRun(t, repo, "rev-parse", "refs/heads/"+wt.Branch)
-	if marker := gitRun(t, repo, "rev-parse", "--verify", guardMarkerRef(wt.Branch)); marker != refusedTip {
-		t.Errorf("refusal marker = %s, want the refused tip %s", marker, refusedTip)
+	if marker := gitRun(t, repo, "rev-parse", "--verify", guardMarkerRef(wt.Branch)); marker != delivered {
+		t.Errorf("refusal marker = %s, want the refused tip %s", marker, delivered)
 	}
 	if list := gitRun(t, repo, "worktree", "list"); !strings.Contains(list, wt.Path) {
 		t.Errorf("preserved worktree is no longer registered:\n%s", list)
@@ -3199,9 +3213,12 @@ func TestGuardRefusalWrapsDeliveryGuardErrorAndMarksBranch(t *testing.T) {
 }
 
 // The retry of a guard-refused task heals by itself when everything the
-// session's reset dropped is a daemon checkpoint: the same branch continues
-// from the refused tip, with the work that tip carries, instead of forking
-// away from the conversation.
+// refused tip has that the branch lacks is a daemon checkpoint (RUYI-479):
+// the same branch continues from the refused tip, with the work that tip
+// carries, instead of forking away from the conversation. The refusal is
+// produced off-branch now that finalize self-heals the checkpoint-reset shape
+// (RUYI-579 W2): the session detaches onto the dropped checkpoint's commit
+// and delivers there.
 func TestRetryPrepareHealsDroppedCheckpointChain(t *testing.T) {
 	repo := newTestRepo(t)
 	writeFile(t, filepath.Join(repo, "notes.txt"), "wip\n")
@@ -3210,34 +3227,38 @@ func TestRetryPrepareHealsDroppedCheckpointChain(t *testing.T) {
 	finalizeOK(t, first)
 
 	// Turn two: new user WIP makes a fresh baseline checkpoint, which the
-	// session then resets away and replaces with its own commit.
+	// session then resets away — and delivers from, detached at the dropped
+	// checkpoint. The guard refuses: the branch does not point at the
+	// delivered tip.
 	writeFile(t, filepath.Join(repo, "notes2.txt"), "more wip\n")
 	second := prepareTurn(t, repo, "mul-6881", turnTwoTask)
 	if second.Branch != first.Branch {
 		t.Fatalf("turn two continued %s, want %s", second.Branch, first.Branch)
 	}
+	dropped := gitRun(t, repo, "rev-parse", "refs/heads/"+second.Branch)
 	gitRun(t, second.Path, "reset", "--hard", "HEAD~1")
-	writeFile(t, filepath.Join(second.Path, "fix.txt"), "session work\n")
-	gitRun(t, second.Path, "add", "-A")
-	gitRun(t, second.Path, "commit", "-m", "session fix")
-	refusedTip := gitRun(t, repo, "rev-parse", "refs/heads/"+second.Branch)
+	gitRun(t, second.Path, "checkout", "--quiet", "--detach", dropped)
 	if outcome, err := second.Finalize(worktreeTestLogger()); err == nil {
 		t.Fatalf("turn two finalized cleanly (%+v); the fixture did not trip the guard", outcome)
+	}
+	if _, err := gitTry(t, repo, "rev-parse", "--verify", "--quiet", guardMarkerRef(first.Branch)); err != nil {
+		t.Fatal("the refusal left no marker for the retry to heal from")
 	}
 
 	third := prepareTurn(t, repo, "mul-6881", turnThreeTask)
 	if third.Branch != first.Branch {
 		t.Fatalf("retry forked %s; the heal must continue %s", third.Branch, first.Branch)
 	}
-	// The replayed WIP makes the turn commit its own baseline; what pins the
-	// heal is that baseline sitting directly on the refused tip.
-	if parent := gitRun(t, repo, "rev-parse", third.BaseCommit+"^"); parent != refusedTip {
-		t.Errorf("retry baseline sits on %s, want the refused tip %s", parent, refusedTip)
+	// The heal continues the branch exactly at the refused tip: the dropped
+	// checkpoint's tree — the user WIP included — is where the retry starts,
+	// with no fork in between.
+	if third.BaseCommit != dropped {
+		t.Errorf("retry anchored at %s, want the refused tip %s", third.BaseCommit, dropped)
 	}
 	// The work the refused tip carries, plus the user WIP that lived only in
 	// the dropped checkpoint — the replay has to put that back, or the heal
 	// quietly ate the user's edit.
-	for _, name := range []string{"turn1.txt", "fix.txt", "notes2.txt"} {
+	for _, name := range []string{"turn1.txt", "notes2.txt"} {
 		if _, err := os.Stat(filepath.Join(third.Path, name)); err != nil {
 			t.Errorf("work carried by the refused tip is missing from the healed worktree: %v", err)
 		}
