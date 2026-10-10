@@ -24,15 +24,37 @@ func init() { register(gitlabProvider{}) }
 
 func (gitlabProvider) Kind() Kind { return KindGitLab }
 
-func (gitlabProvider) EventKind(h http.Header) EventKind {
+func (gitlabProvider) EventKind(h http.Header, body []byte) EventKind {
 	switch h.Get("X-Gitlab-Event") {
 	case "Merge Request Hook":
 		return EventPullRequest
 	case "Pipeline Hook":
 		return EventCIStatus
+	case "System Hook":
+		// Admin-configured system hooks cover the whole instance and label
+		// every event with the same generic header; the payload's object_kind
+		// is the only discriminator, so classification falls through to the
+		// body.
+		return systemHookEventKind(body)
 	default:
 		return EventOther
 	}
+}
+
+// systemHookEventKind classifies a system-hook payload by the object_kind the
+// event header omits. Only merge_request is modelled; every other kind (and an
+// unparseable body) stays EventOther — acknowledged but ignored.
+func systemHookEventKind(body []byte) EventKind {
+	var probe struct {
+		ObjectKind string `json:"object_kind"`
+	}
+	if json.Unmarshal(body, &probe) != nil {
+		return EventOther
+	}
+	if probe.ObjectKind == "merge_request" {
+		return EventPullRequest
+	}
+	return EventOther
 }
 
 // VerifySignature compares the X-Gitlab-Token header to the stored secret in
