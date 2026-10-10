@@ -638,6 +638,7 @@
       "source_unattributed": "책임 멤버를 확인할 수 없음"
     },
     "usage_total_tooltip": "이 태스크의 토큰 사용량 — 클릭하면 실행별 내역",
+      "unpriced_rows_other": "미산출 {{count}}건",
     "status_cancel_requested": "정지 중",
     "stop_again_tooltip": "정지 요청 다시 보내기",
     "stop_again_aria": "정지 요청 다시 보내기",
@@ -674,6 +675,7 @@
     "empty": "이 태스크에서 토큰 사용량이 기록된 실행이 아직 없습니다.",
     "kpi_cost": "비용",
     "kpi_cost_hint_other": "실패한 실행 {{count}}회가 {{pct}}%를 차지합니다",
+      "kpi_unpriced_other": "미산출 {{count}}건",
     "kpi_cache": "캐시 절감",
     "kpi_cache_hint": "적중률 {{pct}}% · 읽기 {{reads}}",
     "kpi_tokens": "토큰",
@@ -1162,6 +1164,7 @@
     "created": "생성 시각",
     "finished": "종료 시각",
     "usage": "사용량",
+      "unpriced_rows_other": "미산출 {{count}}건",
     "reason": "원인",
     "cancelled_by": "{{name}} 님이 정지 요청 · {{time}}",
     "raw_error": "원본 오류",

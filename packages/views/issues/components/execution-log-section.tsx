@@ -423,7 +423,23 @@ export function IssueUsageTotal({
           {formatTokens(total.tokens)}
         </span>
         <span className={`text-faint-foreground ${narrowTier}`}>·</span>
-        <span className="text-muted-foreground">{formatUsd(total.cost)}</span>
+        {/* "—" when nothing could be priced — never $0.00: a run whose model
+            has no rate recorded usage but has no cost figure, and rendering
+            that unknown as zero is what makes an unpriced issue read as a
+            free one. `priced` is answered once inside summarizeTaskUsage so
+            this gate and the usage dialog's can never disagree. */}
+        <span className="text-muted-foreground">
+          {total.priced ? formatUsd(total.cost) : "—"}
+        </span>
+        {/* Adjacent to the figure it qualifies, because a total that omits
+            rows is only honest while it says so. Always visible — hiding it
+            on narrow widths would reintroduce exactly the "$0 reads as free"
+            reading this exists to prevent. */}
+        {total.unpricedRows > 0 && (
+          <span className="whitespace-nowrap align-baseline text-caption font-medium text-warning">
+            {t(($) => $.execution_log.unpriced_rows, { count: total.unpricedRows })}
+          </span>
+        )}
       </TooltipTrigger>
       <TooltipContent>{t(($) => $.execution_log.usage_total_tooltip)}</TooltipContent>
     </Tooltip>
