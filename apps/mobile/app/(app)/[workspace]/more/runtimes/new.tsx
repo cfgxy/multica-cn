@@ -37,6 +37,8 @@ import {
   parseAdvancedParams,
 } from "@/lib/voice-runtime";
 import type { RuntimeProfile } from "@multica/core/types";
+import { probeVoiceCredential, type VoiceProbeOutcome } from "@/lib/voice/probe";
+import { api } from "@/data/api";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { runtimeProfileKeys, runtimeProfileListOptions } from "@/data/queries/runtimes";
@@ -101,17 +103,26 @@ export default function NewVoiceRuntimeScreen() {
       // §4.3 connectivity probe server-side. A failed PUT leaves the
       // instance in place — the settings page can retry — so navigation
       // still proceeds (desktop closes the dialog in this branch too).
-      let probeInvalid = false;
+      let probe: VoiceProbeOutcome | null = null;
       let keySaveFailed = false;
       let keySaveDetail: string | null = null;
       if (apiKey.trim() !== "") {
         try {
-          const result = await putCredential.mutateAsync({
+          await putCredential.mutateAsync({
             runtimeId: runtime.id,
             credentialKey: VOICE_INSTANCE_CREDENTIAL_KEY,
             value: apiKey.trim(),
           });
-          probeInvalid = result.probe?.status === "invalid";
+          // RUYI-626: the verdict that matters is the device's (the direct
+          // path dials Google from the user's network); it feeds the same
+          // credential_probe badge and decides the feedback alert.
+          probe = await probeVoiceCredential(apiKey.trim());
+          void api
+            .reportCredentialProbe(runtime.id, {
+              status: probe.status,
+              http_status: probe.httpStatus,
+            })
+            .catch(() => {});
         } catch (err) {
           keySaveFailed = true;
           // RUYI-540: surface the server's readable message (e.g. the
@@ -121,11 +132,13 @@ export default function NewVoiceRuntimeScreen() {
         }
       }
       Alert.alert(
-        probeInvalid
-          ? t("voice_instance_create.created_probe_invalid")
-          : keySaveFailed
-            ? t("voice_instance_create.key_save_failed")
-            : t("voice_instance_create.created"),
+        keySaveFailed
+          ? t("voice_instance_create.key_save_failed")
+          : probe?.status === "invalid"
+            ? t("voice_instance_create.created_probe_invalid")
+            : probe?.status === "unreachable"
+              ? t("voice_instance_create.created_unreachable")
+              : t("voice_instance_create.created"),
         keySaveDetail ?? undefined,
       );
       router.replace({

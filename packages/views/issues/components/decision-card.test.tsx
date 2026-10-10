@@ -158,4 +158,35 @@ describe("DecisionCard", () => {
     expect(screen.getByTestId("decision-option-0")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Submit answer" })).not.toBeInTheDocument();
   });
+
+  // RUYI-620: legacy data written under the degraded "A 选项文本" form
+  // (letter + space, half- or full-width) must not double-number against
+  // the control's own index letter.
+  it("strips legacy letter+space prefixes so each letter renders once", () => {
+    renderCard(card({ options: [{ label: "A 存量方案一" }, { label: "B　存量方案二" }] }));
+    const first = screen.getByTestId("decision-option-0");
+    expect(within(first).getByText("A")).toBeInTheDocument();
+    expect(within(first).getByText("存量方案一")).toBeInTheDocument();
+    expect(within(first).queryByText("A 存量方案一")).toBeNull();
+    const second = screen.getByTestId("decision-option-1");
+    expect(within(second).getByText("B")).toBeInTheDocument();
+    expect(within(second).getByText("存量方案二")).toBeInTheDocument();
+    expect(within(second).queryByText("B　存量方案二")).toBeNull();
+  });
+
+  // RUYI-620: the badge renders from recommended_indices, so a trailing
+  // "（推荐）" in the label text must be stripped; leading occurrences are
+  // content and stay. Non-recommended labels without the suffix render as-is.
+  it("strips the trailing recommended marker; the badge still renders once", () => {
+    renderCard(card({
+      options: [{ label: "方案一（推荐）" }, { label: "方案二" }, { label: "（推荐）开头不算" }],
+      recommended_indices: [0],
+    }));
+    const first = screen.getByTestId("decision-option-0");
+    expect(within(first).getByText("方案一")).toBeInTheDocument();
+    expect(within(first).queryByText("方案一（推荐）")).toBeNull();
+    expect(within(first).getByText("Recommended")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-option-1")).getByText("方案二")).toBeInTheDocument();
+    expect(within(screen.getByTestId("decision-option-2")).getByText("（推荐）开头不算")).toBeInTheDocument();
+  });
 });
