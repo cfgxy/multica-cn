@@ -699,6 +699,19 @@ func (c *Client) ReportLocalSkillImportResult(ctx context.Context, runtimeID, re
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/local-skills/import/%s/result", runtimeID, requestID), result, nil)
 }
 
+// ReportOpsCommandResult delivers one ops command's terminal receipt. The
+// receipt echoes the lease epoch the claim handed out; a mismatched epoch is
+// rejected server-side (RUYI-645).
+func (c *Client) ReportOpsCommandResult(ctx context.Context, runtimeID, commandID string, receipt opsCommandReceipt) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/ops-commands/%s/result", runtimeID, commandID), receipt, nil)
+}
+
+// ReportInventory posts this machine's service inventory (and ops caps
+// context lives in the register payload). Machine-scoped: keyed by daemon_id.
+func (c *Client) ReportInventory(ctx context.Context, report map[string]any) error {
+	return c.postJSON(ctx, "/api/daemon/inventory", report, nil)
+}
+
 // WorkspaceInfo holds minimal workspace metadata returned by the API.
 type WorkspaceInfo struct {
 	ID   string `json:"id"`

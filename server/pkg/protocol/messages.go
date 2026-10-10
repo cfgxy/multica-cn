@@ -129,6 +129,11 @@ const (
 	PendingWorkKindModelList        = "model_list"
 	PendingWorkKindLocalSkills      = "local_skills"
 	PendingWorkKindLocalSkillImport = "local_skill_import"
+	// PendingWorkKindOpsCommand (RUYI-645): a whitelisted read-only ops
+	// command was submitted for this runtime. Same advisory semantics — the
+	// claim itself happens inside the heartbeat ack, so a dropped hint only
+	// costs the normal heartbeat delay.
+	PendingWorkKindOpsCommand = "ops_command"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -423,6 +428,26 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+	// PendingOpsCommands (RUYI-645) carries whitelisted read-only ops
+	// commands atomically claimed for this runtime. Same backwards-compat
+	// shape as PendingLocalSkillImports: daemons built before the field
+	// silently ignore it, and a claimed-but-undeliverable command simply
+	// times out on the server side (never re-dispatched).
+	PendingOpsCommands []DaemonOpsCommandDispatch `json:"pending_ops_commands,omitempty"`
+}
+
+// DaemonOpsCommandDispatch is one claimed read-only ops command handed to a
+// daemon inside a heartbeat ack. Args is the raw JSON object exactly as the
+// server validated it; the daemon re-validates against the shared opskind
+// registry before executing (second line of defense). LeaseEpoch must be
+// echoed on the result POST — the server accepts receipts only for the
+// current generation of the command row.
+type DaemonOpsCommandDispatch struct {
+	CommandID  string          `json:"command_id"`
+	Kind       string          `json:"kind"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	TimeoutS   int             `json:"timeout_s"`
+	LeaseEpoch int64           `json:"lease_epoch"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

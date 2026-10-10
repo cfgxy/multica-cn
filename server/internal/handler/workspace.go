@@ -17,9 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
-	"github.com/multica-ai/multica/server/internal/quickreply"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/quickreply"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1322,6 +1322,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete runtimes and projects",
 			run:  func() error { return qtx.DeleteWorkspaceRuntimesAndProjects(ctx, requester.WorkspaceID) },
+		},
+		{
+			// Ops command ledger (RUYI-645): workspace-scoped evidence rows
+			// with no FK by design, swept explicitly. The daemon's service
+			// inventory is a daemon-keyed machine fact and stays.
+			name: "delete ops command channel data",
+			run:  func() error { return qtx.DeleteWorkspaceOpsCommands(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete administration data",

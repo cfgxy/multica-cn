@@ -89,6 +89,50 @@
       "toast_saved": "Machine renamed",
       "toast_cleared": "Machine name cleared",
       "toast_failed": "Failed to rename machine"
+    },
+    "ops": {
+      "title": "Node operations",
+      "subtitle": "Read-only diagnostics on this machine: service status, logs and snapshots. Owner/admin only.",
+      "sensitive_notice": "Raw node output — may contain sensitive information. Review before sharing.",
+      "inventory_title": "Service inventory",
+      "inventory_as": "updated {{time}}",
+      "inventory_empty": "The node reported no services.",
+      "inventory_unavailable": "No service inventory received from this node yet.",
+      "loading": "Loading…",
+      "run_title": "Run read-only command",
+      "offline_hint": "The machine is offline — commands cannot be submitted until it reconnects.",
+      "kind_label": "Command",
+      "unit_label": "Service unit",
+      "unit_placeholder": "Pick a unit",
+      "lines_label": "Lines",
+      "minutes_label": "Minutes",
+      "run_button": "Run",
+      "submit_failed": "Submission was rejected — see the command history for details.",
+      "exit_code": "Exit code {{code}}",
+      "history_title": "Command history",
+      "history_empty": "No commands yet.",
+      "show_output": "Show output",
+      "hide_output": "Hide output",
+      "truncated": "output truncated",
+      "terminal_note": "This command is no longer in flight.",
+      "status": {
+        "pending": "Pending",
+        "claimed": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "rejected": "Rejected",
+        "timeout": "Timed out",
+        "expired": "Expired"
+      },
+      "kinds": {
+        "systemctl_status": "systemd service status",
+        "journalctl_tail": "journalctl tail",
+        "ps_snapshot": "Process snapshot",
+        "df_report": "Disk usage",
+        "launchctl_list": "launchd services",
+        "mac_log_show": "macOS log show",
+        "docker_ps": "Docker containers"
+      }
     }
   },
   "health": {
