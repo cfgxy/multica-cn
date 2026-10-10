@@ -834,6 +834,19 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
+-- name: UpdateQueuedTaskPriorityForIssue :execrows
+-- RUYI-648: an issue's priority is snapshotted onto its queue rows at enqueue
+-- time (priorityToInt(issue.Priority) at every CreateAgentTask* path) and the
+-- claim ordering reads the row's column, so an issue edited after enqueueing
+-- left its queued rows on the stale value and the agent kept serving the old
+-- urgency. The priority_changed handler replays the new value onto the rows
+-- still competing for a claim; rows a daemon already claimed
+-- (dispatched/running/waiting_local_directory/deferred) and terminal rows
+-- keep the snapshot their ordering decision was made on.
+UPDATE agent_task_queue
+SET priority = $1
+WHERE issue_id = $2 AND status = 'queued';
+
 -- name: CancelOpenAgentTasksByIssueCancellation :many
 -- RUYI-384: the cascade an issue→cancelled flip runs against its open runs.
 -- One statement applies the RUYI-292 cancel matrix per row:
