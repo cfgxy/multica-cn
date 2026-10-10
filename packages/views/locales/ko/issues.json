@@ -79,6 +79,7 @@
     "breadcrumb_workspace_fallback": "워크스페이스",
     "empty_title": "아직 태스크가 없습니다",
     "empty_hint": "태스크를 만들어 시작하세요.",
+    "scheduling_paused_banner_other": "작업 스케줄링이 일시 중지됨 — 이 워크스페이스에서 {{count}}개의 작업이 대기 중입니다. 워크스페이스 설정에서 재개할 수 있습니다.",
     "move_failed": "태스크를 이동하지 못했습니다"
   },
   "status": {
@@ -1059,8 +1060,7 @@
       "cancel_requested": "정지 중",
       "completed": "완료",
       "failed": "실패",
-      "cancelled": "취소됨",
-      "cancel_requested": "정지 중"
+      "cancelled": "취소됨"
     },
     "runs": {
       "title": "에이전트 실행 기록",
