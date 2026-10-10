@@ -49,42 +49,41 @@
       "cancelled": "Decided not to do."
     }
   },
-    "quick_replies": {
-      "title": "Quick Replies",
-      "description": "Shared templates for the issue comment composer's quick-reply menu. Readable by every member; editable by workspace admins only. Selecting one fills the composer — it never sends on its own.",
-      "loading": "Loading quick replies…",
-      "add": "New quick reply",
-      "empty_title": "No quick replies yet",
-      "empty_hint": "Save recurring comment patterns as templates — conflict resolution, test follow-ups, sign-offs.",
-      "reorder_failed": "Failed to save the new order",
-      "actions": {
-        "open": "Open actions menu for \"{{name}}\"",
-        "edit": "Edit",
-        "delete": "Delete",
-        "reorder": "Drag to reorder \"{{name}}\""
-      },
-      "editor": {
-        "create_title": "New quick reply",
-        "edit_title": "Edit quick reply",
-        "hint": "Selecting this reply in the composer fills the input box; members can edit before sending.",
-        "name": "Name",
-        "name_placeholder": "e.g. Resolve PR conflicts",
-        "content": "Content",
-        "content_placeholder": "Template body filled into the composer…",
-        "cancel": "Cancel",
-        "save": "Save",
-        "saving": "Saving…",
-        "save_failed": "Failed to save"
-      },
-      "delete_dialog": {
-        "title": "Delete quick reply",
-        "description": "Delete \"{{name}}\"? It disappears from every member's composer menu immediately.",
-        "cancel": "Cancel",
-        "confirm": "Delete",
-        "failed": "Failed to delete"
-      }
+  "quick_replies": {
+    "title": "Quick Replies",
+    "description": "Shared templates for the issue comment composer's quick-reply menu. Readable by every member; editable by workspace admins only. Selecting one fills the composer — it never sends on its own.",
+    "loading": "Loading quick replies…",
+    "add": "New quick reply",
+    "empty_title": "No quick replies yet",
+    "empty_hint": "Save recurring comment patterns as templates — conflict resolution, test follow-ups, sign-offs.",
+    "reorder_failed": "Failed to save the new order",
+    "actions": {
+      "open": "Open actions menu for \"{{name}}\"",
+      "edit": "Edit",
+      "delete": "Delete",
+      "reorder": "Drag to reorder \"{{name}}\""
+    },
+    "editor": {
+      "create_title": "New quick reply",
+      "edit_title": "Edit quick reply",
+      "hint": "Selecting this reply in the composer fills the input box; members can edit before sending.",
+      "name": "Name",
+      "name_placeholder": "e.g. Resolve PR conflicts",
+      "content": "Content",
+      "content_placeholder": "Template body filled into the composer…",
+      "cancel": "Cancel",
+      "save": "Save",
+      "saving": "Saving…",
+      "save_failed": "Failed to save"
+    },
+    "delete_dialog": {
+      "title": "Delete quick reply",
+      "description": "Delete \"{{name}}\"? It disappears from every member's composer menu immediately.",
+      "cancel": "Cancel",
+      "confirm": "Delete",
+      "failed": "Failed to delete"
     }
-,
+  },
   "quick_actions": {
     "title": "Quick Actions",
     "description": "Preset an agent and a prompt once, then trigger it from any issue's sidebar with a single click.",
@@ -910,7 +909,15 @@
     "deleting": "Deleting...",
     "toast_delete_failed": "Failed to delete workspace",
     "confirm_cancel": "Cancel",
-    "confirm_action": "Confirm"
+    "confirm_action": "Confirm",
+    "scheduling_pause_label": "Pause task scheduling",
+    "scheduling_pause_hint": "When paused, no agent in this workspace claims new tasks. Queued tasks keep coalescing and running tasks drain normally. Owner/admin only; recorded in the audit log.",
+    "scheduling_paused_note_one": "Task scheduling is paused — {{count}} task queued across all agents.",
+    "scheduling_paused_note_other": "Task scheduling is paused — {{count}} tasks queued across all agents.",
+    "scheduling_paused_toast": "Workspace scheduling paused",
+    "scheduling_resumed_toast_one": "Workspace scheduling resumed — {{count}} task flowing",
+    "scheduling_resumed_toast_other": "Workspace scheduling resumed — {{count}} tasks flowing",
+    "scheduling_toggle_failed_toast": "Failed to change scheduling state"
   },
   "delete_workspace_dialog": {
     "title": "Delete workspace",

@@ -99,6 +99,32 @@ var workspaceSwitchCmd = &cobra.Command{
 	RunE: runWorkspaceSwitch,
 }
 
+var workspacePauseCmd = &cobra.Command{
+	Use:   "pause [workspace-id|slug|prefix]",
+	Short: "Pause task scheduling for the whole workspace (owner/admin only)",
+	Long: "Freezes task scheduling workspace-wide: every agent in the workspace " +
+		"stops claiming tasks. Queued tasks stay queued (new tasks keep " +
+		"coalescing) and running tasks drain normally. An agent-level resume " +
+		"does not lift this freeze — only 'workspace resume' does. Idempotent: " +
+		"pausing an already-paused workspace updates nothing. Only workspace " +
+		"owners and admins may pause.",
+	Example: "  multica workspace pause --reason \"cost cap reached, review tomorrow\"",
+	Args:    cobra.MaximumNArgs(1),
+	RunE:    runWorkspacePause,
+}
+
+var workspaceResumeCmd = &cobra.Command{
+	Use:   "resume [workspace-id|slug|prefix]",
+	Short: "Resume task scheduling for the whole workspace (owner/admin only)",
+	Long: "Lifts the workspace-level scheduling freeze and invalidates every " +
+		"runtime's cached empty-claim verdict in the workspace, so all agents " +
+		"pick queued tasks back up on their next poll. Resuming a non-paused " +
+		"workspace succeeds as a no-op and still reports the queued count.",
+	Example: "  multica workspace resume",
+	Args:    cobra.MaximumNArgs(1),
+	RunE:    runWorkspaceResume,
+}
+
 var workspaceMcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Manage the workspace's MCP server library",
@@ -165,6 +191,8 @@ func init() {
 	workspaceMemberCmd.AddCommand(workspaceMemberInviteCmd)
 	workspaceCmd.AddCommand(workspaceUpdateCmd)
 	workspaceCmd.AddCommand(workspaceSwitchCmd)
+	workspaceCmd.AddCommand(workspacePauseCmd)
+	workspaceCmd.AddCommand(workspaceResumeCmd)
 	workspaceCmd.AddCommand(workspaceMcpCmd)
 	workspaceMcpCmd.AddCommand(workspaceMcpListCmd)
 	workspaceMcpCmd.AddCommand(workspaceMcpAddCmd)
@@ -193,6 +221,10 @@ func init() {
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
 	workspaceUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+
+	workspacePauseCmd.Flags().String("reason", "", "Operator note recorded with the freeze (audit log and workspace detail)")
+	workspacePauseCmd.Flags().String("output", "json", "Output format: table or json")
+	workspaceResumeCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workspaceMcpListCmd.Flags().String("output", "json", "Output format: table or json")
 	// Same three mutually-exclusive secret-safe channels as `agent update`,
@@ -530,6 +562,71 @@ func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 	}
 
 	return cli.PrintJSON(os.Stdout, ws)
+}
+
+func runWorkspacePause(cmd *cobra.Command, args []string) error {
+	wsID, err := resolveWorkspaceArg(cmd, args)
+	if err != nil {
+		return err
+	}
+	if wsID == "" {
+		return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
+	}
+
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	reason, _ := cmd.Flags().GetString("reason")
+	var state schedulingPauseView
+	if err := client.PostJSON(ctx, "/api/workspaces/"+wsID+"/scheduling-pause",
+		map[string]any{"reason": reason}, &state); err != nil {
+		return fmt.Errorf("pause workspace scheduling: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, state)
+	}
+	fmt.Printf("Workspace scheduling paused: %d task(s) queued across all agents\n", state.QueuedCount)
+	if state.Reason != "" {
+		fmt.Printf("Reason: %s\n", state.Reason)
+	}
+	return nil
+}
+
+func runWorkspaceResume(cmd *cobra.Command, args []string) error {
+	wsID, err := resolveWorkspaceArg(cmd, args)
+	if err != nil {
+		return err
+	}
+	if wsID == "" {
+		return fmt.Errorf("workspace ID is required: pass an id/slug/prefix as argument or set MULTICA_WORKSPACE_ID")
+	}
+
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var state schedulingPauseView
+	if err := client.DeleteJSONResponse(ctx, "/api/workspaces/"+wsID+"/scheduling-pause", &state); err != nil {
+		return fmt.Errorf("resume workspace scheduling: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, state)
+	}
+	fmt.Printf("Workspace scheduling resumed: %d task(s) queued, flowing again\n", state.QueuedCount)
+	return nil
 }
 
 // buildWorkspaceUpdateBody assembles the PATCH payload from the flags the
