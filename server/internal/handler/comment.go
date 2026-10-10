@@ -1718,6 +1718,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 	}
 	opts.SourceTaskID = h.commentSourceTaskID(r)
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
+	triggers, targets = h.suppressSameIssueSelfTriggers(r.Context(), issue, triggers, targets, actorType, actorID)
 	// RUYI-391: the preview must not promise a run the submit path refuses.
 	// Same gate, same projection: resolvable targets surface as blocked with
 	// the issue-status reason instead of appearing in `agents`.
@@ -2156,6 +2157,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		SourceTaskID:            comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
 	})
+	triggers, targets = h.suppressSameIssueSelfTriggers(ctx, issue, triggers, targets, actorType, actorID)
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	// RUYI-391: the status gate sits AFTER resolution (so explicit mention
 	// targets are known and get an honest per-target outcome) but BEFORE any
@@ -3097,7 +3099,10 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // @squad mention (MUL-4525 §2). Targets come only from the explicit-mention path
 // — the implicit routing fallbacks (assignee, thread parent, conversation) were
 // never named by the user, so a no-route there is not a silent no-op.
-func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
+	defer func() {
+		triggers, targets = h.suppressSameIssueSelfTriggers(ctx, issue, triggers, targets, actorType, actorID)
+	}()
 	if isNoteComment(content) {
 		return nil, nil
 	}
