@@ -1017,7 +1017,8 @@
       "comments_empty": "No comments yet.",
       "comments_no_match": "No matching comments.",
       "comments_open_a11y": "Browse comments",
-      "pull_request_open_failed": "Couldn't open this pull request."
+      "pull_request_open_failed": "Couldn't open this pull request.",
+      "pull_request_card_label": "Pull request"
     },
     "picker": {
       "unassigned": "Unassigned",

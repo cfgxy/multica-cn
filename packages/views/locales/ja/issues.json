@@ -980,7 +980,8 @@
       "comments_empty": "コメントはまだありません。",
       "comments_no_match": "一致するコメントはありません。",
       "comments_open_a11y": "コメントを参照",
-      "pull_request_open_failed": "この Pull request を開けませんでした。"
+      "pull_request_open_failed": "この Pull request を開けませんでした。",
+      "pull_request_card_label": "Pull request"
     },
     "picker": {
       "unassigned": "未割り当て",
