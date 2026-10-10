@@ -457,6 +457,8 @@ export type {
       SelfEvolutionOverviewScan,
   SelfEvolutionOverviewKnowledge,
   SelfEvolutionOverviewSkills,
+  SelfEvolutionOverviewLastAutoProposal,
+  SelfEvolutionOverviewProposals,
 } from "./self-evolution-overview";
 export type {
   SelfEvolutionConfigSource,

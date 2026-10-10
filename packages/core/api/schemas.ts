@@ -4982,6 +4982,14 @@ const SelfEvolutionOverviewSkillsSchema = z.object({
   invocations: z.number().default(0),
 });
 
+const SelfEvolutionOverviewProposalsSchema = z.object({
+  total: z.number().default(0),
+  pending_owner: z.number().default(0),
+  last_auto_proposal: z
+    .object({ source: z.string(), created_at: z.string() })
+    .optional(),
+});
+
 export const SelfEvolutionOverviewSchema = z.object({
   versions: z.array(SelfEvolutionOverviewTierSchema).default([]),
   quality: z
@@ -5012,6 +5020,7 @@ export const SelfEvolutionOverviewSchema = z.object({
   }),
   knowledge: SelfEvolutionOverviewKnowledgeSchema.default({ dirs: 0, entries: 0 }),
   skills: SelfEvolutionOverviewSkillsSchema.default({ count: 0, invocations: 0 }),
+  proposals: SelfEvolutionOverviewProposalsSchema.default({ total: 0, pending_owner: 0 }),
 });
 
 // The fallback for a response that did not parse: no tier rows, an unmeasured
@@ -5030,6 +5039,7 @@ export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
   quiz: { verdict: "insufficient", measured: false, required_sample: 0, required_baseline: 0 },
   knowledge: { dirs: 0, entries: 0 },
   skills: { count: 0, invocations: 0 },
+  proposals: { total: 0, pending_owner: 0 },
 };
 
 // ---- Self-evolution model-service config (RUYI-551) ----

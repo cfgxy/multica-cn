@@ -31,7 +31,11 @@
     },
     "proposals": {
       "title": "提案池动态",
-      "pendingModel": "提案指标将随新提案模型（RUYI-305）落地后接入。"
+      "intro": "提案由每日总复盘自动分析入池，也可人工起草。",
+      "counts": "{{total}} 条提案 · {{pending}} 条待 Owner 审批",
+      "lastAuto": "最近自动提案（每日总复盘）：{{date}}",
+      "noneAuto": "尚无自动提案。",
+      "empty": "提案池为空。配置每日总复盘后，提案将随每日分析自动入池。"
     },
     "knowledge": {
       "title": "知识库沉淀",
@@ -381,8 +385,10 @@
   },
   "legislation": {
     "title": "Prompt 立法提案",
-    "description": "针对四个 Prompt 载体的条款级草案。提交后进入 Owner 审批；批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
+    "description": "提案由每日总复盘自动分析入池，也可人工起草。条款级草案针对四个 Prompt 载体：提交后进入 Owner 审批，批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
     "filterAll": "全部",
+    "sourceFilterLabel": "按来源筛选",
+    "sourceFilterAll": "全部来源",
     "status": {
       "draft": "草稿",
       "pending_owner": "待 Owner 审批",
@@ -466,6 +472,7 @@
     "ownerOnly": "仅 Owner",
     "empty": "这里还没有提案。",
     "emptyHint": "从真实执行证据起草一条，或让每日总复盘来提案。",
+    "emptyConfig": "配置每日总复盘",
     "error": "写入失败。请检查输入后重试。",
     "batchPartial": "批量中有提案未生效——请查看逐条结果。",
     "jevAdvisoryLabel": "本地模型预警",
@@ -686,6 +693,16 @@
     "modelError": {
       "title": "模型服务校验失败",
       "action": "查看配置"
+    },
+    "retrospectiveOff": {
+      "title": "每日总复盘未启用",
+      "description": "提案闭环不会自动运转，提案池只能人工起草",
+      "action": "去配置"
+    },
+    "retrospectiveNoAgent": {
+      "title": "每日总复盘未选执行智能体",
+      "description": "已启用但没有执行者，运行不会发生",
+      "action": "去配置"
     },
     "discoveries": {
       "title": "有 {{count}} 条技能发现待导入",
