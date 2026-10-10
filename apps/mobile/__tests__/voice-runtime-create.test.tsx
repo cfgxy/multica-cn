@@ -288,6 +288,44 @@ describe("NewVoiceRuntimeScreen", () => {
     alertSpy.mockRestore();
   });
 
+  it("registers with could-not-verify wording when the probe reports unreachable (RUYI-619)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    mockCreateRuntimeAsync.mockResolvedValue(createdRuntime);
+    mockPutCredentialAsync.mockResolvedValue({
+      runtime_id: "rt-new",
+      credential_key: "api_key",
+      credential_status: "unreachable",
+      probe: { status: "unreachable" },
+    });
+    // RUYI-626: the alert follows the DEVICE probe verdict, not the PUT
+    // response's server-side probe (that describes the server's egress).
+    mockProbeVoiceCredential.mockResolvedValue({ status: "unreachable" });
+    await render(<NewVoiceRuntimeScreen />);
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("e.g. Gemini Live (personal)"),
+      "Gemini Live (personal)",
+    );
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Paste the Gemini API key"),
+      "qaFAKE-key",
+    );
+    await fireEvent.press(screen.getByLabelText("Register"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Registered, but this device couldn't reach Google to verify the key — voice may not work on this network",
+        undefined,
+      );
+    });
+    // Registration still lands on the settings page (§4.5).
+    expect(mockReplace).toHaveBeenCalledWith({
+      pathname: "/[workspace]/more/runtimes/[id]",
+      params: { workspace: "ws", id: "rt-new" },
+    });
+    alertSpy.mockRestore();
+  });
+
   it("keeps the instance when the credential PUT fails and surfaces the server message (RUYI-540)", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     mockCreateRuntimeAsync.mockResolvedValue(createdRuntime);

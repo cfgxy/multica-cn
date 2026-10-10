@@ -526,7 +526,7 @@ func TestCleanTaskDir_RemovesDirectory(t *testing.T) {
 		t.Fatal("task dir should exist before cleanup")
 	}
 
-	if bytes, removed := d.cleanTaskDir(taskDir); !removed || bytes < 64 {
+	if bytes, removed, _ := d.cleanTaskDir(taskDir); !removed || bytes < 64 {
 		t.Fatalf("reclaimed bytes = %d, want at least payload size", bytes)
 	}
 
@@ -633,7 +633,7 @@ func TestCleanTaskDir_RefusesOwnerPathMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if bytes, removed := d.cleanTaskDir(taskDir); removed || bytes != 0 {
+	if bytes, removed, guard := d.cleanTaskDir(taskDir); removed || bytes != 0 || guard != "" {
 		t.Fatalf("cleanTaskDir removed owner/path mismatch: removed=%v bytes=%d", removed, bytes)
 	}
 	if _, err := os.Stat(survivor); err != nil {
@@ -663,7 +663,7 @@ func TestCleanTaskDir_AcceptsLegacyOwnerWithGCWorkspaceIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, removed := d.cleanTaskDir(taskDir); !removed {
+	if _, removed, _ := d.cleanTaskDir(taskDir); !removed {
 		t.Fatal("legacy task owner with matching GC workspace identity was not removed")
 	}
 	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
@@ -689,7 +689,7 @@ func TestCleanTaskDir_RemovesStableRootRecord(t *testing.T) {
 	}
 	original := env.RootDir
 	d := &Daemon{cfg: Config{WorkspacesRoot: root}, logger: slog.Default()}
-	if bytes, removed := d.cleanTaskDir(original); !removed || bytes <= 0 {
+	if bytes, removed, _ := d.cleanTaskDir(original); !removed || bytes <= 0 {
 		t.Fatalf("reclaimed bytes = %d, want owner metadata bytes", bytes)
 	}
 

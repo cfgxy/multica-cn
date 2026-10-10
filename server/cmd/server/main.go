@@ -743,8 +743,10 @@ func main() {
 	// D3 rides the same job and needs the internal LLM layer; h.LLM is the
 	// same client the handlers use, and it reports Enabled() == false when no
 	// MULTICA_LLM_* configuration exists, which turns scoring off instead of
-	// failing the tick.
-	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM)); err != nil {
+	// failing the tick. The generator seam is per workspace (RUYI-551): a
+	// saved module config wins over the deploy default, nil keeps the
+	// deploy-wide behavior while the self-evolution deployment key is absent.
+	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM, handler.PerplexityGeneratorFor(h.SelfEvolution))); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quality rollup job", "error", err)
 	}
 	// RUYI-185: the periodic quiz replays a fixed question set against each

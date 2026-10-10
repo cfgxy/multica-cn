@@ -469,6 +469,7 @@
     "key_cleared": "キーを削除しました",
     "key_update_failed": "キーの更新に失敗しました",
     "probe_invalid": "キーは保存されましたが、接続確認に失敗しました（HTTP {{status}}）",
+    "probe_unreachable": "この端末から Google に接続できません——ネットワークを確認してください。キーが無効という意味ではありません。",
     "model_label": "モデル",
     "model_placeholder": "gemini-3.8-live",
     "advanced_label": "詳細パラメータ（JSON）",
@@ -488,12 +489,13 @@
     "model_saved": "モデルを更新しました",
     "badge_configured": "設定済み ✓",
     "badge_invalid": "キー無効",
+    "badge_unreachable": "検証不可",
     "badge_not_configured": "未設定",
     "probe_test": "接続テスト",
     "probe_running": "テスト中…",
     "probe_ok": "接続成功——この端末でこのキーは利用できます",
-    "probe_unreachable": "この端末から Google に接続できません——ネットワークを確認してください。キーが無効という意味ではありません。",
-    "key_saved_unreachable": "キーは保存されましたが、この端末から Google に接続して検証できませんでした——このネットワークでは音声が利用できない可能性があります"
+    "key_saved_unreachable": "キーは保存されましたが、この端末から Google に接続して検証できませんでした——このネットワークでは音声が利用できない可能性があります",
+    "key_saved_probe_unreachable": "キーは保存されましたが、接続を確認できませんでした（ターゲットに到達できません）"
   },
   "voice_instance_create": {
     "action": "音声インスタンスを追加",
@@ -507,6 +509,7 @@
     "creating": "登録中…",
     "created": "音声インスタンスを登録しました",
     "created_probe_invalid": "登録されましたが、接続確認に失敗しました。API キーを確認してください",
+    "created_probe_unreachable": "登録されましたが、接続を確認できませんでした。ターゲットに到達できない可能性があります",
     "create_failed": "音声インスタンスの登録に失敗しました",
     "key_save_failed": "登録されましたが、API キーの保存に失敗しました。インスタンス設定から追加してください",
     "created_unreachable": "登録されましたが、この端末から Google に接続してキーを検証できませんでした——このネットワークでは音声が利用できない可能性があります"

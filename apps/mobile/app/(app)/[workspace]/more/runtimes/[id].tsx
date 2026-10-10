@@ -558,7 +558,7 @@ export default function VoiceRuntimeSettingsScreen() {
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("runtimes");
   return (
@@ -568,14 +568,18 @@ function CredentialBadge({
           ? "text-xs text-success"
           : status === "invalid"
             ? "text-xs text-destructive"
-            : "text-xs text-muted-foreground"
+            : status === "unreachable"
+              ? "text-xs text-warning"
+              : "text-xs text-muted-foreground"
       }
     >
       {status === "configured"
         ? t("voice_instance.badge_configured")
         : status === "invalid"
           ? t("voice_instance.badge_invalid")
-          : t("voice_instance.badge_not_configured")}
+          : status === "unreachable"
+            ? t("voice_instance.badge_unreachable")
+            : t("voice_instance.badge_not_configured")}
     </Text>
   );
 }
