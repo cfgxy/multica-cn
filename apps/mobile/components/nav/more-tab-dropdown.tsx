@@ -105,6 +105,11 @@ export function MoreTabDropdownAnchor({
     { label: i18n.t("layout:nav.squads", "Squads"), icon: "person.3", androidIcon: "people-outline", path: "/more/squads" },
     // RUYI-425 §4.3: 语音实例配置入口（Gemini Live 创建/配置，独立页面）。
     { label: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), icon: "waveform", androidIcon: "mic-outline", path: "/more/runtimes" },
+    // RUYI-638 阶段3: workspace usage 统计入口。键与 web sidebar 同源
+    // （layout:nav.usage，"Analytics"），可达性不做角色过滤——web 端
+    // usage 入口对全部工作区成员可见（views app-sidebar 静态 nav 数组），
+    // 权限面由服务端六个 dashboard rollup 接口一致裁决（A2 parity）。
+    { label: i18n.t("layout:nav.usage", "Analytics"), icon: "chart.bar", androidIcon: "stats-chart-outline", path: "/more/stats" },
   ];
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);

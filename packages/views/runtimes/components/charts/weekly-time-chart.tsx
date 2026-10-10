@@ -13,6 +13,7 @@ import {
   type ChartConfig,
 } from "@multica/ui/components/ui/chart";
 import { useT } from "../../../i18n";
+import type { WeeklyTimeData } from "@multica/core/dashboard";
 
 // Weekly counterpart of DailyTimeChart — same single-series bar, but each
 // bar represents Mon–Sun run-time totals. Partial weeks render at half
@@ -22,15 +23,9 @@ const weeklyTimeChartConfig = {
   totalSeconds: { label: "Run time", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
-export interface WeeklyTimeData {
-  weekStart: string;
-  weekEnd: string;
-  label: string;
-  rangeLabel: string;
-  partial: boolean;
-  daysCovered: number;
-  totalSeconds: number;
-}
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { WeeklyTimeData } from "@multica/core/dashboard";
 
 export function WeeklyTimeChart({
   data,

@@ -110,3 +110,18 @@ const REASON_CLASS: Record<string, FailureClass> = {
 export function failureClassOf(reason: string): FailureClass {
   return REASON_CLASS[reason] ?? "other";
 }
+
+// One bucket's failure counts, keyed by display class. Every class is always
+// present (0 when unused) so a bucket can be read without existence checks;
+// which of them actually get drawn is the view layer's call. Moved here from
+// the web-only chart visuals module (RUYI-638) so the aggregators in
+// `./aggregate` and the mobile failure view share one definition.
+export type FailureClassCounts = Record<FailureClass, number>;
+
+// Bucket-level totals that ride alongside the per-class counts. `total`
+// counts every terminal task in the bucket, not just failures, so the
+// tooltip can report a rate.
+export interface FailureBucketTotals {
+  failed: number;
+  total: number;
+}

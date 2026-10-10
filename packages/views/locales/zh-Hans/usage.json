@@ -105,9 +105,13 @@
   },
   "empty": {
     "title": "暂无消耗数据",
-    "body": "当智能体在这里开始执行 task 后，它们的 token 消耗和运行时长将出现在此处。"
+    "body": "当智能体在这里开始执行 task 后，它们的 token 消耗和运行时长将出现在此处。",
+    "desktop_hint": "完整统计请前往桌面端查看。"
   },
   "duration": {
     "less_than_minute": "<1分钟"
+  },
+  "error": {
+    "title": "统计数据加载失败"
   }
 }

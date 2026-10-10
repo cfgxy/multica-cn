@@ -105,9 +105,13 @@
   },
   "empty": {
     "title": "No usage yet",
-    "body": "Once agents start running tasks here, their token spend and run time will appear in this view."
+    "body": "Once agents start running tasks here, their token spend and run time will appear in this view.",
+    "desktop_hint": "For the full analytics experience, open the desktop app."
   },
   "duration": {
     "less_than_minute": "<1m"
+  },
+  "error": {
+    "title": "Couldn't load stats"
   }
 }

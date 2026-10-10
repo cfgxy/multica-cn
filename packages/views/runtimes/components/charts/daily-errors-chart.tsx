@@ -10,14 +10,12 @@ import {
   formatRate,
   labelOf,
   useFailureClassConfig,
-  type FailureBucketTotals,
-  type FailureClassCounts,
 } from "./failure-class-visuals";
+import type { DailyErrorsData } from "@multica/core/dashboard";
 
-export interface DailyErrorsData extends FailureClassCounts, FailureBucketTotals {
-  date: string;
-  label: string;
-}
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { DailyErrorsData } from "@multica/core/dashboard";
 
 /**
  * Failed tasks per day, stacked by failure class.

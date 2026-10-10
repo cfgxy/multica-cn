@@ -12,6 +12,7 @@ import {
   type ChartConfig,
 } from "@multica/ui/components/ui/chart";
 import { useLocale, useT } from "../../../i18n";
+import type { DailyTasksData } from "@multica/core/dashboard";
 
 // Three-segment stack — completed runs at the bottom (chart-1, primary
 // brand), then cancelled (chart-3, muted: a manual stop is an outcome, not
@@ -23,14 +24,9 @@ const tasksChartConfig = {
   failed: { label: "Failed", color: "var(--chart-5)" },
 } satisfies ChartConfig;
 
-export interface DailyTasksData {
-  date: string;
-  label: string;
-  completed: number;
-  failed: number;
-  cancelled: number;
-}
-
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { DailyTasksData } from "@multica/core/dashboard";
 export function DailyTasksChart({ data }: { data: DailyTasksData[] }) {
   const { t } = useT("runtimes");
   const locale = useLocale();
