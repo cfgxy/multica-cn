@@ -69,15 +69,25 @@ vi.mock("../issues/components/issue-mention-card", () => ({
 }));
 
 // RUYI-635: the tail footer needs query/navigation infra this parity fixture
-// does not exercise — its behaviours are pinned in issue-reference-footer and
-// issue-mention-aggregation tests. A stub keeps the aggregation block present
-// in the surface comparison without dragging those providers in.
-vi.mock("./issue-reference-footer", () => ({
-  IssueReferenceFooter: ({ references }: { references: unknown[] }) =>
-    references.length > 0 ? (
-      <div data-issue-reference-footer="" data-count={references.length} />
-    ) : null,
-}));
+// does not exercise — its behaviours are pinned in issue-reference-footer,
+// issue-reference-tail and issue-mention-aggregation tests. A stub keeps the
+// aggregation block present in the surface comparison without dragging those
+// providers in; the pure extractor decides presence exactly like the real
+// tail does.
+vi.mock("./issue-reference-footer", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./issue-reference-footer")>();
+  const { dedupeIssueReferences, extractIssueReferences } = await import(
+    "@multica/core/markdown"
+  );
+  return {
+    ...actual,
+    IssueReferenceTail: ({ content }: { content: string }) =>
+      dedupeIssueReferences(extractIssueReferences(content)).length > 0 ? (
+        <div data-issue-reference-footer="" />
+      ) : null,
+  };
+});
 
 vi.mock("../projects/components/project-chip", () => ({
   ProjectChip: ({ projectId }: { projectId: string }) => (
