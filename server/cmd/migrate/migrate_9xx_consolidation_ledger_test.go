@@ -134,7 +134,7 @@ var postConsolidationStems = []string{
 	"932_voice_fact_event",                 // RUYI-425 stage 4
 	"933_issue_decision_client_request_id", // RUYI-514
 	"935_retrospective_agent",              // RUYI-552 (934 issued to the same issue's direction-2 attempt and deleted unreleased)
-	"936_scheduling_pause",                 // RUYI-608
+	"939_scheduling_pause",                 // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
