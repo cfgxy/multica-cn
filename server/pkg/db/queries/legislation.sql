@@ -26,9 +26,22 @@ WHERE prompt_proposal.id = $1 AND prompt_proposal.workspace_id = $2;
 
 -- name: ListPromptProposals :many
 -- Optional status filter: pass '' for the whole pool.
+-- Optional run_id filter (RUYI-673): pass '' for the whole pool. A proposal
+-- belongs to a retrospective run when the run created it (the audit_log's
+-- "created" entry carries the run id as actor_id) or merged into it
+-- (merged_from cites the run id) — the two places upsertDraft writes it.
 SELECT * FROM prompt_proposal
 WHERE prompt_proposal.workspace_id = $1
   AND ($2 = '' OR prompt_proposal.status = $2)
+  AND (
+    $3 = '' OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(prompt_proposal.audit_log) a
+      WHERE a->>'action' = 'created' AND a->>'actor_id' = $3
+    ) OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(prompt_proposal.merged_from) m
+      WHERE m->>'run_id' = $3
+    )
+  )
 ORDER BY prompt_proposal.created_at DESC
 LIMIT 200;
 
