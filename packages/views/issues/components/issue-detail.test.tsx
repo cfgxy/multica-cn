@@ -26,6 +26,9 @@ const mockGitHubEnabled = vi.hoisted(() => ({ value: true }));
 // Counts MockContentEditor mounts. This pins the description to exactly one
 // eager editor per issue and catches stale editor reuse across issue switches.
 const contentEditorMounts = vi.hoisted(() => ({ count: 0 }));
+// Last props handed to the description editor, for asserting the host wiring
+// (RUYI-635: demoteIssueMentions must actually reach the editor).
+const contentEditorProps = vi.hoisted(() => ({} as Record<string, unknown>));
 // Stable empty-attachments reference: the real store returns a shared constant
 // so the `useCommentDraftStore(s => s.getAttachments(key))` selector keeps a
 // stable identity. A fresh `[]` per call would loop useSyncExternalStore.
@@ -194,9 +197,11 @@ vi.mock("../../editor", async () => ({
       placeholder,
       flushPendingOnUnmount,
       onReady,
+      ...rest
     }: any,
     ref: any,
   ) {
+    Object.assign(contentEditorProps, rest);
     const initialValue = syncedValue ?? defaultValue ?? "";
     const valueRef = useRef(initialValue);
     const baseRef = useRef(initialValue);
@@ -745,6 +750,7 @@ describe("IssueDetail (shared)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
+    for (const key of Object.keys(contentEditorProps)) delete contentEditorProps[key];
     mockViewport.isMobile = false;
     mockGitHubEnabled.value = true;
     configStore.getState().setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: false });
@@ -903,6 +909,35 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByTestId("title-editor")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("rich-text-editor")).toHaveLength(1);
     expect(contentEditorMounts.count).toBe(1);
+  });
+
+  it("renders no body tail block when the description has no issue references", async () => {
+    const { container } = renderIssueDetail();
+
+    expect(await screen.findByDisplayValue("Add JWT auth to the backend")).toBeInTheDocument();
+    // RUYI-635 negative assertion: content without references must not grow
+    // a trailing aggregation block.
+    expect(container.querySelector("[data-issue-reference-footer]")).toBeNull();
+  });
+
+  it("aggregates the body's issue references into a tail block", async () => {
+    mockApiObj.getIssue.mockResolvedValue({
+      ...mockIssue,
+      description: `Body references [TES-2](mention://issue/22222222-2222-4222-8222-222222222222) twice: TES-2.`,
+    });
+    const { container } = renderIssueDetail();
+
+    // RUYI-635: the body renders through ContentEditor, so the tail list is
+    // the host's job — the detail page must mount the shared tail block next
+    // to the editor (extraction + dedup policy live in IssueReferenceTail).
+    await screen.findByDisplayValue(
+      "Body references [TES-2](mention://issue/22222222-2222-4222-8222-222222222222) twice: TES-2.",
+    );
+    expect(container.querySelector("[data-issue-reference-footer]")).not.toBeNull();
+    // ...and the editor must actually be opted into the plain-text mention
+    // display — the demotion itself is pinned against the real Tiptap
+    // pipeline in editor/content-editor-demote-issue-mentions.test.tsx.
+    expect(contentEditorProps.demoteIssueMentions).toBe(true);
   });
 
   it("reconciles a cached list snapshot so source context appears on first entry", async () => {

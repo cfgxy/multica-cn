@@ -41,6 +41,7 @@ import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/u
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useEditorUpload, ImageSequenceProvider } from "../../editor";
+import { IssueReferenceTail } from "../../rich-content";
 import { collectImageSequence, type ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
@@ -3292,6 +3293,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               key={id}
               value={issue.description ?? ""}
               placeholder={t(($) => $.detail.desc_placeholder)}
+              // RUYI-635: this editor IS the body's rendered content — issue
+              // mentions read as plain text here, exactly as they do on the
+              // markdown surfaces, and navigation lives in the tail list
+              // rendered right below.
+              demoteIssueMentions
               onUpdate={(md, baseMarkdown) => {
                 // Bind any pending uploads still referenced in the markdown
                 // so they appear in `issueAttachments` after refresh and the
@@ -3328,6 +3334,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               currentIssueId={id}
               attachments={descEditorAttachments}
             />
+
+            {/* RUYI-635: the body's tail aggregation. The editor pipeline has
+                no footer of its own, so the host mounts the same tail block
+                RichContent uses — dedup and degradation policies stay shared,
+                and content without references renders nothing here. */}
+            <IssueReferenceTail content={issue.description ?? ""} />
 
             <div className="flex items-center gap-1 mt-3">
               <ReactionBar
