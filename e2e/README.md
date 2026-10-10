@@ -66,9 +66,14 @@ PLAYWRIGHT_BASE_URL=http://localhost:13801 pnpm exec playwright test
 | redis | `REDIS_URL` 端口可达 | 不可达 → API 记 DB fallback（日志 `WARN`/`WRN` 双前缀取证），realtime 路径症状不能干净归因 |
 | postgres | `DATABASE_URL` 端口可达 | 不可达 = E2E 登录/seed 全挂 |
 | feature flags | 经 web 入口 `GET /api/config` 实测 | `composio_mcp_apps=false` 时 `e2e/agent-mcp.spec.ts` 的「creator sees the MCP Apps tab」用例按配置必败——要么给 api 进程设 `FF_COMPOSIO_MCP_APPS=true`，要么把这类失败显式归因为装置配置 |
+| upload route | 直连 api 与经 web 代理各 `POST /api/upload-file`（不带鉴权）应答 401/400/403 | Go handler 本体永不 404；404 = 请求死在 web 运行时改写或 API base 指错——QA 轮 4 的 chat-attachments 失败即此类 |
 | port ownership | api/web 端口有监听者 | 无监听 = 组件未起或不属本槽位 |
 
 退出码：0 = 无 FAIL（WARN 可开跑但必须记录进报告）；1 = 有 FAIL（先修复再跑）。
+
+### E2E 进程环境确定性（RUYI-632 新增）
+
+E2E harness 的 API base 链是 `e2e/env.ts` 读 `<载体根>/.env.worktree` → `e2e/fixtures.ts` 的 `NEXT_PUBLIC_API_URL || localhost:${PORT||8080}`。槽位 `use` 现在会把槽位 env 物化为槽位 worktree 内的 `.env.worktree`（gitignored，600 权限，每次 use 刷新），把 API base 钉死到槽位后端端口——QA 轮 4 的载体里没有这个文件，base 依赖发起 shell 的导出，属于不可追溯的环境 luck。跑套件的 shell 应保持干净（`env -u NEXT_PUBLIC_API_URL -u PORT -u PLAYWRIGHT_BASE_URL pnpm exec playwright test` 或显式 `PLAYWRIGHT_BASE_URL=http://localhost:<槽位web端口>`），禁止让残留导出覆盖 `.env.worktree`（dotenv 不覆盖已存在变量）。
 
 ## 4. 症状三分归因协议（验收标准 4）
 

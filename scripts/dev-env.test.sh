@@ -406,6 +406,17 @@ wt="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
 [ -z "$(git -C "$wt" symbolic-ref -q HEAD || true)" ] || fail "worktree must be detached, not on a branch"
 grep -q "^CODE_SHA=$sha2" "$manifest" || fail "manifest must record the loaded revision"
 
+# RUYI-632: a worktree binding materializes .env.worktree so the E2E harness
+# (e2e/env.ts) derives a deterministic API base instead of inheriting whatever
+# the launching shell happened to export.
+[ -f "$wt/.env.worktree" ] || fail "use <sha> must materialize .env.worktree in the slot worktree for the E2E harness"
+[ "$(stat -c %a "$wt/.env.worktree")" = 600 ] || fail ".env.worktree must be 600 (it mirrors the slot env secrets)"
+grep -q '^NEXT_PUBLIC_API_URL=http://localhost:21801$' "$wt/.env.worktree" || fail ".env.worktree must pin the E2E API base to the slot backend"
+cmp -s "$wt/.env.worktree" "$MULTICA_SLOTS_HOME/dev1/env" || fail ".env.worktree must mirror the slot env file byte-for-byte"
+# Bind mode (use without a sha points DIR at REPO_ROOT) must not write the
+# checkout root's own env file.
+[ ! -e "$repo/.env.worktree" ] || fail "bind-mode use must not touch the main checkout's .env.worktree"
+
 # The lease lives next to the manifest and names the caller.
 [ -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "use must write a slot lease"
 grep -q "OWNER_ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "lease must name the calling issue"

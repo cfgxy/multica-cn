@@ -9,7 +9,9 @@
 #   2. composio_mcp_apps off → explicit WARN naming the agent-mcp consequence;
 #   3. REDIS_URL pointing at a dead port → WARN naming DB fallback attribution;
 #   4. web down → FAIL, exit 1;
-#   5. api serving a foreign commit → WARN on the commit mismatch.
+#   5. api serving a foreign commit → WARN on the commit mismatch;
+#   6. POST /api/upload-file answering 404 → FAIL naming the proxy/base layer
+#      (the Go handler itself can never 404 that path).
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -103,13 +105,20 @@ cat > "$tmp_dir/stub.js" <<EOF
 const http = require("http");
 const commit = process.env.STUB_COMMIT;
 const composio = process.env.STUB_COMPOSIO === "true";
+const uploadCode = Number(process.env.STUB_UPLOAD || 401);
+const upload = (req, res) => {
+  if (req.method === "POST" && req.url === "/api/upload-file") { res.statusCode = uploadCode; res.end(JSON.stringify({ error: "stub" })); return true; }
+  return false;
+};
 const handlers = {
   $API_PORT: (req, res) => {
     if (req.url === "/health") { res.end(JSON.stringify({ status: "ok", commit, pid: 1, started_at: new Date().toISOString() })); return; }
+    if (upload(req, res)) return;
     res.statusCode = 404; res.end();
   },
   $WEB_PORT: (req, res) => {
     if (req.url === "/api/config") { res.end(JSON.stringify({ feature_flags: { composio_mcp_apps: composio } })); return; }
+    if (upload(req, res)) return;
     res.end("<html>stub web entry</html>");
   },
 };
@@ -126,6 +135,8 @@ out="$(bash "$script" dev1)"; rc=$?
 check "healthy slot exits 0" "0" "$rc"
 expect_line "$out" "[PASS] api health" "scenario1 api health"
 expect_line "$out" "[PASS] release entry" "scenario1 release entry verified"
+expect_line "$out" '[PASS] upload route (direct api)' "scenario1 upload route reachable direct"
+expect_line "$out" '[PASS] upload route (web proxy)' "scenario1 upload route reachable via web"
 expect_line "$out" '"composio_mcp_apps":true' "scenario1 composio flag recorded"
 # REDIS_URL points at the dead port → must WARN, never PASS.
 if printf '%s' "$out" | grep -qF '[PASS] redis'; then
@@ -167,5 +178,16 @@ rc=0
 out="$(bash "$script" dev1 2>/dev/null)" || rc=$?
 check "web down exits 1" "1" "$rc"
 expect_line "$out" "[FAIL] web entry" "scenario4 web entry FAIL"
+
+# --- scenario 5: upload 404 → FAIL with the layer-specific remediation -----
+STUB_COMMIT="$FIXTURE_SHA" STUB_COMPOSIO=true STUB_UPLOAD=404 node "$tmp_dir/stub.js" &
+stub_pid=$!
+sleep 0.4
+rc=0
+out="$(bash "$script" dev1 2>/dev/null)" || rc=$?
+check "upload 404 exits 1" "1" "$rc"
+expect_line "$out" "[FAIL] upload route (direct api)" "scenario5 direct upload 404 fails"
+expect_line "$out" "[FAIL] upload route (web proxy)" "scenario5 proxy upload 404 fails"
+expect_line "$out" "REMOTE_API_URL" "scenario5 proxy remediation names the rewrite env"
 
 printf 'e2e-preflight.test: %d checks passed\n' "$passed"

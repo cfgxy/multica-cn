@@ -746,6 +746,19 @@ ensure_slot_env() {
   [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
 
+# Materialize the slot env as the worktree's .env.worktree (RUYI-632): the
+# E2E harness (e2e/env.ts → playwright.config.ts) reads .env.worktree from
+# the checkout root and derives its API base from NEXT_PUBLIC_API_URL —
+# without this file those values depend on whichever shell launched
+# Playwright, which is how QA round 4 ran with an unpredictable API base.
+# The file is gitignored and carries the same secrets as the slot env, so
+# keep it 600 and refresh it on every use.
+materialize_worktree_env() {
+  [ -n "${DIR:-}" ] && [ "$DIR" != "$REPO_ROOT" ] && [ -f "$SLOT_ENV_FILE" ] || return 0
+  (umask 077 && cat "$SLOT_ENV_FILE" > "$DIR/.env.worktree")
+  ok "materialized $DIR/.env.worktree from the slot env (E2E API base pinned to NEXT_PUBLIC_API_URL)"
+}
+
 env_file_field() {
   local key=$1
   [ -f "$SLOT_ENV_FILE" ] || return 1
@@ -1819,6 +1832,7 @@ cmd_use() {
   DESKTOP_ENV_FILE="$DIR/apps/desktop/.env.development.local"
   mkdir -p "$SLOT_DIR"
   ensure_slot_env "$(random_hex 16)"
+  materialize_worktree_env
   save_manifest
   bind_paths
   ok "slot $SLOT now runs $CODE_SOURCE $CODE_SHA from $DIR"
@@ -1974,7 +1988,10 @@ slot_worktrees_removable() {
       warn "worktree $wt is on a branch; destroy refuses to remove it."
       return 1
     fi
-    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | head -n 1)" ]; then
+    # .env.worktree is slot-system-owned state (RUYI-632: the materialized
+    # E2E env, gitignored) — it must not read as an uncommitted change here
+    # or destroy would refuse every slot worktree from now on.
+    if [ -n "$(git -C "$wt" status --porcelain -- . ':!.env.worktree' 2>/dev/null | head -n 1)" ]; then
       warn "worktree $wt has uncommitted changes; destroy refuses to remove it."
       return 1
     fi
