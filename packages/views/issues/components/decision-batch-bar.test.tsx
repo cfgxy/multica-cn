@@ -196,4 +196,28 @@ describe("DecisionBatchBar", () => {
     // until the survivor card is answered again.
     expect(screen.getByTestId("decision-batch-submit")).toBeDisabled();
   });
+
+  // RUYI-620: legacy data written under the degraded "A 选项文本" form
+  // (letter + space, half- or full-width) must not double-number against
+  // the bar's own index letter, same as the single card.
+  it("strips legacy letter+space prefixes so each letter renders once", () => {
+    renderBar([card("d-620", { options: [{ label: "A 存量方案一" }, { label: "B　存量方案二" }] })]);
+    const first = screen.getByTestId("decision-batch-option-d-620-0");
+    expect(within(first).getByText("A")).toBeInTheDocument();
+    expect(within(first).getByText("存量方案一")).toBeInTheDocument();
+    expect(within(first).queryByText("A 存量方案一")).toBeNull();
+    const second = screen.getByTestId("decision-batch-option-d-620-1");
+    expect(within(second).getByText("B")).toBeInTheDocument();
+    expect(within(second).queryByText("B　存量方案二")).toBeNull();
+  });
+
+  // RUYI-620: trailing "（推荐）" is stripped by the shared display helper;
+  // labels without it render as-is.
+  it("strips the trailing recommended marker from option text", () => {
+    renderBar([card("d-621", { options: [{ label: "方案一（推荐）" }, { label: "方案二" }] })]);
+    const first = screen.getByTestId("decision-batch-option-d-621-0");
+    expect(within(first).getByText("方案一")).toBeInTheDocument();
+    expect(within(first).queryByText("方案一（推荐）")).toBeNull();
+    expect(within(screen.getByTestId("decision-batch-option-d-621-1")).getByText("方案二")).toBeInTheDocument();
+  });
 });
