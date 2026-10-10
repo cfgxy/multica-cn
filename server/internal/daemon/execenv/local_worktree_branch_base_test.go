@@ -149,3 +149,94 @@ func TestContinuedBranchIgnoresOriginTip(t *testing.T) {
 			second.BaseCommit, branchTip, originMainTip(t, repo))
 	}
 }
+
+// divergedLocalHead pushes mainline work to the origin, then advances local
+// HEAD past it with an un-pushed commit — the 10-08 shape behind RUYI-579 W1:
+// the daemon's HEAD carries work only an agent branch has, and the origin tip
+// has content local HEAD has never seen.
+func divergedLocalHead(t *testing.T, repo string) (head, tip string) {
+	t.Helper()
+	writeFile(t, repo+"/mainline.txt", "newer mainline\n")
+	gitRun(t, repo, "add", "mainline.txt")
+	gitRun(t, repo, "commit", "-m", "mainline advances")
+	gitRun(t, repo, "push", "--quiet", "origin", "main")
+	tip = originMainTip(t, repo)
+
+	writeFile(t, repo+"/carried.txt", "local-only agent work\n")
+	gitRun(t, repo, "add", "carried.txt")
+	gitRun(t, repo, "commit", "-m", "local un-pushed work")
+	head = gitRun(t, repo, "rev-parse", "HEAD")
+	return head, tip
+}
+
+// The replay's fresh-fork contract predates W1: it assumed the new branch is
+// checked out at the snapshot's own parent, so replaying the snapshot's whole
+// delta was safe. With the branch anchored at the origin tip instead, that
+// delta is the entire tree distance between the two checkouts — replaying it
+// would dress mainline movement up as pending reversals and carry local
+// un-pushed work into a task branch that must not have it (RUYI-380). Only
+// the user's edit set may ride in.
+func TestFreshForkAfterOriginAnchorReplaysOnlyUserEdits(t *testing.T) {
+	repo, _ := newTestRepoWithOrigin(t)
+	_, tip := divergedLocalHead(t, repo)
+
+	// The user's uncommitted edits on top of the diverged HEAD.
+	writeFile(t, repo+"/tracked.txt", "user edited\n")
+	writeFile(t, repo+"/user-notes.txt", "untracked scratch\n")
+
+	wt := prepareTurn(t, repo, "MUL-W1REPLAY", "22223333-4444-5555-6666-aaaaaaaaaaaa")
+
+	// With user edits present, prepare commits a baseline onto the anchored
+	// branch; the baseline's parent is the origin tip the branch forks from.
+	if anchoredBase := gitRun(t, repo, "rev-parse", wt.BaseCommit+"^"); anchoredBase != tip {
+		t.Errorf("baseline parent = %s, want the anchored origin tip %s", anchoredBase, tip)
+	}
+	status := gitRun(t, wt.Path, "status", "--porcelain")
+	for _, banned := range []string{"mainline.txt", "carried.txt"} {
+		if strings.Contains(status, banned) {
+			t.Errorf("worktree pending changes touch %s; the anchor delta must not replay:\n%s", banned, status)
+		}
+	}
+	if _, err := os.Stat(wt.Path + "/carried.txt"); !os.IsNotExist(err) {
+		t.Errorf("local un-pushed work leaked into the task worktree (stat err %v)", err)
+	}
+	if got := gitRun(t, wt.Path, "show", ":tracked.txt"); got != "user edited" {
+		t.Errorf("worktree tracked.txt = %q, want the user's edit replayed", got)
+	}
+	if _, err := os.Stat(wt.Path + "/user-notes.txt"); err != nil {
+		t.Errorf("user's untracked file missing from the worktree: %v", err)
+	}
+
+	writeFile(t, wt.WorkDir+"/agent-output.txt", "agent work\n")
+	outcome := finalizeOK(t, wt)
+	if outcome.Branch == "" {
+		t.Fatal("finalize delivered no branch for a task with agent work")
+	}
+	if got := gitRun(t, repo, "show", outcome.Branch+":mainline.txt"); got != "newer mainline" {
+		t.Errorf("delivered mainline.txt = %q, want the origin version untouched by the replay", got)
+	}
+	if got := gitRun(t, repo, "show", outcome.Branch+":tracked.txt"); got != "user edited" {
+		t.Errorf("delivered tracked.txt = %q, want the user's edit", got)
+	}
+	if out := gitRun(t, repo, "ls-tree", "--name-only", outcome.Branch, "--", "user-notes.txt"); !strings.Contains(out, "user-notes.txt") {
+		t.Errorf("user's untracked file missing from the delivered branch:\n%s", out)
+	}
+}
+
+// A clean user directory in the same diverged shape must leave the worktree
+// untouched: the origin's newer content is the branch's own base, not a
+// pending reversal waiting for the agent to commit.
+func TestFreshForkCleanDirectoryAfterDivergentAnchorStaysClean(t *testing.T) {
+	repo, _ := newTestRepoWithOrigin(t)
+	divergedLocalHead(t, repo)
+
+	wt := prepareTurn(t, repo, "MUL-W1CLEAN", "22223333-4444-5555-6666-bbbbbbbbbbbb")
+	defer finalizeAndDiscardForTest(t, wt)
+
+	if status := gitRun(t, wt.Path, "status", "--porcelain"); status != "" {
+		t.Errorf("clean user directory replayed as pending changes:\n%s", status)
+	}
+	if got := gitRun(t, wt.Path, "show", ":mainline.txt"); got != "newer mainline" {
+		t.Errorf("worktree mainline.txt = %q, want the origin version the branch anchors at", got)
+	}
+}
