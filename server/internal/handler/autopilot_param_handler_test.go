@@ -492,3 +492,88 @@ func TestAutopilotParamsContractRoundTrip(t *testing.T) {
 		t.Fatalf("snapshot level = %#v, want \"low\"", snap.Params["level"])
 	}
 }
+
+func TestTriggerAutopilotBodySizeCap(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createWebhookTestAgent(t, "ParamsCap Agent")
+	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
+	cleanupAutopilotParams(t, apID)
+
+	// A body past maxTriggerBodyBytes must stop at the read cap (413), not
+	// buffer fully and surface later as a parameter-validation 400.
+	big := strings.Repeat("x", maxTriggerBodyBytes+1024)
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/autopilots/"+apID+"/trigger", map[string]any{
+		"params": map[string]any{"pad": big},
+	})
+	req = withURLParam(req, "id", apID)
+	testHandler.TriggerAutopilot(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body: expected 413, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateAutopilotParamsAtomicWithTemplates(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createWebhookTestAgent(t, "ParamsPatch Agent")
+	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
+	cleanupAutopilotParams(t, apID)
+
+	patch := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, body)
+		req = withURLParam(req, "id", apID)
+		testHandler.UpdateAutopilot(w, req)
+		return w
+	}
+
+	// Seed: one param plus a template referencing it.
+	if w := putAutopilotParams(t, apID, []service.AutopilotParamInput{cityParam()}); w.Code != http.StatusOK {
+		t.Fatalf("seed params: got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// Adding a parameter and referencing it in the template is ONE atomic
+	// write: the new token validates against the new set within the request.
+	w := patch(map[string]any{
+		"issue_title_template": "Report for {{city}} / {{region}}",
+		"params": []map[string]any{
+			{"name": "city", "param_type": "string", "required": true},
+			{"name": "region", "param_type": "string"},
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("atomic add+template: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if listed := listAutopilotParams(t, apID); len(listed.Params) != 2 {
+		t.Fatalf("params after atomic patch = %#v, want city+region", listed.Params)
+	}
+
+	// Dropping a parameter a stored template still references is rejected and
+	// leaves the stored set untouched.
+	w = patch(map[string]any{"params": []map[string]any{}})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("dangling token via patch: expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	var errResp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &errResp)
+	if got, _ := errResp["error"].(string); !strings.Contains(got, "city") {
+		t.Fatalf("rejection must name the dangling token, got %#v", errResp["error"])
+	}
+	if listed := listAutopilotParams(t, apID); len(listed.Params) != 2 {
+		t.Fatalf("rejected patch must not touch the stored set, got %#v", listed.Params)
+	}
+
+	// A patch WITHOUT the params key must not replace the stored set.
+	w = patch(map[string]any{"issue_title_template": "Report for {{city}} / {{region}} again"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("no-params patch: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if listed := listAutopilotParams(t, apID); len(listed.Params) != 2 {
+		t.Fatalf("params-key-absent patch must not touch the set, got %#v", listed.Params)
+	}
+}
