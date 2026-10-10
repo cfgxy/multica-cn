@@ -265,6 +265,129 @@ func (q *Queries) CreatePromptProposal(ctx context.Context, arg CreatePromptProp
 	return i, err
 }
 
+const createRetrospectiveTask = `-- name: CreateRetrospectiveTask :one
+INSERT INTO agent_task_queue (
+    agent_id,
+    runtime_id,
+    issue_id,
+    status,
+    priority,
+    context,
+    originator_user_id,
+    accountable_user_id,
+    originator_source,
+    trigger_evidence_kind,
+    trigger_evidence_ref_id
+)
+SELECT
+    $1, $2, NULL::uuid, 'queued', $3,
+    $4,
+    $5, $6,
+    'retrospective', 'retrospective_run', $7
+WHERE lock_task_owner_rows($1, NULL::uuid, $2)
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id
+`
+
+type CreateRetrospectiveTaskParams struct {
+	AgentID           pgtype.UUID `json:"agent_id"`
+	RuntimeID         pgtype.UUID `json:"runtime_id"`
+	Priority          int32       `json:"priority"`
+	Context           []byte      `json:"context"`
+	OriginatorUserID  pgtype.UUID `json:"originator_user_id"`
+	AccountableUserID pgtype.UUID `json:"accountable_user_id"`
+	RunID             pgtype.UUID `json:"run_id"`
+}
+
+// The daily retrospective's one agent run (RUYI-552 direction 3), enqueued
+// on the existing no-issue path. issue_id is NULL by construction — the run
+// must never create an issue or comment — and originator_source='retrospective'
+// keeps it out of the quick_create production statistic, the same discipline
+// as the prompt-quiz run.
+//
+// originator_user_id/accountable_user_id carry the member who last saved the
+// config (the honest human originator); NULL for configs saved before
+// migration 935.
+//
+// Fenced against workspace teardown by lock_task_owner_rows (migration 284),
+// exactly like the quiz enqueue: the owners' workspace rows are locked in
+// this statement's own transaction and the INSERT writes no row once they
+// are gone. Returning no row is that refusal, not an error.
+func (q *Queries) CreateRetrospectiveTask(ctx context.Context, arg CreateRetrospectiveTaskParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, createRetrospectiveTask,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Priority,
+		arg.Context,
+		arg.OriginatorUserID,
+		arg.AccountableUserID,
+		arg.RunID,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.PromptVersions,
+		&i.CancelRequestedByUserID,
+		&i.CancelRequestedAt,
+		&i.CancelReason,
+		&i.CancelActorType,
+		&i.CancelActorID,
+	)
+	return i, err
+}
+
 const enactPromptProposal = `-- name: EnactPromptProposal :one
 UPDATE prompt_proposal SET status = 'enacted',
     gate_errors = '[]'::jsonb, gate_warnings = $1::jsonb,
@@ -398,7 +521,7 @@ UPDATE retrospective_run SET
     proposals_created = $4, proposals_merged = $5, duplicates_skipped = $6,
     error = $7, detail = $8::jsonb, finished_at = now()
 WHERE retrospective_run.id = $9 AND retrospective_run.workspace_id = $10
-RETURNING id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at
+RETURNING id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at, task_id
 `
 
 type FinishRetrospectiveRunParams struct {
@@ -444,6 +567,7 @@ func (q *Queries) FinishRetrospectiveRun(ctx context.Context, arg FinishRetrospe
 		&i.Detail,
 		&i.CreatedAt,
 		&i.FinishedAt,
+		&i.TaskID,
 	)
 	return i, err
 }
@@ -556,7 +680,7 @@ func (q *Queries) GetPromptStructureBaseline(ctx context.Context, arg GetPromptS
 
 const getRetrospectiveConfig = `-- name: GetRetrospectiveConfig :one
 
-SELECT workspace_id, enabled, include_in_review, window_days, updated_at FROM retrospective_config WHERE retrospective_config.workspace_id = $1
+SELECT workspace_id, enabled, include_in_review, window_days, updated_at, agent_id, updated_by FROM retrospective_config WHERE retrospective_config.workspace_id = $1
 `
 
 // --- Retrospective (E3) ---
@@ -569,6 +693,36 @@ func (q *Queries) GetRetrospectiveConfig(ctx context.Context, workspaceID pgtype
 		&i.IncludeInReview,
 		&i.WindowDays,
 		&i.UpdatedAt,
+		&i.AgentID,
+		&i.UpdatedBy,
+	)
+	return i, err
+}
+
+const getRetrospectiveRunByTaskID = `-- name: GetRetrospectiveRunByTaskID :one
+SELECT id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at, task_id FROM retrospective_run WHERE retrospective_run.task_id = $1
+`
+
+func (q *Queries) GetRetrospectiveRunByTaskID(ctx context.Context, taskID pgtype.UUID) (RetrospectiveRun, error) {
+	row := q.db.QueryRow(ctx, getRetrospectiveRunByTaskID, taskID)
+	var i RetrospectiveRun
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Status,
+		&i.Trigger,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.IssuesScanned,
+		&i.IssuesAnalyzed,
+		&i.ProposalsCreated,
+		&i.ProposalsMerged,
+		&i.DuplicatesSkipped,
+		&i.Error,
+		&i.Detail,
+		&i.CreatedAt,
+		&i.FinishedAt,
+		&i.TaskID,
 	)
 	return i, err
 }
@@ -630,9 +784,9 @@ func (q *Queries) HasRetrospectiveWatermark(ctx context.Context, arg HasRetrospe
 
 const insertRetrospectiveRun = `-- name: InsertRetrospectiveRun :one
 INSERT INTO retrospective_run (
-    workspace_id, status, trigger, window_start, window_end
-) VALUES ($1, 'running', $2, $3, $4)
-RETURNING id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at
+    workspace_id, status, trigger, window_start, window_end, detail
+) VALUES ($1, 'running', $2, $3, $4, $5::jsonb)
+RETURNING id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at, task_id
 `
 
 type InsertRetrospectiveRunParams struct {
@@ -640,14 +794,19 @@ type InsertRetrospectiveRunParams struct {
 	Trigger     string             `json:"trigger"`
 	WindowStart pgtype.Timestamptz `json:"window_start"`
 	WindowEnd   pgtype.Timestamptz `json:"window_end"`
+	Detail      []byte             `json:"detail"`
 }
 
+// detail carries the scanned issue ids from the start: the completion
+// processor validates the agent's reported issue ids against it, so the
+// run row is the single source of what this pass put in scope.
 func (q *Queries) InsertRetrospectiveRun(ctx context.Context, arg InsertRetrospectiveRunParams) (RetrospectiveRun, error) {
 	row := q.db.QueryRow(ctx, insertRetrospectiveRun,
 		arg.WorkspaceID,
 		arg.Trigger,
 		arg.WindowStart,
 		arg.WindowEnd,
+		arg.Detail,
 	)
 	var i RetrospectiveRun
 	err := row.Scan(
@@ -666,6 +825,7 @@ func (q *Queries) InsertRetrospectiveRun(ctx context.Context, arg InsertRetrospe
 		&i.Detail,
 		&i.CreatedAt,
 		&i.FinishedAt,
+		&i.TaskID,
 	)
 	return i, err
 }
@@ -688,7 +848,7 @@ func (q *Queries) InsertRetrospectiveWatermark(ctx context.Context, arg InsertRe
 }
 
 const listEnabledRetrospectiveConfigs = `-- name: ListEnabledRetrospectiveConfigs :many
-SELECT workspace_id, enabled, include_in_review, window_days, updated_at FROM retrospective_config WHERE retrospective_config.enabled = true
+SELECT workspace_id, enabled, include_in_review, window_days, updated_at, agent_id, updated_by FROM retrospective_config WHERE retrospective_config.enabled = true
 `
 
 func (q *Queries) ListEnabledRetrospectiveConfigs(ctx context.Context) ([]RetrospectiveConfig, error) {
@@ -706,6 +866,8 @@ func (q *Queries) ListEnabledRetrospectiveConfigs(ctx context.Context) ([]Retros
 			&i.IncludeInReview,
 			&i.WindowDays,
 			&i.UpdatedAt,
+			&i.AgentID,
+			&i.UpdatedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -886,7 +1048,7 @@ func (q *Queries) ListPromptProposals(ctx context.Context, arg ListPromptProposa
 }
 
 const listRetrospectiveRuns = `-- name: ListRetrospectiveRuns :many
-SELECT id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at FROM retrospective_run
+SELECT id, workspace_id, status, trigger, window_start, window_end, issues_scanned, issues_analyzed, proposals_created, proposals_merged, duplicates_skipped, error, detail, created_at, finished_at, task_id FROM retrospective_run
 WHERE retrospective_run.workspace_id = $1
 ORDER BY retrospective_run.created_at DESC
 LIMIT 50
@@ -917,6 +1079,7 @@ func (q *Queries) ListRetrospectiveRuns(ctx context.Context, workspaceID pgtype.
 			&i.Detail,
 			&i.CreatedAt,
 			&i.FinishedAt,
+			&i.TaskID,
 		); err != nil {
 			return nil, err
 		}
@@ -1048,6 +1211,52 @@ func (q *Queries) MergePromptProposalEvidence(ctx context.Context, arg MergeProm
 		&i.JevAdvisory,
 	)
 	return i, err
+}
+
+const reconcileTerminalRetrospectiveRuns = `-- name: ReconcileTerminalRetrospectiveRuns :execrows
+UPDATE retrospective_run r
+SET status = 'failed',
+    detail = COALESCE(r.detail, '{}'::jsonb) || '{"reason":{"code":"task_not_completed"}}'::jsonb,
+    finished_at = now()
+FROM agent_task_queue t
+WHERE r.task_id = t.id
+  AND r.status = 'running'
+  AND t.status IN ('failed', 'cancelled')
+`
+
+// Bulk backstop for runs whose platform task went terminal without the
+// completion hook seeing it: offline-runtime sweeps, cancel paths and
+// daemon crashes all bypass FailTask. First terminal verdict wins — a run
+// the completion processor already finished (succeeded/failed) is skipped
+// by the status guard. The verdict is the stable reason code on the run's
+// detail (the UI localizes it); the legacy error text column stays empty.
+func (q *Queries) ReconcileTerminalRetrospectiveRuns(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, reconcileTerminalRetrospectiveRuns)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const reconcileUnenqueuedRetrospectiveRuns = `-- name: ReconcileUnenqueuedRetrospectiveRuns :execrows
+UPDATE retrospective_run
+SET status = 'failed',
+    detail = COALESCE(retrospective_run.detail, '{}'::jsonb) || '{"reason":{"code":"task_never_enqueued"}}'::jsonb,
+    finished_at = now()
+WHERE retrospective_run.status = 'running'
+  AND retrospective_run.task_id IS NULL
+  AND retrospective_run.created_at < now() - interval '10 minutes'
+`
+
+// Runs whose task never made it into the queue (enqueue interrupted, or the
+// teardown fence refused) would stay "running" forever; age them out with
+// the stable never-enqueued reason code (RUYI-561).
+func (q *Queries) ReconcileUnenqueuedRetrospectiveRuns(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, reconcileUnenqueuedRetrospectiveRuns)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const rejectPromptProposal = `-- name: RejectPromptProposal :one
@@ -1207,6 +1416,20 @@ func (q *Queries) ReworkPromptProposal(ctx context.Context, arg ReworkPromptProp
 	return i, err
 }
 
+const setRetrospectiveRunTaskID = `-- name: SetRetrospectiveRunTaskID :exec
+UPDATE retrospective_run SET task_id = $1 WHERE id = $2
+`
+
+type SetRetrospectiveRunTaskIDParams struct {
+	TaskID pgtype.UUID `json:"task_id"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) SetRetrospectiveRunTaskID(ctx context.Context, arg SetRetrospectiveRunTaskIDParams) error {
+	_, err := q.db.Exec(ctx, setRetrospectiveRunTaskID, arg.TaskID, arg.ID)
+	return err
+}
+
 const submitPromptProposal = `-- name: SubmitPromptProposal :one
 UPDATE prompt_proposal SET status = 'pending_owner',
     audit_log = prompt_proposal.audit_log || $1::jsonb,
@@ -1347,6 +1570,20 @@ func (q *Queries) UpdatePromptProposalDraft(ctx context.Context, arg UpdatePromp
 	return i, err
 }
 
+const updateRetrospectiveRunDetail = `-- name: UpdateRetrospectiveRunDetail :exec
+UPDATE retrospective_run SET detail = $1::jsonb WHERE id = $2
+`
+
+type UpdateRetrospectiveRunDetailParams struct {
+	Detail []byte      `json:"detail"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateRetrospectiveRunDetail(ctx context.Context, arg UpdateRetrospectiveRunDetailParams) error {
+	_, err := q.db.Exec(ctx, updateRetrospectiveRunDetail, arg.Detail, arg.ID)
+	return err
+}
+
 const upsertPromptStructureBaseline = `-- name: UpsertPromptStructureBaseline :one
 INSERT INTO prompt_structure_baseline (
     workspace_id, carrier_scope, carrier_scope_id, sections, clauses, content_sha256, updated_at
@@ -1392,14 +1629,16 @@ func (q *Queries) UpsertPromptStructureBaseline(ctx context.Context, arg UpsertP
 }
 
 const upsertRetrospectiveConfig = `-- name: UpsertRetrospectiveConfig :one
-INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, updated_at)
-VALUES ($1, $2, $3, $4, now())
+INSERT INTO retrospective_config (workspace_id, enabled, include_in_review, window_days, agent_id, updated_by, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, now())
 ON CONFLICT (workspace_id) DO UPDATE SET
     enabled = EXCLUDED.enabled,
     include_in_review = EXCLUDED.include_in_review,
     window_days = EXCLUDED.window_days,
+    agent_id = EXCLUDED.agent_id,
+    updated_by = EXCLUDED.updated_by,
     updated_at = now()
-RETURNING workspace_id, enabled, include_in_review, window_days, updated_at
+RETURNING workspace_id, enabled, include_in_review, window_days, updated_at, agent_id, updated_by
 `
 
 type UpsertRetrospectiveConfigParams struct {
@@ -1407,14 +1646,22 @@ type UpsertRetrospectiveConfigParams struct {
 	Enabled         bool        `json:"enabled"`
 	IncludeInReview bool        `json:"include_in_review"`
 	WindowDays      int32       `json:"window_days"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	UpdatedBy       pgtype.UUID `json:"updated_by"`
 }
 
+// Full-row upsert: the handler reads current, merges the patch (agent
+// selection included, RUYI-552 direction 3) and writes everything back in
+// one statement. agent_id/updated_by are nullable: a disabled config may
+// clear the agent, and rows saved before migration 935 carry no saver.
 func (q *Queries) UpsertRetrospectiveConfig(ctx context.Context, arg UpsertRetrospectiveConfigParams) (RetrospectiveConfig, error) {
 	row := q.db.QueryRow(ctx, upsertRetrospectiveConfig,
 		arg.WorkspaceID,
 		arg.Enabled,
 		arg.IncludeInReview,
 		arg.WindowDays,
+		arg.AgentID,
+		arg.UpdatedBy,
 	)
 	var i RetrospectiveConfig
 	err := row.Scan(
@@ -1423,6 +1670,8 @@ func (q *Queries) UpsertRetrospectiveConfig(ctx context.Context, arg UpsertRetro
 		&i.IncludeInReview,
 		&i.WindowDays,
 		&i.UpdatedAt,
+		&i.AgentID,
+		&i.UpdatedBy,
 	)
 	return i, err
 }

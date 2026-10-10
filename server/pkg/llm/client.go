@@ -51,12 +51,13 @@
 //     sends no end-user chat content; it does send instruction text the
 //     workspace authored, after email addresses are masked and a credential
 //     scan has refused the whole call on any finding.
-//   - Daily retrospective draft extraction (RUYI-305 E3) —
-//     server/internal/retrospective/runner.go. Sends the real execution
-//     content of issues completed inside the workspace's configured window:
-//     titles, descriptions and discussion comments, per issue capped
-//     (retrospective.MaxInputChars) and credential-scanned — a refused issue
-//     is skipped, never sent. Sends no chat sessions outside issues.
+//   - Model-config save-time validation ping (RUYI-551) —
+//     server/internal/selfevconfig/resolver.go. When a workspace owner saves
+//     a per-workspace model service, sends one minimal completion to the just
+//     saved base URL with the just saved key — the fixed health-check phrase
+//     ("reply with pong"), no workspace content — to prove connectivity
+//     before anything persists. Failure text is masked before storage or
+//     display.
 //
 // The first two consumers send private chat content, which is why an
 // unconfigured deployment making zero upstream requests is a contract rather
@@ -66,8 +67,7 @@
 // (TestUnconfiguredClientMakesZeroUpstreamRequests). An operator who must not
 // let THIS layer send chat content leaves MULTICA_LLM_API_KEY and
 // MULTICA_LLM_BASE_URL empty; the product stays whole (client-derived chat
-// titles, no follow-up question buttons, D3 shown as "not scored", the daily
-// retrospective recording a failed run that names the missing configuration).
+// titles, no follow-up question buttons, D3 shown as "not scored").
 //
 // The wrapper is intentionally small:
 //

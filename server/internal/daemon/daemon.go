@@ -565,6 +565,11 @@ type Daemon struct {
 	// setupSupervisor runs — keeps every worker on the legacy direct-child
 	// path; that nil IS the fallback switch.
 	supervisor *supervisor.Supervisor
+	// supervisedRunsBase is the pre-RUYI-607 shared run-store root (the
+	// parent of this daemon's namespaced segment). The startup reconcile
+	// migrates own in-flight runs out of it; empty — as in directly
+	// constructed test daemons — disables migration entirely.
+	supervisedRunsBase string
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -698,6 +703,14 @@ type profileLaunchSpec struct {
 
 // New creates a new Daemon instance.
 func New(cfg Config, logger *slog.Logger) *Daemon {
+	// Recycle guard (RUYI-594): every execenv-side removal hook reads this
+	// process-wide configuration. Evidence lives in a dot directory under the
+	// workspaces root that no GC walk descends into.
+	execenv.ConfigureRecycleGuard(execenv.RecycleGuardConfig{
+		Enabled:     cfg.GCGuardEnabled,
+		EvidenceDir: filepath.Join(cfg.WorkspacesRoot, ".recycle-evidence"),
+		EvidenceTTL: cfg.GCGuardEvidenceTTL,
+	})
 	cacheRoot := filepath.Join(cfg.WorkspacesRoot, ".repos")
 	skillCacheRoot := filepath.Join(cfg.WorkspacesRoot, ".skill-cache", "v1")
 	client := NewClient(cfg.ServerBaseURL)
@@ -7393,6 +7406,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ChatChannelType:                  task.ChatChannelType,
 		ChatChannelDeliversFiles:         task.ChatChannelDeliversFiles,
 		QuizPrompt:                       task.QuizPrompt,
+		RetrospectivePrompt:              task.RetrospectivePrompt,
 		AutopilotRunID:                   task.AutopilotRunID,
 		AutopilotID:                      task.AutopilotID,
 		AutopilotTitle:                   task.AutopilotTitle,

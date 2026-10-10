@@ -2,8 +2,17 @@ name: Mobile iOS Release
 
 # EAS owns Apple signing credentials and produces the IPA remotely. Repository
 # secrets only provide the EAS access token and project identity; their values
-# are never printed. Tag pushes create a versioned Release, while manual runs
-# create an isolated prerelease tied to the selected commit.
+# are never printed. Tag pushes create a versioned formal Release, while manual
+# runs create a dev prerelease following the unified version scheme
+# `X.Y.Z-dev.YYYYMMDD-N` (RUYI-573) — the N is derived from existing release
+# tags by scripts/dev-version.sh, so same-day runs never collide.
+#
+# Caveat: EAS builds remotely from the committed app config, and this workflow
+# does not inject MULTICA_APP_VERSION into the EAS environment — so the IPA's
+# embedded CFBundleShortVersionString stays at the app.config.ts baseline
+# (e.g. 0.2.0) on the dev channel. The dev version lives in the release tag
+# (`mobile-ios-dev-v<version>`), which is what testers and the release list
+# resolve against.
 
 on:
   push:
@@ -89,6 +98,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        # For scripts/dev-version.sh (dev channel tag derivation) and the
+        # app.config.ts baseline read; no full history needed.
+        uses: actions/checkout@v4
+
       - name: Download IPA artifact
         uses: actions/download-artifact@v4
         with:
@@ -97,6 +111,8 @@ jobs:
 
       - name: Resolve Release metadata
         id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -104,7 +120,22 @@ jobs:
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=mobile-ios-build-$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            # Dev channel: unified scheme X.Y.Z-dev.YYYYMMDD-N; N is today's
+            # sequence derived from existing releases, so same-day reruns
+            # never collide. Check-tag fails loud if a race slipped past the
+            # serial concurrency group.
+            base="$(sed -n 's/^ *version:.*"\([^"]*\)",*$/\1/p' apps/mobile/app.config.ts | head -n 1)"
+            if [[ -z "$base" ]]; then
+              echo "::error::无法从 apps/mobile/app.config.ts 解析基准版本号"
+              exit 1
+            fi
+            build_date="$(TZ=Asia/Shanghai date +%Y%m%d)"
+            kv="$(bash scripts/dev-version.sh next --base "$base" --date "$build_date" --prefix mobile-ios-dev-v)"
+            version="$(sed -n 's/^version=//p' <<<"$kv")"
+            tag="$(sed -n 's/^tag=//p' <<<"$kv")"
+            bash scripts/dev-version.sh check-tag --tag "$tag"
+            echo "Dev version: $version (base $base, date $build_date)"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           fi
 

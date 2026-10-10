@@ -3,13 +3,23 @@
  * RUYI-346 into the design's A2 three-tab screen: 概览 / 活跃 / 设置.
  *
  *   - 概览   profile card (avatar / name / description / access badge /
- *           archived banner) + key facts (runtime + online status, model,
- *           concurrency cap, owner, presence) + the edit entry.
- *   - 活跃   the per-agent active-run list (running first, then queued —
- *           `selectAgentActiveTasks`) with a row-level cancel affordance.
- *           The only cancel endpoint in P0 is agent-level cancel-tasks, so
- *           the confirm dialog is the web `cancel_dialog_*` copy that says
- *           exactly that ("cancel ALL of <name>'s tasks").
+ *           archived banner) + instructions preview + DM / Assign Work +
+ *           the explicit Edit Profile row + key facts (runtime + online
+ *           status, model, concurrency cap, thinking, owner, presence).
+ *           RUYI-624: the three editor entries are distinct — Edit Profile
+ *           row → edit-profile (profile fields), instructions preview →
+ *           the dedicated edit-instructions window, the facts card's
+ *           execution rows → run-config (web's execution section). Before
+ *           the split every entry routed to edit-profile, so runtime /
+ *           model / concurrency had no direct mobile editor and the
+ *           half-height profile sheet read as an instructions-only box.
+ *   - 活跃   two sections (RUYI-538): 进行中 — the per-agent active-run
+ *           list (`selectAgentActiveTasks`) with a per-row left-swipe
+ *           cancel (the inbox archive gesture; fires THIS row's task id
+ *           only, replacing the batch cancel-tasks button) — and 运行历史
+ *           — the paginated terminal-run history (`selectAgentRunHistory`,
+ *           initial 10 + 20 per tap) with failed-run retry and the same
+ *           status badge as the issue runs sheet.
  *   - 设置   grouped navigation rows into the skills / access / custom args /
  *           env / webhooks sub-screens plus the capability rows with the
  *           same visibility conditions as web's agent overview pane
@@ -29,22 +39,24 @@
  * banner. A 403 from the detail fetch renders the forbidden state (S3) —
  * distinct copy from the not-found state, same layout.
  */
-import { useCallback, useMemo, useState } from "react";
-import { Alert, FlatList, Pressable, ScrollView, View } from "react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Alert, Pressable, ScrollView, SectionList, View } from "react-native";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { providerSupportsMcpConfig } from "@multica/core/agents/mcp-support";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
-import type { Agent } from "@multica/core/types";
+import type { Agent, AgentTask } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { InstructionsPreview } from "@/components/ui/instructions-preview";
 import { ActionSheetModal, useActionSheet } from "@/components/ui/action-sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentPresenceLine } from "@/components/agents/agent-presence-line";
-import { AgentTaskRow } from "@/components/agents/agent-task-row";
+import { SwipeableAgentTaskRow } from "@/components/agents/swipeable-agent-task-row";
+import { AgentRunHistoryRow } from "@/components/agents/agent-run-history-row";
 import { AccessScopeBadge } from "@/components/agents/access-scope-badge";
 import { ApiError } from "@/data/api";
 import { agentDetailOptions, agentListOptions } from "@/data/queries/agents";
@@ -56,16 +68,27 @@ import {
   telegramInstallationsOptions,
   wecomInstallationsOptions,
 } from "@/data/queries/integrations";
-import { issueListOptions } from "@/data/queries/issues";
+import { issueDetailOptions } from "@/data/queries/issues";
 import { agentTaskSnapshotOptions } from "@/data/queries/agent-task-snapshot";
+import { agentTasksOptions } from "@/data/queries/agent-tasks";
 import { runtimeListOptions } from "@/data/queries/runtimes";
+import { runtimeModelsOptions } from "@/data/queries/runtime-models";
+import { resolveThinkingLevels } from "@/lib/model-capability";
 import { memberListOptions } from "@/data/queries/members";
 import {
   useArchiveAgent,
-  useCancelAgentTasks,
+  useCancelAgentTask,
   useRestoreAgent,
 } from "@/data/mutations/agents";
-import { selectAgentActiveTasks } from "@/lib/issue-agent-activity";
+import {
+  canCancelAgentTask,
+  selectAgentActiveTasks,
+} from "@/lib/issue-agent-activity";
+import {
+  RUN_HISTORY_INITIAL,
+  RUN_HISTORY_PAGE,
+  selectAgentRunHistory,
+} from "@/lib/agent-run-history";
 import { useWorkspacePresenceMap } from "@/lib/use-agent-presence";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useAuthStore } from "@/data/auth-store";
@@ -77,6 +100,17 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
 
 type DetailTab = "overview" | "active" | "settings";
+
+/** Sentinel row so the 运行历史 section header can carry an empty-state
+ *  line without a second FlatList. Discriminated by the historyEmpty flag. */
+interface HistoryEmptyRow {
+  id: "__history_empty__";
+  historyEmpty: true;
+}
+const HISTORY_EMPTY: HistoryEmptyRow = {
+  id: "__history_empty__",
+  historyEmpty: true,
+};
 
 export default function AgentDetailPage() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -91,7 +125,7 @@ export default function AgentDetailPage() {
 
   const archiveAgent = useArchiveAgent();
   const restoreAgent = useRestoreAgent();
-  const cancelTasks = useCancelAgentTasks(agentId);
+  const cancelTask = useCancelAgentTask();
 
   const {
     data: fetched,
@@ -122,13 +156,52 @@ export default function AgentDetailPage() {
     [snapshot, agent],
   );
 
-  // Title lookup only — an error here must NOT blank the run list.
-  const { data: issues } = useQuery(issueListOptions(wsId));
+  // Full per-agent task list (RUYI-538 ②) — the terminal side feeds the run
+  // history section; the active side stays on the presence snapshot above so
+  // the tab badge paints before this fetch resolves.
+  const { data: agentTaskList = [] } = useQuery(
+    agentTasksOptions(wsId, agentId),
+  );
+  const runHistory = useMemo(
+    () => (agent ? selectAgentRunHistory(agentTaskList) : []),
+    [agentTaskList, agent],
+  );
+
+  // Client-side pagination over the server's full terminal list (web
+  // activity-tab parity: initial window, then +PAGE per tap — the endpoint
+  // has no cursor). Reset when the screen rebinds to another agent.
+  const [historyLimit, setHistoryLimit] = useState(RUN_HISTORY_INITIAL);
+  useEffect(() => {
+    setHistoryLimit(RUN_HISTORY_INITIAL);
+  }, [agentId]);
+  const visibleHistory = useMemo(
+    () => runHistory.slice(0, historyLimit),
+    [runHistory, historyLimit],
+  );
+  const hasMoreHistory = runHistory.length > visibleHistory.length;
+
+  // Title lookup, per-issue detail queries — an issue beyond the 100-row
+  // list window still resolves here (RUYI-538 ④ root cause: the old
+  // issueListOptions lookup fell back to 「任务不可见」 exactly there). An
+  // error must NOT blank the rows; unresolved titles fall back to the
+  // issue's short id, mirroring web's activity tab.
+  const issueIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const task of activeTasks) if (task.issue_id) ids.add(task.issue_id);
+    for (const task of visibleHistory) if (task.issue_id) ids.add(task.issue_id);
+    return [...ids];
+  }, [activeTasks, visibleHistory]);
+  const issueTitleQueries = useQueries({
+    queries: issueIds.map((issueId) => issueDetailOptions(wsId, issueId)),
+  });
   const titleById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const issue of issues ?? []) map.set(issue.id, issue.title);
+    issueIds.forEach((issueId, i) => {
+      const title = issueTitleQueries[i]?.data?.title;
+      if (title) map.set(issueId, title);
+    });
     return map;
-  }, [issues]);
+  }, [issueIds, issueTitleQueries]);
 
   const { data: members } = useQuery(memberListOptions(wsId));
   const isWorkspaceAdmin = useMemo(() => {
@@ -151,6 +224,25 @@ export default function AgentDetailPage() {
         ? runtimes?.find((r) => r.id === agent.runtime_id) ?? null
         : null,
     [runtimes, agent],
+  );
+
+  // RUYI-538 ①: thinking-effort display vocabulary from the same daemon
+  // catalog the editor uses (labels are per-CLI, never normalised). Only
+  // resolved for an online runtime; shown in the facts card when the model
+  // exposes levels or a value is persisted (web ThinkingPropRow visibility).
+  const thinkingModelsQuery = useQuery(
+    runtimeModelsOptions(
+      runtime?.status === "online" ? (agent?.runtime_id ?? null) : null,
+    ),
+  );
+  const thinkingLevels = useMemo(
+    () =>
+      resolveThinkingLevels(
+        thinkingModelsQuery.data?.models,
+        agent?.model ?? "",
+        runtime?.provider ?? "",
+      ),
+    [thinkingModelsQuery.data, agent?.model, runtime?.provider],
   );
 
   // Capability-row visibility — same predicates as web agent-overview-pane:
@@ -319,31 +411,37 @@ export default function AgentDetailPage() {
     );
   }, [agent, isSystem, canManage, showMoreMenu, colorScheme]);
 
-  const confirmCancelAll = useCallback(() => {
-    if (!agent || activeTasks.length === 0) return;
-    Alert.alert(
-      t("row_actions.cancel_dialog_title", "Cancel all of \"{{name}}\"'s tasks?", {
-        name: agent.name,
-      }),
-      [
-        t("row_actions.cancel_dialog_impact_other", "This will cancel {{summary}} tasks.", {
-          summary: String(activeTasks.length),
-        }),
-        t(
-          "row_actions.cancel_dialog_irreversible",
-          "Cancelled tasks cannot be resumed.",
-        ),
-      ].join(""),
-      [
-        { text: t("row_actions.cancel_dialog_keep", "Keep them"), style: "cancel" },
-        {
-          text: t("row_actions.cancel_dialog_confirm", "Cancel all tasks"),
-          style: "destructive",
-          onPress: () => cancelTasks.mutate(),
-        },
-      ],
-    );
-  }, [agent, activeTasks.length, cancelTasks, t]);
+  // RUYI-624 split: each overview entry opens its own editor. Edit Profile
+  // row → edit-profile (avatar / name / description / voice); instructions
+  // block → the dedicated edit-instructions window (RUYI-541 pattern);
+  // facts-card execution rows (runtime / model / thinking / concurrency) →
+  // run-config, web's execution-section mirror. Before the split every
+  // entry routed to edit-profile, whose half-height sheet opens on the
+  // instructions textarea — owners read it as "every entry opens the same
+  // instruction box" and runtime/model/concurrency had no direct editor.
+  const openEditProfile = useCallback(() => {
+    if (!agent || !wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/more/agents/[id]/edit-profile",
+      params: { workspace: wsSlug, id: agent.id },
+    });
+  }, [agent, wsSlug]);
+
+  const openRunConfig = useCallback(() => {
+    if (!agent || !wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/more/agents/[id]/run-config",
+      params: { workspace: wsSlug, id: agent.id },
+    });
+  }, [agent, wsSlug]);
+
+  const openInstructions = useCallback(() => {
+    if (!agent || !wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/more/agents/[id]/edit-instructions",
+      params: { workspace: wsSlug, id: agent.id },
+    });
+  }, [agent, wsSlug]);
 
   if (isLoading) {
     return (
@@ -384,10 +482,30 @@ export default function AgentDetailPage() {
   }
 
   const a = agent;
+  const factsEditable = canManage && !isArchived;
 
-  const factRows: { label: string; value: React.ReactNode }[] = [
+  // Thinking row mirrors web's ThinkingPropRow visibility: render only when
+  // the model exposes levels or a value is persisted. Unknown-but-set
+  // values render the raw token so the operator sees what's saved (same
+  // rule as the editor picker).
+  const showThinkingRow = thinkingLevels.length > 0 || !!a.thinking_level;
+  const thinkingEntry =
+    a.thinking_level
+      ? (thinkingLevels.find((l) => l.value === a.thinking_level) ?? null)
+      : null;
+  const thinkingLabel = a.thinking_level
+    ? (thinkingEntry?.label ?? a.thinking_level)
+    : t("pickers.thinking_default", "Follow CLI config");
+
+  const factRows: {
+    label: string;
+    value: React.ReactNode;
+    /** RUYI-624: execution rows tap through to the run-config editor. */
+    editable?: boolean;
+  }[] = [
     {
       label: t("inspector.prop_runtime", "Runtime"),
+      editable: true,
       value: runtime ? (
         <Text className="text-sm text-foreground" numberOfLines={1}>
           {runtime.custom_name || runtime.name}
@@ -406,6 +524,7 @@ export default function AgentDetailPage() {
     },
     {
       label: t("inspector.prop_model", "Model"),
+      editable: true,
       value: (
         <Text className="text-sm text-foreground" numberOfLines={1}>
           {a.model || t("pickers.model_default", "Default")}
@@ -414,10 +533,26 @@ export default function AgentDetailPage() {
     },
     {
       label: t("mobile.detail.fact_concurrency", "Concurrency cap"),
+      editable: true,
       value: (
         <Text className="text-sm text-foreground">{a.max_concurrent_tasks}</Text>
       ),
     },
+    // RUYI-538 ①: reasoning-effort surfaced next to the model it qualifies,
+    // with the editor one tap away via the card tap-through below.
+    ...(showThinkingRow
+      ? [
+          {
+            label: t("mobile.detail.fact_thinking", "Thinking"),
+            editable: true,
+            value: (
+              <Text className="text-sm text-foreground" numberOfLines={1}>
+                {thinkingLabel}
+              </Text>
+            ),
+          },
+        ]
+      : []),
     {
       label: t("inspector.prop_owner", "Owner"),
       value: (
@@ -472,13 +607,7 @@ export default function AgentDetailPage() {
             )}
           </Text>
           <Pressable
-            onPress={() => {
-              if (!wsSlug) return;
-              router.push({
-                pathname: "/[workspace]/more/agents/[id]/edit-profile",
-                params: { workspace: wsSlug, id: a.id },
-              });
-            }}
+            onPress={openRunConfig}
             className="px-2 py-1"
             hitSlop={6}
           >
@@ -540,6 +669,33 @@ export default function AgentDetailPage() {
               </View>
             </View>
 
+            {/* RUYI-541/RUYI-624: instructions 缩略预览——完整查看与编辑
+                在专用 edit-instructions 窗口（同小队编辑器模式）：managers
+                点按编辑，读者点按只读查看全文。此前该入口（连同编辑资料行
+                与事实卡）全部落到 edit-profile，半屏 sheet 顶部是指令输入
+                框，Owner 读感即「所有入口都弹同一个指令框」。 */}
+            <View className="mx-4 mb-3 gap-1.5">
+              <Text className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                {t("tabs.instructions", "Instructions")}
+              </Text>
+              <InstructionsPreview
+                text={a.instructions}
+                emptyHint={t("mobile.detail.instructions_empty", "No instructions yet")}
+                numberOfLines={4}
+                onTap={
+                  !isArchived
+                    ? openInstructions
+                    : undefined
+                }
+                canEdit={canManage && !isArchived}
+                accessibilityLabel={
+                  canManage
+                    ? t("mobile.detail.instructions_edit", "Edit instructions")
+                    : t("tabs.instructions", "Instructions")
+                }
+              />
+            </View>
+
             {/* A7：DM / Assign Work —— web 详情头同一对动作。chat 共享
                 invocation 门（MUL-3963）；runtime 未绑定点了如实提示，
                 与 web 的 toast 语义一致。 */}
@@ -585,13 +741,7 @@ export default function AgentDetailPage() {
 
             {canManage && !isArchived ? (
               <Pressable
-                onPress={() => {
-                  if (!wsSlug) return;
-                  router.push({
-                    pathname: "/[workspace]/more/agents/[id]/edit-profile",
-                    params: { workspace: wsSlug, id: a.id },
-                  });
-                }}
+                onPress={openEditProfile}
                 className="flex-row items-center gap-3 mx-4 mb-3 rounded-lg border border-border px-4 py-3 active:bg-secondary"
                 accessibilityRole="button"
                 accessibilityLabel={t("mobile.detail.edit_profile", "Edit Profile")}
@@ -612,21 +762,39 @@ export default function AgentDetailPage() {
               </Pressable>
             ) : null}
 
-            {/* 关键事实组 */}
+            {/* 关键事实组：执行行（运行时/模型/思考强度/并发上限）逐行可点
+                直达 run-config 编辑器（web 概览事实行即执行配置编辑入口的
+                移动端等价物，RUYI-624）；所有者与状态行只读。上面的 Edit
+                Profile 行保留为资料编辑的显式入口。 */}
             <View className="mx-4 rounded-lg border border-border overflow-hidden">
-              {factRows.map((row, i) => (
-                <View
-                  key={row.label}
-                  className={`flex-row items-center gap-3 px-4 py-2.5 ${
-                    i > 0 ? "border-t border-border" : ""
-                  }`}
-                >
-                  <Text className="w-20 text-xs text-muted-foreground shrink-0">
-                    {row.label}
-                  </Text>
-                  <View className="flex-1 min-w-0">{row.value}</View>
-                </View>
-              ))}
+              {factRows.map((row, i) => {
+                const rowContent = (
+                  <>
+                    <Text className="w-20 text-xs text-muted-foreground shrink-0">
+                      {row.label}
+                    </Text>
+                    <View className="flex-1 min-w-0">{row.value}</View>
+                  </>
+                );
+                const rowClass = `flex-row items-center gap-3 px-4 py-2.5 ${
+                  i > 0 ? "border-t border-border" : ""
+                }`;
+                return row.editable && factsEditable ? (
+                  <Pressable
+                    key={row.label}
+                    onPress={openRunConfig}
+                    className={`${rowClass} active:bg-secondary`}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${row.label} — ${t("inspector.section_execution", "Execution")}`}
+                  >
+                    {rowContent}
+                  </Pressable>
+                ) : (
+                  <View key={row.label} className={rowClass}>
+                    {rowContent}
+                  </View>
+                );
+              })}
               {presence && !isArchived ? (
                 <View className="flex-row items-center gap-3 px-4 py-2.5 border-t border-border">
                   <Text className="w-20 text-xs text-muted-foreground shrink-0">
@@ -643,10 +811,35 @@ export default function AgentDetailPage() {
 
         {/* --- 活跃 --- */}
         <TabsContent value="active" className="flex-1">
-          <FlatList
+          <SectionList<AgentTask | HistoryEmptyRow>
             className="flex-1"
-            data={activeTasks}
-            keyExtractor={(task) => task.id}
+            sections={
+              activeTasks.length === 0 && runHistory.length === 0
+                ? []
+                : [
+                    {
+                      key: "active",
+                      title: t("mobile.detail.tab_active", "Active"),
+                      data: activeTasks,
+                    },
+                    {
+                      key: "history",
+                      title: t("mobile.detail.section_history", "Run history"),
+                      data:
+                        runHistory.length === 0
+                          ? [HISTORY_EMPTY]
+                          : visibleHistory,
+                    },
+                  ]
+            }
+            keyExtractor={(item) => item.id}
+            renderSectionHeader={({ section }) => (
+              <View className="px-4 pt-3 pb-1 bg-background">
+                <Text className="text-xs font-medium text-muted-foreground">
+                  {section.title}
+                </Text>
+              </View>
+            )}
             ItemSeparatorComponent={() => (
               <View className="h-px bg-border ml-4" />
             )}
@@ -663,10 +856,36 @@ export default function AgentDetailPage() {
                 </Text>
               </View>
             }
-            renderItem={({ item }) => (
-              <View className="flex-row items-center">
-                <View className="flex-1 min-w-0">
-                  <AgentTaskRow
+            ListFooterComponent={
+              hasMoreHistory ? (
+                <Pressable
+                  onPress={() =>
+                    setHistoryLimit((limit) => limit + RUN_HISTORY_PAGE)
+                  }
+                  className="items-center py-3 active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel={t(
+                    "mobile.run_history.load_more",
+                    "Load more",
+                  )}
+                >
+                  <Text className="text-sm text-brand">
+                    {t("mobile.run_history.load_more", "Load more")}
+                  </Text>
+                </Pressable>
+              ) : null
+            }
+            renderItem={({ item, section }) => {
+              if ("historyEmpty" in item) {
+                return (
+                  <Text className="px-4 py-3 text-sm text-muted-foreground">
+                    {t("mobile.run_history.empty", "No runs yet.")}
+                  </Text>
+                );
+              }
+              if (section.key === "history") {
+                return (
+                  <AgentRunHistoryRow
                     task={item}
                     issueTitle={
                       item.issue_id
@@ -675,28 +894,24 @@ export default function AgentDetailPage() {
                     }
                     wsSlug={wsSlug}
                   />
-                </View>
-                {/* 行级取消：P0 只有 agent 级 cancel-tasks 端点，确认弹窗
-                    文案明确「取消全部 task」（镜像 web cancel_dialog_*）。 */}
-                {canManage && !isArchived ? (
-                  <Pressable
-                    onPress={confirmCancelAll}
-                    disabled={cancelTasks.isPending}
-                    className="px-3 py-2 mr-1"
-                    hitSlop={4}
-                    accessibilityRole="button"
-                    accessibilityLabel={t(
-                      "row_actions.cancel_all_tasks",
-                      "Cancel all tasks",
-                    )}
-                  >
-                    <Text className="text-sm text-destructive">
-                      {t("row_actions.cancel_all_tasks", "Cancel all tasks")}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            )}
+                );
+              }
+              return (
+                <SwipeableAgentTaskRow
+                  task={item}
+                  issueTitle={
+                    item.issue_id
+                      ? (titleById.get(item.issue_id) ?? null)
+                      : null
+                  }
+                  wsSlug={wsSlug}
+                  cancellable={
+                    canManage && !isArchived && canCancelAgentTask(item)
+                  }
+                  onCancel={() => cancelTask.mutate(item.id)}
+                />
+              );
+            }}
           />
         </TabsContent>
 

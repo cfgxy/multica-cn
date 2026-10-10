@@ -269,7 +269,7 @@ func TestCompleteTaskOnCancelRequestedConvergesToCancelled(t *testing.T) {
 	env := newRunLifecycleEnv(t)
 	id := env.seedRunTask(t, env.agentID, "cancel_requested", seedRunTaskOpts{started: true})
 
-	task, err := env.svc.CompleteTask(context.Background(), id, []byte(`{"ok":true}`), "", "", "", false, "", "")
+	task, _, err := env.svc.CompleteTask(context.Background(), id, []byte(`{"ok":true}`), "", "", "", false, "", "")
 	if err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}

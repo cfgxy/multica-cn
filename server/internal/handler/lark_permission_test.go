@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -34,8 +35,8 @@ func TestGetLarkPermissionCatalog_ServesVerifiedCatalog(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Capabilities) != 5 {
-		t.Fatalf("expected 5 catalog entries, got %d", len(resp.Capabilities))
+	if len(resp.Capabilities) != 7 {
+		t.Fatalf("expected 7 catalog entries, got %d", len(resp.Capabilities))
 	}
 	byID := map[string]struct {
 		probeable bool
@@ -47,7 +48,7 @@ func TestGetLarkPermissionCatalog_ServesVerifiedCatalog(t *testing.T) {
 			scopes    [][]string
 		}{c.Probeable, c.Scopes}
 	}
-	for _, id := range []string{"receive_messages", "send_messages", "read_history", "media_resources", "contact_lookup"} {
+	for _, id := range []string{"receive_messages", "send_messages", "read_history", "media_resources", "contact_lookup", "drive_file_links", "wiki_doc_links"} {
 		if _, ok := byID[id]; !ok {
 			t.Fatalf("catalog missing %q", id)
 		}
@@ -58,15 +59,26 @@ func TestGetLarkPermissionCatalog_ServesVerifiedCatalog(t *testing.T) {
 	if !byID["read_history"].probeable {
 		t.Error("read_history must be probeable")
 	}
-	// The AND-of-OR shape must survive serialization: read_history needs
-	// any base read scope AND im:message.group_msg.
+	// RUYI-572 share-link capabilities are synthetic-REST-probeable.
+	if !byID["drive_file_links"].probeable || !byID["wiki_doc_links"].probeable {
+		t.Error("drive_file_links/wiki_doc_links must be probeable")
+	}
+	// The AND-of-OR shape must survive serialization, group-exact:
+	// read_history needs any base read scope AND im:message.group_msg.
+	// im:message.history:readonly grants the conversation LIST but not
+	// the single-message GET, so it must NOT satisfy group 1 (RUYI-546).
 	want := [][]string{
-		{"im:message", "im:message:readonly", "im:message.history:readonly"},
+		{"im:message", "im:message:readonly"},
 		{"im:message.group_msg"},
 	}
 	got := byID["read_history"].scopes
-	if len(got) != len(want) || got[1][0] != "im:message.group_msg" {
+	if len(got) != len(want) {
 		t.Fatalf("read_history scopes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Fatalf("read_history group %d = %v, want %v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -99,8 +111,8 @@ func (s *recheckStubClient) SendTextMessage(context.Context, lark.SendTextParams
 func (s *recheckStubClient) DownloadMessageResource(context.Context, lark.InstallationCredentials, lark.DownloadResourceParams) (lark.DownloadedResource, error) {
 	return lark.DownloadedResource{}, nil
 }
-func (s *recheckStubClient) BatchGetUsers(context.Context, lark.InstallationCredentials, []string) (map[string]string, error) {
-	return map[string]string{}, nil
+func (s *recheckStubClient) GetUserName(context.Context, lark.InstallationCredentials, string) (string, error) {
+	return "", nil
 }
 
 // wireRecheckStub attaches a programmable APIClient to the shared test
@@ -149,8 +161,8 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Capabilities) != 5 {
-		t.Fatalf("expected 5 verdicts, got %d", len(resp.Capabilities))
+	if len(resp.Capabilities) != 7 {
+		t.Fatalf("expected 7 verdicts, got %d", len(resp.Capabilities))
 	}
 	status := map[string]string{}
 	for _, c := range resp.Capabilities {
@@ -162,6 +174,11 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 		"read_history":     "missing", // 99991672 from the stub
 		"media_resources":  "granted",
 		"contact_lookup":   "granted",
+		// RUYI-572: the stub predates the ShareLinkClient surface, so the
+		// share-link probes degrade to honest unknown instead of faking a
+		// verdict — the degradation the install panel shows pre-regrant.
+		"drive_file_links": "unknown",
+		"wiki_doc_links":   "unknown",
 	}
 	for id, s := range want {
 		if status[id] != s {
@@ -178,13 +195,13 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 	// Verdicts are persisted exactly once per capability (upsert, not
 	// accumulate), and a second recheck overwrites in place.
 	n := capabilityStateCount(t, instUUID)
-	if n != 5 {
-		t.Fatalf("expected 5 persisted rows, got %d", n)
+	if n != 7 {
+		t.Fatalf("expected 7 persisted rows, got %d", n)
 	}
 	if w := recheckAs(testUserID, instID); w.Code != http.StatusOK {
 		t.Fatalf("second recheck as workspace owner: want 200, got %d", w.Code)
 	}
-	if n := capabilityStateCount(t, instUUID); n != 5 {
+	if n := capabilityStateCount(t, instUUID); n != 7 {
 		t.Fatalf("recheck must upsert, not accumulate: got %d rows", n)
 	}
 }

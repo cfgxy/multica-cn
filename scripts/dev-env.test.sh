@@ -219,6 +219,8 @@ repo="$tmp_dir/repo"
 mkdir -p "$repo/scripts" "$repo/server/cmd/migrate"
 ln -s "$root_dir/scripts/dev-env.sh" "$repo/scripts/dev-env.sh"
 ln -s "$root_dir/scripts/qa-clean.sh" "$repo/scripts/qa-clean.sh"
+ln -s "$root_dir/scripts/lib-recycle-guard.sh" "$repo/scripts/lib-recycle-guard.sh"
+ln -s "$root_dir/scripts/remove-worktree.sh" "$repo/scripts/remove-worktree.sh"
 git -C "$repo" init -q
 git -C "$repo" config user.email test@localhost
 git -C "$repo" config user.name test
@@ -296,6 +298,13 @@ node -e '
 # dev2=13002, base 13000 + slot index — same shape as the other port columns.
 grep -q '"mcp_port": 13001' "$repo/scripts/slots.json" || fail "dev1's mcp_port must be a registered fact"
 grep -q '"mcp_port": 13002' "$repo/scripts/slots.json" || fail "dev2's mcp_port must be a registered fact"
+
+# The slot daemon's supervisor run store must stay slot-scoped (RUYI-606): the
+# shared default (~/.multica/supervisor-runs) is where production workers
+# live, and a slot startup reconcile enumerating them is the RUYI-592
+# cross-daemon kill blind spot.
+grep -q 'MULTICA_SUPERVISOR_RUNS_DIR="$SLOT_DIR/supervisor-runs"' "$repo/scripts/dev-env.sh" \
+  || fail "slot daemon must scope MULTICA_SUPERVISOR_RUNS_DIR to \$SLOT_DIR (RUYI-606)"
 
 # component_resource_env translates the budget into per-component env so the
 # quota travels with the process even before the watchdog is up.
@@ -733,6 +742,100 @@ MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || fail "
 [ ! -d "$wt1" ] || fail "destroy must remove the slot worktree"
 
 # ---------------------------------------------------------------------------
+# Recycle guard (RUYI-594) on the destroy path. A worktree holding the last
+# reference to a commit blocks destroy with an itemised evidence file; the
+# override releases exactly that verdict once and records it; the kill switch
+# restores the legacy unconditional behaviour; a carrier git cannot read
+# (source repository gone) is fail-closed, never "empty output"; and
+# gc --dry-run produces the same evidence (dry_run: true) without deleting
+# anything. Evidence lands in the sandboxed HOME's recycle-evidence root.
+# ---------------------------------------------------------------------------
+ev_root="$HOME/.multica/recycle-evidence"
+ev_count() { ls "$ev_root" 2>/dev/null | wc -l | tr -d ' '; }
+
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use "$sha1" > "$out" 2>&1 || fail "guard: setup must load dev1"
+wtg="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
+git -C "$wtg" checkout -q --detach
+echo guarded > "$wtg/guarded.txt"
+git -C "$wtg" add guarded.txt
+git -C "$wtg" commit -q -m "sole reference work"
+status=0
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "guard must refuse to destroy a worktree holding sole-reference commits"
+require_contains "$out" "recycle guard blocks"
+[ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "a guard-blocked destroy must keep the manifest for retry"
+[ -d "$wtg" ] || fail "a guard-blocked destroy must keep the worktree"
+ev_file="$(sed -n 's/.*evidence: //p' "$out" | tail -1)"
+[ -f "$ev_file" ] || fail "the blocked destroy must name an existing evidence file"
+grep -q '^verdict: blocked' "$ev_file" || fail "evidence must record verdict: blocked"
+grep -q '^dry_run: false' "$ev_file" || fail "a live destroy scan must be marked dry_run: false"
+grep -q '^kind: slot-worktree' "$ev_file" || fail "evidence must record the carrier kind"
+grep -q '^topology: linked' "$ev_file" || fail "a slot worktree scans as linked (shared .git survives)"
+grep -q 'sole_ref_list' "$ev_file" || fail "evidence must itemise the sole-reference commits"
+grep -q 'sole reference work' "$ev_file" || fail "evidence must name the guarded commit subject"
+
+# The one-shot override releases exactly the guard's verdict — and says so.
+MULTICA_RECYCLE_OVERRIDE=1 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || fail "override must release the guard-blocked destroy"
+[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "override destroy must complete the teardown"
+ev_file="$(sed -n 's/.*evidence: //p' "$out" | tail -1)"
+[ -f "$ev_file" ] || fail "override destroy must still write evidence"
+grep -q '^override: true' "$ev_file" || fail "override evidence must record override: true"
+grep -q '^verdict: blocked' "$ev_file" || fail "override evidence must keep the scan verdict"
+
+# Kill switch: the legacy unconditional behaviour returns, evidence-free.
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use "$sha1" > "$out" 2>&1 || fail "kill-switch: setup must load dev1"
+wtg="$MULTICA_SLOTS_HOME/dev1/worktrees/ruyi-333"
+git -C "$wtg" checkout -q --detach
+echo guarded > "$wtg/guarded2.txt"
+git -C "$wtg" add guarded2.txt
+git -C "$wtg" commit -q -m "another sole reference"
+ev_before="$(ev_count)"
+MULTICA_GC_GUARD_ENABLED=false MULTICA_CALLER_OWNER=$issue_a dev_env dev1 destroy --yes > "$out" 2>&1 || fail "kill switch must restore the legacy unconditional destroy"
+[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "kill-switch destroy must complete the teardown"
+[ "$(ev_count)" -eq "$ev_before" ] || fail "kill switch must not write evidence"
+
+# Fail-closed: a worktree whose source repository is gone cannot be scanned;
+# that used to read as "empty output" and the slot vanished with it.
+gsrc="$tmp_dir/guard-src"
+git init -q "$gsrc"
+git -C "$gsrc" config user.email test@localhost
+git -C "$gsrc" config user.name test
+echo base > "$gsrc/base.txt"
+git -C "$gsrc" add base.txt
+git -C "$gsrc" commit -q -m base
+mkdir -p "$MULTICA_SLOTS_HOME/dev2/worktrees"
+git -C "$gsrc" worktree add -q --detach "$MULTICA_SLOTS_HOME/dev2/worktrees/orphan" HEAD
+rm -rf "$gsrc"
+register_slot dev2 RUYI-594 "$tmp_dir/guard-src-gone" 24 "$past_iso" qa
+dev_env gc --dry-run > "$out" 2>&1 || fail "gc --dry-run must succeed against an unreadable carrier"
+require_contains "$out" "dev2 would be collected"
+require_contains "$out" "guard: blocked"
+[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "dry run must not destroy anything"
+ev_file="$(sed -n 's/.*evidence: //p' "$out" | tail -1)"
+[ -f "$ev_file" ] || fail "gc --dry-run must write its own evidence file"
+grep -q '^dry_run: true' "$ev_file" || fail "dry-run evidence must be marked dry_run: true"
+grep -q 'fail-closed' "$ev_file" || fail "the unreadable carrier must be recorded fail-closed"
+
+status=0
+dev_env gc > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "gc must fail loudly when the guard blocks the collection"
+[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "a guard-blocked gc must keep the slot"
+[ -d "$MULTICA_SLOTS_HOME/dev2/worktrees/orphan" ] || fail "a guard-blocked gc must keep the unreadable worktree"
+[ -f "$MULTICA_SLOTS_HOME/dev2/manifest.env" ] || fail "a guard-blocked gc must keep the manifest"
+# gc writes its own lease while collecting; the retry must still see the
+# slot's qa phase (RUYI-594) — a phase drift to dev would make every later
+# cycle silently skip the slot, guard and override included.
+grep -q '^PHASE=qa' "$MULTICA_SLOTS_HOME/dev2/.slot-lock" || fail "the gc-written lease must keep the manifest's qa phase across a blocked destroy"
+status=0
+dev_env gc > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "the next gc cycle must retry and stay guard-blocked"
+[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "the blocked retry must keep the slot"
+
+# The override works on the gc path too: preservation done, one-shot release.
+MULTICA_RECYCLE_OVERRIDE=1 dev_env gc > "$out" 2>&1 || fail "override must let gc collect the unreadable carrier"
+[ ! -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "override gc must complete the collection"
+
+# ---------------------------------------------------------------------------
 # Partial failure keeps the slot: a failed drop leaves the manifest + lease so
 # destroy can retry instead of stranding the database.
 # ---------------------------------------------------------------------------
@@ -874,6 +977,23 @@ bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "q
 bash "$repo/scripts/qa-clean.sh" --yes > "$out" 2>&1 || fail "qa-clean unscoped --yes must succeed"
 [ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "qa-clean unscoped --yes must not destroy a slot it has no owner for"
 require_contains "$out" "skipped slot dev2"
+
+# The worktree report runs the recycle guard's own predicates (RUYI-594),
+# report-only: the numbers printed are the numbers destroy will act on, so
+# the report can never say 0 while the guard blocks.
+mkdir -p "$MULTICA_SLOTS_HOME/dev2/worktrees"
+git -C "$repo" worktree add -q --detach "$MULTICA_SLOTS_HOME/dev2/worktrees/ruyi-402-sole" HEAD
+wtq="$MULTICA_SLOTS_HOME/dev2/worktrees/ruyi-402-sole"
+echo q > "$wtq/q.txt"
+git -C "$wtq" add q.txt
+git -C "$wtq" commit -q -m "qa report sole commit"
+bash "$repo/scripts/qa-clean.sh" --issue RUYI-402 > "$out" 2>&1 || fail "qa-clean report must succeed"
+require_contains "$out" "guard: BLOCKED"
+require_contains "$out" "sole_ref=1"
+[ -d "$wtq" ] || fail "qa-clean report must never delete the worktree it reports"
+git -C "$repo" worktree remove --force "$wtq"
+rm -rf "$MULTICA_SLOTS_HOME/dev2/worktrees"
+git -C "$repo" worktree prune
 
 # ---------------------------------------------------------------------------
 # RUYI-431: dual-server test windows on the two fixed slots. One issue may

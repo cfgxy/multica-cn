@@ -7379,7 +7379,7 @@ type ListFailedTasksForRetryReevaluationParams struct {
 // re-run. Only rows the auto-retry path recognises at all (the reason
 // allowlist is passed in from the Go side so the two lists cannot drift);
 // budget and eligibility are re-checked per row by MaybeRetryFailedTask.
-// Backed by idx_agent_task_queue_failed_retry_reeval (migration 934), a
+// Backed by idx_agent_task_queue_failed_retry_reeval (migration 936), a
 // partial index whose row set is near-empty in steady state.
 func (q *Queries) ListFailedTasksForRetryReevaluation(ctx context.Context, arg ListFailedTasksForRetryReevaluationParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listFailedTasksForRetryReevaluation, arg.FailureReasons, arg.MaxPerTick)

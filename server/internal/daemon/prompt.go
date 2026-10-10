@@ -262,6 +262,9 @@ func buildPromptBody(task Task, provider string) string {
 	if task.QuizPrompt != "" {
 		return buildQuizPrompt(task)
 	}
+	if task.RetrospectivePrompt != "" {
+		return buildRetrospectivePrompt(task)
+	}
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
@@ -298,6 +301,16 @@ func buildQuizPrompt(task Task) string {
 	b.WriteString("\n\n")
 	b.WriteString("This run has no issue, no comment thread, and no codebase task attached: do not run `multica issue get`, do not read comment history, and do not create issues. Just answer the item.\n")
 	return b.String()
+}
+
+// buildRetrospectivePrompt renders the daily-retrospective agent run
+// (RUYI-552 direction 3). The server composes the full window prompt —
+// boundaries, workspace/run ids, the completed-issue list, the draft output
+// contract — and it is the run's entire assignment, so the daemon passes it
+// through verbatim; anything added here would drift from the contract the
+// completion hook parses.
+func buildRetrospectivePrompt(task Task) string {
+	return task.RetrospectivePrompt
 }
 
 // buildQuickCreatePrompt constructs a prompt for quick-create tasks. The

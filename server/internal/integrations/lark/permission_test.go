@@ -11,8 +11,8 @@ import (
 func TestCapabilityCatalogShape(t *testing.T) {
 	t.Parallel()
 	catalog := CapabilityCatalog()
-	if len(catalog) != 5 {
-		t.Fatalf("expected 5 capabilities, got %d", len(catalog))
+	if len(catalog) != 7 {
+		t.Fatalf("expected 7 capabilities, got %d", len(catalog))
 	}
 	seen := map[CapabilityID]bool{}
 	for _, spec := range catalog {
@@ -32,6 +32,7 @@ func TestCapabilityCatalogShape(t *testing.T) {
 	for _, id := range []CapabilityID{
 		CapabilityReceiveMessages, CapabilitySendMessages, CapabilityReadHistory,
 		CapabilityMediaResources, CapabilityContactLookup,
+		CapabilityDriveFileLinks, CapabilityWikiDocLinks,
 	} {
 		if !seen[id] {
 			t.Errorf("catalog missing capability %q", id)
@@ -41,6 +42,45 @@ func TestCapabilityCatalogShape(t *testing.T) {
 	catalog[0].Scopes = nil
 	if len(capabilityCatalog[0].Scopes) == 0 {
 		t.Fatal("CapabilityCatalog returned the backing slice, not a copy")
+	}
+}
+
+// TestCapabilityCatalogShareLinkRows pins the RUYI-572 rows' exact
+// AND-of-OR shape: drive_file_links is one OR group of four drive read
+// scopes (any one grants the download endpoint, ADR 005 §3 直抓);
+// wiki_doc_links is the AND of the wiki routing group and the docx read
+// group — get_node resolves the wiki token but raw_content still needs a
+// docx read scope, so an install holding only one side must read as
+// missing.
+func TestCapabilityCatalogShareLinkRows(t *testing.T) {
+	t.Parallel()
+	drive, ok := CapabilitySpecByID(CapabilityDriveFileLinks)
+	if !ok {
+		t.Fatal("drive_file_links missing from catalog")
+	}
+	if !drive.Probeable {
+		t.Error("drive_file_links must be probeable")
+	}
+	wantDrive := [][]string{
+		{"drive:drive", "drive:drive:readonly", "drive:file", "drive:file:readonly"},
+	}
+	if !slices.EqualFunc(drive.Scopes, wantDrive, func(a, b []string) bool { return slices.Equal(a, b) }) {
+		t.Errorf("drive_file_links scopes = %v, want %v", drive.Scopes, wantDrive)
+	}
+
+	wiki, ok := CapabilitySpecByID(CapabilityWikiDocLinks)
+	if !ok {
+		t.Fatal("wiki_doc_links missing from catalog")
+	}
+	if !wiki.Probeable {
+		t.Error("wiki_doc_links must be probeable")
+	}
+	wantWiki := [][]string{
+		{"wiki:wiki", "wiki:wiki:readonly"},
+		{"docx:document:readonly", "docx:document"},
+	}
+	if !slices.EqualFunc(wiki.Scopes, wantWiki, func(a, b []string) bool { return slices.Equal(a, b) }) {
+		t.Errorf("wiki_doc_links scopes = %v, want %v", wiki.Scopes, wantWiki)
 	}
 }
 
@@ -60,16 +100,42 @@ func TestScopesForCapability(t *testing.T) {
 		id   CapabilityID
 		want []string
 	}{
+		// receive_messages: one group-side scope AND one p2p-side scope —
+		// the receive-event doc's full subscription set, partitioned by
+		// delivery side.
 		{CapabilityReceiveMessages, []string{
-			"im:message.group_at_msg", "im:message.group_at_msg:readonly",
+			"im:message.group_at_msg", "im:message.group_at_msg.include_bot:readonly", "im:message.group_at_msg:readonly",
+			"im:message.group_bot_msg:readonly", "im:message.group_msg", "im:message.group_msg.include_bot:read", "im:message.group_msg:readonly",
 			"im:message.p2p_msg", "im:message.p2p_msg:readonly",
 		}},
-		{CapabilitySendMessages, []string{"im:message", "im:message:send_as_bot"}},
+		// send_messages: the POST /im/v1/messages doc's three-way grant
+		// row — im:message:send is the closed-to-new-apps historical
+		// scope, kept for legacy-install diff correctness.
+		{CapabilitySendMessages, []string{"im:message", "im:message:send", "im:message:send_as_bot"}},
+		// read_history: the intersection of the single-message GET and the
+		// conversation-list requirements — im:message.history:readonly
+		// grants the list but NOT the quoted-message GET, so it must not
+		// satisfy this capability on its own.
 		{CapabilityReadHistory, []string{
-			"im:message", "im:message.group_msg", "im:message.history:readonly", "im:message:readonly",
+			"im:message", "im:message.group_msg", "im:message:readonly",
 		}},
-		{CapabilityMediaResources, []string{"im:resource"}},
-		{CapabilityContactLookup, []string{"contact:user.base:readonly"}},
+		// media_resources: the message-resource doc's grant list.
+		{CapabilityMediaResources, []string{
+			"im:message", "im:message.history:readonly", "im:message:readonly",
+		}},
+		// contact_lookup: union of the single-user doc's two requirement
+		// rows (API gate AND name-field grants) — ScopesForCapability
+		// flattens groups; dedup collapses the three shared grants.
+		{CapabilityContactLookup, []string{
+			"contact:contact.base:readonly", "contact:contact:access_as_app", "contact:contact:readonly", "contact:contact:readonly_as_app", "contact:user.base:readonly",
+		}},
+		// RUYI-572 (ADR 005 §3/§4): the two share-link capabilities.
+		{CapabilityDriveFileLinks, []string{
+			"drive:drive", "drive:drive:readonly", "drive:file", "drive:file:readonly",
+		}},
+		{CapabilityWikiDocLinks, []string{
+			"docx:document", "docx:document:readonly", "wiki:wiki", "wiki:wiki:readonly",
+		}},
 	}
 	for _, tc := range cases {
 		got := ScopesForCapability(tc.id)
@@ -113,13 +179,20 @@ func TestMissingScopes(t *testing.T) {
 // flow must surface exactly that one scope.
 func TestCapabilityScopeDiffGroupMsgGap(t *testing.T) {
 	t.Parallel()
-	granted := []string{"im:message", "im:message:send_as_bot", "im:resource"}
+	granted := []string{"im:message", "im:message:send_as_bot"}
 	for _, id := range []CapabilityID{CapabilityReadHistory, CapabilitySendMessages, CapabilityMediaResources} {
 		want := ScopesForCapability(id)
 		got := MissingScopes(want, granted)
 		switch id {
 		case CapabilityReadHistory:
-			want = []string{"im:message.group_msg", "im:message.history:readonly", "im:message:readonly"}
+			want = []string{"im:message.group_msg", "im:message:readonly"}
+		case CapabilityMediaResources:
+			want = []string{"im:message.history:readonly", "im:message:readonly"}
+		case CapabilitySendMessages:
+			// The flatten-based diff lists every candidate grant, so the
+			// historical im:message:send shows up even though the granted
+			// im:message already satisfies the group.
+			want = []string{"im:message:send"}
 		default:
 			want = nil
 		}
@@ -139,8 +212,20 @@ func TestClassifyProbeError(t *testing.T) {
 		{"nil", nil, ProbeGranted},
 		{"canonical no-permission 99991672", &APIError{Op: "get message", Code: 99991672}, ProbeMissing},
 		{"no-permission 99991002", &APIError{Op: "list chat messages", Code: 99991002}, ProbeMissing},
-		{"no-permission 230001", &APIError{Op: "get message", Code: 230001}, ProbeMissing},
-		{"group_msg gap 230027", &APIError{Op: "list chat messages", Code: 230027, Msg: "missing im:message.group_msg"}, ProbeMissing},
+		// 230001/230027 are enforced at the business layer against a REAL
+		// target ("bot is not in the chat", missing im:message.group_msg).
+		// A probe carries a synthetic target, so parameter validation runs
+		// before any business-layer scope check — QA live evidence
+		// 2026-10-08: a send-granted install got 230001 "invalid
+		// receive_id" on the send probe. Both mean the gateway's scope
+		// check passed → granted.
+		{"230001 param validation on synthetic target", &APIError{Op: "send message", Code: 230001, Msg: "invalid receive_id"}, ProbeGranted},
+		{"230027 business-layer gap not reachable on synthetic target", &APIError{Op: "list chat messages", Code: 230027, Msg: "missing im:message.group_msg"}, ProbeGranted},
+		// QA-observed not-exist family on synthetic targets (contact
+		// lookup / message GET / resource download), installs verified
+		// granted via the data plane → target validation, gateway passed.
+		{"contact not-exist 99992351", &APIError{Op: "get user", Code: 99992351}, ProbeGranted},
+		{"message id not-exist 99992354", &APIError{Op: "get message", Code: 99992354}, ProbeGranted},
 		{"not-exist business code", &APIError{Op: "get message", Code: 230002}, ProbeGranted},
 		{"deleted 230110", &APIError{Op: "get message", Code: 230110}, ProbeGranted},
 		{"invisible 230050", &APIError{Op: "get message", Code: 230050}, ProbeGranted},
@@ -151,6 +236,15 @@ func TestClassifyProbeError(t *testing.T) {
 		{"http 502 html", &larkAPIStatusError{StatusCode: 502, Code: 0, Raw: "<html>gateway</html>"}, ProbeUnknown},
 		{"wrapped APIError", fmt.Errorf("lark http client: get message: %w", &APIError{Op: "get message", Code: 99991672}), ProbeMissing},
 		{"other 999xxxxx server error", &APIError{Op: "get message", Code: 99991400}, ProbeUnknown},
+		// Drive family (RUYI-572): 1061004 "file not exist" is the one
+		// ADR-documented target-rejection code — passing it proves the
+		// gateway scope check succeeded. Explicit allowlist, NOT a range
+		// rule: unseen 106xxxx members (incl. business-layer permission
+		// denials) must conservatively stay unknown until the QA live
+		// test calibrates them (ADR 005 §4/§9).
+		{"drive not-exist 1061004", &APIError{Op: "download drive file", Code: 1061004}, ProbeGranted},
+		{"drive uncalibrated 1061001", &APIError{Op: "download drive file", Code: 1061001}, ProbeUnknown},
+		{"drive uncalibrated 1062000", &APIError{Op: "download drive file", Code: 1062000}, ProbeUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -166,6 +260,9 @@ func TestClassifyProbeError(t *testing.T) {
 type probeStubClient struct {
 	APIClient
 	getErr, sendErr, downloadErr, usersErr error
+	driveErr, wikiErr, docxErr             error
+	// last requested synthetic targets, asserted by the probe tests
+	driveToken, wikiToken, documentID string
 }
 
 func (s *probeStubClient) GetMessage(context.Context, InstallationCredentials, string) ([]LarkMessage, error) {
@@ -177,8 +274,20 @@ func (s *probeStubClient) SendTextMessage(context.Context, SendTextParams) (stri
 func (s *probeStubClient) DownloadMessageResource(context.Context, InstallationCredentials, DownloadResourceParams) (DownloadedResource, error) {
 	return DownloadedResource{}, s.downloadErr
 }
-func (s *probeStubClient) BatchGetUsers(context.Context, InstallationCredentials, []string) (map[string]string, error) {
-	return nil, s.usersErr
+func (s *probeStubClient) GetUserName(context.Context, InstallationCredentials, string) (string, error) {
+	return "", s.usersErr
+}
+func (s *probeStubClient) DownloadDriveFile(_ context.Context, _ InstallationCredentials, fileToken string) (DownloadedResource, error) {
+	s.driveToken = fileToken
+	return DownloadedResource{}, s.driveErr
+}
+func (s *probeStubClient) GetWikiNode(_ context.Context, _ InstallationCredentials, wikiToken string) (WikiNode, error) {
+	s.wikiToken = wikiToken
+	return WikiNode{}, s.wikiErr
+}
+func (s *probeStubClient) GetDocxRawContent(_ context.Context, _ InstallationCredentials, documentID string) (string, error) {
+	s.documentID = documentID
+	return "", s.docxErr
 }
 
 func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
@@ -215,7 +324,7 @@ func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
 			t.Errorf("status = %q (%s), want granted", out.Status, out.Detail)
 		}
 	})
-	t.Run("contact_lookup probes batch users", func(t *testing.T) {
+	t.Run("contact_lookup probes the single-user lookup", func(t *testing.T) {
 		t.Parallel()
 		out := ProbeCapability(context.Background(), &probeStubClient{}, creds, CapabilityContactLookup)
 		if out.Status != ProbeGranted {
@@ -236,4 +345,78 @@ func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
 			t.Errorf("status = %q (%s), want unknown", out.Status, out.Detail)
 		}
 	})
+	t.Run("drive_file_links granted via synthetic-target rejection", func(t *testing.T) {
+		t.Parallel()
+		stub := &probeStubClient{driveErr: &APIError{Op: "download drive file", Code: 1061004}}
+		out := ProbeCapability(context.Background(), stub, creds, CapabilityDriveFileLinks)
+		if out.Status != ProbeGranted {
+			t.Errorf("status = %q (%s), want granted", out.Status, out.Detail)
+		}
+		if stub.driveToken != probeDriveFileToken {
+			t.Errorf("probe token = %q, want %q", stub.driveToken, probeDriveFileToken)
+		}
+	})
+	t.Run("drive_file_links missing on permission code", func(t *testing.T) {
+		t.Parallel()
+		out := ProbeCapability(context.Background(), &probeStubClient{driveErr: noPerm}, creds, CapabilityDriveFileLinks)
+		if out.Status != ProbeMissing {
+			t.Errorf("status = %q (%s), want missing", out.Status, out.Detail)
+		}
+	})
+	t.Run("drive_file_links unknown on transport failure", func(t *testing.T) {
+		t.Parallel()
+		out := ProbeCapability(context.Background(), &probeStubClient{driveErr: errors.New("dial tcp: refused")}, creds, CapabilityDriveFileLinks)
+		if out.Status != ProbeUnknown {
+			t.Errorf("status = %q (%s), want unknown", out.Status, out.Detail)
+		}
+	})
+	t.Run("wiki_doc_links granted only when BOTH endpoints pass", func(t *testing.T) {
+		t.Parallel()
+		stub := &probeStubClient{}
+		out := ProbeCapability(context.Background(), stub, creds, CapabilityWikiDocLinks)
+		if out.Status != ProbeGranted {
+			t.Errorf("status = %q (%s), want granted", out.Status, out.Detail)
+		}
+		if stub.wikiToken != probeWikiToken || stub.documentID != probeDocumentID {
+			t.Errorf("synthetic targets = %q / %q, want %q / %q", stub.wikiToken, stub.documentID, probeWikiToken, probeDocumentID)
+		}
+	})
+	t.Run("wiki_doc_links missing when wiki group missing", func(t *testing.T) {
+		t.Parallel()
+		stub := &probeStubClient{wikiErr: noPerm}
+		out := ProbeCapability(context.Background(), stub, creds, CapabilityWikiDocLinks)
+		if out.Status != ProbeMissing {
+			t.Errorf("status = %q (%s), want missing", out.Status, out.Detail)
+		}
+	})
+	t.Run("wiki_doc_links missing when docx group missing", func(t *testing.T) {
+		t.Parallel()
+		stub := &probeStubClient{docxErr: noPerm}
+		out := ProbeCapability(context.Background(), stub, creds, CapabilityWikiDocLinks)
+		if out.Status != ProbeMissing {
+			t.Errorf("status = %q (%s), want missing — wiki routing alone cannot grant raw_content", out.Status, out.Detail)
+		}
+	})
+	t.Run("wiki_doc_links unknown when one probe is inconclusive", func(t *testing.T) {
+		t.Parallel()
+		stub := &probeStubClient{wikiErr: errors.New("dial tcp: refused")}
+		out := ProbeCapability(context.Background(), stub, creds, CapabilityWikiDocLinks)
+		if out.Status != ProbeUnknown {
+			t.Errorf("status = %q (%s), want unknown", out.Status, out.Detail)
+		}
+	})
+	t.Run("share-link probes degrade to unknown without a ShareLinkClient", func(t *testing.T) {
+		t.Parallel()
+		out := ProbeCapability(context.Background(), &probeNoShareClient{}, creds, CapabilityDriveFileLinks)
+		if out.Status != ProbeUnknown || out.Detail == "" {
+			t.Errorf("status = %q detail = %q, want unknown with reason", out.Status, out.Detail)
+		}
+	})
+}
+
+// probeNoShareClient models an APIClient predating the share-link
+// surface (stub client, older fakes): the share-link probes must
+// honestly report unknown instead of panicking on the type assertion.
+type probeNoShareClient struct {
+	APIClient
 }

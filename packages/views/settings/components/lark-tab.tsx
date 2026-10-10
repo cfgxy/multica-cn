@@ -243,6 +243,10 @@ function useLarkCapabilityCopy() {
         return t(($) => $.lark.capability_read_history);
       case "media_resources":
         return t(($) => $.lark.capability_download_media);
+      case "drive_file_links":
+        return t(($) => $.lark.capability_drive_file_links);
+      case "wiki_doc_links":
+        return t(($) => $.lark.capability_wiki_doc_links);
       case "contact_lookup":
         return t(($) => $.lark.capability_lookup_contacts);
       default:
@@ -273,12 +277,20 @@ function useLarkCapabilityCopy() {
 // pressing 重新检测 — the fresh probe is the only truth; Multica never
 // pretends a grant happened.
 //
-// Render rules: `capabilities` undefined means the server predates the
-// field — render nothing (API compat, CLAUDE.md). Empty array means the
-// bot has never been probed (installed before this feature) — show the
-// not-checked hint so the panel invites a first check. Revoked bots
+// Render rules (three distinct wire states, RUYI-545): `capabilities`
+// undefined means the server predates the field — render nothing (API
+// compat, CLAUDE.md). Empty array means the bot has never been probed
+// (installed before this feature) — show the not-checked hint so the
+// panel invites a first check. Null means the stored verdicts could not
+// be read right now — keep the panel visible with an error/retry hint;
+// hiding it here is what left pre-feature bots with no permission
+// surface at all (the recheck button lives inside this panel, so a
+// hidden panel could never schedule the first probe). Revoked bots
 // don't reach this component (stale verdicts would mislead).
-function LarkCapabilityPanel({
+// Exported for the RUYI-545 wire-state unit tests — the three capabilities
+// states (absent / [] / null) are a cross-team contract with the backend
+// and get their own regression coverage.
+export function LarkCapabilityPanel({
   installation,
   canManage,
 }: {
@@ -316,7 +328,10 @@ function LarkCapabilityPanel({
     }
   }
 
-  if (!caps) return null;
+  // Only the old-server case (field absent) hides the panel entirely.
+  // Null (read failure) and [] (never probed) must stay visible — the
+  // recheck entry lives inside this panel.
+  if (caps === undefined) return null;
   const authHref = `${larkDevConsoleHost(installation.region)}/app/${encodeURIComponent(installation.app_id)}/auth`;
 
   return (
@@ -345,7 +360,11 @@ function LarkCapabilityPanel({
         )}
       </div>
 
-      {caps.length === 0 ? (
+      {caps === null ? (
+        <p className="text-caption text-amber-600">
+          {t(($) => $.lark.permissions_read_failed)}
+        </p>
+      ) : caps.length === 0 ? (
         <p className="text-caption text-muted-foreground">
           {t(($) => $.lark.permissions_not_checked)}
         </p>

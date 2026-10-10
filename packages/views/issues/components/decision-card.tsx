@@ -9,7 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import { api } from "@multica/core/api";
-import { patchDecisionInCache } from "@multica/core/issues/decisions";
+import { patchDecisionInCache, stripDecisionOptionLetterPrefix } from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
@@ -19,6 +19,11 @@ import { useT, useTimeAgo } from "../../i18n";
 // the issue comment stream. Open cards take picks from human members; the
 // server refuses agent callers, so the UI only needs to fail readably —
 // the card is the gate, the server is the authority.
+//
+// Option rows render the same index letters as DecisionBatchBar (RUYI-588)
+// and strip the label's embedded "A：" prefix so the letter shows once.
+
+const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
 
 export function DecisionCard({ decision }: { decision: IssueDecision }) {
   const { t } = useT("issues");
@@ -134,7 +139,18 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
                 )}
                 aria-hidden
               />
-              <span className="min-w-0 flex-1 break-words">{opt.label}</span>
+              <span
+                className={cn(
+                  "shrink-0 font-medium",
+                  isSelected ? "text-brand" : "text-muted-foreground",
+                )}
+                aria-hidden
+              >
+                {OPTION_LETTERS[idx] ?? idx + 1}
+              </span>
+              <span className="min-w-0 flex-1 break-words">
+                {stripDecisionOptionLetterPrefix(opt.label)}
+              </span>
               {recommended.has(idx) && (
                 <Badge variant="outline" className="shrink-0">
                   {t(($) => $.decisions.recommended)}

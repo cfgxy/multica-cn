@@ -74,7 +74,9 @@ export function RunRow({ task, issueId }: Props) {
         detailAvailable ? "active:opacity-70" : ""
       }`}
     >
-      <ActorAvatar type="agent" id={task.agent_id} size={28} showPresence />
+      {/* RUYI-554: run rows carry no presence corner dot — the run's own
+          StatusBadge is the state cue on a history list. */}
+      <ActorAvatar type="agent" id={task.agent_id} size={28} />
       <View className="flex-1 gap-1">
         <Text
           className="text-sm text-foreground"
@@ -98,7 +100,9 @@ export function RunRow({ task, issueId }: Props) {
   );
 }
 
-function StatusBadge({ task }: { task: AgentTask }) {
+// Exported for the agent run-history rows (RUYI-538 ②) — one status/failure
+// vocabulary everywhere a run renders.
+export function StatusBadge({ task }: { task: AgentTask }) {
   const { t } = useT("issues");
   const en = STATUS_LABEL[task.status];
   // 未知 status 原样透出（API Response Compatibility：服务端可能新增枚举

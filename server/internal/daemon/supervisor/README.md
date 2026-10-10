@@ -90,4 +90,10 @@ liveness before failing a task.
   lifecycle; the reconciler's Quarantine path exists precisely so unknown
   evidence is recorded, never destroyed.
 - Run stores live under `~/.multica/supervisor-runs` (override:
-  `MULTICA_SUPERVISOR_RUNS_DIR`); retention GC is a Phase 2 item.
+  `MULTICA_SUPERVISOR_RUNS_DIR`), namespaced per daemon profile since
+  RUYI-607: each profile's runs live in `<root>/<OwnerIdentity(profile)>/`,
+  its manifests carry that identity as `owner`, and the reconciler acts only
+  on runs whose owner matches its own identity — foreign or pre-RUYI-607
+  ownerless runs are skipped untouched. The first startup after upgrading
+  adopts own in-flight runs out of the legacy flat root into the namespace;
+  everything else stays put. Retention GC is a Phase 2 item.

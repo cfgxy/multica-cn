@@ -27,6 +27,7 @@ import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +47,7 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
 
 export default function NewAgentScreen() {
+  const insets = useSafeAreaInsets();
   const me = useAuthStore((s) => s.user);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { t } = useT("agents");
@@ -112,8 +114,11 @@ export default function NewAgentScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* modal 自绘头部 */}
-      <View className="flex-row items-center px-4 pt-3 pb-2 border-b border-border">
+      {/* modal 自绘头部；顶部让出系统状态栏（RUYI-540），见 more/runtimes/new。 */}
+      <View
+        className="flex-row items-center px-4 pb-2 border-b border-border"
+        style={{ paddingTop: insets.top + 12 }}
+      >
         <Pressable
           onPress={() => router.back()}
           hitSlop={8}
@@ -327,12 +332,12 @@ export default function NewAgentScreen() {
   );
 }
 
-// RUYI-425 §4.2 voice credential tri-state badge. Text-only by design: the
+// RUYI-425 §4.2 voice credential badge states. Text-only by design: the
 // agent form never edits credentials, it only reflects the instance's state.
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("agents");
   if (status === "configured") {
@@ -346,6 +351,13 @@ function CredentialBadge({
     return (
       <Text className="text-xs text-destructive">
         {t("create_dialog.credential_invalid", "Key invalid")}
+      </Text>
+    );
+  }
+  if (status === "unreachable") {
+    return (
+      <Text className="text-xs text-warning">
+        {t("create_dialog.credential_unreachable", "Can't verify")}
       </Text>
     );
   }

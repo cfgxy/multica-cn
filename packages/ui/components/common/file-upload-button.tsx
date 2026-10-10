@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 import { Paperclip } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@multica/ui/components/ui/button";
@@ -13,6 +13,14 @@ interface FileUploadButtonProps {
   className?: string;
   size?: "sm" | "default";
   multiple?: boolean;
+  /** HTML accept filter — e.g. "image/*" narrows the OS picker to images
+   *  (RUYI-550 mobile-parity image entry). Unrestricted when omitted. */
+  accept?: string;
+  /** Overrides the default paperclip glyph (e.g. an image glyph on a
+   *  dedicated image entry that shares the upload pipeline). */
+  icon?: ReactNode;
+  /** Overrides the default attach-file label for aria/title. */
+  label?: string;
 }
 
 function FileUploadButton({
@@ -21,10 +29,13 @@ function FileUploadButton({
   className,
   size = "default",
   multiple = false,
+  accept,
+  icon,
+  label,
 }: FileUploadButtonProps) {
   const { t } = useTranslation("ui");
   const inputRef = useRef<HTMLInputElement>(null);
-  const attachLabel = t(($) => $.attach_file);
+  const attachLabel = label ?? t(($) => $.attach_file);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -48,12 +59,13 @@ function FileUploadButton({
         title={attachLabel}
         className={cn("text-muted-foreground", className)}
       >
-        <Paperclip className={iconSize} />
+        {icon ?? <Paperclip className={iconSize} />}
       </Button>
       <input
         ref={inputRef}
         type="file"
         multiple={multiple}
+        accept={accept}
         className="hidden"
         onChange={handleChange}
       />

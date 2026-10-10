@@ -121,6 +121,10 @@ WHERE atq.issue_id = $1;
 -- with DATE_TRUNC here — DATE_TRUNC operates in the session tz and would
 -- snap the cutoff back to UTC midnight, dragging in an extra partial
 -- local day for any non-UTC viewer.
+-- @until is an exclusive upper bound on bucket_hour. Legacy ?days=N
+-- requests pass NULL (no rows exist in the future); an explicit
+-- ?start/?end window closes here so a past window cannot bleed forward
+-- past its end day.
 -- provider is LOWER()-normalized so mixed-case historical rows (written
 -- before the handler lowercased provider on write) merge with new rows
 -- instead of forming a separate case-variant bucket.
@@ -141,6 +145,7 @@ SELECT
 FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
+  AND (sqlc.narg('until')::timestamptz IS NULL OR bucket_hour < sqlc.narg('until')::timestamptz)
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
 GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
 ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
@@ -160,6 +165,9 @@ ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provide
 -- "tasks" column, so this stays informational only.
 -- provider is LOWER()-normalized so mixed-case historical rows merge with
 -- new rows (see ListDashboardUsageDaily).
+-- @until is an exclusive upper bound on bucket_hour — NULL for legacy
+-- ?days=N requests, the day after ?end for explicit windows (see
+-- ListDashboardUsageDaily).
 SELECT
     agent_id,
     LOWER(provider) AS provider,
@@ -177,6 +185,7 @@ SELECT
 FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= @since::timestamptz
+  AND (sqlc.narg('until')::timestamptz IS NULL OR bucket_hour < sqlc.narg('until')::timestamptz)
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
 GROUP BY agent_id, LOWER(provider), model
 ORDER BY agent_id, LOWER(provider), model;
@@ -202,6 +211,9 @@ ORDER BY agent_id, LOWER(provider), model;
 --
 -- @since is already the viewer's local start-of-day-(N) (parseSinceParamInTZ)
 -- — passed straight through, NOT re-truncated; see ListDashboardUsageDaily.
+-- @until is an exclusive upper bound on completed_at — NULL for legacy
+-- ?days=N requests, the day after ?end for explicit windows (see
+-- ListDashboardUsageDaily).
 SELECT
     DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) AS date,
     COALESCE(
@@ -219,6 +231,7 @@ WHERE a.workspace_id = $1
   AND atq.started_at IS NOT NULL
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= sqlc.arg('since')::timestamptz
+  AND (sqlc.narg('until')::timestamptz IS NULL OR atq.completed_at < sqlc.narg('until')::timestamptz)
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
 GROUP BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text)
 ORDER BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) DESC;
@@ -238,6 +251,10 @@ ORDER BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) DESC;
 -- "last N days" window lines up with the per-agent cost card and the daily
 -- charts the client trims to the same span; passed straight through without
 -- re-truncation.
+-- @until is an exclusive upper bound on completed_at — NULL for legacy
+-- ?days=N requests, the day after ?end for explicit windows (see
+-- ListDashboardUsageDaily). These rows carry no date, so without the bound a
+-- past window's leaderboard would silently absorb everything after end.
 SELECT
     atq.agent_id,
     COALESCE(
@@ -255,6 +272,7 @@ WHERE a.workspace_id = $1
   AND atq.started_at IS NOT NULL
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= @since::timestamptz
+  AND (sqlc.narg('until')::timestamptz IS NULL OR atq.completed_at < sqlc.narg('until')::timestamptz)
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
 GROUP BY atq.agent_id
 ORDER BY total_seconds DESC;
@@ -281,6 +299,9 @@ ORDER BY total_seconds DESC;
 --
 -- @since is already the viewer's local start-of-day-(N) (parseSinceParamInTZ)
 -- — passed straight through, NOT re-truncated; see ListDashboardUsageDaily.
+-- @until is an exclusive upper bound on completed_at — NULL for legacy
+-- ?days=N requests, the day after ?end for explicit windows (see
+-- ListDashboardUsageDaily).
 SELECT
     DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) AS date,
     CASE
@@ -296,6 +317,7 @@ WHERE a.workspace_id = $1
   AND atq.status IN ('completed', 'failed')
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= sqlc.arg('since')::timestamptz
+  AND (sqlc.narg('until')::timestamptz IS NULL OR atq.completed_at < sqlc.narg('until')::timestamptz)
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
 GROUP BY 1, 2
 ORDER BY 1 DESC, 2;
@@ -308,6 +330,10 @@ ORDER BY 1 DESC, 2;
 --
 -- No date bucketing, so no @tz — @since is the viewer's local
 -- start-of-day-(N) so the window lines up with the per-agent run-time card.
+-- @until is an exclusive upper bound on completed_at — NULL for legacy
+-- ?days=N requests, the day after ?end for explicit windows (see
+-- ListDashboardUsageDaily). These rows carry no date, so without the bound a
+-- past window's offender list would silently absorb everything after end.
 SELECT
     atq.agent_id,
     CASE
@@ -323,6 +349,7 @@ WHERE a.workspace_id = $1
   AND atq.status IN ('completed', 'failed')
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= @since::timestamptz
+  AND (sqlc.narg('until')::timestamptz IS NULL OR atq.completed_at < sqlc.narg('until')::timestamptz)
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
