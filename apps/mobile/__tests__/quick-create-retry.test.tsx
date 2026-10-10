@@ -81,13 +81,30 @@ jest.mock("@/lib/use-t", () => ({
   }),
 }));
 
-// The billing queries stay disabled for non-quota items, but the hooks still
-// construct their options on render — stand them in with inert query shapes.
+// The billing queries stay disabled for non-quota items, but two consumers
+// construct their options on render: the detail card's quota block and the
+// shared issue-limit recovery dialog (opened from the retry catch). Stand
+// them in with real query shapes so an opened dialog resolves a
+// checkout-authorized summary like a Pro-eligible workspace would.
 jest.mock("@/data/queries/billing", () => ({
-  appConfigOptions: () => ({ queryKey: ["app-config"], enabled: false }),
-  workspaceSubscriptionSummaryOptions: () => ({
-    queryKey: ["ws-sub", "ws-1"],
+  appConfigOptions: () => ({
+    queryKey: ["config"],
+    queryFn: () => ({
+      feature_flags: { billing_workspace_subscriptions: true },
+    }),
     enabled: false,
+  }),
+  workspaceSubscriptionSummaryOptions: (
+    _wsId: unknown,
+    enabled: boolean,
+  ) => ({
+    queryKey: ["workspace-subscriptions", "ws-1", "summary"],
+    queryFn: () => ({
+      availableActions: { checkout: true, portal: true, purchaseSeats: true },
+    }),
+    enabled,
+    staleTime: 0,
+    retry: false,
   }),
 }));
 
@@ -128,6 +145,29 @@ jest.mock("@/components/ui/button", () => {
 jest.mock("@/components/ui/icon-button", () => ({
   IconButton: () => null,
 }));
+
+// RN's Modal cannot render open under the jest harness, so the call-site
+// test stubs the shared dialog and pins the wiring (opened on the
+// issue-limit rejection, closed on dismiss); the dialog's copy/action
+// semantics are covered in issue-limit-recovery-dialog.test.tsx.
+jest.mock("@/components/billing/issue-limit-recovery", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { Pressable } = jest.requireActual<typeof import("react-native")>(
+    "react-native",
+  );
+  return {
+    IssueLimitRecoveryDialog: ({
+      visible,
+      onClose,
+    }: {
+      visible: boolean;
+      onClose: () => void;
+    }) =>
+      visible ? (
+        <Pressable onPress={onClose} testID="issue-limit-dialog" />
+      ) : null,
+  };
+});
 
 import InboxNoticeDetail from "@/app/(app)/[workspace]/inbox/[id]";
 import { getQuickCreateRetryPlan } from "@/lib/quick-create-retry";
@@ -374,7 +414,7 @@ describe("Inbox detail card retry entry", () => {
     alertSpy.mockRestore();
   });
 
-  it("surfaces the issue-limit alert when the workspace is at capacity", async () => {
+  it("opens the shared recovery dialog when the retry hits the issue limit", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     mockRetryQuickCreate.mockRejectedValue(
       new MockApiError("limit", 403, { code: "issue_limit_reached" }),
@@ -382,11 +422,13 @@ describe("Inbox detail card retry entry", () => {
     await renderDetail(inboxItem());
 
     fireEvent.press(await screen.findByText("Retry with context"));
-    await waitFor(() =>
-      expect(alertSpy).toHaveBeenCalledWith(
-        "This workspace has reached its issue limit",
-      ),
-    );
+    // RUYI-605 delta: the bare title alert became the shared recovery
+    // surface (desktop IssueLimitUpgradeDialog semantics) — the dialog
+    // opens on the structured rejection and no native alert fires.
+    expect(await screen.findByTestId("issue-limit-dialog")).toBeTruthy();
+    expect(
+      alertSpy,
+    ).not.toHaveBeenCalledWith("This workspace has reached its issue limit");
     alertSpy.mockRestore();
   });
 
