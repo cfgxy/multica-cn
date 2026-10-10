@@ -167,6 +167,13 @@ type Config struct {
 	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
 	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
 	AutoReloadEnabled              bool                  // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
+	// PipeCrashSelfHealEnabled is the single kill switch for the Claude
+	// pipe-crash self-heal (RUYI-659): when a resumed run's CLI crashes
+	// before producing any session, the daemon retries in-turn with a fresh
+	// session (retiring the old pointer) instead of failing the task for a
+	// human to retry. Disabling restores pre-RUYI-659 behaviour exactly: the
+	// crash carries no rejection signal, the task fails, a human retries.
+	PipeCrashSelfHealEnabled bool
 	PollInterval                   time.Duration
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
@@ -685,6 +692,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
+	// RUYI-659: on by default — the self-heal only fires on the narrow
+	// pipe-crash evidence — with MULTICA_PIPE_CRASH_SELF_HEAL=0 as the
+	// operator's way back to "fail and wait for a human retry".
+	pipeCrashSelfHealEnabled := boolFromEnv("MULTICA_PIPE_CRASH_SELF_HEAL", true)
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -713,6 +725,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoUpdateEnabled:               autoUpdateEnabled,
 		AutoUpdateCheckInterval:         autoUpdateInterval,
 		AutoReloadEnabled:               autoReloadEnabled,
+		PipeCrashSelfHealEnabled:        pipeCrashSelfHealEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
 		BackpressureEnabled:             backpressureEnabled,
