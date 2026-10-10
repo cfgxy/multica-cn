@@ -94,6 +94,10 @@ func seedDelegatedFailureFixture(t *testing.T) (*delegatedFailureFixture, *TaskS
 	}, NewTaskService(db.New(pool), pool, nil, events.New())
 }
 
+// insertWorkerTask seeds a delegated worker task. attempt == maxAttempts
+// seeds an EXHAUSTED budget — the terminal failure the recovery path answers.
+// Below the ceiling, transient reasons now auto-retry on the worker first
+// (RUYI-601), so recovery-path tests must exhaust the budget explicitly.
 func (f *delegatedFailureFixture) insertWorkerTask(t *testing.T, status, evidenceKind string, attempt, maxAttempts int32) pgtype.UUID {
 	t.Helper()
 	var taskID pgtype.UUID
@@ -113,7 +117,7 @@ func (f *delegatedFailureFixture) insertWorkerTask(t *testing.T, status, evidenc
 func TestFailTaskFinalDelegatedFailureWakesCoordinatorOnce(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+	failedID := f.insertWorkerTask(t, "running", "comment", 2, 2)
 	secret := "sk-" + strings.Repeat("a", 24)
 
 	failed, err := svc.FailTask(ctx, failedID, "upstream capacity exhausted "+secret, "", "", "", "agent_error.process_failure", false, "", "")
@@ -622,7 +626,7 @@ func TestDelegatedFailureRecoveryStopsAfterBoundedUndeliveredAttempts(t *testing
 func TestHandleFailedTasksFinalDelegatedFailureWakesCoordinator(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
+	failedID := f.insertWorkerTask(t, "failed", "comment", 2, 2)
 	if _, err := f.pool.Exec(ctx, `
 		UPDATE agent_task_queue
 		SET failure_reason = 'agent_error.process_failure', error = 'worker process exited', completed_at = now()
@@ -677,7 +681,7 @@ func TestFailTaskRetryPendingDoesNotWakeCoordinator(t *testing.T) {
 func TestFinalDelegatedFailureMergesIntoPendingCoordinatorTask(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+	failedID := f.insertWorkerTask(t, "running", "comment", 2, 2)
 
 	var pendingID pgtype.UUID
 	if err := f.pool.QueryRow(ctx, `
@@ -717,7 +721,7 @@ func TestFinalDelegatedFailureMergesIntoPendingCoordinatorTask(t *testing.T) {
 
 	// A second delegated failure while the same coordinator task is still
 	// queued must coalesce into that task instead of creating a parallel run.
-	secondFailedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+	secondFailedID := f.insertWorkerTask(t, "running", "comment", 2, 2)
 	if _, err := svc.FailTask(ctx, secondFailedID, "second worker exited", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
 		t.Fatalf("FailTask(second): %v", err)
 	}
@@ -739,7 +743,7 @@ func TestFinalDelegatedFailureMergesIntoPendingCoordinatorTask(t *testing.T) {
 func TestDelegatedFailurePlannedBehindDispatchedCoordinatorGetsFollowUp(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+	failedID := f.insertWorkerTask(t, "running", "comment", 2, 2)
 
 	var activeID pgtype.UUID
 	if err := f.pool.QueryRow(ctx, `
@@ -803,7 +807,7 @@ func TestDelegatedFailurePlannedBehindDispatchedCoordinatorGetsFollowUp(t *testi
 func TestDelegatedFailureRecoveryTaskDoesNotRecursivelyWake(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
 	ctx := context.Background()
-	recoveryID := f.insertWorkerTask(t, "running", string(attribution.EvidenceDelegatedFailure), 1, 2)
+	recoveryID := f.insertWorkerTask(t, "running", string(attribution.EvidenceDelegatedFailure), 2, 2)
 
 	if _, err := svc.FailTask(ctx, recoveryID, "recovery failed", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
 		t.Fatalf("FailTask: %v", err)

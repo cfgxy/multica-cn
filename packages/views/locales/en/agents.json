@@ -469,6 +469,7 @@
     "voice_empty": "No voice-capable instance",
     "credential_configured": "Configured ✓",
     "credential_invalid": "Key invalid",
+    "credential_unreachable": "Can't verify",
     "credential_not_configured": "Not configured"
   },
   "conversation_starters": {
@@ -1069,7 +1070,13 @@
       "forbidden_title": "No access to this agent",
       "runtime_unbound_banner": "This agent has no runtime bound yet — bind one to start running it.",
       "forbidden_body": "You don't have permission to view this agent. Ask its owner to share it with you.",
-      "instructions_empty": "No instructions yet"
+      "instructions_empty": "No instructions yet",
+      "instructions_edit": "Edit instructions",
+      "instructions_saved": "Instructions saved",
+      "unsaved_title": "Unsaved changes",
+      "unsaved_body": "Your edits to the instructions haven't been saved yet.",
+      "unsaved_keep": "Keep editing",
+      "unsaved_discard": "Discard"
     },
     "run_history": {
       "load_more": "Load more",

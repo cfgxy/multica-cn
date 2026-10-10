@@ -18,8 +18,9 @@ import (
 //
 // Saving or rotating a credential on a voice-family instance triggers a
 // lightweight probe against the provider's model-list endpoint: a 2xx means
-// the key works, anything else (or an unreachable target) records the
-// "invalid" badge state per §4.5. The probe NEVER blocks the save — the
+// the key works, a 401/403 means the provider rejected it ("invalid"), and
+// anything else (transport failure, other non-2xx) means the probe could not
+// verify ("unreachable", RUYI-619). The probe NEVER blocks the save — the
 // credential is already committed when the probe runs, and a probe outcome
 // that cannot be recorded is a log line, not an error.
 //
@@ -41,10 +42,24 @@ const voiceProbeTimeout = 5 * time.Second
 // It carries no credential material and no provider response body — only the
 // coarse status and the HTTP status code.
 type CredentialProbeResult struct {
-	Status     string `json:"status"` // "ok" | "invalid" | "skipped"
+	// "ok" = 2xx; "invalid" = the provider explicitly rejected the key
+	// (401/403); "unreachable" = the probe could not verify (transport
+	// failure, or any other non-2xx that says nothing about the key);
+	// "skipped" = no probe target configured.
+	Status     string `json:"status"`
 	HTTPStatus int    `json:"http_status,omitempty"`
 	CheckedAt  string `json:"checked_at"`
 }
+
+// credentialProbe statuses. "unreachable" (RUYI-619) separates "could not
+// verify" from "key rejected" so an offline deployment never renders a
+// working key as invalid.
+const (
+	credentialProbeOK          = "ok"
+	credentialProbeInvalid     = "invalid"
+	credentialProbeUnreachable = "unreachable"
+	credentialProbeSkipped     = "skipped"
+)
 
 // instanceHasVoiceFamily reports whether the instance's Type layer declares
 // realtime voice — the only family the probe applies to. Profile lookup
@@ -63,7 +78,7 @@ func (h *Handler) instanceHasVoiceFamily(ctx context.Context, rt db.AgentRuntime
 // probeVoiceCredential checks the just-stored credential value against the
 // configured probe target. The returned result is presentation-safe.
 func (h *Handler) probeVoiceCredential(ctx context.Context, value string) CredentialProbeResult {
-	result := CredentialProbeResult{Status: "skipped", CheckedAt: time.Now().UTC().Format(time.RFC3339)}
+	result := CredentialProbeResult{Status: credentialProbeSkipped, CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	baseURL := h.VoiceProbeBaseURL
 	if baseURL == "" {
 		return result
@@ -77,7 +92,8 @@ func (h *Handler) probeVoiceCredential(ctx context.Context, value string) Creden
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+"/models", nil)
 	if err != nil {
-		result.Status = "invalid"
+		// A probe-side fault (bad target config) cannot speak for the key.
+		result.Status = credentialProbeUnreachable
 		return result
 	}
 	// The key rides the header Google's API expects — not the query string,
@@ -86,11 +102,12 @@ func (h *Handler) probeVoiceCredential(ctx context.Context, value string) Creden
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// Unreachable target counts as a failed probe per §4.5: the badge
-		// flips to "invalid" and a fresh save re-probes. The error detail can
-		// embed the URL but never the key — it is only logged, never stored.
+		// Could not reach the target (connection refused, timeout): the key
+		// was never evaluated, so this is "unreachable", not "invalid"
+		// (RUYI-619 — RUYI-603's mislabel). The error detail can embed the
+		// URL but never the key — it is only logged, never stored.
 		slog.Warn("runtime credential probe failed", "error", err)
-		result.Status = "invalid"
+		result.Status = credentialProbeUnreachable
 		return result
 	}
 	defer resp.Body.Close()
@@ -98,10 +115,16 @@ func (h *Handler) probeVoiceCredential(ctx context.Context, value string) Creden
 	// body is never parsed, so no provider payload can reach logs or clients.
 	_, _ = io.CopyN(io.Discard, resp.Body, 4096)
 	result.HTTPStatus = resp.StatusCode
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		result.Status = "ok"
-	} else {
-		result.Status = "invalid"
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		result.Status = credentialProbeOK
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		// The provider evaluated the key and rejected it.
+		result.Status = credentialProbeInvalid
+	default:
+		// Any other non-2xx (400/404/429/5xx) is undecidable: the response
+		// body stays unparsed, so there is no evidence the key is at fault.
+		result.Status = credentialProbeUnreachable
 	}
 	return result
 }

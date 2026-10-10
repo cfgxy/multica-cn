@@ -332,12 +332,12 @@ export default function NewAgentScreen() {
   );
 }
 
-// RUYI-425 §4.2 voice credential tri-state badge. Text-only by design: the
+// RUYI-425 §4.2 voice credential badge states. Text-only by design: the
 // agent form never edits credentials, it only reflects the instance's state.
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("agents");
   if (status === "configured") {
@@ -351,6 +351,13 @@ function CredentialBadge({
     return (
       <Text className="text-xs text-destructive">
         {t("create_dialog.credential_invalid", "Key invalid")}
+      </Text>
+    );
+  }
+  if (status === "unreachable") {
+    return (
+      <Text className="text-xs text-warning">
+        {t("create_dialog.credential_unreachable", "Can't verify")}
       </Text>
     );
   }

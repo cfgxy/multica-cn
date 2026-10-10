@@ -1,7 +1,8 @@
 {
   "button": {
     "start": "开始语音对话",
-    "stop": "结束语音对话"
+    "stop": "结束语音对话",
+    "disabled_stage1": "语音对话一期仅移动端支持——请在移动 App 中使用"
   },
   "overlay": {
     "title": "语音对话",

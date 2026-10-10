@@ -96,11 +96,11 @@ func TestForgejoEventKindAndParse(t *testing.T) {
 	p, _ := For("gitea")
 	h := http.Header{}
 	h.Set("X-Gitea-Event", "pull_request")
-	if p.EventKind(h) != EventPullRequest {
+	if p.EventKind(h, nil) != EventPullRequest {
 		t.Error("pull_request not classified")
 	}
 	h.Set("X-Gitea-Event", "status")
-	if p.EventKind(h) != EventCIStatus {
+	if p.EventKind(h, nil) != EventCIStatus {
 		t.Error("status not classified")
 	}
 
@@ -139,7 +139,7 @@ func TestGitlabParse(t *testing.T) {
 	p, _ := For("gitlab")
 	h := http.Header{}
 	h.Set("X-Gitlab-Event", "Merge Request Hook")
-	if p.EventKind(h) != EventPullRequest {
+	if p.EventKind(h, nil) != EventPullRequest {
 		t.Error("MR hook not classified")
 	}
 
@@ -164,7 +164,7 @@ func TestGitlabParse(t *testing.T) {
 	}
 
 	h.Set("X-Gitlab-Event", "Pipeline Hook")
-	if p.EventKind(h) != EventCIStatus {
+	if p.EventKind(h, nil) != EventCIStatus {
 		t.Error("pipeline hook not classified")
 	}
 	st, err := p.ParseCIStatus([]byte(`{"object_kind":"pipeline","object_attributes":{"sha":"deadbeef","status":"failed"}}`))
@@ -173,6 +173,25 @@ func TestGitlabParse(t *testing.T) {
 	}
 	if st.SHA != "deadbeef" || st.State != "failed" || st.Context != "gitlab/pipeline" {
 		t.Errorf("bad status: %+v", st)
+	}
+}
+
+// System hooks label every event "X-Gitlab-Event: System Hook"; only the
+// payload's object_kind tells an MR event from instance noise (push, user,
+// project changes...).
+func TestGitlabSystemHookEventKind(t *testing.T) {
+	p, _ := For("gitlab")
+	h := http.Header{}
+	h.Set("X-Gitlab-Event", "System Hook")
+
+	if p.EventKind(h, []byte(`{"object_kind":"merge_request","object_attributes":{"iid":1}}`)) != EventPullRequest {
+		t.Error("system hook MR event not classified")
+	}
+	if p.EventKind(h, []byte(`{"object_kind":"push"}`)) != EventOther {
+		t.Error("system hook push event must stay ignored")
+	}
+	if p.EventKind(h, []byte("not json")) != EventOther {
+		t.Error("unparseable system hook body must stay ignored")
 	}
 }
 

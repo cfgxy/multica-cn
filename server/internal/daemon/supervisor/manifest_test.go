@@ -120,3 +120,42 @@ func TestStreamReadStateRoundTrip(t *testing.T) {
 		t.Fatalf("default read state not zero: %+v", empty)
 	}
 }
+
+// RUYI-607: Owner must survive a store round trip, and manifests written by
+// pre-RUYI-607 daemons (no owner key) must decode to an empty Owner — that
+// emptiness is what makes the reconcile ownership guard treat them as
+// unproven instead of ours.
+func TestManifestOwnerRoundTripAndLegacyDecode(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "0123abcd-1234-5678-9abc-def012345678"
+	man := &Manifest{
+		Version: 1, RunID: id, TaskID: "task-1", Runtime: "claude",
+		Unit: UnitName(id), State: StateRunning, StartedAt: time.Now().UTC(),
+		Owner: "dev1",
+	}
+	if err := mgr.WriteManifest(man); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mgr.ReadManifest(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Owner != "dev1" {
+		t.Fatalf("owner round trip = %q, want dev1", got.Owner)
+	}
+
+	legacy := []byte(`{"version":1,"run_id":"` + id + `","task_id":"task-1","runtime":"claude","unit":"multica-run-` + id + `.service","state":"running","started_at":"2026-10-09T00:00:00Z"}`)
+	if err := os.WriteFile(filepath.Join(mgr.Dir(id), "manifest.json"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := mgr.ReadManifest(id)
+	if err != nil {
+		t.Fatalf("legacy manifest decode: %v", err)
+	}
+	if old.Owner != "" {
+		t.Fatalf("legacy manifest owner = %q, want empty", old.Owner)
+	}
+}

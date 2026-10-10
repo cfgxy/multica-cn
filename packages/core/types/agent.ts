@@ -93,12 +93,14 @@ export interface RuntimeDevice {
    */
   registration_source?: string;
   /**
-   * RUYI-425 §4.5 credential badge tri-state: "not_configured" (no
-   * credential), "configured" (present, last connectivity probe OK or not
-   * run yet) or "invalid" (last probe failed). Never carries the value.
-   * Older backends omit it; treat missing as "not_configured".
+   * RUYI-425 §4.5 credential badge state: "not_configured" (no credential),
+   * "configured" (present, last connectivity probe OK or not run yet),
+   * "invalid" (the provider explicitly rejected the key) or "unreachable"
+   * (the probe could not verify — target unreachable or an undecidable
+   * response; RUYI-619). Never carries the value. Older backends omit it;
+   * treat missing as "not_configured".
    */
-  credential_status?: "not_configured" | "configured" | "invalid";
+  credential_status?: "not_configured" | "configured" | "invalid" | "unreachable";
   /**
    * RUYI-425 §4.2: the Type-layer protocol family this instance inherits
    * through its profile (built-in instances: their provider). The slot

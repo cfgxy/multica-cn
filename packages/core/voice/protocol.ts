@@ -7,10 +7,13 @@
  * `setupComplete` / `serverContent{modelTurn,interrupted,turnComplete,
  * inputTranscription,outputTranscription}` / `goAway` / `error`.
  *
- * The gateway composes the setup frame server-side (agent instructions +
- * transcription taps + resumption + compression) and swallows any client
- * setup, so this module never builds one. Pure string in / object out — no
- * DOM, no WebSocket — so the browser and React Native transports share it.
+ * Gateway mode composes the setup frame server-side and swallows any client
+ * setup, so that path never builds one. Direct mode (RUYI-626) dials the
+ * provider from the client, so it builds the setup with
+ * `composeVoiceSetupFrame` — a line-for-line port of the gateway's Go
+ * composition (reserved keys, VAD block placement, transcription taps), kept
+ * in lockstep by mirrored unit tests on both sides. Pure string in / object
+ * out — no DOM, no WebSocket — so every surface shares it.
  */
 
 /** 16 kHz mono PCM16, the capture format both transports feed in. */
@@ -36,6 +39,8 @@ export interface VoiceServerFrame {
   errorMessage: string;
   /** The gateway's stable rejection code; "" on provider-relayed errors. */
   errorCode: string;
+  /** Fresh session-resumption handle; "" when the frame carries none. */
+  resumptionHandle: string;
 }
 
 export function voiceAudioInputFrame(pcmBase64: string): string {
@@ -44,6 +49,58 @@ export function voiceAudioInputFrame(pcmBase64: string): string {
       audio: { data: pcmBase64, mimeType: VOICE_INPUT_MIME_TYPE },
     },
   });
+}
+
+/**
+ * Setup fields the composing side owns (gateway in relay mode, client in
+ * direct mode): an instance's advanced JSON may add provider options around
+ * them but never override them. Mirrors voice_gateway.go's reservedSetupKeys.
+ */
+const reservedSetupKeys: ReadonlySet<string> = new Set([
+  "model",
+  "systemInstruction",
+  "generationConfig",
+  "inputAudioTranscription",
+  "outputAudioTranscription",
+  "realtimeInputConfig",
+  "sessionResumption",
+  "contextWindowCompression",
+]);
+
+/**
+ * Builds the BidiGenerateContent setup the direct client sends the provider:
+ * the gateway's demo-aligned shape (VAD under realtimeInputConfig —
+ * setup-root placement is rejected by the service) plus sessionResumption,
+ * contextWindowCompression, and both transcription taps that feed the
+ * transcript write-back.
+ */
+export function composeVoiceSetupFrame(
+  instructions: string,
+  model: string,
+  advanced: Record<string, unknown>,
+): { setup: Record<string, unknown> } {
+  const setup: Record<string, unknown> = {
+    model: `models/${model}`,
+    generationConfig: { responseModalities: ["AUDIO"] },
+    inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    sessionResumption: {},
+    contextWindowCompression: { slidingWindow: {} },
+    realtimeInputConfig: {
+      automaticActivityDetection: {
+        disabled: false,
+        startOfSpeechSensitivity: "START_SENSITIVITY_LOW",
+      },
+    },
+  };
+  if (instructions.trim() !== "") {
+    setup.systemInstruction = { parts: [{ text: instructions }] };
+  }
+  for (const [key, value] of Object.entries(advanced)) {
+    if (reservedSetupKeys.has(key)) continue;
+    setup[key] = value;
+  }
+  return { setup };
 }
 
 const emptyFrame: VoiceServerFrame = {
@@ -56,6 +113,7 @@ const emptyFrame: VoiceServerFrame = {
   outputTranscription: "",
   errorMessage: "",
   errorCode: "",
+  resumptionHandle: "",
 };
 
 /**
@@ -103,6 +161,18 @@ export function parseVoiceServerFrame(raw: string): VoiceServerFrame | null {
   }
 
   if (root.goAway !== undefined) frame.goAway = true;
+
+  const resumptionUpdate = root.sessionResumptionUpdate as
+    | { newHandle?: unknown }
+    | undefined;
+  if (
+    resumptionUpdate &&
+    typeof resumptionUpdate === "object" &&
+    typeof resumptionUpdate.newHandle === "string"
+  ) {
+    frame.resumptionHandle = resumptionUpdate.newHandle;
+  }
+
   // The gateway's rejection frames use the HTTP shape {"error": <text>,
   // "code": <stable code>}; provider-relayed errors use {"error": {message}}.
   // Accept both so degrade mapping works on either surface.

@@ -182,6 +182,35 @@ describe("VoiceInstanceSettingsCard", () => {
     );
   });
 
+  it("surfaces an unreachable probe as could-not-verify, never invalid (RUYI-619)", async () => {
+    const { toast } = await import("sonner");
+    mockPutCredential.mockResolvedValue({
+      runtime_id: "rt-voice-1",
+      credential_key: "api_key",
+      credential_status: "unreachable",
+      probe: { status: "unreachable" },
+    });
+    renderCard(makeVoiceRuntime());
+    fireEvent.change(screen.getByLabelText("API Key"), {
+      target: { value: "sk-gemini-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Update key" }));
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        "Key saved, but connectivity could not be verified (target unreachable)",
+      ),
+    );
+    expect(toast.warning).not.toHaveBeenCalledWith(
+      expect.stringContaining("connectivity check failed"),
+    );
+  });
+
+  it("renders the unreachable badge with its own warning wording (RUYI-619)", () => {
+    renderCard(makeVoiceRuntime({ credential_status: "unreachable" }));
+    expect(screen.getByText("Can't verify")).toBeTruthy();
+  });
+
   it("shows a server gate error instead of swallowing it (§4.3)", async () => {
     const { toast } = await import("sonner");
     mockPutCredential.mockRejectedValue(

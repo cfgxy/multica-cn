@@ -20,6 +20,7 @@ const (
 	RuntimeSweepStageReconnectRetries         = "runtime_reconnect_retries"
 	RuntimeSweepStageStaleTasks               = "stale_tasks"
 	RuntimeSweepStageQueuedExpiry             = "queued_task_expiry"
+	RuntimeSweepStageRetryReevaluation        = "failed_retry_reevaluation"
 	RuntimeSweepStageDelegatedFailureRecovery = "delegated_failure_recovery"
 	RuntimeSweepStageDeferredChatFinalization = "deferred_chat_finalize"
 	RuntimeSweepStageGC                       = "runtime_gc"
@@ -516,6 +517,7 @@ func normalizeRuntimeSweepStage(stage string) string {
 		RuntimeSweepStageReconnectRetries,
 		RuntimeSweepStageStaleTasks,
 		RuntimeSweepStageQueuedExpiry,
+		RuntimeSweepStageRetryReevaluation,
 		RuntimeSweepStageDelegatedFailureRecovery,
 		RuntimeSweepStageDeferredChatFinalization,
 		RuntimeSweepStageGC:

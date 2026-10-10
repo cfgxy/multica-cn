@@ -1,41 +1,62 @@
 /**
- * Mobile voice-session glue (RUYI-449). Reuses the shared
- * @multica/core/voice controller (same wire format, same degrade mapping as
- * web/desktop) over two mobile-specific halves:
+ * Mobile voice-session glue — direct-connect edition (RUYI-626). Reuses the
+ * shared @multica/core/voice controller over the mobile-specific halves:
  *
- * - Transport: a plain RN WebSocket to
- *   `/api/agents/{id}/voice-session?workspace_slug=…`. RN sockets cannot set
- *   headers, so the session token travels as the FIRST auth frame — the
- *   gateway's header-less path (same pattern as /ws). The token never goes
- *   in the URL.
+ * - Session start: REST `POST /api/agents/{id}/voice-direct-session` runs
+ *   the §4.4 rule-3 gate and creates the live_session row, then hands back
+ *   the provider websocket URL, the decrypted credential and the setup
+ *   inputs. A gate rejection (409 `VOICE_UNAVAILABLE:<reason>`) surfaces as
+ *   the same degrade copy the gateway path produced.
+ * - Transport: a plain RN WebSocket straight to Google. The credential
+ *   rides the connect headers (RN's third constructor argument) — never the
+ *   URL, which proxies and CDNs log. The controller composes and sends the
+ *   BidiGenerateContent setup frame itself (core direct mode).
+ * - Terminal write-back: the controller collects the transcript and the
+ *   freshest resumption handle; on ANY terminal state (hang-up, provider
+ *   drop, failure) the record is POSTed to
+ *   `/api/voice-sessions/{id}/complete` so the server-side live_session row
+ *   and its facts/summary write-back reach the same state the gateway path
+ *   produced. Idempotent server-side; best-effort client-side.
  * - Audio: the VoiceAudio native module — 16 kHz PCM16 mic chunks upstream,
  *   24 kHz PCM16 playback downstream, `interruptPlayback` on barge-in.
  */
 import {
-  buildVoiceSessionUrl,
   VoiceRejectionError,
   VoiceSessionController,
   type VoiceRejection,
   type VoiceSessionState,
 } from "@multica/core/voice";
-import { getApiUrl, useServerStore } from "@/data/server-store";
-import { getToken } from "@/data/secure-storage";
-import { probeHandshakeRejection } from "./handshake-reason";
+import { api } from "@/data/api";
 import { getVoiceAudioModule } from "./native-audio";
+import { voiceRejectionFromApiError } from "./start-rejection";
 
 /** RN WebSocket implementation of the core transport contract. */
+
+// RN honors a third `options.headers` argument on the WebSocket constructor
+// (iOS and Android both pass it to the native socket) even though the DOM
+// typing doesn't declare it. The direct path relies on it: the credential
+// rides the connect headers — never the URL.
+type HeaderedWebSocket = new (
+  url: string,
+  protocols?: string | string[] | null,
+  options?: { headers?: Record<string, string> },
+) => WebSocket;
+
 class MobileVoiceTransport {
   private ws: WebSocket | null = null;
 
   onFrame: ((data: string) => void) | null = null;
   onClose: ((code: number) => void) | null = null;
 
+  constructor(private readonly headers: Record<string, string> = {}) {}
+
   connect(url: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
+      const ws = new (WebSocket as unknown as HeaderedWebSocket)(url, undefined, {
+        headers: this.headers,
+      });
       this.ws = ws;
       let opened = false;
-      let deciding = false;
       ws.onopen = () => {
         opened = true;
         resolve();
@@ -49,20 +70,12 @@ class MobileVoiceTransport {
           this.onClose?.(event.code ?? 1006);
           return;
         }
-        // Handshake-level rejection (e.g. the header-auth path's plain HTTP
-        // 409): the socket API hides the body, so recover the precise
-        // reason with a plain authenticated GET on the same URL before
-        // failing. Null keeps the generic degrade copy. The controller's
-        // connect-catch owns the failure, so the close is NOT forwarded.
-        if (deciding) return;
-        deciding = true;
-        void probeHandshakeRejection(url).then((rejection) => {
-          reject(
-            rejection
-              ? new VoiceRejectionError(rejection)
-              : new Error(`voice websocket closed (${event.code})`),
-          );
-        });
+        // Handshake-level drop against the provider: no code recovery is
+        // possible (and none needed — the gate already passed server-side),
+        // so this is a network verdict, not a credential verdict. The
+        // controller's connect-catch owns the failure; the close is NOT
+        // forwarded.
+        reject(new VoiceRejectionError({ kind: "provider_unreachable" }));
       };
       ws.onerror = () => {
         // onclose always follows; nothing actionable here.
@@ -97,6 +110,8 @@ export interface MobileVoiceSessionCallbacks {
 export class MobileVoiceSession {
   private controller: VoiceSessionController | null = null;
   private unsubscribeChunk: (() => void) | null = null;
+  private sessionId: string | null = null;
+  private completeSent = false;
 
   constructor(
     private readonly agentId: string,
@@ -112,15 +127,31 @@ export class MobileVoiceSession {
     const permission = await audio.requestPermissionsAsync();
     if (!permission.granted) throw new Error("VOICE_PERMISSION_DENIED");
 
-    const token = await getToken(useServerStore.getState().activeServerId);
-    if (!token) throw new Error("VOICE_AUTH_MISSING");
+    // The gate chain runs server-side; a rejection arrives as an ApiError
+    // whose body carries `VOICE_UNAVAILABLE:<reason>` — mapped to the same
+    // degrade copy the gateway path produced, then rethrown as a typed
+    // error so the overlay's catch keeps the specific message.
+    let handoff;
+    try {
+      handoff = await api.startVoiceDirectSession(this.agentId);
+    } catch (err) {
+      const rejection = voiceRejectionFromApiError(err);
+      this.callbacks.onDegrade?.(rejection);
+      throw new VoiceRejectionError(rejection);
+    }
+    this.sessionId = handoff.session_id;
 
     const controller = new VoiceSessionController({
-      url: buildVoiceSessionUrl(getApiUrl(), this.agentId, {
-        workspaceSlug: this.workspaceSlug || undefined,
+      url: handoff.provider_ws_url,
+      mode: "direct",
+      directSetup: {
+        instructions: handoff.instructions,
+        model: handoff.model,
+        advanced: handoff.advanced ?? {},
+      },
+      transport: new MobileVoiceTransport({
+        "x-goog-api-key": handoff.api_key,
       }),
-      authToken: token,
-      transport: new MobileVoiceTransport(),
       callbacks: {
         onStateChange: (state) => {
           this.callbacks.onStateChange?.(state);
@@ -134,6 +165,9 @@ export class MobileVoiceSession {
               // Permission could have been revoked mid-flow; the session
               // stays up but silent — degrade surfaces on the next failure.
             });
+          }
+          if (state === "ended" || state === "failed") {
+            this.sendComplete(controller);
           }
         },
         onUserTranscriptDelta: (delta) => this.callbacks.onUserTranscriptDelta?.(delta),
@@ -163,6 +197,26 @@ export class MobileVoiceSession {
     this.controller?.end();
     this.controller = null;
     this.releaseAudio();
+  }
+
+  /**
+   * Terminal write-back: relay the client-collected record (transcript +
+   * resumption handle) so the live_session row and the facts/summary
+   * projection land exactly as the gateway path produced them. Exactly once
+   * per session, fire-and-forget — a failed relay must never surface as a
+   * voice error (the row stays active and ages out server-side).
+   */
+  private sendComplete(controller: VoiceSessionController): void {
+    if (this.completeSent || !this.sessionId) return;
+    this.completeSent = true;
+    const record = controller.getSessionRecord();
+    if (!record) return;
+    void api
+      .completeVoiceDirectSession(this.sessionId, {
+        transcript: record.transcript,
+        session_handle: record.sessionHandle || undefined,
+      })
+      .catch(() => {});
   }
 
   private releaseAudio(): void {

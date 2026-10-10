@@ -2626,6 +2626,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)
+					// Voice direct-session handoff (RUYI-626): mints the
+					// live_session row behind the same rule-3 gate as the
+					// gateway path, then hands the provider websocket URL,
+					// the credential and the setup parameters to the mobile
+					// client, which dials Google itself.
+					r.Post("/voice-direct-session", h.StartVoiceDirectSession)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
 					r.Get("/skills", h.ListAgentSkills)
@@ -2777,6 +2783,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
 
+			// Voice direct-session completion (RUYI-626): the mobile client
+			// relays the transcript / resumption handle it collected from
+			// its own provider websocket so the live_session row reaches
+			// the same terminal state (transcript, summary write-back) the
+			// gateway path produces. Caller ownership is enforced in the
+			// handler; replays after the row is terminal are idempotent.
+			r.Post("/api/voice-sessions/{sessionId}/complete", h.CompleteVoiceDirectSession)
+
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
@@ -2815,6 +2829,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// instance payload only carries the credential_status badge.
 					r.Put("/credentials/{credentialKey}", h.PutRuntimeCredential)
 					r.Delete("/credentials/{credentialKey}", h.DeleteRuntimeCredential)
+					// Client-reported credential connectivity probe
+					// (RUYI-626): on the direct path the device runs the
+					// models.list probe itself, so the credential_status
+					// badge is recorded from the client's reported outcome.
+					r.Post("/credential-probe", h.ReportCredentialProbe)
 				})
 			})
 

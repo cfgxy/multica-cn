@@ -88,8 +88,12 @@ func runtimeCredentialStatus(ref pgtype.Text, metadata []byte) string {
 			Status string `json:"status"`
 		}
 		if raw, ok := bag[credentialProbeMetadataKey]; ok && json.Unmarshal(raw, &probe) == nil {
-			if probe.Status == "invalid" {
-				return "invalid"
+			switch probe.Status {
+			case "invalid", "unreachable":
+				// Pre-RUYI-619 bags only carry ok|invalid|skipped; the switch
+				// falls through to "configured" for everything else, so old
+				// values keep rendering unchanged.
+				return probe.Status
 			}
 		}
 	}

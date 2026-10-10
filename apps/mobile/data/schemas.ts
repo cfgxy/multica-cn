@@ -790,7 +790,7 @@ export const RuntimeSchema: z.ZodType<RuntimeDevice> = z.object({
   profile_id: z.string().nullable().default(null),
   registration_source: z.string().optional(),
   credential_status: z
-    .enum(["not_configured", "configured", "invalid"])
+    .enum(["not_configured", "configured", "invalid", "unreachable"])
     .optional(),
   protocol_family: z.string().optional(),
   capabilities: z

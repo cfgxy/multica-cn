@@ -16,8 +16,16 @@
  *
  * Manual mode: `ManualCreatePanel` (the original form, extracted verbatim).
  * Smart mode: `QuickCreatePanel` (web AgentCreatePanel counterpart).
+ *
+ * RUYI-624: the agent detail page's "+ Assign work" entry pre-seeds
+ * `smartActor` in the draft store before pushing this screen — the web
+ * counterpart opens quick-create with `initialMode="agent"` and a seeded
+ * actor. The mount reset below would wipe that seed, so it is captured
+ * first and re-applied after the reset; while a seed survives, Smart mode
+ * is forced for this visit only (the remembered `lastMode` is untouched
+ * and takes over as soon as the user touches the switch themselves).
  */
-import { useEffect, useLayoutEffect } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { View } from "react-native";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Text } from "@/components/ui/text";
@@ -37,12 +45,42 @@ export default function NewIssueModal() {
   const setLastMode = useQuickCreatePrefsStore((s) => s.setLastMode);
   const resetDraft = useNewIssueDraftStore((s) => s.reset);
   const { t } = useT("common");
+  // RUYI-624: Smart forced only while a pre-navigation actor seed is in
+  // effect; the first explicit tab touch hands control back to lastMode.
+  const [smartForced, setSmartForced] = useState(false);
+  const effectiveMode = smartForced ? "smart" : lastMode;
 
   // Reset before child passive effects seed Smart actor memory. Both panels
-  // still share one draft for the rest of this visit.
+  // still share one draft for the rest of this visit. An actor seeded by the
+  // assign-work entry survives the reset so the panel opens on that agent.
   useLayoutEffect(() => {
+    const seededActor = useNewIssueDraftStore.getState().smartActor;
     resetDraft();
+    if (seededActor) {
+      useNewIssueDraftStore.getState().setSmartActor(seededActor);
+      setSmartForced(true);
+    }
   }, [resetDraft]);
+
+  const handleModeChange = (v: string) => {
+    // RUYI-624: web `switchToManual` parity. On a seeded (assign-work)
+    // visit, landing on Manual — after the CLI version gate blocked Smart
+    // or by explicit tap — carries the actor into the manual assignee slot
+    // when the user hasn't picked one (a landed memory backfill counts as
+    // picked). Unseeded visits stay memory-backfill-only: smartActor there
+    // is the panel's first-visible fallback, not an assignment intent.
+    // Going through setAssignee bumps assigneeVersion, so a still-pending
+    // RUYI-79 memory read can't replace the seed after the fact.
+    if (v === "manual" && smartForced) {
+      const { smartActor, assignee, setAssignee } =
+        useNewIssueDraftStore.getState();
+      if (smartActor && !assignee) {
+        setAssignee({ type: smartActor.type, id: smartActor.id });
+      }
+    }
+    setSmartForced(false);
+    setLastMode(v as "smart" | "manual");
+  };
 
   useEffect(() => {
     // RUYI-79 web parity: prefill the assignee with the last one submitted
@@ -66,8 +104,8 @@ export default function NewIssueModal() {
           (behavior="padding" twice would double-offset). */}
       <View className="px-4 pt-3 pb-1">
         <Tabs
-          value={lastMode}
-          onValueChange={(v) => setLastMode(v as "smart" | "manual")}
+          value={effectiveMode}
+          onValueChange={handleModeChange}
         >
           <TabsList className="w-full">
             <TabsTrigger value="smart" className="flex-1">
@@ -79,7 +117,7 @@ export default function NewIssueModal() {
           </TabsList>
         </Tabs>
       </View>
-      {lastMode === "smart" ? <QuickCreatePanel /> : <ManualCreatePanel />}
+      {effectiveMode === "smart" ? <QuickCreatePanel /> : <ManualCreatePanel />}
     </View>
   );
 }
