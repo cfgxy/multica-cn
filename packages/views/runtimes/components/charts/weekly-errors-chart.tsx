@@ -10,18 +10,12 @@ import {
   formatRate,
   labelOf,
   useFailureClassConfig,
-  type FailureBucketTotals,
-  type FailureClassCounts,
 } from "./failure-class-visuals";
+import type { WeeklyErrorsData } from "@multica/core/dashboard";
 
-export interface WeeklyErrorsData extends FailureClassCounts, FailureBucketTotals {
-  weekStart: string;
-  weekEnd: string;
-  label: string;
-  rangeLabel: string;
-  partial: boolean;
-  daysCovered: number;
-}
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { WeeklyErrorsData } from "@multica/core/dashboard";
 
 /**
  * Weekly counterpart of DailyErrorsChart — same class stack, each bar a

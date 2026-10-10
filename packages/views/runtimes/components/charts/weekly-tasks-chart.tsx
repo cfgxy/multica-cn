@@ -13,6 +13,7 @@ import {
   type ChartConfig,
 } from "@multica/ui/components/ui/chart";
 import { useLocale, useT } from "../../../i18n";
+import type { WeeklyTasksData } from "@multica/core/dashboard";
 
 // Weekly counterpart of DailyTasksChart — same completed/cancelled/failed
 // stacked bar, but each bar groups a Mon–Sun calendar week. Partial-week
@@ -24,17 +25,9 @@ const weeklyTasksChartConfig = {
   failed: { label: "Failed", color: "var(--chart-5)" },
 } satisfies ChartConfig;
 
-export interface WeeklyTasksData {
-  weekStart: string;
-  weekEnd: string;
-  label: string;
-  rangeLabel: string;
-  partial: boolean;
-  daysCovered: number;
-  completed: number;
-  failed: number;
-  cancelled: number;
-}
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { WeeklyTasksData } from "@multica/core/dashboard";
 
 export function WeeklyTasksChart({ data }: { data: WeeklyTasksData[] }) {
   const { t } = useT("usage");

@@ -11,6 +11,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@multica/ui/components/ui/chart";
+import type { DailyTimeData } from "@multica/core/dashboard";
 
 // Single-series bar — total daily run time in seconds. The y-axis tick
 // formatter and tooltip both use the same `formatDuration` so the user
@@ -19,12 +20,9 @@ const timeChartConfig = {
   totalSeconds: { label: "Run time", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
-export interface DailyTimeData {
-  date: string;
-  label: string;
-  totalSeconds: number;
-}
-
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { DailyTimeData } from "@multica/core/dashboard";
 export function DailyTimeChart({
   data,
   formatY,

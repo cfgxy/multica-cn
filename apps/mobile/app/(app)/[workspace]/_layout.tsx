@@ -568,6 +568,12 @@ export default function WorkspaceLayout() {
           name="more/squads"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
         />
+        {/* RUYI-638 阶段3: workspace usage 统计屏（web /usage 语义，
+            More 下拉入口进入；数据层镜像 core dashboard 查询语义）。 */}
+        <Stack.Screen
+          name="more/stats"
+          options={{ title: i18n.t("layout:nav.usage", "Analytics"), headerBackTitle: "Back" }}
+        />
         <Stack.Screen
           name="more/squads/[id]"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}

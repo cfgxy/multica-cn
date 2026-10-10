@@ -37,6 +37,12 @@ import type {
   CreateSquadRequest,
   CreateProjectResourceRequest,
   CreateRuntimeProfileRequest,
+  DashboardUsageDaily,
+  DashboardUsageByAgent,
+  DashboardAgentRunTime,
+  DashboardRunTimeDaily,
+  DashboardFailureDaily,
+  DashboardFailureByAgent,
   ExecutionProfile,
   ExecutionProfileActivationResponse,
   ExecutionProfileEntry,
@@ -149,6 +155,12 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
+  DashboardUsageDailyListSchema,
+  DashboardUsageByAgentListSchema,
+  DashboardAgentRunTimeListSchema,
+  DashboardRunTimeDailyListSchema,
+  DashboardFailureDailyListSchema,
+  DashboardFailureByAgentListSchema,
 } from "@multica/core/api/schemas";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
@@ -2087,6 +2099,139 @@ class ApiClient {
   }
 
   // --- Labels ---
+  // ---------------------------------------------------------------------------
+  // Workspace usage dashboard (RUYI-638) — the six rollups behind the stats
+  // screen. Same wire contract as packages/core/api/client.ts: the explicit
+  // `start`/`end` window (inclusive calendar days in the viewer's timezone)
+  // always rides along — the mobile screen has no legacy relative-`days`
+  // caller — plus `project_id` when narrowed and `tz` so the server cuts its
+  // day buckets on the viewer's calendar. Cost is computed client-side from
+  // the shared pricing engine in `@multica/core/runtimes/usage`.
+  // ---------------------------------------------------------------------------
+
+  async getDashboardUsageDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/daily?${search}`,
+      DashboardUsageDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  async getDashboardUsageByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/by-agent?${search}`,
+      DashboardUsageByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/by-agent" },
+    );
+  }
+
+  async getDashboardAgentRunTime(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAgentRunTime[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/agent-runtime?${search}`,
+      DashboardAgentRunTimeListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/agent-runtime" },
+    );
+  }
+
+  async getDashboardRunTimeDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardRunTimeDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/runtime/daily?${search}`,
+      DashboardRunTimeDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/runtime/daily" },
+    );
+  }
+
+  async getDashboardFailuresDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/daily?${search}`,
+      DashboardFailureDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/daily" },
+    );
+  }
+
+  async getDashboardFailuresByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/by-agent?${search}`,
+      DashboardFailureByAgentListSchema,
+      [],
+      {
+        signal: params.signal,
+        endpoint: "GET /api/dashboard/failures/by-agent",
+      },
+    );
+  }
+
   async listLabels(opts?: {
     signal?: AbortSignal;
   }): Promise<ListLabelsResponse> {
