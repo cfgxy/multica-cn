@@ -11,8 +11,10 @@
  *   - Daemon CLI version gate: same pure checks as web
  *     (`@multica/core/runtimes/cli-version`), fields gate applies only when
  *     an explicit priority/due date is set.
- *   - Structured submit failures surfaced in-flow: issue_limit_reached /
- *     agent_unavailable / daemon_version_unsupported.
+ *   - Structured submit failures surfaced in-flow: issue_limit_reached
+ *     opens the shared recovery dialog (components/billing/
+ *     issue-limit-recovery.tsx); agent_unavailable /
+ *     daemon_version_unsupported stay alerts.
  *   - Shared fields (project / priority / due date) live in the same
  *     new-issue draft store the manual form reads, so picks carry across a
  *     mode switch — web's unified-draft semantics.
@@ -81,6 +83,7 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { completedAttachmentIds } from "@/lib/attachment-zone";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
+import { IssueLimitRecoveryDialog } from "@/components/billing/issue-limit-recovery";
 import { useT } from "@/lib/use-t";
 
 /**
@@ -270,6 +273,10 @@ export function QuickCreatePanel() {
 
   const { t } = useT("modals");
   const { t: tCommon } = useT("common");
+  // RUYI-605 delta: an issue-limit rejection opens the shared recovery
+  // dialog (desktop IssueLimitUpgradeDialog semantics) instead of the bare
+  // title alert.
+  const [issueLimitOpen, setIssueLimitOpen] = useState(false);
   // RUYI-449: 语音入口仅对 agent 生效（squad 无客户端可指定的 agent id，
   // 与 web AgentCreatePanel 同边界）。口述轮次回填进 prompt，由用户自行
   // 确认后提交，本面板不做任何自动发送。
@@ -362,9 +369,9 @@ export function QuickCreatePanel() {
           ? String((err.body as { code: unknown }).code)
           : null;
       if (code === "issue_limit_reached") {
-        Alert.alert(
-          t("create_issue.issue_limit.title", "This workspace has reached its issue limit"),
-        );
+        // Same key as web's upgrade prompt; the shared dialog carries the
+        // per-state description and the cloud-authorized billing action.
+        setIssueLimitOpen(true);
         return;
       }
       if (code === "agent_unavailable") {
@@ -549,6 +556,10 @@ export function QuickCreatePanel() {
 
         {/* RUYI-477: Android 侧「拍照/相册」弹层为 RN Modal，必须显式挂载。 */}
         <ActionSheetModal {...imageSourceModalProps} />
+        <IssueLimitRecoveryDialog
+          visible={issueLimitOpen}
+          onClose={() => setIssueLimitOpen(false)}
+        />
         <VoiceSessionOverlay
           agentId={voiceOpen && voiceAgentId !== null ? voiceAgentId : null}
           workspaceSlug={wsSlug ?? ""}
