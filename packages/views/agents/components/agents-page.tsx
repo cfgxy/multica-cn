@@ -4,6 +4,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   Bot,
+  CirclePause,
   Lock,
   Plus,
 } from "lucide-react";
@@ -434,6 +435,20 @@ function StatusCell({ row }: { row: AgentListRow }) {
         <AlertCircle className="size-3.5 shrink-0 text-amber-500" />
         <span className="truncate text-caption text-amber-600 dark:text-amber-400">
           {t(($) => $.row.needs_runtime)}
+        </span>
+      </ListGridCell>
+    );
+  }
+  // Scheduling freeze (RUYI-608) outranks runtime availability in this cell:
+  // a frozen agent cannot take work even when online, so the freeze is the
+  // status a scanning reader needs first. The frozen queue depth explains
+  // what is waiting behind the freeze.
+  if (agent.scheduling_paused) {
+    return (
+      <ListGridCell className="gap-1.5">
+        <CirclePause className="size-3.5 shrink-0 text-amber-500" />
+        <span className="truncate text-caption text-amber-600 dark:text-amber-400">
+          {t(($) => $.row.paused, { count: agent.scheduling_queued_count ?? 0 })}
         </span>
       </ListGridCell>
     );

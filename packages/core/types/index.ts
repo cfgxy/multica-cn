@@ -103,6 +103,8 @@ export type {
   RuntimeLocalSkillImportResult,
   IssueUsageSummary,
   MikaBootstrapResponse,
+  SchedulingPauseScope,
+  SchedulingPauseState,
   AgentWebhook,
   CreateAgentWebhookRequest,
   UpdateAgentWebhookRequest,

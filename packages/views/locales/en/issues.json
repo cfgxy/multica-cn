@@ -80,6 +80,8 @@
     "breadcrumb_workspace_fallback": "Workspace",
     "empty_title": "No issues yet",
     "empty_hint": "Create an issue to get started.",
+    "scheduling_paused_banner_one": "Task scheduling is paused — {{count}} task queued across this workspace. Resume it in workspace settings.",
+    "scheduling_paused_banner_other": "Task scheduling is paused — {{count}} tasks queued across this workspace. Resume it in workspace settings.",
     "move_failed": "Failed to move issue"
   },
   "status": {
@@ -1096,8 +1098,7 @@
       "cancel_requested": "Stopping",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Cancelled",
-      "cancel_requested": "Stopping"
+      "cancelled": "Cancelled"
     },
     "runs": {
       "title": "Agent Runs",

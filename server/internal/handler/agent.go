@@ -159,6 +159,15 @@ type AgentResponse struct {
 	// activation) bump it — status transitions don't, so they never
 	// invalidate a config-write token.
 	Revision int64 `json:"revision"`
+	// Scheduling freeze (RUYI-608): a paused agent keeps enqueueing and
+	// coalescing tasks but ClaimAgentTask will not hand them out. Scope
+	// names the freeze holding the agent ("agent" = its own row,
+	// "workspace" = the workspace-level switch) and is empty when not
+	// paused. QueuedCount is the agent's queued task depth — the UI renders
+	// it as the frozen backlog only while Paused is true.
+	SchedulingPaused      bool   `json:"scheduling_paused"`
+	SchedulingPausedScope string `json:"scheduling_paused_scope,omitempty"`
+	SchedulingQueuedCount int64  `json:"scheduling_queued_count"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -1275,6 +1284,10 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		visible = append(visible, resp)
 	}
 
+	// Scheduling freeze badges (RUYI-608): two workspace-wide reads fill
+	// every visible card — no per-agent round trips.
+	h.applySchedulingToAgentResponses(r.Context(), parseUUID(workspaceID), visible)
+
 	writeJSON(w, http.StatusOK, visible)
 }
 
@@ -1298,6 +1311,8 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	if !h.enrichAgentResponseWithTargetsHTTP(w, r, &resp, agent.ID) {
 		return
 	}
+	// Scheduling freeze state (RUYI-608): scope-aware, two cheap reads.
+	h.applySchedulingToAgentResponse(r.Context(), &resp, agent.WorkspaceID, agent.ID)
 	// Use the summary query (no `content` column) — the embedded
 	// AgentSkillSummary only needs id/name/description, and reading large
 	// SKILL.md bodies just to discard them is the exact regression we fixed
@@ -2960,10 +2975,24 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional status filter (RUYI-608): the CLI's freeze preview reads
+	// `?status=queued` to show what a scheduling pause is holding back
+	// before a resume. Equality filter on the bounded per-agent list — no
+	// new SQL surface needed.
+	statusFilter := r.URL.Query().Get("status")
 	tasks, err := h.Queries.ListAgentTasks(r.Context(), agent.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
 		return
+	}
+	if statusFilter != "" {
+		filtered := tasks[:0]
+		for _, t := range tasks {
+			if t.Status == statusFilter {
+				filtered = append(filtered, t)
+			}
+		}
+		tasks = filtered
 	}
 
 	resp := make([]AgentTaskResponse, len(tasks))

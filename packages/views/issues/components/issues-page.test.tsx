@@ -32,13 +32,17 @@ vi.mock("@multica/core/auth", () => ({
 // Mock @multica/core/paths — after the URL-driven workspace refactor,
 // useCurrentWorkspace derives from the workspace slug in URL Context. Tests
 // don't mount a real route, so we short-circuit to a fixed fixture.
+// Mutable so tests can flip the workspace-level scheduling freeze (RUYI-608).
+const mockCurrentWorkspace = vi.hoisted(() => ({
+  current: { id: "ws-1", name: "Test WS", slug: "test" } as Record<string, unknown>,
+}));
 vi.mock("@multica/core/paths", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/paths")>(
     "@multica/core/paths",
   );
   return {
     ...actual,
-    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test" }),
+    useCurrentWorkspace: () => mockCurrentWorkspace.current,
     useWorkspacePaths: () => actual.paths.workspace("test"),
   };
 });
@@ -686,6 +690,7 @@ describe("IssuesPage (shared)", () => {
     );
     mockListIssues.mockResolvedValue({ issues: [], total: 0 });
     mockListGroupedIssues.mockResolvedValue({ groups: [] });
+    mockCurrentWorkspace.current = { id: "ws-1", name: "Test WS", slug: "test" };
     mockViewState.viewMode = "board";
     mockViewState.grouping = "status";
     mockViewState.statusFilters = [];
@@ -781,6 +786,28 @@ describe("IssuesPage (shared)", () => {
     // The list header is now `icon + title`, matching the other list pages.
     // The workspace/org name is no longer rendered as a breadcrumb prefix.
     expect(screen.queryByText("Test WS")).not.toBeInTheDocument();
+  });
+
+  it("renders without the scheduling freeze banner when not paused", async () => {
+    renderWithQuery(<IssuesPage />);
+    await screen.findByText("Issues");
+    expect(screen.queryByText(/Task scheduling is paused/)).toBeNull();
+  });
+
+  it("shows the scheduling freeze banner with the frozen backlog count", async () => {
+    mockCurrentWorkspace.current = {
+      id: "ws-1",
+      name: "Test WS",
+      slug: "test",
+      scheduling_paused: true,
+      scheduling_queued_count: 2,
+    };
+    renderWithQuery(<IssuesPage />);
+    expect(
+      await screen.findByText(
+        "Task scheduling is paused — 2 tasks queued across this workspace. Resume it in workspace settings.",
+      ),
+    ).toBeTruthy();
   });
 
   it("shows empty state when there are no issues", async () => {
