@@ -220,6 +220,7 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
   // offset. See react-native-screens#3634.
   return (
     <FlatList
+      nestedScrollEnabled
       ref={listRef}
       data={rows}
       className="flex-1"

@@ -219,6 +219,7 @@ export default function InboxNoticeDetail() {
         </View>
       ) : (
         <ScrollView
+          nestedScrollEnabled
           className="flex-1"
           contentContainerClassName="gap-5 px-4 py-5"
           showsVerticalScrollIndicator={false}
