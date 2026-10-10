@@ -183,6 +183,9 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	for i, ws := range workspaces {
 		resp[i] = h.workspaceToResponse(ws)
 	}
+	// Workspace-level freeze fields (RUYI-608), batch-filled so the list
+	// agrees with the detail endpoint and the settings toggle's data source.
+	h.applySchedulingToWorkspaceResponses(r.Context(), resp)
 
 	writeJSON(w, http.StatusOK, resp)
 }

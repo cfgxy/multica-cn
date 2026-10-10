@@ -94,3 +94,22 @@ GROUP BY atq.agent_id;
 -- the next poll instead of after EmptyClaimCacheTTL.
 SELECT DISTINCT runtime_id FROM agent
 WHERE workspace_id = @workspace_id AND runtime_id IS NOT NULL;
+
+-- name: ListWorkspaceSchedulingPauses :many
+-- Workspace-level freeze rows for a set of workspaces — the workspaces-list
+-- DTO enrichment reads this once instead of GetWorkspaceSchedulingPause in
+-- a loop (no N+1).
+SELECT * FROM scheduling_pause
+WHERE agent_id IS NULL AND workspace_id = ANY(@workspace_ids::uuid[]);
+
+-- name: CountQueuedTasksPerWorkspace :many
+-- Per-workspace frozen-backlog depth in one query — the workspaces-list DTO
+-- enrichment reads this instead of CountQueuedTasksByWorkspace in a loop.
+-- The scheduling_pause join scopes the count to frozen workspaces, mirroring
+-- the detail endpoint (no freeze row → zero, not a live queue depth).
+SELECT a.workspace_id, count(*) AS queued_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+JOIN scheduling_pause sp ON sp.workspace_id = a.workspace_id AND sp.agent_id IS NULL
+WHERE a.workspace_id = ANY(@workspace_ids::uuid[]) AND atq.status = 'queued'
+GROUP BY a.workspace_id;

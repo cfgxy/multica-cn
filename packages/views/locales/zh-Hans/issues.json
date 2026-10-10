@@ -79,6 +79,7 @@
     "breadcrumb_workspace_fallback": "工作区",
     "empty_title": "还没有任务",
     "empty_hint": "创建一个任务开始使用。",
+    "scheduling_paused_banner_other": "任务调度已暂停 — 本工作区共有 {{count}} 个任务在队列中。可在工作区设置中恢复调度。",
     "move_failed": "移动任务失败"
   },
   "status": {
@@ -1058,8 +1059,7 @@
       "cancel_requested": "正在停止",
       "completed": "已完成",
       "failed": "失败",
-      "cancelled": "已取消",
-      "cancel_requested": "正在停止"
+      "cancelled": "已取消"
     },
     "runs": {
       "title": "Agent 运行记录",

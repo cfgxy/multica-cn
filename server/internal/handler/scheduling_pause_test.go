@@ -213,3 +213,170 @@ func TestWorkspaceSchedulingPause_PermissionAndShape(t *testing.T) {
 		t.Fatalf("workspace resume: got %d — %s", w.Code, w.Body.String())
 	}
 }
+
+// ---- List/detail projection parity (RUYI-608 QA P1 rework) ----
+//
+// The QA pass on 7d980dbd found the freeze fields inconsistent across the
+// projection surface: the workspaces LIST answered paused=false/0 while the
+// detail endpoint answered true/2, the agent DETAIL dropped the queued
+// count the list carried, and the tasks page had nothing to render. These
+// tests pin the repaired contract: for each resource, list and detail must
+// answer the same scheduling fields.
+
+// insertQueuedTask seeds one queued agent_task_queue row for agentID and
+// registers its cleanup.
+func insertQueuedTask(t *testing.T, agentID string) {
+	t.Helper()
+	var id string
+	if err := testPool.QueryRow(context.Background(),
+		`INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority)
+		 VALUES ($1, $2, 'queued', 0) RETURNING id`, agentID, testRuntimeID).Scan(&id); err != nil {
+		t.Fatalf("insert queued task: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, id)
+	})
+}
+
+func TestWorkspaceList_SchedulingProjectionParity(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "sched-wslist-agent", nil)
+	t.Cleanup(func() { schedulingCleanup(t, testWorkspaceID, agentID) })
+	insertQueuedTask(t, agentID)
+
+	readList := func() WorkspaceResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		testHandler.ListWorkspaces(w, newRequestAs(testUserID, http.MethodGet, "/api/workspaces", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("ListWorkspaces: got %d — %s", w.Code, w.Body.String())
+		}
+		var list []WorkspaceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		for _, ws := range list {
+			if ws.ID == testWorkspaceID {
+				return ws
+			}
+		}
+		t.Fatalf("workspace %s missing from list", testWorkspaceID)
+		return WorkspaceResponse{}
+	}
+	readDetail := func() WorkspaceResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		testHandler.GetWorkspace(w, withURLParam(newRequestAs(testUserID, http.MethodGet,
+			"/api/workspaces/"+testWorkspaceID, nil), "id", testWorkspaceID))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GetWorkspace: got %d — %s", w.Code, w.Body.String())
+		}
+		var resp WorkspaceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode detail: %v", err)
+		}
+		return resp
+	}
+
+	// Unfrozen baseline: not paused; the count is zero because the detail
+	// endpoint scopes it to the freeze (ErrNoRows → zero value), and the
+	// list must mirror that shape.
+	before := readList()
+	if before.SchedulingPaused || before.SchedulingQueuedCount != 0 {
+		t.Fatalf("unfrozen list = paused=%v count=%d; want false/0",
+			before.SchedulingPaused, before.SchedulingQueuedCount)
+	}
+
+	// Freeze at the workspace level; the frozen queue depth is now 1.
+	pauseReq := withURLParam(newRequestAs(testUserID, http.MethodPost,
+		"/api/workspaces/"+testWorkspaceID+"/scheduling-pause",
+		map[string]any{"reason": "list projection drill"}), "id", testWorkspaceID)
+	wPause := httptest.NewRecorder()
+	testHandler.PauseWorkspaceScheduling(wPause, pauseReq)
+	if wPause.Code != http.StatusOK {
+		t.Fatalf("pause setup: got %d — %s", wPause.Code, wPause.Body.String())
+	}
+
+	list := readList()
+	detail := readDetail()
+	if !list.SchedulingPaused {
+		t.Fatalf("frozen list answered paused=false — list projection missing (QA P1)")
+	}
+	if list.SchedulingPausedReason != "list projection drill" {
+		t.Fatalf("list reason = %q; want %q", list.SchedulingPausedReason, "list projection drill")
+	}
+	if list.SchedulingQueuedCount != 1 {
+		t.Fatalf("list queued_count = %d; want 1", list.SchedulingQueuedCount)
+	}
+	if list.SchedulingPaused != detail.SchedulingPaused ||
+		list.SchedulingQueuedCount != detail.SchedulingQueuedCount {
+		t.Fatalf("list/detail mismatch: list paused=%v count=%d, detail paused=%v count=%d",
+			list.SchedulingPaused, list.SchedulingQueuedCount,
+			detail.SchedulingPaused, detail.SchedulingQueuedCount)
+	}
+
+	// Resume restores the unfrozen shape.
+	resumeReq := withURLParam(newRequestAs(testUserID, http.MethodDelete,
+		"/api/workspaces/"+testWorkspaceID+"/scheduling-pause", nil), "id", testWorkspaceID)
+	wResume := httptest.NewRecorder()
+	testHandler.ResumeWorkspaceScheduling(wResume, resumeReq)
+	if wResume.Code != http.StatusOK {
+		t.Fatalf("resume: got %d — %s", wResume.Code, wResume.Body.String())
+	}
+	if after := readList(); after.SchedulingPaused {
+		t.Fatalf("resumed list answered paused=true")
+	}
+}
+
+func TestAgentDetail_SchedulingQueuedCountParity(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := createHandlerTestAgent(t, "sched-detail-agent", nil)
+	t.Cleanup(func() { schedulingCleanup(t, testWorkspaceID, agentID) })
+	insertQueuedTask(t, agentID)
+
+	// The list carries the count (batch fill via
+	// CountQueuedTasksByWorkspacePerAgent); the detail must answer the same
+	// number for the same agent.
+	wl := httptest.NewRecorder()
+	testHandler.ListAgents(wl, newRequestAs(testUserID, http.MethodGet, "/api/agents", nil))
+	if wl.Code != http.StatusOK {
+		t.Fatalf("ListAgents: got %d — %s", wl.Code, wl.Body.String())
+	}
+	var agents []AgentResponse
+	if err := json.Unmarshal(wl.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode agents list: %v", err)
+	}
+	var fromList *AgentResponse
+	for i := range agents {
+		if agents[i].ID == agentID {
+			fromList = &agents[i]
+			break
+		}
+	}
+	if fromList == nil {
+		t.Fatalf("agent %s missing from list", agentID)
+	}
+
+	wd := httptest.NewRecorder()
+	testHandler.GetAgent(wd, withURLParam(newRequestAs(testUserID, http.MethodGet,
+		"/api/agents/"+agentID, nil), "id", agentID))
+	if wd.Code != http.StatusOK {
+		t.Fatalf("GetAgent: got %d — %s", wd.Code, wd.Body.String())
+	}
+	var detail AgentResponse
+	if err := json.Unmarshal(wd.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode agent detail: %v", err)
+	}
+
+	if detail.SchedulingQueuedCount != fromList.SchedulingQueuedCount {
+		t.Fatalf("detail queued_count = %d; list says %d — detail projection drops the count (QA P1)",
+			detail.SchedulingQueuedCount, fromList.SchedulingQueuedCount)
+	}
+	if detail.SchedulingQueuedCount != 1 {
+		t.Fatalf("detail queued_count = %d; want 1", detail.SchedulingQueuedCount)
+	}
+}
