@@ -6,6 +6,11 @@ import {
   CartesianGrid,
 } from "recharts";
 import {
+  useBarSelection,
+  dailyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -31,14 +36,35 @@ export const costStackConfig = {
   cacheWrite: { label: "Cache write", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
-export function DailyCostChart({ data }: { data: DailyCostStackData[] }) {
+export function DailyCostChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: DailyCostStackData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
   const { t } = useT("runtimes");
+  const barSel = useBarSelection({
+    spans: dailyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  const barCells = barSel.cells(data.length, {
+    keyOf: (i) => data[i]?.date ?? String(i),
+  });
+
   // No internal empty-state — the parent decides what to show in place of
   // the chart (often a diagnostic explaining *why* there's no cost). Letting
   // recharts render an empty axis would be both ugly and uninformative.
   return (
     <ChartContainer config={costStackConfig} className="aspect-[3/1] w-full">
-      <BarChart data={data} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -89,25 +115,33 @@ export function DailyCostChart({ data }: { data: DailyCostStackData[] }) {
           stackId="cost"
           fill="var(--color-input)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="output"
           stackId="cost"
           fill="var(--color-output)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="cacheRead"
           stackId="cost"
           fill="var(--color-cacheRead)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="cacheWrite"
           stackId="cost"
           fill="var(--color-cacheWrite)"
           radius={[3, 3, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
       </BarChart>
     </ChartContainer>
   );

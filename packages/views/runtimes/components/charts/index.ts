@@ -18,3 +18,9 @@ export {
   type FailureClassCounts,
 } from "./failure-class-visuals";
 export { ActivityHeatmap } from "./activity-heatmap";
+export {
+  useBarSelection,
+  dailyBarSpans,
+  weeklyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
