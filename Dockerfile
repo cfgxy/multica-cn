@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.9-alpine AS builder
 
 # CN mirrors (override via build args when building outside China):
 # GOPROXY for Go modules/toolchains, tuna mirror for Alpine packages.
