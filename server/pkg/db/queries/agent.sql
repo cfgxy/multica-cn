@@ -738,6 +738,42 @@ ON CONFLICT (issue_id, agent_id) WHERE status IN ('queued', 'dispatched')
 DO NOTHING
 RETURNING *;
 
+-- name: ArmFailedTaskRetryReevaluation :exec
+-- RUYI-579 W3: a retryable task failed while a successor held the pending
+-- slot, so the retry was skipped. Arm a future re-evaluation on the FAILED
+-- parent (status stays failed — the user keeps seeing the failure): the
+-- runtime sweeper re-runs the retry decision after fire_at, by which time
+-- the successor has usually reached a terminal state. Harmless no-op when
+-- the row is no longer failed (re-rerun, cancel) — the WHERE clause is the
+-- guard.
+UPDATE agent_task_queue
+SET fire_at = @fire_at
+WHERE id = @id AND status = 'failed';
+
+-- name: ClearFailedTaskRetryReevaluation :exec
+-- RUYI-579 W3: retire a failed task's retry re-evaluation marker. The
+-- `fire_at <= now()` predicate is the concurrency guard: a re-evaluation
+-- pass that re-armed the row (successor still pending) wrote a FUTURE
+-- fire_at, and this statement must not erase that newer marker — only the
+-- expired one this pass was started by.
+UPDATE agent_task_queue
+SET fire_at = NULL
+WHERE id = @id AND status = 'failed' AND fire_at <= now();
+
+-- name: ListFailedTasksForRetryReevaluation :many
+-- RUYI-579 W3: failed tasks whose deferred retry decision is due for a
+-- re-run. Only rows the auto-retry path recognises at all (the reason
+-- allowlist is passed in from the Go side so the two lists cannot drift);
+-- budget and eligibility are re-checked per row by MaybeRetryFailedTask.
+-- Backed by idx_agent_task_queue_failed_retry_reeval (migration 936), a
+-- partial index whose row set is near-empty in steady state.
+SELECT * FROM agent_task_queue
+WHERE status = 'failed'
+  AND fire_at IS NOT NULL AND fire_at <= now()
+  AND failure_reason = ANY(@failure_reasons::text[])
+ORDER BY fire_at
+LIMIT @max_per_tick;
+
 -- name: CreateManualQuickCreateRetryTask :one
 -- A human retry of an issue-less quick-create is a new direct_human run, not
 -- an automatic retry. It preserves the immutable quick-create context JSON
