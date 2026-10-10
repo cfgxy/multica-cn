@@ -47,7 +47,157 @@ const EMPTY_SQUADS: { id: string; name: string }[] = [];
 
 const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
 
+/**
+ * Authorization card face (RUYI-630) — RN port of the web AuthorizationCard.
+ * Shares the issue thread with question cards but takes two fixed buttons
+ * (approve/deny), no free picks, no cancel here (lifecycle lives in the
+ * decisions tab's authorization section). The server enforces tier, window
+ * and CAS — the card only needs to fail readably.
+ */
+function AuthorizationCard({ decision }: { decision: IssueDecision }) {
+  const { t } = useT("issues");
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+
+  const { data: members = EMPTY_MEMBERS } = useQuery(memberListOptions(wsId));
+  const { data: agents = EMPTY_AGENTS } = useQuery(agentListOptions(wsId));
+  const { data: squads = EMPTY_SQUADS } = useQuery(squadListOptions(wsId));
+  const getActorName = useMemo(
+    () => buildActorNameResolver({ members, agents, squads }),
+    [members, agents, squads],
+  );
+  const creatorName = getActorName(decision.created_by_type, decision.created_by_id);
+  const answeredName = decision.answered_by_type
+    ? getActorName(decision.answered_by_type, decision.answered_by_id ?? "")
+    : null;
+
+  const answer = useMutation({
+    mutationFn: (index: 0 | 1) =>
+      api.answerIssueDecision(decision.issue_id, decision.id, [index]),
+    onSuccess: (updated) => {
+      upsertDecisionInCache(qc, updated.issue_id, updated);
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      Alert.alert(
+        t("decisions.auth_answer_failed", "Failed to record your answer"),
+      );
+    },
+  });
+
+  const isOpen = decision.status === "open";
+  const optionLabel = (idx: 0 | 1) => {
+    const named = idx === 0 ? decision.approve_label : decision.deny_label;
+    if (named) return stripDecisionOptionLetterPrefix(named);
+    const opt = decision.options[idx];
+    if (opt?.label) return stripDecisionOptionLetterPrefix(opt.label);
+    return idx === 0
+      ? t("decisions.auth_approve_default", "Approve")
+      : t("decisions.auth_deny_default", "Deny");
+  };
+
+  return (
+    <View className="px-4" testID="decision-card">
+      <Card>
+        <View className="flex-row items-start gap-2">
+          <Ionicons
+            name="shield-checkmark-outline"
+            size={16}
+            color={theme.brand}
+            style={{ marginTop: 2 }}
+          />
+          <View className="flex-1">
+            <View className="flex-row flex-wrap items-center gap-2">
+              <Text className="text-xs font-medium text-muted-foreground">
+                {t("decisions.auth_title", "Authorization request")}
+              </Text>
+              {decision.status === "cancelled" && (
+                <Text className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {t("decisions.status_cancelled", "Cancelled")}
+                </Text>
+              )}
+              {decision.auth_state === "approved" && (
+                <Text className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                  {t("decisions.auth_state_approved", "Approved")}
+                </Text>
+              )}
+              {decision.auth_state === "denied" && (
+                <Text className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {t("decisions.auth_state_denied", "Denied")}
+                </Text>
+              )}
+              {decision.executed_at && !decision.execution_error && (
+                <Text className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                  {t("decisions.auth_state_executed", "Executed")}
+                </Text>
+              )}
+              {decision.execution_error && (
+                <Text className="rounded-full border border-destructive px-2 py-0.5 text-xs text-destructive">
+                  {t("decisions.auth_state_execute_failed", "Execution failed")}
+                </Text>
+              )}
+            </View>
+            <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
+            <Text className="mt-0.5 text-xs text-muted-foreground">
+              {creatorName} · {timeAgo(decision.created_at)}
+            </Text>
+          </View>
+        </View>
+
+        {isOpen ? (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Button
+              size="sm"
+              disabled={answer.isPending}
+              onPress={() => answer.mutate(0)}
+              testID="decision-auth-approve"
+            >
+              <Text>{optionLabel(0)}</Text>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={answer.isPending}
+              onPress={() => answer.mutate(1)}
+              testID="decision-auth-deny"
+            >
+              <Text>{optionLabel(1)}</Text>
+            </Button>
+          </View>
+        ) : null}
+
+        {decision.status === "answered" ? (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Ionicons
+              name="checkmark-done-outline"
+              size={14}
+              color={theme.mutedForeground}
+            />
+            <Text className="text-xs text-muted-foreground">
+              {answeredName ?? ""}
+              {decision.answered_at ? ` · ${timeAgo(decision.answered_at)}` : ""}
+            </Text>
+          </View>
+        ) : null}
+
+        {decision.execution_error ? (
+          <Text className="mt-2 text-xs text-destructive">
+            {t("decisions.auth_execute_failed", "Execution failed: {{reason}}", {
+              reason: decision.execution_error,
+            })}
+          </Text>
+        ) : null}
+      </Card>
+    </View>
+  );
+}
+
 export function DecisionCard({ decision }: { decision: IssueDecision }) {
+  if (decision.decision_kind === "authorization") {
+    return <AuthorizationCard decision={decision} />;
+  }
   const { t } = useT("issues");
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);

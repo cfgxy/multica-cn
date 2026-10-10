@@ -55,5 +55,32 @@
     "title": "フィルターに一致する意思決定カードはありません",
     "hint": "フィルターを調整またはクリアして、このビューのカードを表示してください。",
     "clear_button": "フィルターをクリア"
+  },
+  "requests": {
+    "section_title": "承認リクエスト",
+    "action_workspace_info_read": "ワークスペース情報の読み取り",
+    "action_prompt_restore": "プロンプトの復元",
+    "risk_read": "読み取り専用",
+    "risk_write_low": "低リスク書き込み",
+    "status_pending": "承認待ち",
+    "status_approved": "承認済み",
+    "status_denied": "却下済み",
+    "status_expired": "期限切れ",
+    "status_revoked": "取り下げ済み",
+    "status_executed": "実行済み",
+    "status_execute_failed": "実行失敗",
+    "origin_label": "{{agent}} がリクエスト",
+    "source_issue": "Issue：{{title}}",
+    "approve": "承認",
+    "deny": "却下",
+    "cancel": "リクエストを取り下げ",
+    "projection_hint": "この行は状態の投影です。対象ワークスペースで操作してください",
+    "executed_failed": "実行失敗：{{reason}}",
+    "steps_title": "ワークスペース別のステップ",
+    "step_origin": "発信元",
+    "step_target": "対象",
+    "detail_error": "ステップ詳細の読み込みに失敗しました",
+    "answer_failed": "承認操作に失敗しました",
+    "cancel_failed": "取り下げに失敗しました"
   }
 }

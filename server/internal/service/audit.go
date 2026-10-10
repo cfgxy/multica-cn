@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Unified audit event contract (RUYI-355 Phase 1).
@@ -78,6 +78,17 @@ const (
 	AuditAgentEnvRevealed             = "agent.env_revealed"
 	AuditAgentEnvUpdated              = "agent.env_updated"
 	AuditAgentExecutionProfileActived = "agent.execution_profile_activated"
+
+	// Agent domain, RUYI-630: the sensitive-operation authorization channel.
+	// One story per request_group_id: requested → authorized/denied (per
+	// step) → executed/execute_failed, with revoked and the sweep's expired
+	// alongside.
+	AuditAgentDecisionRequested     = "agent.decision_requested"
+	AuditAgentDecisionAuthorized    = "agent.decision_authorized"
+	AuditAgentDecisionDenied        = "agent.decision_denied"
+	AuditAgentDecisionRevoked       = "agent.decision_revoked"
+	AuditAgentDecisionExecuted      = "agent.decision_executed"
+	AuditAgentDecisionExecuteFailed = "agent.decision_execute_failed"
 
 	// Issue domain: mirror of the activity_log writes (dual-write until
 	// Phase 2 switches the timeline data source), plus the audit-only direct

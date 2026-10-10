@@ -1058,8 +1058,7 @@
       "cancel_requested": "停止中",
       "completed": "完了",
       "failed": "失敗",
-      "cancelled": "キャンセル済み",
-      "cancel_requested": "停止中"
+      "cancelled": "キャンセル済み"
     },
     "runs": {
       "title": "エージェントの実行履歴",
@@ -1180,6 +1179,15 @@
     "answer_failed": "回答の送信に失敗しました",
     "cancel_failed": "カードのキャンセルに失敗しました",
     "batch_title": "一括回答",
-    "batch_submit": "すべて送信"
+    "batch_submit": "すべて送信",
+    "auth_title": "承認リクエスト",
+    "auth_state_approved": "承認済み",
+    "auth_state_denied": "却下済み",
+    "auth_state_executed": "実行済み",
+    "auth_state_execute_failed": "実行失敗",
+    "auth_approve_default": "承認",
+    "auth_deny_default": "却下",
+    "auth_execute_failed": "実行失敗：{{reason}}",
+    "auth_answer_failed": "承認操作に失敗しました"
   }
 }
