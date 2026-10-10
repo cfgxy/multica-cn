@@ -421,6 +421,17 @@ export interface AgentTask {
    */
   kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct" | "retrospective";
   /**
+   * Daily-retrospective runs (kind="retrospective") only: the
+   * retrospective_run row this task serves, from the task's context
+   * payload. The activity row links to the run's results view through it.
+   */
+  retrospective_run_id?: string;
+  /**
+   * Daily-retrospective runs only: RFC3339 window end — the trigger
+   * moment the readable title stamps (`每日复盘YYYYMMDD_HHmmss`).
+   */
+  retrospective_window_end?: string;
+  /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
    * the canonical absolute path the agent runs in; UI surfaces should prefer
