@@ -63,6 +63,33 @@ var agentRestoreCmd = &cobra.Command{
 	RunE:  runAgentRestore,
 }
 
+var agentPauseCmd = &cobra.Command{
+	Use:   "pause <id>",
+	Short: "Pause an agent's task scheduling (workspace owner/admin only)",
+	Long: "Freezes task scheduling for one agent: queued tasks stay in the " +
+		"queue (new tasks keep coalescing) and running tasks drain normally, " +
+		"but no new task is claimed until resume. The freeze is idempotent — " +
+		"pausing an already-paused agent updates nothing. Only workspace " +
+		"owners and admins may pause; agents can never pause themselves.",
+	Example: "  multica agent pause <agent-id> --reason \"incident 4213 drain\"",
+	Args:    exactArgs(1),
+	RunE:    runAgentPause,
+}
+
+var agentResumeCmd = &cobra.Command{
+	Use:   "resume <id>",
+	Short: "Resume an agent's task scheduling (workspace owner/admin only)",
+	Long: "Lifts an agent-level scheduling freeze. Queued tasks flow again on " +
+		"the agent's next poll — the server invalidates the runtime's cached " +
+		"empty-claim verdict, so no waiting for cache expiry. Resuming a " +
+		"non-paused agent succeeds as a no-op and still reports the queued " +
+		"count. Note: a workspace-level freeze takes precedence; resume only " +
+		"clears the agent-level one.",
+	Example: "  multica agent resume <agent-id>",
+	Args:    exactArgs(1),
+	RunE:    runAgentResume,
+}
+
 var agentTasksCmd = &cobra.Command{
 	Use:   "tasks <id>",
 	Short: "List tasks for an agent",
@@ -137,6 +164,8 @@ func init() {
 	agentCmd.AddCommand(agentUpdateCmd)
 	agentCmd.AddCommand(agentArchiveCmd)
 	agentCmd.AddCommand(agentRestoreCmd)
+	agentCmd.AddCommand(agentPauseCmd)
+	agentCmd.AddCommand(agentResumeCmd)
 	agentCmd.AddCommand(agentTasksCmd)
 	agentCmd.AddCommand(agentAvatarCmd)
 	agentCmd.AddCommand(agentSkillsCmd)
@@ -215,8 +244,14 @@ func init() {
 	// agent restore
 	agentRestoreCmd.Flags().String("output", "json", "Output format: table or json")
 
+	// agent pause / resume
+	agentPauseCmd.Flags().String("reason", "", "Operator note recorded with the freeze (audit log and agent detail)")
+	agentPauseCmd.Flags().String("output", "json", "Output format: table or json")
+	agentResumeCmd.Flags().String("output", "json", "Output format: table or json")
+
 	// agent tasks
 	agentTasksCmd.Flags().String("output", "table", "Output format: table or json")
+	agentTasksCmd.Flags().String("status", "", "Filter by exact status (e.g. queued); server-side equality filter")
 
 	// agent avatar
 	agentAvatarCmd.Flags().String("file", "", "Path to the avatar image file (required)")
@@ -868,6 +903,70 @@ func runAgentRestore(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// schedulingPauseView mirrors handler.schedulingPauseResponse so the CLI can
+// print the pause state without importing the handler package.
+type schedulingPauseView struct {
+	Paused      bool   `json:"paused"`
+	Scope       string `json:"scope"`
+	Reason      string `json:"reason"`
+	CreatedBy   string `json:"created_by"`
+	CreatedAt   string `json:"created_at"`
+	QueuedCount int64  `json:"queued_count"`
+}
+
+func printSchedulingPause(cmd *cobra.Command, state schedulingPauseView, verb string) error {
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, state)
+	}
+
+	if verb != "" {
+		if state.Paused {
+			fmt.Printf("Agent scheduling paused (scope: %s, %d task(s) queued)\n", state.Scope, state.QueuedCount)
+		} else {
+			fmt.Printf("Agent scheduling resumed: %d task(s) queued, flowing again\n", state.QueuedCount)
+		}
+		if state.Reason != "" {
+			fmt.Printf("Reason: %s\n", state.Reason)
+		}
+	}
+	return nil
+}
+
+func runAgentPause(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	reason, _ := cmd.Flags().GetString("reason")
+	var state schedulingPauseView
+	if err := client.PostJSON(ctx, "/api/agents/"+args[0]+"/scheduling-pause",
+		map[string]any{"reason": reason}, &state); err != nil {
+		return fmt.Errorf("pause agent scheduling: %w", err)
+	}
+	return printSchedulingPause(cmd, state, "pause")
+}
+
+func runAgentResume(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var state schedulingPauseView
+	if err := client.DeleteJSONResponse(ctx, "/api/agents/"+args[0]+"/scheduling-pause", &state); err != nil {
+		return fmt.Errorf("resume agent scheduling: %w", err)
+	}
+	return printSchedulingPause(cmd, state, "resume")
+}
+
 func runAgentTasks(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -877,8 +976,13 @@ func runAgentTasks(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	tasksPath := "/api/agents/" + args[0] + "/tasks"
+	if statusFilter, _ := cmd.Flags().GetString("status"); strings.TrimSpace(statusFilter) != "" {
+		tasksPath += "?status=" + url.QueryEscape(statusFilter)
+	}
+
 	var tasks []map[string]any
-	if err := client.GetJSON(ctx, "/api/agents/"+args[0]+"/tasks", &tasks); err != nil {
+	if err := client.GetJSON(ctx, tasksPath, &tasks); err != nil {
 		return fmt.Errorf("list agent tasks: %w", err)
 	}
 

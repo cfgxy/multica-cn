@@ -24,6 +24,8 @@ export type WSEventType =
   | "agent:created"
   | "agent:archived"
   | "agent:restored"
+  | "agent:scheduling_paused"
+  | "agent:scheduling_resumed"
   | "task:queued"
   | "task:dispatch"
   | "task:running"
@@ -185,6 +187,22 @@ export interface AgentRestoredPayload {
   agent: Agent;
 }
 
+/**
+ * Scheduling freeze state change (RUYI-608). Broadcast workspace-wide for
+ * BOTH scopes — `scope` says which freeze flipped, `agent_id` is set only
+ * for the agent-level one. Carries the effective queue depth at flip time
+ * rather than an agent object: consumers refetch the agents/workspace
+ * queries (the DTO enrichment is a server-side join, not a diffable entity).
+ */
+export interface AgentSchedulingPausePayload {
+  workspace_id: string;
+  scope: "agent" | "workspace";
+  paused: boolean;
+  queued_count: number;
+  reason?: string;
+  agent_id?: string;
+}
+
 export interface InboxNewPayload {
   item: InboxItem;
 }
@@ -300,7 +318,7 @@ export interface TaskMessagePayload {
   issue_id: string;
   chat_session_id?: string;
   seq: number;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "watchdog";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;
@@ -598,6 +616,8 @@ export interface WSEventPayloadMap {
   "agent:created": AgentCreatedPayload;
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
+  "agent:scheduling_paused": AgentSchedulingPausePayload;
+  "agent:scheduling_resumed": AgentSchedulingPausePayload;
   "task:queued": TaskQueuedPayload;
   "task:dispatch": TaskDispatchPayload;
   "task:running": TaskRunningPayload;

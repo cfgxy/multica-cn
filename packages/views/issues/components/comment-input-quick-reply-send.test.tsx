@@ -269,6 +269,12 @@ describe("input-area entries — mobile parity (RUYI-550)", () => {
     // Shell path: the trigger queues until the lazy editor mounts.
     fireEvent.click(screen.getByRole("button", { name: "Mention someone or an issue" }));
     await waitFor(() => expect(editorText()).toBe("@"), { timeout: 2000 });
+    // Unlike quick replies, the @ insert is not synchronously flushed — the
+    // host learns of it only via the debounced emission, whose dedupe must
+    // not be poisoned by the deferred-create watermark snapshot (the
+    // content-editor half of RUYI-550). Assert the user-visible contract:
+    // send is usable, not just that bytes reached the DOM.
+    await expectSendEnabled();
 
     // Mounted path: a second click inserts immediately at the caret.
     fireEvent.click(screen.getByRole("button", { name: "Mention someone or an issue" }));

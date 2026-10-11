@@ -57,6 +57,9 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "list_runtimes",
   "list_squads",
   "get_squad",
+  // Decision-card reads (the write is answer_decisions).
+  "list_decisions",
+  "get_decision",
   // Project resource binding read.
   "list_project_resources",
 ]);

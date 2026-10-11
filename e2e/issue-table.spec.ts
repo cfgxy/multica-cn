@@ -243,15 +243,19 @@ test.describe("Issue Table server grouping", () => {
     // The workspace-scoped root query returns every root row in the group,
     // including leftovers from earlier suites sharing the E2E workspace —
     // assert on this test's own fixture instead of the full payload.
-    // Grouped branch pages pin hierarchy disabled (use-issue-group-branches
-    // sends hierarchy.enabled=false), and ListIssueTableRows only computes
-    // direct_child_count when hierarchy is enabled — so the parent row always
-    // reports 0 here. Nesting itself is asserted via the child page below.
+    // The table view keeps hierarchy enabled on grouped branches (it sends
+    // hierarchy.enabled=<tableHierarchy>, which defaults to true in the view
+    // store; use-issue-group-branches pins hierarchy off for board/swimlane,
+    // not for this view). ListIssueTableRows therefore computes
+    // direct_child_count over the group-filtered membership CTE: exactly the
+    // same-group children. The parent has 1 here (the todo child); the done
+    // child counts toward the done group instead. Nesting itself is asserted
+    // via the child page below.
     const parentRow = todoRoot.rows.find((row) => row.issue.id === parent.id);
     expect(parentRow).toEqual(
       expect.objectContaining({
         issue: expect.objectContaining({ id: parent.id, title: parentTitle }),
-        direct_child_count: 0,
+        direct_child_count: 1,
       }),
     );
     expect(todoChildren.rows.map((row) => row.issue.title)).toEqual([

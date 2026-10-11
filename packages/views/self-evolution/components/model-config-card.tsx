@@ -54,7 +54,7 @@ export function ModelConfigCard({
   showConsumers = false,
 }: {
   wsId: string;
-  /** Module-config page variant: name both consumers and their switches. */
+  /** Module-config page variant: name the scoring consumer and its switch. */
   showConsumers?: boolean;
 }) {
   const { t } = useT("self-evolution");

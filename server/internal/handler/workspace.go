@@ -108,6 +108,15 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// Workspace-level scheduling freeze (RUYI-608). The flag means the
+	// workspace-level switch itself is on — it does not aggregate
+	// agent-level freezes, which live on each agent resource. QueuedCount
+	// is the workspace-wide queued depth (the frozen backlog while
+	// paused); Reason/At carry the freeze row's audit note.
+	SchedulingPaused       bool    `json:"scheduling_paused"`
+	SchedulingPausedReason string  `json:"scheduling_paused_reason,omitempty"`
+	SchedulingPausedAt     *string `json:"scheduling_paused_at,omitempty"`
+	SchedulingQueuedCount  int64   `json:"scheduling_queued_count"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -174,6 +183,9 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	for i, ws := range workspaces {
 		resp[i] = h.workspaceToResponse(ws)
 	}
+	// Workspace-level freeze fields (RUYI-608), batch-filled so the list
+	// agrees with the detail endpoint and the settings toggle's data source.
+	h.applySchedulingToWorkspaceResponses(r.Context(), resp)
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -190,7 +202,9 @@ func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.workspaceToResponse(ws))
+	resp := h.workspaceToResponse(ws)
+	h.applySchedulingToWorkspaceResponse(r.Context(), &resp, idUUID)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type CreateWorkspaceRequest struct {
@@ -422,6 +436,20 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Settings != nil {
 		s, _ := json.Marshal(req.Settings)
+		// RUYI-693: the settings bag gains a "voice" document (workspace
+		// default + ASR refs into the voice_provider pool). A foreign bag is
+		// untouched; a bag carrying "voice" gets the strict write validation
+		// (referenced providers must exist inside this workspace) before the
+		// whole blob replaces the stored one.
+		var bag map[string]json.RawMessage
+		if json.Unmarshal(s, &bag) == nil {
+			if _, hasVoice := bag[workspaceVoiceSettingsKey]; hasVoice {
+				if err := h.validateWorkspaceVoiceSettings(r.Context(), idUUID, bag); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+		}
 		params.Settings = s
 	}
 	if req.Repos != nil {

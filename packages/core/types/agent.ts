@@ -421,6 +421,17 @@ export interface AgentTask {
    */
   kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct" | "retrospective";
   /**
+   * Daily-retrospective runs (kind="retrospective") only: the
+   * retrospective_run row this task serves, from the task's context
+   * payload. The activity row links to the run's results view through it.
+   */
+  retrospective_run_id?: string;
+  /**
+   * Daily-retrospective runs only: RFC3339 window end — the trigger
+   * moment the readable title stamps (`每日复盘YYYYMMDD_HHmmss`).
+   */
+  retrospective_window_end?: string;
+  /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
    * the canonical absolute path the agent runs in; UI surfaces should prefer
@@ -612,6 +623,26 @@ export interface MikaBootstrapResponse extends Agent {
   onboarding_session?: ChatSession;
 }
 
+/** Which level a scheduling freeze (RUYI-608) is anchored at. */
+export type SchedulingPauseScope = "agent" | "workspace";
+
+/**
+ * Read-back of a scheduling freeze mutation or GET (RUYI-608). `paused`
+ * answers "is this agent / workspace frozen right now", `scope` tells which
+ * freeze row is in effect (agent-level wins over workspace-level for an
+ * agent read), and `queued_count` is the depth that will flow on resume.
+ * Empty strings for the audit fields when not paused (resume replies carry
+ * only `paused` + `queued_count`).
+ */
+export interface SchedulingPauseState {
+  paused: boolean;
+  scope: SchedulingPauseScope | "";
+  reason: string;
+  created_by: string;
+  created_at: string;
+  queued_count: number;
+}
+
 export interface Agent {
   id: string;
   workspace_id: string;
@@ -730,6 +761,22 @@ export interface Agent {
    * treat `undefined` as 1.
    */
   resource_weight?: number;
+  /**
+   * Scheduling freeze state (RUYI-608). True when an owner/admin froze this
+   * agent's task claiming — queued tasks keep coalescing and running tasks
+   * drain, but nothing new is claimed until resume. Optional because servers
+   * predating RUYI-608 omit it; treat `undefined` as false.
+   *
+   * `scheduling_paused_scope` tells WHICH freeze is in effect when paused:
+   * `"agent"` (this agent only) or `"workspace"` (a workspace-wide freeze —
+   * an agent-level resume does not lift it). `scheduling_queued_count` is
+   * the number of tasks that will flow on resume.
+   */
+  scheduling_paused?: boolean;
+  scheduling_paused_scope?: SchedulingPauseScope;
+  scheduling_paused_reason?: string;
+  scheduling_paused_at?: string;
+  scheduling_queued_count?: number;
   /**
    * Session context gate (RUYI-107). Ceiling, in tokens, for a resumable
    * session before the platform starts a fresh one; `0` disables the gate.
@@ -1741,41 +1788,4 @@ export interface RuntimeLocalSkillImportResult {
   status: "created" | "updated" | "conflict";
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
-}
-
-// ---------------------------------------------------------------------------
-// Agent webhooks (RUYI-52)
-//
-// A public, token-bearing trigger URL bound to a fixed prompt. Every visit to
-// the URL starts a fresh chat session whose first user message is the bound
-// prompt. The token is a bearer credential; the server strips the credential
-// fields for non-managers (only webhook_path_masked remains, safe to render).
-// ---------------------------------------------------------------------------
-
-export interface AgentWebhook {
-  id: string;
-  agent_id: string;
-  name: string;
-  prompt: string;
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
-  /** Ingress path with the token replaced by the fixed-width mask. */
-  webhook_path_masked: string;
-  /** Manager-only: the raw bearer token. Null for non-managers. */
-  webhook_token?: string | null;
-  /** Manager-only: "/api/webhooks/agents/{token}". */
-  webhook_path?: string | null;
-  /** Manager-only absolute URL, present only when the server has MULTICA_PUBLIC_URL. */
-  webhook_url?: string | null;
-}
-
-export interface CreateAgentWebhookRequest {
-  name: string;
-  prompt: string;
-}
-
-export interface UpdateAgentWebhookRequest {
-  name: string;
-  prompt: string;
 }

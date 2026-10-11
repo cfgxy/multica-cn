@@ -79,6 +79,7 @@
     "breadcrumb_workspace_fallback": "워크스페이스",
     "empty_title": "아직 태스크가 없습니다",
     "empty_hint": "태스크를 만들어 시작하세요.",
+    "scheduling_paused_banner_other": "작업 스케줄링이 일시 중지됨 — 이 워크스페이스에서 {{count}}개의 작업이 대기 중입니다. 워크스페이스 설정에서 재개할 수 있습니다.",
     "move_failed": "태스크를 이동하지 못했습니다"
   },
   "status": {
@@ -322,6 +323,7 @@
     "title_placeholder": "태스크 제목",
     "desc_placeholder": "설명 추가...",
     "current_issue": "현재 태스크",
+    "referenced_issues": "참조된 태스크",
     "sub_issues_label": "하위 태스크",
     "sub_issue_of": "상위 태스크",
     "add_sub_issues": "하위 태스크 추가",
@@ -332,6 +334,12 @@
     "section_properties": "속성",
     "section_parent_issue": "상위 태스크",
     "section_pull_requests": "Pull requests",
+    "section_relations": "관련 태스크",
+    "relations_blocks": "블로킹",
+    "relations_blocked_by": "블로크됨",
+    "relations_relates_to": "관련",
+    "relations_supersedes": "대체 중",
+    "relations_superseded_by": "대체됨",
     "section_metadata": "메타데이터",
     "section_details": "세부 정보",
     "section_quick_actions": "퀵 액션",
@@ -967,6 +975,7 @@
       "actions_a11y": "태스크 작업",
       "edit_details": "세부 정보 편집",
       "open_on_web": "웹에서 열기",
+      "relations_empty": "아직 구조화된 관련이 없습니다. 블로킹, 관련, 대체 링크가 여기에 표시됩니다.",
       "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
       "not_found": "찾을 수 없음",
       "retry": "다시 시도",
@@ -980,7 +989,8 @@
       "comments_empty": "아직 댓글이 없습니다.",
       "comments_no_match": "일치하는 댓글이 없습니다.",
       "comments_open_a11y": "댓글 찾아보기",
-      "pull_request_open_failed": "이 Pull request를 열 수 없습니다."
+      "pull_request_open_failed": "이 Pull request를 열 수 없습니다.",
+      "pull_request_card_label": "Pull request"
     },
     "picker": {
       "unassigned": "미할당",
@@ -1058,8 +1068,7 @@
       "cancel_requested": "정지 중",
       "completed": "완료",
       "failed": "실패",
-      "cancelled": "취소됨",
-      "cancel_requested": "정지 중"
+      "cancelled": "취소됨"
     },
     "runs": {
       "title": "에이전트 실행 기록",

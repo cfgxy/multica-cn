@@ -57,8 +57,19 @@ export const issueKeys = {
   ) => [...issueKeys.myAll(wsId), scope, filter] as const,
   detail: (wsId: string | null, id: string) =>
     [...issueKeys.all(wsId), "detail", id] as const,
+  // Bare identifier ("MUL-123") → issue point lookup. Separate branch from
+  // detail so a UUID and its identifier don't share a cache entry — the
+  // identifier form can 404 (wrong workspace prefix) and cache as null.
+  identifier: (wsId: string | null, identifier: string) =>
+    [...issueKeys.all(wsId), "identifier", identifier] as const,
   timeline: (wsId: string | null, id: string) =>
     [...issueKeys.all(wsId), "timeline", id] as const,
+  // Structured relations (RUYI-689): parent + five edge views, one payload.
+  relations: (wsId: string | null, id: string) =>
+    [...issueKeys.all(wsId), "relations", id] as const,
+  // Sub-issues of a parent (children group of the Relations page).
+  children: (wsId: string | null, id: string) =>
+    [...issueKeys.all(wsId), "children", id] as const,
   // Currently-running tasks for an issue (queued/dispatched/running). Drives
   // the "Working" state of the AgentActivityRow inside IssueHeaderCard.
   activeTasks: (wsId: string | null, id: string) =>

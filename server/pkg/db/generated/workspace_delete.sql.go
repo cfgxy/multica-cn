@@ -118,6 +118,9 @@ deleted_triggers AS (
     WHERE autopilot_id IN (
         SELECT id FROM autopilot WHERE autopilot.workspace_id = $1
     )
+), deleted_params AS (
+    DELETE FROM autopilot_param
+    WHERE autopilot_param.workspace_id = $1
 )
 DELETE FROM autopilot_rule_version
 WHERE autopilot_rule_version.workspace_id = $1
@@ -615,12 +618,18 @@ deleted_runtime_credentials AS (
     WHERE runtime_instance_id IN (
         SELECT id FROM agent_runtime WHERE agent_runtime.workspace_id = $1
     )
+       OR runtime_instance_id IN (
+        SELECT id FROM voice_provider WHERE voice_provider.workspace_id = $1
+    )
 ),
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
+),
+deleted_voice_providers AS (
+    DELETE FROM voice_provider WHERE voice_provider.workspace_id = $1
 ),
 deleted_execution_profile_entries AS (
     DELETE FROM execution_profile_entry
@@ -636,6 +645,13 @@ DELETE FROM project WHERE project.workspace_id = $1
 // owns it: matched through the runtime set rather than a workspace column
 // (same construction as execution_profile_entry below). The encrypted
 // payloads are destroyed with the workspace; nothing plaintext ever existed.
+// RUYI-693: voice_provider rows share the runtime_credential store (their
+// credential_ref points at '<provider-uuid>:<key>'), so their secret copies
+// are swept through the provider set in the same statement.
+// voice_provider has no FK to workspace (house rule); teardown owns it.
+// Its agent overrides (agent.voice_provider_id) go away with the agent
+// sweep above, and workspace.settings voice references die with the
+// workspace row itself.
 // execution_profile has no FK to workspace (house rule), so teardown owns it.
 // Entries are matched through the profile set rather than a workspace column:
 // an entry only exists under a profile, and deleting both in one statement

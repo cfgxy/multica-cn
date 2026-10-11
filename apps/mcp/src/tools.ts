@@ -33,6 +33,15 @@
  *       optimistic locking; the descriptions say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota).
+ * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions — the
+ *       same decision-card surface the mobile decision center drives, one
+ *       store of truth. Reads are pure reads; answer_decisions is the only
+ *       write and it rides the product's own member-only answer gates (an
+ *       OAuth token acts as the consenting member). SIDE EFFECT: a successful
+ *       answer posts the product's echo comment that mentions the creating
+ *       agent, which resumes that agent's run. Answer numbering and the
+ *       "1a 2b" selection grammar mirror the product's comment convention;
+ *       defined failures come back as structured results keyed by `code`.
  * Write (project resource bindings): list_project_resources,
  *       create_project_resource, update_project_resource,
  *       delete_project_resource — the same REST surface the web project page
@@ -76,6 +85,8 @@ import type {
   CancelRunResult,
   CommentInfo,
   CreateProjectResourceBody,
+  DecisionCardInfo,
+  ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
   IssueInfo,
   ModelEntryInfo,
@@ -422,6 +433,28 @@ function structuredResourceFailure(error: unknown): Record<string, unknown> | un
         };
       }
       return undefined;
+    default:
+      return undefined;
+  }
+}
+
+// ---- structured decision failures ------------------------------------------
+//
+// The decision face rides the product's own gates: the answer endpoints
+// refuse non-member callers with 403 and unknown issues/cards with 404. Both
+// are defined outcomes for the tools, so they map to structured results; the
+// rest of the matrix (parse errors, closed cards, bad letters) is produced
+// locally before any write. Anything outside (auth, transport, 5xx) is
+// rethrown to the MCP error surface unchanged.
+
+function structuredDecisionFailure(error: unknown): Record<string, unknown> | undefined {
+  if (!(error instanceof MulticaApiError)) return undefined;
+  const message = apiErrorMessage(error);
+  switch (error.status) {
+    case 403:
+      return { code: "permission_denied", message };
+    case 404:
+      return { code: "not_found", message };
     default:
       return undefined;
   }
@@ -834,6 +867,144 @@ function modelCatalogBrief(request: {
     })),
     unavailable_models: request.unavailable_models ?? [],
     error: request.error ?? null,
+  };
+}
+
+// ---- decision cards (RUYI-688) --------------------------------------------
+//
+// The decision-card face mirrors the product's own decision center: the
+// workspace inbox lists cards, the issue-scoped list feeds detail reads and
+// answer numbering, and the batch answer endpoint is the only write. Answer
+// numbering follows the product's "1A 2B" comment convention exactly — 1-based
+// card number over the issue's OPEN cards ordered by created_at ascending,
+// option letters A-D where A is options[0]. Selected indices are 0-based on
+// the wire. Defined failures come back as structured results keyed by `code`:
+// invalid_selection, decision_not_found, invalid_option, not_found,
+// already_answered, already_cancelled, already_closed, permission_denied —
+// never as exception strings. Parsing and range checks run entirely
+// client-side against a fresh card read, so a rejected selection never
+// reaches the answer endpoint and cannot leave partial state.
+
+interface DecisionAnswerToken {
+  seq: number;
+  letters: string;
+}
+
+function isDecisionOptionLetter(char: string): boolean {
+  const upper = char.toUpperCase();
+  return upper >= "A" && upper <= "D";
+}
+
+function isDecisionTokenSeparator(char: string): boolean {
+  return char === " " || char === "\t" || char === "\n" || char === "\r" ||
+    char === "、" || char === "，" || char === "," || char === "/";
+}
+
+/** Parses the whole trimmed selection as a compact "1a 2b" token sequence —
+ * the same grammar the product's comment text answers accept (RUYI-471):
+ * each token is non-zero-leading digits followed by one or more option
+ * letters A-D (case folded); between tokens only whitespace or 、，,/ is
+ * allowed. Returns null unless the ENTIRE string parses. */
+function parseDecisionSelection(raw: string): DecisionAnswerToken[] | null {
+  const chars = Array.from(raw.trim());
+  if (chars.length === 0) return null;
+  const tokens: DecisionAnswerToken[] = [];
+  let i = 0;
+  for (;;) {
+    const digitStart = i;
+    while (i < chars.length && (chars[i] ?? "") >= "0" && (chars[i] ?? "") <= "9") i++;
+    const lead = chars[digitStart];
+    if (i === digitStart || i - digitStart > 6) return null;
+    if (lead === undefined || lead === "0") return null;
+    let seq = 0;
+    for (let k = digitStart; k < i; k++) {
+      seq = seq * 10 + ((chars[k]?.codePointAt(0) ?? 48) - 48);
+    }
+    const letterStart = i;
+    while (i < chars.length && isDecisionOptionLetter(chars[i] ?? "")) i++;
+    if (i === letterStart) return null;
+    const letters = chars
+      .slice(letterStart, i)
+      .map((char) => char.toUpperCase())
+      .join("");
+    tokens.push({ seq, letters });
+    if (i === chars.length) return tokens;
+    if (isDecisionTokenSeparator(chars[i] ?? "")) {
+      while (i < chars.length && isDecisionTokenSeparator(chars[i] ?? "")) i++;
+      if (i === chars.length) return null;
+      continue;
+    }
+    return null;
+  }
+}
+
+/** The projection decision tools return: identity, question, options with
+ * their letters, state and issue context — everything a caller needs to
+ * answer via answer_decisions or judge staleness. `openNumber` is the
+ * caller-computed "决策编号" (position among the issue's open cards in
+ * created_at order) for open cards, null for closed ones. */
+function decisionCardBrief(
+  card: DecisionCardInfo,
+  issue?: { identifier?: string; number?: number; title?: string },
+  openNumber?: number | null,
+): Record<string, unknown> {
+  return {
+    id: card.id,
+    decision_number: card.status === "open" ? openNumber ?? null : null,
+    issue_id: card.issue_id,
+    issue_identifier: issue?.identifier ?? null,
+    issue_number: issue?.number ?? null,
+    issue_title: issue?.title ?? null,
+    question: card.question,
+    options: card.options.map((label, index) => ({
+      letter: String.fromCharCode(65 + index),
+      label,
+    })),
+    multi_select: card.multi_select,
+    recommended: (card.recommended_indices ?? []).map(
+      (index) => String.fromCharCode(65 + index),
+    ),
+    status: card.status,
+    selected: (card.selected_indices ?? []).map(
+      (index) => String.fromCharCode(65 + index),
+    ),
+    answered_at: card.answered_at ?? null,
+    created_at: card.created_at,
+    updated_at: card.updated_at,
+  };
+}
+
+/** Numbers the open cards in created_at ascending order (ties broken by id)
+ * and returns card-id → 1-based 决策编号 — the product's answer numbering,
+ * identical to the echo comment's "决策 N". */
+function openCardNumbers(cards: DecisionCardInfo[]): Map<string, number> {
+  const open = cards
+    .filter((card) => card.status === "open")
+    .sort((a, b) => {
+      const byTime = a.created_at.localeCompare(b.created_at);
+      return byTime !== 0 ? byTime : a.id.localeCompare(b.id);
+    });
+  return new Map(open.map((card, index) => [card.id, index + 1]));
+}
+
+function indexToLabel(card: DecisionCardInfo, indices: number[]): string[] {
+  return indices.map((index) => card.options[index] ?? `#${index}`);
+}
+
+/** Per-card classification against the full card list: open cards proceed to
+ * the answer endpoint, closed ones answer with precise codes instead of a
+ * round trip that would fail server-side anyway. */
+function classifyClosedCard(card: DecisionCardInfo): Record<string, unknown> {
+  if (card.status === "answered") {
+    return {
+      code: "already_answered",
+      message: "decision card is already answered; re-read it to see the outcome",
+      selected: indexToLabel(card, card.selected_indices ?? []),
+    };
+  }
+  return {
+    code: "already_cancelled",
+    message: "decision card was cancelled and can no longer be answered",
   };
 }
 
@@ -3347,7 +3518,18 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         client.listExecutionProfiles(workspaceId),
       ]);
       const active = profiles.find((profile) => profile.is_active) ?? null;
-      const activeEntries = new Map(active?.entries.map((entry) => [entry.agent_id, entry]) ?? []);
+      // The list endpoint omits entries (entry_count only), so drift reads
+      // the active profile's full detail. A 404 (deleted between list and
+      // get) degrades to no entries rather than failing the whole overview.
+      let activeEntries = new Map<string, ExecutionProfileEntryInfo>();
+      if (active !== null) {
+        try {
+          const detail = await client.getExecutionProfile(workspaceId, active.id);
+          activeEntries = new Map(detail.entries.map((entry) => [entry.agent_id, entry]));
+        } catch (error) {
+          if (!(error instanceof MulticaApiError && error.status === 404)) throw error;
+        }
+      }
 
       const liveAgents = agents.filter((agent) => agent.archived_at === undefined || agent.archived_at === null);
       const topologyRuntimes = runtimes.map((runtime) => {
@@ -3362,7 +3544,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
               : null;
             return {
               ...agentConfigBrief(agent),
-              active_profile_entry_matches: drift,
+              is_drifted: drift,
             };
           }),
         };
@@ -4145,6 +4327,418 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         }
         throw error;
       }
+    },
+  },
+  {
+    name: "list_decisions",
+    description:
+      "List decision cards in a workspace — the structured questions agent runs raised while waiting on a human call (default: open cards only). " +
+      "Read-only; one row PER card with its issue context (identifier, number, title), question, options with their answer letters and current state. " +
+      "Use get_decision for one card's full detail and answer_decisions to submit choices.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        status: {
+          type: "string",
+          enum: ["open", "answered", "cancelled"],
+          description:
+            "Filter by card state (default open — the pending set). Omitting the filter lists every card regardless of state.",
+        },
+        limit: {
+          type: "integer",
+          description: "Page size, 1-500 (default 200).",
+          minimum: 1,
+          maximum: 500,
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const result = await client.listDecisionInbox(workspace, {
+        status: optionalEnum(args, "status", ["open", "answered", "cancelled"]),
+        limit: optionalInt(args, "limit", { min: 1, max: 500 }) ?? 200,
+      });
+      // 决策编号 is per-issue over open cards in creation order — compute it
+      // here so a caller can go straight from a listed card to "1a"-style
+      // answer input (answer_decisions re-resolves numbering at submit time).
+      const numbersByIssue = new Map<string, Map<string, number>>();
+      for (const item of result.items) {
+        if (numbersByIssue.has(item.issue_id)) continue;
+        numbersByIssue.set(
+          item.issue_id,
+          openCardNumbers(result.items.filter((card) => card.issue_id === item.issue_id)),
+        );
+      }
+      return {
+        counts: result.counts,
+        total: result.items.length,
+        decisions: result.items.map((item) =>
+          decisionCardBrief(
+            item,
+            {
+              identifier: item.issue_identifier,
+              number: item.issue_number,
+              title: item.issue_title,
+            },
+            numbersByIssue.get(item.issue_id)?.get(item.id) ?? null,
+          ),
+        ),
+      };
+    },
+  },
+  {
+    name: "get_decision",
+    description:
+      "Read ONE decision card's full detail — question, options with their answer letters, multi-select mode, recommended options, current state and the owning issue. " +
+      "Read-only. Find card ids via list_decisions; submit a choice with answer_decisions. decision_number is the card's current 决策编号 " +
+      "among the issue's open cards (creation order) when it is still open.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        decision_id: {
+          type: "string",
+          description: "Decision card UUID, from list_decisions.",
+        },
+      },
+      required: ["workspace", "issue", "decision_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueRef = requireString(args, "issue");
+      const decisionId = requireString(args, "decision_id");
+      let cards: DecisionCardInfo[];
+      try {
+        cards = await client.listIssueDecisions(workspace, issueRef);
+      } catch (error) {
+        const failure = structuredDecisionFailure(error);
+        if (failure === undefined) throw error;
+        return failure;
+      }
+      const card = cards.find((candidate) => candidate.id === decisionId);
+      if (card === undefined) {
+        return {
+          code: "not_found",
+          message: `decision card ${decisionId} not found on issue ${issueRef}`,
+        };
+      }
+      const numbers = openCardNumbers(cards);
+      const issue = await client.getIssue(workspace, issueRef);
+      return {
+        decision: decisionCardBrief(card, undefined, numbers.get(card.id) ?? null),
+        issue: {
+          id: issue.id,
+          identifier: issue.identifier,
+          number: issue.number,
+          title: issue.title,
+          status: issue.status,
+        },
+      };
+    },
+  },
+  {
+    name: "answer_decisions",
+    description:
+      "Submit choices on one issue's decision cards — the only decision write, riding the product's own member-only answer gates (an OAuth token acts as the consenting member). " +
+      "Two mutually exclusive inputs: `selection` in the product's compact \"1a 2b\" grammar (决策编号 counts the issue's OPEN cards by creation time, letters A-D pick options; partial answers are allowed) or `answers` naming cards by id for explicit targeting. " +
+      "SIDE EFFECT: each answered card flips to answered in the same store the mobile decision center reads, and the platform posts one echo comment mentioning the creating agents — that mention resumes their runs. " +
+      "Single-select cards take exactly one letter; multi-select cards take one or more, no repeats. Selections are parsed and range-checked against a fresh card read BEFORE any write, so a rejected input returns a structured result (invalid_selection, decision_not_found, invalid_option, already_answered, already_cancelled, not_found) and never leaves partial state; a mid-flight race answers as already_closed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        selection: {
+          type: "string",
+          description:
+            'Compact answer tokens, e.g. "1a" or "1a 2bc" — 决策编号 over the issue\'s open cards (creation order, from list_decisions/get_decision) + option letters. Separators: spaces, tabs, 、，, or /.',
+        },
+        answers: {
+          type: "array",
+          description:
+            "Explicit per-card answers — use instead of selection to target cards by id regardless of numbering.",
+          items: {
+            type: "object",
+            properties: {
+              decision_id: {
+                type: "string",
+                description: "Decision card UUID, from list_decisions.",
+              },
+              options: {
+                type: "string",
+                description: 'Option letters, e.g. "A" or "AC" (A = first option).',
+              },
+            },
+            required: ["decision_id", "options"],
+          },
+        },
+      },
+      required: ["workspace", "issue"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueRef = requireString(args, "issue");
+      const hasSelection = args.selection !== undefined && args.selection !== null;
+      const hasAnswers = args.answers !== undefined && args.answers !== null;
+      if (hasSelection === hasAnswers) {
+        throw new ToolInputError(
+          "answer_decisions requires exactly one of `selection` (compact \"1a 2b\" tokens) or `answers` (explicit per-card list)",
+        );
+      }
+      let cards: DecisionCardInfo[];
+      try {
+        cards = await client.listIssueDecisions(workspace, issueRef);
+      } catch (error) {
+        const failure = structuredDecisionFailure(error);
+        if (failure === undefined) throw error;
+        return failure;
+      }
+      const numbers = openCardNumbers(cards);
+      const cardByNumber = new Map<number, DecisionCardInfo>();
+      for (const [id, number] of numbers) {
+        const card = cards.find((candidate) => candidate.id === id);
+        if (card !== undefined) cardByNumber.set(number, card);
+      }
+
+      // Input gate: every target resolves and every selection passes range
+      // checks BEFORE the answer endpoint is touched — a rejected input is a
+      // pure read (GET) and cannot leave partial state.
+      const targets: Array<{ card: DecisionCardInfo; indices: number[]; number: number }> = [];
+      const inputErrors: Array<Record<string, unknown>> = [];
+
+      const checkIndices = (card: DecisionCardInfo, indices: number[], ref: string): void => {
+        const seen = new Set<number>();
+        for (const index of indices) {
+          if (index < 0 || index >= card.options.length) {
+            inputErrors.push({
+              decision: ref,
+              decision_id: card.id,
+              code: "invalid_option",
+              message: `option letter out of range — ${card.options.length} options (A-D available: ${card.options
+                .map((label, i) => `${String.fromCharCode(65 + i)}=${label}`)
+                .join(", ")})`,
+            });
+            return;
+          }
+          if (seen.has(index)) {
+            inputErrors.push({
+              decision: ref,
+              decision_id: card.id,
+              code: "invalid_option",
+              message: "an option may not be picked twice on one card",
+            });
+            return;
+          }
+          seen.add(index);
+        }
+        if (!card.multi_select && indices.length !== 1) {
+          inputErrors.push({
+            decision: ref,
+            decision_id: card.id,
+            code: "invalid_option",
+            message: "this card is single-select: exactly one option letter is required",
+          });
+          return;
+        }
+        targets.push({ card, indices, number: numbers.get(card.id) ?? 0 });
+      };
+
+      const parseLetters = (raw: string): number[] | null => {
+        const chars = Array.from(raw.trim());
+        if (chars.length === 0) return null;
+        const indices: number[] = [];
+        for (const char of chars) {
+          const upper = char.toUpperCase();
+          if (upper < "A" || upper > "D") return null;
+          indices.push(upper.codePointAt(0)! - 65);
+        }
+        return indices;
+      };
+
+      if (hasSelection) {
+        const tokens = parseDecisionSelection(requireString(args, "selection"));
+        if (tokens === null) {
+          return {
+            answered: 0,
+            code: "invalid_selection",
+            message:
+              'selection must be compact "1a 2b" tokens — 1-based card numbers over the issue\'s open cards + option letters A-D (separators: spaces, tabs, 、，, /)',
+          };
+        }
+        const openCount = cardByNumber.size;
+        const claimed = new Set<number>();
+        for (const token of tokens) {
+          if (claimed.has(token.seq)) {
+            inputErrors.push({
+              decision: token.seq,
+              code: "invalid_selection",
+              message: `decision number ${token.seq} appears twice in the selection`,
+            });
+            continue;
+          }
+          claimed.add(token.seq);
+          const card = cardByNumber.get(token.seq);
+          if (card === undefined) {
+            // Out-of-range numbering: an empty open set almost always means
+            // the caller is re-submitting against already-settled cards.
+            inputErrors.push(
+              openCount === 0
+                ? {
+                    decision: token.seq,
+                    code: "already_closed",
+                    message: `no open decision cards remain on this issue (all ${cards.length} card(s) are answered or cancelled) — this looks like a re-submission; re-read via list_decisions`,
+                  }
+                : {
+                    decision: token.seq,
+                    code: "decision_not_found",
+                    message: `decision number ${token.seq} is outside the current open set (1-${openCount}); numbering may have shifted — re-read via list_decisions or target cards with answers[]`,
+                  },
+            );
+            continue;
+          }
+          const indices = parseLetters(token.letters);
+          if (indices === null) {
+            inputErrors.push({
+              decision: token.seq,
+              decision_id: card.id,
+              code: "invalid_selection",
+              message: "option letters must be A-D",
+            });
+            continue;
+          }
+          checkIndices(card, indices, String(token.seq));
+        }
+      } else {
+        const seenIds = new Set<string>();
+        for (const item of args.answers as unknown[]) {
+          if (typeof item !== "object" || item === null) {
+            throw new ToolInputError("each item of `answers` must be an object");
+          }
+          const record = item as Record<string, unknown>;
+          const decisionId = record.decision_id;
+          const options = record.options;
+          if (typeof decisionId !== "string" || decisionId.trim().length === 0) {
+            throw new ToolInputError(
+              "each `answers` item requires a non-empty string `decision_id`",
+            );
+          }
+          if (typeof options !== "string") {
+            throw new ToolInputError(
+              "each `answers` item requires a string `options` (option letters A-D)",
+            );
+          }
+          if (seenIds.has(decisionId)) {
+            inputErrors.push({
+              decision_id: decisionId,
+              code: "invalid_selection",
+              message: "the same decision card appears twice in `answers`",
+            });
+            continue;
+          }
+          seenIds.add(decisionId);
+          const card = cards.find((candidate) => candidate.id === decisionId);
+          if (card === undefined) {
+            inputErrors.push({
+              decision_id: decisionId,
+              code: "not_found",
+              message: `decision card not found on issue ${issueRef}`,
+            });
+            continue;
+          }
+          if (card.status !== "open") {
+            inputErrors.push({ decision_id: decisionId, ...classifyClosedCard(card) });
+            continue;
+          }
+          const indices = parseLetters(options);
+          if (indices === null) {
+            inputErrors.push({
+              decision_id: decisionId,
+              code: "invalid_option",
+              message: "options must be one or more letters A-D",
+            });
+            continue;
+          }
+          checkIndices(card, indices, decisionId);
+        }
+      }
+
+      if (inputErrors.length > 0) {
+        return {
+          answered: 0,
+          code: inputErrors[0]?.code,
+          message: "no card was answered — the selection failed validation before any write",
+          errors: inputErrors,
+        };
+      }
+      if (targets.length === 0) {
+        throw new ToolInputError("no answers were given");
+      }
+
+      let batch: Awaited<ReturnType<MulticaClient["answerDecisionsBatch"]>>;
+      try {
+        batch = await client.answerDecisionsBatch(
+          workspace,
+          issueRef,
+          targets.map((target) => ({
+            decision_id: target.card.id,
+            selected_indices: target.indices,
+          })),
+        );
+      } catch (error) {
+        const failure = structuredDecisionFailure(error);
+        if (failure === undefined) throw error;
+        return { answered: 0, ...failure };
+      }
+
+      let answered = 0;
+      const results = batch.results.map((outcome) => {
+        const target = targets.find(
+          (candidate) => candidate.card.id === outcome.decision_id,
+        );
+        const number = target?.number ?? null;
+        if (outcome.status === "answered") {
+          answered += 1;
+          return {
+            decision: number,
+            decision_id: outcome.decision_id,
+            status: "answered" as const,
+            question: outcome.decision?.question ?? target?.card.question ?? "",
+            selected:
+              target === undefined
+                ? (outcome.decision?.selected_indices ?? []).map(
+                    (index) => outcome.decision?.options[index] ?? `#${index}`,
+                  )
+                : indexToLabel(target.card, target.indices),
+          };
+        }
+        const code =
+          outcome.status === "conflict"
+            ? "already_closed"
+            : outcome.status === "invalid"
+              ? "invalid_option"
+              : "not_found";
+        return {
+          decision: number,
+          decision_id: outcome.decision_id,
+          code,
+          message: outcome.error ?? "the card could not be answered",
+        };
+      });
+      const payload: Record<string, unknown> = { answered, results };
+      if (batch.echo_comment_id !== undefined) {
+        payload.echo_comment_id = batch.echo_comment_id;
+      }
+      if (batch.trigger_outcomes !== undefined) {
+        payload.trigger_outcomes = batch.trigger_outcomes;
+      }
+      if (answered > 0) {
+        payload.note =
+          "Answered cards are updated in the same store the mobile decision center reads; the echo comment mentioning the creating agents has been posted.";
+      }
+      return payload;
     },
   },
 ];

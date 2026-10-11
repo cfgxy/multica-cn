@@ -52,13 +52,28 @@ import { useChatAgentRequestResetOnWorkspaceChange } from "@/data/stores/chat-ag
  *   - `headerShown: false` — every sheet body draws its own header (title
  *     + optional right action). The native Stack header would double up.
  */
-const SHEET_OPTIONS: NativeStackNavigationOptions = {
+const SHEET_OPTIONS_BASE: NativeStackNavigationOptions = {
   presentation: "formSheet",
   sheetGrabberVisible: true,
   sheetAllowedDetents: [0.6, 0.95],
   sheetCornerRadius: 20,
   contentStyle: { flex: 1 },
   headerShown: false,
+};
+
+/**
+ * RUYI-637: 长内容 sheet（长列表搜索 picker、长文本编辑器）在 SHEET_OPTIONS
+ * 基础上以最大档打开。以 0.6 小档打开时，内容顶部的纵向手势被 detent 切换
+ * 抢占：上滑先涨高度再滚动、下滑收层而不滚内容（iOS
+ * `prefersScrollingExpandsWhenScrolledToEdge` 与 Android `BottomSheetBehavior`
+ * 在非最大档都是 sheet 拖拽优先）——用户感知为「弹窗只能单向滚动」。
+ * 打开即落 0.95 档后内容独占纵向手势，0.6 档仅作 grabber 下拉的停靠点
+ * （RUYI-476 在 project picker 验证的配方，本单推广到全部长内容路由）。
+ * 短内容 sheet 不用此常量——保持 SHEET_OPTIONS 两段式打开性格。
+ */
+const LONG_CONTENT_SHEET_OPTIONS_BASE: NativeStackNavigationOptions = {
+  ...SHEET_OPTIONS_BASE,
+  sheetInitialDetentIndex: "last" as const,
 };
 
 /**
@@ -117,6 +132,23 @@ function RealtimeSubscriptions() {
  * membership, deep links to wrong slugs, etc.).
  */
 export default function WorkspaceLayout() {
+  // RUYI-637 返工：Android 上嵌套滚动手势优先驱动内容（上滑滚内容、内容在顶
+  // 时下滑收层），不再先拖 sheet 升降档——label picker 内容区收层与
+  // edit-profile 小档滚出首屏外字段（Voice）共用这一个开关。screens 4.23 的
+  // Android 侧原本不消费该 prop，原生接线由 pnpm patch 补齐（见
+  // patches/react-native-screens@4.23.0.patch 与 form-sheet-scroll-governance
+  // 的源码形态断言）。iOS 保持 screens 默认（滚动涨档性格不变）。
+  // 平台分支在渲染期求值而非模块级 Platform.select：真机上 Platform.OS 恒定
+  // 二者等价，治理测试需要在同一模块上切换 platformOS。
+  const sheetExpandsWhenScrolledToEdge = Platform.select({ android: false });
+  const SHEET_OPTIONS: NativeStackNavigationOptions = {
+    ...SHEET_OPTIONS_BASE,
+    sheetExpandsWhenScrolledToEdge,
+  };
+  const LONG_CONTENT_SHEET_OPTIONS: NativeStackNavigationOptions = {
+    ...LONG_CONTENT_SHEET_OPTIONS_BASE,
+    sheetExpandsWhenScrolledToEdge,
+  };
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
   const isServerSwitching = useAuthStore((s) => s.isServerSwitching);
   const shouldResolveMembership = shouldResolveWorkspaceMembership(
@@ -233,7 +265,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/picker/assignee"
           options={{
-            ...SHEET_OPTIONS,
+            ...LONG_CONTENT_SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
@@ -247,7 +279,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/picker/label"
           options={{
-            ...SHEET_OPTIONS,
+            ...LONG_CONTENT_SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("issues:filters.section_label", "Label"),
           }}
@@ -255,7 +287,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="mention-picker"
           options={{
-            ...SHEET_OPTIONS,
+            ...LONG_CONTENT_SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("issues:mobile.mention.screen_title", "Mention"),
           }}
@@ -263,7 +295,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="skill-picker"
           options={{
-            ...SHEET_OPTIONS,
+            ...LONG_CONTENT_SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("issues:mobile.skill.title", "Skills"),
           }}
@@ -281,10 +313,9 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/picker/project"
           options={{
-            ...SHEET_OPTIONS,
+            ...LONG_CONTENT_SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("layout:tab.project", "Project"),
-            sheetInitialDetentIndex: "last",
           }}
         />
         <Stack.Screen
@@ -346,6 +377,18 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
+        {/* Structured relations (RUYI-689) — full-page modal, same
+            container rationale as issue/[id]/pull-requests above: a browse
+            surface with a back-stack entry, not a picker row. Title reuses
+            the web sidebar section key `issues:detail.section_relations`,
+            localized in every bundle. */}
+        <Stack.Screen
+          name="issue/[id]/relations"
+          options={{
+            title: i18n.t("issues:detail.section_relations", "Relations"),
+            presentation: "modal",
+          }}
+        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"
@@ -361,7 +404,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="project/[id]/picker/lead"
           options={{
-            ...SHEET_OPTIONS,
+            ...LONG_CONTENT_SHEET_OPTIONS,
             headerShown: true,
             title: i18n.t("projects:toolbar.section_lead", "Lead"),
           }}
@@ -387,7 +430,7 @@ export default function WorkspaceLayout() {
           name="new-issue-picker/assignee"
           options={modalStackedSheetOptions(
             {
-              ...SHEET_OPTIONS,
+              ...LONG_CONTENT_SHEET_OPTIONS,
               headerShown: true,
               title: i18n.t("issues:actions.assignee", "Assignee"),
             },
@@ -401,10 +444,9 @@ export default function WorkspaceLayout() {
           name="new-issue-picker/project"
           options={modalStackedSheetOptions(
             {
-              ...SHEET_OPTIONS,
+              ...LONG_CONTENT_SHEET_OPTIONS,
               headerShown: true,
               title: i18n.t("layout:tab.project", "Project"),
-              sheetInitialDetentIndex: "last" as const,
             },
             Platform.OS,
           )}
@@ -471,7 +513,10 @@ export default function WorkspaceLayout() {
         />
         {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
         <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
-        <Stack.Screen name="tasks-actor-picker" options={SHEET_OPTIONS} />
+        <Stack.Screen
+          name="tasks-actor-picker"
+          options={LONG_CONTENT_SHEET_OPTIONS}
+        />
         {/* Decisions-tab filter sheet (RUYI-530, formSheet presentation) —
             reads/writes decisions-view-store directly. */}
         <Stack.Screen name="decisions-filter" options={SHEET_OPTIONS} />
@@ -484,7 +529,7 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
         />
         {/* RUYI-346: 智能体与小队管理（P0）。创建走 modal；agent 域
-            skills/env/webhooks 与 squad 域 add-member 走 formSheet
+            skills/env 与 squad 域 add-member 走 formSheet
             （body 自绘 header）。squad 详情用原生 header，body 内以
             Stack.Screen 动态写 title。 */}
         <Stack.Screen
@@ -503,7 +548,7 @@ export default function WorkspaceLayout() {
             page's split entries. */}
         <Stack.Screen
           name="more/agents/[id]/edit-instructions"
-          options={SHEET_OPTIONS}
+          options={LONG_CONTENT_SHEET_OPTIONS}
         />
         <Stack.Screen
           name="more/agents/[id]/run-config"
@@ -515,10 +560,6 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="more/agents/[id]/env"
-          options={SHEET_OPTIONS}
-        />
-        <Stack.Screen
-          name="more/agents/[id]/webhooks"
           options={SHEET_OPTIONS}
         />
         {/* RUYI-425 §4.3: voice runtime instances — list from the More
@@ -592,7 +633,7 @@ export default function WorkspaceLayout() {
             独立窗口（完整查看/编辑 + 未保存离开拦截），formSheet。 */}
         <Stack.Screen
           name="more/squads/[id]/edit-instructions"
-          options={SHEET_OPTIONS}
+          options={LONG_CONTENT_SHEET_OPTIONS}
         />
         <Stack.Screen
           name="more/pins"
@@ -625,7 +666,7 @@ export default function WorkspaceLayout() {
           name="new-issue-picker/actor"
           options={modalStackedSheetOptions(
             {
-              ...SHEET_OPTIONS,
+              ...LONG_CONTENT_SHEET_OPTIONS,
               headerShown: true,
               title: i18n.t(
                 "modals:create_issue.agent.created_by",
