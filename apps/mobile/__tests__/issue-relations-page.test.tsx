@@ -79,6 +79,9 @@ const EMPTY_RELATIONS = {
 const mockPush = jest.fn();
 const mockGetIssueRelations = jest.fn();
 const mockListChildIssues = jest.fn();
+// Keys the page's keyExtractor produced for the latest render — the
+// duplicate-across-groups test asserts their global uniqueness.
+const mockCapturedKeys: string[] = [];
 
 // VirtualizedList only renders its initial window (~10 cells) in the test
 // environment — later sections would be invisible to the assertions. The
@@ -91,16 +94,21 @@ jest.mock("react-native", () => {
     sections: { key: string; data: unknown[] }[];
     renderItem: (info: { item: unknown }) => React.ReactNode;
     renderSectionHeader: (info: { section: unknown }) => React.ReactNode;
+    keyExtractor?: (item: unknown, index: number) => string;
   }) => (
     <>
       {props.sections.map((section) => (
         <React.Fragment key={section.key}>
           {props.renderSectionHeader({ section })}
-          {section.data.map((item, idx) => (
-            <React.Fragment key={idx}>
-              {props.renderItem({ item })}
-            </React.Fragment>
-          ))}
+          {section.data.map((item, idx) => {
+            const key = props.keyExtractor?.(item, idx);
+            if (key) mockCapturedKeys.push(key);
+            return (
+              <React.Fragment key={idx}>
+                {props.renderItem({ item })}
+              </React.Fragment>
+            );
+          })}
         </React.Fragment>
       ))}
     </>
@@ -192,6 +200,7 @@ async function renderPage(opts: RenderOpts = {}) {
   mockGetIssueRelations.mockReset();
   mockListChildIssues.mockReset();
   mockPush.mockReset();
+  mockCapturedKeys.length = 0;
   if (opts.pending) {
     mockGetIssueRelations.mockImplementation(() => new Promise(() => {}));
     mockListChildIssues.mockImplementation(() => new Promise(() => {}));
@@ -314,5 +323,27 @@ describe("issue relations page (stage-3 tasks-tab restyle)", () => {
       expect(screen.getByText(/boom/)).toBeTruthy();
     });
     expect(screen.getByText("Retry")).toBeTruthy();
+  });
+
+  it("keeps SectionList keys unique when one issue appears in two groups", async () => {
+    // The backend rejects same-type duplicates but a parent may
+    // legitimately also block its child (and two different edge types can
+    // exist on one pair) — the same id then lands in two sections, and a
+    // bare-id keyExtractor would collide (the stage-3 SectionList keys are
+    // global, the stage-2 ScrollView keys were per-group).
+    const { screen } = await renderPage({
+      relations: {
+        ...EMPTY_RELATIONS,
+        parent: ref(PARENT_ID, "MUL-1", "Parent issue title", "in_progress"),
+        blocked_by: [
+          ref(PARENT_ID, "MUL-1", "Parent issue title", "in_progress"),
+        ],
+      },
+      children: { issues: [] },
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText("Parent issue title")).toHaveLength(2);
+    });
+    expect(new Set(mockCapturedKeys).size).toBe(mockCapturedKeys.length);
   });
 });
