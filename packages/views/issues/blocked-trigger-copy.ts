@@ -40,6 +40,8 @@ export function blockedReasonLabel(reasonCode: string, t: IssuesT): string {
       return t(($) => $.comment.trigger_blocked_agent_runtime_required);
     case "agent_only_cascade_blocked":
       return t(($) => $.comment.trigger_blocked_agent_only_cascade_blocked);
+    case "budget_exceeded":
+      return t(($) => $.comment.trigger_blocked_budget_exceeded);
     default:
       return t(($) => $.comment.trigger_blocked_generic);
   }
@@ -61,6 +63,8 @@ export function blockedShortReasonLabel(reasonCode: string, t: IssuesT): string 
       return t(($) => $.comment.trigger_blocked_short_agent_runtime_required);
     case "agent_only_cascade_blocked":
       return t(($) => $.comment.trigger_blocked_short_agent_only_cascade_blocked);
+    case "budget_exceeded":
+      return t(($) => $.comment.trigger_blocked_short_budget_exceeded);
     default:
       return t(($) => $.comment.trigger_blocked_short_generic);
   }

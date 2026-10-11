@@ -224,6 +224,7 @@ export function RuntimeDetail({
                 )}
               </section>
             )}
+            {canReadRuntime && <BudgetSection runtime={runtime} />}
             {canReadRuntime && <ModelCallBudgetCard runtime={runtime} canEdit={isAdmin} />}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>

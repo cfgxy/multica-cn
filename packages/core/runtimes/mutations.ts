@@ -9,6 +9,7 @@ import type {
   RuntimeBackpressureSettings,
   RuntimeModelCallBudgetConfig,
 } from "../api/schemas";
+import type { RuntimeCostBudgetInput } from "../types";
 import { workspaceKeys } from "../workspace/queries";
 import { agentTaskSnapshotKeys } from "../agents/queries";
 
@@ -186,6 +187,19 @@ export function useSaveRuntimeModelCallBudget(runtimeId: string) {
     // boundary, or a failed save after a stale read, cannot keep the card stale.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runtimeModelCallBudgetKeys.budget(runtimeId) });
+    },
+  });
+}
+
+// Replaces the runtime's whole cost-budget set and refreshes all meters.
+export function useUpdateRuntimeCostBudget(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runtimeId, input }: { runtimeId: string; input: RuntimeCostBudgetInput }) =>
+      api.updateRuntimeCostBudget(runtimeId, input),
+    onSettled: (_data, _err, { runtimeId }) => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.budget(runtimeId) });
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     },
   });
 }

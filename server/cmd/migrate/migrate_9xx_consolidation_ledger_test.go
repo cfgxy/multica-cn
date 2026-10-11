@@ -208,6 +208,10 @@ var postConsolidationStems = []string{
 	"999_knowledge_entry_operation",           // RUYI-889
 	"999_knowledge_lifecycle_writeback_claim", // RUYI-916
 	"999_knowledge_lifecycle_writeback_claim_index",
+	"1012_runtime_cost_budget", // RUYI-665; reallocated from collided 966-969 stems
+	"1013_runtime_cost_budget_pkey_index",
+	"1014_runtime_cost_budget_primary_key",
+	"1015_runtime_cost_budget_scope_index",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
