@@ -238,6 +238,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"vcs_connection":                 workspaceDelete,
 	"vcs_pull_request":               workspaceDelete,
 	"verification_code":              workspaceDeleteKeep,
+	// Voice provider pool (RUYI-693): pool rows die with the workspace.
+	// Their credentials live in runtime_credential keyed by the provider id
+	// and are swept by the deleted_runtime_credentials CTE in
+	// DeleteWorkspaceRuntimesAndProjects (which also covers provider rows).
+	"voice_provider":                 workspaceDelete,
 	"webhook_delivery":               workspaceDelete,
 	"workspace":                      workspaceDelete,
 	"workspace_invitation":           workspaceDelete,

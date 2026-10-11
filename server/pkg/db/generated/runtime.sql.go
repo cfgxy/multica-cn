@@ -1572,7 +1572,7 @@ const unbindUserAgentsFromRuntime = `-- name: UnbindUserAgentsFromRuntime :many
 UPDATE agent
 SET runtime_id = NULL, updated_at = now()
 WHERE runtime_id = $1 AND kind = 'user'
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 // MUL-5559: the runtime-delete replacement for archive-then-hard-delete. Every
@@ -1630,6 +1630,9 @@ func (q *Queries) UnbindUserAgentsFromRuntime(ctx context.Context, runtimeID pgt
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -1645,7 +1648,7 @@ const unbindUserAgentsFromVoiceRuntime = `-- name: UnbindUserAgentsFromVoiceRunt
 UPDATE agent
 SET voice_runtime_id = NULL, updated_at = now()
 WHERE voice_runtime_id = $1 AND kind = 'user'
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 // RUYI-425: voice-slot counterpart of UnbindUserAgentsFromRuntime. Runs in
@@ -1698,6 +1701,9 @@ func (q *Queries) UnbindUserAgentsFromVoiceRuntime(ctx context.Context, voiceRun
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
