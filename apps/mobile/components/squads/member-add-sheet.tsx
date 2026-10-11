@@ -138,6 +138,7 @@ export function MemberAddSheet({ squadId }: { squadId: string }) {
       </View>
 
       <ScrollView
+        nestedScrollEnabled
         className="flex-1"
         contentContainerClassName="px-4 pt-3 pb-8 gap-3"
         keyboardShouldPersistTaps="handled"
