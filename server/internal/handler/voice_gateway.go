@@ -141,14 +141,18 @@ func lastVoiceProbeInvalid(rt db.AgentRuntime) bool {
 	return false
 }
 
-// resolveVoiceSessionTarget is the §4.4 rule-3 initiation recheck: binding
-// gates validated these same facts when the agent was saved, but a voice
-// instance's health is a living property (disabled flag, offline status,
-// rotated/invalidated credential), so every session start re-derives it.
-// Rejection order puts operator intent (disabled) ahead of transient state
-// (status) and static Type-layer facts (capability) ahead of credentials.
-// The returned credential is the decrypted API key for the provider hop only.
-func (h *Handler) resolveVoiceSessionTarget(ctx context.Context, agentRow db.Agent) (db.AgentRuntime, string, *voiceGateRejection, error) {
+// resolveLegacyVoiceRuntimeTarget is the binding-model §4.4 rule-3 initiation
+// recheck, kept verbatim as the RUYI-693 compat bridge: agents still bound to
+// an un-migrated runtime instance (anything that is not a manual voice
+// instance) resolve exactly like they did before the voice_provider chain
+// existed. Binding gates validated these same facts when the agent was
+// saved, but a voice instance's health is a living property (disabled flag,
+// offline status, rotated/invalidated credential), so every session start
+// re-derives it. Rejection order puts operator intent (disabled) ahead of
+// transient state (status) and static Type-layer facts (capability) ahead of
+// credentials. The returned credential is the decrypted API key for the
+// provider hop only.
+func (h *Handler) resolveLegacyVoiceRuntimeTarget(ctx context.Context, agentRow db.Agent) (db.AgentRuntime, string, *voiceGateRejection, error) {
 	if !agentRow.VoiceRuntimeID.Valid {
 		return db.AgentRuntime{}, "", &voiceGateRejection{"no_voice_runtime", "this agent has no voice runtime bound"}, nil
 	}
@@ -187,7 +191,7 @@ func (h *Handler) resolveVoiceSessionTarget(ctx context.Context, agentRow db.Age
 	if h.RuntimeCredentialBox == nil {
 		// Same fail-closed contract as the credential PUT: without the
 		// encryption key the server must not fall back to plaintext hops.
-		return db.AgentRuntime{}, "", nil, fmt.Errorf("runtime credential encryption is not configured")
+		return db.AgentRuntime{}, "", nil, errVoiceCredentialEncryptionMissing
 	}
 	plaintext, err := h.RuntimeCredentialBox.Open(credential.SecretEncrypted)
 	if err != nil {
@@ -217,15 +221,23 @@ type voiceTranscriptEntry struct {
 // liveSessionSnapshot freezes the §4.5 配置变更版本一致性 contract: the
 // parameters this session runs under, hash-pinned, so write-back audits can
 // answer "which context version spoke".
-func liveSessionSnapshot(agentRow db.Agent, rt db.AgentRuntime, model string) []byte {
+func liveSessionSnapshot(agentRow db.Agent, target *voiceTarget, model string) []byte {
 	digest := sha256.Sum256([]byte(agentRow.Instructions))
-	snapshot, _ := json.Marshal(map[string]any{
+	snapshot := map[string]any{
 		"model":               model,
 		"instructions_sha256": hex.EncodeToString(digest[:]),
-		"voice_runtime_id":    uuidToString(rt.ID),
-		"protocol_family":     rt.Provider,
-	})
-	return snapshot
+		"protocol_family":     target.protocolFamily(),
+		// RUYI-693: which chain level produced this configuration, so
+		// write-back audits can answer "which config layer spoke".
+		"config_source": target.configSource,
+	}
+	if target.provider != nil {
+		snapshot["voice_provider_id"] = uuidToString(target.provider.ID)
+	} else {
+		snapshot["voice_runtime_id"] = uuidToString(target.runtime.ID)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	return encoded
 }
 
 // composeVoiceSetupFrame builds the BidiGenerateContent setup the gateway
@@ -451,7 +463,7 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 		return nil, &voiceHandshakeError{status: http.StatusNotFound, detail: "agent not found"}
 	}
 
-	rt, apiKey, rejection, serverErr := h.resolveVoiceSessionTarget(ctx, agentRow)
+	target, rejection, serverErr := h.resolveVoiceTarget(ctx, agentRow)
 	if serverErr != nil {
 		slog.Error("voice session gate failed", "agent_id", uuidToString(agentUUID), "error", serverErr)
 		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
@@ -459,33 +471,29 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 	if rejection != nil {
 		return nil, &voiceHandshakeError{status: http.StatusConflict, code: "VOICE_UNAVAILABLE:" + rejection.reason, detail: rejection.detail}
 	}
-	if !canUseRuntimeForAgent(member, rt) {
+	// The visibility/ownership check only applies to legacy runtime targets:
+	// a voice_provider pool entry is workspace-level shared state by design
+	// (the pool is managed in workspace settings), so any member who may use
+	// the agent may use its resolved provider.
+	if target.runtime != nil && !canUseRuntimeForAgent(member, *target.runtime) {
 		return nil, &voiceHandshakeError{status: http.StatusForbidden, detail: "you cannot use this agent's voice runtime"}
 	}
 
-	model := runtimeMetadataString(rt, "model")
-	if model == "" {
-		model = defaultVoiceModel
-	}
-	var advanced map[string]json.RawMessage
-	if raw, ok := runtimeMetadataBag(rt.Metadata)["advanced"]; ok {
-		json.Unmarshal(raw, &advanced)
-	}
-
+	model := target.model
 	session, err := h.Queries.CreateLiveSession(ctx, db.CreateLiveSessionParams{
 		WorkspaceID:       agentRow.WorkspaceID,
 		AgentID:           agentRow.ID,
-		RuntimeInstanceID: rt.ID,
+		RuntimeInstanceID: target.sessionEntityID(),
 		UserID:            parseUUID(userID),
 		Model:             model,
-		ContextSnapshot:   liveSessionSnapshot(agentRow, rt, model),
+		ContextSnapshot:   liveSessionSnapshot(agentRow, target, model),
 		Mode:              mode,
 	})
 	if err != nil {
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
 		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
 	}
-	return &voiceSessionPlan{session: session, apiKey: apiKey, instructions: agentRow.Instructions, model: model, advanced: advanced}, nil
+	return &voiceSessionPlan{session: session, apiKey: target.apiKey, instructions: agentRow.Instructions, model: model, advanced: target.advanced}, nil
 }
 
 // voiceRequestUserID resolves the caller identity from the request's bearer
