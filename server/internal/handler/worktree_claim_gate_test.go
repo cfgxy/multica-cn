@@ -122,6 +122,44 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 	})
 }
 
+// Snapshot mode rides the same claim-time fence, but its capability is
+// host-probed (the daemon's startup userns+overlay probe), not version-floored:
+// only the advertised capability can satisfy it, so the block reason points at
+// the host requirement rather than an upgrade floor.
+func TestSnapshotClaimBlockReason(t *testing.T) {
+	const daemon = "daemon-a"
+
+	snapshotRes := []ProjectResourceData{{
+		ID: "r1", ResourceType: "local_directory",
+		ResourceRef: localDirRef(t, "/Users/dev/game", daemon, "snapshot"),
+	}}
+
+	t.Run("blocks a runtime that does not advertise the capability", func(t *testing.T) {
+		reason := localIsolationClaimBlockReason(snapshotRes, runtimeWithVersion(daemon, "9.9.9"), true, false)
+		if reason == "" {
+			t.Fatal("a runtime without the snapshot capability was allowed to claim a snapshot task")
+		}
+		if !strings.Contains(reason, "/Users/dev/game") || !strings.Contains(reason, "user-namespace") {
+			t.Errorf("reason should name the directory and the host requirement, got: %q", reason)
+		}
+	})
+
+	t.Run("allows a runtime that advertises the capability", func(t *testing.T) {
+		if reason := localIsolationClaimBlockReason(snapshotRes, runtimeWithVersion(daemon, "9.9.9"), true, true); reason != "" {
+			t.Errorf("a capable runtime was blocked: %q", reason)
+		}
+	})
+
+	t.Run("a version alone never satisfies the snapshot gate", func(t *testing.T) {
+		// Unlike worktree, no min_version exists: the capability is a host
+		// property, so even the freshest version with the probe unpassed
+		// (capability unadvertised) must block.
+		if localIsolationClaimBlockReason(snapshotRes, runtimeWithVersion(daemon, "999.0.0"), true, false) == "" {
+			t.Error("a fresh-version runtime without the probed capability was allowed to claim")
+		}
+	})
+}
+
 // Worktree delivery metadata has to survive the whole way to the task row on
 // BOTH terminal paths. branch_name locates the commit, while durable_work_dir
 // records the directory that remains usable after the task worktree is gone.

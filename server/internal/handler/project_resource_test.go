@@ -1341,6 +1341,7 @@ func TestValidateLocalDirectoryRefExecutionMode(t *testing.T) {
 		{"absent means in_place", "", ""},
 		{"explicit in_place", "in_place", "in_place"},
 		{"worktree", "worktree", "worktree"},
+		{"snapshot", "snapshot", "snapshot"},
 		{"surrounding whitespace is trimmed", "  worktree  ", "worktree"},
 	}
 	for _, tc := range accepted {
@@ -1367,7 +1368,7 @@ func TestValidateLocalDirectoryRefExecutionMode(t *testing.T) {
 		})
 	}
 
-	rejected := []string{"snapshot", "WORKTREE", "in-place", "true"}
+	rejected := []string{"WORKTREE", "in-place", "true"}
 	for _, mode := range rejected {
 		t.Run("rejects "+mode, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
@@ -1505,6 +1506,53 @@ func TestCreateProjectGatesWorktreeLocalDirectory(t *testing.T) {
 	lreq := newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListProjects(lw, lreq)
 	if strings.Contains(lw.Body.String(), "Bundled worktree resource") {
+		t.Fatal("rejected create left a project behind")
+	}
+}
+
+// Snapshot mode rides the same bundled-create gate, but its capability is
+// host-probed (userns+overlay startup probe), not version-floored: the
+// rejection must carry the shared error code and NO min_version to upgrade to.
+func TestCreateProjectGatesSnapshotLocalDirectory(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Bundled snapshot resource",
+		"resources": []map[string]any{
+			{
+				"resource_type": "local_directory",
+				"resource_ref": map[string]any{
+					"local_path":     "/Users/dev/work/game-client",
+					"daemon_id":      "daemon-with-no-runtime-row",
+					"execution_mode": "snapshot",
+				},
+			},
+		},
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("CreateProject with un-runnable snapshot resource: expected 422, got %d: %s",
+			w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["code"] != "daemon_version_unsupported" {
+		t.Fatalf("expected the shared gate's error code, got %#v", resp["code"])
+	}
+	if _, has := resp["min_version"]; has {
+		t.Error("snapshot capability is host-probed: no min_version should be offered")
+	}
+
+	// The gate runs before the transaction opens, so the rejection must not
+	// leave a half-created project behind.
+	lw := httptest.NewRecorder()
+	lreq := newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
+	testHandler.ListProjects(lw, lreq)
+	if strings.Contains(lw.Body.String(), "Bundled snapshot resource") {
 		t.Fatal("rejected create left a project behind")
 	}
 }
