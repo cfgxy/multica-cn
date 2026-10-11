@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Unified audit event contract (RUYI-355 Phase 1).
@@ -78,6 +78,10 @@ const (
 	AuditAgentEnvRevealed             = "agent.env_revealed"
 	AuditAgentEnvUpdated              = "agent.env_updated"
 	AuditAgentExecutionProfileActived = "agent.execution_profile_activated"
+	// Scheduling freeze lifecycle, agent-level (RUYI-608). The workspace-
+	// level twin anchors in ops below (no single agent dimension).
+	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
+	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
 
 	// Issue domain: mirror of the activity_log writes (dual-write until
 	// Phase 2 switches the timeline data source), plus the audit-only direct
@@ -108,6 +112,11 @@ const (
 	// behind the operator API, never in the audit trail.
 	AuditOpsCommandSubmitted = "ops.command_submitted"
 	AuditOpsCommandFinalized = "ops.command_finalized"
+
+	// Workspace-level scheduling freeze lifecycle (RUYI-608): no single
+	// agent dimension to anchor, so the workspace is the object.
+	AuditOpsSchedulingPaused  = "ops.scheduling_paused"
+	AuditOpsSchedulingResumed = "ops.scheduling_resumed"
 )
 
 // Structured cancel/failure reasons. Cancel-class events (run.cancelled) MUST

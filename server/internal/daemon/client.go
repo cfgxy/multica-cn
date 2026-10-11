@@ -527,6 +527,16 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
+// AddTaskComment posts a system comment on the task's issue as the task's
+// agent — the ALERT tier's human-reachable leg (RUYI-593): a dead-channel run
+// has to reach a person, not just the transcript. Callers treat failures as
+// best-effort; the comment is an observation, never a delivery prerequisite.
+func (c *Client) AddTaskComment(ctx context.Context, taskID, content string) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/comment", taskID), map[string]any{
+		"content": content,
+	}, nil)
+}
+
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {

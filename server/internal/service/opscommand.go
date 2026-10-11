@@ -327,7 +327,7 @@ func FinalizeOpsCommandReceipt(ctx context.Context, q *db.Queries, receipt OpsRe
 				OccurredAt:  time.Now(),
 				ActorType:   AuditActorSystem,
 				RuntimeID:   runtimeUUID,
-				Reason:      strPtr("late_or_mismatched_receipt"),
+				Reason:      opsStringPtr("late_or_mismatched_receipt"),
 				Details: mustJSON(map[string]any{
 					"command_id":  receipt.CommandID,
 					"outcome":     "late_receipt_rejected",
@@ -387,7 +387,7 @@ func SweepOpsCommands(ctx context.Context, q *db.Queries) (expired, timedOut int
 			OccurredAt:  time.Now(),
 			ActorType:   AuditActorSystem,
 			RuntimeID:   row.RuntimeID,
-			Reason:      strPtr("pending_ttl_exceeded"),
+			Reason:      opsStringPtr("pending_ttl_exceeded"),
 			Details: mustJSON(map[string]any{
 				"command_id": uuidString(row.ID),
 				"kind":       row.Kind,
@@ -413,7 +413,7 @@ func SweepOpsCommands(ctx context.Context, q *db.Queries) (expired, timedOut int
 			OccurredAt:  time.Now(),
 			ActorType:   AuditActorSystem,
 			RuntimeID:   row.RuntimeID,
-			Reason:      strPtr("lease_expired"),
+			Reason:      opsStringPtr("lease_expired"),
 			Details: mustJSON(map[string]any{
 				"command_id":  uuidString(row.ID),
 				"kind":        row.Kind,
@@ -496,7 +496,7 @@ func argsEquivalent(a, b []byte) bool {
 	return string(aj) == string(bj)
 }
 
-func strPtr(s string) *string { return &s }
+func opsStringPtr(s string) *string { return &s }
 
 func textToString(t pgtype.Text) string {
 	if !t.Valid {

@@ -9,7 +9,9 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("react", () => ({ useEffect: vi.fn() }));
-vi.mock("react-native", () => ({ Platform: { OS: "ios" } }));
+vi.mock("react-native", () => ({
+  Platform: { OS: "ios", select: (s: Record<string, unknown>) => s.ios },
+}));
 vi.mock("expo-router", () => ({
   Redirect: state.redirect,
   Stack: () => null,

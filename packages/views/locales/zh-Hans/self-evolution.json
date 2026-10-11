@@ -383,6 +383,8 @@
     "title": "Prompt 立法提案",
     "description": "针对四个 Prompt 载体的条款级草案。提交后进入 Owner 审批；批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
     "filterAll": "全部",
+    "runFilterLabel": "运行批次",
+    "runFilterAll": "全部运行",
     "status": {
       "draft": "草稿",
       "pending_owner": "待 Owner 审批",
@@ -486,6 +488,8 @@
     "windowDays": "回看窗口（天）",
     "save": "保存配置",
     "runs": "运行记录",
+    "runTitle": "每日复盘{{stamp}}",
+    "viewResults": "查看成果",
     "trigger": "立即运行",
     "status": {
       "succeeded": "成功",
@@ -511,6 +515,24 @@
     "agentArchivedHint": "该智能体已归档；请改选其他智能体，否则运行会失败。",
     "agentTriggerBlocked": "未配置可用的执行智能体：请先在上方配置中选择一个智能体再运行。",
     "emptyDescription": "定时或手动触发后，这里会显示每次运行的记录。",
+    "viewDetail": "详情",
+    "detailTitle": "运行详情",
+    "triggerLabel": "触发方式",
+    "triggerSource": {
+      "schedule": "定时",
+      "manual": "手动"
+    },
+    "windowLabel": "回看窗口",
+    "startedAt": "开始时间",
+    "finishedAt": "结束时间",
+    "duration": "耗时",
+    "durationRunning": "运行中…",
+    "statsLabel": "统计",
+    "failureLabel": "失败原因",
+    "scannedIssues": "扫描的 Issue",
+    "analyzedIssues": "已分析的 Issue",
+    "noIssues": "无",
+    "viewLog": "查看运行日志",
     "run_errors": {
       "agent_not_configured": "未配置执行智能体：请在上方配置中选择一个智能体，保存后重试。",
       "agent_missing": "配置的执行智能体不存在：请在上方配置中重新选择并保存。",
@@ -680,7 +702,7 @@
     "hint": "处理后自动从列表消失",
     "modelUnconfigured": {
       "title": "模型服务未配置",
-      "description": "质量评分与每日总复盘没有可用的 LLM",
+      "description": "质量评分没有可用的 LLM",
       "action": "去配置"
     },
     "modelError": {
@@ -763,7 +785,7 @@
   },
   "modelConfig": {
     "title": "模型服务",
-    "description": "本工作区质量评分与每日总复盘共用的 LLM 端点。Key 加密存储，保存后不再回显。",
+    "description": "本工作区质量评分专用的 LLM 端点。Key 加密存储，保存后不再回显。",
     "baseUrl": "Base URL",
     "apiKey": "API Key",
     "model": "模型",
@@ -791,6 +813,6 @@
   },
   "configPage": {
     "title": "模块配置",
-    "description": "下方模型服务支撑质量评分与每日总复盘；Langfuse 为实例级配置，此处只读。"
+    "description": "下方模型服务支撑质量评分；Langfuse 为实例级配置，此处只读。"
   }
 }

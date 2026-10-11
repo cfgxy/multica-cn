@@ -72,6 +72,9 @@ type Agent struct {
 	ResourceWeight         int32       `json:"resource_weight"`
 	Revision               int64       `json:"revision"`
 	VoiceRuntimeID         pgtype.UUID `json:"voice_runtime_id"`
+	VoiceProviderID        pgtype.UUID `json:"voice_provider_id"`
+	VoiceModel             pgtype.Text `json:"voice_model"`
+	VoiceAdvanced          []byte      `json:"voice_advanced"`
 }
 
 type AgentBuilderDraft struct {
@@ -223,19 +226,6 @@ type AgentToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
-type AgentWebhook struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	Name        string             `json:"name"`
-	Prompt      string             `json:"prompt"`
-	Token       string             `json:"token"`
-	Enabled     bool               `json:"enabled"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-}
-
 type Attachment struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -297,6 +287,21 @@ type AutopilotCollaborator struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	GrantedBy   pgtype.UUID        `json:"granted_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type AutopilotParam struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AutopilotID  pgtype.UUID        `json:"autopilot_id"`
+	Name         string             `json:"name"`
+	ParamType    string             `json:"param_type"`
+	Description  string             `json:"description"`
+	Required     bool               `json:"required"`
+	DefaultValue pgtype.Text        `json:"default_value"`
+	EnumOptions  []string           `json:"enum_options"`
+	Position     int32              `json:"position"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type AutopilotQuotaPeriod struct {
@@ -1825,6 +1830,19 @@ type RuntimeSkillDiscovery struct {
 	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
 }
 
+// Active scheduling freezes (RUYI-608). agent_id NULL = workspace-level freeze; non-null = agent-level. ClaimAgentTask fences on this table, so frozen agents cannot claim queued tasks; enqueue and coalesce continue; running tasks drain normally.
+type SchedulingPause struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// NULL freezes every agent in the workspace; a value freezes exactly that agent.
+	AgentID pgtype.UUID `json:"agent_id"`
+	// Free-text note from the operator who froze scheduling; audit trail, never interpreted.
+	Reason string `json:"reason"`
+	// member.user_id of the workspace owner/admin who froze scheduling.
+	CreatedBy pgtype.UUID        `json:"created_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type SeatCapacityOutbox struct {
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
 	OperationToken pgtype.UUID        `json:"operation_token"`
@@ -2133,6 +2151,20 @@ type VerificationCode struct {
 	Used      bool               `json:"used"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	Attempts  int32              `json:"attempts"`
+}
+
+type VoiceProvider struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	DisplayName     string             `json:"display_name"`
+	ProviderType    string             `json:"provider_type"`
+	CredentialRef   pgtype.Text        `json:"credential_ref"`
+	Metadata        []byte             `json:"metadata"`
+	Enabled         bool               `json:"enabled"`
+	SourceRuntimeID pgtype.UUID        `json:"source_runtime_id"`
+	CreatedBy       pgtype.UUID        `json:"created_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WebhookDelivery struct {

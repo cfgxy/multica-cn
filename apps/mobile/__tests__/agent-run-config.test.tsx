@@ -28,6 +28,13 @@ jest.mock("expo-router", () => ({
   Stack: { Screen: ({ children }) => children },
 }));
 
+// SheetHeader (RUYI-698) reads the sheet detent via useNavigation — the
+// suite renders outside a NavigationContainer, so stub the hook only.
+jest.mock("@react-navigation/native", () => ({
+  ...jest.requireActual("@react-navigation/native"),
+  useNavigation: () => ({ addListener: jest.fn(() => jest.fn()) }),
+}));
+
 jest.mock("react-native-keyboard-controller", () => {
   const React = jest.requireActual("react");
   const { View } = jest.requireActual("react-native");

@@ -41,6 +41,64 @@ export const issueDetailOptions = (wsId: string | null, id: string) =>
     enabled: !!wsId && !!id,
   });
 
+// Structured relations (RUYI-689): parent + five edge views in one payload.
+// Relation writes emit no WS event (server only bumps the anchor revisions),
+// so every mount re-pulls — same contract as web's issueRelationsOptions in
+// packages/core/issues/queries.ts.
+export const issueRelationsOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.relations(wsId, id),
+    queryFn: ({ signal }) => api.getIssueRelations(id, { signal }),
+    enabled: !!wsId && !!id,
+    refetchOnMount: "always",
+  });
+
+// Sub-issues of a parent — backs the children group of the Relations page
+// (RUYI-689). Same refetchOnMount contract as its web sibling
+// childIssuesOptions: child creation can happen off-subscription and no
+// event is guaranteed to heal a stale snapshot.
+export const childIssuesOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.children(wsId, id),
+    queryFn: ({ signal }) => api.listChildIssues(id, { signal }),
+    enabled: !!wsId && !!id,
+    refetchOnMount: "always",
+  });
+
+/**
+ * Resolve a bare issue identifier ("MUL-123") to its issue, or `null`.
+ *
+ * Backs the RUYI-635 tail reference list: an identifier reference that
+ * resolves renders a tappable row; a miss renders as plain text. The lookup
+ * is EXACT — `GET /api/issues/{identifier}` parses `PREFIX-NUMBER` and 404s
+ * on a non-existent or wrong-workspace-prefix identifier, which maps to
+ * `null` here (mirrors `issueIdentifierOptions` in packages/core, kept
+ * mobile-owned because the api instance carries this app's auth). Any other
+ * failure (401/5xx/abort) propagates so the query retries instead of caching
+ * "no such issue".
+ */
+export const issueIdentifierOptions = (wsId: string | null, identifier: string) =>
+  queryOptions({
+    queryKey: issueKeys.identifier(wsId, identifier),
+    queryFn: async ({ signal }) => {
+      try {
+        return await api.getIssue(identifier, { signal });
+      } catch (err) {
+        if (
+          err instanceof Error &&
+          (err as { status?: number }).status === 404
+        ) {
+          return null;
+        }
+        throw err;
+      }
+    },
+    enabled: !!wsId && !!identifier,
+    // Identifier→issue mapping is effectively immutable; the same identifier
+    // can appear in many comments on one screen — don't refetch per mount.
+    staleTime: 5 * 60_000,
+  });
+
 /**
  * Single query over the full issue timeline (ASC, oldest first). Mirrors
  * web's `issueTimelineOptions` post-#2322 — server returns the whole list

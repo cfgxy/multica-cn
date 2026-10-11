@@ -22,14 +22,12 @@ import type {
   Agent,
   AgentEnvResponse,
   AgentTask,
-  AgentWebhook,
   Attachment,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
   Comment,
   CreateAgentRequest,
-  CreateAgentWebhookRequest,
   AddSquadMemberRequest,
   CreateIssueRequest,
   CreateLabelRequest,
@@ -55,6 +53,7 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   Issue,
+  IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
   IssueLabelsResponse,
@@ -95,7 +94,6 @@ import type {
   TaskMessagePayload,
   UpdateAgentEnvRequest,
   UpdateAgentRequest,
-  UpdateAgentWebhookRequest,
   UpdateIssueRequest,
   UpdateMeRequest,
   UpdateProjectRequest,
@@ -109,17 +107,14 @@ import {
 } from "@multica/core/issues/timeline-query";
 import {
   AgentEnvResponseSchema,
-  AgentWebhookListSchema,
-  AgentWebhookSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
   EMPTY_AGENT_ENV,
-  EMPTY_AGENT_WEBHOOK,
-  EMPTY_AGENT_WEBHOOK_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_ISSUE_RELATIONS,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_SQUAD,
@@ -128,6 +123,8 @@ import {
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
   IssuePullRequestsResponseSchema,
+  IssueRelationsResponseSchema,
+  ChildIssuesResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
@@ -1110,65 +1107,6 @@ class ApiClient {
     );
   }
 
-  // Agent webhooks (RUYI-52). webhook_token/path/url come back only for
-  // managers — the server strips them for anyone else; the UI keys its
-  // manage affordances off their presence.
-  async listAgentWebhooks(agentId: string, opts?: { signal?: AbortSignal }): Promise<AgentWebhook[]> {
-    return this.fetchValidated(
-      `/api/agents/${agentId}/webhooks`,
-      AgentWebhookListSchema,
-      EMPTY_AGENT_WEBHOOK_LIST,
-      { ...opts, endpoint: "listAgentWebhooks" },
-    );
-  }
-
-  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "POST", body: JSON.stringify(data) },
-      { endpoint: "createAgentWebhook" },
-    );
-  }
-
-  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "PUT", body: JSON.stringify(data) },
-      { endpoint: "updateAgentWebhook" },
-    );
-  }
-
-  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}/enabled`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "PUT", body: JSON.stringify({ enabled }) },
-      { endpoint: "setAgentWebhookEnabled" },
-    );
-  }
-
-  // POST rotate — mints a new token; the old URL stops working immediately.
-  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}/rotate`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "POST", body: JSON.stringify({}) },
-      { endpoint: "rotateAgentWebhook" },
-    );
-  }
-
-  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
-    await this.fetch<void>(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "DELETE",
-    });
-  }
-
   // Incremental attach — POST /skills/add only inserts the given ids (server
   // upserts with ON CONFLICT DO NOTHING), mirroring web's addAgentSkills.
   async addAgentSkills(agentId: string, data: SetAgentSkillsRequest): Promise<void> {
@@ -1724,6 +1662,37 @@ class ApiClient {
       EMPTY_ISSUE_FALLBACK,
       { ...opts, endpoint: "getIssue" },
     );
+  }
+
+  // Structured relations (RUYI-689) — mirrors web packages/core/api/client.ts
+  // getIssueRelations → GET /api/issues/:id/relations. Read-only: edge
+  // creation/deletion stays an API concern, no mobile write counterpart.
+  async getIssueRelations(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IssueRelationsResponse> {
+    return this.fetchValidated(
+      `/api/issues/${id}/relations`,
+      IssueRelationsResponseSchema,
+      EMPTY_ISSUE_RELATIONS,
+      { ...opts, endpoint: "getIssueRelations" },
+    );
+  }
+
+  // Sub-issues of a parent — mirrors web packages/core/api/client.ts
+  // listChildIssues → GET /api/issues/:id/children. Backs the children
+  // group of the Relations page (RUYI-689); the relations endpoint covers
+  // parent + edge views but deliberately not children.
+  async listChildIssues(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ issues: Issue[] }> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/children`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
+      endpoint: "GET /api/issues/:id/children",
+    });
   }
 
   // Write endpoint — mirrors POST /api/issues

@@ -8393,7 +8393,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -8453,7 +8453,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// this retry launches a fresh unit instead of reentering the old one.
 		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
@@ -8952,7 +8952,7 @@ func freshSessionMayHelp(errText string) bool {
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
-func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome, provider string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
 	// drain loop with a single cancel. Without this layer the backend would
@@ -9022,8 +9022,83 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	}
 	var idleWatchdogThreshold atomic.Int64
 	idleWatchdogThreshold.Store(int64(idleWindow))
+
+	// Watchdog observation state (RUYI-593 round 2). The pending-call tracker
+	// and the transcript batch share the drain mutex, so watchdog events get
+	// their seq from the same msgSeq counter and interleave monotonically
+	// with the message stream. The observer is pure visibility — it never
+	// touches lastActivityAt (self-produced events are not backend activity;
+	// feeding them back would let each event defer its own kill) — and is
+	// fully inert when every knob is zero, which leaves the watchdog
+	// byte-for-byte on its pre-round behavior.
+	var mu sync.Mutex
+	var batch []TaskMessageData
+	watchTracker := newToolCallTracker()
+	emitWatchdogEvent := func(input map[string]any, tool string) {
+		s := msgSeq.Add(1)
+		mu.Lock()
+		batch = append(batch, TaskMessageData{
+			Seq:   int(s),
+			Type:  "watchdog",
+			Tool:  tool,
+			Input: input,
+		})
+		mu.Unlock()
+	}
+	observer := newWatchdogObserver(d.cfg, watchTracker)
+	// postSilenceAlertComment is the ALERT tier's human-reachable leg: the
+	// transcript event alone is agent-visible, so the alert also lands as an
+	// issue comment through the daemon task-comment endpoint. Best-effort and
+	// bounded: a comment failure is logged and swallowed — it must never
+	// disturb the run or the watchdog.
+	postSilenceAlertComment := func(content string) {
+		commentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.client.AddTaskComment(commentCtx, taskID, content); err != nil {
+			taskLog.Warn("failed to post silence alert comment", "error", err)
+		}
+	}
+	// recordForceStopSnapshot is the pre-mortem leg (RUYI-593): at the moment
+	// the watchdog decides to kill, take one atomic snapshot and deliver it
+	// three ways — a transcript event (via the shared batch, so its seq
+	// interleaves monotonically with the message stream), the structured kill
+	// log, and the terminal message wording (premortemSummary, read by the
+	// terminal branches after the drain tail has flushed). The kill itself is
+	// untouched: the caller fires it exactly where it always did.
+	var premortemSummary atomic.Value // string
+	recordForceStopSnapshot := func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool) {
+		mu.Lock()
+		pendingCount := len(watchTracker.pendingLocked())
+		ev := observer.collectPremortem(now, idleFor, threshold, toolInFlight, provider, toolCount.Load())
+		mu.Unlock()
+		emitWatchdogEvent(ev.input, ev.tool)
+		summary := premortemSummaryText(ev.input)
+		premortemSummary.Store(summary)
+		taskLog.Warn("watchdog force-stop pre-mortem",
+			"provider", provider,
+			"threshold", threshold.String(),
+			"idle_for", idleFor.Round(time.Millisecond).String(),
+			"tool_in_flight", toolInFlight,
+			"pending_tools", pendingCount,
+			"detail", summary,
+		)
+	}
+	var observe func(now time.Time, idleFor time.Duration, toolInFlight bool)
+	if observer.marksEnabled() || observer.silenceEnabled() {
+		observe = func(now time.Time, idleFor time.Duration, toolInFlight bool) {
+			mu.Lock()
+			events := observer.collectEvents(now, idleFor, toolInFlight)
+			mu.Unlock()
+			for _, ev := range events {
+				emitWatchdogEvent(ev.input, ev.tool)
+				if ev.comment != "" {
+					postSilenceAlertComment(ev.comment)
+				}
+			}
+		}
+	}
 	if idleWindow > 0 {
-		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog)
+		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog, observe, recordForceStopSnapshot)
 	}
 
 	// drainFinished closes after the drain goroutine has flushed the last
@@ -9032,11 +9107,11 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	drainFinished := make(chan struct{})
 	go func() {
 		defer close(drainFinished)
-		var mu sync.Mutex
+		// mu and batch live at executeAndDrain scope, shared with the
+		// watchdog's observation events so every reported row — transcript
+		// and watchdog alike — drains through one mutex-guarded batch.
 		var pendingText strings.Builder
 		var pendingThinking strings.Builder
-		var batch []TaskMessageData
-		callIDToTool := map[string]string{}
 
 		flush := func() {
 			mu.Lock()
@@ -9103,6 +9178,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// slow downstream call (mu.Lock contention, batch resize)
 				// can't be misattributed to backend silence.
 				lastActivityAt.Store(time.Now().UnixNano())
+				// A backend message means the run recovered from any silent
+				// segment: re-arm the warn/alert escalation so the next
+				// silence escalates on its own again.
+				mu.Lock()
+				observer.observeActivity()
+				mu.Unlock()
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
@@ -9141,11 +9222,15 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					n := toolCount.Add(1)
 					inFlightTools.Add(1)
 					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
-					if msg.CallID != "" {
-						mu.Lock()
-						callIDToTool[msg.CallID] = msg.Tool
-						mu.Unlock()
-					}
+					mu.Lock()
+					// Track the call for the watchdog's observation tier:
+					// in-flight marks and the force-stop pre-mortem both
+					// describe runs through this pending set. Calls without
+					// an id are tracked under a synthetic key (CallID stays
+					// empty) so they still show up even though no result can
+					// ever match them exactly.
+					watchTracker.register(msg.CallID, msg.Tool, time.Now())
+					mu.Unlock()
 					s := msgSeq.Add(1)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
@@ -9185,11 +9270,20 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						output = output[:8192]
 					}
 					toolName := msg.Tool
-					if toolName == "" && msg.CallID != "" {
-						mu.Lock()
-						toolName = callIDToTool[msg.CallID]
-						mu.Unlock()
+					mu.Lock()
+					// Retire the pending call this result pairs with: exact
+					// call_id match first, then the frontend folder's
+					// same-tool-FIFO fallback for results that lost their id.
+					// The retired record supplies the display name when the
+					// result itself is nameless.
+					if msg.CallID != "" {
+						if tr := watchTracker.take(msg.CallID); tr != nil && toolName == "" {
+							toolName = tr.Tool
+						}
+					} else {
+						watchTracker.retireOldest(msg.Tool)
 					}
+					mu.Unlock()
 					taskLog.Info("tool_result observed", "seq", s, "tool", toolName, "call_id", msg.CallID)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
@@ -9264,6 +9358,17 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 
+	// watchdogTerminalError composes the terminal wording: the fixed watchdog
+	// sentence plus the pre-mortem snapshot summary (read after waitForDrain,
+	// so the snapshot event has already been written before the run reports).
+	watchdogTerminalError := func() string {
+		msg := idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+		if s, ok := premortemSummary.Load().(string); ok && s != "" {
+			msg += "; " + s
+		}
+		return msg
+	}
+
 	select {
 	case result := <-session.Result:
 		waitForDrain()
@@ -9275,7 +9380,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			// generic "agent_error" bucket the aborted path falls into.
 			result.Status = "idle_watchdog"
 			if result.Error == "" {
-				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+				result.Error = watchdogTerminalError()
 			}
 		}
 		return result, toolCount.Load(), nil
@@ -9292,7 +9397,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		if idleWatchdogFired.Load() {
 			return agent.Result{
 				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
+				Error:  watchdogTerminalError(),
 			}, toolCount.Load(), nil
 		}
 		// Distinguish external cancellation (e.g. server-initiated cancel
@@ -9365,7 +9470,7 @@ func idleWatchdogTickInterval(window time.Duration) time.Duration {
 //
 // Polling rate comes from idleWatchdogTickInterval, so a run is force-stopped
 // somewhere between its budget and budget + tick, never earlier.
-func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger) {
+func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, observe func(now time.Time, idleFor time.Duration, toolInFlight bool), snapshot func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool)) {
 	ticker := time.NewTicker(idleWatchdogTickInterval(window))
 	defer ticker.Stop()
 	for {
@@ -9377,16 +9482,26 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 			// silent (a long build/install/test emits nothing between
 			// tool_use and tool_result), so it gets the larger toolWindow;
 			// toolWindow <= 0 disables the in-flight bound entirely.
-			threshold := window
+			now := time.Now()
 			toolInFlight := inFlightTools.Load() > 0
+			last := time.Unix(0, lastActivityAt.Load())
+			idleFor := now.Sub(last)
+			// Observation hook (RUYI-593 round 2): pure visibility on every
+			// tick, including ones the kill checks below skip — a tool in
+			// flight with toolWindow <= 0 never force-stops, and that is
+			// exactly the regime where in-flight marks matter most. The hook
+			// reads the same clocks the kill path does but never mutates
+			// them, so force-stop semantics are unchanged.
+			if observe != nil {
+				observe(now, idleFor, toolInFlight)
+			}
+			threshold := window
 			if toolInFlight {
 				if toolWindow <= 0 {
 					continue
 				}
 				threshold = toolWindow
 			}
-			last := time.Unix(0, lastActivityAt.Load())
-			idleFor := time.Since(last)
 			if idleFor < threshold {
 				continue
 			}
@@ -9403,6 +9518,12 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 				"tool_in_flight", toolInFlight,
 			)
 			firedThreshold.Store(int64(threshold))
+			// Take the pre-mortem snapshot before firing so the transcript
+			// event, log record, and terminal summary all describe the exact
+			// kill decision (same now, same idleFor, same threshold).
+			if snapshot != nil {
+				snapshot(now, idleFor, threshold, toolInFlight)
+			}
 			fired.Store(true)
 			cancel()
 			return

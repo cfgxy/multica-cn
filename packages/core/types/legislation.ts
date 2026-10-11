@@ -158,4 +158,11 @@ export interface RetrospectiveRun {
   /** Raw server JSONB passthrough (issue_ids membership, etc.). */
   detail?: RetrospectiveRunDetail | null;
   created_at: string;
+  /** Terminal time; null/absent while the run is still going. */
+  finished_at?: string | null;
+  /**
+   * Platform task enqueued for this run (RUYI-663) — the transcript anchor.
+   * Null for runs that failed before enqueue and rows predating the column.
+   */
+  task_id?: string | null;
 }

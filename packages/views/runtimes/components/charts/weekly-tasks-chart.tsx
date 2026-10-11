@@ -7,6 +7,11 @@ import {
   Cell,
 } from "recharts";
 import {
+  useBarSelection,
+  weeklyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -36,16 +41,45 @@ export interface WeeklyTasksData {
   cancelled: number;
 }
 
-export function WeeklyTasksChart({ data }: { data: WeeklyTasksData[] }) {
+export function WeeklyTasksChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: WeeklyTasksData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
   const { t } = useT("usage");
   const { t: tRuntimes } = useT("runtimes");
   const locale = useLocale();
+  const barSel = useBarSelection({
+    spans: weeklyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  // Selection active -> the hook owns per-bar opacity (dim vs selected,
+  // merged over the partial-week fade); idle -> fall back to this chart's
+  // own partial Cells so the no-selection render is unchanged.
+  const barCells =
+    barSel.cells(data.length, {
+      keyOf: (i) => data[i]?.weekStart ?? String(i),
+      baseOpacity: (i) => (data[i]?.partial ? 0.5 : 1),
+    }) ??
+    data.map((d) => (
+      <Cell key={d.weekStart} fillOpacity={d.partial ? 0.5 : 1} />
+    ));
+
   return (
     <ChartContainer
       config={weeklyTasksChartConfig}
       className="aspect-[3/1] w-full"
     >
-      <BarChart data={data} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -101,9 +135,7 @@ export function WeeklyTasksChart({ data }: { data: WeeklyTasksData[] }) {
           fill="var(--color-completed)"
           radius={[0, 0, 0, 0]}
         >
-          {data.map((d) => (
-            <Cell key={`${d.weekStart}-c`} fillOpacity={d.partial ? 0.5 : 1} />
-          ))}
+          {barCells}
         </Bar>
         <Bar
           dataKey="cancelled"
@@ -111,9 +143,7 @@ export function WeeklyTasksChart({ data }: { data: WeeklyTasksData[] }) {
           fill="var(--color-cancelled)"
           radius={[0, 0, 0, 0]}
         >
-          {data.map((d) => (
-            <Cell key={`${d.weekStart}-x`} fillOpacity={d.partial ? 0.5 : 1} />
-          ))}
+          {barCells}
         </Bar>
         <Bar
           dataKey="failed"
@@ -121,9 +151,7 @@ export function WeeklyTasksChart({ data }: { data: WeeklyTasksData[] }) {
           fill="var(--color-failed)"
           radius={[3, 3, 0, 0]}
         >
-          {data.map((d) => (
-            <Cell key={`${d.weekStart}-f`} fillOpacity={d.partial ? 0.5 : 1} />
-          ))}
+          {barCells}
         </Bar>
       </BarChart>
     </ChartContainer>

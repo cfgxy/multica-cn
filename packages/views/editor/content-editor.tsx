@@ -47,6 +47,7 @@ import { useWorkspaceSlug } from "@multica/core/paths";
 import { useQueryClient } from "@tanstack/react-query";
 import { issueIdentifierOptions } from "@multica/core/issues/queries";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
+import { identifierMatchesPrefix } from "@multica/core/markdown";
 import { isIssueIdentifier } from "@multica/ui/markdown";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -188,6 +189,14 @@ interface ContentEditorBaseProps {
    * prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
+  /**
+   * RUYI-635: issue mention nodes read as plain text instead of chips, and
+   * navigation moves to the tail reference list the host renders next to the
+   * editor. For hosts whose editor IS the rendered content — the issue body,
+   * which no longer has a separate readonly display pass. Composers omit it:
+   * while typing, the chip is the feedback that a mention node exists.
+   */
+  demoteIssueMentions?: boolean;
   /** Chat can surface current/recent issue/project suggestions. Other editors use default mention behavior. */
   mentionMode?: "default" | "context";
   mentionContextItems?: MentionItem[];
@@ -402,6 +411,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       showBubbleMenu = true,
       currentIssueId,
       disableMentions = false,
+      demoteIssueMentions = false,
       mentionMode = "default",
       mentionContextItems,
       enableSlashCommands = false,
@@ -558,13 +568,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       const workspaces = await queryClient.fetchQuery(workspaceListOptions());
       const ws = workspaces.find((w) => w.slug === slug);
       if (!ws) return null;
-      const prefix = ws.issue_prefix;
-      if (
-        prefix &&
-        !identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`)
-      ) {
-        return null;
-      }
+      if (!identifierMatchesPrefix(identifier, ws.issue_prefix)) return null;
       const issue = await queryClient.fetchQuery(
         issueIdentifierOptions(ws.id, identifier),
       );
@@ -647,6 +651,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         onUploadFileRef,
         pasteAsFileThresholdRef,
         disableMentions,
+        demoteIssueMentions,
         mentionMode,
         getMentionContextItems: () => mentionContextItemsRef.current,
         enableSlashCommands,

@@ -1,7 +1,6 @@
 /**
  * Pure string transforms applied before marked.lexer parses the content.
  *
- * Two passes, both idempotent:
  *   1. Legacy mention shortcodes `[@ id="..." label="..."]` → modern
  *      mention link `[@Label](mention://member/id)`. Old DB rows from before
  *      the April 2026 migration use the shortcode form; the modern form is
@@ -9,19 +8,29 @@
  *      `@multica/core/markdown` (single source of truth — same regex web/
  *      desktop run).
  *
- *   2. File card lines `!file[name](url)` → standard link `[📎 name](url)`.
+ *   2. Issue mention links `[label](mention://issue/id)` → plain body text
+ *      (RUYI-635): web renders mentions as plain text and aggregates the
+ *      references into a tail list; the demote pass applies the same body-text
+ *      contract here, and navigation moves to the tail list rendered by
+ *      `IssueReferenceList`. Also lives in `@multica/core/markdown` so the
+ *      display token can't drift from web.
+ *
+ *   3. File card lines `!file[name](url)` → standard link `[📎 name](url)`.
  *      marked.js doesn't recognize the `!file` prefix; web's preprocess
  *      turns it into HTML, which mobile can't render natively. Rewriting
  *      to a normal link with a 📎 emoji makes it a tappable link that
  *      `Linking.openURL` opens in the system viewer (Safari for PDFs,
  *      QuickLook for docs, share sheet for arbitrary files).
  *
- * NOTE: Web's preprocess also has a third pass that detects bare CDN
+ * NOTE: Web's preprocess also has a pass that detects bare CDN
  * URLs as legacy file links. We skip that because mobile doesn't bootstrap
  * the cdnDomain config. Old comments using the legacy form render as plain
  * hyperlinks — same tap behavior, just no 📎 prefix. Acceptable degradation.
  */
-import { preprocessMentionShortcodes } from "@multica/core/markdown";
+import {
+  demoteIssueMentionLinks,
+  preprocessMentionShortcodes,
+} from "@multica/core/markdown";
 
 // File-card line matcher, kept in sync with web's parser in
 // `packages/ui/markdown/file-cards.ts` (NEW_FILE_CARD_RE + FILE_CARD_URL_PATTERN):
@@ -161,7 +170,11 @@ export function preprocessMobileMarkdown(input: string): string {
   if (!input) return "";
   return preprocessTaskListStrikethrough(
     preprocessCommentAnchors(
-      preprocessFileCards(preprocessMentionShortcodes(stripHtml(input))),
+      preprocessFileCards(
+        demoteIssueMentionLinks(
+          preprocessMentionShortcodes(stripHtml(input)),
+        ),
+      ),
     ),
   );
 }
