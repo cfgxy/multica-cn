@@ -290,30 +290,39 @@ export default function IssueDetail() {
                           onOpenPicker={openPicker}
                         />
                         <DropdownMenuSeparator />
+                        {/*
+                          Labels below stretch to the row (flex-1) instead of
+                          shrink-to-fit: with Fabric on Android, a shrink-to-fit
+                          Text measured at its exact-fit width can drop its
+                          final word at render time while keeping the reserved
+                          space (facebook/react-native#57110). Full-row width
+                          leaves slack, so measurement and layout agree;
+                          left-aligned single-line rendering is unchanged.
+                        */}
                         <DropdownMenuItem onPress={onTogglePin}>
-                          <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
+                          <Text className="flex-1">{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onEditDetails}>
-                          <Text>
+                          <Text className="flex-1">
                             {t("mobile.detail.edit_details", "Edit details")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyTitle}>
-                          <Text>{t("mobile.detail.copy_title", "Copy title")}</Text>
+                          <Text className="flex-1">{t("mobile.detail.copy_title", "Copy title")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyDescription}>
-                          <Text>{t("mobile.detail.copy_description", "Copy description")}</Text>
+                          <Text className="flex-1">{t("mobile.detail.copy_description", "Copy description")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyLink}>
-                          <Text>{t("actions.copy_link", "Copy link")}</Text>
+                          <Text className="flex-1">{t("actions.copy_link", "Copy link")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenOnWeb}>
-                          <Text>
+                          <Text className="flex-1">
                             {t("mobile.detail.open_on_web", "Open on web")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenPullRequests}>
-                          <Text>
+                          <Text className="flex-1">
                             {t(
                               "detail.section_pull_requests",
                               "Pull requests",
@@ -322,7 +331,7 @@ export default function IssueDetail() {
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem variant="destructive" onPress={onDelete}>
-                          <Text>{t("actions.delete_issue", "Delete issue")}</Text>
+                          <Text className="flex-1">{t("actions.delete_issue", "Delete issue")}</Text>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
