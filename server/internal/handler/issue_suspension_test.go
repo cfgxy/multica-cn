@@ -131,8 +131,8 @@ func TestSuspendSetsSnapshotSingleActiveAndValidation(t *testing.T) {
 	// First suspend: 201, snapshot set, dual audit trail (activity + audit
 	// twin), waiting target recorded.
 	code, resp := suspendIssueForTest(t, issue.ID, map[string]any{
-		"reason":             "waiting for the schema decision",
-		"waiting_on_type":    "issue",
+		"reason":              "waiting for the schema decision",
+		"waiting_on_type":     "issue",
 		"waiting_on_issue_id": target.ID,
 	})
 	if code != http.StatusCreated {
@@ -157,9 +157,9 @@ func TestSuspendSetsSnapshotSingleActiveAndValidation(t *testing.T) {
 	// Second active suspension loses to the partial unique index: 409, no
 	// new row, snapshot untouched.
 	code, _ = suspendIssueForTest(t, issue.ID, map[string]any{
-		"reason":             "second hold",
-		"waiting_on_type":    "external",
-		"resume_condition":   "whenever",
+		"reason":           "second hold",
+		"waiting_on_type":  "external",
+		"resume_condition": "whenever",
 	})
 	if code != http.StatusConflict {
 		t.Fatalf("double suspend: expected 409, got %d", code)
@@ -206,8 +206,8 @@ func TestSuspensionGateHoldsCommentDispatchUntilRelease(t *testing.T) {
 	targetID := createCommentTriggerPreviewIssue(t, "gate suspension target", "", "")
 
 	code, resp := suspendIssueForTest(t, issueID, map[string]any{
-		"reason":             "parked on the dependency",
-		"waiting_on_type":    "issue",
+		"reason":              "parked on the dependency",
+		"waiting_on_type":     "issue",
 		"waiting_on_issue_id": targetID,
 	})
 	if code != http.StatusCreated {
@@ -266,8 +266,8 @@ func TestAutoResumeOnWaitingIssueDone(t *testing.T) {
 	target := createIssueForTest(t, map[string]any{"title": "auto resume target", "status": "todo"})
 
 	code, resp := suspendIssueForTest(t, waitingID, map[string]any{
-		"reason":             "waiting on the blocker",
-		"waiting_on_type":    "issue",
+		"reason":              "waiting on the blocker",
+		"waiting_on_type":     "issue",
 		"waiting_on_issue_id": target.ID,
 	})
 	if code != http.StatusCreated {
@@ -489,8 +489,8 @@ func TestDeleteIssueSweepsSuspensions(t *testing.T) {
 	target := createIssueForTest(t, map[string]any{"title": "sweep target", "status": "todo"})
 
 	code, _ := suspendIssueForTest(t, issue.ID, map[string]any{
-		"reason":             "will be swept",
-		"waiting_on_type":    "issue",
+		"reason":              "will be swept",
+		"waiting_on_type":     "issue",
 		"waiting_on_issue_id": target.ID,
 	})
 	if code != http.StatusCreated {
@@ -519,13 +519,13 @@ func TestWorkspaceSuspensionAggregate(t *testing.T) {
 	target := createIssueForTest(t, map[string]any{"title": "aggregate target", "status": "todo"})
 
 	suspendIssueForTest(t, a.ID, map[string]any{
-		"reason":             "still waiting",
-		"waiting_on_type":    "issue",
+		"reason":              "still waiting",
+		"waiting_on_type":     "issue",
 		"waiting_on_issue_id": target.ID,
 	})
 	_, respB := suspendIssueForTest(t, b.ID, map[string]any{
-		"reason":             "already released",
-		"waiting_on_type":    "issue",
+		"reason":              "already released",
+		"waiting_on_type":     "issue",
 		"waiting_on_issue_id": target.ID,
 	})
 	if c := releaseSuspensionForTest(t, b.ID, respB.Suspension.ID, "resume", nil); c != http.StatusOK {
@@ -580,5 +580,70 @@ func TestWorkspaceSuspensionAggregate(t *testing.T) {
 	}
 	if !sawB {
 		t.Fatal("resumed row missing from ?status=all")
+	}
+}
+
+// AC (acceptance scenario 3, extended to the child-done wake): a child
+// finishing is a routine wake and must NOT start a run on a suspended parent
+// whose resume condition lives elsewhere. The hold stays active through the
+// child's done transition; a manual release admits the wake again
+// (decision 3). This is the dispatchParentAssigneeTrigger suspension gate.
+func TestChildDoneDoesNotWakeSuspendedParent(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := seededReadyAgentID(t)
+
+	// Parent with an agent assignee, seeded raw (no assign-trigger task) so
+	// the task count below isolates the child-done wake. Unstaged siblings
+	// are one implicit stage, so finishing the child closes the stage barrier
+	// and would wake the parent if it were not suspended.
+	parentID := createCommentTriggerPreviewIssue(t, "suspension parent seed", "agent", agentID)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":           "suspension parent child",
+		"status":          "in_progress",
+		"parent_issue_id": parentID,
+	})
+	testHandler.CreateIssue(cw, creq)
+	if cw.Code != http.StatusCreated {
+		t.Fatalf("create child: expected 201, got %d", cw.Code)
+	}
+	var child IssueResponse
+	if err := json.NewDecoder(cw.Body).Decode(&child); err != nil {
+		t.Fatalf("decode child: %v", err)
+	}
+
+	// Suspend the parent on an external wait: no machine predicate, so the
+	// child completing can never satisfy it.
+	code, resp := suspendIssueForTest(t, parentID, map[string]any{
+		"reason":           "waiting on the owner decision",
+		"waiting_on_type":  "external",
+		"resume_condition": "owner answers the design question",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("suspend: expected 201, got %d", code)
+	}
+
+	// Child done: the stage barrier closes, but the parent is suspended —
+	// no run, hold untouched.
+	updateIssueForTest(t, child.ID, map[string]any{"status": "done"})
+	if n := taskCountFor(t, parentID, agentID); n != 0 {
+		t.Fatalf("suspended parent woke on child done (%d tasks), want 0", n)
+	}
+	status, _ := suspensionStateForTest(t, resp.Suspension.ID)
+	if status != "active" {
+		t.Fatalf("suspension moved to %q on child done, want active", status)
+	}
+	if !issueSuspendedAtForTest(t, parentID) {
+		t.Fatal("child done cleared the snapshot without a release")
+	}
+
+	// Manual release: the assignee wake lands (decision 3).
+	if c := releaseSuspensionForTest(t, parentID, resp.Suspension.ID, "resume", nil); c != http.StatusOK {
+		t.Fatalf("resume: expected 200, got %d", c)
+	}
+	if n := taskCountFor(t, parentID, agentID); n != 1 {
+		t.Fatalf("wake tasks after release = %d, want 1", n)
 	}
 }
