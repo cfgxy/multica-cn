@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type CSSProperties } from "react";
-import { EyeOff, Trash2 } from "lucide-react";
+import { EyeOff, Trash2, X } from "lucide-react";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { formatTokens } from "../../runtimes/utils";
 import { useT } from "../../i18n";
@@ -53,11 +53,17 @@ export function Leaderboard({
   agents,
   deletedAgentCount,
   lessThanMinuteLabel,
+  selectedRange,
+  onClearSelection,
 }: {
   rows: AgentDashboardRow[];
   agents: { id: string; name: string }[];
   deletedAgentCount: number;
   lessThanMinuteLabel: string;
+  // Present only while a chart bar selection is scoping these rows; the
+  // chip names the span and doubles as the way out of it.
+  selectedRange?: string | null;
+  onClearSelection?: () => void;
 }) {
   const { t } = useT("usage");
   const [sortBy, setSortBy] = useState<LeaderboardSort>("tokens");
@@ -111,6 +117,18 @@ export function Leaderboard({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 pt-4 pb-3">
         <h4 className="text-body font-semibold">{t(($) => $.leaderboard.title)}</h4>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          {selectedRange && onClearSelection ? (
+            <button
+              type="button"
+              onClick={onClearSelection}
+              aria-label={t(($) => $.leaderboard.clear_selection)}
+              title={t(($) => $.leaderboard.clear_selection)}
+              className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-caption text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {t(($) => $.leaderboard.selected_range, { range: selectedRange })}
+              <X className="h-3 w-3" aria-hidden />
+            </button>
+          ) : null}
           <Segmented
             label={t(($) => $.leaderboard.sort_label)}
             value={sortBy}
