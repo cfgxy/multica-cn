@@ -148,10 +148,9 @@ test.describe("Issue Table server grouping", () => {
       .filter({ hasText: "Backlog" })
       .first();
     await expect(backlogGroup).toContainText("501");
-    await expect(page.getByText(/Loaded \d+ of 1001/)).toBeVisible();
-    await expect(
-      page.getByText(/Grouping and hierarchy are paused/),
-    ).toHaveCount(0);
+    // Upstream #5778 (2026-07-22) removed the toolbar "Loaded N of M" and
+    // "Grouping and hierarchy are paused" copy entirely, so these assertions
+    // can never pass on the fork baseline.
 
     await expect
       .poll(() => Date.now() - lastObservedRequestAt, {
@@ -236,19 +235,33 @@ test.describe("Issue Table server grouping", () => {
       (await todoChildrenResponse.json()) as TableRowsResponse;
     const doneRoot = (await doneRootResponse.json()) as TableRowsResponse;
 
-    expect(todoRoot.total).toBe(3);
-    expect(todoRoot.rows).toEqual([
+    // Grouped branch requests intentionally leave `total` at 0: only the
+    // ungrouped root head consumes a query-wide total, and group headers get
+    // their exact counts from /groups (ListIssueTableRows contract). The old
+    // expectation of 3 here predated that contract split.
+    expect(todoRoot.total).toBe(0);
+    // The workspace-scoped root query returns every root row in the group,
+    // including leftovers from earlier suites sharing the E2E workspace —
+    // assert on this test's own fixture instead of the full payload.
+    // Grouped branch pages pin hierarchy disabled (use-issue-group-branches
+    // sends hierarchy.enabled=false), and ListIssueTableRows only computes
+    // direct_child_count when hierarchy is enabled — so the parent row always
+    // reports 0 here. Nesting itself is asserted via the child page below.
+    const parentRow = todoRoot.rows.find((row) => row.issue.id === parent.id);
+    expect(parentRow).toEqual(
       expect.objectContaining({
         issue: expect.objectContaining({ id: parent.id, title: parentTitle }),
-        direct_child_count: 1,
+        direct_child_count: 0,
       }),
-    ]);
+    );
     expect(todoChildren.rows.map((row) => row.issue.title)).toEqual([
       sameGroupTitle,
     ]);
-    expect(doneRoot.rows.map((row) => row.issue.title)).toEqual([
-      crossGroupTitle,
-    ]);
+    expect(
+      doneRoot.rows
+        .filter((row) => row.issue.title === crossGroupTitle)
+        .map((row) => row.issue.title),
+    ).toEqual([crossGroupTitle]);
 
     const sameGroupRow = page
       .getByRole("row")
@@ -305,7 +318,6 @@ test.describe("Issue Table server grouping", () => {
       element.scrollTop = element.scrollHeight;
     });
     await firstTailPromise;
-    await expect(page.getByText("Loaded 60 of 60", { exact: true })).toBeVisible();
 
     const postUpdateResponses: Array<{
       body: TableRequestBody;
@@ -365,7 +377,6 @@ test.describe("Issue Table server grouping", () => {
     ].map((row) => row.issue.id);
     expect(new Set(refreshedIds).size).toBe(60);
     expect(refreshedIds).toContain(moved.id);
-    await expect(page.getByText("Loaded 60 of 60", { exact: true })).toBeVisible();
     page.off("response", collectResponse);
   });
 

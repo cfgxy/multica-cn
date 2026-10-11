@@ -9,7 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import { api } from "@multica/core/api";
-import { patchDecisionInCache, stripDecisionOptionLetterPrefix } from "@multica/core/issues/decisions";
+import { decisionOptionDisplayLabel, patchDecisionInCache } from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -122,7 +122,7 @@ export function DecisionBatchBar({ issueId, open }: { issueId: string; open: Iss
                     >
                       {OPTION_LETTERS[idx] ?? idx + 1}
                     </span>
-                    <span className="break-words">{stripDecisionOptionLetterPrefix(opt.label)}</span>
+                    <span className="break-words">{decisionOptionDisplayLabel(opt.label)}</span>
                   </button>
                 );
               })}

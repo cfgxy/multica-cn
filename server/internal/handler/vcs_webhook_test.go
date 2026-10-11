@@ -442,6 +442,59 @@ func TestVCSWebhook_GitlabMergeRequest(t *testing.T) {
 	}
 }
 
+// Admin-configured GitLab system hooks send the generic "System Hook" event
+// header for the whole instance; an MR payload under that header must still
+// reach MR parsing, repo routing, and issue linking.
+func TestVCSWebhook_GitlabSystemHookMergeRequest(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "gitlab", "https://gitlab.test")
+	issue := newVCSIssue(t, "GitLab system hook MR test")
+	t.Cleanup(func() { cleanupVCS(ctx, issue.ID) })
+
+	raw, _ := json.Marshal(map[string]any{
+		"object_kind": "merge_request",
+		"user":        map[string]any{"username": "alice"},
+		"project":     map[string]any{"path_with_namespace": "acme/widget"},
+		"object_attributes": map[string]any{
+			"iid": 42, "title": "Add " + issue.Identifier, "description": "Closes " + issue.Identifier,
+			"state": "opened", "action": "open", "source_branch": "feat",
+			"url":         "https://gitlab.test/acme/widget/-/merge_requests/42",
+			"last_commit": map[string]any{"id": "deadbeef"},
+		},
+	})
+	w := httptest.NewRecorder()
+	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+		"X-Gitlab-Event": "System Hook", "X-Gitlab-Token": vcsTestSecret,
+	}, raw))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
+	}
+
+	rows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Provider != "gitlab" || rows[0].RepoOwner != "acme" || rows[0].PrNumber != 42 {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+
+	// Instance noise under the same header (e.g. a push system event) must not
+	// mirror anything.
+	raw, _ = json.Marshal(map[string]any{"object_kind": "push", "ref": "main"})
+	w = httptest.NewRecorder()
+	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+		"X-Gitlab-Event": "System Hook", "X-Gitlab-Token": vcsTestSecret,
+	}, raw))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("push: expected 202, got %d (%s)", w.Code, w.Body.String())
+	}
+	rows, _ = testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
+	if len(rows) != 1 {
+		t.Fatalf("push event changed rows: %+v", rows)
+	}
+}
+
 func TestVCSWebhook_CommitStatusMirrors(t *testing.T) {
 	ctx := context.Background()
 	box := withVCSBox(t)
