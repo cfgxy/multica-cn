@@ -54,11 +54,18 @@ type EdgeGroupKey =
   | "supersedes"
   | "superseded_by";
 
+// A ref tagged with the group that renders it. SectionList keys are global
+// across sections (the stage-2 ScrollView keys were per-group), and the same
+// issue can legitimately appear in two groups — a parent that also blocks
+// its child, or two edge types on one pair (same-type duplicates are 409'd,
+// cross-type ones are not) — so the key must carry the group, not just the id.
+type SectionRef = IssueRelationRef & { groupKey: string };
+
 interface RelationSection {
   key: string;
   label: string;
   // SectionList's section contract field; holds the group's refs.
-  data: IssueRelationRef[];
+  data: SectionRef[];
 }
 
 export default function IssueRelationsRoute() {
@@ -75,25 +82,31 @@ export default function IssueRelationsRoute() {
     const data = relations.data;
     if (!data) return [];
     const out: RelationSection[] = [];
+    const pushGroup = (key: string, label: string, refs: IssueRelationRef[]) => {
+      if (refs.length > 0)
+        out.push({
+          key,
+          label,
+          data: refs.map((ref) => ({ ...ref, groupKey: key })),
+        });
+    };
     if (data.parent) {
-      out.push({
-        key: "parent",
-        label: t("detail.section_parent_issue", "Parent issue"),
-        data: [data.parent],
-      });
+      pushGroup("parent", t("detail.section_parent_issue", "Parent issue"), [
+        data.parent,
+      ]);
     }
     const childIssues = children.data?.issues;
     if (childIssues && childIssues.length > 0) {
-      out.push({
-        key: "children",
-        label: t("detail.sub_issues_label", "Sub-issues"),
-        data: childIssues.map((issue) => ({
+      pushGroup(
+        "children",
+        t("detail.sub_issues_label", "Sub-issues"),
+        childIssues.map((issue) => ({
           id: issue.id,
           identifier: issue.identifier,
           title: issue.title,
           status: issue.status,
         })),
-      });
+      );
     }
     const edgeGroups: [EdgeGroupKey, string][] = [
       ["blocks", t("detail.relations_blocks", "Blocks")],
@@ -103,8 +116,7 @@ export default function IssueRelationsRoute() {
       ["superseded_by", t("detail.relations_superseded_by", "Superseded by")],
     ];
     for (const [key, label] of edgeGroups) {
-      const refs = data[key];
-      if (refs.length > 0) out.push({ key, label, data: refs });
+      pushGroup(key, label, data[key]);
     }
     return out;
   }, [relations.data, children.data?.issues, t]);
@@ -162,7 +174,7 @@ export default function IssueRelationsRoute() {
       ) : (
         <SectionList
           sections={sections}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => `${item.groupKey}:${item.id}`}
           stickySectionHeadersEnabled={false}
           ItemSeparatorComponent={() => (
             <View className="h-px bg-border ml-4" />
