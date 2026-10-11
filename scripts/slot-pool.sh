@@ -190,36 +190,138 @@ _write_guest_env() {
       cwd:"/"}')" >/dev/null
 }
 
-# _guard_prehook <kind> — run the RUYI-594 guard inside the VM. Prints the
-# verdict line; returns 0 when the caller may proceed (pass/evidence/disabled
-# or a one-shot override), 1 when blocked, 2 when skipped (kill switch).
+# _guard_verdict <log_tail> — the last "verdict: " line of the guest guard's
+# stdout (per-carrier lines then the overall verdict; last wins).
+_guard_verdict() { printf '%s\n' "$1" | sed -n 's/^verdict: //p' | tail -1; }
+
+# _archive_guard_evidence <execution_id> — pull the guard's evidence artifacts
+# (collected in-VM from .recycle-evidence/ via artifact_globs) into the local
+# recycle-evidence dir, byte-identical and sha256-verified. Prints one
+# "archived: <path>" line per file; returns 1 on any failure.
+_archive_guard_evidence() {
+  local execution_id=$1 list n i
+  list="$(_tool list_artifacts "$(jq -n --arg l "$LEASE_ID" --arg e "$execution_id" '{lease_id:$l,execution_id:$e}')")"
+  n="$(jq '.artifacts | length' <<<"$list" 2>/dev/null)" || n=0
+  if [ "${n:-0}" -eq 0 ]; then
+    printf 'verdict: blocked (fail-closed: guard produced no evidence artifact)\n' >&2
+    return 1
+  fi
+  mkdir -p "$EVIDENCE_DIR"
+  chmod 700 "$EVIDENCE_DIR" 2>/dev/null || true
+  for ((i = 0; i < n; i++)); do
+    local art_id art_path art_sha art_b64 art_url dest got
+    art_id="$(jq -r ".artifacts[$i].artifact_id // empty" <<<"$list")"
+    art_path="$(jq -r ".artifacts[$i].path // empty" <<<"$list")"
+    art_sha="$(jq -r ".artifacts[$i].sha256 // empty" <<<"$list")"
+    if [ -z "$art_id" ] || [ -z "$art_path" ]; then
+      printf 'verdict: blocked (fail-closed: evidence artifact entry missing id/path)\n' >&2
+      return 1
+    fi
+    local dl
+    dl="$(_tool download_artifact "$(jq -n --arg l "$LEASE_ID" --arg a "$art_id" '{lease_id:$l,artifact_id:$a}')")" || {
+      printf 'verdict: blocked (fail-closed: evidence download failed for %s)\n' "$art_id" >&2
+      return 1
+    }
+    dest="$EVIDENCE_DIR/$(basename "$art_path")"
+    local suf="" k=0
+    while [ -e "$dest$suf" ]; do k=$((k + 1)); suf="_$k"; done
+    dest="$dest$suf"
+    art_b64="$(jq -r '.content_base64 // empty' <<<"$dl" 2>/dev/null)"
+    if [ -n "$art_b64" ]; then
+      printf '%s' "$art_b64" | base64 -d >"$dest" || {
+        rm -f "$dest"
+        printf 'verdict: blocked (fail-closed: evidence base64 decode failed)\n' >&2
+        return 1
+      }
+    else
+      art_url="$(jq -r '.download_url // empty' <<<"$dl" 2>/dev/null)"
+      if [ -z "$art_url" ]; then
+        printf 'verdict: blocked (fail-closed: evidence download returned no content)\n' >&2
+        return 1
+      fi
+      local auth=()
+      [ -n "$POOL_TOKEN" ] && auth=(-H "Authorization: Bearer $POOL_TOKEN")
+      curl -fsS --max-time "$HTTP_TIMEOUT" "${auth[@]+"${auth[@]}"}" "$art_url" >"$dest" || {
+        rm -f "$dest"
+        printf 'verdict: blocked (fail-closed: evidence GET failed)\n' >&2
+        return 1
+      }
+    fi
+    if [ -n "$art_sha" ]; then
+      got="$(sha256sum "$dest" | awk '{print $1}')"
+      if [ "$got" != "$art_sha" ]; then
+        rm -f "$dest"
+        printf 'verdict: blocked (fail-closed: evidence sha256 mismatch for %s)\n' "$(basename "$art_path")" >&2
+        return 1
+      fi
+    fi
+    chmod 600 "$dest" 2>/dev/null || true
+    printf 'archived: %s\n' "$dest"
+  done
+}
+
+# _guard_prehook <kind> <dry_run:0|1> — run the RUYI-594 guard inside the VM
+# and archive its evidence locally. Verdict comes from the guest guard's own
+# stdout (verdict: line), never from an exec-result field. The evidence chain
+# is part of the guard: a release is only accountable when the scan's evidence
+# landed in the local archive, so for an ALLOWING verdict a missing artifact,
+# a download failure or a sha256 mismatch is fail-closed exactly like a scan
+# failure. Blocked verdicts refuse first and archive best-effort (the lease is
+# kept either way). Returns 0 when the caller may proceed, 1 when blocked,
+# 2 when skipped (kill switch).
 _guard_prehook() {
-  local kind=$1 out exit_code verdict
+  local kind=$1 dry_run=${2:-0} out exit_code verdict exec_id
   case "${MULTICA_GC_GUARD_ENABLED:-true}" in
     false|FALSE|0|off|OFF) printf 'verdict: disabled\n'; return 2 ;;
   esac
-  local env_json='{"MULTICA_RECYCLE_EVIDENCE_DIR":"/home/agent/.multica/recycle-evidence","RG_TOOL":"slot-pool"}'
+  local env_json="{\"MULTICA_RECYCLE_EVIDENCE_DIR\":\"$WORKSPACE_ROOT/.recycle-evidence\",\"RG_TOOL\":\"slot-pool\""
   if [ "${MULTICA_RECYCLE_OVERRIDE:-}" = "1" ]; then
-    env_json='{"MULTICA_RECYCLE_EVIDENCE_DIR":"/home/agent/.multica/recycle-evidence","RG_TOOL":"slot-pool","MULTICA_RECYCLE_OVERRIDE":"1"}'
+    env_json="$env_json,\"MULTICA_RECYCLE_OVERRIDE\":\"1\""
   fi
+  env_json="$env_json}"
   out="$(_tool exec "$(jq -n \
-      --arg l "${LEASE_ID:?}" --arg g "$GUEST_GUARD" --arg w "$WORKSPACE_ROOT" --arg k "$kind" --argjson e "$env_json" \
-      '{lease_id:$l,command:$g,args:[$w,$k,"0"],env:$e,cwd:"/",wait:true,timeout_seconds:600,
-       artifact_globs:["/home/agent/.multica/recycle-evidence/*.txt"]}')")" || {
+      --arg l "${LEASE_ID:?}" --arg g "$GUEST_GUARD" --arg w "$WORKSPACE_ROOT" --arg k "$kind" --arg d "$dry_run" --argjson e "$env_json" \
+      '{lease_id:$l,command:$g,args:[$w,$k,$d],env:$e,cwd:"/",wait:true,timeout_seconds:600,
+       artifact_globs:[".recycle-evidence/*.txt"]}')")" || {
     printf 'verdict: blocked (fail-closed: guard exec failed)\n'
     return 1
   }
   exit_code="$(jq -r '.exit_code // empty' <<<"$out" 2>/dev/null)"
-  verdict="$(jq -r '.verdict // empty' <<<"$out" 2>/dev/null)"
-  case "${exit_code:-}" in
-    0) printf 'verdict: %s\n' "${verdict:-pass}"; return 0 ;;
-    1) printf 'verdict: %s\n' "${verdict:-blocked}"
-       printf '%s\n' "$(jq -r '.log_tail // .logs // ""' <<<"$out" 2>/dev/null)"
-       return 1 ;;
-    *) printf 'verdict: blocked (fail-closed: guard exit_code=%s state=%s)\n' \
-         "${exit_code:-none}" "$(jq -r '.state // "unknown"' <<<"$out" 2>/dev/null)"
-       return 1 ;;
+  exec_id="$(jq -r '.execution_id // empty' <<<"$out" 2>/dev/null)"
+  verdict="$(_guard_verdict "$(jq -r '.log_tail // ""' <<<"$out" 2>/dev/null)")"
+  case "$exit_code" in
+    0) ;;
+    1)
+      # Blocked: refuse first, then archive best-effort so the operator has the
+      # refusal evidence at hand without another pool roundtrip.
+      [ -n "$verdict" ] || verdict="blocked"
+      printf 'verdict: %s\n' "$verdict"
+      printf '%s\n' "$(jq -r '.log_tail // ""' <<<"$out" 2>/dev/null)"
+      if [ -n "$exec_id" ]; then
+        _archive_guard_evidence "$exec_id" ||
+          printf 'slot-pool: warning: evidence archive failed (lease kept; artifacts remain in the pool retention window)\n' >&2
+      fi
+      return 1 ;;
+    "")
+      printf 'verdict: blocked (fail-closed: guard exec returned no exit code)\n'
+      return 1 ;;
+    *)
+      printf 'verdict: blocked (fail-closed: guard exit_code=%s state=%s)\n' \
+        "$exit_code" "$(jq -r '.state // "unknown"' <<<"$out" 2>/dev/null)"
+      return 1 ;;
   esac
+  if [ -z "$verdict" ]; then
+    printf 'verdict: blocked (fail-closed: guard stdout has no verdict line)\n'
+    return 1
+  fi
+  if [ "$verdict" = "disabled" ]; then
+    printf 'verdict: disabled\n'
+    return 0
+  fi
+  local archived
+  archived="$(_archive_guard_evidence "$exec_id")" || return 1
+  printf '%s\n' "$archived"
+  printf 'verdict: %s\n' "$verdict"
 }
 
 _do_release() { # <reason>
@@ -279,7 +381,14 @@ cmd_status() {
 }
 
 cmd_exec() {
-  [ "${1:-}" = "--" ] || die "exec: usage: slot-pool.sh <name> exec -- <command> [args...]"
+  local cwd=""
+  while [ "$#" -gt 0 ] && [ "${1:-}" != "--" ]; do
+    case "$1" in
+      --cwd) cwd=$2; shift 2 ;;
+      *) die "exec: usage: slot-pool.sh <name> exec [--cwd <dir>] -- <command> [args...]" ;;
+    esac
+  done
+  [ "${1:-}" = "--" ] || die "exec: usage: slot-pool.sh <name> exec [--cwd <dir>] -- <command> [args...]"
   shift
   local cmd=$1; shift
   load_manifest
@@ -288,9 +397,11 @@ cmd_exec() {
   if [ "$#" -gt 0 ]; then
     args_json="$(printf '%s\n' "$@" | jq -Rsc 'split("\n")[:-1]')"
   fi
+  local extra="{}"
+  [ -n "$cwd" ] && extra="$(jq -n --arg c "$cwd" '{cwd:$c}')"
   local out exit_code
-  out="$(_tool exec "$(jq -n --arg l "$LEASE_ID" --arg c "$cmd" --argjson a "$args_json" \
-      '{lease_id:$l,command:$c,args:$a,wait:true}')")" ||
+  out="$(_tool exec "$(jq -n --arg l "$LEASE_ID" --arg c "$cmd" --argjson a "$args_json" --argjson x "$extra" \
+      '{lease_id:$l,command:$c,args:$a,wait:true} + $x')")" ||
     die "exec failed"
   exit_code="$(jq -r '.exit_code // empty' <<<"$out" 2>/dev/null)"
   jq -r '.log_tail // .logs // empty' <<<"$out" 2>/dev/null
@@ -370,13 +481,19 @@ cmd_lock_status() {
 }
 
 cmd_lock_release() {
+  local dry_run=0
+  [ "${1:-}" = "--dry-run" ] && dry_run=1
   require_owner
   load_manifest
   local verdict rc=0
-  verdict="$(_guard_prehook slot-release)" || rc=$?
+  verdict="$(_guard_prehook slot-release "$dry_run")" || rc=$?
   if [ "$rc" = 1 ]; then
     printf 'slot-pool: release refused (%s) — guard blocked %s; preserve the work, then re-run once with MULTICA_RECYCLE_OVERRIDE=1\n' "$verdict" "$LEASE_ID" >&2
     return 1
+  fi
+  if [ "$dry_run" = 1 ]; then
+    printf 'slot-pool: dry-run complete (%s); lease %s untouched\n' "$verdict" "$LEASE_ID"
+    return 0
   fi
   _do_release "lock-release ($verdict)"
 }
@@ -394,7 +511,7 @@ cmd_handoff() {
   require_owner
   load_manifest
   local rc=0 verdict
-  verdict="$(_guard_prehook "handoff-$to")" || rc=$?
+  verdict="$(_guard_prehook "handoff-$to" 0)" || rc=$?
   if [ "$rc" = 1 ]; then
     printf 'slot-pool: handoff refused (%s) — guard blocked %s\n' "$verdict" "$LEASE_ID" >&2
     return 1
@@ -504,16 +621,21 @@ cmd_audit() {
 
 usage() {
   cat <<'EOF'
-Pool-backed slot leases (RUYI-676 E3 skeleton; MCP contract docs/03).
+Pool-backed slot leases (RUYI-676 E3; MCP contract docs/03).
 
   slot-pool.sh <name> use    [--phase dev|qa] [--template <id>] [--ttl <min>]
   slot-pool.sh <name> load   --file <pkg> [--name <nm>] [--prepare]
   slot-pool.sh <name> status [--json]
-  slot-pool.sh <name> exec   -- <command> [args...]
+  slot-pool.sh <name> exec   [--cwd <dir>] -- <command> [args...]
   slot-pool.sh <name> logs   <execution_id> [lines]
   slot-pool.sh <name> handoff --to dev|qa [--template <id>]
   slot-pool.sh <name> lock-status
-  slot-pool.sh <name> lock-release      # guard pre-hook inside the VM first
+  slot-pool.sh <name> lock-release [--dry-run]
+                              # guard runs inside the VM; the release is only
+                              # granted when the scan verdict is grantable AND
+                              # its evidence landed in the local archive
+                              # (fail-closed end to end). --dry-run runs guard
+                              # + archive and keeps the lease.
   slot-pool.sh <name> orphans [--json]  # in-VM inventory must be clean
   slot-pool.sh list [--json]
   slot-pool.sh gc     [--dry-run]
@@ -521,7 +643,8 @@ Pool-backed slot leases (RUYI-676 E3 skeleton; MCP contract docs/03).
 
 Env: MULTICA_POOL_URL, MULTICA_POOL_TOKEN (or ~/.multica/pool-auth),
 MULTICA_SLOT_POOL_HOME, MULTICA_CALLER_OWNER (write verbs),
-MULTICA_RECYCLE_OVERRIDE (one-shot), MULTICA_GC_GUARD_ENABLED=false (kill switch).
+MULTICA_RECYCLE_OVERRIDE (one-shot), MULTICA_GC_GUARD_ENABLED=false (kill switch),
+MULTICA_RECYCLE_EVIDENCE_DIR (local archive, default ~/.multica/recycle-evidence).
 Config: scripts/slot-pool.json (phase→template/TTL, guest ports).
 EOF
 }
@@ -548,7 +671,7 @@ main() {
     logs) cmd_logs "$@" ;;
     handoff) cmd_handoff "$@" ;;
     lock-status) cmd_lock_status ;;
-    lock-release) cmd_lock_release ;;
+    lock-release) cmd_lock_release "$@" ;;
     orphans) cmd_orphans "$@" ;;
     -h|--help|help) usage ;;
     *) usage >&2; printf '\nslot-pool: unknown action "%s"\n' "$action" >&2; exit 2 ;;
