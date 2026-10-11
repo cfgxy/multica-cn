@@ -20,15 +20,21 @@ const APP_ORIGIN = "https://app.multica.ai";
 
 let resolvedByRef: Record<string, Issue> = {};
 
-vi.mock("../issues/hooks/use-issue-reference-resolutions", () => ({
-  useIssueReferenceResolutions: (references: IssueReference[]) =>
-    new Map(
-      references.map((ref) => [
-        `${ref.form}:${ref.ref}`,
-        resolvedByRef[`${ref.form}:${ref.ref}`] ?? null,
-      ]),
-    ),
-}));
+vi.mock(
+  "../issues/hooks/use-issue-reference-resolutions",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../issues/hooks/use-issue-reference-resolutions")
+    >()),
+    useIssueReferenceResolutions: (references: IssueReference[]) =>
+      new Map(
+        references.map((ref) => [
+          `${ref.form}:${ref.ref}`,
+          resolvedByRef[`${ref.form}:${ref.ref}`] ?? null,
+        ]),
+      ),
+  }),
+);
 
 vi.mock("../issues/hooks", () => ({
   useResolveIssueIdentifier: () => null,
@@ -136,14 +142,16 @@ describe("issue mentions read as plain text in the body", () => {
 });
 
 describe("tail aggregation block", () => {
-  it("lists resolved references as clickable rows after the content", () => {
+  it("lists resolved references as non-navigating rows after the content", () => {
+    const mul7 = {
+      id: UUID,
+      identifier: "MUL-7",
+      title: "Fix the thing",
+      status: "in_progress",
+    } as Issue;
     resolvedByRef = {
-      [`mention:${UUID}`]: {
-        id: UUID,
-        identifier: "MUL-7",
-        title: "Fix the thing",
-        status: "in_progress",
-      } as Issue,
+      [`mention:${UUID}`]: mul7,
+      "identifier:MUL-7": mul7,
     };
     const { container } = renderContent(
       `See [MUL-7](mention://issue/${UUID}) and MUL-7 again.`,
@@ -151,10 +159,11 @@ describe("tail aggregation block", () => {
 
     const footer = container.querySelector("[data-issue-reference-footer]")!;
     expect(footer).not.toBeNull();
-    // Same issue via mention + bare identifier → ONE row.
-    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
-    const row = footer.querySelector("a.issue-reference-row")!;
-    expect(row.getAttribute("href")).toBe(`/acme/issues/${UUID}`);
+    // Same issue via mention + bare identifier → ONE row, and the anti-
+    // mistouch rework keeps every inline row a span (zero anchors).
+    expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
+    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    const row = footer.querySelector(".issue-reference-row")!;
     expect(row.textContent).toContain("MUL-7");
     expect(row.textContent).toContain("Fix the thing");
   });

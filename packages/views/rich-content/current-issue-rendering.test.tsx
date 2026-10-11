@@ -28,7 +28,10 @@ vi.mock("../issues/hooks", () => ({
 // the tail footer, so its hook must resolve without a QueryClient here.
 vi.mock(
   "../issues/hooks/use-issue-reference-resolutions",
-  () => ({
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../issues/hooks/use-issue-reference-resolutions")
+    >()),
     useIssueReferenceResolutions: (references: IssueReference[]) =>
       new Map(
         references.map((ref) => [
@@ -190,13 +193,16 @@ describe("RichContent current-issue rendering", () => {
     );
     expect(mentions.map((m) => m.textContent)).toEqual(["MUL-7", "MUL-8"]);
 
-    const rows = Array.from(container.querySelectorAll("a.issue-reference-row"));
-    expect(rows.map((row) => row.getAttribute("href"))).toEqual([
-      `/acme/issues/${CURRENT_ID}`,
-      `/acme/issues/${OTHER_ID}`,
+    // RUYI-635 增量: inline rows are spans (the block is one button; zero
+    // inline navigation) — the aggregation contract is row count + content.
+    const rows = Array.from(
+      container.querySelectorAll(".issue-reference-row"),
+    );
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "MUL-7Issue MUL-7",
+      "MUL-8Issue MUL-8",
     ]);
-    expect(rows[0]!.textContent).toContain("MUL-7");
-    expect(rows[0]!.textContent).toContain("Issue MUL-7");
   });
 
   it.each(URL_FORMS)(

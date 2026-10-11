@@ -1874,6 +1874,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
+					// PR text-reference lookup for the reference tail
+					// (RUYI-635 增量): member-visible, read-only, DB snapshot.
+					r.Get("/pull-requests/lookup", h.LookupPullRequestByRef)
 					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
