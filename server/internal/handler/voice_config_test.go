@@ -146,6 +146,59 @@ func TestAgentVoiceAdvancedRaw(t *testing.T) {
 	}
 }
 
+// liveSessionSnapshot pins the merged-form snapshot contract (RUYI-693 on
+// top of RUYI-692 D1): config_source names the chain level that won, and the
+// entity-id field switches with the target form — pool sessions record the
+// provider under voice_provider_id, legacy bridges keep voice_runtime_id.
+func TestLiveSessionSnapshot_ConfigSourceAndEntityID(t *testing.T) {
+	t.Parallel()
+
+	providerID := pgtype.UUID{Bytes: [16]byte{0xa1}, Valid: true}
+	runtimeID := pgtype.UUID{Bytes: [16]byte{0xb2}, Valid: true}
+	agentRow := db.Agent{Instructions: "be concise"}
+
+	var providerBag map[string]any
+	providerSnapshot := liveSessionSnapshot(agentRow, &voiceTarget{
+		provider:     &db.VoiceProvider{ID: providerID, ProviderType: "gemini"},
+		model:        "gemini-2.5-flash",
+		configSource: "agent_override",
+	}, "gemini-2.5-flash")
+	if err := json.Unmarshal(providerSnapshot, &providerBag); err != nil {
+		t.Fatalf("provider snapshot not JSON: %v", err)
+	}
+	if providerBag["config_source"] != "agent_override" {
+		t.Errorf("config_source = %v, want agent_override", providerBag["config_source"])
+	}
+	if providerBag["voice_provider_id"] != uuidToString(providerID) {
+		t.Errorf("voice_provider_id = %v, want %s", providerBag["voice_provider_id"], uuidToString(providerID))
+	}
+	if _, ok := providerBag["voice_runtime_id"]; ok {
+		t.Errorf("pool-form snapshot must not carry voice_runtime_id")
+	}
+	if providerBag["protocol_family"] != "gemini_live" {
+		t.Errorf("protocol_family = %v, want gemini_live", providerBag["protocol_family"])
+	}
+
+	var runtimeBag map[string]any
+	runtimeSnapshot := liveSessionSnapshot(agentRow, &voiceTarget{
+		runtime:      &db.AgentRuntime{ID: runtimeID, Provider: "gemini_live"},
+		model:        "gemini-2.5-flash",
+		configSource: "legacy_binding",
+	}, "gemini-2.5-flash")
+	if err := json.Unmarshal(runtimeSnapshot, &runtimeBag); err != nil {
+		t.Fatalf("runtime snapshot not JSON: %v", err)
+	}
+	if runtimeBag["config_source"] != "legacy_binding" {
+		t.Errorf("config_source = %v, want legacy_binding", runtimeBag["config_source"])
+	}
+	if runtimeBag["voice_runtime_id"] != uuidToString(runtimeID) {
+		t.Errorf("voice_runtime_id = %v, want %s", runtimeBag["voice_runtime_id"], uuidToString(runtimeID))
+	}
+	if _, ok := runtimeBag["voice_provider_id"]; ok {
+		t.Errorf("legacy-form snapshot must not carry voice_provider_id")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DB-backed helpers
 // ---------------------------------------------------------------------------

@@ -48,8 +48,8 @@ var (
 // runVoiceProviderProbe failures: operator-actionable "nothing to probe"
 // states surfaced as 400 by the probe endpoint.
 var (
-	errVoiceProbeNoCredential  = errors.New("voice provider has no stored API key to probe")
-	errVoiceProbeUndecryptable = errors.New("voice provider's stored API key cannot be decrypted")
+	errVoiceProviderProbeNoCredential  = errors.New("voice provider has no stored API key to probe")
+	errVoiceProviderProbeUndecryptable = errors.New("voice provider's stored API key cannot be decrypted")
 )
 
 // voiceProviderTypePattern keeps the create-time type check aligned with the
@@ -535,21 +535,21 @@ func (h *Handler) runVoiceProviderProbe(ctx context.Context, vp db.VoiceProvider
 	skip := CredentialProbeResult{Status: credentialProbeSkipped, CheckedAt: time.Now().UTC().Format(time.RFC3339)}
 	keyName, ok := voiceProviderCredentialKey(vp)
 	if !ok {
-		return skip, errVoiceProbeNoCredential
+		return skip, errVoiceProviderProbeNoCredential
 	}
 	credential, err := h.Queries.GetRuntimeCredential(ctx, db.GetRuntimeCredentialParams{
 		RuntimeInstanceID: vp.ID,
 		CredentialKey:     keyName,
 	})
 	if err != nil {
-		return skip, errVoiceProbeNoCredential
+		return skip, errVoiceProviderProbeNoCredential
 	}
 	if h.RuntimeCredentialBox == nil {
 		return skip, errVoiceCredentialEncryptionMissing
 	}
 	plaintext, err := h.RuntimeCredentialBox.Open(credential.SecretEncrypted)
 	if err != nil {
-		return skip, errVoiceProbeUndecryptable
+		return skip, errVoiceProviderProbeUndecryptable
 	}
 	probe := h.probeVoiceCredential(ctx, string(plaintext))
 	h.recordVoiceProviderProbeOutcome(ctx, vp.ID, vp.Metadata, probe)
