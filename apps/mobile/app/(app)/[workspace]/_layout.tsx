@@ -628,6 +628,10 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
+          name="more/suspensions"
+          options={{ title: i18n.t("layout:nav.suspensions", "Suspensions"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
           name="more/settings"
           options={{ title: i18n.t("layout:nav.settings", "Settings"), headerBackTitle: "Back" }}
         />

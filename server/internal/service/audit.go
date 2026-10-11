@@ -98,6 +98,10 @@ const (
 	AuditIssueTaskFailed           = "issue.task_failed"
 	AuditIssueSquadLeaderEvaluated = "issue.squad_leader_evaluated"
 	AuditIssueRunSuppressed        = "issue.run_suppressed"
+	// RUYI-690: issue suspension lifecycle (orthogonal "waiting" dimension).
+	AuditIssueSuspended             = "issue.suspended"
+	AuditIssueSuspensionResumed     = "issue.suspension_resumed"
+	AuditIssueSuspensionCancelled   = "issue.suspension_cancelled"
 
 	// Ops domain: deployment anchoring.
 	AuditOpsServerStarted = "ops.server_started"

@@ -225,6 +225,15 @@ export interface Issue {
   /** When the hold was placed (RFC3339); null/absent whenever
    * run_suppressed is not true. */
   run_suppressed_at?: string | null;
+  /**
+   * Read-side snapshot of an active issue suspension (挂起, RUYI-690): set
+   * while a suspension row is active, cleared on resume/cancel. Orthogonal
+   * to `status` — suspending never rewrites the lifecycle state. While set,
+   * comment/@ triggers hold dispatch (reason `issue_suspended`). Optional
+   * for compatibility with a server that predates the field — treat
+   * null/absent as not suspended.
+   */
+  suspended_at?: string | null;
   /** Present only on issue detail responses for issues created from a comment. */
   source_context?: IssueSourceContext;
 }

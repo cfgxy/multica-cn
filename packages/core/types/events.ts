@@ -61,6 +61,7 @@ export type WSEventType =
   | "issue_reaction:added"
   | "issue_reaction:removed"
   | "decision:updated"
+  | "issue_suspension:updated"
   | "chat:message"
   | "chat:done"
   | "chat:quick_actions"
@@ -245,6 +246,16 @@ export interface DecisionUpdatedPayload {
   decision: IssueDecision;
   issue_id: string;
   issue_title?: string;
+}
+
+// Issue suspension lifecycle event (RUYI-690) — one event covers
+// suspend/resume/cancel; the payload's suspension.status says which. The
+// refreshed issue snapshot rides along so read-side `suspended_at` mirrors
+// without a refetch (snapshot writes deliberately don't bump revision).
+export interface IssueSuspensionUpdatedPayload {
+  suspension: import("./suspension").IssueSuspension;
+  issue: Partial<import("./issue").Issue> & { id: string };
+  trigger_comment_id?: string;
 }
 
 export interface CommentCreatedPayload {
@@ -605,6 +616,7 @@ export interface WSEventPayloadMap {
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "decision:updated": DecisionUpdatedPayload;
+  "issue_suspension:updated": IssueSuspensionUpdatedPayload;
   "comment:created": CommentCreatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;

@@ -917,6 +917,8 @@ type Issue struct {
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
 	RunSuppressed      bool               `json:"run_suppressed"`
 	RunSuppressedAt    pgtype.Timestamptz `json:"run_suppressed_at"`
+	// Read-side snapshot of an active issue_suspension row (RUYI-690), maintained in the same transaction that flips the row's status. NULL = not suspended. Badge/list/filter surfaces read this column with zero joins; the suspension table owns the audit trail.
+	SuspendedAt pgtype.Timestamptz `json:"suspended_at"`
 }
 
 type IssueDecision struct {
@@ -1047,6 +1049,35 @@ type IssueSubscriber struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UnsubscribedAt pgtype.Timestamptz `json:"unsubscribed_at"`
 	OptOutScope    pgtype.Text        `json:"opt_out_scope"`
+}
+
+// Issue suspensions (RUYI-690): "waiting" as a dimension orthogonal to the lifecycle status. One row per suspension; the partial unique index keeps at most one active per issue. issue.suspended_at mirrors activeness for join-free board/list badge rendering. No FKs by house rule; swept by workspace/issue deletion in the application layer.
+type IssueSuspension struct {
+	ID                  pgtype.UUID `json:"id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	IssueID             pgtype.UUID `json:"issue_id"`
+	Status              string      `json:"status"`
+	Reason              string      `json:"reason"`
+	WaitingOnType       string      `json:"waiting_on_type"`
+	WaitingOnIssueID    pgtype.UUID `json:"waiting_on_issue_id"`
+	WaitingOnDecisionID pgtype.UUID `json:"waiting_on_decision_id"`
+	WaitingOnSummary    string      `json:"waiting_on_summary"`
+	ResumeCondition     string      `json:"resume_condition"`
+	// Closed machine-predicate set: {"kind":"issue_done","issue_id":…} | {"kind":"decision_answered","decision_id":…} | {"kind":"manual"}. Only the first two ever auto-resume; external/manual waits are judged by humans.
+	ResumePredicate []byte             `json:"resume_predicate"`
+	SuspendedByType string             `json:"suspended_by_type"`
+	SuspendedByID   pgtype.UUID        `json:"suspended_by_id"`
+	SuspendedAt     pgtype.Timestamptz `json:"suspended_at"`
+	ResumedByType   pgtype.Text        `json:"resumed_by_type"`
+	ResumedByID     pgtype.UUID        `json:"resumed_by_id"`
+	ResumedAt       pgtype.Timestamptz `json:"resumed_at"`
+	ResumeNote      string             `json:"resume_note"`
+	CancelledByType pgtype.Text        `json:"cancelled_by_type"`
+	CancelledByID   pgtype.UUID        `json:"cancelled_by_id"`
+	CancelledAt     pgtype.Timestamptz `json:"cancelled_at"`
+	CancelNote      string             `json:"cancel_note"`
+	// Denormalized copy of the predicate that fired for a system resume, so the audit trail names the releasing condition without a JSONB re-read. NULL on manual resume/cancel.
+	ResumedByPredicate []byte `json:"resumed_by_predicate"`
 }
 
 type IssueToLabel struct {
