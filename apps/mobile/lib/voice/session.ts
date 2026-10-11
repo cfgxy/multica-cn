@@ -32,6 +32,8 @@ export interface MobileVoiceSessionCallbacks {
   onUserTranscriptDelta?: (delta: string) => void;
   onAssistantTranscriptDelta?: (delta: string) => void;
   onUserTurn?: (text: string) => void;
+  /** User barged in — playback stopped; UI shows the interrupted transient. */
+  onInterrupted?: () => void;
   onDegrade?: (rejection: VoiceRejection | null) => void;
   onEnded?: () => void;
 }
@@ -44,6 +46,7 @@ export interface MobileVoiceSessionCallbacks {
 export class MobileVoiceSession {
   private controller: VoiceSessionController | null = null;
   private unsubscribeChunk: (() => void) | null = null;
+  private muted = false;
 
   constructor(
     private readonly agentId: string,
@@ -78,6 +81,9 @@ export class MobileVoiceSession {
           if (state === "live") {
             this.unsubscribeChunk?.();
             const sub = audio.addListener("onAudioChunk", (event) => {
+              // 静音（RUYI-694 板3 右上键）：在采集入口丢弃上行，会话
+              // 保持 live、下行播放不受影响。
+              if (this.muted) return;
               controller.sendAudio(event.data);
             });
             this.unsubscribeChunk = () => sub.remove();
@@ -96,6 +102,7 @@ export class MobileVoiceSession {
         },
         onInterrupted: () => {
           void audio.interruptPlayback().catch(() => {});
+          this.callbacks.onInterrupted?.();
         },
         onDegrade: (rejection) => this.callbacks.onDegrade?.(rejection ?? null),
         onEnded: () => {
@@ -114,6 +121,11 @@ export class MobileVoiceSession {
     this.controller?.end();
     this.controller = null;
     this.releaseAudio();
+  }
+
+  /** 板3 右上静音键：上行静默，下行不受影响。 */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
   }
 
   private releaseAudio(): void {
