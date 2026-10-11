@@ -42,6 +42,7 @@ import {
   type TimelineListHandle,
 } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
+import { IssueMenuFieldItems } from "@/components/issue/issue-menu-field-items";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
 import {
   issueDetailOptions,
@@ -279,27 +280,15 @@ export default function IssueDetail() {
                         />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
-                        {/* Quick property setters first — they're the
-                         *  frequent actions, and the group ordering
-                         *  mirrors web's menu (status / priority /
-                         *  assignee ahead of the pin / copy / delete
-                         *  block). */}
-                        <DropdownMenuItem
-                          onPress={() => openPicker("assignee")}
-                        >
-                          <Text>{t("actions.assignee", "Assignee")}</Text>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onPress={() => openPicker("status")}>
-                          <Text>{t("actions.status", "Status")}</Text>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onPress={() => openPicker("project")}>
-                          <Text>{t("detail.prop_project", "Project")}</Text>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onPress={() => openPicker("priority")}
-                        >
-                          <Text>{t("actions.priority", "Priority")}</Text>
-                        </DropdownMenuItem>
+                        {/* Quick property setters with live values
+                         *  (RUYI-697) — same value sources as the attribute
+                         *  chip row; pressing still opens the same picker
+                         *  routes (RUYI-129). Group ordering mirrors web's
+                         *  menu. */}
+                        <IssueMenuFieldItems
+                          issue={issue}
+                          onOpenPicker={openPicker}
+                        />
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onPress={onTogglePin}>
                           <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
