@@ -28,7 +28,9 @@ func TestDaemonBackpressureConfigValidate(t *testing.T) {
 		{"psi hysteresis inverted", func(c *DaemonBackpressureConfig) { c.PSIHighPct, c.PSIRecoveryPct = 30, 40 }, "psi recovery watermark"},
 		{"sample interval zero", func(c *DaemonBackpressureConfig) { c.SampleIntervalSeconds = 0 }, "sample interval"},
 		{"sample interval negative", func(c *DaemonBackpressureConfig) { c.SampleIntervalSeconds = -5 }, "sample interval"},
+		{"sample interval above max", func(c *DaemonBackpressureConfig) { c.SampleIntervalSeconds = MaxBackpressureSampleIntervalSeconds + 1 }, "sample interval"},
 		{"window size zero", func(c *DaemonBackpressureConfig) { c.WindowSize = 0 }, "window size"},
+		{"window size above max", func(c *DaemonBackpressureConfig) { c.WindowSize = MaxBackpressureWindowSize + 1 }, "window size"},
 	}
 	for _, tc := range cases {
 		c := DefaultDaemonBackpressureConfig()
@@ -58,5 +60,16 @@ func TestDaemonBackpressureConfigValidate(t *testing.T) {
 	noSwapPSI.PSIHighPct, noSwapPSI.PSIRecoveryPct = 0, 0
 	if err := noSwapPSI.Validate(); err != nil {
 		t.Fatalf("mem-only card must validate: %v", err)
+	}
+
+	// The upper bounds are allocation and cadence guards: the boundary
+	// values themselves stay legal so an owner can still run an hour-scale
+	// gate, but a fat-fingered huge value cannot reach the daemon's
+	// window allocation.
+	atMax := DefaultDaemonBackpressureConfig()
+	atMax.SampleIntervalSeconds = MaxBackpressureSampleIntervalSeconds
+	atMax.WindowSize = MaxBackpressureWindowSize
+	if err := atMax.Validate(); err != nil {
+		t.Fatalf("boundary-max card must validate: %v", err)
 	}
 }

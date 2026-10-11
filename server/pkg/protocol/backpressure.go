@@ -29,6 +29,15 @@ const (
 	DefaultBackpressurePSIRecoveryPct = 20.0
 	DefaultBackpressureSampleInterval = 5 * time.Second
 	DefaultBackpressureWindowSize     = 6 // samples; 6 × 5s = 30s smoothing window
+
+	// Upper bounds for the sampler knobs. They cap the daemon's per-machine
+	// window allocation (WindowSize × per-sample struct) and keep the
+	// sampling cadence within an hour, so a fat-fingered save cannot turn
+	// the first hot-apply into a huge allocation on every daemon host. The
+	// maxima are round numbers an hour wide — beyond that the gate stops
+	// being an operational control.
+	MaxBackpressureSampleIntervalSeconds = 3600
+	MaxBackpressureWindowSize            = 3600
 )
 
 // DaemonBackpressureConfig is the workspace's effective backpressure card as
@@ -116,8 +125,14 @@ func (c *DaemonBackpressureConfig) Validate() error {
 	if c.SampleIntervalSeconds <= 0 {
 		return fmt.Errorf("backpressure: sample interval %s must be positive", time.Duration(c.SampleIntervalSeconds)*time.Second)
 	}
+	if c.SampleIntervalSeconds > MaxBackpressureSampleIntervalSeconds {
+		return fmt.Errorf("backpressure: sample interval %d must not exceed %d", c.SampleIntervalSeconds, MaxBackpressureSampleIntervalSeconds)
+	}
 	if c.WindowSize < 1 {
 		return fmt.Errorf("backpressure: window size %d must be at least 1", c.WindowSize)
+	}
+	if c.WindowSize > MaxBackpressureWindowSize {
+		return fmt.Errorf("backpressure: window size %d must not exceed %d", c.WindowSize, MaxBackpressureWindowSize)
 	}
 	return nil
 }

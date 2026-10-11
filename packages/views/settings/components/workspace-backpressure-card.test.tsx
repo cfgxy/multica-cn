@@ -178,4 +178,22 @@ describe("WorkspaceBackpressureCard", () => {
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(m.saveMutate).not.toHaveBeenCalled();
   });
+
+  it("bounds the sampling fields at the protocol maximum (3600)", async () => {
+    mount();
+
+    // The server's Validate (and the daemon) refuse anything above 3600 for
+    // both fields; the form advertises the same ceiling so owners see it
+    // before the 422 round trip.
+    const interval = (await screen.findByLabelText(
+      "Sample interval in seconds",
+    )) as HTMLInputElement;
+    const window = (await screen.findByLabelText(
+      "Smoothing window in samples",
+    )) as HTMLInputElement;
+    expect(interval.min).toBe("1");
+    expect(interval.max).toBe("3600");
+    expect(window.min).toBe("1");
+    expect(window.max).toBe("3600");
+  });
 });
