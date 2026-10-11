@@ -226,7 +226,12 @@ export function VoiceSessionOverlay({
           animationType="fade"
           onRequestClose={hangUp}
         >
-          <View style={{ flex: 1, backgroundColor: IMMERSIVE_BG }}>
+          {/* 板7 转场标注：进模式一 260ms fade——内容层自绘 260ms 淡入
+              （Modal 容器的平台 fade 只兜退出；进入观感由本层主导）。 */}
+          <Animated.View
+            entering={FadeIn.duration(260)}
+            style={{ flex: 1, backgroundColor: IMMERSIVE_BG }}
+          >
             <View
               style={{
                 flexDirection: "row",
@@ -268,7 +273,7 @@ export function VoiceSessionOverlay({
               </RNText>
               {disconnectedActions}
             </View>
-          </View>
+          </Animated.View>
         </Modal>
       ) : null}
 
