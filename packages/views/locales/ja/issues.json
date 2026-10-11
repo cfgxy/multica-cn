@@ -511,6 +511,8 @@
     "trigger_blocked_short_runtime_offline": "ランタイム オフライン",
     "trigger_blocked_short_runtime_unusable": "CLI を実行できません",
     "trigger_blocked_short_agent_runtime_required": "ランタイム未設定",
+    "trigger_blocked_budget_exceeded": "この対象のランタイムは費用予算の上限に達しています — 期間がリセットされてから再試行してください",
+    "trigger_blocked_short_budget_exceeded": "予算上限",
     "trigger_blocked_short_generic": "トリガーされません",
     "send_reply_failed": "返信を送信できませんでした",
     "delete_failed": "コメントを削除できませんでした",

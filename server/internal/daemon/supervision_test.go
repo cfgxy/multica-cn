@@ -48,7 +48,7 @@ func newTestSupervisor(t *testing.T) *supervisor.Supervisor {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	sup, err := supervisor.New(mgr, nil, "/tmp/fake-daemon", "test", nil)
+	sup, err := supervisor.New(mgr, nil, "/tmp/fake-daemon", "", "test", nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -282,7 +282,7 @@ func newReconcileHarness(t *testing.T, runtimeIDs []string, respond func(runtime
 		t.Fatalf("seed manifest: %v", err)
 	}
 	sys := supervisor.NewSystemdCtl(nil)
-	sup, err := supervisor.New(mgr, sys, "/tmp/fake-daemon", supervisor.OwnerIdentity(""), nil)
+	sup, err := supervisor.New(mgr, sys, "/tmp/fake-daemon", "", supervisor.OwnerIdentity(""), nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -500,7 +500,7 @@ func wireShimmedSupervisor(t *testing.T, d *Daemon, activeUnits ...string) *supe
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	sup, err := supervisor.New(mgr, supervisor.NewSystemdCtl(nil), "/tmp/fake-daemon", "test", nil)
+	sup, err := supervisor.New(mgr, supervisor.NewSystemdCtl(nil), "/tmp/fake-daemon", "", "test", nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

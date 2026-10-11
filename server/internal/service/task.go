@@ -1252,6 +1252,11 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	// RUYI-665: refuse before the task row exists once the runtime's cost
+	// budget is spent. After attribution, so a refusal still names its human.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1411,6 +1416,11 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+		return db.AgentTaskQueue{}, err
+	}
+	// RUYI-665: refuse before the task row exists once the runtime's cost
+	// budget is spent. After attribution, so a refusal still names its human.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	originatorUserID := attr.UserID
@@ -1678,6 +1688,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// owner), or is refused if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	// RUYI-665: refuse before the task row exists once the runtime's cost
+	// budget is spent.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -2092,6 +2107,13 @@ func (s *TaskService) enqueueChatTaskTx(
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
 	}
+	// RUYI-665: refuse while still before the run-intent CAS, so a budget
+	// refusal never burns a run-intent window. The refusal rolls this
+	// transaction back; the notice the check sends runs on the auto-commit
+	// handle and survives it.
+	if err := s.checkRuntimeCostBudget(ctx, qtx, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 
 	binding, bindingErr := qtx.LockChannelChatSessionBindingForContext(ctx, chatSession.ID)
 	if bindingErr != nil && !errors.Is(bindingErr, pgx.ErrNoRows) {
@@ -2470,6 +2492,17 @@ func (s *TaskService) SendDirectChatMessage(
 		}
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
+		}
+
+		// RUYI-665: the direct-chat path writes its task with CreateChatTask
+		// instead of the enqueue helpers, so the runtime cost budget gate must
+		// be stated here too — the helpers' gate never sees this path. A
+		// refusal returns before anything is written, so the tx rolls back
+		// with nothing persisted and the handler maps the typed error onto the
+		// amount-free 409. The check's inbox notice uses s.Queries
+		// (auto-commit), so it survives the rollback.
+		if err := s.checkRuntimeCostBudget(ctx, qtx, carrier, time.Now()); err != nil {
+			return err
 		}
 
 		// The database status of every newly-created task is "queued" until a
@@ -4195,9 +4228,20 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// promoted task would sit unclaimed until the empty key's TTL. Also emits
 	// the deferred→queued UI event and the enqueue analytics sample.
 	s.cancelSupersededDeferredRetries(ctx, uniqueIDs)
+	// RUYI-665: vet the due set against the runtime cost budgets before
+	// promoting. Blocked rows stay deferred (fire_at already past, so the next
+	// tick retries them) and come back on their own once the period resets.
+	dueForGate, err := s.Queries.ListDueDeferredTasksForBudgetGate(ctx, db.ListDueDeferredTasksForBudgetGateParams{
+		RuntimeIds:       uniqueIDs,
+		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list due deferred tasks for budget gate: %w", err)
+	}
 	promoted, err := s.Queries.PromoteDueDeferredTasksForRuntimes(ctx, db.PromoteDueDeferredTasksForRuntimesParams{
 		RuntimeIds:       uniqueIDs,
 		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+		ExcludedIds:      s.budgetBlockedDeferredTaskIDs(ctx, dueForGate),
 	})
 	if isDuplicatePendingTaskErr(err) {
 		// Same tolerance as the single-runtime path, and it matters more here:
@@ -4399,11 +4443,75 @@ func (s *TaskService) cancelSupersededDeferredRetries(ctx context.Context, runti
 	}
 }
 
+// budgetBlockedDeferredTaskIDs vets a due deferred set against the runtime
+// cost budgets (RUYI-665) and returns the task IDs the promoters must not
+// flip to queued this tick. One budget check per distinct agent: every due
+// row of an agent shares the verdict, and checkRuntimeCostBudget's inbox
+// notice stays one-per scope/period, so a burst of due rows cannot spam it.
+// Warn-only mode vetoes nothing — promotion proceeds. The budget is still
+// evaluated per agent (checkRuntimeCostBudget's warn branch notices the
+// owner, once per scope/period via the CAS marker) but every verdict comes
+// back allowed, so nothing is excluded. Fail-closed on unreadable inputs: a
+// budget read error, or an agent row that cannot be loaded to even scope the
+// check, holds that agent's due rows deferred for this tick; with fire_at
+// already past they are retried on the next poll, mirroring how the enqueue
+// helpers treat read errors.
+func (s *TaskService) budgetBlockedDeferredTaskIDs(ctx context.Context, due []db.ListDueDeferredTasksForBudgetGateRow) []pgtype.UUID {
+	// Empty, never nil: a nil slice binds as SQL NULL and `id <> ALL(NULL)`
+	// filters out every row, so an empty verdict set must stay an empty array.
+	if len(due) == 0 {
+		return []pgtype.UUID{}
+	}
+	verdict := make(map[pgtype.UUID]bool, len(due)) // agent_id → blocked
+	blocked := make([]pgtype.UUID, 0)
+	for _, row := range due {
+		if _, seen := verdict[row.AgentID]; !seen {
+			agent, err := s.Queries.GetAgent(ctx, row.AgentID)
+			if err != nil {
+				slog.Warn("deferred promote budget gate: load agent failed, holding tasks",
+					"agent_id", util.UUIDToString(row.AgentID), "error", err)
+				verdict[row.AgentID] = true
+			} else if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+				if budgetErr := (*RuntimeBudgetExceededError)(nil); errors.As(err, &budgetErr) {
+					slog.Info("deferred promote budget gate: holding tasks, runtime cost budget reached",
+						"agent_id", util.UUIDToString(row.AgentID),
+						"runtime_id", util.UUIDToString(row.RuntimeID),
+						"scope", budgetErr.Scope, "period", budgetErr.Period)
+					verdict[row.AgentID] = true
+				} else {
+					slog.Warn("deferred promote budget gate: budget read failed, holding tasks",
+						"agent_id", util.UUIDToString(row.AgentID), "error", err)
+					verdict[row.AgentID] = true
+				}
+			} else {
+				verdict[row.AgentID] = false
+			}
+		}
+		if verdict[row.AgentID] {
+			blocked = append(blocked, row.ID)
+		}
+	}
+	if len(blocked) > 0 {
+		slog.Info("deferred promote budget gate: blocked due tasks stay deferred",
+			"blocked_count", len(blocked), "due_count", len(due))
+	}
+	return blocked
+}
+
 func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
 	s.cancelSupersededDeferredRetries(ctx, []pgtype.UUID{runtimeID})
+	// RUYI-665: budget gate before promotion; see budgetBlockedDeferredTaskIDs.
+	dueForGate, err := s.Queries.ListDueDeferredTasksForBudgetGate(ctx, db.ListDueDeferredTasksForBudgetGateParams{
+		RuntimeIds:       []pgtype.UUID{runtimeID},
+		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+	})
+	if err != nil {
+		return fmt.Errorf("list due deferred tasks for budget gate: %w", err)
+	}
 	tasks, err := s.Queries.PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{
 		RuntimeID:        runtimeID,
 		RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+		ExcludedIds:      s.budgetBlockedDeferredTaskIDs(ctx, dueForGate),
 	})
 	if isDuplicatePendingTaskErr(err) {
 		// The NOT EXISTS fence inside the query cannot see an enqueue that has
@@ -5204,24 +5312,44 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
 		} else if retryEligible(failureReason, parent) {
-			wantRetry = true
-			// Persist the reason-aware effective budget into the child so the
-			// retry chain self-describes (e.g. provider_network → max_attempts=3),
-			// rather than leaking a contradictory attempt=N/max_attempts=2 row.
-			retryMaxAttempts = pgtype.Int4{Int32: retryAttemptCeiling(failureReason, parent.MaxAttempts), Valid: true}
-			// Defer this attempt when the reason's schedule calls for a backoff
-			// (provider_network's final attempt waits ~5s); a zero delay leaves
-			// fire_at NULL so the child is created immediately-claimable.
-			if delay := retryDelayForAttempt(failureReason, parent.Attempt); delay > 0 {
-				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
-			}
-			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
-				// Best-effort: a missing overlay is not retry-fatal — the child
-				// simply runs without the Composio overlay.
-				slog.Warn("fail task auto-retry: load agent for overlay failed",
+			// RUYI-665: budget suppression. An auto-retry is a new run nobody
+			// individually armed, so it answers to the same runtime cost
+			// budget as a fresh enqueue — and a budget that cannot be read
+			// suppresses too, matching the enqueue helpers' fail-closed
+			// stance: never spend under an unreadable budget. The check's
+			// inbox notice tells the owner why retries stopped. This load is
+			// no longer best-effort-overlay-only: without the agent row the
+			// budget cannot even be scoped, so suppression is the only safe
+			// reading, and a retried task on a vanished agent would fail at
+			// claim anyway.
+			agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID)
+			if aerr != nil {
+				slog.Warn("fail task auto-retry: suppressed, load agent failed",
 					"task_id", util.UUIDToString(taskID),
 					"agent_id", util.UUIDToString(parent.AgentID), "error", aerr)
+			} else if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+				if budgetErr := (*RuntimeBudgetExceededError)(nil); errors.As(err, &budgetErr) {
+					slog.Info("fail task auto-retry: suppressed, runtime cost budget reached",
+						"task_id", util.UUIDToString(taskID),
+						"agent_id", util.UUIDToString(parent.AgentID),
+						"scope", budgetErr.Scope, "period", budgetErr.Period)
+				} else {
+					slog.Warn("fail task auto-retry: suppressed, runtime cost budget read failed",
+						"task_id", util.UUIDToString(taskID),
+						"agent_id", util.UUIDToString(parent.AgentID), "error", err)
+				}
 			} else {
+				wantRetry = true
+				// Persist the reason-aware effective budget into the child so the
+				// retry chain self-describes (e.g. provider_network → max_attempts=3),
+				// rather than leaking a contradictory attempt=N/max_attempts=2 row.
+				retryMaxAttempts = pgtype.Int4{Int32: retryAttemptCeiling(failureReason, parent.MaxAttempts), Valid: true}
+				// Defer this attempt when the reason's schedule calls for a backoff
+				// (provider_network's final attempt waits ~5s); a zero delay leaves
+				// fire_at NULL so the child is created immediately-claimable.
+				if delay := retryDelayForAttempt(failureReason, parent.Attempt); delay > 0 {
+					retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
+				}
 				retryOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
 			}
 		}
@@ -7939,6 +8067,30 @@ func commentEventFields(c db.Comment) map[string]any {
 		"source_task_id": util.UUIDToPtr(c.SourceTaskID),
 		"created_at":     util.TimestampToString(c.CreatedAt),
 	}
+}
+
+// AddDaemonTaskSystemComment posts a system comment on the issue behind a
+// daemon task, attributed to the task's agent — the service-side half of the
+// daemon task-comment endpoint (RUYI-593). The strong-stop path has always
+// reached humans this way (FailTask's fixed wording); this exposes the same
+// channel to pre-terminal watchdog alerts. Same redact-then-sanitize pipeline
+// as FailTask, and best-effort by contract: a task with no issue backing
+// (autopilot / quick-create) has no thread to comment on and returns nil, so
+// the daemon's alert loop is never disturbed by delivery problems here.
+func (s *TaskService) AddDaemonTaskSystemComment(ctx context.Context, taskID pgtype.UUID, content string) error {
+	content = util.SanitizeTextForPostgres(redact.Text(content))
+	if content == "" {
+		return nil
+	}
+	task, err := s.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !task.IssueID.Valid || !task.AgentID.Valid {
+		return nil
+	}
+	s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "system", task.TriggerCommentID, task.ID)
+	return nil
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {

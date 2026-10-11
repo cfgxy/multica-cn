@@ -2657,6 +2657,13 @@ RETURNING *;
 -- promoted by a later tick once the slot frees, so nothing is lost — the human's
 -- rerun simply goes first. Chat / quick-create rows (issue_id NULL) are outside
 -- the index and bypass both fences.
+--
+-- RUYI-665: the runtime cost budget gate runs just before this query and
+-- passes the task IDs it vetoes via excluded_ids, which the due CTE drops
+-- here. A vetoed row stays deferred with fire_at in the past — the same
+-- "promoted by a later tick" recovery the occupant fence relies on, so the
+-- task comes back once the budget period resets. An empty array vetoes
+-- nothing (id <> ALL('{}') is vacuously true).
 WITH due AS (
     SELECT t.id,
            t.issue_id,
@@ -2668,6 +2675,7 @@ WITH due AS (
     WHERE t.runtime_id = @runtime_id
       AND t.status = 'deferred'
       AND t.fire_at <= now()
+      AND t.id <> ALL(@excluded_ids::uuid[])
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
         WHERE r.id = t.runtime_id
@@ -2727,7 +2735,9 @@ ORDER BY atq.priority DESC, atq.created_at ASC;
 -- name: PromoteDueDeferredTasksForRuntimes :many
 -- Batch variant of PromoteDueDeferredTasksForRuntime (MUL-4257): promotes all
 -- due deferred tasks across the runtime set in one UPDATE. Carries the same two
--- fences as the singular query; see its comment for why.
+-- fences as the singular query; see its comment for why. The singular query's
+-- RUYI-665 budget veto applies here identically: excluded_ids carries the
+-- blocked task IDs and a vetoed row stays deferred for a later tick.
 WITH due AS (
     SELECT t.id,
            t.issue_id,
@@ -2739,6 +2749,7 @@ WITH due AS (
     WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
       AND t.status = 'deferred'
       AND t.fire_at <= now()
+      AND t.id <> ALL(@excluded_ids::uuid[])
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
         WHERE r.id = t.runtime_id
@@ -2761,6 +2772,28 @@ UPDATE agent_task_queue
 SET status = 'queued'
 WHERE id IN (SELECT id FROM due WHERE issue_id IS NULL OR rn = 1)
 RETURNING *;
+
+-- name: ListDueDeferredTasksForBudgetGate :many
+-- The due set the deferred-fallback promoters are about to promote, read just
+-- before them so the runtime cost budget gate (RUYI-665) can veto rows whose
+-- agent's runtime budget is spent. Mirrors the status / fire_at / online
+-- fence of the promoters' due CTE, but deliberately omits the occupant and
+-- rn fences: the budget verdict is per agent, and a row that would lose its
+-- slot race anyway still names its agent — dropping it here could hide the
+-- only due row of a blocked agent. Cheap by construction: deferred rows are
+-- rare and the verdict is computed once per distinct agent, not per row.
+SELECT t.id, t.runtime_id, t.agent_id
+FROM agent_task_queue t
+WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now()
+  AND EXISTS (
+    SELECT 1 FROM agent_runtime r
+    WHERE r.id = t.runtime_id
+      AND r.status = 'online'
+      AND COALESCE(r.last_seen_at, r.updated_at) >=
+          now() - make_interval(secs => @runtime_stale_secs::double precision)
+  );
 
 -- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue

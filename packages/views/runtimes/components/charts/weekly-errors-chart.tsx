@@ -1,5 +1,10 @@
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell } from "recharts";
 import {
+  useBarSelection,
+  weeklyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -28,14 +33,43 @@ export interface WeeklyErrorsData extends FailureClassCounts, FailureBucketTotal
  * Mon–Sun calendar week. Partial-week bars render at half opacity, matching
  * every other weekly chart so the in-progress week reads as subordinate.
  */
-export function WeeklyErrorsChart({ data }: { data: WeeklyErrorsData[] }) {
+export function WeeklyErrorsChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: WeeklyErrorsData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
   const { t } = useT("usage");
   const config = useFailureClassConfig();
   const classes = activeFailureClasses(data);
+  const barSel = useBarSelection({
+    spans: weeklyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  // Selection active -> the hook owns per-bar opacity (dim vs selected,
+  // merged over the partial-week fade); idle -> fall back to this chart's
+  // own partial Cells so the no-selection render is unchanged.
+  const barCells =
+    barSel.cells(data.length, {
+      keyOf: (i) => data[i]?.weekStart ?? String(i),
+      baseOpacity: (i) => (data[i]?.partial ? 0.5 : 1),
+    }) ??
+    data.map((d) => (
+      <Cell key={d.weekStart} fillOpacity={d.partial ? 0.5 : 1} />
+    ));
+
 
   return (
     <ChartContainer config={config} className="aspect-[3/1] w-full">
-      <BarChart data={data} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -92,9 +126,7 @@ export function WeeklyErrorsChart({ data }: { data: WeeklyErrorsData[] }) {
             fill={`var(--color-${c})`}
             radius={i === classes.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
           >
-            {data.map((d) => (
-              <Cell key={`${d.weekStart}-${c}`} fillOpacity={d.partial ? 0.5 : 1} />
-            ))}
+            {barCells}
           </Bar>
         ))}
       </BarChart>

@@ -2446,12 +2446,17 @@ func commentBlockedTargetOutcomes(targets []commentMentionTarget) []CommentTrigg
 // commentEnqueueFailureReason types an enqueue error that reached the response
 // (MUL-4525 §2). The admission gate (canInvokeAgent / archived / runtime) already
 // ran during resolution, so a failure here is either a fail-closed attribution
-// refusal (attribution_blocked, typed via errors.Is) or a rare race /
+// refusal (attribution_blocked, typed via errors.Is), a spent runtime cost
+// budget (budget_exceeded, typed via errors.As — RUYI-665), or a rare race /
 // infrastructure error that stays an unclassified internal error rather than
 // leaking the raw message.
 func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
+	}
+	var budgetErr *service.RuntimeBudgetExceededError
+	if errors.As(err, &budgetErr) {
+		return ReasonBudgetExceeded
 	}
 	return ReasonInternalError
 }

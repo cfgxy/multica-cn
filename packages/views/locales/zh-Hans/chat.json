@@ -262,6 +262,7 @@
     "send_failure": {
       "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
       "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",
+      "budget_reached": "该运行时的本期费用预算已用尽，消息未发送。预算周期重置后可再次发送。",
       "generic": "消息发送失败，请重试。"
     },
     "disabled_reason": {
