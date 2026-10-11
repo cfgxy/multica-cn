@@ -530,6 +530,8 @@ deleted_issue_decisions AS (
 -- no dependents outside this database: the executor only reads them, and
 -- audit_event rows reference them by trigger_ref strings, not by FK. The
 -- linked issue_decisions card is swept by the CTE above. Cascade directly.
+-- Cross-space groups are revoked whole first — see
+-- RevokeInFlightCrossSpaceDecisionRequests, which must run before this CTE.
 deleted_decision_requests AS (
     DELETE FROM decision_requests WHERE workspace_id = $1
 )
@@ -547,6 +549,28 @@ SET state = CASE
     next_attempt_at = now(),
     last_error = NULL
 WHERE channel_media_pending_object.workspace_id = $1;
+
+-- name: RevokeInFlightCrossSpaceDecisionRequests :many
+-- RUYI-630: a cross-space authorization group torn down mid-flight on one
+-- side must not keep advancing on the survivor. Left alone, the surviving
+-- space's row degenerates to a single-row group, falls back to the deleted
+-- origin row as its landing, and would execute against the deleted side's
+-- context. Groups with an in-flight row HERE and any row in another space
+-- get every still-in-flight row revoked in the caller's delete transaction;
+-- single-space rows are swept by the cascade CTE above, and groups whose row
+-- here is already terminal were settled before the teardown started.
+UPDATE decision_requests SET status = 'revoked', updated_at = now()
+WHERE status IN ('pending', 'approved')
+  AND request_group_id IN (
+      SELECT a.request_group_id
+      FROM decision_requests a
+      JOIN decision_requests b
+        ON b.request_group_id = a.request_group_id
+       AND b.workspace_id <> a.workspace_id
+      WHERE a.workspace_id = $1
+        AND a.status IN ('pending', 'approved')
+  )
+RETURNING *;
 
 -- name: DeleteWorkspaceChatMessages :exec
 DELETE FROM chat_message
