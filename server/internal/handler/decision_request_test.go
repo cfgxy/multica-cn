@@ -9,6 +9,7 @@ package handler
 // containment check.
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -713,6 +714,46 @@ func TestDecisionRequestExpiryAndCancel(t *testing.T) {
 			t.Fatal("terminal_callback_at not set — expiry callback must fire at most once and be marked")
 		}
 	})
+	t.Run("expiry sweep spares a fully-approved group awaiting execution", func(t *testing.T) {
+		// The crash window between the final approval and the advance pass:
+		// both rows approved, window lapsed. The captured consent must not
+		// be voided — no expired rows, no expired card, no expiry callback.
+		ws2 := secondWorkspaceWithOwner(t)
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         "workspace_info_read",
+			"title":               "approved before the window lapsed",
+			"target_workspace_id": ws2,
+			"origin_issue_id":     f.IssueID,
+		})
+		detail := decodeDecisionRequestDetail(t, w)
+		dbfx.Exec(t, `UPDATE decision_requests SET status = 'approved', answered_at = now() WHERE request_group_id = $1`, detail.Request.RequestGroupID)
+		dbfx.Exec(t, `UPDATE decision_requests SET expires_at = now() - interval '1 minute' WHERE request_group_id = $1`, detail.Request.RequestGroupID)
+		dbfx.Exec(t, `UPDATE issue_decisions SET expires_at = now() - interval '1 minute' WHERE pending_request_group_id = $1`, detail.Request.RequestGroupID)
+
+		listW := httptest.NewRecorder()
+		req := withURLParam(newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/decision-requests", nil), "id", testWorkspaceID)
+		testHandler.ListDecisionRequests(listW, req)
+		if listW.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", listW.Code, listW.Body.String())
+		}
+
+		var originStatus, targetStatus string
+		dbfx.QueryRow(t, `SELECT status FROM decision_requests WHERE request_group_id = $1 AND role = 'origin'`, detail.Request.RequestGroupID).Scan(&originStatus)
+		dbfx.QueryRow(t, `SELECT status FROM decision_requests WHERE request_group_id = $1 AND role = 'target'`, detail.Request.RequestGroupID).Scan(&targetStatus)
+		if originStatus != "approved" || targetStatus != "approved" {
+			t.Fatalf("rows = %s/%s after sweep, want both still approved — captured consent is not expiry fuel", originStatus, targetStatus)
+		}
+		var cardState *string
+		dbfx.QueryRow(t, `SELECT auth_state FROM issue_decisions WHERE pending_request_group_id = $1`, detail.Request.RequestGroupID).Scan(&cardState)
+		if cardState == nil || *cardState != "pending" {
+			t.Fatalf("card auth_state = %v after sweep, want pending — the card waits for execution, not expiry", cardState)
+		}
+		var callbackAt *time.Time
+		dbfx.QueryRow(t, `SELECT terminal_callback_at FROM decision_requests WHERE request_group_id = $1 AND role = 'origin'`, detail.Request.RequestGroupID).Scan(&callbackAt)
+		if callbackAt != nil {
+			t.Fatal("terminal_callback_at set — a spared group must not fire the expiry callback")
+		}
+	})
 	t.Run("creator agent cancel revokes the whole group; plain member cannot", func(t *testing.T) {
 		user2 := dbfx.User(t, "ruyi630-member3", "ruyi630-member3@test.local")
 		dbfx.Member(t, testWorkspaceID, user2, "member")
@@ -736,6 +777,69 @@ func TestDecisionRequestExpiryAndCancel(t *testing.T) {
 			t.Fatalf("row status after cancel = %s, want revoked", status)
 		}
 	})
+}
+
+// ── duplicate terminal finalize (F2) ────────────────────────────────────────
+
+func TestDecisionRequestDuplicateTerminalFinalize(t *testing.T) {
+	f := newDecisionFixture(t)
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": "workspace_info_read", "title": "deny once, wake once",
+		"origin_issue_id": f.IssueID,
+	})
+	detail := decodeDecisionRequestDetail(t, w)
+
+	// Deny through the authorization card (the issue-ref origin step lives
+	// there). The in-request advance finalizes the group: one denied audit,
+	// the once-only terminal callback comment, the marker.
+	denyW := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+detail.Card.ID+"/answer", map[string]any{
+		"selected_indices": []int{1},
+	})
+	req = withURLParams(req, "id", f.IssueID, "decisionId", detail.Card.ID)
+	testHandler.AnswerIssueDecision(denyW, req)
+	if denyW.Code != http.StatusOK {
+		t.Fatalf("card deny: %d %s", denyW.Code, denyW.Body.String())
+	}
+
+	countDeniedAudits := func() int {
+		var n int
+		dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind = 'decision_request' AND trigger_ref = $1 AND event_type = 'agent.decision_denied'`, detail.Request.RequestGroupID).Scan(&n)
+		return n
+	}
+	// The callback comment is the only system-authored comment on the issue;
+	// the step echo rides the answering member.
+	countCallbackComments := func() int {
+		var n int
+		dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system'`, f.IssueID).Scan(&n)
+		return n
+	}
+	if n := countDeniedAudits(); n != 1 {
+		t.Fatalf("denied audits after first finalize = %d, want 1", n)
+	}
+	if n := countCallbackComments(); n != 1 {
+		t.Fatalf("terminal callback comments = %d, want 1", n)
+	}
+
+	// Re-run the advance the way the racing path would see the group after
+	// the first finalize committed: marker set in the same transaction as
+	// the flips, rows terminal. A duplicate finalize must flip nothing — no
+	// second audit, no second wake.
+	advanceReq := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/decision-requests/"+detail.Request.ID+"/answer", nil)
+	advanceReq = withURLParams(advanceReq, "id", testWorkspaceID, "requestId", detail.Request.ID)
+	testHandler.advanceDecisionRequestAfterAnswer(advanceReq, parseUUID(detail.Request.RequestGroupID), "tester")
+
+	if n := countDeniedAudits(); n != 1 {
+		t.Fatalf("denied audits after duplicate finalize = %d, want still 1", n)
+	}
+	if n := countCallbackComments(); n != 1 {
+		t.Fatalf("terminal callback comments after duplicate advance = %d, want still 1", n)
+	}
+	var status string
+	dbfx.QueryRow(t, `SELECT status FROM decision_requests WHERE id = $1`, detail.Request.ID).Scan(&status)
+	if status != "denied" {
+		t.Fatalf("row status after duplicate advance = %s, want denied", status)
+	}
 }
 
 // ── platform executor: prompt_restore ───────────────────────────────────────
@@ -945,5 +1049,54 @@ func TestDecisionRequestWorkspaceTeardown(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT count(*) FROM decision_requests WHERE id = $1`, detail.Request.ID).Scan(&n)
 	if n != 0 {
 		t.Fatal("rows survived the teardown delete, want 0")
+	}
+}
+
+func TestDecisionRequestCrossSpaceTeardownRevokesGroup(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": "workspace_info_read", "title": "teardown mid-flight",
+		"target_workspace_id": ws2,
+	})
+	detail := decodeDecisionRequestDetail(t, w)
+	// Approve the origin step; the group waits on ws2's owner.
+	if aw := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); aw.Code != http.StatusOK {
+		t.Fatalf("origin approve: %d", aw.Code)
+	}
+
+	// Mirror the DeleteWorkspace ordering: the revoke step runs inside the
+	// delete transaction, then the cascade CTE sweeps this side's rows.
+	if err := testHandler.revokeCrossSpaceDecisionRequestsOnDelete(context.Background(), testHandler.Queries, parseUUID(ws2)); err != nil {
+		t.Fatalf("cross-space revoke step: %v", err)
+	}
+	dbfx.Exec(t, `DELETE FROM decision_requests WHERE workspace_id = $1`, ws2)
+
+	var targetLeft int
+	dbfx.QueryRow(t, `SELECT count(*) FROM decision_requests WHERE request_group_id = $1 AND workspace_id = $2`, detail.Request.RequestGroupID, ws2).Scan(&targetLeft)
+	if targetLeft != 0 {
+		t.Fatalf("target rows after teardown = %d, want 0", targetLeft)
+	}
+	var originStatus string
+	dbfx.QueryRow(t, `SELECT status FROM decision_requests WHERE id = $1`, detail.Request.ID).Scan(&originStatus)
+	if originStatus != "revoked" {
+		t.Fatalf("surviving origin row = %s, want revoked with its deleted counterparty", originStatus)
+	}
+
+	// The survivor must not advance on its own: no phantom execution after
+	// the counterparty disappeared.
+	advanceReq := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/decision-requests/"+detail.Request.ID+"/answer", nil)
+	advanceReq = withURLParams(advanceReq, "id", testWorkspaceID, "requestId", detail.Request.ID)
+	testHandler.advanceDecisionRequestAfterAnswer(advanceReq, parseUUID(detail.Request.RequestGroupID), "tester")
+	var after string
+	dbfx.QueryRow(t, `SELECT status FROM decision_requests WHERE id = $1`, detail.Request.ID).Scan(&after)
+	if after != "revoked" {
+		t.Fatalf("row after post-teardown advance = %s, want still revoked (never executed)", after)
+	}
+
+	var revokedAudits int
+	dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind = 'decision_request' AND trigger_ref = $1 AND event_type = 'agent.decision_revoked'`, detail.Request.RequestGroupID).Scan(&revokedAudits)
+	if revokedAudits != 1 {
+		t.Fatalf("teardown audit events = %d, want 1", revokedAudits)
 	}
 }

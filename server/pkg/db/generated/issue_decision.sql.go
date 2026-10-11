@@ -446,12 +446,20 @@ UPDATE issue_decisions SET
 WHERE decision_kind = 'authorization'
   AND status = 'open' AND auth_state = 'pending'
   AND expires_at IS NOT NULL AND expires_at <= now()
+  AND EXISTS (
+      SELECT 1 FROM decision_requests dr
+      WHERE dr.request_group_id = issue_decisions.pending_request_group_id
+        AND dr.status NOT IN ('approved', 'executed')
+  )
 RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at
 `
 
 // RUYI-630: lazy expiry for authorization link cards (standalone expiry
 // guard mirroring the group sweep; a card whose group row expired but that
-// was missed by the same-transaction sweep still converges here).
+// was missed by the same-transaction sweep still converges here). A group
+// whose approval is fully captured — every row approved or already past
+// execution — keeps its card: the window lapsed before execution landed,
+// not before consent did (same guard as ExpireDueDecisionRequests).
 func (q *Queries) ExpireDueDecisionCards(ctx context.Context) ([]IssueDecision, error) {
 	rows, err := q.db.Query(ctx, expireDueDecisionCards)
 	if err != nil {

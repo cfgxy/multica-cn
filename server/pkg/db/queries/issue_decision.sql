@@ -141,13 +141,21 @@ RETURNING *;
 -- name: ExpireDueDecisionCards :many
 -- RUYI-630: lazy expiry for authorization link cards (standalone expiry
 -- guard mirroring the group sweep; a card whose group row expired but that
--- was missed by the same-transaction sweep still converges here).
+-- was missed by the same-transaction sweep still converges here). A group
+-- whose approval is fully captured — every row approved or already past
+-- execution — keeps its card: the window lapsed before execution landed,
+-- not before consent did (same guard as ExpireDueDecisionRequests).
 UPDATE issue_decisions SET
     auth_state = 'expired',
     updated_at = now()
 WHERE decision_kind = 'authorization'
   AND status = 'open' AND auth_state = 'pending'
   AND expires_at IS NOT NULL AND expires_at <= now()
+  AND EXISTS (
+      SELECT 1 FROM decision_requests dr
+      WHERE dr.request_group_id = issue_decisions.pending_request_group_id
+        AND dr.status NOT IN ('approved', 'executed')
+  )
 RETURNING *;
 
 -- name: SetAuthorizationCardExecution :many

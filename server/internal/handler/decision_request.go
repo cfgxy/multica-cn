@@ -860,6 +860,48 @@ func (h *Handler) sweepDueDecisionRequests(r *http.Request) {
 	}
 }
 
+// revokeCrossSpaceDecisionRequestsOnDelete is the workspace-teardown arm of
+// the authorization channel: groups with an in-flight row in the deleted
+// space and a row in another space are revoked whole — surviving rows, the
+// origin link card, one audit event per group — inside the caller's delete
+// transaction. Without it the surviving space's row degenerates to a
+// single-row group, falls back to the deleted origin row as its landing,
+// and would execute against the deleted side's context.
+func (h *Handler) revokeCrossSpaceDecisionRequestsOnDelete(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+	revoked, err := qtx.RevokeInFlightCrossSpaceDecisionRequests(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	audited := make(map[pgtype.UUID]bool, len(revoked))
+	for _, row := range revoked {
+		if !audited[row.RequestGroupID] {
+			audited[row.RequestGroupID] = true
+			// Anchor the audit event on a surviving row when the group has
+			// one, so the record outlives the teardown that caused it.
+			anchor := row
+			for _, other := range revoked {
+				if other.RequestGroupID != row.RequestGroupID {
+					continue
+				}
+				if other.WorkspaceID != workspaceID {
+					anchor = other
+					break
+				}
+			}
+			service.TryAppendAuditEvents(ctx, qtx, auditEventForDecisionRequest(
+				service.AuditAgentDecisionRevoked, anchor,
+				decisionRequestAuditDetails(anchor, map[string]any{"revoked_by_type": "workspace_teardown"})))
+		}
+		if _, err := qtx.SyncDecisionCardsForGroup(ctx, db.SyncDecisionCardsForGroupParams{
+			AuthState:      decisionReqRevoked,
+			RequestGroupID: row.RequestGroupID,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // publishGroupUpdate fans the freshest group state to both workspaces' WS
 // channels (one event per row) — clients never read across spaces.
 func (h *Handler) publishGroupUpdate(r *http.Request, groupID pgtype.UUID) {
@@ -1048,6 +1090,12 @@ func (h *Handler) CancelDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(
 		service.AuditAgentDecisionRevoked, row,
 		decisionRequestAuditDetails(row, map[string]any{"revoked_by": authorID, "revoked_by_type": authorType})))
+	// The revoke flip owns the terminal callback (the CAS above handed it to
+	// exactly one caller); its marker rides this transaction so a racing
+	// terminal path can never double-post it.
+	if err := qtx.MarkDecisionRequestCallbackDone(r.Context(), row.RequestGroupID); err != nil {
+		slog.Warn("decision request callback mark failed", append(logger.RequestAttrs(r), "error", err)...)
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to cancel decision request")
 		return
@@ -1059,10 +1107,7 @@ func (h *Handler) CancelDecisionRequest(w http.ResponseWriter, r *http.Request) 
 			origin = row
 		}
 	}
-	if !origin.TerminalCallbackAt.Valid {
-		h.postDecisionRequestCallback(r, origin, decisionReqRevoked, "", nil)
-		h.Queries.MarkDecisionRequestCallbackDone(r.Context(), origin.RequestGroupID)
-	}
+	h.postDecisionRequestCallback(r, origin, decisionReqRevoked, "", nil)
 	h.publishGroupUpdate(r, row.RequestGroupID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": decisionReqRevoked})
 }

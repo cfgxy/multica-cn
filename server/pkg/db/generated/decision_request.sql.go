@@ -284,7 +284,7 @@ WITH due_groups AS (
     FROM decision_requests
     WHERE expires_at <= now() AND status IN ('pending', 'approved')
     GROUP BY request_group_id
-    HAVING count(*) FILTER (WHERE status NOT IN ('pending', 'approved')) = 0
+    HAVING count(*) FILTER (WHERE status = 'pending') > 0
 )
 UPDATE decision_requests SET status = 'expired', updated_at = now()
 WHERE request_group_id IN (SELECT request_group_id FROM due_groups)
@@ -292,10 +292,13 @@ WHERE request_group_id IN (SELECT request_group_id FROM due_groups)
 RETURNING id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at
 `
 
-// ExpireDueDecisionRequests flips every group whose window lapsed before all
-// required steps approved (lazy expiry — no scheduler). A group qualifies
-// only while ALL its rows are still in flight; a denied or executed group is
-// already terminal and stays put.
+// ExpireDueDecisionRequests flips every group whose window lapsed before
+// all required steps approved (lazy expiry — no scheduler). A group
+// qualifies only while a pending step remains: a fully-approved group is
+// already past consent — its advance/execute pass just hasn't landed yet —
+// and expiring it there would void captured human approvals and misreport
+// the terminal callback. Groups with no pending row are otherwise terminal
+// and stay put.
 func (q *Queries) ExpireDueDecisionRequests(ctx context.Context) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, expireDueDecisionRequests)
 	if err != nil {
@@ -540,9 +543,10 @@ type ListDecisionRequestsForWorkspaceParams struct {
 }
 
 // Decision-center rows for one workspace (one row PER SPACE-LEVEL REQUEST).
-// NULL status lists every status; a set status filters to it. Visibility
-// (restricted tiers) is enforced by the handler after the fetch — the row
-// carries everything the check needs.
+// NULL status lists every status; a set status filters to it. Row visibility
+// is workspace-membership scoped at the route: every member of this space
+// sees its rows; operator tiers gate who may ANSWER (the answer endpoint's
+// tier check), never who may see.
 func (q *Queries) ListDecisionRequestsForWorkspace(ctx context.Context, arg ListDecisionRequestsForWorkspaceParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, listDecisionRequestsForWorkspace, arg.WorkspaceID, arg.Limit, arg.Status)
 	if err != nil {

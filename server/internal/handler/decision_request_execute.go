@@ -133,12 +133,20 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 	// propagated yet — this loop is what propagates it. Re-entry safety comes
 	// from the checks below: allApproved requires every row approved, so an
 	// executed/denied/expired/revoked row keeps the execution path out, and
-	// the group FOR UPDATE lock serializes concurrent advances.
+	// the group FOR UPDATE lock serializes concurrent advances. A duplicate
+	// entry (deny landed on the card and the row surface in the same instant)
+	// flips nothing — finalize skips its audit and card sync, and the
+	// once-only callback stays with the transaction that did the flipping.
 	for _, row := range rows {
 		if row.Status == decisionReqDenied {
-			h.finalizeDecisionRequestGroup(r, qtx, rows, decisionReqDenied)
-			_ = tx.Commit(r.Context())
-			h.afterDecisionRequestTerminal(r, origin, decisionReqDenied, "", nil)
+			ownsTerminal := h.finalizeDecisionRequestGroup(r, qtx, rows, decisionReqDenied)
+			if err := tx.Commit(r.Context()); err != nil {
+				slog.Warn("decision request advance commit failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+				return
+			}
+			if ownsTerminal {
+				h.afterDecisionRequestTerminal(r, origin, decisionReqDenied, "", nil)
+			}
 			return
 		}
 	}
@@ -152,7 +160,10 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		}
 	}
 	if !allApproved {
-		_ = tx.Commit(r.Context())
+		if err := tx.Commit(r.Context()); err != nil {
+			slog.Warn("decision request advance commit failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+			return
+		}
 		for _, row := range rows {
 			resp := decisionRequestToResponse(row)
 			h.publish(protocol.EventDecisionRequestUpdated, uuidToString(row.WorkspaceID), "member", answererID, map[string]any{
@@ -212,25 +223,57 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(eventType, execRow, decisionRequestAuditDetails(execRow, map[string]any{
 		"answered_by": answererID,
 	})))
-	_ = tx.Commit(r.Context())
+	// The callback marker rides the execution transaction: the group lock
+	// makes the locked-read marker state authoritative, so a concurrent
+	// terminal path can never double-post the once-only callback.
+	ownsTerminal := !origin.TerminalCallbackAt.Valid
+	if ownsTerminal {
+		if err := qtx.MarkDecisionRequestCallbackDone(r.Context(), groupID); err != nil {
+			slog.Warn("decision request callback mark failed", append(logger.RequestAttrs(r), "error", err)...)
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("decision request advance commit failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+		return
+	}
 
 	var errPtr *string
 	if execErr != nil {
 		s := execErr.Error()
 		errPtr = &s
 	}
-	h.afterDecisionRequestTerminal(r, execRow, status, string(resultJSON), errPtr)
+	if ownsTerminal {
+		h.afterDecisionRequestTerminal(r, execRow, status, string(resultJSON), errPtr)
+		return
+	}
+	h.publishGroupUpdate(r, groupID)
 }
 
 // finalizeDecisionRequestGroup propagates a terminal state (denied today;
 // expiry and revoke converge on the same shape) onto every row and pending
-// card of the group, with the audit row, inside the caller's transaction.
-func (h *Handler) finalizeDecisionRequestGroup(r *http.Request, qtx *db.Queries, rows []db.DecisionRequest, status string) {
+// card of the group, with the audit row and the once-only callback marker,
+// inside the caller's transaction. Returns false for a duplicate finalize:
+// the callback marker is written inside the terminal-flipping transaction,
+// so a set marker on the locked read means another path already settled the
+// group — audit, card sync and callback stay with that transaction. (The
+// propagate row count cannot be the signal: on the single-space card-deny
+// path the origin row is already denied by the answer-transaction sync, and
+// the primary finalize legitimately flips zero rows.)
+func (h *Handler) finalizeDecisionRequestGroup(r *http.Request, qtx *db.Queries, rows []db.DecisionRequest, status string) bool {
+	for _, row := range rows {
+		if row.TerminalCallbackAt.Valid {
+			return false
+		}
+	}
 	if _, err := qtx.PropagateDecisionRequestGroup(r.Context(), db.PropagateDecisionRequestGroupParams{
 		Status:         status,
 		RequestGroupID: rows[0].RequestGroupID,
 	}); err != nil {
 		slog.Warn("decision request propagation failed", append(logger.RequestAttrs(r), "error", err, "status", status)...)
+		return false
+	}
+	if err := qtx.MarkDecisionRequestCallbackDone(r.Context(), rows[0].RequestGroupID); err != nil {
+		slog.Warn("decision request callback mark failed", append(logger.RequestAttrs(r), "error", err)...)
 	}
 	if _, err := qtx.SyncDecisionCardsForGroup(r.Context(), db.SyncDecisionCardsForGroupParams{
 		AuthState:      status,
@@ -243,25 +286,23 @@ func (h *Handler) finalizeDecisionRequestGroup(r *http.Request, qtx *db.Queries,
 		eventType = service.AuditAgentDecisionRevoked
 	}
 	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(eventType, rows[0], decisionRequestAuditDetails(rows[0], nil)))
+	return true
 }
 
 // afterDecisionRequestTerminal posts the once-only callback to the
 // requesting run and fans the fresh group state out over both workspaces'
-// WS channels. Callback = system comment on the origin issue mentioning the
-// creating agent, run through the standard mention pipeline with the
-// agent's owner as the effective human — the consent the group captured was
-// that owner's, so the wake acts for them. No issue reference means no
-// thread: the run polls GET /decision-requests/{id} (creator allowed) and
-// the WS event is the push signal.
+// WS channels. The caller owns callback uniqueness — it invokes this only
+// when its transaction is the one that flipped the group terminal (the
+// marker was written inside that same transaction, so racing paths see it
+// under the group lock). Callback = system comment on the origin issue
+// mentioning the creating agent, run through the standard mention pipeline
+// with the agent's owner as the effective human — the consent the group
+// captured was that owner's, so the wake acts for them. No issue reference
+// means no thread: the run polls GET /decision-requests/{id} (creator
+// allowed) and the WS event is the push signal.
 func (h *Handler) afterDecisionRequestTerminal(r *http.Request, origin db.DecisionRequest, status, resultJSON string, execErr *string) {
-	groupID := origin.RequestGroupID
-	if !origin.TerminalCallbackAt.Valid {
-		h.postDecisionRequestCallback(r, origin, status, resultJSON, execErr)
-		if err := h.Queries.MarkDecisionRequestCallbackDone(r.Context(), groupID); err != nil {
-			slog.Warn("decision request callback mark failed", append(logger.RequestAttrs(r), "error", err)...)
-		}
-	}
-	h.publishGroupUpdate(r, groupID)
+	h.postDecisionRequestCallback(r, origin, status, resultJSON, execErr)
+	h.publishGroupUpdate(r, origin.RequestGroupID)
 }
 
 // postDecisionRequestCallback writes the terminal-state echo comment and

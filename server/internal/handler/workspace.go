@@ -1234,6 +1234,19 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return deleteWorkspaceTasks(ctx, qtx, requester.WorkspaceID) },
 		},
 		{
+			// A cross-space authorization group with an in-flight row here
+			// dies with the space (RUYI-630): left alone, the surviving
+			// space's row would degenerate to a single-row group, fall back
+			// to the deleted origin row as its landing, and execute against
+			// the deleted side's context. Revoke the whole group in this
+			// transaction — surviving rows, the origin link card, the audit
+			// trail — before the cascade sweep deletes this side's rows.
+			name: "revoke cross-space decision request groups",
+			run: func() error {
+				return h.revokeCrossSpaceDecisionRequestsOnDelete(ctx, qtx, requester.WorkspaceID)
+			},
+		},
+		{
 			name: "delete leaf data",
 			run:  func() error { return qtx.DeleteWorkspaceLeafData(ctx, requester.WorkspaceID) },
 		},
