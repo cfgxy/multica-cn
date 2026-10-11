@@ -1252,6 +1252,11 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.AgentTaskQueue{}, err
 	}
+	// RUYI-665: refuse before the task row exists once the runtime's cost
+	// budget is spent. After attribution, so a refusal still names its human.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -1411,6 +1416,11 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+		return db.AgentTaskQueue{}, err
+	}
+	// RUYI-665: refuse before the task row exists once the runtime's cost
+	// budget is spent. After attribution, so a refusal still names its human.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	originatorUserID := attr.UserID
@@ -1678,6 +1688,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// owner), or is refused if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	// RUYI-665: refuse before the task row exists once the runtime's cost
+	// budget is spent.
+	if err := s.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -2091,6 +2106,13 @@ func (s *TaskService) enqueueChatTaskTx(
 	}
 	if !agent.RuntimeID.Valid {
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
+	}
+	// RUYI-665: refuse while still before the run-intent CAS, so a budget
+	// refusal never burns a run-intent window. The refusal rolls this
+	// transaction back; the notice the check sends runs on the auto-commit
+	// handle and survives it.
+	if err := s.checkRuntimeCostBudget(ctx, qtx, agent, time.Now()); err != nil {
+		return db.AgentTaskQueue{}, err
 	}
 
 	binding, bindingErr := qtx.LockChannelChatSessionBindingForContext(ctx, chatSession.ID)

@@ -523,6 +523,8 @@
     "trigger_blocked_short_runtime_offline": "Runtime offline",
     "trigger_blocked_short_runtime_unusable": "CLI can't run",
     "trigger_blocked_short_agent_runtime_required": "Needs a runtime",
+    "trigger_blocked_budget_exceeded": "This target's runtime has reached its cost budget — try again after the period resets",
+    "trigger_blocked_short_budget_exceeded": "Budget reached",
     "trigger_blocked_short_generic": "Won't start",
     "send_reply_failed": "Failed to send reply",
     "delete_failed": "Failed to delete comment",

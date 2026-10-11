@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import type { RuntimeCostBudgetInput } from "../types";
 import { runtimeKeys } from "./queries";
 import { workspaceKeys } from "../workspace/queries";
 import { agentTaskSnapshotKeys } from "../agents/queries";
@@ -123,6 +124,21 @@ export function useUpdateRuntime(wsId: string) {
       };
     }) => api.updateRuntime(runtimeId, patch),
     onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+// Replaces the runtime's whole budget set (RUYI-665). Invalidates the budget
+// query so meters reflect the new limits, and the runtime list in case a
+// summary column reads budgets later.
+export function useUpdateRuntimeCostBudget(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runtimeId, input }: { runtimeId: string; input: RuntimeCostBudgetInput }) =>
+      api.updateRuntimeCostBudget(runtimeId, input),
+    onSettled: (_data, _err, { runtimeId }) => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.budget(runtimeId) });
       qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
     },
   });

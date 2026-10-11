@@ -1755,6 +1755,25 @@ type RetrospectiveRun struct {
 	TaskID pgtype.UUID `json:"task_id"`
 }
 
+// Per-runtime model cost budgets: runtime total (user_id NULL) plus per-user scopes, each with optional daily/weekly/monthly UTC-window USD limits in 1e-10 USD ticks. No row = no limit.
+type RuntimeCostBudget struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RuntimeID   pgtype.UUID `json:"runtime_id"`
+	// NULL = runtime-total scope (blocks every user); non-NULL = caps tasks whose agent this user owns.
+	UserID               pgtype.UUID `json:"user_id"`
+	DailyLimitUsdTicks   pgtype.Int8 `json:"daily_limit_usd_ticks"`
+	WeeklyLimitUsdTicks  pgtype.Int8 `json:"weekly_limit_usd_ticks"`
+	MonthlyLimitUsdTicks pgtype.Int8 `json:"monthly_limit_usd_ticks"`
+	// UTC start of the daily period that already received its limit-reached inbox notice; NULL = not yet notified this period.
+	DailyNotifiedPeriodStart   pgtype.Timestamptz `json:"daily_notified_period_start"`
+	WeeklyNotifiedPeriodStart  pgtype.Timestamptz `json:"weekly_notified_period_start"`
+	MonthlyNotifiedPeriodStart pgtype.Timestamptz `json:"monthly_notified_period_start"`
+	UpdatedBy                  pgtype.UUID        `json:"updated_by"`
+	CreatedAt                  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RuntimeCredential struct {
 	RuntimeInstanceID pgtype.UUID        `json:"runtime_instance_id"`
 	CredentialKey     string             `json:"credential_key"`

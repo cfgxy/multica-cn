@@ -140,6 +140,10 @@ var postConsolidationStems = []string{
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
+	"966_runtime_cost_budget",                        // RUYI-665 (renumbered from 962: 962-964 yielded to RUYI-669's retrospective stems on main)
+	"967_runtime_cost_budget_pkey_index",             // RUYI-665
+	"968_runtime_cost_budget_primary_key",            // RUYI-665
+	"969_runtime_cost_budget_scope_index",            // RUYI-665
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

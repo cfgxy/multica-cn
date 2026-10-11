@@ -511,6 +511,8 @@
     "trigger_blocked_short_runtime_offline": "运行时离线",
     "trigger_blocked_short_runtime_unusable": "CLI 无法运行",
     "trigger_blocked_short_agent_runtime_required": "需绑定运行时",
+    "trigger_blocked_budget_exceeded": "该目标所在运行时已达费用额度，请在周期重置后重试",
+    "trigger_blocked_short_budget_exceeded": "额度已满",
     "trigger_blocked_short_generic": "不会触发",
     "send_reply_failed": "发送回复失败",
     "delete_failed": "删除评论失败",
