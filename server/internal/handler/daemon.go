@@ -1177,6 +1177,14 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	// RUYI-645: the claim in processHeartbeat already flipped these rows to
+	// claimed, so dropping the field here would blackhole the commands for
+	// HTTP-heartbeating daemons — they would never execute and every row
+	// would die in sweep timeout. The WS path returns the ack struct directly
+	// and was never affected.
+	if len(ack.PendingOpsCommands) > 0 {
+		resp["pending_ops_commands"] = ack.PendingOpsCommands
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
