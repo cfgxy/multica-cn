@@ -88,3 +88,11 @@ export function groupReferenceTailRows(
   );
   return { grouped: tasks.length > 0 && prs.length > 0, tasks, prs, degraded };
 }
+
+// Board 2 close path #3 (下滑手势): a drag on the sheet header closes the
+// sheet when the release point travels 72px+ downward OR flings down at
+// ≥0.5 px/ms (~500 px/s). Upward drags never close. Thresholds live here so
+// the policy stays node-testable; the component only wires the PanResponder.
+export function shouldCloseSheetOnDragRelease(dy: number, vy: number): boolean {
+  return dy > 72 || vy > 0.5;
+}

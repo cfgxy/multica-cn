@@ -30,11 +30,12 @@
  * Extraction happens once in `Markdown` (raw content, shared core
  * extractor, raw-deduped); this component only resolves and renders.
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Alert,
   Linking,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   Text,
@@ -59,6 +60,7 @@ import { resolveLinkAction } from "@/lib/markdown/link-route";
 import {
   buildReferenceTailRows,
   groupReferenceTailRows,
+  shouldCloseSheetOnDragRelease,
   type ReferenceTailRow,
 } from "@/lib/issue-reference-rows";
 import { pullRequestStateVisual } from "@/lib/pull-request-display";
@@ -144,6 +146,20 @@ export function IssueReferenceList({
   const { colorScheme } = useColorScheme();
   const insets = useSafeAreaInsets();
   const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Board 2 close path #3: swipe down on the sheet header to dismiss. The
+  // responder only claims the gesture once a vertical drag emerges, so taps
+  // on the header (including the × button) still reach their Pressables; the
+  // threshold decision itself is node-tested policy.
+  const sheetDrag = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) =>
+        Math.abs(g.dy) > 8 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_e, g) => {
+        if (shouldCloseSheetOnDragRelease(g.dy, g.vy)) setSheetOpen(false);
+      },
+    }),
+  ).current;
 
   const results = useQueries({
     queries: useMemo(
@@ -372,7 +388,10 @@ export function IssueReferenceList({
             className="mt-auto rounded-t-2xl bg-popover"
             style={{ maxHeight: "75%", paddingBottom: insets.bottom + 8 }}
           >
-            <View className="flex-row items-center border-b border-border px-4 py-3">
+            <View
+              className="flex-row items-center border-b border-border px-4 py-3"
+              {...sheetDrag.panHandlers}
+            >
               <Text className="flex-1 text-base font-bold text-foreground">
                 {headerLabel}
               </Text>
