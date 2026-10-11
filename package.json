@@ -62,7 +62,8 @@
       "builder-util-runtime": "9.7.0"
     },
     "patchedDependencies": {
-      "react-native-enriched-markdown@1.0.2": "patches/react-native-enriched-markdown@1.0.2.patch"
+      "react-native-enriched-markdown@1.0.2": "patches/react-native-enriched-markdown@1.0.2.patch",
+      "react-native-screens@4.23.0": "patches/react-native-screens@4.23.0.patch"
     }
   },
   "devDependencies": {
