@@ -87,13 +87,16 @@ while [ "$i" -lt "$count" ]; do
 done
 
 # Pass 2 — swap each staged tree into place. Each target switches atomically
-# (rename), and a swap never leaves the old tree missing on failure.
+# (rename). The move-aside trash is per-iteration state: when a swap fails we
+# restore that target's own previous tree (if it had one) before exiting, so a
+# previously deployed target is never left empty by a failed load.
 i=0
 while [ "$i" -lt "$count" ]; do
   name="$(jq -r ".artifacts[$i].name" "$manifest")"
   target="$(jq -r ".artifacts[$i].target" "$manifest")"
   dest="$deploy_dir/$target"
   stage="$work/stage.$i"
+  trash=""
 
   mkdir -p "$(dirname "$dest")"
   if [ -e "$dest" ]; then
@@ -102,7 +105,9 @@ while [ "$i" -lt "$count" ]; do
   fi
   if ! mv "$stage" "$dest"; then
     printf 'artifact-install: cannot install %s -> %s\n' "$name" "$dest" >&2
-    [ -n "${trash:-}" ] && [ -e "${trash:-}" ] && mv "$trash" "$dest"
+    if [ -n "$trash" ] && [ -e "$trash" ]; then
+      mv "$trash" "$dest" || printf 'artifact-install: warning: could not restore previous tree at %s\n' "$dest" >&2
+    fi
     exit 1
   fi
   printf 'installed: %s -> %s\n' "$name" "$target"

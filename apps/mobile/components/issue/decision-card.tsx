@@ -91,9 +91,9 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   const isOpen = decision.status === "open";
   const optionLabel = (idx: 0 | 1) => {
     const named = idx === 0 ? decision.approve_label : decision.deny_label;
-    if (named) return stripDecisionOptionLetterPrefix(named);
+    if (named) return decisionOptionDisplayLabel(named);
     const opt = decision.options[idx];
-    if (opt?.label) return stripDecisionOptionLetterPrefix(opt.label);
+    if (opt?.label) return decisionOptionDisplayLabel(opt.label);
     return idx === 0
       ? t("decisions.auth_approve_default", "Approve")
       : t("decisions.auth_deny_default", "Deny");
