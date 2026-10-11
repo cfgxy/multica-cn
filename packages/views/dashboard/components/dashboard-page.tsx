@@ -204,6 +204,21 @@ export function DashboardPage() {
     });
   };
 
+  // Quick windows re-anchor on `today` at every render, so a page left open
+  // across midnight (or a viewing-timezone switch) shifts statWindow without
+  // any handler firing — the clear sites above only cover explicit window
+  // changes. A stored span can therefore end up fully outside the new window,
+  // dimming every bar around an invisible selection and silently scoping the
+  // leaderboard off the visible axis. Derive the live span instead of
+  // trusting the stored one: a stale out-of-window span reads as no selection
+  // until the next gesture overwrites it.
+  const activeBarSelection =
+    barSelection &&
+    barSelection.start >= statWindow.start &&
+    barSelection.end <= statWindow.end
+      ? barSelection
+      : null;
+
   // The tab lives in the URL because the Errors view is the half of this page
   // people paste at each other ("this agent failed 54 times, see for
   // yourself"); component state cannot be linked to. `replace`, not `push`, so
@@ -272,7 +287,7 @@ export function DashboardPage() {
   // no dates, so narrowing them means re-querying with the selected span;
   // with no selection the window IS statWindow and both queries dedupe onto
   // the fetches above — same key, nothing extra on the wire.
-  const lbWindow = barSelection ?? statWindow;
+  const lbWindow = activeBarSelection ?? statWindow;
   const lbByAgentQuery = useQuery(
     dashboardUsageByAgentOptions(wsId, lbWindow, projectId, viewTZ),
   );
@@ -551,10 +566,10 @@ export function DashboardPage() {
   const lessThanMinuteLabel = t(($) => $.duration.less_than_minute);
   // The chip names the span the leaderboard is actually scoped to, in the
   // same M/D labels the charts' x-axes use.
-  const selectedRangeLabel = barSelection
-    ? barSelection.start === barSelection.end
-      ? formatDateLabel(barSelection.start)
-      : `${formatDateLabel(barSelection.start)} – ${formatDateLabel(barSelection.end)}`
+  const selectedRangeLabel = activeBarSelection
+    ? activeBarSelection.start === activeBarSelection.end
+      ? formatDateLabel(activeBarSelection.start)
+      : `${formatDateLabel(activeBarSelection.start)} – ${formatDateLabel(activeBarSelection.end)}`
     : null;
 
   // Every window change also drops the bar selection: it is an annotation
@@ -760,7 +775,7 @@ export function DashboardPage() {
                   weeklyTime={weeklyTime}
                   weeklyTasks={weeklyTasks}
                   lessThanMinuteLabel={lessThanMinuteLabel}
-                  selection={barSelection}
+                  selection={activeBarSelection}
                   onSelectionChange={handleBarSelection}
                 />
 
@@ -791,7 +806,7 @@ export function DashboardPage() {
                 weeklyErrors={weeklyErrors}
                 agents={agents}
                 locales={locales}
-                selection={barSelection}
+                selection={activeBarSelection}
                 onSelectionChange={handleBarSelection}
               />
             )}
