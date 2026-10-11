@@ -40,7 +40,7 @@ import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
-import { useWorkspaceSlug } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -541,13 +541,22 @@ export const RichContent = memo(function RichContent({
   // re-run it. Subscribing puts the value in the memo dependencies below, so a
   // late config arrival reprocesses exactly once.
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
+  // Same reactivity rule for the workspace's issue prefix (RUYI-705): the
+  // readonly autolink rewrite must not turn a wrong-prefix token (`AC-1`)
+  // into an issue reference, and a late workspace-list arrival has to
+  // reprocess content that rendered before the prefix was known.
+  const workspacePrefix = useCurrentWorkspace()?.issue_prefix || null;
 
   const processed = useMemo(
     () =>
       highlightToHtml(
-        preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true }),
+        preprocessMarkdown(content, {
+          cdnDomain,
+          autolinkIssueIdentifiers: true,
+          issueIdentifierPrefix: workspacePrefix,
+        }),
       ),
-    [content, cdnDomain],
+    [content, cdnDomain, workspacePrefix],
   );
 
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up
