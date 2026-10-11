@@ -36,6 +36,7 @@ import type {
   ExecutionProfileActivationInfo,
   ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
+  ExecutionProfileListResponse,
   IssueInfo,
   IssueListParams,
   IssueListResult,
@@ -499,10 +500,13 @@ export class MulticaClient {
   }
 
   async listExecutionProfiles(workspaceId: string): Promise<ExecutionProfileInfo[]> {
-    return this.request<ExecutionProfileInfo[]>(
+    // The list endpoint answers enveloped (unlike the single-profile reads);
+    // unwrap so callers always see the array.
+    const page = await this.request<ExecutionProfileListResponse>(
       "GET",
       `/api/workspaces/${encodeURIComponent(workspaceId)}/execution-profiles`,
     );
+    return page.execution_profiles;
   }
 
   async getExecutionProfile(workspaceId: string, profileId: string): Promise<ExecutionProfileInfo> {
