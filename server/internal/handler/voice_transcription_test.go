@@ -276,6 +276,34 @@ func TestMP4AudioDuration(t *testing.T) {
 			t.Fatal("truncated mp4 must be an error")
 		}
 	})
+
+	t.Run("64-bit largesize extremes are corrupt, not panic", func(t *testing.T) {
+		// moov rewritten in the 64-bit size form: the box header grows to 16
+		// bytes and largesize occupies the following 8 bytes.
+		malformedMP4 := func(largesize uint64) []byte {
+			ftyp := buildMP4Bytes(0, 1000, 500)[:20]
+			box := append(beU32(1), []byte("moov")...)
+			box = append(box, beU64(largesize)...)
+			box = append(box, make([]byte, 8)...) // payload filler
+			return append(ftyp, box...)
+		}
+
+		cases := []struct {
+			name      string
+			largesize uint64
+		}{
+			{"negative when cast to int64", ^uint64(0)}, // 0xFFFFFFFFFFFFFFFF
+			{"smaller than the 16-byte header", 8},
+			{"overflows int64 in off+size", 1<<63 - 1},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := mp4AudioDuration(malformedMP4(tc.largesize)); err == nil {
+					t.Fatalf("largesize %#x must be rejected as corrupt", tc.largesize)
+				}
+			})
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
