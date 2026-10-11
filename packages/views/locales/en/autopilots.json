@@ -328,7 +328,21 @@
         "label": "Run only",
         "description": "Silent run, no issue created"
       }
-    }
+    },
+    "section_params": "Parameters",
+    "params_hint": "Variables callers pass at trigger time; reference them by name in double curly braces in the title template and instructions. Schedules use the defaults.",
+    "param_name_ph": "Name (e.g. city)",
+    "param_default_ph": "Default value",
+    "param_required": "Required",
+    "param_enum_ph": "Enum options, comma-separated",
+    "param_add": "Add parameter",
+    "param_remove": "Remove parameter",
+    "param_type_string": "String",
+    "param_type_text": "Long text",
+    "param_type_number": "Number",
+    "param_type_boolean": "Boolean",
+    "param_type_enum": "Enum",
+    "param_type_label": "Type"
   },
   "schedule_editor": {
     "time_label": "Time",
