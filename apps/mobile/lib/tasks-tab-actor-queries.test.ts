@@ -35,7 +35,7 @@ vi.mock("react", () => ({
   useMemo: (fn: () => unknown) => fn(),
 }));
 vi.mock("react-native", () => ({
-  Platform: { OS: "ios" },
+  Platform: { OS: "ios", select: (s: Record<string, unknown>) => s.ios },
   Pressable: () => null,
   SectionList: () => null,
   ScrollView: () => null,

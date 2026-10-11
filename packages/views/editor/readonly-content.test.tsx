@@ -16,13 +16,37 @@ vi.mock("../issues/hooks", () => ({
     resolveIssueIdentifierMock(identifier),
 }));
 
+// RUYI-635: mention-form references no longer resolve inline — they read as
+// plain text and aggregate into the tail footer. The footer's resolution hook
+// is stubbed to "unresolved" so its rows degrade to plain text; this suite
+// pins the body-text behaviour, not resolution (see issue-reference-footer
+// and issue-mention-aggregation tests for that).
+vi.mock("../issues/hooks/use-issue-reference-resolutions", () => ({
+  useIssueReferenceResolutions: (
+    references: { form: string; ref: string }[],
+  ) => new Map(references.map((ref) => [`${ref.form}:${ref.ref}`, null])),
+}));
+
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "ws-1",
+}));
+
+vi.mock("@multica/core/issue-statuses/hooks", () => ({
+  useIssueStatuses: () => ({ colorOf: () => "#123456" }),
+}));
+
 // i18next is not initialized in this suite, so `t()` would resolve every label
 // to "". Resolve against the real EN bundle instead — the editor tree only ever
-// uses the `editor` namespace — so tests can select controls by accessible name.
+// uses the `editor` namespace, and the RUYI-635 tail footer adds `issues` —
+// so tests can select controls by accessible name.
 vi.mock("../i18n", async () => {
   const editor = (await import("../locales/en/editor.json")).default;
+  const issues = (await import("../locales/en/issues.json")).default;
   return {
-    useT: () => ({ t: (select: (bundle: typeof editor) => string) => select(editor) }),
+    useT: (ns?: string) => ({
+      t: (select: (bundle: Record<string, unknown>) => string) =>
+        select((ns === "issues" ? issues : editor) as Record<string, unknown>),
+    }),
     useTimeAgo: () => "just now",
   };
 });
@@ -265,37 +289,45 @@ describe("ReadonlyContent highlight Markdown", () => {
 });
 
 describe("ReadonlyContent issue mention Markdown", () => {
-  it("renders an issue mention inside a task list as an issue mention card", () => {
-    const { container, getByTestId } = render(
+  it("renders an issue mention inside a task list as plain text, aggregated into the footer", () => {
+    const { container } = render(
       <ReadonlyContent content="- [ ] [MUL-123](mention://issue/issue-123)" />,
     );
 
     expect(container.querySelector('input[type="checkbox"]')).not.toBeNull();
-    expect(getByTestId("issue-mention-card").textContent).toBe("MUL-123");
+    expect(container.querySelector("[data-issue-mention-text]")?.textContent).toBe(
+      "MUL-123",
+    );
+    expect(
+      container.querySelector("[data-issue-reference-footer]"),
+    ).not.toBeNull();
+    expect(container.querySelector(".issue-reference-degraded")?.textContent).toBe(
+      "MUL-123",
+    );
   });
 
-  it("autolinks a resolved bare identifier as an issue mention card", () => {
-    resolveIssueIdentifierMock.mockImplementation((id: string) =>
-      id === "MUL-7" ? { id: "issue-7", identifier: "MUL-7" } : null,
-    );
-
-    const { getByTestId } = render(
+  it("renders a bare identifier as plain text, aggregated into the footer", () => {
+    const { container } = render(
       <ReadonlyContent content="See MUL-7 for context" />,
     );
 
-    expect(getByTestId("issue-mention-card").textContent).toBe("MUL-7");
-    expect(resolveIssueIdentifierMock).toHaveBeenCalledWith("MUL-7");
+    expect(container.querySelector("[data-issue-mention-text]")?.textContent).toBe(
+      "MUL-7",
+    );
+    expect(
+      container.querySelector("[data-issue-reference-footer]"),
+    ).not.toBeNull();
   });
 
-  it("leaves an unresolved bare identifier as plain text", () => {
-    resolveIssueIdentifierMock.mockReturnValue(null);
-
-    const { container, queryByTestId } = render(
+  it("leaves an unresolved bare identifier as plain text, degraded in the footer", () => {
+    const { container } = render(
       <ReadonlyContent content="See MUL-999 for context" />,
     );
 
-    expect(queryByTestId("issue-mention-card")).toBeNull();
     expect(container.textContent).toContain("MUL-999");
+    expect(container.querySelector(".issue-reference-degraded")?.textContent).toBe(
+      "MUL-999",
+    );
   });
 
   it("does not autolink a bare identifier inside inline code", () => {

@@ -127,6 +127,7 @@ export default function AgentComposioScreen() {
         <View className="flex-1" />
       ) : (
         <ScrollView
+          nestedScrollEnabled
           className="flex-1"
           contentContainerClassName="px-4 pt-3 pb-8 gap-3"
         >

@@ -17,6 +17,17 @@ export interface Workspace {
   avatar_url: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * Workspace-wide scheduling freeze (RUYI-608). True when an owner/admin
+   * froze task claiming for EVERY agent in the workspace; per-agent freezes
+   * are NOT reflected here (read each agent's own DTO for those). Optional
+   * because servers predating RUYI-608 omit it; treat `undefined` as false.
+   */
+  scheduling_paused?: boolean;
+  scheduling_paused_reason?: string;
+  scheduling_paused_at?: string;
+  /** Total queued tasks across the workspace's agents. */
+  scheduling_queued_count?: number;
 }
 
 /**

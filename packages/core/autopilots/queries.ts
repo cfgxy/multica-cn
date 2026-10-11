@@ -7,6 +7,8 @@ export const autopilotKeys = {
   list: (wsId: string) => [...autopilotKeys.all(wsId), "list"] as const,
   detail: (wsId: string, id: string) =>
     [...autopilotKeys.all(wsId), "detail", id] as const,
+  params: (wsId: string, id: string) =>
+    [...autopilotKeys.all(wsId), "params", id] as const,
   runs: (wsId: string, id: string) =>
     [...autopilotKeys.all(wsId), "runs", id] as const,
   run: (wsId: string, autopilotId: string, runId: string) =>
@@ -41,6 +43,20 @@ export function autopilotDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: autopilotKeys.detail(wsId, id),
     queryFn: () => api.getAutopilot(id),
+  });
+}
+
+// Parameter definitions load with the detail page so the dialog can edit
+// them; they are a separate endpoint because only writers may change them.
+export function autopilotParamsOptions(
+  wsId: string,
+  id: string,
+  options?: { enabled?: boolean },
+) {
+  return queryOptions({
+    queryKey: autopilotKeys.params(wsId, id),
+    queryFn: () => api.listAutopilotParams(id),
+    enabled: options?.enabled ?? true,
   });
 }
 
