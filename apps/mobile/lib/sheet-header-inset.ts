@@ -16,11 +16,18 @@ export type SheetHeaderGap = number;
 /**
  * 标题头顶部 padding：大档/全屏形态保留 `insetsTop` 避让，小档回落为常规
  * 内容间距 `gap`。
+ *
+ * "worklet" 指令必须保留：本函数在 `components/ui/sheet-header.tsx` 的
+ * `useAnimatedStyle`（UI 线程 worklet）内被调用，无指令的普通函数进入
+ * worklet 闭包后 release 包无法解析为可调用体，UI 线程抛 TypeError 直接
+ * 杀进程（RUYI-698 P0 根因）。指令不影响 JS 线程调用——单测按普通纯函数
+ * 覆盖同一实现。
  */
 export function sheetHeaderTopInset(
   insetsTop: number,
   atLargeDetent: boolean,
   gap: SheetHeaderGap,
 ): number {
+  "worklet";
   return (atLargeDetent ? insetsTop : 0) + gap;
 }
