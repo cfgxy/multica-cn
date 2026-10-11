@@ -92,7 +92,8 @@ class SpeechRecognitionModule : Module() {
           val response = result[Manifest.permission.RECORD_AUDIO]
           promise.resolve(mapOf("granted" to (response?.status == expo.modules.interfaces.permissions.PermissionsStatus.GRANTED)))
         },
-        arrayOf(Manifest.permission.RECORD_AUDIO),
+        // 本版 expo-modules-core 的 askForPermissions 第二实参为单权限 String（同 voice-audio 用法）。
+        Manifest.permission.RECORD_AUDIO,
       )
     }
 
