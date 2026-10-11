@@ -5,6 +5,7 @@
     "my_issues": "My Issues",
     "issues": "Issues",
     "decisions": "Decisions",
+    "suspensions": "Suspensions",
     "projects": "Projects",
     "autopilots": "Autopilot",
     "agents": "Agents",
@@ -15,7 +16,6 @@
     "runtimes": "Runtimes",
     "skills": "Skills",
     "settings": "Settings",
-
     "admin": "Admin"
   },
   "tab": {

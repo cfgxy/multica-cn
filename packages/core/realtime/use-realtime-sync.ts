@@ -90,6 +90,8 @@ import type {
   NotificationPreferenceResponse,
   CommentCreatedPayload,
   DecisionUpdatedPayload,
+  IssueSuspensionUpdatedPayload,
+  IssueSuspension,
   CommentUpdatedPayload,
   CommentDeletedPayload,
   CommentResolvedPayload,
@@ -1158,6 +1160,37 @@ export function useRealtimeSync(
       qc.invalidateQueries({ queryKey: decisionInboxKeys.all() });
     });
 
+    // Issue suspensions (RUYI-690): one event per lifecycle transition; the
+    // payload carries the full row plus the refreshed issue snapshot (with
+    // the new suspended_at). Same two-part coherence as decision:updated —
+    // upsert the per-issue list, refetch the workspace aggregation — plus
+    // the issue cache write so board/list badges repaint without a refetch.
+    const unsubSuspensionUpdated = ws.on("issue_suspension:updated", (p) => {
+      const payload = p as IssueSuspensionUpdatedPayload;
+      const { suspension, issue } = payload;
+      if (!suspension?.id || !issue?.id) return;
+      qc.setQueryData<IssueSuspension[]>(
+        issueKeys.suspensions(issue.id),
+        (prev) => {
+          if (!prev) return prev;
+          const idx = prev.findIndex((s) => s.id === suspension.id);
+          if (idx === -1) {
+            return [...prev, suspension].sort(
+              (a, b) => Date.parse(a.suspended_at) - Date.parse(b.suspended_at),
+            );
+          }
+          const next = [...prev];
+          next[idx] = suspension;
+          return next;
+        },
+      );
+      const wsId = getCurrentWsId();
+      if (wsId) {
+        onIssueUpdated(qc, wsId, issue);
+        qc.invalidateQueries({ queryKey: issueKeys.workspaceSuspensions(wsId) });
+      }
+    });
+
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
       const { comment, issue_revision } = p as CommentUpdatedPayload;
       if (!comment?.issue_id) return;
@@ -1761,6 +1794,7 @@ export function useRealtimeSync(
       unsubCommentCreated();
       unsubCommentUpdated();
       unsubDecisionUpdated();
+      unsubSuspensionUpdated();
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();

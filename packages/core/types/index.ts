@@ -236,6 +236,16 @@ export type {
   WorkspaceDecisionInbox,
   WorkspaceDecisionInboxItem,
 } from "./decision";
+export type {
+  IssueSuspension,
+  IssueSuspensionMutation,
+  IssueSuspensionTarget,
+  ResumePredicate,
+  SuspensionStatus,
+  SuspensionWaitingOnType,
+  WorkspaceIssueSuspension,
+  WorkspaceSuspensionList,
+} from "./suspension";
 export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
 export type * from "./api";

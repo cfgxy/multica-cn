@@ -16,6 +16,7 @@ import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { AttributeRow } from "./attribute-row";
 import { AgentActivityRow } from "./agent-activity-row";
+import { SuspensionBanner } from "./suspension-banner";
 
 export function IssueHeaderCard({ issue }: { issue: Issue }) {
   return (
@@ -30,6 +31,9 @@ export function IssueHeaderCard({ issue }: { issue: Issue }) {
        *  Conditionally renders null when there are no tasks at all. */}
       <AgentActivityRow issueId={issue.id} />
       <AttributeRow issue={issue} />
+      {/* 挂起横幅 (RUYI-690)：active 时展示等待对象/恢复条件/原因并支持
+          一键恢复；suspended_at 与生命周期状态正交，横幅只看快照。 */}
+      <SuspensionBanner issue={issue} />
     </View>
   );
 }

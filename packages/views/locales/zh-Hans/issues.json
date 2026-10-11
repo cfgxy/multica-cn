@@ -1183,5 +1183,38 @@
     "cancel_failed": "取消卡片失败",
     "batch_title": "批量作答",
     "batch_submit": "全部提交"
+  },
+  "suspension": {
+    "badge": "挂起",
+    "tooltip": "正在等待外部条件，解除前评论与 @ 不会触发执行",
+    "banner": {
+      "active_title": "挂起中",
+      "waiting_on": "等待对象",
+      "condition": "恢复条件",
+      "reason_label": "原因",
+      "resume": "恢复",
+      "cancel": "取消等待",
+      "blocked_hint": "Blocked 表示生命周期内停止推进。如果本单自身工作已完成、只是在等外部依赖，改用挂起可保留原生命周期状态、让等待可见，并在条件满足时自动恢复。",
+      "convert": "转为挂起",
+      "dialog_title": "挂起任务",
+      "reason_placeholder": "例如：等待 RUYI-668",
+      "waiting_type_label": "等待对象",
+      "type_external": "外部条件",
+      "type_manual": "人工判断",
+      "type_issue": "指定 Issue",
+      "type_decision": "指定决策卡",
+      "target_issue": "目标 Issue",
+      "target_decision": "目标决策卡",
+      "pick_issue": "选择一个 Issue…",
+      "pick_decision": "选择一张决策卡…",
+      "no_open_cards": "工作区暂无开启中的决策卡",
+      "condition_label": "恢复条件",
+      "condition_placeholder": "例如：RUYI-668 完成后恢复",
+      "condition_required_hint": "外部 / 人工等待必填",
+      "cancel_dialog": "取消",
+      "submit": "挂起",
+      "toast_success": "已挂起",
+      "toast_failed": "挂起失败"
+    }
   }
 }

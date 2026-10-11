@@ -147,6 +147,14 @@ export const issueKeys = {
   decisionsAll: () => ["issues", "decisions"] as const,
   decisions: (issueId: string) =>
     [...issueKeys.decisionsAll(), issueId] as const,
+  /** Issue suspensions (RUYI-690) — same reconnect discipline: the `*All`
+   *  prefix is invalidated on WS reconnect so missed
+   *  `issue_suspension:updated` events can't strand a stale snapshot. */
+  suspensionsAll: () => ["issues", "suspensions"] as const,
+  suspensions: (issueId: string) =>
+    [...issueKeys.suspensionsAll(), issueId] as const,
+  workspaceSuspensions: (wsId: string | null | undefined) =>
+    [...issueKeys.suspensionsAll(), "workspace", wsId ?? "none"] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
    *  an open composer's trigger preview refreshes when an agent's queue
    *  state changes (the dedup guard makes the answer queue-dependent). */
