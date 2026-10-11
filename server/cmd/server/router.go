@@ -1329,6 +1329,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProviderWSBaseURL = v
 	}
 
+	// One-shot dictation transcription provider origin (RUYI-710).
+	// MULTICA_GEMINI_ASR_BASE_URL lets air-gapped deployments and tests aim
+	// the generateContent hop at a stub; empty env keeps the public default.
+	h.VoiceASRBaseURL = handler.DefaultVoiceASRBaseURL
+	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_ASR_BASE_URL")); v != "" {
+		h.VoiceASRBaseURL = v
+	}
+
 	// Voice provider egress proxy (RUYI-692 D1 ①): MULTICA_GEMINI_PROXY_URL
 	// names the per-connection proxy the Gemini Live dial and the credential
 	// probe use — `socks5://` preferred, `http(s)://` accepted. The value may
@@ -2003,6 +2011,32 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
+				// Voice provider pool (RUYI-693): the listing is
+				// member-visible — the settings page renders the pool for
+				// everyone — while pool writes are workspace-admin state,
+				// the same split as the workspace settings themselves.
+				r.Route("/voice-providers", func(r chi.Router) {
+					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
+					r.Group(func(r chi.Router) {
+						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+						r.Post("/", h.CreateVoiceProvider)
+						r.Route("/{providerId}", func(r chi.Router) {
+							r.Patch("/", h.UpdateVoiceProvider)
+							r.Delete("/", h.DeleteVoiceProvider)
+							// The key itself never round-trips: it enters
+							// here (and probes on save) and is only ever
+							// read back as the coarse status badge.
+							r.Put("/credentials/{credentialKey}", h.PutVoiceProviderCredential)
+							r.Delete("/credentials/{credentialKey}", h.DeleteVoiceProviderCredential)
+							r.Post("/credential-probe", h.RunVoiceProviderProbe)
+						})
+					})
+				})
+				// One-shot dictation transcription (RUYI-710): any workspace
+				// member may dictate — the same membership the settings
+				// page itself renders under. The ASR provider key rides
+				// only the server→provider hop; nothing is persisted.
+				r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Post("/voice-transcriptions", h.CreateVoiceTranscription)
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 

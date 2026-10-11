@@ -32,11 +32,23 @@ import LinkifyIt from "linkify-it";
  * from `packages/core` (package boundary rules, root CLAUDE.md), and the
  * rewrite-side preprocessor lives there.
  *
+ * Bare identifiers are scoped to the CURRENT workspace (RUYI-705): `AC-1` in
+ * a body is acceptance-criteria numbering, not a reference — the server
+ * resolves identifiers against the workspace, so a wrong-prefix token could
+ * never resolve anyway. When the caller passes `opts.workspacePrefix`,
+ * identifier-form hits whose prefix does not match `issue_prefix` are not
+ * collected at all: no tail row, no resolution query. An unknown or empty
+ * prefix falls through (matches everything) so callers without workspace
+ * context keep the pre-RUYI-705 behaviour; the exact-match resolver stays the
+ * correctness backstop. Mention-form references are NEVER prefix-filtered —
+ * an explicit link is explicit, whatever it points at.
+ *
  * Deliberately NOT done here: dedup (raw collection keeps every occurrence —
  * `dedupeIssueReferences` below is the raw-token policy; collapsing a UUID
  * mention with the same issue's bare identifier needs the resolved issue id
- * and belongs to the render layer). Over-detection is also harmless downstream:
- * an unresolved reference degrades to plain text.
+ * and belongs to the render layer). Remaining over-detection (unknown prefix,
+ * unloaded workspace list) is harmless downstream: an unresolved reference
+ * degrades to plain text.
  */
 
 export type IssueReferenceForm = "mention" | "identifier" | "pull_request";
@@ -47,6 +59,18 @@ export interface IssueReference {
   /** Authored link label; `null` for bare identifiers. */
   label: string | null;
   form: IssueReferenceForm;
+}
+
+export interface ExtractIssueReferencesOptions {
+  /**
+   * Current workspace's `issue_prefix` (`RUYI` for `RUYI-123`). Bare
+   * identifiers carry the workspace's own prefix, so a token prefixed
+   * differently is not a reference to anything resolvable here (RUYI-705).
+   * `null`/`undefined`/empty = unknown — fall through and collect (the
+   * resolver's exact match decides), matching `useResolveIssueIdentifier`'s
+   * documented loading-state behaviour.
+   */
+  workspacePrefix?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,12 +320,39 @@ const ISSUE_MENTION_LINK_RE =
   /\[((?:\\.|[^\]\\])*)\]\(mention:\/\/issue\/([^)\s]+)\)/g;
 
 /**
- * Collect every issue reference in `text` (mention links + bare identifiers),
- * ordered by position of first appearance. Pure — no workspace, no network.
+ * True when the bare identifier `identifier` can belong to a workspace whose
+ * issue prefix is `prefix` (RUYI-705 gate). Case-insensitive; the dash in the
+ * compared form keeps a proper prefix (`RUYI`) from matching a longer one
+ * (`RUYIX-1`). An unknown prefix (`null`/`undefined`/empty) matches
+ * everything — callers without workspace context fall through and let the
+ * exact-match resolver decide.
+ *
+ * The ui copy of the surrounding extraction rules lives in
+ * `packages/ui/markdown/issue-identifiers.ts` (package boundary); this helper
+ * is the single authority for the prefix comparison itself — the views hooks
+ * (`useResolveIssueIdentifier`, `useIssueReferenceResolutions`) and the
+ * editor's autolink resolver use it too.
  */
-export function extractIssueReferences(text: string): IssueReference[] {
+export function identifierMatchesPrefix(
+  identifier: string,
+  prefix: string | null | undefined,
+): boolean {
+  if (!prefix) return true;
+  return identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`);
+}
+
+/**
+ * Collect every issue reference in `text` (mention links + bare identifiers),
+ * ordered by position of first appearance. Pure — no workspace, no network;
+ * the workspace only enters as the `opts.workspacePrefix` string.
+ */
+export function extractIssueReferences(
+  text: string,
+  opts?: ExtractIssueReferencesOptions,
+): IssueReference[] {
   if (!text) return [];
 
+  const workspacePrefix = opts?.workspacePrefix;
   const codeRanges = findCodeRanges(text);
   const linkRanges = findMarkdownLinkRanges(text);
   const detectedLinks = detectLinks(text);
@@ -339,6 +390,11 @@ export function extractIssueReferences(text: string): IssueReference[] {
     if (after === "/" || text[start - 1] === "/") continue;
     // Embedded in a dotted name on the left (`file.MUL-1`).
     if (text[start - 1] === ".") continue;
+    // Wrong workspace prefix (`AC-1` while this is `RUYI`) — acceptance-
+    // criteria-style numbering, not a reference (RUYI-705). Applied after the
+    // shape skips: the prefix filter only ever removes tokens that would
+    // otherwise be collected.
+    if (!identifierMatchesPrefix(identifier, workspacePrefix)) continue;
 
     hits.push({ ref: identifier, label: null, form: "identifier", start });
   }

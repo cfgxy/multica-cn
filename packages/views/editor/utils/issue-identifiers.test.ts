@@ -88,6 +88,40 @@ describe("preprocessIssueIdentifiers", () => {
     const input = "plain text with no identifiers";
     expect(preprocessIssueIdentifiers(input)).toBe(input);
   });
+
+  // --- workspace prefix filter (RUYI-705) --------------------------------
+  // Same gate as core's extractIssueReferences — the two copies must agree on
+  // which tokens are issue references, or the tail list and the body drift.
+  it("leaves non-matching-prefix tokens as plain text", () => {
+    const input = "AC-1 and AC-2 stay plain";
+    expect(
+      preprocessIssueIdentifiers(input, { workspacePrefix: "MUL" }),
+    ).toBe(input);
+  });
+
+  it("rewrites matching-prefix tokens and leaves the rest in one pass", () => {
+    expect(
+      preprocessIssueIdentifiers("MUL-1 and AC-1", { workspacePrefix: "MUL" }),
+    ).toBe("[MUL-1](mention://issue/MUL-1) and AC-1");
+  });
+
+  it("matches the prefix case-insensitively", () => {
+    expect(
+      preprocessIssueIdentifiers("MUL-1 done", { workspacePrefix: "mul" }),
+    ).toBe("[MUL-1](mention://issue/MUL-1) done");
+  });
+
+  it("falls through when no prefix is given", () => {
+    expect(preprocessIssueIdentifiers("AC-1")).toBe(
+      "[AC-1](mention://issue/AC-1)",
+    );
+  });
+
+  it("treats an empty prefix as unknown (fall-through)", () => {
+    expect(preprocessIssueIdentifiers("AC-1", { workspacePrefix: "" })).toBe(
+      "[AC-1](mention://issue/AC-1)",
+    );
+  });
 });
 
 describe("isIssueIdentifier", () => {
