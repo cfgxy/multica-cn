@@ -429,12 +429,19 @@
 - `72fe1ae13` feat(queue): 运行中任务可消费排队任务——自动解除排队并防重复执行（RUYI-48）
 - `8552de766` feat(daemon): teach running agents the consume-queued adoption loop (RUYI-53)
 
-### Agent Webhook 触发（绑定固定 prompt 的触发 URL）
+### Agent Webhook 触发（绑定固定 prompt 的触发 URL；已随 RUYI-641 退役）
 
 - `326db5a6a` feat(agents): webhook trigger URLs bound to a fixed prompt (RUYI-52)
 - `b5872142c` fix(agents): renumber migration to 450 and adapt readiness seam after main merge (RUYI-52)
 - `d661c8f7b` fix(agents): register agent_webhook in the workspace deletion manifest; unbreak CRUD tests (RUYI-52)
 - `493ac00bb` fix(agents): redact agent webhook tokens in access logs; close delete dialog; fix narrow-viewport URL row (RUYI-52)
+
+  > 退役说明（RUYI-641 阶段 C）：该能力与 autopilot 触发面重叠且生产 0 行使用，
+  > 已整体移除（`agent_webhook` 表由迁移 942 drop，路由/管理面/移动端入口删除）。
+  > 通用触发能力由 autopilot webhook（`/api/webhooks/autopilots/{token}`）与
+  > 参数化 PAT API（`POST /api/autopilots/{id}/trigger`）承接，决策记录见
+  > `docs/adr/006-autopilot-parameterized-webhook-api.md`。上方条目保留仅为
+  > 历史溯源，上表提交不再构成对上游的能力差异。
 
 ### 实例级超级管理员与审计（全局用户/空间管理 + 身份切换）
 

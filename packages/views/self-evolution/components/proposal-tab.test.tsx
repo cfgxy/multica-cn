@@ -6,10 +6,13 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { NavigationProvider, type NavigationAdapter } from "../../navigation";
-import type { PromptProposal, PromptProposalPreview } from "@multica/core/types";
+import type { PromptProposal, PromptProposalPreview, RetrospectiveRun } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
+import {
+  NavigationProvider,
+  type NavigationAdapter,
+} from "../../navigation";
 import { ProposalTab } from "./proposal-tab";
 
 /**
@@ -33,6 +36,8 @@ const state = vi.hoisted(() => ({
   proposals: [] as PromptProposal[],
   approved: [] as { id: string; confirmDiffPreviewed: boolean }[],
   batchApproved: [] as { ids: string[]; confirmDiffPreviewed: boolean }[],
+  retroRuns: [] as RetrospectiveRun[],
+  proposalCalls: [] as { status?: string; runId?: string }[],
 }));
 
 vi.mock("@multica/core/permissions", () => ({
@@ -42,7 +47,10 @@ vi.mock("@multica/core/permissions", () => ({
 vi.mock("@multica/core/api", () => ({
   clientErrorMessage: (e: unknown) => (e instanceof Error ? e.message : undefined),
   api: {
-    listPromptProposals: () => Promise.resolve(state.proposals),
+    listPromptProposals: (params?: { status?: string; runId?: string }) => {
+      state.proposalCalls.push(params ?? {});
+      return Promise.resolve(state.proposals);
+    },
     createPromptProposal: vi.fn(),
     updatePromptProposalDraft: vi.fn(),
     submitPromptProposal: vi.fn(),
@@ -69,7 +77,7 @@ vi.mock("@multica/core/api", () => ({
     reworkPromptProposal: vi.fn(),
     enactPromptProposal: vi.fn(),
     getRetrospectiveConfig: vi.fn(),
-    listRetrospectiveRuns: vi.fn(),
+    listRetrospectiveRuns: () => Promise.resolve(state.retroRuns),
   },
 }));
 
@@ -106,34 +114,48 @@ function proposal(overrides: Partial<PromptProposal> = {}): PromptProposal {
 
 afterEach(cleanup);
 
-function makeAdapter(
-  overrides: Partial<NavigationAdapter> = {},
-): NavigationAdapter {
-  return {
+function mount(opts: { run?: string } = {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const searchParams = new URLSearchParams();
+  if (opts.run) searchParams.set("run", opts.run);
+  const navigation: NavigationAdapter = {
     push: vi.fn(),
     replace: vi.fn(),
     back: vi.fn(),
-    pathname: "/test-workspace/self-evolution/proposals",
-    searchParams: new URLSearchParams(),
+    pathname: "/acme/self-evolution/proposals",
+    searchParams,
     hash: "",
-    getShareableUrl: (p) => p,
-    ...overrides,
+    getShareableUrl: (path) => path,
   };
-}
-
-function mount() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
-        <NavigationProvider value={makeAdapter()}>
-          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <NavigationProvider value={navigation}>
             <ProposalTab wsId="ws-1" />
-          </I18nProvider>
-        </NavigationProvider>
+          </NavigationProvider>
+        </I18nProvider>
       </WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
+}
+
+function retroRun(overrides: Partial<RetrospectiveRun> = {}): RetrospectiveRun {
+  return {
+    id: "run-1",
+    status: "succeeded",
+    trigger: "schedule",
+    window_start: "2026-10-10T00:00:00Z",
+    window_end: "2026-10-11T00:00:00Z",
+    issues_scanned: 2,
+    issues_analyzed: 2,
+    proposals_created: 1,
+    proposals_merged: 0,
+    duplicates_skipped: 0,
+    error: "",
+    created_at: "2026-10-11T00:00:00Z",
+    ...overrides,
+  };
 }
 
 it("moves the lifecycle controls with the selected row's status", async () => {
@@ -318,4 +340,45 @@ it("points an empty unfiltered pool at the retrospective config and hides the li
   await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
   expect(screen.queryByTestId("legislation-empty-retro-link")).toBeNull();
   second.unmount();
+});
+
+// RUYI-673: the results view scoped to one retrospective run's batch.
+it("scopes the pool to the run in the URL and shows the run filter", async () => {
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-r1" })];
+  state.retroRuns = [retroRun(), retroRun({ id: "run-0", window_end: "2026-10-10T00:00:00Z" })];
+  state.proposalCalls = [];
+  mount({ run: "run-1" });
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  // The URL's run rides through to the API call.
+  expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" });
+  // The filter renders and names the scoped run by its readable title.
+  const filter = screen.getByTestId("legislation-run-filter");
+  expect(filter).toBeTruthy();
+  expect(screen.getAllByText(/Daily retrospective/).length).toBeGreaterThan(0);
+});
+
+it("queries the whole pool when no run is scoped", async () => {
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-all" })];
+  state.retroRuns = [retroRun()];
+  state.proposalCalls = [];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  expect(state.proposalCalls.at(-1)).toEqual({});
+});
+
+it("updates the scoped run when the filter changes", async () => {
+  const user = userEvent.setup();
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-x" })];
+  state.retroRuns = [retroRun()];
+  state.proposalCalls = [];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-run-filter")).toBeTruthy());
+  await user.click(screen.getByTestId("legislation-run-filter"));
+  await user.click(await screen.findByRole("option", { name: /Daily retrospective/ }));
+  await waitFor(() =>
+    expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }),
+  );
 });
