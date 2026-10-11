@@ -4884,6 +4884,10 @@ export const RetrospectiveRunSchema = z.object({
   // untyped). Null-safe: rows predating the column serialize null.
   detail: z.unknown().nullable().optional(),
   created_at: z.string(),
+  // RUYI-663: transcript anchor — null for runs that failed before enqueue
+  // and rows predating the column (935); absent on old servers.
+  task_id: z.string().nullable().optional(),
+  finished_at: z.string().nullable().optional(),
 }).loose();
 
 export const RetrospectiveRunListSchema = z.array(RetrospectiveRunSchema);
