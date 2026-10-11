@@ -6,12 +6,12 @@ import { useT } from "../../i18n";
 import { useWorkspaceId } from "@multica/core/hooks";
 
 /**
- * The module-config page (RUYI-551 §3): the single model-service card with
- * both consumers named. This is the closure point of the configuration
- * domain — quality scoring and the daily retrospective share one workspace
- * LLM endpoint, so they are configured here and nowhere else; Langfuse is
- * system-level and deliberately absent (the quality page's status card
- * explains it instead of faking a workspace switch).
+ * The module-config page (RUYI-551 §3): the single model-service card. This
+ * is the closure point of the configuration domain — the workspace LLM
+ * endpoint serves quality scoring alone since RUYI-552 moved the daily
+ * retrospective to execution agents, so it is configured here and nowhere
+ * else; Langfuse is system-level and deliberately absent (the quality page's
+ * status card explains it instead of faking a workspace switch).
  */
 export function SelfEvolutionConfigPage() {
   const { t } = useT("self-evolution");

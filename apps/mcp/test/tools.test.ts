@@ -116,6 +116,7 @@ describe("tool surface", () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name).sort()).toEqual(
       [
         "add_comment",
+        "answer_decisions",
         "apply_execution_profile",
         "archive_agent",
         "archive_squad",
@@ -140,6 +141,7 @@ describe("tool surface", () => {
         "get_agent_runtime_config",
         "get_comment",
         "get_daemon_instance",
+        "get_decision",
         "get_execution_profile",
         "get_execution_topology",
         "get_issue",
@@ -152,6 +154,7 @@ describe("tool surface", () => {
         "list_agents",
         "list_comments",
         "list_daemon_instances",
+        "list_decisions",
         "list_execution_profiles",
         "list_issue_runs",
         "list_issues",

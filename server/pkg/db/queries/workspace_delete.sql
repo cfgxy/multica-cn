@@ -615,6 +615,9 @@ deleted_triggers AS (
     WHERE autopilot_id IN (
         SELECT id FROM autopilot WHERE autopilot.workspace_id = $1
     )
+), deleted_params AS (
+    DELETE FROM autopilot_param
+    WHERE autopilot_param.workspace_id = $1
 )
 DELETE FROM autopilot_rule_version
 WHERE autopilot_rule_version.workspace_id = $1;

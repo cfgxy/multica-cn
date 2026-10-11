@@ -1,0 +1,5 @@
+# Build outputs — never commit rendered seeds or disk images.
+seed/
+*.vhdx
+*.vhd
+.iso/

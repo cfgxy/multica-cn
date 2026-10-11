@@ -90,6 +90,12 @@ type WebhookEnvelope struct {
 	Event        string          `json:"event"`
 	EventPayload json.RawMessage `json:"eventPayload"`
 	Request      WebhookRequest  `json:"request"`
+	// Params carries the caller-supplied trigger parameters (RUYI-641 stage
+	// A): the top-level `params` object of the inbound body, re-published at
+	// the envelope's top level so admission resolves it uniformly with the
+	// manual /trigger surface. omitempty keeps param-less deliveries
+	// byte-identical to the pre-parameter envelope shape.
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 type WebhookRequest struct {
@@ -433,6 +439,14 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Re-publish the caller's trigger parameters (RUYI-641 stage A) at the
+	// envelope's top level so admission resolves them uniformly with the
+	// manual /trigger surface. Contract: `params` is a top-level object in
+	// the inbound JSON body. Absent for param-less bodies (omitempty keeps
+	// the stored envelope shape unchanged); a non-object `params` is carried
+	// as-is and rejected by parameter resolution as a skipped run with the
+	// reason recorded.
+	envelope.Params = extractWebhookParamsJSON(body)
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to encode envelope")
@@ -628,6 +642,26 @@ func (h *Handler) HandleAutopilotWebhook(w http.ResponseWriter, r *http.Request)
 		h.WebhookDeliveryWorker.Notify()
 	}
 	writeJSON(w, http.StatusOK, respBody)
+}
+
+// extractWebhookParamsJSON returns the raw top-level `params` value of an
+// inbound webhook body, or nil when the body is not a JSON object carrying
+// one. The raw value is passed through unvalidated: parameter resolution at
+// admission owns the contract errors so they land on the delivery/run audit
+// trail instead of an unpersisted 400.
+func extractWebhookParamsJSON(body []byte) json.RawMessage {
+	if len(body) == 0 {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil
+	}
+	params, ok := obj["params"]
+	if !ok {
+		return nil
+	}
+	return params
 }
 
 // ── Event filter helpers ────────────────────────────────────────────────────

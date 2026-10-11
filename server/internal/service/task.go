@@ -2885,6 +2885,24 @@ func (s *TaskService) CancelRunsForCancelledIssue(ctx context.Context, issueID p
 	return nil
 }
 
+// UpdateQueuedTaskPrioritiesForIssue replays an issue's new priority onto its
+// still-queued task rows (RUYI-648). Priority is snapshotted at enqueue time
+// and ClaimAgentTask orders on the row's column, so a priority edit made
+// after enqueueing used to leave every queued row on the stale value — the
+// "just made urgent" issue kept waiting behind a FIFO of pri=0 rows. Rows the
+// daemon has already claimed keep their value: their ordering decision was
+// made, and only 'queued' rows are still competing for a claim.
+func (s *TaskService) UpdateQueuedTaskPrioritiesForIssue(ctx context.Context, issueID pgtype.UUID, priority string) (int64, error) {
+	rows, err := s.Queries.UpdateQueuedTaskPriorityForIssue(ctx, db.UpdateQueuedTaskPriorityForIssueParams{
+		Priority: priorityToInt(priority),
+		IssueID:  issueID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
 // distinctAgentIDs returns each agent id appearing in the cancelled rows once,
 // preserving first-seen order. Bulk cancellations frequently stop several tasks
 // owned by the same agent; reconciling per distinct agent (rather than per row)
@@ -3789,6 +3807,24 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if runtimeID.Valid && agent.RuntimeID != runtimeID {
 			outcome = "runtime_mismatch"
 			return nil
+		}
+
+		// RUYI-608: cheap freeze probe before the claim UPDATE. ClaimAgentTask
+		// re-enforces the fence authoritatively inside its own statement;
+		// this pre-check only makes the claim log distinguishable — without
+		// it a frozen agent's poll is indistinguishable from "queue empty".
+		if frozen, err := qtx.GetSchedulingPauseForAgent(ctx, db.GetSchedulingPauseForAgentParams{
+			WorkspaceID: agent.WorkspaceID,
+			AgentID:     agentID,
+		}); err == nil {
+			outcome = "scheduling_paused"
+			slog.Info("task claim: scheduling frozen",
+				"agent_id", util.UUIDToString(agentID),
+				"scope", schedulingPauseScopeOf(frozen))
+			return nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			outcome = "error_pause_probe"
+			return fmt.Errorf("probe scheduling pause: %w", err)
 		}
 
 		t0 = time.Now()
@@ -7903,6 +7939,30 @@ func commentEventFields(c db.Comment) map[string]any {
 		"source_task_id": util.UUIDToPtr(c.SourceTaskID),
 		"created_at":     util.TimestampToString(c.CreatedAt),
 	}
+}
+
+// AddDaemonTaskSystemComment posts a system comment on the issue behind a
+// daemon task, attributed to the task's agent — the service-side half of the
+// daemon task-comment endpoint (RUYI-593). The strong-stop path has always
+// reached humans this way (FailTask's fixed wording); this exposes the same
+// channel to pre-terminal watchdog alerts. Same redact-then-sanitize pipeline
+// as FailTask, and best-effort by contract: a task with no issue backing
+// (autopilot / quick-create) has no thread to comment on and returns nil, so
+// the daemon's alert loop is never disturbed by delivery problems here.
+func (s *TaskService) AddDaemonTaskSystemComment(ctx context.Context, taskID pgtype.UUID, content string) error {
+	content = util.SanitizeTextForPostgres(redact.Text(content))
+	if content == "" {
+		return nil
+	}
+	task, err := s.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !task.IssueID.Valid || !task.AgentID.Valid {
+		return nil
+	}
+	s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "system", task.TriggerCommentID, task.ID)
+	return nil
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {

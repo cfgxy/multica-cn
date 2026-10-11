@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -15,12 +15,21 @@ import {
   Play,
   Plus,
   Rocket,
+  Trash2,
   Users,
   Webhook,
   X as XIcon,
   Zap,
 } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
+import { Input } from "@multica/ui/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@multica/ui/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -46,12 +55,16 @@ import {
   useUpdateAutopilot,
   useUpdateAutopilotTrigger,
 } from "@multica/core/autopilots/mutations";
+import { autopilotParamsOptions } from "@multica/core/autopilots/queries";
 import { buildAutopilotWebhookUrl } from "@multica/core/autopilots";
 import { api } from "@multica/core/api";
 import type {
   AutopilotAssigneeType,
   AutopilotCollaborator,
   AutopilotExecutionMode,
+  AutopilotParam,
+  AutopilotParamInput,
+  AutopilotParamType,
   AutopilotTrigger,
 } from "@multica/core/types";
 import { TitleEditor, ContentEditor, type TitleEditorRef } from "../../editor";
@@ -163,6 +176,26 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const [subscriberUserIds, setSubscriberUserIds] = useState<string[]>(
     initial.subscriber_user_ids ?? [],
   );
+
+  // Parameter definitions (RUYI-641): drafts edited in the params section,
+  // written with the autopilot on submit. In edit mode the stored set loads
+  // async and syncs in exactly once — after that the drafts are user-owned
+  // until save. The wire-form snapshot taken at sync drives the dirty check.
+  const [paramDrafts, setParamDrafts] = useState<ParamDraft[]>([]);
+  const paramsSyncedRef = useRef(false);
+  const initialParamsWireRef = useRef<string>("[]");
+  const { data: storedParams } = useQuery(
+    autopilotParamsOptions(wsId, isCreate ? "" : props.autopilotId, {
+      enabled: open && !isCreate,
+    }),
+  );
+  useEffect(() => {
+    if (isCreate || paramsSyncedRef.current || !storedParams) return;
+    paramsSyncedRef.current = true;
+    const drafts = storedParams.params.map(paramToDraft);
+    initialParamsWireRef.current = JSON.stringify(drafts.map(draftToParamInput));
+    setParamDrafts(drafts);
+  }, [isCreate, storedParams]);
 
   // The schedule panel speaks for the autopilot's SCHEDULE trigger, not for
   // `triggers[0]` — on a webhook- or api-triggered autopilot that row is one no
@@ -323,6 +356,9 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             user_type: "member" as const,
             user_id,
           })),
+          // Unfilled rows (no name typed yet) are not a definition set; the
+          // server would only reject them.
+          params: paramDrafts.filter((d) => d.name.trim() !== "").map(draftToParamInput),
         });
         let triggerOk = true;
         let triggerErrMessage: string | null = null;
@@ -364,6 +400,20 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           toast.error(formatSchedulePartialFailureToast(t, "create", triggerErrMessage));
         }
       } else {
+        // The whole edit is one PATCH. Params ride along (key present = whole-set
+        // swap) ONLY when the section actually changed, so the server validates
+        // the templates it will keep against the parameter set it will keep —
+        // atomically. Splitting template and params into two calls cannot work:
+        // PATCH-first rejects a template that references a newly added parameter
+        // against the stored set, and params-first rejects a set that drops a
+        // parameter the stored template still names. A rejection (duplicate
+        // name, dangling template token, …) throws into the shared catch below,
+        // so the dialog stays open with the server's reason toasted.
+        const nextParams = paramDrafts
+          .filter((d) => d.name.trim() !== "")
+          .map(draftToParamInput);
+        const paramsChanged =
+          JSON.stringify(nextParams) !== initialParamsWireRef.current;
         await updateAutopilot.mutateAsync({
           id: props.autopilotId,
           title: title.trim(),
@@ -376,6 +426,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             user_type: "member" as const,
             user_id,
           })),
+          ...(paramsChanged ? { params: nextParams } : {}),
         });
         let triggerOk = true;
         let triggerErrMessage: string | null = null;
@@ -634,6 +685,8 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               selectedProject={selectedProject}
               onChange={setProjectId}
             />
+
+            <AutopilotParamsSection drafts={paramDrafts} onChange={setParamDrafts} />
 
             {executionMode === "create_issue" && (
               <SubscribersSection
@@ -959,6 +1012,196 @@ function SubscribersSection({
         selectedIds={selectedUserIds}
         onChange={onChange}
       />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Parameter definitions (RUYI-641): the autopilot's calling contract, edited
+// as a whole set and validated server-side on save.
+// ---------------------------------------------------------------------------
+
+type ParamDraft = {
+  name: string;
+  param_type: AutopilotParamType;
+  required: boolean;
+  default_value: string;
+  // Comma-separated wire form; split on save.
+  enum_options: string;
+};
+
+const PARAM_TYPE_ITEMS: readonly {
+  value: AutopilotParamType;
+  labelKey:
+    | "param_type_string"
+    | "param_type_text"
+    | "param_type_number"
+    | "param_type_boolean"
+    | "param_type_enum";
+}[] = [
+  { value: "string", labelKey: "param_type_string" },
+  { value: "text", labelKey: "param_type_text" },
+  { value: "number", labelKey: "param_type_number" },
+  { value: "boolean", labelKey: "param_type_boolean" },
+  { value: "enum", labelKey: "param_type_enum" },
+];
+
+function emptyParamDraft(): ParamDraft {
+  return {
+    name: "",
+    param_type: "string",
+    required: false,
+    default_value: "",
+    enum_options: "",
+  };
+}
+
+function paramToDraft(p: AutopilotParam): ParamDraft {
+  return {
+    name: p.name,
+    param_type: p.param_type,
+    required: p.required,
+    default_value: p.default_value ?? "",
+    enum_options: (p.enum_options ?? []).join(", "),
+  };
+}
+
+function draftToParamInput(d: ParamDraft): AutopilotParamInput {
+  const input: AutopilotParamInput = {
+    name: d.name.trim(),
+    param_type: d.param_type,
+  };
+  if (d.required) input.required = true;
+  const def = d.default_value.trim();
+  if (def !== "") input.default_value = def;
+  if (d.param_type === "enum") {
+    const options = d.enum_options
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (options.length > 0) input.enum_options = options;
+  }
+  return input;
+}
+
+function AutopilotParamsSection({
+  drafts,
+  onChange,
+}: {
+  drafts: ParamDraft[];
+  onChange: (next: ParamDraft[]) => void;
+}) {
+  const { t } = useT("autopilots");
+  const update = (index: number, patch: Partial<ParamDraft>) => {
+    onChange(drafts.map((d, i) => (i === index ? { ...d, ...patch } : d)));
+  };
+  const remove = (index: number) => {
+    onChange(drafts.filter((_, i) => i !== index));
+  };
+  const typeItems = PARAM_TYPE_ITEMS.map((item) => ({
+    value: item.value,
+    label: t(($) => $.dialog[item.labelKey]),
+  }));
+
+  return (
+    <div>
+      <SectionLabel>{t(($) => $.dialog.section_params)}</SectionLabel>
+      <p className="mb-2 text-micro text-muted-foreground">
+        {t(($) => $.dialog.params_hint)}
+        {/* Literal example rendered here so the locale strings stay free of
+            i18next interpolation syntax. */}
+        {" {{city}}"}
+      </p>
+      <div className="space-y-2">
+        {drafts.map((draft, i) => (
+          <div key={i} className="rounded-md border bg-background p-2 space-y-2">
+            <div className="flex items-center gap-2">
+              <Input
+                value={draft.name}
+                onChange={(e) => update(i, { name: e.target.value })}
+                placeholder={t(($) => $.dialog.param_name_ph)}
+                aria-label={t(($) => $.dialog.param_name_ph)}
+                className="h-8 min-w-0 flex-1 font-mono text-caption"
+              />
+              <Select
+                items={typeItems}
+                value={draft.param_type}
+                onValueChange={(v) => {
+                  if (v && v !== draft.param_type) {
+                    update(i, { param_type: v as AutopilotParamType });
+                  }
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t(($) => $.dialog.param_type_label)}
+                  className="h-8 w-[92px] shrink-0"
+                >
+                  <SelectValue>
+                    {typeItems.find((item) => item.value === draft.param_type)?.label}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {typeItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
+              {draft.param_type === "enum" ? (
+                <Input
+                  value={draft.enum_options}
+                  onChange={(e) => update(i, { enum_options: e.target.value })}
+                  placeholder={t(($) => $.dialog.param_enum_ph)}
+                  aria-label={t(($) => $.dialog.param_enum_ph)}
+                  className="h-8 min-w-0 flex-1 text-caption"
+                />
+              ) : (
+                <Input
+                  value={draft.default_value}
+                  onChange={(e) => update(i, { default_value: e.target.value })}
+                  placeholder={t(($) => $.dialog.param_default_ph)}
+                  aria-label={t(($) => $.dialog.param_default_ph)}
+                  className="h-8 min-w-0 flex-1 text-caption"
+                />
+              )}
+              <button
+                type="button"
+                aria-pressed={draft.required}
+                onClick={() => update(i, { required: !draft.required })}
+                className={cn(
+                  "inline-flex h-8 shrink-0 items-center gap-1 rounded-sm border px-2 text-caption transition-colors cursor-pointer",
+                  draft.required
+                    ? "border-primary/40 bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-accent/60",
+                )}
+              >
+                {draft.required && <Check className="size-3" />}
+                {t(($) => $.dialog.param_required)}
+              </button>
+              <button
+                type="button"
+                aria-label={t(($) => $.dialog.param_remove)}
+                onClick={() => remove(i)}
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="mt-2"
+        onClick={() => onChange([...drafts, emptyParamDraft()])}
+      >
+        <Plus className="size-3.5 mr-1" />
+        {t(($) => $.dialog.param_add)}
+      </Button>
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, RetrospectiveConfig, RetrospectiveRun } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
+import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import { RetrospectiveTab } from "./retrospective-tab";
 
 /**
@@ -47,6 +48,14 @@ const state = vi.hoisted(() => ({
 
 vi.mock("@multica/core/permissions", () => ({
   useCurrentMember: () => ({ role: state.role }),
+}));
+
+// RUYI-673: the per-run results entry builds its href through the shared
+// path builders; the stub keeps the test free of workspace-route context.
+vi.mock("@multica/core/paths", () => ({
+  useWorkspacePaths: () => ({
+    selfEvolutionProposals: () => "/acme/self-evolution/proposals",
+  }),
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
@@ -103,10 +112,21 @@ function config(overrides: Partial<RetrospectiveConfig> = {}): RetrospectiveConf
 
 function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const navigation: NavigationAdapter = {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/acme/self-evolution/retrospective",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (path) => path,
+  };
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <RetrospectiveTab wsId="ws-1" />
+        <NavigationProvider value={navigation}>
+          <RetrospectiveTab wsId="ws-1" />
+        </NavigationProvider>
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -292,5 +312,33 @@ describe("run failure reason rendering", () => {
 
     await screen.findByTestId("retrospective-runs");
     expect(screen.queryByTestId("retrospective-run-error")).toBeNull();
+  });
+});
+
+// RUYI-673: run rows adopt the agent-detail list's row language (readable
+// title + status icon + hover actions) and each row carries the results
+// entry — a link to the proposals view scoped to that run's batch, the same
+// surface the agent detail page's retrospective rows land on.
+describe("run rows link to the per-run results view", () => {
+  it("titles each run by its window stamp and links to the scoped results", async () => {
+    state.runs = [run({ id: "run-1", status: "succeeded" })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-runs");
+    expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
+    const link = screen.getByRole("link", { name: "View results" });
+    expect(link.getAttribute("href")).toBe("/acme/self-evolution/proposals?run=run-1");
+  });
+
+  it("keeps the failure line and the rerun affordance alongside the link", async () => {
+    state.runs = [run({ id: "run-2", detail: { reason: { code: "agent_archived" } } })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-run-error");
+    expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "View results" }).getAttribute("href"),
+    ).toContain("?run=run-2");
+    expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
   });
 });

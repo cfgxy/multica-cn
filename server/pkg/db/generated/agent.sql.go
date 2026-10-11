@@ -1953,6 +1953,19 @@ WHERE id = (
                 AND issue_effective_status(ci.workspace_id, ci.status) = 'cancelled'
           )
       )
+      -- RUYI-608: a scheduling freeze on the agent's workspace (workspace-
+      -- level row, agent_id NULL) or on this agent (agent-level row) blocks
+      -- claiming. Evaluated inside the claim statement so freeze and claim
+      -- cannot both win — the same atomicity argument as the RUYI-384 fence
+      -- above. Enqueue and coalesce never read scheduling_pause: tasks keep
+      -- queueing (and coalescing) while frozen and flow on resume in this
+      -- query's existing created_at ASC order. A paused agent still finishes
+      -- dispatched/running work: complete/fail paths never consult this table.
+      AND NOT EXISTS (
+          SELECT 1 FROM scheduling_pause sp
+          WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
+            AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
+      )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -11335,4 +11348,31 @@ type UpdateAgentTaskSessionParams struct {
 func (q *Queries) UpdateAgentTaskSession(ctx context.Context, arg UpdateAgentTaskSessionParams) error {
 	_, err := q.db.Exec(ctx, updateAgentTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
 	return err
+}
+
+const updateQueuedTaskPriorityForIssue = `-- name: UpdateQueuedTaskPriorityForIssue :execrows
+UPDATE agent_task_queue
+SET priority = $1
+WHERE issue_id = $2 AND status = 'queued'
+`
+
+type UpdateQueuedTaskPriorityForIssueParams struct {
+	Priority int32       `json:"priority"`
+	IssueID  pgtype.UUID `json:"issue_id"`
+}
+
+// RUYI-648: an issue's priority is snapshotted onto its queue rows at enqueue
+// time (priorityToInt(issue.Priority) at every CreateAgentTask* path) and the
+// claim ordering reads the row's column, so an issue edited after enqueueing
+// left its queued rows on the stale value and the agent kept serving the old
+// urgency. The priority_changed handler replays the new value onto the rows
+// still competing for a claim; rows a daemon already claimed
+// (dispatched/running/waiting_local_directory/deferred) and terminal rows
+// keep the snapshot their ordering decision was made on.
+func (q *Queries) UpdateQueuedTaskPriorityForIssue(ctx context.Context, arg UpdateQueuedTaskPriorityForIssueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateQueuedTaskPriorityForIssue, arg.Priority, arg.IssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

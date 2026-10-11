@@ -224,7 +224,7 @@ export default function Decisions() {
             ) : null
           }
           ItemSeparatorComponent={() => <View className="h-px bg-border ml-4" />}
-          contentContainerClassName="pb-6"
+          contentContainerClassName="pb-2"
           refreshing={isRefetching}
           onRefresh={refetch}
           stickySectionHeadersEnabled={false}

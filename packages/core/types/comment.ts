@@ -81,3 +81,22 @@ export interface CommentTriggerPreview {
   blocked?: CommentTriggerOutcome[];
   invalid_mentions?: { start: number; end: number }[];
 }
+
+/**
+ * Anchor info for a `mention://comment/<id>` chip whose target lives outside
+ * the current issue (RUYI-643). Everything the chip needs to render a jump:
+ * the owning issue's canonical identifier for the deep link, plus the same
+ * author/time/excerpt triple the in-issue chip announces. The server returns
+ * this only when the CALLER's workspace hosts the comment — every other miss
+ * (unknown id, deleted, foreign workspace) is the same 404, so a null here
+ * carries no information about invisible comments.
+ */
+export interface CommentAnchor {
+  issue_id: string;
+  identifier: string;
+  author_type: CommentAuthorType;
+  author_id: string;
+  created_at: string;
+  /** Raw comment content, server-truncated; the client derives the label. */
+  excerpt: string;
+}

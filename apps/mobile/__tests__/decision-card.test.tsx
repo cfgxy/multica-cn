@@ -174,6 +174,40 @@ describe("DecisionCard", () => {
     expect(screen.getByText("B超 声呐")).toBeTruthy();
   });
 
+  // RUYI-620: legacy data written under the degraded "A 选项文本" form
+  // (letter + space, half- or full-width) must not double-number against
+  // the card's own index letter.
+  it("strips legacy letter+space prefixes so each letter renders once", async () => {
+    await renderCard(
+      card({ options: [{ label: "A 存量方案一" }, { label: "B　存量方案二" }] }),
+    );
+
+    expect(screen.getByText("A")).toBeTruthy();
+    expect(screen.getByText("B")).toBeTruthy();
+    expect(screen.getByText("存量方案一")).toBeTruthy();
+    expect(screen.getByText("存量方案二")).toBeTruthy();
+    expect(screen.queryByText("A 存量方案一")).toBeNull();
+    expect(screen.queryByText("B　存量方案二")).toBeNull();
+  });
+
+  // RUYI-620: the badge renders from recommended_indices, so a trailing
+  // "（推荐）" in the label text must be stripped; leading occurrences are
+  // content and stay.
+  it("strips the trailing recommended marker; the badge still renders once", async () => {
+    await renderCard(
+      card({
+        options: [{ label: "方案一（推荐）" }, { label: "方案二" }, { label: "（推荐）开头不算" }],
+        recommended_indices: [0],
+      }),
+    );
+
+    expect(screen.getByText("方案一")).toBeTruthy();
+    expect(screen.queryByText("方案一（推荐）")).toBeNull();
+    expect(screen.getByText("Recommended")).toBeTruthy();
+    expect(screen.getByText("方案二")).toBeTruthy();
+    expect(screen.getByText("（推荐）开头不算")).toBeTruthy();
+  });
+
   it("renders the question, options and creator for an open single-select card", async () => {
     await renderCard(card({ recommended_indices: [1] }));
 

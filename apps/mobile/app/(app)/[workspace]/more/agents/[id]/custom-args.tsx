@@ -154,6 +154,7 @@ export default function AgentCustomArgs() {
       </View>
 
       <ScrollView
+        nestedScrollEnabled
         className="flex-1"
         contentContainerClassName="px-4 pt-4 pb-8 gap-4"
         keyboardShouldPersistTaps="handled"
