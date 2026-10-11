@@ -36,5 +36,25 @@
     "not_recognized": "未识别到语音",
     "listening": "正在聆听…",
     "stop_agent": "停止 Agent"
+  },
+  "orb": {
+    "connecting": "正在连接…",
+    "listening": "聆听中",
+    "user_speaking": "正在听你说",
+    "thinking": "思考中",
+    "speaking": "正在回应",
+    "interrupted": "已打断",
+    "disconnected": "连接已断开",
+    "failed": "语音暂不可用",
+    "mute": "静音麦克风",
+    "unmute": "取消静音",
+    "immerse": "沉浸视图",
+    "collapse": "收起为迷你球",
+    "reconnect": "重连",
+    "hangup": "挂断",
+    "disconnect_hint": "连接已断开，可重连或挂断。",
+    "toast_saved": "语音对话已保存",
+    "toast_saved_idle": "语音对话已保存（空闲超时自动挂断）",
+    "toast_saved_background": "语音对话已保存（切后台超时自动挂断）"
   }
 }

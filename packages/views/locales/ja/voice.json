@@ -36,5 +36,25 @@
     "not_recognized": "音声が認識されませんでした",
     "listening": "聴き取っています…",
     "stop_agent": "エージェントを停止"
+  },
+  "orb": {
+    "connecting": "接続中…",
+    "listening": "聞いています",
+    "user_speaking": "話してください",
+    "thinking": "考えています",
+    "speaking": "応答中",
+    "interrupted": "中断されました",
+    "disconnected": "接続が切断されました",
+    "failed": "音声を利用できません",
+    "mute": "マイクをミュート",
+    "unmute": "ミュート解除",
+    "immerse": "全画面表示",
+    "collapse": "ミニ球に縮小",
+    "reconnect": "再接続",
+    "hangup": "通話を終了",
+    "disconnect_hint": "接続が切断されました。再接続または終了してください。",
+    "toast_saved": "音声会話を保存しました",
+    "toast_saved_idle": "音声会話を保存しました（アイドルタイムアウト）",
+    "toast_saved_background": "音声会話を保存しました（バックグラウンドタイムアウト）"
   }
 }
