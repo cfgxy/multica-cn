@@ -18,6 +18,7 @@ import {
   FilePen,
   FileText,
   Search,
+  ShieldAlert,
   Terminal,
   Wrench,
   MoreHorizontal,
@@ -182,6 +183,11 @@ function stepFilterKey(step: TraceStep): TranscriptFilterKey {
 /** Lowercased haystack for the in-run search. Outputs are clipped: a match
  *  past 4KB of command output is not one anybody is scanning for. */
 function stepHaystack(step: TraceStep): string {
+  if (step.kind === "watchdog") {
+    // Content is empty on watchdog rows; search the summary and raw payload.
+    const input = step.item.input ? JSON.stringify(step.item.input) : "";
+    return `${traceEventSummary(step.item)} ${input}`.toLowerCase();
+  }
   if (step.kind !== "call") return (step.item.content ?? "").toLowerCase();
   const input = step.call?.input ? JSON.stringify(step.call.input) : "";
   return `${step.tool} ${input} ${(step.result?.output ?? "").slice(0, 4000)}`.toLowerCase();
@@ -190,6 +196,7 @@ function stepHaystack(step: TraceStep): string {
 function StepIcon({ step, className }: { step: TraceStep; className?: string }) {
   if (!isCallStep(step)) {
     if (step.kind === "thinking") return <Brain className={className} />;
+    if (step.kind === "watchdog") return <ShieldAlert className={className} />;
     if (step.kind === "error") return <CircleAlert className={className} />;
     return <Bot className={className} />;
   }
@@ -1463,10 +1470,14 @@ function StepRow({
     ? call.tool || t(($) => $.transcript.kind_tool)
     : row.kind === "thinking"
       ? t(($) => $.transcript.kind_thinking)
-      : t(($) => $.transcript.kind_error);
+      : row.kind === "watchdog"
+        ? t(($) => $.transcript.kind_watchdog)
+        : t(($) => $.transcript.kind_error);
   const summary = call
     ? callSummary(call, summaryLabels)
-    : firstLineOf((row as TraceMessageStep).item.content);
+    : row.kind === "watchdog"
+      ? traceEventSummary(row.item)
+      : firstLineOf((row as TraceMessageStep).item.content);
   const pending = call !== null && isLive && !call.result;
   const selected = selectedSeq === row.seq;
 
@@ -1659,7 +1670,9 @@ function StepInspector({
       ? call.tool || t(($) => $.transcript.kind_tool)
       : step.kind === "thinking"
         ? t(($) => $.transcript.kind_thinking)
-        : t(($) => $.transcript.kind_error);
+        : step.kind === "watchdog"
+          ? t(($) => $.transcript.kind_watchdog)
+          : t(($) => $.transcript.kind_error);
 
   return (
     <aside className="flex w-[26rem] shrink-0 flex-col border-l bg-muted/25">
@@ -1711,7 +1724,18 @@ function StepInspector({
           </>
         ) : (
           <InspectorSection label={title}>
-            <ToolDetailSurface text={redactSecrets(message?.item.content ?? "")} />
+            <ToolDetailSurface
+              text={redactSecrets(
+                message?.item.type === "watchdog"
+                  ? [
+                      traceEventSummary(message.item),
+                      message.item.input ? JSON.stringify(message.item.input, null, 2) : "",
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n")
+                  : (message?.item.content ?? ""),
+              )}
+            />
           </InspectorSection>
         )}
       </div>
