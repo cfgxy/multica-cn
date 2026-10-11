@@ -234,6 +234,7 @@ func TestEnqueueQuickCreateTaskWithSourceContextIsAtomic(t *testing.T) {
 		pgtype.UUID{},
 		nil,
 		successCapture,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("enqueue with source context: %v", err)
@@ -266,6 +267,7 @@ func TestEnqueueQuickCreateTaskWithSourceContextIsAtomic(t *testing.T) {
 		pgtype.UUID{},
 		nil,
 		rollbackCapture,
+		nil,
 	)
 	if err == nil {
 		t.Fatal("duplicate context id enqueue succeeded")
