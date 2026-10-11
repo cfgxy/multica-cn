@@ -47,7 +47,7 @@ export const pullRequestLookupOptions = (
   queryOptions({
     queryKey: githubKeys.pullRequestLookup(wsId, owner, repo, number),
     queryFn: ({ signal }) =>
-      api.lookupPullRequest(owner, repo, number, { signal }),
+      api.lookupPullRequest(wsId ?? "", owner, repo, number, { signal }),
     enabled:
       !!wsId &&
       owner.length > 0 &&
