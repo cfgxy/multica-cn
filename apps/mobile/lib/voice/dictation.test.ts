@@ -35,6 +35,7 @@ describe("起录门（120ms）", () => {
     const begun = reduceDictation(pressed.state, {
       type: "beginRecord",
       atMs: 1_000,
+      degraded: false,
     });
     expect(begun.state.phase).toBe("recording");
     expect(begun.state.startedAtMs).toBe(1_000);
