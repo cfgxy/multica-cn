@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -688,5 +689,60 @@ func TestReportDaemonInventory_UnknownDaemonReturns404(t *testing.T) {
 	}, testWorkspaceID, "ops-unknown-daemon-caller"))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDaemonHeartbeat_HTTPResponseCarriesPendingOpsCommands pins the QA escape
+// (RUYI-645): claimOpsCommands attaches claimed commands to the shared ack, but
+// the HTTP heartbeat handler re-projects the ack into a response map and dropped
+// pending_ops_commands — HTTP-heartbeating daemons never saw their claimed rows,
+// so every command died in sweep timeout. The WS path returns the ack struct
+// directly and was unaffected; this regression guards the HTTP projection.
+func TestDaemonHeartbeat_HTTPResponseCarriesPendingOpsCommands(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID, daemonID := createOpsChannelTestRuntime(t, "online")
+	commandID := insertOpsChannelCommand(t, testWorkspaceID, runtimeID, daemonID, "ps_snapshot")
+
+	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
+		"runtime_id": runtimeID,
+	}, testWorkspaceID, daemonID)
+	w := testutil.Call(t, testHandler.DaemonHeartbeat, req).Want(http.StatusOK)
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode heartbeat response %q: %v", w.Body.String(), err)
+	}
+	raw, ok := resp["pending_ops_commands"]
+	if !ok {
+		t.Fatalf("heartbeat response dropped pending_ops_commands: %s", w.Body.String())
+	}
+	dispatches, ok := raw.([]any)
+	if !ok || len(dispatches) != 1 {
+		t.Fatalf("pending_ops_commands = %#v, want exactly one dispatch", raw)
+	}
+	dispatch, _ := dispatches[0].(map[string]any)
+	if dispatch["command_id"] != commandID {
+		t.Fatalf("dispatch command_id = %v, want %s", dispatch["command_id"], commandID)
+	}
+	if dispatch["kind"] != "ps_snapshot" {
+		t.Fatalf("dispatch kind = %v, want ps_snapshot", dispatch["kind"])
+	}
+	if _, ok := dispatch["lease_epoch"].(float64); !ok {
+		t.Fatalf("dispatch lease_epoch missing or not a number: %#v", dispatch["lease_epoch"])
+	}
+
+	// The claim runs inside processHeartbeat, so the row must already be
+	// claimed after this beat — proving the response projection was the only
+	// loss point on the HTTP path.
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM daemon_ops_command WHERE id = $1`, commandID).Scan(&status); err != nil {
+		t.Fatalf("read command row: %v", err)
+	}
+	if status != "claimed" {
+		t.Fatalf("command status = %q after HTTP heartbeat, want claimed", status)
 	}
 }
