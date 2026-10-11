@@ -71,8 +71,8 @@ export function AdminPage({ onBack }: { onBack?: () => void }) {
       <DragStrip />
       <header className="flex items-center justify-between border-b px-6 py-4">
         <div>
-          <h1 className="text-xl font-semibold">{t(($) => $.admin.title)}</h1>
-          <p className="text-sm text-muted-foreground">
+          <h1 className="text-title-lg font-semibold">{t(($) => $.admin.title)}</h1>
+          <p className="text-body text-muted-foreground">
             {t(($) => $.admin.scope)}
           </p>
         </div>
@@ -226,7 +226,7 @@ function AdminSections({
           )}
           {notice && dialogClosed && <p role="status">{notice}</p>}
           <div className="flex items-center justify-between gap-3">
-            <h2 id="computer-registry" className="text-lg font-semibold">
+            <h2 id="computer-registry" className="text-title font-semibold">
               {t(($) => $.computers.title)}
             </h2>
             <div className="flex gap-2">
@@ -245,7 +245,7 @@ function AdminSections({
               </Button>
             </div>
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-body text-muted-foreground">
             {t(($) => $.admin.disable_help)}
           </p>
           {data.computers.isPending && (
@@ -289,8 +289,8 @@ function AdminSections({
       )}
       {section === "bindings" && (
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">{t(($) => $.admin.bindings)}</h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 className="text-title font-semibold">{t(($) => $.admin.bindings)}</h2>
+          <p className="text-body text-muted-foreground">
             {t(($) => $.admin.bindings_help)}
           </p>
           <Input
@@ -309,19 +309,19 @@ function AdminSections({
                     {b.state === "ready" ? t(($) => $.computers.ready) : b.state === "running" ? t(($) => $.computers.running) : b.state === "removed" ? t(($) => $.computers.removed) : b.state === "failed" ? t(($) => $.computers.failed) : b.state}
                   </Badge>
                 </div>
-                <dl className="grid gap-1 text-sm sm:grid-cols-2">
+                <dl className="grid gap-1 text-body sm:grid-cols-2">
                   <div className="flex gap-2"><dt className="text-muted-foreground">{t(($) => $.admin.linux_user_computer)}</dt><dd className="break-all">{name(b.computer_id)}</dd></div>
                   <div className="flex gap-2"><dt className="text-muted-foreground">{t(($) => $.admin.linux_user_owner)}</dt><dd className="break-all">{b.user_name}</dd></div>
                   <div className="flex gap-2"><dt className="text-muted-foreground">{t(($) => $.admin.linux_user_workspace)}</dt><dd className="break-all">{b.workspace_id}</dd></div>
                 </dl>
-                {b.last_error && <p className="break-words text-sm text-destructive">{b.last_error}</p>}
+                {b.last_error && <p className="break-words text-body text-destructive">{b.last_error}</p>}
                 <div className="flex flex-wrap items-center gap-3">
                   <Button type="button" variant="outline" size="sm" disabled={checkingBinding !== ""} onClick={() => void checkBinding(b.id)}>
                     {checkingBinding === b.id ? t(($) => $.computers.loading) : t(($) => $.admin.linux_user_check)}
                   </Button>
-                  {bindingChecks[b.id]?.present === true && <p role="status" className="text-sm">{t(($) => $.admin.linux_user_present)}</p>}
-                  {bindingChecks[b.id]?.present === false && <p role="status" className="text-sm">{t(($) => $.admin.linux_user_missing)}</p>}
-                  {bindingChecks[b.id]?.error && <p role="alert" className="break-words text-sm text-destructive">{bindingChecks[b.id]?.error}</p>}
+                  {bindingChecks[b.id]?.present === true && <p role="status" className="text-body">{t(($) => $.admin.linux_user_present)}</p>}
+                  {bindingChecks[b.id]?.present === false && <p role="status" className="text-body">{t(($) => $.admin.linux_user_missing)}</p>}
+                  {bindingChecks[b.id]?.error && <p role="alert" className="break-words text-body text-destructive">{bindingChecks[b.id]?.error}</p>}
                 </div>
                 <Button variant="outline" size="sm" aria-expanded={detailBinding === b.id} onClick={() => setDetailBinding(detailBinding === b.id ? "" : b.id)}>{t(($) => $.linux_user.details)}</Button>
                 {detailBinding === b.id && <LinuxUserDetail bindingId={b.id} userId={userId} admin />}
@@ -333,13 +333,13 @@ function AdminSections({
       )}
       {section === "audit" && (
         <section className="space-y-3">
-          <h2 className="text-lg font-semibold">{t(($) => $.admin.audit)}</h2>
-          <p className="text-sm text-muted-foreground">
+          <h2 className="text-title font-semibold">{t(($) => $.admin.audit)}</h2>
+          <p className="text-body text-muted-foreground">
             {t(($) => $.admin.audit_help)}
           </p>
           <ul className="space-y-2">
             {data.audit.data?.map((a) => (
-              <li className="rounded border p-3 text-sm" key={a.id}>
+              <li className="rounded border p-3 text-body" key={a.id}>
                 <time dateTime={a.created_at}>
                   {new Date(a.created_at).toLocaleString()}
                 </time>{" "}
@@ -496,10 +496,10 @@ function ComputerRow({
               <Badge variant="destructive">{t(($) => $.admin.check_failed)}</Badge>
             )}
           </p>
-          <p className="break-all text-sm text-muted-foreground">
+          <p className="break-all text-body text-muted-foreground">
             {m.ssh_user}@{m.host}:{m.port}
           </p>
-          <dl className="grid gap-x-6 gap-y-1 text-sm text-muted-foreground sm:grid-cols-2">
+          <dl className="grid gap-x-6 gap-y-1 text-body text-muted-foreground sm:grid-cols-2">
             <div className="flex gap-1">
               <dt>{t(($) => $.admin.bound_accounts)}:</dt>
               <dd>{m.bindings}</dd>
@@ -530,7 +530,7 @@ function ComputerRow({
             </div>
           </dl>
           {m.check_ok === false && m.check_detail && (
-            <p className="break-all text-sm text-destructive">{m.check_detail}</p>
+            <p className="break-all text-body text-destructive">{m.check_detail}</p>
           )}
         </div>
         <div className="flex flex-wrap gap-2">
@@ -570,7 +570,7 @@ function ProbeReport({ probe }: { probe: ProbeResult }) {
           ? t(($) => $.admin.check_passed)
           : t(($) => $.admin.check_failed)}
       </p>
-      <ul className="space-y-1 text-sm">
+      <ul className="space-y-1 text-body">
         {probe.checks.map((c) => (
           <li
             key={c.name}
@@ -582,7 +582,7 @@ function ProbeReport({ probe }: { probe: ProbeResult }) {
         ))}
       </ul>
       {probe.facts.hostname && (
-        <p className="text-sm text-muted-foreground">
+        <p className="text-body text-muted-foreground">
           {[
             probe.facts.hostname,
             probe.facts.os,
@@ -670,7 +670,7 @@ function ComputerFormDialog({
               />
             </label>
           </div>
-          <p className="text-sm text-muted-foreground">
+          <p className="text-body text-muted-foreground">
             {t(($) => $.admin.check_help)}
           </p>
           {error && (

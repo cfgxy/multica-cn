@@ -301,12 +301,12 @@ export function LinuxUserDetail({
                   )}
                 </div>
                 {d.state !== "removed" && (
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-body text-muted-foreground">
                     {t(($) => $.computers.remove_help)}
                   </p>
                 )}
                 {d.state === "removed" && (
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-body text-muted-foreground">
                     {t(($) => $.linux_user.archive_help)}{" "}
                     {d.account_state !== "missing" &&
                       t(($) => $.linux_user.delete_help)}
@@ -319,7 +319,7 @@ export function LinuxUserDetail({
       )}
       {d && view === "all" && (
         <>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm break-all">
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-body break-all">
             <dt>{t(($) => $.computers.title)}</dt>
             <dd>{d.computer_name}</dd>
             <dt>{t(($) => $.computers.username)}</dt>

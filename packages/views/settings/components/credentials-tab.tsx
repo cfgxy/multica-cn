@@ -335,7 +335,7 @@ function CredentialEditor({
                 )}
                 <p
                   id={`credential-help-${field}`}
-                  className="text-sm text-muted-foreground"
+                  className="text-body text-muted-foreground"
                 >
                   {help[field]}
                 </p>
