@@ -13,6 +13,7 @@ import {
   formatRate,
 } from "../../runtimes/components/charts";
 import { AppLink } from "../../navigation";
+import type { BarSelection } from "../../runtimes/components/charts";
 import { useT } from "../../i18n";
 import {
   aggregateDailyErrors,
@@ -87,6 +88,8 @@ export function ErrorsTab({
   weeklyErrors,
   agents,
   locales,
+  selection,
+  onSelectionChange,
 }: {
   days: number;
   allowedDims: readonly Dim[];
@@ -98,6 +101,8 @@ export function ErrorsTab({
   weeklyErrors: ReturnType<typeof aggregateWeeklyErrors>;
   agents: { id: string; name: string }[];
   locales?: Intl.LocalesArgument;
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
 }) {
   const { t } = useT("usage");
   const classLabel = useFailureClassLabel();
@@ -177,6 +182,8 @@ export function ErrorsTab({
             allowedDims={allowedDims}
             dailyErrors={dailyErrors}
             weeklyErrors={weeklyErrors}
+            selection={selection}
+            onSelectionChange={onSelectionChange}
           />
           <FailureMixCard
             totals={totals}
@@ -202,10 +209,14 @@ function ErrorTrendCard({
   allowedDims,
   dailyErrors,
   weeklyErrors,
+  selection,
+  onSelectionChange,
 }: {
   allowedDims: readonly Dim[];
   dailyErrors: ReturnType<typeof aggregateDailyErrors>;
   weeklyErrors: ReturnType<typeof aggregateWeeklyErrors>;
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
 }) {
   const { t } = useT("usage");
   const [dim, setDim] = useState<Dim>("daily");
@@ -222,9 +233,17 @@ function ErrorTrendCard({
       </div>
       <div className="min-h-[240px]">
         {weekly ? (
-          <WeeklyErrorsChart data={weeklyErrors} />
+          <WeeklyErrorsChart
+            data={weeklyErrors}
+            selection={selection}
+            onSelectionChange={onSelectionChange}
+          />
         ) : (
-          <DailyErrorsChart data={dailyErrors} />
+          <DailyErrorsChart
+            data={dailyErrors}
+            selection={selection}
+            onSelectionChange={onSelectionChange}
+          />
         )}
       </div>
     </div>

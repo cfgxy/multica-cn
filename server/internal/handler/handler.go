@@ -478,6 +478,21 @@ type Handler struct {
 	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
 	// tight transports). Nil means a 5s-timeout default client.
 	VoiceProbeHTTPClient *http.Client
+	// VoiceASRBaseURL is the one-shot dictation transcription provider
+	// origin (RUYI-710): POST {base}/v1beta/models/{model}:generateContent
+	// with the audio inlined. Wired from MULTICA_GEMINI_ASR_BASE_URL with
+	// the public Gemini endpoint as the default; tests inject a stub
+	// server URL so the hop never touches the real service.
+	VoiceASRBaseURL string
+	// VoiceASRMaxAudioBytes bounds the in-memory audio buffer of a
+	// transcription upload (RUYI-710). Zero means the production default
+	// (20 MiB); tests inject tight bounds to exercise the rejection edges
+	// cheaply.
+	VoiceASRMaxAudioBytes int64
+	// VoiceASRMaxAudioDuration bounds the container-declared length of a
+	// transcription upload (RUYI-710). Zero means the production default
+	// (5 minutes).
+	VoiceASRMaxAudioDuration time.Duration
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box

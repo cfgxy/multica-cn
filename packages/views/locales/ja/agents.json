@@ -1018,7 +1018,8 @@
     "detail": {
       "section_history": "実行履歴",
       "edit_profile": "プロフィールを編集",
-      "tab_active": "進行中",
+      "tab_active": "タスク履歴",
+      "section_active": "進行中",
       "fact_status": "ステータス",
       "fact_runtime_unbound": "ランタイム未設定",
       "bind_runtime": "ランタイムをバインド",
@@ -1037,7 +1038,9 @@
     },
     "run_history": {
       "load_more": "さらに読み込む",
-      "empty": "実行履歴はまだありません。"
+      "empty": "実行履歴はまだありません。",
+      "queued_backpressure": "ランタイムの復帰待ち",
+      "other_agents": "{{count}} 体のエージェントが稼働中"
     },
     "edit": {
       "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します",

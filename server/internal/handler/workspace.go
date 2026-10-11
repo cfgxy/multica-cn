@@ -436,6 +436,20 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Settings != nil {
 		s, _ := json.Marshal(req.Settings)
+		// RUYI-693: the settings bag gains a "voice" document (workspace
+		// default + ASR refs into the voice_provider pool). A foreign bag is
+		// untouched; a bag carrying "voice" gets the strict write validation
+		// (referenced providers must exist inside this workspace) before the
+		// whole blob replaces the stored one.
+		var bag map[string]json.RawMessage
+		if json.Unmarshal(s, &bag) == nil {
+			if _, hasVoice := bag[workspaceVoiceSettingsKey]; hasVoice {
+				if err := h.validateWorkspaceVoiceSettings(r.Context(), idUUID, bag); err != nil {
+					writeError(w, http.StatusBadRequest, err.Error())
+					return
+				}
+			}
+		}
 		params.Settings = s
 	}
 	if req.Repos != nil {

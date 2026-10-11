@@ -50,12 +50,14 @@ import {
   partitionReferencePreview,
 } from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
+import { identifierMatchesPrefix } from "@multica/core/markdown";
 import {
   issueDetailOptions,
   issueIdentifierOptions,
 } from "@/data/queries/issues";
 import { pullRequestLookupOptions } from "@/data/queries/github";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
 import {
   buildReferenceTailRows,
@@ -142,6 +144,7 @@ export function IssueReferenceList({
   const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const workspacePrefix = useWorkspaceIssuePrefix();
   const { colorOf } = useIssueStatuses();
   const { colorScheme } = useColorScheme();
   const insets = useSafeAreaInsets();
@@ -166,7 +169,20 @@ export function IssueReferenceList({
       () =>
         references.map((ref) => {
           if (ref.form === "identifier") {
-            return issueIdentifierOptions(wsId, ref.ref);
+            // Same gate as web's useIssueReferenceResolutions: once the
+            // workspace prefix is known, a mismatched bare identifier cannot
+            // resolve here — skip the network instead of spending a
+            // guaranteed-404 request (RUYI-705 defense in depth; extraction
+            // normally filters these already). Unknown prefix falls through
+            // and lets the exact match decide, web parity.
+            const prefixMatches = identifierMatchesPrefix(
+              ref.ref,
+              workspacePrefix,
+            );
+            return {
+              ...issueIdentifierOptions(wsId, ref.ref),
+              enabled: !!wsId && !!ref.ref && prefixMatches,
+            };
           }
           if (ref.form === "pull_request") {
             // The extractor only emits parseable tokens; the re-parse here is
@@ -181,7 +197,7 @@ export function IssueReferenceList({
           }
           return issueDetailOptions(wsId, ref.ref);
         }),
-      [references, wsId],
+      [references, wsId, workspacePrefix],
     ),
     // Zip positions with `references` below; a failed / loading query reads
     // as unresolved and degrades, the same "every miss looks alike" contract
