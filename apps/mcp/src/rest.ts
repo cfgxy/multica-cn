@@ -33,6 +33,11 @@ import type {
   CreateProjectBody,
   CreateProjectResourceBody,
   CreateSquadBody,
+  DecisionBatchAnswerBody,
+  DecisionBatchResult,
+  DecisionCardInfo,
+  DecisionInboxItemInfo,
+  DecisionInboxResult,
   ExecutionProfileActivationInfo,
   ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
@@ -99,6 +104,27 @@ export class MulticaRequestError extends Error {
     super(message);
     this.name = "MulticaRequestError";
   }
+}
+
+/** The wire renders options as [{label}] objects; the typed surface uses
+ * plain label arrays with option letter A = index 0. A hand-edited row that
+ * fails to decode projects as an empty card rather than a crash — the same
+ * grace the server's own renderer applies. */
+function normalizeDecisionOptions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) =>
+      typeof entry === "object" && entry !== null && typeof (entry as { label?: unknown }).label === "string"
+        ? ((entry as { label: string }).label)
+        : undefined,
+    )
+    .filter((label): label is string => label !== undefined);
+}
+
+function normalizeDecisionCard(raw: unknown): DecisionCardInfo {
+  const record = raw as Record<string, unknown> & { options?: unknown };
+  const { options, ...rest } = record;
+  return { ...rest, options: normalizeDecisionOptions(options) } as DecisionCardInfo;
 }
 
 export interface MulticaClientOptions {
@@ -642,6 +668,84 @@ export class MulticaClient {
       throw new MulticaRequestError(`workspace not found for slug: ${slug}`);
     }
     return match.id;
+  }
+
+  // ---- decision cards (RUYI-688) ----------------------------------
+  // The same decision-card surface the mobile decision center reads and
+  // writes, one source of truth: the inbox lists every card in the
+  // workspace, the issue-scoped list feeds detail reads and answer
+  // numbering, and the batch endpoint is the only write. Like the audit
+  // search, the inbox keys the workspace by UUID in its path, so a slug
+  // input resolves via resolveWorkspaceIdBySlug first. The wire carries
+  // options as [{label}] objects; these methods normalize to label arrays
+  // so every consumer below speaks one shape.
+
+  async listDecisionInbox(
+    workspace: string,
+    params: { status?: string; limit?: number } = {},
+  ): Promise<DecisionInboxResult> {
+    const workspaceId = isUuid(workspace)
+      ? workspace
+      : await this.resolveWorkspaceIdBySlug(workspace);
+    const raw = await this.request<{
+      items: Array<Record<string, unknown>>;
+      counts: { open: number; answered: number; cancelled: number };
+    }>(
+      "GET",
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/decision-inbox`,
+      {
+        workspace,
+        query: { status: params.status, limit: params.limit },
+      },
+    );
+    return {
+      items: raw.items.map((item) => {
+        const { options, ...rest } = item as Record<string, unknown> & {
+          options?: unknown;
+        };
+        return {
+          ...rest,
+          options: normalizeDecisionOptions(options),
+        } as DecisionInboxItemInfo;
+      }),
+      counts: raw.counts,
+    };
+  }
+
+  async listIssueDecisions(workspace: string, issueId: string): Promise<DecisionCardInfo[]> {
+    const raw = await this.request<Array<Record<string, unknown>>>(
+      "GET",
+      `/api/issues/${encodeURIComponent(issueId)}/decisions`,
+      { workspace },
+    );
+    return raw.map(normalizeDecisionCard);
+  }
+
+  async answerDecisionsBatch(
+    workspace: string,
+    issueId: string,
+    answers: DecisionBatchAnswerBody[],
+  ): Promise<DecisionBatchResult> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/api/issues/${encodeURIComponent(issueId)}/decisions/answer-batch`,
+      { workspace, body: { answers } },
+    );
+    const results = Array.isArray(raw.results) ? raw.results : [];
+    return {
+      ...raw,
+      results: results.map((outcome) => {
+        const record = outcome as Record<string, unknown>;
+        const decision = record.decision as Record<string, unknown> | undefined;
+        return {
+          ...record,
+          decision:
+            decision === undefined || decision === null
+              ? undefined
+              : normalizeDecisionCard(decision),
+        };
+      }),
+    } as DecisionBatchResult;
   }
 
   // ---- workspace management surface ----------------------------
