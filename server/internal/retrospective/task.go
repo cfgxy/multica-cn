@@ -171,13 +171,27 @@ func stripJSONFences(s string) string {
 }
 
 // runDetail is the JSONB the run row carries: the scanned issue ids from the
-// trigger (the membership set the agent's report is validated against) plus
+// trigger (the membership set the agent's report is attributed against) plus
 // outcome fields merged in at finish. Reason is the structured failure
 // verdict (RUYI-561): the UI localizes from its code; nil on success.
+// RUYI-674 membership breadcrumbs: ids the report named outside the scanned
+// set either got auto-corrected onto a unique near neighbor, were accepted
+// as real workspace issues (drafts land, no watermark), or were dropped as
+// unattributable — each category lands in its own list, length = count.
 type runDetail struct {
-	IssueIDs         []string   `json:"issue_ids,omitempty"`
-	AnalyzedIssueIDs []string   `json:"analyzed_issue_ids,omitempty"`
-	Reason           *runReason `json:"reason,omitempty"`
+	IssueIDs              []string       `json:"issue_ids,omitempty"`
+	AnalyzedIssueIDs      []string       `json:"analyzed_issue_ids,omitempty"`
+	CorrectedIssueIDs     []idCorrection `json:"corrected_issue_ids,omitempty"`
+	IgnoredIssueIDs       []string       `json:"ignored_issue_ids,omitempty"`
+	AcceptedOutOfScopeIDs []string       `json:"accepted_out_of_scope_ids,omitempty"`
+	Reason                *runReason     `json:"reason,omitempty"`
+}
+
+// idCorrection records one reported id auto-corrected onto the scanned set
+// (the f15f→f15a class of single-character copy typos).
+type idCorrection struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
 func parseRunDetail(raw []byte) runDetail {
@@ -209,10 +223,6 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 
 	stats := &RunStats{WorkspaceID: tc.WorkspaceID, RunID: tc.RunID}
 	detail := parseRunDetail(run.Detail)
-	scanned := make(map[string]bool, len(detail.IssueIDs))
-	for _, id := range detail.IssueIDs {
-		scanned[id] = true
-	}
 
 	if strings.TrimSpace(taskErr) != "" || strings.TrimSpace(output) == "" {
 		var reason *runReason
@@ -237,23 +247,81 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 			"run_id", tc.RunID, "task_id", util.UUIDToString(task.ID), "error", err)
 		return stats, r.finishRun(ctx, run, "failed", &runReason{Code: ReasonAgentReportInvalid}, runDetail{IssueIDs: detail.IssueIDs}, stats)
 	}
-	// All-or-nothing membership validation before any write: a report that
-	// names issues outside this run's scanned set is rejected wholesale, so a
-	// confused agent can never watermark or draft against foreign issues.
+	// Membership is a filter, not a gate (RUYI-674): every id the report
+	// names is attributed instead of the report being rejected wholesale.
+	// A unique single-edit neighbor is auto-corrected (the f15f→f15a class
+	// of copy typos), ids naming a real issue of this workspace keep their
+	// drafts (no watermark), and only unattributable ids are dropped — each
+	// category with a breadcrumb in the run detail. Nothing on this path
+	// fails the run; hard failures stay parse/runtime errors above.
 	analyzed := dedupeStrings(out.AnalyzedIssueIDs)
+	for i := range out.Drafts {
+		out.Drafts[i].IssueID = strings.TrimSpace(out.Drafts[i].IssueID)
+	}
+	reported := dedupeStrings(append(append([]string{}, analyzed...), draftIssueIDs(out.Drafts)...))
+	kinds, resolvedByID, corrections, err := r.classifyReportedIDs(ctx, tc.WorkspaceID, reported, detail.IssueIDs)
+	if err != nil {
+		return stats, err
+	}
+
+	var analyzedOut, ignoredIDs, foreignIDs []string
 	for _, id := range analyzed {
-		if !scanned[id] {
-			return stats, r.finishRun(ctx, run, "failed",
-				&runReason{Code: ReasonReportOutOfScope, IssueID: id},
-				runDetail{IssueIDs: detail.IssueIDs}, stats)
+		switch kinds[id] {
+		case idInScope:
+			analyzedOut = append(analyzedOut, resolvedByID[id])
+		case idOutOfScopeReal:
+			analyzedOut = append(analyzedOut, id)
+			foreignIDs = append(foreignIDs, id)
+		default: // idUnattributable
+			ignoredIDs = append(ignoredIDs, id)
 		}
 	}
-	for _, d := range out.Drafts {
-		if !scanned[d.IssueID] {
-			return stats, r.finishRun(ctx, run, "failed",
-				&runReason{Code: ReasonDraftOutOfScope, IssueID: d.IssueID},
-				runDetail{IssueIDs: detail.IssueIDs}, stats)
+	analyzedOut = dedupeStrings(analyzedOut)
+
+	// Watermark eligibility by attributed id: only the scanned set (exact or
+	// corrected) is ever watermarked (RUYI-674 requirement 4).
+	watermarkOK := make(map[string]bool, len(reported))
+	for _, id := range reported {
+		switch kinds[id] {
+		case idInScope:
+			watermarkOK[resolvedByID[id]] = true
+		case idOutOfScopeReal:
+			watermarkOK[id] = false
 		}
+	}
+
+	// Drafts whose issue id is unattributable are dropped with the id; the
+	// rest keep their (possibly corrected) attribution.
+	keptDrafts := make([]extractedDraft, 0, len(out.Drafts))
+	for _, d := range out.Drafts {
+		switch kinds[d.IssueID] {
+		case idInScope:
+			d.IssueID = resolvedByID[d.IssueID]
+			keptDrafts = append(keptDrafts, d)
+		case idOutOfScopeReal:
+			keptDrafts = append(keptDrafts, d)
+		default: // idUnattributable — its draft is discarded with it
+		}
+	}
+
+	// Breadcrumbs: run detail carries the id lists, the server log carries
+	// the same accounting (warn for the dropped ids). IDs and counts only —
+	// never report text (RUYI-561 discipline).
+	stats.IDsCorrected = len(corrections)
+	for _, c := range corrections {
+		slog.Info("retrospective: reported issue id auto-corrected onto the scanned set",
+			"run_id", tc.RunID, "task_id", util.UUIDToString(task.ID), "from", c.From, "to", c.To)
+	}
+	stats.IDsIgnored = len(ignoredIDs)
+	if len(ignoredIDs) > 0 {
+		slog.Warn("retrospective: unattributable issue ids ignored",
+			"run_id", tc.RunID, "task_id", util.UUIDToString(task.ID),
+			"count", len(ignoredIDs), "issue_ids", strings.Join(ignoredIDs, ","))
+	}
+	if len(foreignIDs) > 0 {
+		slog.Info("retrospective: out-of-scope issue accepted without watermark",
+			"run_id", tc.RunID, "task_id", util.UUIDToString(task.ID),
+			"issue_ids", strings.Join(foreignIDs, ","))
 	}
 
 	// Current-clause pre-check source: the workspace carrier's effective
@@ -271,7 +339,7 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	// nameless/oversized clauses are dropped here (counted, not fatal), the
 	// same accounting the direct-LLM design used.
 	draftsByIssue := map[string][]extractedDraft{}
-	for _, d := range out.Drafts {
+	for _, d := range keptDrafts {
 		switch d.ChangeKind {
 		case "add_clause", "revise_clause", "remove_clause":
 		default:
@@ -292,36 +360,91 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 		draftsByIssue[d.IssueID] = append(draftsByIssue[d.IssueID], d)
 	}
 
-	for _, issueID := range analyzed {
+	// Every attributed id with results to land — the analyzed ids plus any
+	// issue the agent drafted for without listing it under analyzed_issue_ids
+	// (the output contract allows that shape; its work must not vanish).
+	processIDs := dedupeStrings(append(append([]string{}, analyzedOut...), draftIssueIDs(keptDrafts)...))
+	for _, issueID := range processIDs {
 		drafts := draftsByIssue[issueID]
+		watermarkEligible := watermarkOK[issueID]
 		if len(drafts) == 0 {
 			// Analyzed, nothing worth proposing — watermark so the issue is
-			// never re-read.
+			// never re-read (only ever an in-scope id).
 			stats.IssuesAnalyzed++
-			if err := r.watermark(ctx, tc.WorkspaceID, issueID, tc.RunID); err != nil {
-				return stats, err
+			if watermarkEligible {
+				if err := r.watermark(ctx, tc.WorkspaceID, issueID, tc.RunID); err != nil {
+					return stats, err
+				}
 			}
 			continue
 		}
 		for _, d := range drafts {
-			if err := r.upsertDraft(ctx, tc.WorkspaceID, tc.RunID, issueID, d, liveClauses, stats); err != nil {
+			if err := r.upsertDraft(ctx, tc.WorkspaceID, tc.RunID, issueID, d, liveClauses, stats, watermarkEligible); err != nil {
 				return stats, err
 			}
 		}
 		stats.IssuesAnalyzed++
 	}
 
-	return stats, r.finishRun(ctx, run, "succeeded", nil, runDetail{IssueIDs: detail.IssueIDs, AnalyzedIssueIDs: analyzed}, stats)
+	return stats, r.finishRun(ctx, run, "succeeded", nil, runDetail{
+		IssueIDs:              detail.IssueIDs,
+		AnalyzedIssueIDs:      analyzedOut,
+		CorrectedIssueIDs:     corrections,
+		IgnoredIssueIDs:       ignoredIDs,
+		AcceptedOutOfScopeIDs: foreignIDs,
+	}, stats)
+}
+
+// classifyReportedIDs decides where every distinct issue id named by the
+// report belongs (RUYI-674). In-scope ids — exact hits or a unique
+// single-edit neighbor corrected onto the scanned set — map through
+// resolvedByID; ids naming a real issue of this workspace are accepted
+// out-of-scope (their drafts land, no watermark); everything else is
+// unattributable and gets dropped with a breadcrumb.
+func (r *Runner) classifyReportedIDs(ctx context.Context, workspaceID string, reported, scannedIDs []string) (map[string]reportedIDKind, map[string]string, []idCorrection, error) {
+	kinds := make(map[string]reportedIDKind, len(reported))
+	resolvedByID := make(map[string]string, len(reported))
+	var corrections []idCorrection
+	for _, id := range reported {
+		if target, corrected, ok := resolveIssueID(id, scannedIDs); ok {
+			kinds[id] = idInScope
+			resolvedByID[id] = target
+			if corrected {
+				corrections = append(corrections, idCorrection{From: id, To: target})
+			}
+			continue
+		}
+		var kind reportedIDKind
+		if parsed, parseErr := util.ParseUUID(id); parseErr == nil {
+			exists, probeErr := r.Queries.RetrospectiveIssueExistsInWorkspace(ctx, db.RetrospectiveIssueExistsInWorkspaceParams{
+				WorkspaceID: util.MustParseUUID(workspaceID),
+				IssueID:     parsed,
+			})
+			if probeErr != nil {
+				return nil, nil, nil, fmt.Errorf("retrospective: 探测越界 Issue 归属: %w", probeErr)
+			}
+			if exists {
+				kind = idOutOfScopeReal
+				resolvedByID[id] = id
+			}
+		}
+		kinds[id] = kind
+	}
+	return kinds, resolvedByID, corrections, nil
 }
 
 // upsertDraft is the two-layer dedup for one draft, one transaction: pool
 // merge beats a duplicate row; the watermark rides along so a crash cannot
-// re-analyze the issue.
-func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID string, d extractedDraft, liveClauses map[string]bool, stats *RunStats) error {
+// re-analyze the issue. watermark is false for ids attributed outside the
+// scanned set (RUYI-674): their drafts land but the next pass may rescan.
+func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID string, d extractedDraft, liveClauses map[string]bool, stats *RunStats, watermark bool) error {
 	if d.ChangeKind == "add_clause" && liveClauses[strings.ToLower(d.ClauseName)] {
 		// 现行条款重复预检: the clause already exists in the carrier.
 		stats.DuplicatesSkipped++
-		return r.watermark(ctx, workspaceID, issueID, runID)
+		if watermark {
+			return r.watermark(ctx, workspaceID, issueID, runID)
+		}
+		return nil
 	}
 
 	anchors, _ := json.Marshal([]map[string]string{{
@@ -351,9 +474,12 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 				return err
 			}
 			stats.ProposalsMerged++
-			return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
-				WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
-			})
+			if watermark {
+				return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
+					WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
+				})
+			}
+			return nil
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -380,9 +506,12 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 			return err
 		}
 		stats.ProposalsCreated++
-		return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
-			WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
-		})
+		if watermark {
+			return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
+				WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
+			})
+		}
+		return nil
 	})
 }
 
@@ -396,6 +525,81 @@ func dedupeStrings(in []string) []string {
 		}
 		seen[s] = true
 		out = append(out, s)
+	}
+	return out
+}
+
+// reportedIDKind is what the membership filter decided about one id the
+// agent's report named (RUYI-674).
+type reportedIDKind uint8
+
+const (
+	// idUnattributable: not correctable onto the scanned set and not a real
+	// issue of this workspace — dropped, with a breadcrumb in the run detail.
+	idUnattributable reportedIDKind = iota
+	// idInScope: names (exactly, or after single-edit correction) an issue in
+	// this run's scanned set — fully attributed, watermark eligible.
+	idInScope
+	// idOutOfScopeReal: outside the scanned set but a real issue of this
+	// workspace — its drafts land (anchors carry the reported id), no
+	// watermark, the next pass may rescan it.
+	idOutOfScopeReal
+)
+
+// editDistanceAtMost1 reports whether a and b differ by at most one
+// single-character edit (insert, delete, or substitute). Issue ids are
+// ASCII UUIDs, but rune-wise comparison keeps it correct for any noise.
+func editDistanceAtMost1(a, b string) bool {
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) > len(rb) {
+		ra, rb = rb, ra
+	}
+	if len(rb)-len(ra) > 1 {
+		return false
+	}
+	for i := range ra {
+		if ra[i] != rb[i] {
+			if len(ra) == len(rb) {
+				// Substitution: the tails after the differing rune must
+				// match exactly for one edit to suffice.
+				return string(ra[i+1:]) == string(rb[i+1:])
+			}
+			// One insertion into ra (deletion from rb): the rest of ra must
+			// equal rb shifted by one.
+			return string(ra[i:]) == string(rb[i+1:])
+		}
+	}
+	return true // ra is a prefix of rb; the distance is the length gap ≤ 1
+}
+
+// resolveIssueID attributes one reported id against the scanned set: an
+// exact hit returns itself; a unique single-edit neighbor is returned for
+// auto-correction (the f15f→f15a class of copy typos, RUYI-674). Two or
+// more equidistant neighbors — or none — leave the id unresolved.
+func resolveIssueID(reported string, scannedIDs []string) (resolved string, corrected bool, ok bool) {
+	for _, id := range scannedIDs {
+		if id == reported {
+			return id, false, true
+		}
+	}
+	for _, id := range scannedIDs {
+		if editDistanceAtMost1(reported, id) {
+			if corrected {
+				// A second equidistant candidate: attribution would be a
+				// coin flip, treat the id as out of scope.
+				return "", false, false
+			}
+			resolved, corrected = id, true
+		}
+	}
+	return resolved, corrected, corrected
+}
+
+// draftIssueIDs lists the issue ids the report's drafts reference, in order.
+func draftIssueIDs(drafts []extractedDraft) []string {
+	out := make([]string, 0, len(drafts))
+	for _, d := range drafts {
+		out = append(out, d.IssueID)
 	}
 	return out
 }

@@ -5,4 +5,5 @@ export { useIssueDetailScrollRestore } from "./use-issue-detail-scroll-restore";
 export { useInPageFind } from "./use-in-page-find";
 export { useResolveIssueIdentifier } from "./use-resolve-issue-identifier";
 export { useIssueReferenceResolutions } from "./use-issue-reference-resolutions";
+export { useResolveCommentAnchor } from "./use-resolve-comment-anchor";
 export { useStickyComposer } from "./use-sticky-composer";

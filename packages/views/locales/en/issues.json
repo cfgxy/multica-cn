@@ -80,6 +80,8 @@
     "breadcrumb_workspace_fallback": "Workspace",
     "empty_title": "No issues yet",
     "empty_hint": "Create an issue to get started.",
+    "scheduling_paused_banner_one": "Task scheduling is paused — {{count}} task queued across this workspace. Resume it in workspace settings.",
+    "scheduling_paused_banner_other": "Task scheduling is paused — {{count}} tasks queued across this workspace. Resume it in workspace settings.",
     "move_failed": "Failed to move issue"
   },
   "status": {
@@ -1018,7 +1020,8 @@
       "comments_empty": "No comments yet.",
       "comments_no_match": "No matching comments.",
       "comments_open_a11y": "Browse comments",
-      "pull_request_open_failed": "Couldn't open this pull request."
+      "pull_request_open_failed": "Couldn't open this pull request.",
+      "pull_request_card_label": "Pull request"
     },
     "picker": {
       "unassigned": "Unassigned",
@@ -1096,8 +1099,7 @@
       "cancel_requested": "Stopping",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Cancelled",
-      "cancel_requested": "Stopping"
+      "cancelled": "Cancelled"
     },
     "runs": {
       "title": "Agent Runs",

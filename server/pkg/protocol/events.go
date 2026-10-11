@@ -30,6 +30,14 @@ const (
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
 
+	// Scheduling freeze events (RUYI-608). Payload carries workspace_id,
+	// scope ("agent"|"workspace"), paused, queued_count and, for agent-level
+	// freezes, agent_id. An agent-level event invalidates one agent card; a
+	// workspace-level one (agent_id absent) invalidates the workspace
+	// surface and the agents list.
+	EventAgentSchedulingPaused  = "agent:scheduling_paused"
+	EventAgentSchedulingResumed = "agent:scheduling_resumed"
+
 	// Task events (server <-> daemon).
 	// Each event maps to a status transition on agent_task_queue. Front-end
 	// subscribes by `task:` prefix and invalidates the workspace task

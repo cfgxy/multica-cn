@@ -14,7 +14,9 @@ test.describe("Settings", () => {
     await page.goto(`/${workspaceSlug}/settings?tab=workspace`, { waitUntil: "domcontentloaded" });
     await waitForPageText(page, "General");
 
-    // Change workspace name
+    // Change workspace name — the General form auto-saves (the workspace tab
+    // moved to useAutoSave; there is no submit button and the "Saved" state
+    // badge replaces the old saved toast).
     const nameInput = page
       .locator('input[type="text"]')
       .first();
@@ -22,20 +24,18 @@ test.describe("Settings", () => {
     const newName = "Renamed WS " + Date.now();
     await nameInput.fill(newName);
 
-    // Save
-    await page.locator("button", { hasText: "Save" }).click();
-
-    await expect(page.getByText("Workspace settings saved").first()).toBeVisible({ timeout: 5000 });
-
-    // Sidebar should reflect the new name WITHOUT page refresh
-    await expect(page.getByRole("button", { name: new RegExp(newName) }).first()).toBeVisible();
+    // Sidebar should reflect the new name WITHOUT page refresh — this is also
+    // the signal that the auto-save round-trip completed.
+    await expect(page.getByRole("button", { name: new RegExp(newName) }).first()).toBeVisible({
+      timeout: 15000,
+    });
 
     // Restore original name so other tests aren't affected
     await nameInput.clear();
     await nameInput.fill(originalName.trim());
-    await page.locator("button", { hasText: "Save" }).click();
-    await expect(page.getByText("Workspace settings saved").first()).toBeVisible({ timeout: 5000 });
-    await expect(page.getByRole("button", { name: new RegExp(originalName) }).first()).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: new RegExp(originalName.trim()) }).first(),
+    ).toBeVisible({ timeout: 15000 });
   });
 
   // Composio connect flow, fully mocked at the network boundary so it runs

@@ -711,6 +711,10 @@ generate_slot_env() {
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
     printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
+    # E2E fixture dependency (RUYI-632): e2e/agent-mcp.spec.ts asserts the
+    # creator-only MCP Apps tab, which the composio_mcp_apps flag gates off by
+    # default. Slots exist to run the E2E/dev surface, so the flag ships on.
+    printf 'FF_COMPOSIO_MCP_APPS=true\n'
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
 }
@@ -735,7 +739,24 @@ ensure_slot_env() {
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }MULTICA_MCP_PORT"
   fi
+  if ! grep -q '^FF_COMPOSIO_MCP_APPS=' "$SLOT_ENV_FILE"; then
+    printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
+    appended="${appended:+$appended }FF_COMPOSIO_MCP_APPS"
+  fi
   [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
+}
+
+# Materialize the slot env as the worktree's .env.worktree (RUYI-632): the
+# E2E harness (e2e/env.ts → playwright.config.ts) reads .env.worktree from
+# the checkout root and derives its API base from NEXT_PUBLIC_API_URL —
+# without this file those values depend on whichever shell launched
+# Playwright, which is how QA round 4 ran with an unpredictable API base.
+# The file is gitignored and carries the same secrets as the slot env, so
+# keep it 600 and refresh it on every use.
+materialize_worktree_env() {
+  [ -n "${DIR:-}" ] && [ "$DIR" != "$REPO_ROOT" ] && [ -f "$SLOT_ENV_FILE" ] || return 0
+  (umask 077 && cat "$SLOT_ENV_FILE" > "$DIR/.env.worktree")
+  ok "materialized $DIR/.env.worktree from the slot env (E2E API base pinned to NEXT_PUBLIC_API_URL)"
 }
 
 env_file_field() {
@@ -1128,7 +1149,18 @@ start_web() {
   fi
 
   resource_env_args web
-  launch_detached web env "${RE_ARGS[@]}" make -C "$DIR" -s web-dev ENV_FILE="$SLOT_ENV_FILE"
+  # MULTICA_WEB_MODE=release serves the prebuilt production bundle instead of
+  # the dev server — the verifiable E2E entry (RUYI-632). The build must
+  # exist before up; building is e2e-release-entry.sh's job, not the slot's.
+  local web_target="web-dev"
+  if [ "${MULTICA_WEB_MODE:-dev}" = "release" ]; then
+    web_target="web-release"
+    if [ ! -f "$DIR/apps/web/.next/BUILD_ID" ]; then
+      die "MULTICA_WEB_MODE=release needs a production build first: bash scripts/e2e-release-entry.sh $SLOT build (runbook: e2e/README.md)"
+    fi
+    info "web mode: release (BUILD_ID $(cat "$DIR/apps/web/.next/BUILD_ID"))"
+  fi
+  launch_detached web env "${RE_ARGS[@]}" make -C "$DIR" -s "$web_target" ENV_FILE="$SLOT_ENV_FILE"
   info "web launching (pid $(cat "$(pid_file web)")), log: $(log_file web)"
 
   while [ "$waited" -lt 300 ]; do
@@ -1800,6 +1832,7 @@ cmd_use() {
   DESKTOP_ENV_FILE="$DIR/apps/desktop/.env.development.local"
   mkdir -p "$SLOT_DIR"
   ensure_slot_env "$(random_hex 16)"
+  materialize_worktree_env
   save_manifest
   bind_paths
   ok "slot $SLOT now runs $CODE_SOURCE $CODE_SHA from $DIR"
@@ -1955,7 +1988,10 @@ slot_worktrees_removable() {
       warn "worktree $wt is on a branch; destroy refuses to remove it."
       return 1
     fi
-    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | head -n 1)" ]; then
+    # .env.worktree is slot-system-owned state (RUYI-632: the materialized
+    # E2E env, gitignored) — it must not read as an uncommitted change here
+    # or destroy would refuse every slot worktree from now on.
+    if [ -n "$(git -C "$wt" status --porcelain -- . ':!.env.worktree' 2>/dev/null | head -n 1)" ]; then
       warn "worktree $wt has uncommitted changes; destroy refuses to remove it."
       return 1
     fi
