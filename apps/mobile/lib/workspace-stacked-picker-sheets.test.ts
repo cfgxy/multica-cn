@@ -28,6 +28,7 @@ vi.mock("react-native", () => ({
     get OS() {
       return state.platformOS;
     },
+    select: (specifics: Record<string, unknown>) => specifics[state.platformOS],
   },
 }));
 vi.mock("expo-router", () => ({

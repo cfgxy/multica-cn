@@ -328,7 +328,21 @@
         "label": "仅运行",
         "description": "静默运行，不创建任务"
       }
-    }
+    },
+    "section_params": "参数",
+    "params_hint": "触发时可传入的变量；在标题模板与任务说明中以双大括号引用参数名。定时触发使用默认值。",
+    "param_name_ph": "名称（如 city）",
+    "param_default_ph": "默认值",
+    "param_required": "必填",
+    "param_enum_ph": "枚举选项，逗号分隔",
+    "param_add": "添加参数",
+    "param_remove": "删除参数",
+    "param_type_string": "字符串",
+    "param_type_text": "长文本",
+    "param_type_number": "数字",
+    "param_type_boolean": "布尔",
+    "param_type_enum": "枚举",
+    "param_type_label": "类型"
   },
   "schedule_editor": {
     "time_label": "时间",

@@ -3,6 +3,8 @@
 import { useState } from "react";
 import {
   AlertCircle,
+  CirclePause,
+  CirclePlay,
   Copy,
   ExternalLink,
   MoreHorizontal,
@@ -17,6 +19,7 @@ import type { AgentPresenceDetail } from "@multica/core/agents";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentMember } from "@multica/core/permissions";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import {
   AlertDialog,
@@ -78,6 +81,7 @@ export function AgentRowActions({
 
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmPause, setConfirmPause] = useState(false);
 
   const isArchived = !!agent.archived_at;
   const runningCount = presence?.runningCount ?? 0;
@@ -87,6 +91,18 @@ export function AgentRowActions({
   // Derive which menu items to render. Doing this once here keeps the JSX
   // below a flat list of conditionals rather than a tangle of role/state
   // branches.
+  // Scheduling freeze is workspace-owner/admin-only (RUYI-608): deliberately
+  // narrower than canManage, which also admits a non-admin agent owner.
+  const { role: myRole } = useCurrentMember(wsId);
+  const isWorkspaceAdmin = myRole === "owner" || myRole === "admin";
+  const schedulingPaused = !!agent.scheduling_paused;
+  // The scope tells which freeze to act on: only an agent-level freeze can be
+  // resumed here; a workspace-level one belongs to the workspace settings and
+  // is surfaced read-only.
+  const showPause = isWorkspaceAdmin && !isArchived && !schedulingPaused;
+  const showResume =
+    isWorkspaceAdmin && !isArchived && schedulingPaused && agent.scheduling_paused_scope === "agent";
+
   const showStop = canManage && !isArchived && hasActiveWork;
   const showDuplicate = !isArchived; // any workspace member can duplicate
   // Multica's built-in agents cannot be archived — the server refuses it, and
@@ -117,6 +133,28 @@ export function AgentRowActions({
       toast.success(t(($) => $.row_actions.agent_restored_toast));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t(($) => $.row_actions.restore_failed_toast));
+    }
+  };
+
+  const handlePause = async () => {
+    try {
+      await api.pauseAgentScheduling(agent.id);
+      invalidateAgents();
+      toast.success(t(($) => $.row_actions.agent_paused_toast));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.row_actions.pause_failed_toast));
+    }
+  };
+
+  const handleResume = async () => {
+    try {
+      const state = await api.resumeAgentScheduling(agent.id);
+      invalidateAgents();
+      toast.success(
+        t(($) => $.row_actions.agent_resumed_toast, { count: state.queued_count }),
+      );
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.row_actions.resume_failed_toast));
     }
   };
 
@@ -165,6 +203,25 @@ export function AgentRowActions({
             <ExternalLink className="h-3.5 w-3.5" />
             {tCommon(($) => $.navigation.open_in_new_tab)}
           </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {showPause && (
+            <DropdownMenuItem onClick={() => setConfirmPause(true)}>
+              <CirclePause className="h-3.5 w-3.5" />
+              {t(($) => $.row_actions.pause_scheduling)}
+            </DropdownMenuItem>
+          )}
+          {showResume && (
+            <DropdownMenuItem onClick={handleResume}>
+              <CirclePlay className="h-3.5 w-3.5" />
+              {t(($) => $.row_actions.resume_scheduling)}
+            </DropdownMenuItem>
+          )}
+          {isWorkspaceAdmin && !isArchived && schedulingPaused && agent.scheduling_paused_scope === "workspace" && (
+            <DropdownMenuItem disabled>
+              <CirclePause className="h-3.5 w-3.5" />
+              {t(($) => $.row_actions.paused_by_workspace)}
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           {showStop && (
             <DropdownMenuItem
@@ -268,6 +325,37 @@ export function AgentRowActions({
                 }}
               >
                 {t(($) => $.row_actions.archive_dialog_confirm)}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+
+      {confirmPause && (
+        <AlertDialog
+          open
+          onOpenChange={(v) => {
+            if (!v) setConfirmPause(false);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t(($) => $.row_actions.pause_dialog_title, { name: agent.name })}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t(($) => $.row_actions.pause_dialog_description)}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t(($) => $.row_actions.pause_dialog_cancel)}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirmPause(false);
+                  void handlePause();
+                }}
+              >
+                {t(($) => $.row_actions.pause_dialog_confirm)}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

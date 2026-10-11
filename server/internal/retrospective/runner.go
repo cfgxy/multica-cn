@@ -100,6 +100,11 @@ type RunStats struct {
 	ProposalsCreated  int    `json:"proposals_created"`
 	ProposalsMerged   int    `json:"proposals_merged"`
 	DuplicatesSkipped int    `json:"duplicates_skipped"`
+	// RUYI-674 membership-filter accounting: ids auto-corrected onto the
+	// scanned set and ids dropped as unattributable. Detail lists live on
+	// the run row's JSONB; these are the counts for the caller.
+	IDsCorrected int `json:"ids_corrected"`
+	IDsIgnored   int `json:"ids_ignored"`
 }
 
 // ErrNoConfig marks "nothing to do" — no config row, or not enabled. The
@@ -319,6 +324,9 @@ func (r *Runner) finishRun(ctx context.Context, run db.RetrospectiveRun, status 
 		detail.IssueIDs = extra.IssueIDs
 	}
 	detail.AnalyzedIssueIDs = extra.AnalyzedIssueIDs
+	detail.CorrectedIssueIDs = extra.CorrectedIssueIDs
+	detail.IgnoredIssueIDs = extra.IgnoredIssueIDs
+	detail.AcceptedOutOfScopeIDs = extra.AcceptedOutOfScopeIDs
 	detail.Reason = reason
 	out, err := json.Marshal(detail)
 	if err != nil {

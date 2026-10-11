@@ -79,6 +79,7 @@
     "breadcrumb_workspace_fallback": "ワークスペース",
     "empty_title": "まだタスクがありません",
     "empty_hint": "タスクを作成して始めましょう。",
+    "scheduling_paused_banner_other": "タスクのスケジューリングは一時停止中 — このワークスペースで {{count}} 件のタスクがキューにあります。ワークスペース設定から再開できます。",
     "move_failed": "タスクを移動できませんでした"
   },
   "status": {
@@ -322,6 +323,7 @@
     "title_placeholder": "タスクのタイトル",
     "desc_placeholder": "説明を追加...",
     "current_issue": "現在のタスク",
+    "referenced_issues": "参照タスク",
     "sub_issues_label": "サブタスク",
     "sub_issue_of": "親タスク",
     "add_sub_issues": "サブタスクを追加",
@@ -980,7 +982,8 @@
       "comments_empty": "コメントはまだありません。",
       "comments_no_match": "一致するコメントはありません。",
       "comments_open_a11y": "コメントを参照",
-      "pull_request_open_failed": "この Pull request を開けませんでした。"
+      "pull_request_open_failed": "この Pull request を開けませんでした。",
+      "pull_request_card_label": "Pull request"
     },
     "picker": {
       "unassigned": "未割り当て",

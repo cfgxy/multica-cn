@@ -79,6 +79,9 @@ const PURE_READ_TOOLS = [
   "get_agent",
   "list_squads",
   "get_squad",
+  // Decision-card reads (RUYI-688): both compose GETs only.
+  "list_decisions",
+  "get_decision",
   // Project resource binding read.
   "list_project_resources",
 ] as const;
@@ -98,7 +101,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(62);
+    expect(names).toHaveLength(65);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -119,7 +122,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(62);
+      expect(tools).toHaveLength(65);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -132,7 +135,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(62);
+      expect(Object.keys(hint)).toHaveLength(65);
     } finally {
       await cleanup();
     }

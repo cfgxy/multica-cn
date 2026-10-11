@@ -78,6 +78,10 @@ const (
 	AuditAgentEnvRevealed             = "agent.env_revealed"
 	AuditAgentEnvUpdated              = "agent.env_updated"
 	AuditAgentExecutionProfileActived = "agent.execution_profile_activated"
+	// Scheduling freeze lifecycle, agent-level (RUYI-608). The workspace-
+	// level twin anchors in ops below (no single agent dimension).
+	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
+	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
 
 	// Agent domain, RUYI-630: the sensitive-operation authorization channel.
 	// One story per request_group_id: requested → authorized/denied (per
@@ -111,6 +115,10 @@ const (
 	// RUYI-355 P2-3: ops.server_started only reaches workspaces that exist
 	// at boot; the creation event anchors workspaces born mid-flight.
 	AuditOpsWorkspaceCreated = "ops.workspace_created"
+	// Workspace-level scheduling freeze lifecycle (RUYI-608): no single
+	// agent dimension to anchor, so the workspace is the object.
+	AuditOpsSchedulingPaused  = "ops.scheduling_paused"
+	AuditOpsSchedulingResumed = "ops.scheduling_resumed"
 )
 
 // Structured cancel/failure reasons. Cancel-class events (run.cancelled) MUST

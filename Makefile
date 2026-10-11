@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev desktop-dev mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
+.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
@@ -544,6 +544,14 @@ api-dev: ## Run only the Go backend for the current env file
 
 web-dev: ## Run only the Next.js dev server for the current env file
 	pnpm dev:web
+
+# Release entry for browser acceptance (RUYI-632): serves the production
+# bundle produced by `scripts/e2e-release-entry.sh <slot> build` (apps/web/.next
+# must already contain BUILD_ID). The env file's FRONTEND_PORT picks the
+# listener; runtime rewrites read REMOTE_API_URL / NEXT_PUBLIC_API_URL from
+# the same exported env at request time.
+web-release: ## Serve the prebuilt Next.js production bundle for the current env file
+	cd apps/web && pnpm exec next start --port "$${FRONTEND_PORT:-3000}"
 
 desktop-dev: ## Run only the Electron desktop app for the current env file
 	pnpm dev:desktop
