@@ -146,7 +146,6 @@ class DecisionBackend {
   }
 
   client(): MulticaClient {
-    const backend = this;
     return new MulticaClient({
       serverUrl: "https://api.example.com",
       token: "mul_test",
@@ -156,7 +155,7 @@ class DecisionBackend {
         const method = init?.method ?? "GET";
         const rawBody = init?.body === undefined ? undefined : String(init.body);
         const body = rawBody === undefined || rawBody.length === 0 ? undefined : JSON.parse(rawBody);
-        backend.requestLog.push({ method, path: url.pathname, body });
+        this.requestLog.push({ method, path: url.pathname, body });
 
         const respond = (status: number, payload: unknown): Response =>
           new Response(JSON.stringify(payload), {
@@ -171,7 +170,7 @@ class DecisionBackend {
         }
         if (method === "GET" && url.pathname === `/api/workspaces/${WS_ID}/decision-inbox`) {
           const status = url.searchParams.get("status");
-          const items = backend.cards
+          const items = this.cards
             .filter((card) => status === null || card.status === status)
             .sort((a, b) => b.created_at.localeCompare(a.created_at))
             .map((card) => ({
@@ -184,9 +183,9 @@ class DecisionBackend {
           return respond(200, {
             items,
             counts: {
-              open: backend.cards.filter((card) => card.status === "open").length,
-              answered: backend.cards.filter((card) => card.status === "answered").length,
-              cancelled: backend.cards.filter((card) => card.status === "cancelled").length,
+              open: this.cards.filter((card) => card.status === "open").length,
+              answered: this.cards.filter((card) => card.status === "answered").length,
+              cancelled: this.cards.filter((card) => card.status === "cancelled").length,
             },
           });
         }
@@ -195,11 +194,11 @@ class DecisionBackend {
           if (issueDecisions[1] === "unknown-issue") {
             return respond(404, { error: "issue not found" });
           }
-          return respond(200, backend.cards.map((card) => wireCard(card)));
+          return respond(200, this.cards.map((card) => wireCard(card)));
         }
         const answerBatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/decisions\/answer-batch$/);
         if (method === "POST" && answerBatch !== null) {
-          const outcome = backend.answerBatch(ISSUE_ID, body);
+          const outcome = this.answerBatch(ISSUE_ID, body);
           return respond(outcome.status as number, outcome.payload);
         }
         if (method === "GET" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
