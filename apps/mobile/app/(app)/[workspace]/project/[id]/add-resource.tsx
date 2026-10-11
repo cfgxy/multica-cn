@@ -7,9 +7,9 @@
  * validation: URL must look like `https://github.com/owner/repo`. Server
  * is the canonical validator (validateAndNormalizeResourceRef in Go).
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { useCallback, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -26,7 +26,6 @@ export default function AddResourceRoute() {
   const createResource = useCreateProjectResource(id);
   const { t } = useT("common");
   const { t: tProjects } = useT("projects");
-  const insets = useSafeAreaInsets();
 
   const [url, setUrl] = useState("");
   const [label, setLabel] = useState("");
@@ -62,8 +61,8 @@ export default function AddResourceRoute() {
   return (
     <KeyboardAvoidingView className="flex-1" behavior="padding">
       <View className="flex-1">
-        {/* 顶部让出系统状态栏（RUYI-563）。 */}
-        <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
+        {/* 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
+        <SheetHeader className="flex-row items-center justify-between px-4 pb-2" gap={16}>
           <Text className="text-base font-semibold text-foreground">
             {tProjects("mobile.resource.attach_title", "Attach repository")}
           </Text>
@@ -79,7 +78,7 @@ export default function AddResourceRoute() {
               {submitting ? t("attaching", "Attaching…") : t("attach", "Attach")}
             </Text>
           </Pressable>
-        </View>
+        </SheetHeader>
         <View className="px-4 pt-4 gap-4">
           <View className="gap-1">
             <Text className="text-xs text-muted-foreground">
