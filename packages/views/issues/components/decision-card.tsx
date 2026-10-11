@@ -147,6 +147,10 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
   if (decision.decision_kind === "authorization") {
     return <AuthorizationCard decision={decision} />;
   }
+  return <StandardDecisionCard decision={decision} />;
+}
+
+function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const { getActorName } = useActorName();
