@@ -35,7 +35,7 @@ export interface TraceCallStep {
 
 /** Agent prose, model thinking, or an error: one message, nothing to pair. */
 export interface TraceMessageStep {
-  kind: "text" | "thinking" | "error";
+  kind: "text" | "thinking" | "error" | "watchdog";
   seq: number;
   item: TimelineItem;
   startedAt?: string;
