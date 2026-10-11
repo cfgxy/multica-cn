@@ -48,7 +48,10 @@ func init() {
 	issueDecisionCmd.AddCommand(issueDecisionListCmd)
 
 	issueDecisionAddCmd.Flags().String("question", "", "The decision question (1-500 characters)")
-	issueDecisionAddCmd.Flags().StringSlice("option", nil, "Option label (repeatable; exactly 2-4 options, each 1-200 characters)")
+	// RUYI-691: option labels are free-form text (e.g. "{provider_id, model,
+	// advanced}") — StringArray keeps each occurrence verbatim where
+	// StringSlice would CSV-split it on English commas.
+	issueDecisionAddCmd.Flags().StringArray("option", nil, "Option label (repeatable; exactly 2-4 options, each 1-200 characters; each occurrence is one option and is never split on commas)")
 	issueDecisionAddCmd.Flags().Bool("multi", false, "Allow selecting multiple options (default single-select)")
 	issueDecisionAddCmd.Flags().IntSlice("recommended", nil, "0-based indices of recommended options (repeatable)")
 	issueDecisionAddCmd.Flags().String("source-comment", "", "Comment ID the card originates from (typically the current task's trigger comment)")
@@ -108,7 +111,7 @@ func validateDecisionOptions(question string, options []string, recommended []in
 
 func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 	question, _ := cmd.Flags().GetString("question")
-	options, _ := cmd.Flags().GetStringSlice("option")
+	options, _ := cmd.Flags().GetStringArray("option")
 	multi, _ := cmd.Flags().GetBool("multi")
 	recommended, _ := cmd.Flags().GetIntSlice("recommended")
 	if err := validateDecisionOptions(question, options, recommended); err != nil {
