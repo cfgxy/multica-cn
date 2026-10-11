@@ -45,12 +45,14 @@ import { useCallback, useMemo } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
+import { useQuery } from "@tanstack/react-query";
 import {
   dedupeIssueReferences,
   extractIssueReferences,
 } from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
+import { workspaceListOptions } from "@/data/queries/workspaces";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -158,9 +160,27 @@ export function Markdown({
   // (code, links, URLs) with web's pipeline, so both ends collect exactly the
   // same tokens from the same source. Raw-dedup keeps first occurrences;
   // cross-form collapse by resolved issue id happens in IssueReferenceList.
+  //
+  // Bare identifiers are gated on the current workspace's `issue_prefix`
+  // (RUYI-705): acceptance-criteria numbering like `AC-1` is not a reference,
+  // and without the gate each fake row also fired a resolution query. The
+  // workspace list query is mounted app-wide (workspace layout), so this is a
+  // cache read; an unknown prefix (list still loading) falls through and the
+  // resolver's exact match stays the backstop.
+  const currentWorkspaceId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { data: workspaces } = useQuery(workspaceListOptions());
+  const workspacePrefix = useMemo(
+    () =>
+      workspaces?.find((w) => w.id === currentWorkspaceId)?.issue_prefix ||
+      null,
+    [workspaces, currentWorkspaceId],
+  );
   const issueReferences = useMemo(
-    () => dedupeIssueReferences(extractIssueReferences(content)),
-    [content],
+    () =>
+      dedupeIssueReferences(
+        extractIssueReferences(content, { workspacePrefix }),
+      ),
+    [content, workspacePrefix],
   );
 
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
