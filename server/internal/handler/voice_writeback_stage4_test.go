@@ -17,7 +17,11 @@ import (
 // idempotency, and the summary projection's rebuildability.
 
 // waitForVoiceFacts polls until the write-back for the agent's latest session
-// has landed, returning (session_id, fact_count).
+// has landed in full — the facts and the summary projection that closes the
+// same attempt — returning (session_id, fact_count). The write-back inserts
+// the facts before the summary with no transaction spanning the two, so a
+// facts-only wait can observe the attempt mid-flight (RUYI-593: the replay
+// test raced the not-yet-written summary and read an empty baseline).
 func waitForVoiceFacts(t *testing.T, agentID string, minFacts int) (string, int) {
 	t.Helper()
 	var sessionID string
@@ -25,7 +29,7 @@ func waitForVoiceFacts(t *testing.T, agentID string, minFacts int) (string, int)
 	waitFor(t, 5*time.Second, func() bool {
 		err := testPool.QueryRow(context.Background(), `
 			SELECT s.id::text, (SELECT count(*) FROM agent_fact_event f WHERE f.live_session_id = s.id)
-			FROM live_session s WHERE s.agent_id = $1 AND s.status = 'ended'
+			FROM live_session s WHERE s.agent_id = $1 AND s.status = 'ended' AND s.summary <> ''
 		`, agentID).Scan(&sessionID, &count)
 		return err == nil && count >= minFacts
 	})
@@ -215,6 +219,9 @@ func TestVoiceWriteBack_ReplayProducesNoDuplicates(t *testing.T) {
 	if err := testPool.QueryRow(context.Background(),
 		`SELECT summary FROM live_session WHERE id = $1::uuid`, sessionID).Scan(&summaryBefore); err != nil {
 		t.Fatalf("read summary: %v", err)
+	}
+	if summaryBefore == "" {
+		t.Fatalf("empty summary baseline — the wait did not cover the summary projection")
 	}
 
 	// Replay through the recovery entrypoint, driven by the persisted row.

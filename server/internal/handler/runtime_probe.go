@@ -83,10 +83,11 @@ func (h *Handler) probeVoiceCredential(ctx context.Context, value string) Creden
 	if baseURL == "" {
 		return result
 	}
-	client := h.VoiceProbeHTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: voiceProbeTimeout}
-	}
+	// RUYI-692 D1: the probe rides the same egress the session dial will use
+	// (injected test client > configured proxy transport > plain default), so
+	// its verdict answers "can THIS server reach Google" — through the proxy
+	// when one is configured, never through inherited environment variables.
+	client := h.voiceProbeHTTPClient()
 
 	reqCtx, cancel := context.WithTimeout(ctx, voiceProbeTimeout)
 	defer cancel()
