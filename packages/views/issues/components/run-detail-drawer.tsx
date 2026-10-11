@@ -133,7 +133,17 @@ function RunDetailContent({
       {usage && (
         <MetaRow label={t(($) => $.run_detail.usage)}>
           <span className="tabular-nums">
-            {formatTokens(usage.tokens)} · {formatUsd(usage.cost)}
+            {/* "—" when nothing could be priced — never $0.00: usage was
+                recorded but carries no cost figure, and that unknown is not
+                a zero. Same gate the execution-log header and the usage
+                dialog use, answered once in summarizeTaskUsage. */}
+            {formatTokens(usage.tokens)} ·{" "}
+            {usage.priced ? formatUsd(usage.cost) : "—"}
+            {usage.unpricedRows > 0 && (
+              <span className="ml-1.5 font-medium text-warning">
+                {t(($) => $.run_detail.unpriced_rows, { count: usage.unpricedRows })}
+              </span>
+            )}
           </span>
         </MetaRow>
       )}
