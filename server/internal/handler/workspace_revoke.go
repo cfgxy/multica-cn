@@ -167,6 +167,19 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		return empty, err
 	}
 
+	// Runtime cost budgets scoped to the departing member (RUYI-665;
+	// runtime_cost_budget has no FKs, house rule). Without this prune a
+	// re-invited user would come back still capped by their old per-user row,
+	// and PUT full-replace keeps stale rows for non-members out of its keep
+	// set only when the runtime owner next edits. Rows ON the member's own
+	// runtimes are left to runtime teardown, which prunes the whole runtime's
+	// set when those runtimes are deleted.
+	if err := qtx.DeleteRuntimeCostBudgetsForWorkspaceUser(ctx, db.DeleteRuntimeCostBudgetsForWorkspaceUserParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	}); err != nil {
+		return empty, err
+	}
 	// A private quick action is visible and runnable ONLY by its creator
 	// (quick_action carries no FK, so nothing removes it implicitly). Once the
 	// creator is gone the row is unreachable by every remaining member while

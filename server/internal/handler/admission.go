@@ -62,6 +62,7 @@ const (
 	ReasonAlreadyActive              = dispatch.ReasonAlreadyActive
 	ReasonSelfTriggerSuppressed      = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueStatusNotDispatchable = dispatch.ReasonIssueStatusNotDispatchable
+	ReasonBudgetExceeded             = dispatch.ReasonBudgetExceeded
 	ReasonInternalError              = dispatch.ReasonInternalError
 )
 
@@ -124,6 +125,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the target needs a runtime"
 	case ReasonAttributionBlocked:
 		return "the run couldn't be attributed to a responsible member"
+	case ReasonBudgetExceeded:
+		return "the target's cost budget is spent for this period"
 	case ReasonAlreadyActive:
 		return "a run is already active for this target"
 	default:

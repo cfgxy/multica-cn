@@ -2677,6 +2677,9 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		if writeIssueLimitReached(w, err) {
 			return
 		}
+		if writeRuntimeBudgetExceeded(w, err) {
+			return
+		}
 		slog.Warn("quick-create enqueue failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue quick-create task")
 		return
@@ -3101,6 +3104,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if writeIssueLimitReached(w, err) {
+		return
+	}
+	if writeRuntimeBudgetExceeded(w, err) {
 		return
 	}
 	if err != nil {
