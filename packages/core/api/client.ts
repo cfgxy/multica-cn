@@ -120,9 +120,6 @@ import type {
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   SetAgentRuntimeSkillEnabledRequest,
-  AgentWebhook,
-  CreateAgentWebhookRequest,
-  UpdateAgentWebhookRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
@@ -210,6 +207,8 @@ import type {
   CronPreviewResponse,
   GetAutopilotResponse,
   AutopilotCollaboratorsResponse,
+  AutopilotParamsResponse,
+  AutopilotParamInput,
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
@@ -4958,48 +4957,7 @@ export class ApiClient {
 	async setAgentSkillEnabled(agentId: string, skillId: string, enabled: boolean): Promise<void> {
 		await this.fetch(`/api/agents/${agentId}/skills/${skillId}/enabled`, {
 			method: "PUT",
-			body: JSON.stringify({ enabled }),
-		});
-	}
-
-  // Agent webhooks (RUYI-52): public trigger URLs bound to a fixed prompt.
-  // webhook_token / webhook_path / webhook_url come back only for managers —
-  // the server strips them for anyone else.
-  async listAgentWebhooks(agentId: string): Promise<AgentWebhook[]> {
-    return this.fetch(`/api/agents/${agentId}/webhooks`);
-  }
-
-  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  }
-
-  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    });
-  }
-
-  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/enabled`, {
-      method: "PUT",
       body: JSON.stringify({ enabled }),
-    });
-  }
-
-  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/rotate`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-  }
-
-  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
-    await this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "DELETE",
     });
   }
 
@@ -6059,6 +6017,20 @@ export class ApiClient {
 
   async deleteAutopilot(id: string): Promise<void> {
     await this.fetch(`/api/autopilots/${id}`, { method: "DELETE" });
+  }
+
+  // Parameter definitions (RUYI-641): read by any member who can view the
+  // autopilot; replaced as a whole set by writers. A validation rejection is
+  // a 400 whose error message names the offending parameter (never a value).
+  async listAutopilotParams(id: string): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`);
+  }
+
+  async replaceAutopilotParams(id: string, params: AutopilotParamInput[]): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`, {
+      method: "PUT",
+      body: JSON.stringify({ params }),
+    });
   }
 
   // Grant a workspace member explicit write access to the autopilot. Both
