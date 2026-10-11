@@ -720,7 +720,13 @@ func mp4BoxSize(data []byte, off, size, header int64) (int64, int64, bool) {
 		if off+16 > end {
 			return 0, 0, false
 		}
-		return int64(binary.BigEndian.Uint64(data[off+8 : off+16])), 16, true
+		size = int64(binary.BigEndian.Uint64(data[off+8 : off+16]))
+		// 16, not 8: the 64-bit form's own header. The cast above can go
+		// negative, and size > end-off avoids overflowing off+size.
+		if size < 16 || size > end-off {
+			return 0, 0, false
+		}
+		return size, 16, true
 	case 0:
 		return end - off, 8, true
 	}
