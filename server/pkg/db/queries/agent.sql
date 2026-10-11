@@ -60,7 +60,8 @@ INSERT INTO agent (
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
     session_max_context_tokens, session_compact_pct, resource_weight,
-    voice_runtime_id
+    voice_runtime_id,
+    voice_provider_id, voice_model, voice_advanced
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -80,7 +81,13 @@ INSERT INTO agent (
     -- RUYI-425: the optional voice slot. NULL unless the request binds a
     -- voice runtime; the handler validates capability and workspace scope
     -- before the request reaches here.
-    sqlc.narg('voice_runtime_id')
+    sqlc.narg('voice_runtime_id'),
+    -- RUYI-693: the optional voice override triple. NULL voice_provider_id =
+    -- no override (resolution falls through to the workspace default); the
+    -- handler validates pool membership and workspace scope first.
+    sqlc.narg('voice_provider_id'),
+    sqlc.narg('voice_model'),
+    sqlc.narg('voice_advanced')::jsonb
 )
 RETURNING *;
 
@@ -155,6 +162,15 @@ UPDATE agent SET
     -- request = keep the current binding; an explicit unbind routes through
     -- ClearAgentVoiceRuntime below (COALESCE can't restore NULL).
     voice_runtime_id = COALESCE(sqlc.narg('voice_runtime_id'), voice_runtime_id),
+    -- RUYI-693: the voice override triple preserves field-wise, but an
+    -- override SET (voice_provider_id present) replaces the whole triple and
+    -- an explicit clear routes through ClearAgentVoiceProvider — the triple
+    -- is level-wise atomic, so a provider id never pairs with a stale model
+    -- from another level. The handler enforces that pairing before this
+    -- COALESCE ever sees a partial triple.
+    voice_provider_id = COALESCE(sqlc.narg('voice_provider_id'), voice_provider_id),
+    voice_model = COALESCE(sqlc.narg('voice_model'), voice_model),
+    voice_advanced = COALESCE(sqlc.narg('voice_advanced')::jsonb, voice_advanced),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
@@ -246,6 +262,16 @@ RETURNING *;
 -- the voice runtime" here — same two-query pattern as thinking_level and
 -- composio_toolkit_allowlist.
 UPDATE agent SET voice_runtime_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentVoiceProviderOverride :one
+-- Explicit NULL-clear of the agent's D2 voice override triple (RUYI-693).
+-- The override is level-wise atomic (provider_id + model + advanced move as
+-- one unit), so unbinding drops the whole triple — no half-override survives.
+UPDATE agent SET
+    voice_provider_id = NULL, voice_model = NULL, voice_advanced = NULL,
+    updated_at = now()
 WHERE id = $1
 RETURNING *;
 
