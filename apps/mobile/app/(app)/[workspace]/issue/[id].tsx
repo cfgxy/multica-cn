@@ -146,8 +146,9 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web /
-  // Related PRs / Delete.
+  // Three-dot menu: Pin/Unpin / Edit details / Copy title / Copy
+  // description / Copy link / Open on web / Related PRs / Relations /
+  // Delete.
   // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
   const issueLink = issue && wsSlug
     ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
@@ -182,6 +183,15 @@ export default function IssueDetail() {
   const onOpenPullRequests = useCallback(() => {
     if (wsSlug && issue) {
       router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
+    }
+  }, [wsSlug, issue]);
+  // Structured relations (RUYI-689) — mobile counterpart of the web
+  // sidebar's Relations section (blocks/blocked_by/relates_to/supersedes/
+  // superseded_by + parent/children). Markdown @mentions aggregate in the
+  // timeline tail instead; the two never mix (acceptance 6).
+  const onOpenRelations = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/relations`);
     }
   }, [wsSlug, issue]);
   // Quick property setters (RUYI-129). The header menu reuses the very
@@ -290,39 +300,53 @@ export default function IssueDetail() {
                           onOpenPicker={openPicker}
                         />
                         <DropdownMenuSeparator />
+                        {/*
+                          Labels below stretch to the row (flex-1) instead of
+                          shrink-to-fit: with Fabric on Android, a shrink-to-fit
+                          Text measured at its exact-fit width can drop its
+                          final word at render time while keeping the reserved
+                          space (facebook/react-native#57110). Full-row width
+                          leaves slack, so measurement and layout agree;
+                          left-aligned single-line rendering is unchanged.
+                        */}
                         <DropdownMenuItem onPress={onTogglePin}>
-                          <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
+                          <Text className="flex-1">{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onEditDetails}>
-                          <Text>
+                          <Text className="flex-1">
                             {t("mobile.detail.edit_details", "Edit details")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyTitle}>
-                          <Text>{t("mobile.detail.copy_title", "Copy title")}</Text>
+                          <Text className="flex-1">{t("mobile.detail.copy_title", "Copy title")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyDescription}>
-                          <Text>{t("mobile.detail.copy_description", "Copy description")}</Text>
+                          <Text className="flex-1">{t("mobile.detail.copy_description", "Copy description")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyLink}>
-                          <Text>{t("actions.copy_link", "Copy link")}</Text>
+                          <Text className="flex-1">{t("actions.copy_link", "Copy link")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenOnWeb}>
-                          <Text>
+                          <Text className="flex-1">
                             {t("mobile.detail.open_on_web", "Open on web")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenPullRequests}>
-                          <Text>
+                          <Text className="flex-1">
                             {t(
                               "detail.section_pull_requests",
                               "Pull requests",
                             )}
                           </Text>
                         </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenRelations}>
+                          <Text>
+                            {t("detail.section_relations", "Relations")}
+                          </Text>
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem variant="destructive" onPress={onDelete}>
-                          <Text>{t("actions.delete_issue", "Delete issue")}</Text>
+                          <Text className="flex-1">{t("actions.delete_issue", "Delete issue")}</Text>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>

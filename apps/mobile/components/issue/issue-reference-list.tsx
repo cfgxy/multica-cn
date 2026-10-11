@@ -24,15 +24,18 @@ import { Pressable, Text, View } from "react-native";
 import { router } from "expo-router";
 import { useQueries } from "@tanstack/react-query";
 import type { IssueReference } from "@multica/core/markdown";
+import { identifierMatchesPrefix } from "@multica/core/markdown";
 import type { Issue } from "@multica/core/types";
 import {
   issueDetailOptions,
   issueIdentifierOptions,
 } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/use-t";
+import { CATEGORY_COLOR } from "@/components/ui/status-icon";
 
 interface ResolvedRow {
   key: string;
@@ -52,17 +55,32 @@ export function IssueReferenceList({
   const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const { colorOf } = useIssueStatuses();
+  const workspacePrefix = useWorkspaceIssuePrefix();
+  const { colorOf, categoryOf } = useIssueStatuses();
 
   const results = useQueries({
     queries: useMemo(
       () =>
-        references.map((ref) =>
-          ref.form === "identifier"
-            ? issueIdentifierOptions(wsId, ref.ref)
-            : issueDetailOptions(wsId, ref.ref),
-        ),
-      [references, wsId],
+        references.map((ref) => {
+          if (ref.form === "identifier") {
+            // Same gate as web's useIssueReferenceResolutions: once the
+            // workspace prefix is known, a mismatched bare identifier cannot
+            // resolve here — skip the network instead of spending a
+            // guaranteed-404 request (RUYI-705 defense in depth; extraction
+            // normally filters these already). Unknown prefix falls through
+            // and lets the exact match decide, web parity.
+            const prefixMatches = identifierMatchesPrefix(
+              ref.ref,
+              workspacePrefix,
+            );
+            return {
+              ...issueIdentifierOptions(wsId, ref.ref),
+              enabled: !!wsId && !!ref.ref && prefixMatches,
+            };
+          }
+          return issueDetailOptions(wsId, ref.ref);
+        }),
+      [references, wsId, workspacePrefix],
     ),
     // Zip positions with `references` below; a failed / loading query reads
     // as unresolved and degrades, the same "every miss looks alike" contract
@@ -114,11 +132,14 @@ export function IssueReferenceList({
           >
             <View
               className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: colorOf(row.issue.status) }}
+              style={{
+                backgroundColor:
+                  colorOf(row.issue.status) ??
+                  CATEGORY_COLOR[categoryOf(row.issue.status)],
+              }}
             />
             <Text
               className="text-sm font-medium text-muted-foreground"
-              translate="no"
             >
               {row.issue.identifier}
             </Text>

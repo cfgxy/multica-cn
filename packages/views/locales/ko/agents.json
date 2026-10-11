@@ -1018,7 +1018,8 @@
     "detail": {
       "section_history": "실행 기록",
       "edit_profile": "프로필 편집",
-      "tab_active": "진행 중",
+      "tab_active": "작업 기록",
+      "section_active": "진행 중",
       "fact_status": "상태",
       "fact_runtime_unbound": "런타임 미설정",
       "bind_runtime": "런타임 연결",
@@ -1037,7 +1038,9 @@
     },
     "run_history": {
       "load_more": "더 보기",
-      "empty": "아직 실행 기록이 없습니다."
+      "empty": "아직 실행 기록이 없습니다.",
+      "queued_backpressure": "런타임 복구 대기 중",
+      "other_agents": "에이전트 {{count}}대 실행 중"
     },
     "edit": {
       "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다",

@@ -47,7 +47,13 @@ jest.mock("expo-router", () => ({
 }));
 
 jest.mock("@/data/api", () => ({
-  api: { getIssue: (...args: unknown[]) => mockGetIssue(...args) },
+  api: {
+    getIssue: (...args: unknown[]) => mockGetIssue(...args),
+    // useWorkspaceIssuePrefix (RUYI-705 rework) reads the workspace list for
+    // the prefix gate; an empty list means "unknown prefix", so resolution
+    // falls through to the exact match these fixtures were written against.
+    listWorkspaces: () => Promise.resolve([]),
+  },
 }));
 
 jest.mock("@/data/workspace-store", () => ({
@@ -59,7 +65,10 @@ jest.mock("@/data/workspace-store", () => ({
 }));
 
 jest.mock("@/lib/use-issue-statuses", () => ({
-  useIssueStatuses: () => ({ colorOf: () => "#123456" }),
+  useIssueStatuses: () => ({
+    colorOf: () => "#123456",
+    categoryOf: () => "in_progress",
+  }),
 }));
 
 jest.mock("@/lib/use-t", () => ({
