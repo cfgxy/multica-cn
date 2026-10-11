@@ -19,10 +19,10 @@
 --
 -- id is NOT declared inline as PRIMARY KEY: the repo convention (migrations
 -- 327-329 / 332-334) builds the table without one, creates the backing unique
--- index CONCURRENTLY in its own single-statement migration (967), then attaches
--- it with PRIMARY KEY USING INDEX (968). An inline PRIMARY KEY would build its
+-- index CONCURRENTLY in its own single-statement migration (964), then attaches
+-- it with PRIMARY KEY USING INDEX (965). An inline PRIMARY KEY would build its
 -- index non-concurrently, which the project's migration rules forbid even on a
--- new table. The (runtime_id, user_id) scope index is 969 for the same reason.
+-- new table. The (runtime_id, user_id) scope index is 966 for the same reason.
 CREATE TABLE runtime_cost_budget (
     id                              UUID NOT NULL DEFAULT gen_random_uuid(),
     workspace_id                    UUID NOT NULL,

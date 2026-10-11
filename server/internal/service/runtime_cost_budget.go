@@ -11,12 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
 // Runtime cost budgets (RUYI-665): per-runtime model spend caps over UTC
 // daily/weekly/monthly windows, enforced as a hard refusal at enqueue time.
 // Design decisions adopted from the furtherref evaluation (RUYI-653):
@@ -259,6 +261,15 @@ func firstReachedBudget(applicable []scopedBudgetRow, spend runtimeSpend, now ti
 	return db.RuntimeCostBudget{}, nil
 }
 
+// budgetWarnOnly reports whether budget enforcement is degraded to warn-only
+// (featureflags.RuntimeCostBudgetWarnOnly, env FF_RUNTIME_COST_BUDGET_WARN_ONLY).
+// The default is enforce, and the nil-safe flag service keeps a nil or
+// unreadable provider on that default, so degradation is always a deliberate
+// switch — never an accident of configuration.
+func (s *TaskService) budgetWarnOnly(ctx context.Context) bool {
+	return featureflags.RuntimeCostBudgetWarnOnlyEnabled(ctx, s.FeatureFlags)
+}
+
 // checkRuntimeCostBudget refuses the enqueue when the agent's runtime total or
 // the agent owner's per-user budget is spent for the current UTC period. It
 // runs after attribution in every enqueue helper. Workspaces without budgets
@@ -266,6 +277,10 @@ func firstReachedBudget(applicable []scopedBudgetRow, spend runtimeSpend, now ti
 // belong to other owners costs the same, because the spend query is issued
 // only once a row that applies to this agent is known. A database error is
 // returned as-is so the enqueue fails closed rather than silently spending.
+//
+// In warn-only mode a spent budget is logged and noticed but does not refuse:
+// the branch returns nil so every caller (enqueue helpers, autopilot dispatch,
+// the deferred sweep) degrades together through this single point.
 func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries, agent db.Agent, now time.Time) error {
 	if !agent.RuntimeID.Valid {
 		return nil
@@ -286,12 +301,22 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 	if exceeded == nil {
 		return nil
 	}
+	if s.budgetWarnOnly(ctx) {
+		slog.Warn("runtime cost budget reached: warn-only mode allows the run",
+			"runtime_id", util.UUIDToString(row.RuntimeID), "scope", exceeded.Scope, "period", exceeded.Period,
+			"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
+		// s.Queries, never q: q may be the caller's transaction, and the warn
+		// path can run inside transactions (autopilot create_issue) that must
+		// keep committing.
+		s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, agent.OwnerID, true)
+		return nil
+	}
 	slog.Info("task enqueue refused: runtime cost budget reached",
 		"runtime_id", util.UUIDToString(row.RuntimeID), "scope", exceeded.Scope, "period", exceeded.Period,
 		"used_ticks", exceeded.UsedTicks, "limit_ticks", exceeded.LimitTicks)
 	// s.Queries, never q: q may be the caller's transaction, and the refusal
 	// returned below always rolls that transaction back.
-	s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, agent.OwnerID)
+	s.notifyRuntimeBudgetExceeded(ctx, s.Queries, row, exceeded, agent.OwnerID, false)
 	return exceeded
 }
 
@@ -315,7 +340,12 @@ func (s *TaskService) checkRuntimeCostBudget(ctx context.Context, q *db.Queries,
 // marker written on that handle would be discarded with it. Callers pass the
 // auto-commit s.Queries, and the implementation must keep using the handle it
 // is given rather than reaching for a transaction of the enqueue.
-func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError, blockedOwnerID pgtype.UUID) {
+//
+// warnOnly adjusts the copy: the enforce body tells the recipient runs are
+// refused, which would be false while the warn-only switch is on. The inbox
+// type and the details map stay the same shape, with warn_only added so a
+// client can tell the modes apart without parsing the body.
+func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Queries, row db.RuntimeCostBudget, exceeded *RuntimeBudgetExceededError, blockedOwnerID pgtype.UUID, warnOnly bool) {
 	rt, err := RuntimeLookup{Queries: q, Metrics: s.Metrics, Source: obsmetrics.RuntimeLookupSourceTask}.Get(ctx, row.RuntimeID)
 	if err != nil {
 		slog.Warn("runtime budget notice: load runtime failed", "runtime_id", util.UUIDToString(row.RuntimeID), "error", err)
@@ -348,6 +378,9 @@ func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Que
 	if exceeded.UserID.Valid {
 		detailFields["user_id"] = util.UUIDToString(exceeded.UserID)
 	}
+	if warnOnly {
+		detailFields["warn_only"] = "true"
+	}
 	details, err := json.Marshal(detailFields)
 	if err != nil {
 		slog.Warn("runtime budget notice: marshal details failed", "error", err)
@@ -369,9 +402,16 @@ func (s *TaskService) notifyRuntimeBudgetExceeded(ctx context.Context, q *db.Que
 	if exceeded.Scope == RuntimeBudgetScopeUser {
 		scopeLabel = "Your agents on this runtime"
 	}
-	body := fmt.Sprintf("%s reached the %s cost limit of $%.2f (used $%.2f). New runs are refused until %s UTC.",
-		scopeLabel, exceeded.Period, obsmetrics.TicksToUSD(exceeded.LimitTicks), obsmetrics.TicksToUSD(exceeded.UsedTicks),
-		exceeded.ResetAt.UTC().Format("Jan 2, 15:04"))
+	var body string
+	if warnOnly {
+		body = fmt.Sprintf("%s reached the %s cost limit of $%.2f (used $%.2f). Budget enforcement is in warn-only mode, so new runs are still allowed until %s UTC.",
+			scopeLabel, exceeded.Period, obsmetrics.TicksToUSD(exceeded.LimitTicks), obsmetrics.TicksToUSD(exceeded.UsedTicks),
+			exceeded.ResetAt.UTC().Format("Jan 2, 15:04"))
+	} else {
+		body = fmt.Sprintf("%s reached the %s cost limit of $%.2f (used $%.2f). New runs are refused until %s UTC.",
+			scopeLabel, exceeded.Period, obsmetrics.TicksToUSD(exceeded.LimitTicks), obsmetrics.TicksToUSD(exceeded.UsedTicks),
+			exceeded.ResetAt.UTC().Format("Jan 2, 15:04"))
+	}
 	for _, recipient := range recipients {
 		item, err := q.CreateInboxItem(ctx, db.CreateInboxItemParams{
 			ID: dbid.NewV7(), WorkspaceID: row.WorkspaceID,
