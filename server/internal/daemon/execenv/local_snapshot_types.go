@@ -206,11 +206,15 @@ func RecordSnapshotStart(envRoot string, entry SnapshotLedgerEntry) error {
 	})
 }
 
-// FinalizeSnapshot closes one run's record. keep=false (task succeeded or was
-// cancelled clean) removes the entry and deletes the tree — safe without any
-// umount: the mount lived inside the worker's namespace and evaporated with
-// the process. keep=true (failure worth preserving) flips the entry to
-// "failed" and leaves the tree for inspection and delivery.
+// FinalizeSnapshot closes one run's record. keep=false is the success path
+// only — a completed run, or a snapshot run that armed but never launched an
+// agent — and removes the entry and deletes the tree; safe without any
+// umount, since the mount lived inside the worker's namespace and evaporated
+// with the process. keep=true is every other terminal shape: a failure and a
+// mid-run cancellation alike (both land on the deferred finalizer) flip the
+// entry to "failed" and leave the tree for inspection for the retention
+// window. A cancellation that lands before the entry was recorded (lock-wait
+// abort) finds no entry and is a no-op.
 func FinalizeSnapshot(envRoot, taskID string, keep bool) error {
 	var removed []SnapshotLedgerEntry
 	if err := recordSnapshotLedger(envRoot, func(led *snapshotLedger) {
@@ -275,6 +279,12 @@ func RemoveSnapshotTree(entry SnapshotLedgerEntry) {
 //     leftovers from a daemon that died mid-prepare; they carry only ever
 //     daemon-written material, and the age bound keeps a concurrent prepare
 //     (entry not yet committed) out of the sweep.
+//   - A ledger that exists but cannot be read or parsed (disk error, corrupt
+//     file, future schema) disables the sweep for this env root: with no
+//     trustworthy claim set, reclaiming by age alone would delete trees the
+//     ledger still holds, retention windows included. Fail closed and let
+//     the next cycle retry; the corruption surfaces through the same
+//     recordSnapshotLedger path the next task on this env root hits.
 //
 // It never walks the user's directories: pristine content is only ever read.
 func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
@@ -288,7 +298,9 @@ func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
 	}
 	var reaped []string
 	claimed := map[string]bool{}
+	ledgerRead := false
 	_ = recordSnapshotLedger(envRoot, func(led *snapshotLedger) {
+		ledgerRead = true
 		kept := led.Entries[:0]
 		for _, e := range led.Entries {
 			switch e.State {
@@ -327,6 +339,15 @@ func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
 		}
 		led.Entries = kept
 	})
+	if !ledgerRead {
+		// fn never ran: the ledger could not be read or parsed, so claimed
+		// is empty and reclaiming by age alone would delete trees the
+		// on-disk ledger still holds — retention windows included. Skip the
+		// orphan sweep; the worst case is delaying leftover reclamation by
+		// one GC cycle. A ledger-write failure does not land here: fn had
+		// already run by then, so claimed reflects the on-disk ledger.
+		return reaped
+	}
 
 	stems, err := os.ReadDir(root)
 	if err != nil {
