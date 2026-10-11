@@ -355,3 +355,69 @@ func TestReapExpiredSnapshotsReapsEveryUnitStem(t *testing.T) {
 		}
 	}
 }
+
+// TestReapExpiredSnapshotsSkipsOrphanSweepWhenLedgerUnreadable is the G1
+// regression: a ledger that exists but cannot be parsed leaves the claim set
+// empty and untrustworthy, so the sweep must fail closed and skip the whole
+// env root. Running the orphan sweep anyway would delete every stem past the
+// 24h orphan age — including failed trees inside their 7-day preservation
+// window — through a side door that bypasses the F3 retention promise.
+func TestReapExpiredSnapshotsSkipsOrphanSweepWhenLedgerUnreadable(t *testing.T) {
+	t.Parallel()
+	envRoot := t.TempDir()
+	now := time.Now()
+	entry := ledgerEntryForTest(envRoot, "t-failed", "i1-failed", snapshotStateFailed, now.Add(-3*24*time.Hour))
+	seedLedger(t, envRoot, []SnapshotLedgerEntry{entry})
+	stem := filepath.Join(SnapshotRoot(envRoot), "i1-failed")
+	makeStemDirs(t, envRoot, "i1-failed")
+	stamp := now.Add(-3 * 24 * time.Hour)
+	if err := os.Chtimes(stem, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte("{not-json")
+	if err := os.WriteFile(SnapshotLedgerPath(envRoot), corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reaped := ReapExpiredSnapshots(envRoot, now)
+	if len(reaped) != 0 {
+		t.Fatalf("unreadable ledger must fail closed, reaped=%v", reaped)
+	}
+	if _, err := os.Stat(stem); err != nil {
+		t.Fatalf("unexpired failed tree must survive an unreadable ledger: %v", err)
+	}
+	raw, err := os.ReadFile(SnapshotLedgerPath(envRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(corrupt) {
+		t.Fatalf("unreadable ledger must be left untouched for diagnosis, got %q", raw)
+	}
+}
+
+// TestReapExpiredSnapshotsMissingLedgerStillSweepsOrphans pins the healthy
+// crash-leftover shape: a snapshot root with no ledger file at all is a
+// daemon that died before its first record, and age-based orphan reclamation
+// must keep working there. The G1 fail-closed skip covers an unreadable
+// ledger, not an absent one.
+func TestReapExpiredSnapshotsMissingLedgerStillSweepsOrphans(t *testing.T) {
+	t.Parallel()
+	envRoot := t.TempDir()
+	now := time.Now()
+	orphan := filepath.Join(SnapshotRoot(envRoot), "i1-orphan")
+	if err := os.MkdirAll(filepath.Join(orphan, "upper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stamp := now.Add(-30 * time.Hour)
+	if err := os.Chtimes(orphan, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	reaped := ReapExpiredSnapshots(envRoot, now)
+	if len(reaped) != 1 || reaped[0] != orphan {
+		t.Fatalf("orphan must still be reaped without a ledger file, reaped=%v", reaped)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan must be gone from disk, stat err=%v", err)
+	}
+}
