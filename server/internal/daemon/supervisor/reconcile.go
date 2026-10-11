@@ -81,6 +81,11 @@ type ReconcileInput struct {
 	// as every pre-RUYI-607 manifest — is foreign evidence this daemon must
 	// never act on, whatever the rest of the matrix says.
 	Self string
+	// DaemonID is the reconciling daemon's own persistent identity. The
+	// stop_orphan kill fires only when the manifest attributes the unit to
+	// this exact daemon (RUYI-592 fix 1); anything else on that branch is a
+	// foreign daemon's blind spot and quarantines instead.
+	DaemonID string
 }
 
 // Decide is the decision matrix.
@@ -104,6 +109,13 @@ func Decide(in ReconcileInput) Decision {
 	case in.UnitActive && in.TaskInFlight:
 		return DecisionResume
 	case in.UnitActive && !in.TaskInFlight:
+		if in.Manifest.DaemonID != in.DaemonID {
+			// The unit is live but this daemon cannot prove it launched the
+			// worker: either another daemon launched it (its task is simply
+			// invisible in our in-flight set) or the manifest predates
+			// ownership. Kill decisions never ride on that guess.
+			return DecisionQuarantine
+		}
 		return DecisionStopOrphan
 	case !in.UnitActive && exitProven:
 		return DecisionConvergeExit
@@ -149,6 +161,12 @@ type Reconciler struct {
 	// downgrade every surviving worker to StopOrphan. nil means "unknown",
 	// which Decide treats the same as false.
 	TaskInFlight func(taskID string) bool
+	// DaemonID is this daemon's persistent identity (cfg.DaemonID). When
+	// set, the stop_orphan kill additionally requires the manifest to
+	// attribute the unit to this daemon; foreign-owned and ownerless
+	// manifests quarantine. Empty keeps the pre-ownership legacy behavior
+	// for fixtures and unidentified test daemons.
+	DaemonID string
 }
 
 // ReconcileResult is one decision, for the audit comment and the daemon's
@@ -226,7 +244,7 @@ func (r *Reconciler) Run(ctx context.Context) ([]ReconcileResult, error) {
 }
 
 func (r *Reconciler) classify(ctx context.Context, man *Manifest, unitActive bool) ReconcileResult {
-	in := ReconcileInput{Manifest: man, UnitActive: unitActive, Self: r.Self}
+	in := ReconcileInput{Manifest: man, UnitActive: unitActive, Self: r.Self, DaemonID: r.DaemonID}
 	if r.LockHeld != nil {
 		in.LockHeld = r.LockHeld(man.RunID)
 	}
@@ -243,9 +261,12 @@ func (r *Reconciler) classify(ctx context.Context, man *Manifest, unitActive boo
 	case DecisionConvergeExit:
 		res.Reason = fmt.Sprintf("worker exited while daemon was down (%s)", exitSourceLabel(man.Exit))
 	case DecisionQuarantine:
-		if !unitActive && man.Exit == nil {
+		switch {
+		case !unitActive && man.Exit == nil:
 			res.Reason = "unit gone without exit evidence but task lock held"
-		} else {
+		case man.DaemonID != r.DaemonID:
+			res.Reason = fmt.Sprintf("live unit not owned by this daemon (manifest owner %q)", man.DaemonID)
+		default:
 			res.Reason = "live unit without manifest"
 		}
 	case DecisionLost:
@@ -271,6 +292,11 @@ func exitSourceLabel(e *ExitRecord) string {
 func (r *Reconciler) act(ctx context.Context, res ReconcileResult, man *Manifest) {
 	switch res.Decision {
 	case DecisionStopOrphan:
+		// The decision goes on the record BEFORE the irreversible action: a
+		// reconciler dying mid-kill must not take the audit with it
+		// (RUYI-592 fix 4 — every kill's decision line was lost to exactly
+		// this when the killer daemon died seconds after starting).
+		r.logDecision(res)
 		if err := r.Units.KillUnit(ctx, man.Unit); err != nil {
 			r.logError(res, "orphan stop failed", err)
 			return
@@ -293,6 +319,16 @@ func (r *Reconciler) act(ctx context.Context, res ReconcileResult, man *Manifest
 		// No action, by design: the foreign daemon owns this run's evidence
 		// and its unit. The decision reaches the audit log via the results.
 	}
+}
+
+// logDecision is the at-action audit line for destructive decisions.
+func (r *Reconciler) logDecision(res ReconcileResult) {
+	log := r.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	log.Warn("supervisor: reconcile executing decision", "run_id", res.RunID, "task_id", res.TaskID,
+		"unit", res.Unit, "decision", res.Decision.String(), "reason", res.Reason)
 }
 
 func (r *Reconciler) logError(res ReconcileResult, what string, err error) {
