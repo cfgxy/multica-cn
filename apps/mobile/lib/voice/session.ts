@@ -39,6 +39,15 @@ export interface MobileVoiceSessionCallbacks {
 }
 
 /**
+ * 100ms of 16 kHz mono PCM16 silence, base64 (3200 zero bytes). The muted
+ * keepalive chunk: the provider tears a live session down after ~2min with
+ * zero upstream realtimeInput (QA round 3 — muted sessions died at 2m04s
+ * and 3m00s), so mute swaps real mic chunks for this fixed silent frame
+ * instead of dropping the upstream.
+ */
+const MUTED_KEEPALIVE_CHUNK = `${"A".repeat(4264)}AAA=`;
+
+/**
  * Drives one mobile voice session through the D1 gateway. Create, then call
  * `start()`; `end()` hangs up and releases the mic. Exactly one controller
  * per instance.
@@ -81,10 +90,10 @@ export class MobileVoiceSession {
           if (state === "live") {
             this.unsubscribeChunk?.();
             const sub = audio.addListener("onAudioChunk", (event) => {
-              // 静音（RUYI-694 板3 右上键）：在采集入口丢弃上行，会话
-              // 保持 live、下行播放不受影响。
-              if (this.muted) return;
-              controller.sendAudio(event.data);
+              // 静音（RUYI-694 板3 右上键）：上行换发固定静音帧——上游在
+              // 收不到任何 realtimeInput 约 2 分钟后断链，换发静音帧让会
+              // 话保持 live，真实音频不出设备，下行播放不受影响。
+              controller.sendAudio(this.muted ? MUTED_KEEPALIVE_CHUNK : event.data);
             });
             this.unsubscribeChunk = () => sub.remove();
             void audio.start().catch(() => {
