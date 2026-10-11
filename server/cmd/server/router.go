@@ -2005,7 +2005,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// everyone — while pool writes are workspace-admin state,
 				// the same split as the workspace settings themselves.
 				r.Route("/voice-providers", func(r chi.Router) {
-					r.Get("/", h.ListVoiceProviders)
+					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
 					r.Group(func(r chi.Router) {
 						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 						r.Post("/", h.CreateVoiceProvider)
