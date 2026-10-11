@@ -323,8 +323,8 @@ var concurrentIndexCleanups = map[string][]string{
 	"919_issue_dependency_relationships":                        {"uq_issue_dependency_edge"},
 	"927_issue_decision_workspace_inbox":                        {"idx_issue_decisions_workspace_status"},
 	"936_agent_task_queue_failed_retry_reeval_index":            {"idx_agent_task_queue_failed_retry_reeval"},
-	"967_runtime_cost_budget_pkey_index":                        {"runtime_cost_budget_pkey_uidx"},
-	"969_runtime_cost_budget_scope_index":                       {"idx_runtime_cost_budget_scope"},
+	"964_runtime_cost_budget_pkey_index":                        {"runtime_cost_budget_pkey_uidx"},
+	"966_runtime_cost_budget_scope_index":                       {"idx_runtime_cost_budget_scope"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
