@@ -10,12 +10,14 @@
 import { describe, expect, it } from "vitest";
 import type { AgentTask } from "@multica/core/types";
 import {
+  agentTaskActivityState,
   canCancelAgentTask,
   deriveIssueActivityMap,
   isActiveTaskStatus,
   selectActorActivity,
   selectAgentActiveTasks,
   selectIssueActivity,
+  selectIssueOtherAgentsActivity,
 } from "./issue-agent-activity";
 
 let seq = 0;
@@ -222,5 +224,90 @@ describe("selectActorActivity", () => {
     // as active — callers only pass the prop for agent avatars via type check.
     const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
     expect(selectActorActivity(activity, "agent-1")).toBe("running");
+  });
+});
+
+describe("agentTaskActivityState (RUYI-700 row visual bucket)", () => {
+  it("puts running and cancel_requested on the breathing (running) side", () => {
+    expect(agentTaskActivityState("running")).toBe("running");
+    expect(agentTaskActivityState("cancel_requested")).toBe("running");
+  });
+
+  it("keeps the queued-side trio on the grayed side", () => {
+    for (const status of [
+      "queued",
+      "dispatched",
+      "waiting_local_directory",
+    ] as const) {
+      expect(agentTaskActivityState(status)).toBe("queued");
+    }
+  });
+});
+
+describe("selectIssueOtherAgentsActivity (RUYI-700 row-3 avatar stack)", () => {
+  it("excludes the row's own agent and dedupes repeat tasks", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [
+        task({ agent_id: "agent-2", status: "running" }),
+        task({ agent_id: "agent-2", status: "queued" }),
+        task({ agent_id: "agent-1" }),
+      ],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.agents).toEqual([{ type: "agent", id: "agent-2" }]);
+    expect(result.activity).toBe("running");
+  });
+
+  it("counts cancel_requested as still-running for other agents", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [task({ agent_id: "agent-2", status: "cancel_requested" })],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.activity).toBe("running");
+    expect(result.agents).toHaveLength(1);
+  });
+
+  it("running wins over queued for the single stack bucket", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [
+        task({ agent_id: "agent-2", status: "queued" }),
+        task({ agent_id: "agent-3", status: "running" }),
+      ],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.activity).toBe("running");
+    // The stack renders ONE activity for all its avatars, so with a running
+    // agent present only running-side others are listed — a queued avatar
+    // must never breathe (that would lie about its task state).
+    expect(result.agents).toEqual([{ type: "agent", id: "agent-3" }]);
+  });
+
+  it("answers queued-only when no other agent is running", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [task({ agent_id: "agent-2", status: "dispatched" })],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.activity).toBe("queued");
+  });
+
+  it("ignores terminal tasks, other issues and absent self id", () => {
+    expect(
+      selectIssueOtherAgentsActivity(
+        [task({ agent_id: "agent-2", status: "completed" })],
+        "issue-1",
+        "agent-1",
+      ),
+    ).toEqual({ agents: [], activity: null });
+    expect(
+      selectIssueOtherAgentsActivity(
+        [task({ agent_id: "agent-2", issue_id: "issue-2" })],
+        "issue-1",
+        "agent-1",
+      ),
+    ).toEqual({ agents: [], activity: null });
   });
 });
