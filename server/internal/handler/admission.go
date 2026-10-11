@@ -62,6 +62,7 @@ const (
 	ReasonAlreadyActive              = dispatch.ReasonAlreadyActive
 	ReasonSelfTriggerSuppressed      = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueStatusNotDispatchable = dispatch.ReasonIssueStatusNotDispatchable
+	ReasonIssueSuspended             = dispatch.ReasonIssueSuspended
 	ReasonInternalError              = dispatch.ReasonInternalError
 )
 

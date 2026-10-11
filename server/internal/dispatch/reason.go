@@ -75,6 +75,15 @@ const (
 	// fix is a status move, not a retry: the author moves the issue out of the
 	// non-dispatchable status (e.g. backlog -> todo) and comments again.
 	ReasonIssueStatusNotDispatchable ReasonCode = "issue_status_not_dispatchable"
+	// ReasonIssueSuspended (RUYI-690): the issue carries an ACTIVE suspension —
+	// the orthogonal "waiting" dimension, not a lifecycle status. While it
+	// waits, comment-triggered dispatch is held exactly like the status gate
+	// holds it (the comment itself is saved); the fix is releasing the
+	// suspension (resume/cancel on the suspension row), not a status move.
+	// Distinct from issue_status_not_dispatchable because the status is
+	// dispatchable and the composer must point at the hold, not at a status
+	// edit.
+	ReasonIssueSuspended ReasonCode = "issue_suspended"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"

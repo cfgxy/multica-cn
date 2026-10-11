@@ -28,6 +28,7 @@ import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { SuppressedBadge } from "./suppressed-badge";
+import { SuspensionBadge } from "./suspension-badge";
 import { CustomStatusChip, useIsCustomStatus } from "./custom-status-chip";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 function formatDate(date: string, locale: string): string {
@@ -186,6 +187,7 @@ export const BoardCardContent = memo(function BoardCardContent({
             when there is no activity indicator to show — the two are mutually
             exclusive with the indicator winning, so exactly one is visible. */}
         <SuppressedBadge issue={issue} />
+        <SuspensionBadge issue={issue} />
         <IssueAgentActivityIndicator issueId={issue.id} />
       </div>
 
