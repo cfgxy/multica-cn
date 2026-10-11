@@ -33,6 +33,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/use-t";
+import { CATEGORY_COLOR } from "@/components/ui/status-icon";
 
 interface ResolvedRow {
   key: string;
@@ -52,7 +53,7 @@ export function IssueReferenceList({
   const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const { colorOf } = useIssueStatuses();
+  const { colorOf, categoryOf } = useIssueStatuses();
 
   const results = useQueries({
     queries: useMemo(
@@ -114,11 +115,14 @@ export function IssueReferenceList({
           >
             <View
               className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: colorOf(row.issue.status) }}
+              style={{
+                backgroundColor:
+                  colorOf(row.issue.status) ??
+                  CATEGORY_COLOR[categoryOf(row.issue.status)],
+              }}
             />
             <Text
               className="text-sm font-medium text-muted-foreground"
-              translate="no"
             >
               {row.issue.identifier}
             </Text>
