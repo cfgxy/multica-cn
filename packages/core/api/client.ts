@@ -15,6 +15,7 @@ import type {
   UpdateIssueRequest,
   GroupedIssuesResponse,
   ListIssuesResponse,
+  IssueRelationsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   UpdateMeRequest,
@@ -340,6 +341,8 @@ import {
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
+  IssueRelationsResponseSchema,
+  EMPTY_ISSUE_RELATIONS,
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
   IssueDecisionsListSchema,
@@ -1584,6 +1587,16 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/issues/${id}/children`);
     return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
       endpoint: "GET /api/issues/:id/children",
+    });
+  }
+
+  /** Structured relations: parent + the five edge views (RUYI-689).
+   *  Read-only — creating/deleting edges is a server-side/API concern;
+   *  no write counterpart exists in this client by design. */
+  async getIssueRelations(id: string): Promise<IssueRelationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations`);
+    return parseWithFallback(raw, IssueRelationsResponseSchema, EMPTY_ISSUE_RELATIONS, {
+      endpoint: "GET /api/issues/:id/relations",
     });
   }
 

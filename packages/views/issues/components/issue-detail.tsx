@@ -76,6 +76,7 @@ import {
 import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon, PriorityIcon, StatusPicker, PriorityPicker, StagePicker, StartDatePicker, DueDatePicker, AssigneePicker, LabelPicker } from ".";
+import { IssueRelationsSection } from "./issue-relations-section";
 import { maxSiblingStage } from "./pickers/stage-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
@@ -2772,6 +2773,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>}
         </div>
       )}
+
+      {/* Structured edge relations (RUYI-689) — blocks/blocked_by/
+          relates_to/supersedes/superseded_by. Parent and children keep
+          their dedicated sections; this card covers the five edge types
+          and hides itself entirely when none exist. Self-contained: owns
+          its query and collapse state. */}
+      <IssueRelationsSection issueId={id} />
 
       {/* GitHub settings do not suppress linked self-hosted VCS pull requests. */}
       {shouldShowPullRequestSection(githubSettings.prSidebar, vcsAvailable, linkedPullRequests?.pull_requests ?? []) && (

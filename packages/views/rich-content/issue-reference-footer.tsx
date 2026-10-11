@@ -26,7 +26,7 @@
  */
 import { useMemo } from "react";
 import { AppLink } from "../navigation";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueStatusCategory } from "@multica/core/issues";
 import {
@@ -124,9 +124,12 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
  * markdown (not a preprocessed copy): the extractor shares its skip rules
  * (code, links, URLs) with the preprocessors, so scanning the source finds
  * exactly the references the body would have chipped, while fences the
- * highlighter already turned into HTML stay out of scope. Raw-dedup keeps the
- * first occurrence of each token; cross-form collapse by resolved issue id
- * happens in the footer.
+ * highlighter already turned into HTML stay out of scope. Bare identifiers
+ * are gated on the current workspace's `issue_prefix` (RUYI-705) — an
+ * acceptance-criteria numbering like `AC-1` is not a reference; an unknown
+ * prefix (workspace list still loading) falls through and the resolver side
+ * stays the exact-match backstop. Raw-dedup keeps the first occurrence of
+ * each token; cross-form collapse by resolved issue id happens in the footer.
  *
  * RichContent and the issue body's ContentEditor host (RUYI-635 rework: the
  * body renders through the editor, so its tail list is the host's job) both
@@ -134,9 +137,14 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
  * Nothing renders when there are no references.
  */
 function IssueReferenceTail({ content }: { content: string }) {
+  const workspace = useCurrentWorkspace();
+  const workspacePrefix = workspace?.issue_prefix || null;
   const references = useMemo(
-    () => dedupeIssueReferences(extractIssueReferences(content)),
-    [content],
+    () =>
+      dedupeIssueReferences(
+        extractIssueReferences(content, { workspacePrefix }),
+      ),
+    [content, workspacePrefix],
   );
   if (references.length === 0) return null;
   return <IssueReferenceFooter references={references} />;
