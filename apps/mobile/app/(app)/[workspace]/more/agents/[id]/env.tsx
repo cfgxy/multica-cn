@@ -2,8 +2,8 @@
  * Agent environment sub-screen (`more/agents/[id]/env`, RUYI-346, design §6)
  * — formSheet shell around `EnvEditor`; all reveal/save semantics live there.
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { Pressable, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -17,7 +17,6 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
 
 export default function AgentEnvScreen() {
-  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const agentId = typeof id === "string" ? id : "";
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -29,11 +28,8 @@ export default function AgentEnvScreen() {
 
   return (
     <View className="flex-1 bg-background">
-      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；顶部让出系统状态栏（RUYI-563）。 */}
-      <View
-        className="flex-row items-center px-4 pb-2 border-b border-border"
-        style={{ paddingTop: insets.top + 12 }}
-      >
+      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
+      <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12}>
         <Pressable
           onPress={() => router.back()}
           hitSlop={8}
@@ -50,7 +46,7 @@ export default function AgentEnvScreen() {
           {t("tabs.environment", "Environment")}
         </Text>
         <View className="w-6" />
-      </View>
+      </SheetHeader>
       <EnvEditor
         agentId={agentId}
         canManage={canManage}
