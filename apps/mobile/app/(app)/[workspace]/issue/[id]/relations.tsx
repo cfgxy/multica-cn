@@ -204,14 +204,15 @@ function RelationRow({
   return (
     // Tasks-tab inbox row container (issue-row-inbox.tsx); the row keeps
     // the status dot because the section header names the relation type,
-    // not the status.
-    <View className="bg-background active:bg-secondary">
+    // not the status. active:bg-secondary must sit on the Pressable —
+    // NativeWind only resolves the active variant on a pressable.
+    <View className="bg-background">
       <Pressable
         testID="issue-relation-row"
         accessibilityRole="link"
         accessibilityLabel={`${relation.identifier} ${relation.title}`}
         onPress={() => onOpen(relation)}
-        className="flex-row items-center gap-2 px-4 py-3"
+        className="bg-background active:bg-secondary flex-row items-center gap-2 px-4 py-3"
       >
         <View
           className="h-2 w-2 shrink-0 rounded-full"
