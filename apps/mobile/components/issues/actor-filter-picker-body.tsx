@@ -119,6 +119,7 @@ export function ActorFilterPickerBody({
 
   return (
     <FlatList
+      nestedScrollEnabled
       data={rows}
       className="flex-1"
       keyExtractor={(row) => row.key}
