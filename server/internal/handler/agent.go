@@ -3299,6 +3299,10 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
 	}
+	// RUYI-700: the mobile task history renders active queued rows straight
+	// from this snapshot, so apply the same backpressure decoration as the
+	// list reads — otherwise those queued rows stall silently.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
