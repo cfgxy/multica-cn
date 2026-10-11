@@ -159,13 +159,14 @@ export function WorkspaceBackpressureCard({
   const numericInput = (
     field: FieldName,
     aria: string,
-    opts: { step?: string; min?: string } = {},
+    opts: { step?: string; min?: string; max?: string } = {},
   ) => (
     <Input
       type="number"
       inputMode="decimal"
       step={opts.step ?? "0.5"}
       min={opts.min}
+      max={opts.max}
       className="w-24"
       disabled={!canManage}
       aria-label={aria}
@@ -222,8 +223,8 @@ export function WorkspaceBackpressureCard({
         description={t(($) => $.workspace.bp_sampling_hint)}
       >
         <div className="flex items-center gap-2">
-          {numericInput("sample_interval_seconds", t(($) => $.workspace.bp_interval_aria), { step: "1", min: "1" })}
-          {numericInput("window_size", t(($) => $.workspace.bp_window_aria), { step: "1", min: "1" })}
+          {numericInput("sample_interval_seconds", t(($) => $.workspace.bp_interval_aria), { step: "1", min: "1", max: "3600" })}
+          {numericInput("window_size", t(($) => $.workspace.bp_window_aria), { step: "1", min: "1", max: "3600" })}
         </div>
       </SettingsRow>
 
