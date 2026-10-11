@@ -2142,6 +2142,7 @@ class ApiClient {
    * tail's row degrades to plain text instead of erroring.
    */
   async lookupPullRequest(
+    workspaceId: string,
     owner: string,
     repo: string,
     number: number,
@@ -2154,14 +2155,14 @@ class ApiClient {
     });
     try {
       const raw = await this.fetch<unknown>(
-        `/api/pull-requests/lookup?${params.toString()}`,
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
         { signal: opts?.signal },
       );
       return parseWithFallback(
         raw,
         PullRequestLookupResponseSchema,
         EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
-        { endpoint: "GET /api/pull-requests/lookup" },
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
       ).pull_request;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
