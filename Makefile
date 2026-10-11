@@ -504,7 +504,7 @@ check-slot:
 up: check-slot ## Start a slot's environment (C=api,web,daemon,desktop; default api,web)
 	@bash scripts/dev-env.sh $(SLOT) up $(if $(C),--components $(C)) $(ARGS)
 
-down: check-slot ## Stop a slot's processes, keeping its database and profile
+down: check-slot ## Stop a slot's held processes, keeping database and profile (run before lock-release)
 	@bash scripts/dev-env.sh $(SLOT) down $(ARGS)
 
 status: check-slot ## Show what is running for a slot, with proof of identity
