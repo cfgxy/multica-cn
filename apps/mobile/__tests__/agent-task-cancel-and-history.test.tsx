@@ -128,11 +128,13 @@ jest.mock("expo-haptics", () => ({
 
 import { SwipeableAgentTaskRow } from "@/components/agents/swipeable-agent-task-row";
 import { AgentRunHistoryRow } from "@/components/agents/agent-run-history-row";
+import { AgentTaskRow } from "@/components/agents/agent-task-row";
 import { useCancelAgentTask, useRetryAgentRun } from "@/data/mutations/agents";
 import { agentTaskSnapshotKeys } from "@/data/queries/agent-task-snapshot";
 import { agentTasksKeys } from "@/data/queries/agent-tasks";
 import { issueKeys } from "@/data/queries/issues";
-import type { AgentTask } from "@multica/core/types";
+import type { AgentTask, Issue } from "@multica/core/types";
+import type { IssueOtherAgentsActivity } from "@/lib/issue-agent-activity";
 
 // Flush react-query's batched notifications synchronously — jest-expo's
 // fake timers never advance the default scheduler (see issue-run-retry).
@@ -151,6 +153,21 @@ function task(overrides: Partial<AgentTask> = {}): AgentTask {
     created_at: "2026-10-01T00:00:00Z",
     ...overrides,
   } as AgentTask;
+}
+
+function issue(overrides: Partial<Issue> = {}): Issue {
+  return {
+    id: "issue-0001-aaaa",
+    workspace_id: "workspace-1",
+    number: 123,
+    identifier: "RUY-123",
+    title: "Fix the login flow",
+    description: null,
+    status: "in_progress",
+    priority: "none",
+    assignee_type: null,
+    ...overrides,
+  } as Issue;
 }
 
 function wrapperFor(queryClient: QueryClient) {
@@ -266,12 +283,12 @@ describe("useRetryAgentRun", () => {
 });
 
 describe("AgentRunHistoryRow", () => {
-  async function renderRow(overrides: Partial<AgentTask>, issueTitle: string | null = null) {
+  async function renderRow(overrides: Partial<AgentTask>, issueData: Issue | null = null) {
     const queryClient = newQueryClient();
     const utils = await render(
       <AgentRunHistoryRow
         task={task(overrides)}
-        issueTitle={issueTitle}
+        issue={issueData}
         wsSlug="ws"
       />,
       { wrapper: wrapperFor(queryClient) },
@@ -279,9 +296,9 @@ describe("AgentRunHistoryRow", () => {
     return { ...utils, queryClient };
   }
 
-  it("shows the resolved issue title", async () => {
-    await renderRow({ status: "completed" }, "Fix the login flow");
-    expect(screen.getByText("Fix the login flow")).toBeTruthy();
+  it("shows the resolved issue as identifier + title (RUYI-700 row 1)", async () => {
+    await renderRow({ status: "completed" }, issue());
+    expect(screen.getByText("RUY-123 Fix the login flow")).toBeTruthy();
   });
 
   it("falls back to the issue short id when the title is unresolved (no 任务不可见 placeholder)", async () => {
@@ -345,10 +362,10 @@ describe("AgentRunHistoryRow", () => {
     const { router } = require("expo-router");
     await renderRow(
       { status: "completed", id: "task-7", issue_id: "issue-1" },
-      "Fix the login flow",
+      issue(),
     );
-    await screen.findByText("Fix the login flow");
-    fireEvent.press(await screen.findByText("Fix the login flow"));
+    await screen.findByText("RUY-123 Fix the login flow");
+    fireEvent.press(await screen.findByText("RUY-123 Fix the login flow"));
     expect(router.push).toHaveBeenCalledWith(
       expect.objectContaining({
         pathname: "/[workspace]/issue/[id]/runs/[taskId]",
@@ -368,14 +385,14 @@ describe("SwipeableAgentTaskRow per-task cancel", () => {
       <View>
         <SwipeableAgentTaskRow
           task={task({ id: "task-A", issue_id: "issue-1", status: "running" })}
-          issueTitle="Issue A"
+          issue={issue({ identifier: "RUY-1", title: "Issue A" })}
           wsSlug="ws"
           cancellable
           onCancel={() => cancel.mutate("task-A")}
         />
         <SwipeableAgentTaskRow
           task={task({ id: "task-B", issue_id: "issue-2", status: "queued" })}
-          issueTitle="Issue B"
+          issue={issue({ identifier: "RUY-2", title: "Issue B" })}
           wsSlug="ws"
           cancellable
           onCancel={() => cancel.mutate("task-B")}
@@ -402,7 +419,7 @@ describe("SwipeableAgentTaskRow per-task cancel", () => {
     await render(
       <SwipeableAgentTaskRow
         task={task({ id: "task-C", status: "running" })}
-        issueTitle="Issue C"
+        issue={null}
         wsSlug="ws"
         cancellable={false}
         onCancel={jest.fn()}
@@ -425,5 +442,118 @@ describe("agent detail batch-cancel removal (source contract)", () => {
     expect(page).not.toMatch(/confirmCancelAll/);
     // …and the per-task swipe row is what replaced it.
     expect(page).toMatch(/SwipeableAgentTaskRow/);
+  });
+});
+
+describe("AgentTaskRow three-line structure (RUYI-700)", () => {
+  async function renderTaskRow(
+    overrides: Partial<AgentTask>,
+    props: {
+      issue?: Issue | null;
+      otherAgents?: IssueOtherAgentsActivity;
+    } = {},
+  ) {
+    const queryClient = newQueryClient();
+    return await render(
+      <AgentTaskRow
+        task={task(overrides)}
+        issue={props.issue ?? null}
+        otherAgents={props.otherAgents}
+        wsSlug="ws"
+      />,
+      { wrapper: wrapperFor(queryClient) },
+    );
+  }
+
+  it("running → breathing avatar + 运行中 badge", async () => {
+    await renderTaskRow({ status: "running", issue_id: "" });
+    expect(screen.getByTestId("avatar-breathing")).toBeTruthy();
+    expect(screen.queryByTestId("avatar-queued")).toBeNull();
+    expect(screen.getByText("Running")).toBeTruthy();
+  });
+
+  it("queued-side states → grayed avatar + explicit queued badge (was invisible before)", async () => {
+    await renderTaskRow({ status: "queued", issue_id: "" });
+    expect(screen.getByTestId("avatar-queued")).toBeTruthy();
+    expect(screen.queryByTestId("avatar-breathing")).toBeNull();
+    expect(screen.getByText("Queued")).toBeTruthy();
+
+    await renderTaskRow({ status: "dispatched", issue_id: "" });
+    expect(screen.getByTestId("avatar-queued")).toBeTruthy();
+    expect(screen.getByText("Starting")).toBeTruthy();
+
+    await renderTaskRow({ status: "waiting_local_directory", issue_id: "" });
+    expect(screen.getByTestId("avatar-queued")).toBeTruthy();
+    expect(screen.getByText("Waiting for directory")).toBeTruthy();
+  });
+
+  it("cancel_requested is re-homed to the running side: breathing + Stopping (defect fix)", async () => {
+    await renderTaskRow({ status: "cancel_requested", issue_id: "" });
+    expect(screen.getByTestId("avatar-breathing")).toBeTruthy();
+    expect(screen.queryByTestId("avatar-queued")).toBeNull();
+    expect(screen.getByText("Stopping")).toBeTruthy();
+  });
+
+  it("row 1 composes identifier + title once the issue resolves", async () => {
+    await renderTaskRow({ status: "running" }, { issue: issue() });
+    expect(screen.getByText("RUY-123 Fix the login flow")).toBeTruthy();
+  });
+
+  it("row 2 shows the trigger summary and hides entirely when absent (two-line form)", async () => {
+    await renderTaskRow({
+      status: "running",
+      issue_id: "",
+      trigger_summary: "Please look into the flaky test",
+    });
+    expect(screen.getByText("Please look into the flaky test")).toBeTruthy();
+
+    const { queryByText } = await renderTaskRow({
+      status: "running",
+      issue_id: "",
+    });
+    expect(queryByText("Please look into the flaky test")).toBeNull();
+  });
+
+  it("row 2 falls back to the handoff note for direct assigns", async () => {
+    await renderTaskRow({
+      status: "running",
+      issue_id: "",
+      handoff_note: "Check the deploy logs first",
+    });
+    expect(screen.getByText("Check the deploy logs first")).toBeTruthy();
+  });
+
+  it("queued_reason renders the named hint on queued rows only", async () => {
+    await renderTaskRow({
+      status: "queued",
+      issue_id: "",
+      queued_reason: "runtime_backpressure",
+    });
+    expect(screen.getByText("Waiting for runtime recovery")).toBeTruthy();
+
+    await renderTaskRow({
+      status: "running",
+      issue_id: "",
+      queued_reason: "runtime_backpressure",
+    });
+    expect(screen.queryByText("Waiting for runtime recovery")).toBeNull();
+  });
+
+  it("row 3 renders the other-agents stack with count semantics", async () => {
+    await renderTaskRow(
+      { status: "running", issue_id: "" },
+      {
+        otherAgents: {
+          agents: [
+            { type: "agent", id: "agent-2" },
+            { type: "agent", id: "agent-3" },
+          ],
+          activity: "running",
+        },
+      },
+    );
+    expect(screen.getByLabelText("2 agents active")).toBeTruthy();
+    // Own avatar + both stack avatars breathe.
+    expect(screen.getAllByTestId("avatar-breathing")).toHaveLength(3);
   });
 });
