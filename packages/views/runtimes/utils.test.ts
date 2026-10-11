@@ -1095,8 +1095,33 @@ describe("isUsageRowUnpriced", () => {
     );
   });
 
-  it("is false for a row with no model at all", () => {
-    expect(isUsageRowUnpriced({ ...unpricedRow, model: "" })).toBe(false);
+  it("is true for a no-model row with consumed tokens — same as the server", () => {
+    // With no model there is no rate to resolve and no bill on the row, so
+    // the server's EstimateUsageCost returns CostSourceUnpriced; reporting
+    // `$0.00` for the same row here is the two-vocabularies drift RUYI-664
+    // closes (an acme row with an unknown name shows `—`, an unnamed row
+    // used to show $0.00).
+    expect(isUsageRowUnpriced({ ...unpricedRow, model: "" })).toBe(true);
+  });
+
+  it("is false for a no-model row the provider billed in full", () => {
+    // No model, but real money: the bill prices the row, nothing is left
+    // for us to estimate.
+    expect(
+      isUsageRowUnpriced({
+        ...unpricedRow,
+        model: "",
+        cost_usd_ticks: 5_000_000_000,
+        uncosted_input_tokens: 0,
+        uncosted_output_tokens: 0,
+        uncosted_cache_read_tokens: 0,
+        uncosted_cache_write_tokens: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("is false for a no-model row that consumed nothing", () => {
+    expect(isUsageRowUnpriced({ ...zeroUsage, model: "", provider: "acme" })).toBe(false);
   });
 });
 
@@ -1157,6 +1182,45 @@ describe("collectUnmappedModels", () => {
       { ...zeroUsage, model: "fictional-model-x", input_tokens: 1_000 },
     ];
     expect(collectUnmappedModels(rows)).toEqual(["fictional-model-x"]);
+  });
+
+  it("names a no-model row by its provider bucket, not a dangling slash", () => {
+    // `pricingKey("")` degrades to `acme/` (or to an empty string when no
+    // provider is known) — the caveat footnote would name a bucket nobody
+    // can read. An unnamed row groups under the provider name, or
+    // `unknown`, everywhere else (modelGroupingKey), so the banner and the
+    // footnote use the same word.
+    const withProvider = { ...zeroUsage, model: "", provider: "acme", input_tokens: 1_000 };
+    const withoutProvider = { ...zeroUsage, model: "", input_tokens: 1_000 };
+    expect(collectUnmappedModels([withProvider])).toEqual(["acme"]);
+    expect(collectUnmappedModels([withoutProvider])).toEqual(["unknown"]);
+  });
+
+  it("counts a no-model row as unpriced in the run summary", () => {
+    const summary = summarizeTaskUsage([
+      {
+        model: "gpt-5-codex",
+        provider: "codex",
+        input_tokens: 1_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd_ticks: 0,
+      },
+      {
+        model: "",
+        provider: "acme",
+        input_tokens: 1_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+    ]);
+    expect(summary!.unpricedRows).toBe(1);
+    expect(summary!.priced).toBe(true);
+    // The model column lists named models only; the unnamed row is priced
+    // into the caveat, not into a phantom model label.
+    expect(summary!.models).toEqual(["gpt-5-codex"]);
   });
 });
 
