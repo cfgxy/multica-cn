@@ -89,6 +89,7 @@ import { OfflineBanner } from "@/components/chat/offline-banner";
 import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
+import { useVoiceAvailability } from "@/data/voice-providers";
 import { useT } from "@/lib/use-t";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -204,6 +205,11 @@ export default function ChatDetailScreen() {
   const isArchived = activeSession?.status === "archived";
   const runtimeBound =
     currentAgent !== null && isAgentRuntimeBound(currentAgent);
+  // RUYI-694 D2 免绑定解析链：agent 覆盖 → workspace default → 供应商
+  // 池。resolving（数据未决）与判负都收敛为隐藏 🔵🎤；available 含
+  // credential unreachable（unreachable 保持可发起——回退门禁只有
+  // missing/invalid）。
+  const voiceGate = useVoiceAvailability(currentAgent, wsSlug);
   const sending = !!pendingTask?.task_id;
 
   // ── Drafts ─────────────────────────────────────────────────────────────
@@ -644,22 +650,8 @@ export default function ChatDetailScreen() {
           disabledReason={disabledReason}
           incomingSharedFiles={incomingSharedFiles}
           onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
-          renderVoiceWhenEmpty={
-            runtimeBound && currentAgent !== null && !voiceOpen
-              ? () => (
-                  <IconButton
-                    name="mic-outline"
-                    iconSize={18}
-                    color={theme.primaryForeground}
-                    variant="default"
-                    onPress={() => setVoiceOpen(true)}
-                    hitSlop={12}
-                    className="h-8 w-8 rounded-full"
-                    accessibilityLabel={t("voice:button.start", "Start voice conversation")}
-                  />
-                )
-              : undefined
-          }
+          voiceGate={runtimeBound && currentAgent !== null ? voiceGate : null}
+          onOpenVoice={() => setVoiceOpen(true)}
         />
       </KeyboardAvoidingView>
 
