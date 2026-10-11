@@ -59,7 +59,10 @@ jest.mock("@/data/workspace-store", () => ({
 }));
 
 jest.mock("@/lib/use-issue-statuses", () => ({
-  useIssueStatuses: () => ({ colorOf: () => "#123456" }),
+  useIssueStatuses: () => ({
+    colorOf: () => "#123456",
+    categoryOf: () => "in_progress",
+  }),
 }));
 
 jest.mock("@/lib/use-t", () => ({
