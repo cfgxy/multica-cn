@@ -1329,6 +1329,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProviderWSBaseURL = v
 	}
 
+	// Voice provider egress proxy (RUYI-692 D1 ①): MULTICA_GEMINI_PROXY_URL
+	// names the per-connection proxy the Gemini Live dial and the credential
+	// probe use — `socks5://` preferred, `http(s)://` accepted. The value may
+	// carry user:pass credentials; it lives only in the server environment
+	// and is never logged. Empty (or unusable) means direct dial: the gateway
+	// never inherits the environment's own proxy variables.
+	h.VoiceProviderProxyURL = strings.TrimSpace(os.Getenv("MULTICA_GEMINI_PROXY_URL"))
+
 	// Plugin secrets use a dedicated deployment key. Keeping this separate from
 	// VCS and channel secrets gives operators an isolated rotation and blast
 	// radius; without it, saving a `secret` config field fails closed rather
@@ -1699,6 +1707,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
+		r.Post("/tasks/{taskId}/comment", h.AddTaskComment)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
@@ -2636,12 +2645,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)
-					// Voice direct-session handoff (RUYI-626): mints the
-					// live_session row behind the same rule-3 gate as the
-					// gateway path, then hands the provider websocket URL,
-					// the credential and the setup parameters to the mobile
-					// client, which dials Google itself.
-					r.Post("/voice-direct-session", h.StartVoiceDirectSession)
+					// (RUYI-626's POST /voice-direct-session hand-off was
+					// retired in RUYI-692 D1: it handed the plaintext
+					// provider key to the client; every session now rides
+					// the gateway websocket.)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
 					r.Get("/skills", h.ListAgentSkills)
@@ -2790,13 +2797,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
 
-			// Voice direct-session completion (RUYI-626): the mobile client
-			// relays the transcript / resumption handle it collected from
-			// its own provider websocket so the live_session row reaches
-			// the same terminal state (transcript, summary write-back) the
-			// gateway path produces. Caller ownership is enforced in the
-			// handler; replays after the row is terminal are idempotent.
-			r.Post("/api/voice-sessions/{sessionId}/complete", h.CompleteVoiceDirectSession)
+			// (RUYI-626's POST /api/voice-sessions/{id}/complete was retired
+			// in RUYI-692 D1 along with the direct hand-off: the gateway owns
+			// every session's terminal write-back again.)
 
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
@@ -2836,11 +2839,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// instance payload only carries the credential_status badge.
 					r.Put("/credentials/{credentialKey}", h.PutRuntimeCredential)
 					r.Delete("/credentials/{credentialKey}", h.DeleteRuntimeCredential)
-					// Client-reported credential connectivity probe
-					// (RUYI-626): on the direct path the device runs the
-					// models.list probe itself, so the credential_status
-					// badge is recorded from the client's reported outcome.
-					r.Post("/credential-probe", h.ReportCredentialProbe)
+					// Credential re-probe (RUYI-692 D1): the SERVER runs the
+					// models.list probe now — the RUYI-626 client-reported
+					// outcome retired with the direct path. Same route so
+					// existing entry points keep working; a legacy client
+					// body is ignored, and the operator trigger plus the
+					// background sweep share the handler.
+					r.Post("/credential-probe", h.RunCredentialProbe)
 				})
 			})
 
