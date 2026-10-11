@@ -528,9 +528,19 @@ export interface ExecutionProfileInfo {
   last_activated_at?: string | null;
   created_at?: string;
   updated_at?: string;
+  /** Full detail only on the single-profile endpoints; the list endpoint
+   * always answers with an empty array (entry_count carries the size). */
   entries: ExecutionProfileEntryInfo[];
   /** Optimistic-lock token, including entry upserts/deletes. */
   revision: number;
+}
+
+/** Wire shape of the execution-profile list endpoint: unlike the
+ * single-profile reads, the list comes back enveloped with the workspace's
+ * active-profile pointer. */
+export interface ExecutionProfileListResponse {
+  execution_profiles: ExecutionProfileInfo[];
+  active_execution_profile_id: string | null;
 }
 
 export interface CreateExecutionProfileBody {
