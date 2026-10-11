@@ -46,9 +46,6 @@ func webhookTriggerIDFromContext(ctx context.Context) string {
 // redact it — see redactWebhookPath.
 var webhookIngressPathPrefixes = []string{
 	"/api/webhooks/autopilots/",
-	// Agent webhooks (RUYI-52) share the bearer-URL credential model: the
-	// trailing segment gates the route exactly like an autopilot token.
-	"/api/webhooks/agents/",
 }
 
 // redactWebhookPath returns a logger-safe version of a request path. For
@@ -56,11 +53,10 @@ var webhookIngressPathPrefixes = []string{
 // "[redacted]"; every other path passes through untouched.
 //
 // Why this exists: r.URL.Path for a successful webhook delivery is
-// "/api/webhooks/<autopilots|agents>/awt_<32-byte-base64>", and the token is
+// "/api/webhooks/autopilots/awt_<32-byte-base64>", and the token is
 // the only credential gating the route. Without redaction, every successful
 // delivery prints a replayable URL into the structured log stream. QA round
-// 1 (RUYI-52) caught exactly that for the agents prefix when only the
-// autopilots prefix was listed here.
+// 1 (RUYI-52) caught exactly that when the prefix list was incomplete.
 func redactWebhookPath(path string) string {
 	for _, prefix := range webhookIngressPathPrefixes {
 		if !strings.HasPrefix(path, prefix) {

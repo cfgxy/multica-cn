@@ -328,7 +328,21 @@
         "label": "実行のみ",
         "description": "タスクを作成せず、静かに実行します"
       }
-    }
+    },
+    "section_params": "パラメータ",
+    "params_hint": "トリガー時に渡せる変数。タイトルテンプレートやタスク説明で二重波括弧で名前を参照します。定時実行はデフォルト値を使用します。",
+    "param_name_ph": "名前（例: city）",
+    "param_default_ph": "デフォルト値",
+    "param_required": "必須",
+    "param_enum_ph": "選択肢（カンマ区切り）",
+    "param_add": "パラメータを追加",
+    "param_remove": "パラメータを削除",
+    "param_type_string": "文字列",
+    "param_type_text": "長文",
+    "param_type_number": "数値",
+    "param_type_boolean": "真偽値",
+    "param_type_enum": "列挙",
+    "param_type_label": "型"
   },
   "schedule_editor": {
     "time_label": "時刻",
