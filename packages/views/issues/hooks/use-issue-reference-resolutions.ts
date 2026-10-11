@@ -7,7 +7,10 @@ import {
   issueIdentifierOptions,
 } from "@multica/core/issues/queries";
 import { pullRequestLookupOptions } from "@multica/core/github";
-import { parsePullRequestReference } from "@multica/core/markdown";
+import {
+  identifierMatchesPrefix,
+  parsePullRequestReference,
+} from "@multica/core/markdown";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { isIssueIdentifier } from "@multica/ui/markdown";
 import type { IssueReference } from "@multica/core/markdown";
@@ -58,9 +61,7 @@ export function useIssueReferenceResolutions(
         if (ref.form === "identifier") {
           // Same gate as useResolveIssueIdentifier: skip the network when the
           // token is not identifier-shaped or the prefix cannot match.
-          const prefixMatches =
-            !prefix ||
-            ref.ref.toUpperCase().startsWith(`${prefix.toUpperCase()}-`);
+          const prefixMatches = identifierMatchesPrefix(ref.ref, prefix);
           return {
             ...issueIdentifierOptions(wsId, ref.ref),
             enabled:

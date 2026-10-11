@@ -3,6 +3,7 @@ import {
   dedupeIssueReferences,
   demoteIssueMentionLinks,
   extractIssueReferences,
+  identifierMatchesPrefix,
   isIssueIdentifier,
   parsePullRequestReference,
 } from "./issue-references";
@@ -106,6 +107,82 @@ describe("extractIssueReferences — bare identifiers", () => {
     expect(
       extractIssueReferences("files MUL-123.ts and FOO-1/bar and foo/BAR-1 here"),
     ).toEqual([]);
+  });
+});
+
+describe("extractIssueReferences — workspace prefix filter (RUYI-705)", () => {
+  const RUYI = { workspacePrefix: "RUYI" };
+
+  it("collects zero identifier references for acceptance-criteria numbering (AC-1..AC-5)", () => {
+    const text = ["AC-1", "AC-2", "AC-3", "AC-4", "AC-5"]
+      .map((n) => `- ${n} 验收条目已达成`)
+      .join("\n");
+    expect(extractIssueReferences(text, RUYI)).toEqual([]);
+  });
+
+  it("keeps matching-prefix bare identifiers and drops the rest in one pass", () => {
+    expect(
+      extractIssueReferences("Blocked by RUYI-123, regression tracked as AC-1.", RUYI),
+    ).toEqual([{ ref: "RUYI-123", label: null, form: "identifier" }]);
+  });
+
+  it("matches the prefix case-insensitively", () => {
+    expect(
+      extractIssueReferences("see RUYI-9", { workspacePrefix: "ruyi" }),
+    ).toEqual([{ ref: "RUYI-9", label: null, form: "identifier" }]);
+  });
+
+  it("falls through when no prefix is passed (callers without workspace context)", () => {
+    expect(extractIssueReferences("AC-1 and RUYI-2")).toEqual([
+      { ref: "AC-1", label: null, form: "identifier" },
+      { ref: "RUYI-2", label: null, form: "identifier" },
+    ]);
+  });
+
+  it("treats an empty prefix as unknown (fall-through)", () => {
+    expect(extractIssueReferences("AC-1", { workspacePrefix: "" })).toEqual([
+      { ref: "AC-1", label: null, form: "identifier" },
+    ]);
+  });
+
+  it("never filters mention-form references by prefix", () => {
+    const text = `见 [RUYI-1](mention://issue/${UUID}) 与 [AC-1](mention://issue/${UUID2})。`;
+    expect(extractIssueReferences(text, RUYI)).toEqual([
+      { ref: UUID, label: "RUYI-1", form: "mention" },
+      { ref: UUID2, label: "AC-1", form: "mention" },
+    ]);
+  });
+
+  it("keeps skip rules ahead of the prefix filter", () => {
+    // An identifier inside code/links/URLs is skipped for shape reasons; the
+    // prefix filter only ever removes tokens that would otherwise be collected.
+    expect(
+      extractIssueReferences("`AC-1` and [x](https://h/AC-2) but RUYI-3 yes", RUYI),
+    ).toEqual([{ ref: "RUYI-3", label: null, form: "identifier" }]);
+  });
+});
+
+describe("identifierMatchesPrefix", () => {
+  it("matches an identifier carrying the workspace prefix", () => {
+    expect(identifierMatchesPrefix("RUYI-123", "RUYI")).toBe(true);
+  });
+
+  it("rejects a different prefix at the dash boundary", () => {
+    expect(identifierMatchesPrefix("AC-1", "RUYI")).toBe(false);
+    // The dash stops a proper-prefix false positive: RUYI is not a match for
+    // RUYIX-1.
+    expect(identifierMatchesPrefix("RUYIX-1", "RUYI")).toBe(false);
+  });
+
+  it("is case-insensitive on both sides", () => {
+    expect(identifierMatchesPrefix("ruyi-1", "RUYI")).toBe(true);
+    expect(identifierMatchesPrefix("RUYI-1", "ruyi")).toBe(true);
+  });
+
+  it("matches everything when the prefix is unknown", () => {
+    expect(identifierMatchesPrefix("AC-1", null)).toBe(true);
+    expect(identifierMatchesPrefix("AC-1", undefined)).toBe(true);
+    expect(identifierMatchesPrefix("AC-1", "")).toBe(true);
   });
 });
 

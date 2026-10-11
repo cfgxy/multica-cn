@@ -447,4 +447,69 @@ describe("project resource client methods", () => {
     await client.listProjectResources("ws", "p/1");
     expect(calls[0]?.url.pathname).toBe("/api/projects/p%2F1/resources");
   });
+
+  // The execution-profile list endpoint answers with an envelope
+  // ({ execution_profiles, active_execution_profile_id }), not a bare array —
+  // the client must unwrap it (RUYI-687: profiles.map is not a function).
+  function wireProfile(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "p1",
+      workspace_id: "w-1",
+      name: "backend-default",
+      description: null,
+      created_by: null,
+      is_active: true,
+      entry_count: 2,
+      last_activated_at: "2026-10-10T00:00:00Z",
+      created_at: "2026-10-01T00:00:00Z",
+      updated_at: "2026-10-09T00:00:00Z",
+      // List rows carry no entries — always empty on the wire.
+      entries: [],
+      revision: 3,
+      ...over,
+    };
+  }
+
+  it("unwraps the enveloped execution-profile list response", async () => {
+    const client = makeClient(makeFetch(200, {
+      execution_profiles: [
+        wireProfile(),
+        wireProfile({ id: "p2", name: "second", is_active: false, entry_count: 0, revision: 1 }),
+      ],
+      active_execution_profile_id: "p1",
+    }));
+    const profiles = await client.listExecutionProfiles("w-1");
+    expect(Array.isArray(profiles)).toBe(true);
+    expect(profiles).toHaveLength(2);
+    expect(profiles[0]).toMatchObject({ id: "p1", is_active: true, entry_count: 2, revision: 3 });
+    expect(profiles[1]).toMatchObject({ id: "p2", is_active: false, revision: 1 });
+  });
+
+  it("unwraps a single-row execution-profile list", async () => {
+    const client = makeClient(makeFetch(200, {
+      execution_profiles: [wireProfile()],
+      active_execution_profile_id: "p1",
+    }));
+    const profiles = await client.listExecutionProfiles("w-1");
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]?.id).toBe("p1");
+  });
+
+  it("answers an empty execution-profile list with an empty array", async () => {
+    const client = makeClient(makeFetch(200, {
+      execution_profiles: [],
+      active_execution_profile_id: null,
+    }));
+    await expect(client.listExecutionProfiles("w-1")).resolves.toEqual([]);
+  });
+
+  it("keeps the single execution-profile endpoint unwrapped with entries", async () => {
+    const client = makeClient(makeFetch(200, wireProfile({
+      entries: [{ agent_id: "a-1", runtime_id: "rt-1", model: "claude-opus-5", thinking_level: null, updated_at: null }],
+      entry_count: 1,
+    })));
+    const profile = await client.getExecutionProfile("w-1", "p1");
+    expect(profile.entries).toHaveLength(1);
+    expect(profile.entry_count).toBe(1);
+  });
 });
