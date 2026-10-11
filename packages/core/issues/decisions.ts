@@ -103,14 +103,36 @@ export function upsertDecisionInCache(
 /**
  * Batch-answer views render their own index letter (OPTION_LETTERS), so a
  * label written under the workspace decision-numbering convention already
- * embeds it ("A：…") and the letter would show twice (RUYI-575). Strip one
- * leading A-Z letter plus one of ： : 、 . when non-empty text follows;
- * anything else (A-type, B超, lowercase, mid-label) renders untouched.
+ * embeds it and the letter would show twice (RUYI-575). Strip one leading
+ * A-Z letter plus its separator — "：:、." or a space, half- or full-width
+ * (RUYI-620) — when non-empty text follows; anything else (A股龙头, AB 测试,
+ * lowercase, mid-label) renders untouched.
  * Display-only — stored labels stay verbatim.
  */
 export function stripDecisionOptionLetterPrefix(label: string): string {
-  const match = /^[A-Z][：:、.]\s*(\S.*)$/.exec(label);
+  const match = /^[A-Z]\s*(?:[：:、.．]|\s)\s*(\S.*)$/.exec(label);
   return match?.[1] ?? label;
+}
+
+/**
+ * The option control renders its own recommended badge (recommended_indices),
+ * so a trailing "（推荐）"/"(推荐)" in the label would double it (RUYI-620).
+ * Strip it only when it terminates the label — repeated trailing markers
+ * strip together; mid-label or leading occurrences are content.
+ * Display-only — stored labels stay verbatim.
+ */
+export function stripDecisionOptionRecommendedSuffix(label: string): string {
+  return label.replace(/(?:\s*[（(]\s*推荐\s*[)）])+\s*$/, "");
+}
+
+/**
+ * The single display helper for decision option labels across render
+ * surfaces (issue card, batch bar, and their mobile copies): strips the
+ * embedded letter prefix and the trailing recommended marker so the
+ * control's own index letter and badge render exactly once (RUYI-620).
+ */
+export function decisionOptionDisplayLabel(label: string): string {
+  return stripDecisionOptionLetterPrefix(stripDecisionOptionRecommendedSuffix(label));
 }
 
 export const answerIssueDecision: MutationFunction<

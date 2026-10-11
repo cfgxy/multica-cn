@@ -89,7 +89,6 @@ describe("preprocessMobileMarkdown — 评论锚点 chip", () => {
 
   it("不碰其他 mention 形态和普通链接", () => {
     const others = [
-      `[MUL-1](mention://issue/${UUID})`,
       `[@Bob](mention://agent/${UUID})`,
       `[项目](mention://project/${UUID})`,
       `[站点](https://example.com/mention://comment/x)`,
@@ -100,5 +99,48 @@ describe("preprocessMobileMarkdown — 评论锚点 chip", () => {
   it("同一段里多个锚点各自加前缀", () => {
     const out = preprocessMobileMarkdown(`[a](${ANCHOR}) 与 [b](${ANCHOR})`);
     expect(out).toBe(`[💬 a](${ANCHOR}) 与 [💬 b](${ANCHOR})`);
+  });
+});
+
+/**
+ * Issue mention 降级为正文纯文本（RUYI-635 手机端半边）。
+ *
+ * Web 端 mention 不再渲染内联卡片，正文按普通文本显示、引用聚合到尾部
+ * 列表。手机端没有内联卡片可去——enriched 本来就把 mention 画成带下划线
+ * 的链接——但「正文纯文本、引用只出现在尾部列表」的规则两端必须一致，
+ * 所以管线里加一个 demote pass：issue mention 链接改写为显示 token
+ * （编号形态显示编号，UUID mention 显示作者写的标签）。跳转由尾部聚合
+ * 列表承担，不再依赖正文链接。
+ *
+ * 显示 token 的逻辑与 web 正文渲染（rich-content.tsx `data-issue-mention-text`）
+ * 严格对齐，落点在 @multica/core/markdown 的共享实现，两端不可能漂移。
+ */
+describe("preprocessMobileMarkdown — issue mention demote（RUYI-635）", () => {
+  it("编号形态 mention 降级为编号纯文本", () => {
+    expect(preprocessMobileMarkdown("见 [MUL-7](mention://issue/MUL-7)。")).toBe(
+      "见 MUL-7。",
+    );
+  });
+
+  it("UUID mention 降级为作者写的标签", () => {
+    expect(
+      preprocessMobileMarkdown(`见 [任务单](mention://issue/${UUID})。`),
+    ).toBe("见 任务单。");
+  });
+
+  it("空标签 UUID mention 回退到 id 段，引用不消失", () => {
+    expect(preprocessMobileMarkdown(`[](mention://issue/${UUID})`)).toBe(UUID);
+  });
+
+  it("代码内的 mention 链接保持字面", () => {
+    const inline = "用 `[MUL-7](mention://issue/MUL-7)` 标记";
+    expect(preprocessMobileMarkdown(inline)).toBe(inline);
+  });
+
+  it("降级后再过一遍管线不再变化（幂等）", () => {
+    const once = preprocessMobileMarkdown(
+      `见 [MUL-7](mention://issue/${UUID}) 与 MUL-8。`,
+    );
+    expect(preprocessMobileMarkdown(once)).toBe(once);
   });
 });

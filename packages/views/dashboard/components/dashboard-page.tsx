@@ -36,6 +36,7 @@ import {
   formatTokens,
   todayIso,
 } from "../../runtimes/utils";
+import type { BarSelection } from "../../runtimes/components/charts";
 import {
   dimsForWindowLength,
   shiftedWindow,
@@ -61,6 +62,7 @@ import {
   anonymizeUnresolvedAgentRows,
   computeDailyTotals,
   computeFailureTotals,
+  formatDateLabel,
   isSyntheticAgentRow,
   mergeAgentDashboardRows,
 } from "../utils";
@@ -184,6 +186,39 @@ export function DashboardPage() {
   );
   const windowLen = windowLength(statWindow);
 
+  // Chart bar selection — one span shared by every chart on the page (both
+  // tabs, all metrics, either dimension). The leaderboard narrows to it; the
+  // KPIs and the date-bucketed charts stay on statWindow. Weekly bars span
+  // Mon–Sun calendar weeks that can overhang the window's edges, so incoming
+  // spans are clamped: the chip and the queries then name a range the rest
+  // of the page actually covers.
+  const [barSelection, setBarSelection] = useState<BarSelection | null>(null);
+  const handleBarSelection = (next: BarSelection | null) => {
+    if (!next) {
+      setBarSelection(null);
+      return;
+    }
+    setBarSelection({
+      start: next.start < statWindow.start ? statWindow.start : next.start,
+      end: next.end > statWindow.end ? statWindow.end : next.end,
+    });
+  };
+
+  // Quick windows re-anchor on `today` at every render, so a page left open
+  // across midnight (or a viewing-timezone switch) shifts statWindow without
+  // any handler firing — the clear sites above only cover explicit window
+  // changes. A stored span can therefore end up fully outside the new window,
+  // dimming every bar around an invisible selection and silently scoping the
+  // leaderboard off the visible axis. Derive the live span instead of
+  // trusting the stored one: a stale out-of-window span reads as no selection
+  // until the next gesture overwrites it.
+  const activeBarSelection =
+    barSelection &&
+    barSelection.start >= statWindow.start &&
+    barSelection.end <= statWindow.end
+      ? barSelection
+      : null;
+
   // The tab lives in the URL because the Errors view is the half of this page
   // people paste at each other ("this agent failed 54 times, see for
   // yourself"); component state cannot be linked to. `replace`, not `push`, so
@@ -248,6 +283,17 @@ export function DashboardPage() {
   const failuresByAgentQuery = useQuery(
     dashboardFailuresByAgentOptions(wsId, statWindow, projectId, viewTZ),
   );
+  // The leaderboard follows the bar selection. The per-agent rollups carry
+  // no dates, so narrowing them means re-querying with the selected span;
+  // with no selection the window IS statWindow and both queries dedupe onto
+  // the fetches above — same key, nothing extra on the wire.
+  const lbWindow = activeBarSelection ?? statWindow;
+  const lbByAgentQuery = useQuery(
+    dashboardUsageByAgentOptions(wsId, lbWindow, projectId, viewTZ),
+  );
+  const lbRunTimeQuery = useQuery(
+    dashboardAgentRunTimeOptions(wsId, lbWindow, projectId, viewTZ),
+  );
 
   const dailyUsage = dailyQuery.data ?? EMPTY_DAILY;
   const byAgentUsage = byAgentQuery.data ?? EMPTY_BY_AGENT;
@@ -255,6 +301,8 @@ export function DashboardPage() {
   const runTimeDailyRows = runTimeDailyQuery.data ?? EMPTY_RUNTIME_DAILY;
   const failureDailyRows = failuresDailyQuery.data ?? EMPTY_FAILURE_DAILY;
   const failureByAgentRows = failuresByAgentQuery.data ?? EMPTY_FAILURE_BY_AGENT;
+  const lbByAgentUsage = lbByAgentQuery.data ?? EMPTY_BY_AGENT;
+  const lbRunTimeRows = lbRunTimeQuery.data ?? EMPTY_RUNTIME;
 
   const queryClient = useQueryClient();
   // "Refreshing" covers any of the six rollups being in flight, whichever
@@ -266,7 +314,9 @@ export function DashboardPage() {
     runTimeQuery.isFetching ||
     runTimeDailyQuery.isFetching ||
     failuresDailyQuery.isFetching ||
-    failuresByAgentQuery.isFetching;
+    failuresByAgentQuery.isFetching ||
+    lbByAgentQuery.isFetching ||
+    lbRunTimeQuery.isFetching;
   const handleRefresh = () => {
     void queryClient.invalidateQueries({ queryKey: dashboardKeys.all(wsId) });
   };
@@ -279,6 +329,8 @@ export function DashboardPage() {
       runTimeDailyQuery.dataUpdatedAt,
       failuresDailyQuery.dataUpdatedAt,
       failuresByAgentQuery.dataUpdatedAt,
+      lbByAgentQuery.dataUpdatedAt,
+      lbRunTimeQuery.dataUpdatedAt,
     ],
     viewTZ,
     locales,
@@ -454,9 +506,12 @@ export function DashboardPage() {
       ),
     [failureDailyInWindow, viewTZ, weekCount, statWindow],
   );
+  // Leaderboard rows come from the selection-scoped queries (lbWindow
+  // above); with no selection those are the same fetches as these
+  // full-window ones.
   const agentTokenRows = useMemo(
-    () => aggregateAgentTokens(byAgentUsage),
-    [byAgentUsage],
+    () => aggregateAgentTokens(lbByAgentUsage),
+    [lbByAgentUsage],
   );
 
   // Run-time totals — taskCount + failedCount summed for the KPI row.
@@ -473,8 +528,8 @@ export function DashboardPage() {
   }, [runTimeRows]);
 
   const agentRows = useMemo(
-    () => mergeAgentDashboardRows(agentTokenRows, runTimeRows),
-    [agentTokenRows, runTimeRows],
+    () => mergeAgentDashboardRows(agentTokenRows, lbRunTimeRows),
+    [agentTokenRows, lbRunTimeRows],
   );
 
   // Fold rollup rows for hard-deleted agents into one aggregated "Deleted
@@ -509,38 +564,60 @@ export function DashboardPage() {
   // span without going stale the moment the user pages back a period.
   const allowedDims = dimsForWindowLength(windowLen);
   const lessThanMinuteLabel = t(($) => $.duration.less_than_minute);
+  // The chip names the span the leaderboard is actually scoped to, in the
+  // same M/D labels the charts' x-axes use.
+  const selectedRangeLabel = activeBarSelection
+    ? activeBarSelection.start === activeBarSelection.end
+      ? formatDateLabel(activeBarSelection.start)
+      : `${formatDateLabel(activeBarSelection.start)} – ${formatDateLabel(activeBarSelection.end)}`
+    : null;
 
-  const handleQuickRange = (days: TimeRange) =>
+  // Every window change also drops the bar selection: it is an annotation
+  // on the window it was drawn in, and carrying it over would point the
+  // leaderboard at a span no visible chart can re-create. Clearing here —
+  // not in an effect — keeps the reset in the same render batch as the new
+  // window, so the leaderboard queries never race a stale span.
+  const handleQuickRange = (days: TimeRange) => {
     setSelection({ kind: "quick", days, offset: 0 });
-  const handleCustomRange = (window: StatWindow) =>
+    setBarSelection(null);
+  };
+  const handleCustomRange = (window: StatWindow) => {
     setSelection({ kind: "custom", window });
-  const handleShift = (periods: number) =>
-    setSelection((s) => {
-      if (s.kind === "quick") {
-        // ‹ (periods = -1) steps into the past, and `offset` counts periods
-        // AWAY from today — so it grows; › walks it back down. 0 is the
-        // floor: the present, where › already renders disabled.
-        const offset = Math.max(0, s.offset - periods);
-        return offset === s.offset ? s : { ...s, offset };
-      }
-      const next = shiftWindow(s.window, periods);
+    setBarSelection(null);
+  };
+  const handleShift = (periods: number) => {
+    if (selection.kind === "quick") {
+      // ‹ (periods = -1) steps into the past, and `offset` counts periods
+      // AWAY from today — so it grows; › walks it back down. 0 is the
+      // floor: the present, where › already renders disabled.
+      const offset = Math.max(0, selection.offset - periods);
+      if (offset === selection.offset) return;
+      setSelection({ ...selection, offset });
+    } else {
+      const next = shiftWindow(selection.window, periods);
       // The UI disables › at the present, but a stale click still lands here.
-      if (next.end > today) return s;
-      return { kind: "custom", window: next };
-    });
+      if (next.end > today) return;
+      setSelection({ kind: "custom", window: next });
+    }
+    setBarSelection(null);
+  };
   // Same length, re-anchored on today — the one-click way home from any
   // historical position.
-  const handleBackToCurrent = () =>
-    setSelection((s) => {
-      if (s.kind === "quick") return s.offset === 0 ? s : { ...s, offset: 0 };
-      return {
+  const handleBackToCurrent = () => {
+    if (selection.kind === "quick") {
+      if (selection.offset === 0) return;
+      setSelection({ ...selection, offset: 0 });
+    } else {
+      setSelection({
         kind: "custom",
         window: {
-          start: addDaysIso(today, -(windowLength(s.window) - 1)),
+          start: addDaysIso(today, -(windowLength(selection.window) - 1)),
           end: today,
         },
-      };
-    });
+      });
+    }
+    setBarSelection(null);
+  };
 
   return (
     <Tabs
@@ -698,6 +775,8 @@ export function DashboardPage() {
                   weeklyTime={weeklyTime}
                   weeklyTasks={weeklyTasks}
                   lessThanMinuteLabel={lessThanMinuteLabel}
+                  selection={activeBarSelection}
+                  onSelectionChange={handleBarSelection}
                 />
 
                 <Leaderboard
@@ -705,6 +784,8 @@ export function DashboardPage() {
                   agents={agents}
                   deletedAgentCount={deletedAgentCount}
                   lessThanMinuteLabel={lessThanMinuteLabel}
+                  selectedRange={selectedRangeLabel}
+                  onClearSelection={() => setBarSelection(null)}
                 />
               </>
             )}
@@ -725,6 +806,8 @@ export function DashboardPage() {
                 weeklyErrors={weeklyErrors}
                 agents={agents}
                 locales={locales}
+                selection={activeBarSelection}
+                onSelectionChange={handleBarSelection}
               />
             )}
           </TabsContent>

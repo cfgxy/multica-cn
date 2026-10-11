@@ -100,6 +100,7 @@ export function LabelPickerBody({
 
   return (
     <FlatList
+      nestedScrollEnabled
       ref={listRef}
       data={rows}
       className="flex-1"
