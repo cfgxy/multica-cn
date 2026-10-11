@@ -60,7 +60,9 @@ UPDATE decision_requests SET
     answered_by_type = 'member',
     answered_by_id = @answered_by_id,
     answered_at = now(),
-    answer_source = 'card_click',
+    -- decision_center: this endpoint (decision-center row buttons and the
+    -- bare API) is its own channel, not a card click (migration 967).
+    answer_source = 'decision_center',
     updated_at = now()
 WHERE id = @id AND workspace_id = @workspace_id
   AND operable AND status = 'pending' AND expires_at > now()
