@@ -45,6 +45,9 @@ export const THEME = {
     success: "hsl(142 71% 45%)",
     warning: "hsl(48 89% 47%)",
     info: "hsl(217 91% 60%)",
+    // RUYI-635 增量: merged-PR identity, both ends unified on violet
+    // (#7c3aed reference); dark lifts lightness like web's violet-400.
+    violet: "hsl(262 84% 58%)",
     priority: "hsl(25 95% 53%)",
     codeSurface: "hsl(240 4% 92%)",
     // Surface elevation tiers — see global.css for the full scale.
@@ -84,6 +87,7 @@ export const THEME = {
     success: "hsl(142 71% 45%)",
     warning: "hsl(48 89% 47%)",
     info: "hsl(217 91% 60%)",
+    violet: "hsl(256 91% 75%)",
     priority: "hsl(25 95% 53%)",
     // code-surface is the ONE exception that needs a real dark value —
     // see global.css for rationale. Keep this in sync with .dark:root.

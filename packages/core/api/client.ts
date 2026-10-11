@@ -518,7 +518,9 @@ import {
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
   IssuePullRequestsResponseSchema,
+  PullRequestLookupResponseSchema,
   ResourceLabelsResponseSchema,
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
@@ -6261,6 +6263,37 @@ export class ApiClient {
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { endpoint: "GET /api/issues/:id/pull-requests" },
     );
+  }
+
+  /**
+   * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
+   * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never
+   * seen this PR — returns `null` so the tail degrades the token to plain
+   * text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({ owner, repo, number: String(number) });
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+    );
+    return parsed.pull_request;
   }
 
   // VCS integration (Forgejo / Gitea / GitLab)

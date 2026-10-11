@@ -37,22 +37,67 @@
 }
 
 /*
- * Issue reference tail aggregation (RUYI-635).
+ * Issue reference tail aggregation (RUYI-635 + 增量).
  *
- * RichContent renders issue mentions as plain body text and lists every
- * reference here instead: one deduplicated row per issue under a hairline
- * divider. The block is part of the content flow (not a chrome overlay), so
- * the compact density's `> :last-child` margin trim keeps it flush in chat
- * bubbles with no extra rule.
+ * RichContent renders issue/PR mentions as plain body text and lists every
+ * reference here instead: a gray rounded container — header 「引用 · N」 plus
+ * at most two preview rows plus a fold-count line — that is ONE button. The
+ * rows themselves are spans and never navigate; pressing the block opens the
+ * popover (styled inline in issue-reference-footer.tsx — it portals outside
+ * this scope). The block is part of the content flow, so the compact
+ * density's `> :last-child` margin trim keeps it flush in chat bubbles.
  */
 .rich-text-editor .issue-reference-footer {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 0.25rem;
+  width: 100%;
   margin-top: 0.75rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--border);
+  padding: 0.5rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: color-mix(in oklab, var(--accent) 55%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: background-color 150ms;
+}
+
+.rich-text-editor .issue-reference-footer:hover {
+  background: var(--accent);
+}
+
+.rich-text-editor .issue-reference-footer:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.rich-text-editor .issue-reference-header {
+  display: flex;
+  align-items: center;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--muted-foreground);
+}
+
+.rich-text-editor .issue-reference-chevron {
+  width: 0.875rem;
+  height: 0.875rem;
+  margin-left: auto;
+  transition: transform 150ms;
+}
+
+.rich-text-editor .issue-reference-footer[aria-expanded="true"]
+  .issue-reference-chevron {
+  transform: rotate(180deg);
+}
+
+.rich-text-editor .issue-reference-collapsed {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
 }
 
 .rich-text-editor .issue-reference-row {
@@ -64,13 +109,7 @@
   font-size: 0.8125rem;
   line-height: 1.25rem;
   color: var(--foreground);
-  text-decoration: none;
   text-align: left;
-}
-
-.rich-text-editor a.issue-reference-row:hover .issue-reference-title,
-.rich-text-editor a.issue-reference-row:focus-visible .issue-reference-title {
-  text-decoration: underline;
 }
 
 .rich-text-editor .issue-reference-identifier {
@@ -79,11 +118,15 @@
   color: var(--muted-foreground);
 }
 
+/* Owner point ①: full titles, wrap at two lines — no more ellipsis. */
 .rich-text-editor .issue-reference-title {
-  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .rich-text-editor .issue-reference-degraded {

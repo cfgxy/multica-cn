@@ -324,6 +324,11 @@
     "desc_placeholder": "説明を追加...",
     "current_issue": "現在のタスク",
     "referenced_issues": "参照タスク",
+    "reference_tail_header": "参照 · {{count}}",
+    "reference_tail_more": "他 {{count}} 件の参照",
+    "reference_tail_more_with_pr": "他 {{count}} 件の参照（PR {{prCount}} 件を含む）",
+    "reference_group_tasks": "タスク",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "サブタスク",
     "sub_issue_of": "親タスク",
     "add_sub_issues": "サブタスクを追加",
@@ -983,6 +988,7 @@
       "comments_no_match": "一致するコメントはありません。",
       "comments_open_a11y": "コメントを参照",
       "pull_request_open_failed": "この Pull request を開けませんでした。",
+      "reference_sheet_close": "閉じる",
       "pull_request_card_label": "Pull request"
     },
     "picker": {

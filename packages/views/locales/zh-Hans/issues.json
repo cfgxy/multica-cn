@@ -324,6 +324,11 @@
     "desc_placeholder": "添加描述...",
     "current_issue": "当前任务",
     "referenced_issues": "引用的任务",
+    "reference_tail_header": "引用 · {{count}}",
+    "reference_tail_more": "还有 {{count}} 条引用",
+    "reference_tail_more_with_pr": "还有 {{count}} 条引用（含 {{prCount}} 个 PR）",
+    "reference_group_tasks": "任务",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "子任务",
     "sub_issue_of": "属于父任务",
     "add_sub_issues": "添加子任务",
@@ -983,6 +988,7 @@
       "comments_no_match": "没有匹配的评论。",
       "comments_open_a11y": "浏览评论",
       "pull_request_open_failed": "无法打开这个 PR。",
+      "reference_sheet_close": "关闭",
       "pull_request_card_label": "Pull request"
     },
     "picker": {
