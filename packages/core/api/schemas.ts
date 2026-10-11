@@ -1101,7 +1101,9 @@ export const DecisionRequestSchema = z.object({
   answered_by_type: z.string().nullable().optional(),
   answered_by_id: z.string().nullable().optional(),
   answered_at: z.string().nullable().optional(),
-  answer_source: z.enum(["card_click", "text_token", "batch"]).nullable().optional(),
+  // decision_center: the row answer endpoint (decision-center row buttons /
+  // bare API); card_click stays the only card-surface click value.
+  answer_source: z.enum(["card_click", "text_token", "batch", "decision_center"]).nullable().optional(),
   executed_at: z.string().nullable().optional(),
   execution_result: z.unknown().optional(),
   execution_error: z.string().nullable().optional(),
