@@ -5,12 +5,15 @@ import { useMemo, useState } from "react";
 import {
   ArrowUpRight,
   CircleHelp,
+  ClipboardList,
   Hash,
+  History,
   MessageSquare,
   Workflow,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Badge } from "@multica/ui/components/ui/badge";
 import {
   Tooltip,
   TooltipContent,
@@ -28,6 +31,7 @@ import {
   useWorkspaceActivityMap,
 } from "@multica/core/agents";
 import { api } from "@multica/core/api";
+import { formatRetrospectiveStamp } from "@multica/core/self-evolution";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { issueDetailOptions } from "@multica/core/issues/queries";
@@ -549,7 +553,18 @@ function TaskRow({
     task.status === "completed" ||
     task.status === "failed" ||
     task.status === "cancelled";
-  const sourceFallback = !hasIssue
+  // Daily-retrospective runs (RUYI-673) have no issue/chat/autopilot anchor,
+  // so their identity comes from the kind discriminator itself: a readable
+  // "每日复盘<stamp>" title (the trigger moment = window end) plus a source
+  // badge, and a jump to the run's results view. Without this branch they
+  // used to fall through to the "Untracked" label.
+  const isRetro = task.kind === "retrospective";
+  const retroStamp = isRetro
+    ? formatRetrospectiveStamp(
+        task.retrospective_window_end ?? task.completed_at ?? task.created_at,
+      )
+    : "";
+  const sourceFallback = !hasIssue && !isRetro
     ? task.kind === "quick_create"
       ? isTerminalStatus
         ? t(($) => $.tab_body.activity.source_quick_create)
@@ -563,18 +578,35 @@ function TaskRow({
 
   const SourceIcon = hasIssue
     ? Hash
-    : task.chat_session_id
-      ? MessageSquare
-      : task.autopilot_run_id
-        ? Workflow
-        : CircleHelp;
+    : isRetro
+      ? History
+      : task.chat_session_id
+        ? MessageSquare
+        : task.autopilot_run_id
+          ? Workflow
+          : CircleHelp;
   const sourceLabel = hasIssue
     ? t(($) => $.tab_body.activity.source_issue)
-    : task.chat_session_id
-      ? t(($) => $.tab_body.activity.source_chat)
-      : task.autopilot_run_id
-        ? t(($) => $.tab_body.activity.source_autopilot)
-        : t(($) => $.tab_body.activity.source_untracked);
+    : isRetro
+      ? t(($) => $.tab_body.activity.source_retrospective)
+      : task.chat_session_id
+        ? t(($) => $.tab_body.activity.source_chat)
+        : task.autopilot_run_id
+          ? t(($) => $.tab_body.activity.source_autopilot)
+          : t(($) => $.tab_body.activity.source_untracked);
+
+  // Title slot content, shared by the tooltip-wrapped and plain branches
+  // below. Retrospective runs title themselves with the localized label +
+  // window-end stamp (falling back to the bare label when no timestamp is
+  // parseable) instead of the generic source fallback.
+  const titleText = issue?.title
+    ?? (hasIssue
+      ? t(($) => $.tab_body.activity.issue_short_fallback, { prefix: task.issue_id.slice(0, 8) })
+      : isRetro
+        ? (retroStamp
+            ? t(($) => $.tab_body.activity.retro_title, { stamp: retroStamp })
+            : t(($) => $.tab_body.activity.source_retrospective))
+        : (sourceFallback ?? t(($) => $.tab_body.activity.source_untracked)));
 
   const timeText =
     timeMode === "active"
@@ -641,12 +673,7 @@ function TaskRow({
             <Tooltip>
               <TooltipTrigger
                 render={
-                  <span className="truncate text-body">
-                    {issue?.title ??
-                      (hasIssue
-                        ? t(($) => $.tab_body.activity.issue_short_fallback, { prefix: task.issue_id.slice(0, 8) })
-                        : (sourceFallback ?? t(($) => $.tab_body.activity.source_untracked)))}
-                  </span>
+                  <span className="truncate text-body">{titleText}</span>
                 }
               />
               <TooltipContent className="max-w-md">
@@ -659,18 +686,24 @@ function TaskRow({
               </TooltipContent>
             </Tooltip>
           ) : (
-            <span className="truncate text-body">
-              {issue?.title ??
-                (hasIssue
-                  ? t(($) => $.tab_body.activity.issue_short_fallback, { prefix: task.issue_id.slice(0, 8) })
-                  : (sourceFallback ?? t(($) => $.tab_body.activity.source_untracked)))}
-            </span>
+            <span className="truncate text-body">{titleText}</span>
           )}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
           <span className={cfg.color}>
             {taskStatusLabel(task.status, t)}
           </span>
+          {isRetro && (
+            <>
+              <Sep />
+              {/* Visible source marker (RUYI-673): the title carries the
+                  "每日复盘" label already, but the acceptance bar asks for
+                  an identifiable marker on the row itself. */}
+              <Badge variant="outline" className="px-1.5 text-micro">
+                {t(($) => $.tab_body.activity.source_retrospective)}
+              </Badge>
+            </>
+          )}
           <Sep />
           <span>{timeText}</span>
           {durationText && (
@@ -724,6 +757,27 @@ function TaskRow({
               <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
             </TooltipTrigger>
             <TooltipContent>{t(($) => $.tab_body.activity.open_issue_tooltip)}</TooltipContent>
+          </Tooltip>
+        )}
+        {isRetro && task.retrospective_run_id && (
+          // Results entry (RUYI-673): the proposals view opened filtered to
+          // this run's batch — the same surface the retrospective page's
+          // per-run entries land on, so both routes converge.
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <AppLink
+                  href={`${paths.selfEvolutionProposals()}?run=${task.retrospective_run_id}`}
+                />
+              }
+              aria-label={t(($) => $.tab_body.activity.view_results_tooltip)}
+              className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+            >
+              <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
+            </TooltipTrigger>
+            <TooltipContent>
+              {t(($) => $.tab_body.activity.view_results_tooltip)}
+            </TooltipContent>
           </Tooltip>
         )}
         {showTranscript && (

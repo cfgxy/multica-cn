@@ -163,6 +163,13 @@ export interface EditorExtensionsOptions {
    * system prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
+  /**
+   * RUYI-635: render issue mention nodes as plain text (RichContent's display
+   * contract) instead of chips. For hosts whose editor IS the rendered
+   * content — the issue body. Static per host, so a plain option is enough;
+   * composers keep the default (chips) for authoring feedback.
+   */
+  demoteIssueMentions?: boolean;
   /** Override @ behavior for chat context suggestions. */
   mentionMode?: "default" | "context";
   getMentionContextItems?: () => MentionItem[];
@@ -262,6 +269,7 @@ export function createEditorExtensions(
     SuggestionTriggerArmingExtension,
     BaseMentionExtension.configure({
       HTMLAttributes: { class: "mention" },
+      demoteIssueMentions: options.demoteIssueMentions === true,
       ...(options.disableMentions
         ? { suggestion: { allow: () => false } }
         : options.queryClient

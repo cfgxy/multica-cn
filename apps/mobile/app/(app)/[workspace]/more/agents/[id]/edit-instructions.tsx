@@ -141,6 +141,7 @@ export default function AgentInstructionsEditor() {
         ) : null}
       </View>
       <ScrollView
+        nestedScrollEnabled
         className="flex-1"
         contentContainerClassName="px-4 pt-4 pb-8"
         keyboardShouldPersistTaps="handled"
