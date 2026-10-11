@@ -666,10 +666,10 @@ describe("get_execution_topology", () => {
     const agents = (rt1?.agents as Array<Record<string, unknown>>);
     const a1 = agents.find((agent) => agent.id === A1);
     const a2 = agents.find((agent) => agent.id === A2);
-    // a1 matches its entry (rt-1 + claude-opus-5) → false = no drift;
+    // a1 matches its entry (rt-1 + claude-opus-5) → is_drifted false;
     // a2 has no entry in the active profile → null = unjudged.
-    expect(a1?.active_profile_entry_matches).toBe(false);
-    expect(a2?.active_profile_entry_matches).toBeNull();
+    expect(a1?.is_drifted).toBe(false);
+    expect(a2?.is_drifted).toBeNull();
     expect(result.drift_summary).toMatchObject({ drifted_agent_count: 0 });
     expect((result.unbound_agents as unknown[]).length).toBe(2);
   });
