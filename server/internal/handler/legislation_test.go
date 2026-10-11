@@ -594,3 +594,59 @@ func TestPromptVersionRevertMarksEnactedProposals(t *testing.T) {
 		t.Fatalf("rollback must not change the proposal status: %q", got)
 	}
 }
+
+// TestListPromptProposalsByRun (RUYI-673): the run_id filter selects the
+// proposals a retrospective run created (audit_log's created entry carries
+// the run id as actor_id) or merged into (merged_from cites the run id);
+// the unfiltered listing is untouched.
+func TestListPromptProposalsByRun(t *testing.T) {
+	wsID, ownerID, memberID := legislationFixture(t)
+
+	run1 := "aaaaaaaa-0000-4000-8000-000000000001"
+	run2 := "bbbbbbbb-0000-4000-8000-000000000002"
+
+	retroAudit := func(run string) string {
+		audit, _ := json.Marshal([]map[string]any{{
+			"action": "created", "actor_type": "system", "actor_id": run,
+			"at": "2026-10-11T00:00:00Z",
+		}})
+		return string(audit)
+	}
+
+	idRun1 := createDraft(t, wsID, memberID, "按run过滤一", cleanClauseText)
+	idRun2 := createDraft(t, wsID, memberID, "按run过滤二", cleanClauseText)
+	idPlain := createDraft(t, wsID, memberID, "按run过滤普通", cleanClauseText)
+	dbfx.Exec(t, `UPDATE prompt_proposal SET audit_log = $2::jsonb WHERE id = $1`, idRun1, retroAudit(run1))
+	dbfx.Exec(t, `UPDATE prompt_proposal SET audit_log = $2::jsonb WHERE id = $1`, idRun2, retroAudit(run2))
+
+	// A merged-into row: a regular draft whose pool merge cites run2.
+	idMerged := createDraft(t, wsID, memberID, "按run过滤合并", cleanClauseText)
+	merged, _ := json.Marshal([]map[string]string{{"issue_id": wsID, "run_id": run2}})
+	dbfx.Exec(t, `UPDATE prompt_proposal SET merged_from = $2::jsonb WHERE id = $1`, idMerged, merged)
+
+	list := func(query string) map[string]bool {
+		t.Helper()
+		code, body := legislationCall(t, testHandler.ListPromptProposals,
+			legislationReq(ownerID, wsID, http.MethodGet, "/api/prompt-legislation/proposals"+query, nil))
+		if code != http.StatusOK {
+			t.Fatalf("list %q: expected 200, got %d: %s", query, code, body)
+		}
+		ids := map[string]bool{}
+		for _, id := range []string{idRun1, idRun2, idPlain, idMerged} {
+			if strings.Contains(body, id) {
+				ids[id] = true
+			}
+		}
+		return ids
+	}
+
+	if got := list("?run_id=" + run1); !got[idRun1] || len(got) != 1 {
+		t.Fatalf("run1 filter returned %v, want only %s", got, idRun1)
+	}
+	if got := list("?run_id=" + run2); !got[idRun2] || !got[idMerged] || len(got) != 2 {
+		t.Fatalf("run2 filter returned %v, want %s and %s", got, idRun2, idMerged)
+	}
+	if got := list(""); len(got) != 4 {
+		t.Fatalf("unfiltered list returned %v, want all four", got)
+	}
+}

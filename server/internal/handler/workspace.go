@@ -17,9 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
-	"github.com/multica-ai/multica/server/internal/quickreply"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/quickreply"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -108,6 +108,15 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// Workspace-level scheduling freeze (RUYI-608). The flag means the
+	// workspace-level switch itself is on — it does not aggregate
+	// agent-level freezes, which live on each agent resource. QueuedCount
+	// is the workspace-wide queued depth (the frozen backlog while
+	// paused); Reason/At carry the freeze row's audit note.
+	SchedulingPaused       bool    `json:"scheduling_paused"`
+	SchedulingPausedReason string  `json:"scheduling_paused_reason,omitempty"`
+	SchedulingPausedAt     *string `json:"scheduling_paused_at,omitempty"`
+	SchedulingQueuedCount  int64   `json:"scheduling_queued_count"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -174,6 +183,9 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	for i, ws := range workspaces {
 		resp[i] = h.workspaceToResponse(ws)
 	}
+	// Workspace-level freeze fields (RUYI-608), batch-filled so the list
+	// agrees with the detail endpoint and the settings toggle's data source.
+	h.applySchedulingToWorkspaceResponses(r.Context(), resp)
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -190,7 +202,9 @@ func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.workspaceToResponse(ws))
+	resp := h.workspaceToResponse(ws)
+	h.applySchedulingToWorkspaceResponse(r.Context(), &resp, idUUID)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type CreateWorkspaceRequest struct {
