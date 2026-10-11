@@ -70,13 +70,17 @@ RETURNING *;
 -- name: CountWorkspaceIssueDecisionsByStatus :one
 -- Section counts for the workspace decision inbox (RUYI-494). One scan
 -- serves all three counts; the caller scopes by workspace_id, which the
--- member middleware has already authorized.
+-- member middleware has already authorized. RUYI-630: authorization cards
+-- stay out of the inbox aggregation entirely — the item filter in the
+-- handler drops them, and these counts must agree with the items they
+-- badge, so they exclude the authorization kind at the source.
 SELECT
     count(*) FILTER (WHERE status = 'open')::int AS open_count,
     count(*) FILTER (WHERE status = 'answered')::int AS answered_count,
     count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
 FROM issue_decisions
-WHERE workspace_id = $1;
+WHERE workspace_id = $1
+  AND decision_kind = 'question';
 
 -- name: ListWorkspaceIssueDecisions :many
 -- Workspace decision inbox rows (RUYI-494). One row PER CARD — issues are

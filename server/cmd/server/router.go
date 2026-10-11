@@ -1869,6 +1869,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// never reach it even if a route lands here by mistake
 					// (the handler re-checks too).
 					r.Route("/decision-requests", func(r chi.Router) {
+						// Creation is agent-only in the handler (resolveActor
+						// must land on the creating agent; member credentials
+						// get 403) — the channel exists because agent
+						// credentials cannot reach the sensitive endpoint
+						// themselves.
+						r.Post("/", h.CreateDecisionRequest)
 						r.Get("/", h.ListDecisionRequests)
 						r.Route("/{requestId}", func(r chi.Router) {
 							r.Get("/", h.GetDecisionRequest)
