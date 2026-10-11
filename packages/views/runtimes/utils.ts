@@ -404,7 +404,6 @@ export function isModelPriced(model: string, provider?: string): boolean {
 // model with a missing rate would report "1 row we couldn't price" on an
 // issue that never spent anything.
 export function isUsageRowUnpriced(row: Priceable): boolean {
-  if (!row.model) return false;
   if (isModelPriced(row.model, row.provider)) return false;
   // Priced in full by the provider: nothing left for us to estimate.
   const uncosted = uncostedTokens(row);
@@ -441,7 +440,14 @@ export function isUsageRowUnpriced(row: Priceable): boolean {
 export function collectUnmappedModels(rows: readonly Priceable[]): string[] {
   const set = new Set<string>();
   for (const r of rows) {
-    if (isUsageRowUnpriced(r)) set.add(pricingKey(r.model, r.provider));
+    if (!isUsageRowUnpriced(r)) continue;
+    // `pricingKey("")` degrades to `acme/` (or to nothing at all without a
+    // provider). An unnamed row groups under the provider name — or
+    // `unknown` — everywhere else (modelGroupingKey), so the banner names
+    // the same bucket the table shows.
+    set.add(
+      r.model ? pricingKey(r.model, r.provider) : normalizeProvider(r.provider) || "unknown",
+    );
   }
   return Array.from(set).toSorted();
 }
