@@ -1624,11 +1624,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// purpose: the bearer token in the URL path IS the credential. Workspace
 	// context is derived from the trigger row, never from request headers.
 	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
-	// Agent webhook ingress (RUYI-52). Same bearer-URL credential model; the
-	// bound prompt alone starts a fresh chat session, so the body is never
-	// read and GET (browser test) and POST (workflow step) are equivalent.
-	r.Get("/api/webhooks/agents/{token}", h.HandleAgentWebhook)
-	r.Post("/api/webhooks/agents/{token}", h.HandleAgentWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
@@ -1903,6 +1898,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
+					// Workspace scheduling freeze state (RUYI-608):
+					// member-visible — the agents list and workspace DTO
+					// already expose the same flag; freeze/resume writes
+					// stay in the owner/admin group below.
+					r.Get("/scheduling-pause", h.GetWorkspaceSchedulingPause)
 					// The instance directory is browse-only and
 					// member-visible, for the same reason the installed list
 					// is: a member seeing what this instance offers is how
@@ -1980,6 +1980,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/plugins/{installationId}/config", h.ConfigurePlugin)
 					r.Post("/plugins/{installationId}/enable", h.EnablePlugin)
 					r.Post("/plugins/{installationId}/disable", h.DisablePlugin)
+					// Workspace-level scheduling freeze (RUYI-608): one
+					// switch holds every agent in the workspace. Writes are
+					// owner/admin (middleware below + the handler's
+					// human-only backstop); the state read is member-visible
+					// in the group above.
+					r.Post("/scheduling-pause", h.PauseWorkspaceScheduling)
+					r.Delete("/scheduling-pause", h.ResumeWorkspaceScheduling)
 					// Both outlive plugins_v1: they are the two cleanup levers.
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
@@ -2551,6 +2558,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateAutopilot)
 					r.Delete("/", h.DeleteAutopilot)
 					r.Post("/trigger", h.TriggerAutopilot)
+					r.Get("/params", h.ListAutopilotParams)
+					r.Put("/params", h.ReplaceAutopilotParams)
 					r.Get("/runs", h.ListAutopilotRuns)
 					r.Get("/runs/{runId}", h.GetAutopilotRun)
 					r.Get("/deliveries", h.ListAutopilotDeliveries)
@@ -2601,6 +2610,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Comments
 			r.Route("/api/comments/{commentId}", func(r chi.Router) {
+				r.With(handler.RequireHumanActor).Get("/anchor", h.ResolveCommentAnchor)
 				r.With(handler.RequireHumanActor).Get("/sub-issue-preview", h.PreviewCommentSubIssue)
 				r.With(handler.RequireHumanActor).Post("/sub-issues", h.CreateCommentSubIssue)
 				r.Put("/", h.UpdateComment)
@@ -2658,18 +2668,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// internal/handler/agent_env.go.
 					r.Get("/env", h.GetAgentEnv)
 					r.Put("/env", h.UpdateAgentEnv)
-					// Agent webhooks (RUYI-52): list for any viewer of the
-					// agent (credential fields stripped for non-managers);
-					// writes gate through canManageAgent. See
-					// internal/handler/agent_webhook.go.
-					r.Get("/webhooks", h.ListAgentWebhooks)
-					r.Post("/webhooks", h.CreateAgentWebhook)
-					r.Route("/webhooks/{webhookId}", func(r chi.Router) {
-						r.Put("/", h.UpdateAgentWebhook)
-						r.Put("/enabled", h.SetAgentWebhookEnabled)
-						r.Post("/rotate", h.RotateAgentWebhook)
-						r.Delete("/", h.DeleteAgentWebhook)
-					})
+					// Scheduling freeze (RUYI-608): freeze/unfreeze this
+					// agent's task consumption. Queued tasks keep queueing;
+					// only ClaimAgentTask is fenced. Writes are workspace
+					// owner/admin, human-only — the handler enforces both
+					// (machine-credential backstop + role gate); reads are
+					// member-visible.
+					r.Post("/scheduling-pause", h.PauseAgentScheduling)
+					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
+					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
 				})
 			})
 

@@ -88,7 +88,7 @@ export default function SwitchWorkspaceRoute() {
           <ActivityIndicator />
         </View>
       ) : (
-        <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+        <ScrollView className="flex-1" showsVerticalScrollIndicator={false} nestedScrollEnabled>
           {(data ?? []).map((ws) => {
             const active = ws.slug === activeSlug;
             return (

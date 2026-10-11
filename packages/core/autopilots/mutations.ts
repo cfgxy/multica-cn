@@ -9,6 +9,7 @@ import type {
   GetAutopilotResponse,
   CreateAutopilotTriggerRequest,
   UpdateAutopilotTriggerRequest,
+  AutopilotParamInput,
 } from "../types";
 
 export function useCreateAutopilot() {
@@ -39,10 +40,11 @@ export function useUpdateAutopilot() {
       qc.cancelQueries({ queryKey: autopilotKeys.list(wsId) });
       const prevList = qc.getQueryData<ListAutopilotsResponse>(autopilotKeys.list(wsId));
       const prevDetail = qc.getQueryData<GetAutopilotResponse>(autopilotKeys.detail(wsId, id));
-      // Request shape (AutopilotSubscriberInput) lacks `created_at`, so it's
-      // not assignable to the response shape. onSettled invalidates the
-      // detail query and refetches the authoritative server payload.
-      const { subscribers: _omitSubs, ...optimistic } = data;
+      // Request shape (AutopilotSubscriberInput / AutopilotParamInput) lacks
+      // `created_at`, so it's not assignable to the response shape.
+      // onSettled invalidates the detail and params queries and refetches the
+      // authoritative server payloads.
+      const { subscribers: _omitSubs, params: _omitParams, ...optimistic } = data;
       qc.setQueryData<ListAutopilotsResponse>(autopilotKeys.list(wsId), (old) =>
         old
           ? {
@@ -64,6 +66,8 @@ export function useUpdateAutopilot() {
     },
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: autopilotKeys.detail(wsId, vars.id) });
+      // The PATCH may carry a whole-set params swap; refetch the contract.
+      qc.invalidateQueries({ queryKey: autopilotKeys.params(wsId, vars.id) });
       qc.invalidateQueries({ queryKey: autopilotKeys.list(wsId) });
     },
   });
@@ -172,6 +176,22 @@ export function useRotateAutopilotTriggerWebhookToken() {
       api.rotateAutopilotTriggerWebhookToken(autopilotId, triggerId),
     onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: autopilotKeys.detail(wsId, vars.autopilotId) });
+    },
+  });
+}
+
+// Whole-set replacement of the parameter definitions (RUYI-641). The server
+// validates the set as a unit — duplicate names, enum defaults, template
+// references — so a rejection leaves the stored set untouched. Settled
+// invalidation refetches the authoritative set for the dialog.
+export function useReplaceAutopilotParams() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: ({ autopilotId, params }: { autopilotId: string; params: AutopilotParamInput[] }) =>
+      api.replaceAutopilotParams(autopilotId, params),
+    onSettled: (_data, _err, vars) => {
+      qc.invalidateQueries({ queryKey: autopilotKeys.params(wsId, vars.autopilotId) });
     },
   });
 }
