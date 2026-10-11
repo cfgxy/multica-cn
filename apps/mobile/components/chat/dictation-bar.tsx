@@ -102,8 +102,8 @@ export function DictationBar({
 
   return (
     <Animated.View
-      entering={FadeIn.duration(140)}
-      exiting={FadeOut.duration(140)}
+      entering={FadeIn.springify().duration(240)}
+      exiting={FadeOut.springify().duration(240)}
       className="flex-row items-center px-2"
       style={barStyle}
     >
