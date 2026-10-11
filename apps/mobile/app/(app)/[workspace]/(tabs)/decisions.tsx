@@ -37,7 +37,8 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Header } from "@/components/ui/header";
 import { DecisionInboxRow } from "@/components/decision/decision-inbox-row";
-import { workspaceDecisionInboxOptions } from "@/data/queries/decisions";
+import { DecisionRequestRow } from "@/components/decision/decision-request-row";
+import { workspaceDecisionInboxOptions, workspaceDecisionRequestsOptions } from "@/data/queries/decisions";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useDecisionsViewStore } from "@/data/stores/decisions-view-store";
 import {
@@ -48,6 +49,7 @@ import {
   type DecisionInboxRow as DecisionRowData,
   type DecisionTab,
 } from "@/lib/decision-inbox-display";
+import type { DecisionRequest } from "@multica/core/types";
 import { shouldWrapTaskPills } from "@/lib/task-toolbar";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -65,6 +67,13 @@ export default function Decisions() {
     refetch,
     isRefetching,
   } = useQuery(workspaceDecisionInboxOptions(wsId ?? null));
+
+  // Authorization requests (RUYI-630): own section above the card list —
+  // the authorization summary never enters the card TAB buckets (决策5).
+  const { data: requestsData } = useQuery(
+    workspaceDecisionRequestsOptions(wsId ?? null),
+  );
+  const requestItems = useMemo(() => requestsData?.items ?? [], [requestsData]);
 
   // Workspace-scoped filters live in a module-global store while this screen
   // remounts per workspace — same syncWorkspace pattern as the Tasks tab
@@ -190,13 +199,22 @@ export default function Decisions() {
           </Button>
         </View>
       ) : sections.length === 0 ? (
-        filtersActive || tab !== "all" ? (
+        requestItems.length > 0 ? (
+          <ScrollView contentContainerClassName="pb-6">
+            <DecisionRequestsPanel items={requestItems} />
+          </ScrollView>
+        ) : filtersActive || tab !== "all" ? (
           <DecisionsFilteredEmpty />
         ) : (
           <DecisionsEmpty iconColor={THEME[colorScheme].mutedForeground} />
         )
       ) : (
         <SectionList
+          ListHeaderComponent={
+            requestItems.length > 0 ? (
+              <DecisionRequestsPanel items={requestItems} />
+            ) : null
+          }
           sections={sections}
           keyExtractor={(row) => row.id}
           renderItem={renderItem}
@@ -212,6 +230,35 @@ export default function Decisions() {
           stickySectionHeadersEnabled={false}
         />
       )}
+    </View>
+  );
+}
+
+/**
+ * Authorization requests section (RUYI-630). Renders above the card list
+ * (ListHeaderComponent) or as the tab's sole content when no cards match —
+ * the summary never folds into the 待决策/已决策 buckets.
+ */
+function DecisionRequestsPanel({ items }: { items: DecisionRequest[] }) {
+  const { t } = useT("decisions");
+  const { colorScheme } = useColorScheme();
+  return (
+    <View>
+      <View className="flex-row items-center gap-1.5 px-4 pb-1 pt-4">
+        <Ionicons
+          name="shield-checkmark-outline"
+          size={13}
+          color={THEME[colorScheme].brand}
+        />
+        <Text className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {`${t("requests.section_title", "Authorization requests")} · ${items.length}`}
+        </Text>
+      </View>
+      <View className="mx-4 mt-1 rounded-lg border border-border bg-secondary/30">
+        {items.map((request) => (
+          <DecisionRequestRow key={request.id} request={request} />
+        ))}
+      </View>
     </View>
   );
 }

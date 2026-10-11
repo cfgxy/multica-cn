@@ -65,6 +65,24 @@ type IssueDecisionResponse struct {
 	// original card because the create was a same-key retry; fresh creates
 	// are 201 with the field omitted.
 	IdempotentReplay bool `json:"idempotent_replay,omitempty"`
+	// RUYI-630 authorization face. decision_kind discriminates "question"
+	// (the original surface) from "authorization" (the origin step of a
+	// decision request: two fixed buttons, card-click only, tiers enforced).
+	// answer_source records which channel answered (card_click / text_token
+	// / batch); on authorization cards it is authorization-grade truth.
+	DecisionKind     string     `json:"decision_kind"`
+	VisibleTier      string     `json:"visible_tier"`
+	OperatorTier     string     `json:"operator_tier"`
+	NamedApproverIDs []string   `json:"named_approver_ids"`
+	ApproveLabel     *string    `json:"approve_label"`
+	DenyLabel        *string    `json:"deny_label"`
+	ExpiresAt        *time.Time `json:"expires_at"`
+	AnswerSource     *string    `json:"answer_source"`
+	AuthState        *string    `json:"auth_state"`
+	RequestGroupID   *string    `json:"request_group_id"`
+	ActionType       *string    `json:"action_type"`
+	ExecutedAt       *time.Time `json:"executed_at"`
+	ExecutionError   *string    `json:"execution_error"`
 }
 
 type CreateIssueDecisionRequest struct {
@@ -232,6 +250,49 @@ func decisionToResponse(d db.IssueDecision) IssueDecisionResponse {
 		v := uuidToString(d.AnswerCommentID)
 		resp.AnswerCommentID = &v
 	}
+	// RUYI-630: authorization-face columns. question cards carry the
+	// defaults (kind=question, members tier, no window); authorization
+	// cards carry the request linkage and execution outcome.
+	resp.DecisionKind = d.DecisionKind
+	resp.VisibleTier = d.VisibleTier
+	resp.OperatorTier = d.OperatorTier
+	resp.NamedApproverIDs = parseUUIDJSONArray(d.NamedApproverIds)
+	if d.ApproveLabel.Valid {
+		v := d.ApproveLabel.String
+		resp.ApproveLabel = &v
+	}
+	if d.DenyLabel.Valid {
+		v := d.DenyLabel.String
+		resp.DenyLabel = &v
+	}
+	if d.ExpiresAt.Valid {
+		v := d.ExpiresAt.Time
+		resp.ExpiresAt = &v
+	}
+	if d.AnswerSource.Valid {
+		v := d.AnswerSource.String
+		resp.AnswerSource = &v
+	}
+	if d.AuthState.Valid {
+		v := d.AuthState.String
+		resp.AuthState = &v
+	}
+	if d.PendingRequestGroupID.Valid {
+		v := uuidToString(d.PendingRequestGroupID)
+		resp.RequestGroupID = &v
+	}
+	if d.PendingActionType.Valid {
+		v := d.PendingActionType.String
+		resp.ActionType = &v
+	}
+	if d.ExecutedAt.Valid {
+		v := d.ExecutedAt.Time
+		resp.ExecutedAt = &v
+	}
+	if d.ExecutionError.Valid {
+		v := d.ExecutionError.String
+		resp.ExecutionError = &v
+	}
 	return resp
 }
 
@@ -367,9 +428,40 @@ func (h *Handler) ListIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]IssueDecisionResponse, 0, len(decisions))
 	for _, d := range decisions {
+		if !h.decisionCardVisibleToCaller(r, uuidToString(issue.WorkspaceID), d) {
+			continue
+		}
 		resp = append(resp, decisionToResponse(d))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// decisionCardVisibleToCaller applies the card's visible tier (RUYI-630
+// 第一节: restricted cards show to owners and named approvers only). The
+// creating agent always sees its own card. Legacy rows default to the
+// members tier and are unaffected.
+func (h *Handler) decisionCardVisibleToCaller(r *http.Request, workspaceID string, card db.IssueDecision) bool {
+	if card.VisibleTier != "restricted" {
+		return true
+	}
+	userID := requestUserID(r)
+	authorType, authorID := h.resolveActor(r, userID, workspaceID)
+	if authorType == "agent" {
+		return uuidToString(card.CreatedByID) == authorID
+	}
+	if role, ok := h.workspaceRole(r, userID, workspaceID); ok && role == "owner" {
+		return true
+	}
+	return containsUUIDString(parseUUIDJSONArray(card.NamedApproverIds), userID)
+}
+
+// workspaceRole resolves the caller's role without writing a response.
+func (h *Handler) workspaceRole(r *http.Request, userID, workspaceID string) (string, bool) {
+	member, err := h.getWorkspaceMember(r.Context(), userID, workspaceID)
+	if err != nil {
+		return "", false
+	}
+	return member.Role, true
 }
 
 // loadDecisionForIssue fetches a card and verifies it belongs to the issue in
@@ -431,6 +523,16 @@ func (h *Handler) AnswerIssueDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	// RUYI-630: authorization cards answer through their own CAS, tier gate,
+	// origin-row sync, and group advance — they never reach the question-card
+	// CAS below, and their echo never mentions the agent (the requesting run
+	// is woken once, at terminal).
+	if decision.DecisionKind == "authorization" {
+		h.answerAuthorizationCard(w, r, issue, decision, req.SelectedIndices, authorID)
+		return
+	}
+
 	if err := validateDecisionAnswer(len(parseDecisionOptions(decision.Options)), decision.MultiSelect, req.SelectedIndices); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -450,6 +552,7 @@ func (h *Handler) AnswerIssueDecision(w http.ResponseWriter, r *http.Request) {
 		SelectedIndices: selectedJSON,
 		AnsweredByType:  pgtype.Text{String: "member", Valid: true},
 		AnsweredByID:    parseUUID(authorID),
+		AnswerSource:    decisionSourceCardClick,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -549,6 +652,15 @@ func (h *Handler) CancelIssueDecision(w http.ResponseWriter, r *http.Request) {
 
 	decision, ok := h.loadDecisionForIssue(w, r, issue)
 	if !ok {
+		return
+	}
+
+	// RUYI-630: an authorization card's lifecycle belongs to its decision
+	// request — cancelling here would strand the request's other rows and
+	// steps. The request cancel endpoint (decision-requests/{id}/cancel)
+	// settles the whole group.
+	if decision.DecisionKind == "authorization" {
+		writeError(w, http.StatusConflict, "authorization cards are cancelled through the decision request, not this endpoint")
 		return
 	}
 

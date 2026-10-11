@@ -1875,6 +1875,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// this middleware. Read-only; answering stays on the
 					// issue-scoped endpoints.
 					r.Get("/decision-inbox", h.ListWorkspaceDecisionInbox)
+					// RUYI-630: the sensitive-operation authorization carrier.
+					// Reads are member-visible; the answer route additionally
+					// sits behind RequireHumanActor — machine credentials
+					// never reach it even if a route lands here by mistake
+					// (the handler re-checks too).
+					r.Route("/decision-requests", func(r chi.Router) {
+						// Creation is agent-only in the handler (resolveActor
+						// must land on the creating agent; member credentials
+						// get 403) — the channel exists because agent
+						// credentials cannot reach the sensitive endpoint
+						// themselves.
+						r.Post("/", h.CreateDecisionRequest)
+						r.Get("/", h.ListDecisionRequests)
+						r.Route("/{requestId}", func(r chi.Router) {
+							r.Get("/", h.GetDecisionRequest)
+							r.With(handler.RequireHumanActor).Post("/answer", h.AnswerDecisionRequest)
+							r.Post("/cancel", h.CancelDecisionRequest)
+						})
+					})
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
