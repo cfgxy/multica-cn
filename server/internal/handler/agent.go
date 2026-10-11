@@ -3137,6 +3137,11 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	// RUYI-397/700: same admission decoration as the execution-log read — a
+	// queued row whose agent's bound runtime sits under a fresh backpressure
+	// hold carries the reason, so the mobile task history renders "waiting
+	// for runtime recovery" instead of a silent stall.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
@@ -3413,6 +3418,10 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
 	}
+	// RUYI-700: the mobile task history renders active queued rows straight
+	// from this snapshot, so apply the same backpressure decoration as the
+	// list reads — otherwise those queued rows stall silently.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)

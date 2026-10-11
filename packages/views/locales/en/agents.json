@@ -1044,7 +1044,8 @@
     "detail": {
       "section_history": "Run history",
       "edit_profile": "Edit Profile",
-      "tab_active": "Active",
+      "tab_active": "History",
+      "section_active": "Active",
       "fact_status": "Status",
       "fact_runtime_unbound": "No runtime",
       "bind_runtime": "Bind runtime",
@@ -1063,7 +1064,9 @@
     },
     "run_history": {
       "load_more": "Load more",
-      "empty": "No runs yet."
+      "empty": "No runs yet.",
+      "queued_backpressure": "Waiting for runtime recovery",
+      "other_agents": "{{count}} agents active"
     },
     "edit": {
       "model_placeholder": "Leave empty for the runtime default",
