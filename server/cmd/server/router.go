@@ -1992,6 +1992,27 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
+				// Voice provider pool (RUYI-693): the listing is
+				// member-visible — the settings page renders the pool for
+				// everyone — while pool writes are workspace-admin state,
+				// the same split as the workspace settings themselves.
+				r.Route("/voice-providers", func(r chi.Router) {
+					r.Get("/", h.ListVoiceProviders)
+					r.Group(func(r chi.Router) {
+						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+						r.Post("/", h.CreateVoiceProvider)
+						r.Route("/{providerId}", func(r chi.Router) {
+							r.Patch("/", h.UpdateVoiceProvider)
+							r.Delete("/", h.DeleteVoiceProvider)
+							// The key itself never round-trips: it enters
+							// here (and probes on save) and is only ever
+							// read back as the coarse status badge.
+							r.Put("/credentials/{credentialKey}", h.PutVoiceProviderCredential)
+							r.Delete("/credentials/{credentialKey}", h.DeleteVoiceProviderCredential)
+							r.Post("/credential-probe", h.RunVoiceProviderProbe)
+						})
+					})
+				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
