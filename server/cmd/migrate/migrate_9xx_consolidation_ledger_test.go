@@ -141,6 +141,7 @@ var postConsolidationStems = []string{
 	"940_decision_requests",                          // RUYI-630 (938 reserved to RUYI-618 in flight)
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
+	"961_voice_provider_config",                      // RUYI-693
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

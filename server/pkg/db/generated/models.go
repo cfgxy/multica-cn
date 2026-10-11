@@ -72,6 +72,9 @@ type Agent struct {
 	ResourceWeight         int32       `json:"resource_weight"`
 	Revision               int64       `json:"revision"`
 	VoiceRuntimeID         pgtype.UUID `json:"voice_runtime_id"`
+	VoiceProviderID        pgtype.UUID `json:"voice_provider_id"`
+	VoiceModel             pgtype.Text `json:"voice_model"`
+	VoiceAdvanced          []byte      `json:"voice_advanced"`
 }
 
 type AgentBuilderDraft struct {
@@ -2167,6 +2170,20 @@ type VerificationCode struct {
 	Used      bool               `json:"used"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	Attempts  int32              `json:"attempts"`
+}
+
+type VoiceProvider struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	DisplayName     string             `json:"display_name"`
+	ProviderType    string             `json:"provider_type"`
+	CredentialRef   pgtype.Text        `json:"credential_ref"`
+	Metadata        []byte             `json:"metadata"`
+	Enabled         bool               `json:"enabled"`
+	SourceRuntimeID pgtype.UUID        `json:"source_runtime_id"`
+	CreatedBy       pgtype.UUID        `json:"created_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WebhookDelivery struct {

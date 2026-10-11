@@ -1058,12 +1058,13 @@ func TestDecisionRequestCrossSpaceTeardownRevokesGroup(t *testing.T) {
 	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
 		"action_type": "workspace_info_read", "title": "teardown mid-flight",
 		"target_workspace_id": ws2,
+		"origin_issue_id":     f.IssueID,
 	})
 	detail := decodeDecisionRequestDetail(t, w)
-	// Approve the origin step; the group waits on ws2's owner.
-	if aw := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); aw.Code != http.StatusOK {
-		t.Fatalf("origin approve: %d", aw.Code)
-	}
+	// Nothing is answered: both steps pending, the origin link card pending.
+	// A card already answered on its own step keeps that step's verdict by
+	// design (the card records this step, the group terminal rides the
+	// callback) — the group-level revoke is observable on the pending card.
 
 	// Mirror the DeleteWorkspace ordering: the revoke step runs inside the
 	// delete transaction, then the cascade CTE sweeps this side's rows.
@@ -1081,6 +1082,11 @@ func TestDecisionRequestCrossSpaceTeardownRevokesGroup(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT status FROM decision_requests WHERE id = $1`, detail.Request.ID).Scan(&originStatus)
 	if originStatus != "revoked" {
 		t.Fatalf("surviving origin row = %s, want revoked with its deleted counterparty", originStatus)
+	}
+	var cardAuth string
+	dbfx.QueryRow(t, `SELECT auth_state FROM issue_decisions WHERE pending_request_group_id = $1`, detail.Request.RequestGroupID).Scan(&cardAuth)
+	if cardAuth != "revoked" {
+		t.Fatalf("origin link card auth_state = %s, want revoked with the torn-down group", cardAuth)
 	}
 
 	// The survivor must not advance on its own: no phantom execution after
