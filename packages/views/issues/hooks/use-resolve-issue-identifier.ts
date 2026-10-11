@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { issueIdentifierOptions } from "@multica/core/issues/queries";
+import { identifierMatchesPrefix } from "@multica/core/markdown";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { isIssueIdentifier } from "@multica/ui/markdown";
 import type { Issue } from "@multica/core/types";
@@ -25,9 +26,7 @@ export function useResolveIssueIdentifier(identifier: string): Issue | null {
   const workspace = useCurrentWorkspace();
   const wsId = workspace?.id ?? "";
   const prefix = workspace?.issue_prefix;
-  const prefixMatches =
-    !prefix ||
-    identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`);
+  const prefixMatches = identifierMatchesPrefix(identifier, prefix);
 
   const { data } = useQuery({
     ...issueIdentifierOptions(wsId, identifier),
