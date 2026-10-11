@@ -27,6 +27,7 @@ import type {
   IssueTableRowsResponse,
   Agent,
   MikaBootstrapResponse,
+  SchedulingPauseState,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
@@ -58,6 +59,7 @@ import type {
   InboxWorkspaceUnread,
   IssueSubscriber,
   Comment,
+  CommentAnchor,
   CommentTriggerPreview,
   IssueTriggerPreview,
   IssueTriggerPreviewParams,
@@ -118,9 +120,6 @@ import type {
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   SetAgentRuntimeSkillEnabledRequest,
-  AgentWebhook,
-  CreateAgentWebhookRequest,
-  UpdateAgentWebhookRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
@@ -208,6 +207,8 @@ import type {
   CronPreviewResponse,
   GetAutopilotResponse,
   AutopilotCollaboratorsResponse,
+  AutopilotParamsResponse,
+  AutopilotParamInput,
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
@@ -1811,6 +1812,19 @@ export class ApiClient {
     return this.fetch(`/api/comments/${commentId}/resolve`, { method: "POST" });
   }
 
+  /**
+   * Resolve which issue hosts a comment and how to label a jump to it
+   * (RUYI-643). Backs cross-issue `mention://comment/<id>` chips: the local
+   * render context only knows the current issue's comments, so a miss there
+   * probes this endpoint. 404 covers every miss uniformly — unknown, deleted,
+   * or hosted by another workspace.
+   */
+  async getCommentAnchor(commentId: string, options?: { signal?: AbortSignal }): Promise<CommentAnchor> {
+    return this.fetch<CommentAnchor>(`/api/comments/${commentId}/anchor`, {
+      signal: options?.signal,
+    });
+  }
+
   async unresolveComment(commentId: string): Promise<Comment> {
     return this.fetch(`/api/comments/${commentId}/resolve`, { method: "DELETE" });
   }
@@ -2070,6 +2084,54 @@ export class ApiClient {
   // surfaces can clear their live cards.
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
+  }
+
+  /**
+   * Freezes this agent's task claiming (RUYI-608). Queued tasks keep
+   * coalescing and running tasks drain; nothing new is claimed until
+   * {@link resumeAgentScheduling}. Idempotent — re-pausing a paused agent
+   * keeps the original freeze row. Workspace owner/admin ONLY: agent owners
+   * without the workspace role, plain members, and every machine credential
+   * (including the agent itself) get 403.
+   */
+  async pauseAgentScheduling(id: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts an agent-level scheduling freeze (RUYI-608). The server
+   * invalidates the runtime's cached empty-claim verdict, so queued tasks
+   * flow on the agent's next poll. No-op success when not paused; still
+   * returns the queue depth. A workspace-level freeze is NOT lifted here.
+   * Same owner/admin-only permission as pause.
+   */
+  async resumeAgentScheduling(id: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, { method: "DELETE" });
+  }
+
+  /**
+   * Freezes task claiming for EVERY agent in the workspace (RUYI-608).
+   * Workspace owner/admin only. See {@link pauseAgentScheduling} for the
+   * frozen-state semantics; an agent-level resume does not lift this.
+   */
+  async pauseWorkspaceScheduling(workspaceId: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts the workspace-level scheduling freeze (RUYI-608) and invalidates
+   * every runtime's empty-claim cache in the workspace, so all agents pick
+   * queued tasks back up on their next poll. No-op success when not paused.
+   * Workspace owner/admin only.
+   */
+  async resumeWorkspaceScheduling(workspaceId: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, { method: "DELETE" });
   }
 
   async listRuntimes(
@@ -4618,9 +4680,11 @@ export class ApiClient {
     });
   }
 
-  async listPromptProposals(params?: { status?: string }): Promise<PromptProposal[]> {
+  async listPromptProposals(params?: { status?: string; runId?: string }): Promise<PromptProposal[]> {
     const query = new URLSearchParams();
     if (params?.status) query.set("status", params.status);
+    // RUYI-673: scope the pool to one retrospective run's batch.
+    if (params?.runId) query.set("run_id", params.runId);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals${suffix}`);
     return parseWithFallback(raw, PromptProposalListSchema, [], {
@@ -4893,48 +4957,7 @@ export class ApiClient {
 	async setAgentSkillEnabled(agentId: string, skillId: string, enabled: boolean): Promise<void> {
 		await this.fetch(`/api/agents/${agentId}/skills/${skillId}/enabled`, {
 			method: "PUT",
-			body: JSON.stringify({ enabled }),
-		});
-	}
-
-  // Agent webhooks (RUYI-52): public trigger URLs bound to a fixed prompt.
-  // webhook_token / webhook_path / webhook_url come back only for managers —
-  // the server strips them for anyone else.
-  async listAgentWebhooks(agentId: string): Promise<AgentWebhook[]> {
-    return this.fetch(`/api/agents/${agentId}/webhooks`);
-  }
-
-  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  }
-
-  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    });
-  }
-
-  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/enabled`, {
-      method: "PUT",
       body: JSON.stringify({ enabled }),
-    });
-  }
-
-  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/rotate`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-  }
-
-  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
-    await this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "DELETE",
     });
   }
 
@@ -5994,6 +6017,20 @@ export class ApiClient {
 
   async deleteAutopilot(id: string): Promise<void> {
     await this.fetch(`/api/autopilots/${id}`, { method: "DELETE" });
+  }
+
+  // Parameter definitions (RUYI-641): read by any member who can view the
+  // autopilot; replaced as a whole set by writers. A validation rejection is
+  // a 400 whose error message names the offending parameter (never a value).
+  async listAutopilotParams(id: string): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`);
+  }
+
+  async replaceAutopilotParams(id: string, params: AutopilotParamInput[]): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`, {
+      method: "PUT",
+      body: JSON.stringify({ params }),
+    });
   }
 
   // Grant a workspace member explicit write access to the autopilot. Both

@@ -36,7 +36,9 @@ import { Textarea } from "@multica/ui/components/ui/textarea";
 import { clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
 import {
+  formatRetrospectiveStamp,
   promptProposalListOptions,
+  retrospectiveRunsOptions,
   useApprovePromptProposal,
   useBatchApprovePromptProposals,
   useCreatePromptProposal,
@@ -53,7 +55,7 @@ import type {
   PromptProposalDraftRequest,
 } from "@multica/core/types";
 import { ProposalPreviewDialog } from "./proposal-preview-dialog";
-import { AppLink } from "../../navigation";
+import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { useWorkspacePaths } from "@multica/core/paths";
 
@@ -115,9 +117,16 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   const currentMember = useCurrentMember(wsId);
   const canManage = currentMember.role === "owner";
   const paths = useWorkspacePaths();
+  const navigation = useNavigation();
 
   const [status, setStatus] = useState("");
   const [source, setSource] = useState("");
+  // RUYI-673: the run filter scopes the pool to one retrospective run's
+  // batch. Seeded from `?run=` so the two deep-link entries (the agent
+  // detail page's retrospective run rows and the retrospective page's run
+  // list) land on the same scoped results view; changes are written back
+  // so the URL keeps sharing the exact view.
+  const [runId, setRunId] = useState(() => navigation.searchParams.get("run") ?? "");
   const [selectedId, setSelectedId] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<PromptProposal | null>(null);
@@ -128,7 +137,8 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   const [rejectFor, setRejectFor] = useState<PromptProposal | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
-  const list = useQuery(promptProposalListOptions(wsId, status));
+  const runsQuery = useQuery(retrospectiveRunsOptions(wsId));
+  const list = useQuery(promptProposalListOptions(wsId, status, runId));
   const create = useCreatePromptProposal(wsId);
   const updateDraft = useUpdatePromptProposalDraft(wsId);
   const submit = useSubmitPromptProposal(wsId);
@@ -176,6 +186,22 @@ export function ProposalTab({ wsId }: { wsId: string }) {
 
   const mutationError = (e: unknown) =>
     toast.error(clientErrorMessage(e) ?? t(($) => $.legislation.error));
+
+  const runTitle = (runId: string) => {
+    const run = (runsQuery.data ?? []).find((r) => r.id === runId);
+    return t(($) => $.retrospective.runTitle, {
+      stamp: formatRetrospectiveStamp(run?.window_end ?? ""),
+    });
+  };
+
+  const applyRun = (next: string) => {
+    setRunId(next);
+    const params = new URLSearchParams(navigation.searchParams);
+    if (next) params.set("run", next);
+    else params.delete("run");
+    const qs = params.toString();
+    navigation.replace(qs ? `${navigation.pathname}?${qs}` : navigation.pathname);
+  };
 
   const openCreate = () => {
     setEditing(null);
@@ -263,6 +289,44 @@ export function ProposalTab({ wsId }: { wsId: string }) {
               {STATUSES.map((st) => (
                 <SelectItem key={st} value={st}>
                   {statusLabel(st)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            items={[
+              { value: "", label: t(($) => $.legislation.runFilterAll) },
+              ...(runsQuery.data ?? []).map((r) => ({
+                value: r.id,
+                label: t(($) => $.retrospective.runTitle, {
+                  stamp: formatRetrospectiveStamp(r.window_end),
+                }),
+              })),
+            ]}
+            value={runId}
+            onValueChange={(next) => {
+              if (typeof next === "string") applyRun(next);
+            }}
+          >
+            <SelectTrigger
+              size="sm"
+              className="w-56"
+              aria-label={t(($) => $.legislation.runFilterLabel)}
+              data-testid="legislation-run-filter"
+            >
+              <SelectValue>
+                {runId === ""
+                  ? t(($) => $.legislation.runFilterAll)
+                  : runTitle(runId)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">{t(($) => $.legislation.runFilterAll)}</SelectItem>
+              {(runsQuery.data ?? []).map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {t(($) => $.retrospective.runTitle, {
+                    stamp: formatRetrospectiveStamp(r.window_end),
+                  })}
                 </SelectItem>
               ))}
             </SelectContent>
