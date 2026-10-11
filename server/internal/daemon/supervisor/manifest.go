@@ -48,6 +48,13 @@ const (
 const (
 	ExitSourceLauncher   = "launcher"   // launcher observed the worker exit itself
 	ExitSourceSupervisor = "supervisor" // supervisor stopped the unit; cgroup teardown is the evidence
+	// ExitSourceLost marks a synthesized exit for a worker that is provably
+	// gone with nobody having recorded its exit (RUYI-592 fix 2): the unit
+	// disappeared, no exit record ever landed, and nothing holds the run's
+	// lock. It is convergence evidence, not an observed death — exactly the
+	// Decide matrix's lost corner, persisted so downstream readers converge
+	// on one record instead of re-deriving the loss.
+	ExitSourceLost = "lost"
 )
 
 // Manifest is the run's persisted identity. Written by the daemon before
@@ -73,6 +80,15 @@ type Manifest struct {
 	StderrLog     string      `json:"stderr_log"`
 	StartedAt     time.Time   `json:"started_at"`
 	Exit          *ExitRecord `json:"exit,omitempty"`
+	// DaemonID is the persistent identity of the daemon that launched the
+	// run (RUYI-592 fix 1). Reconciliation's one irreversible action — the
+	// stop_orphan kill — requires the manifest to attribute the unit to the
+	// reconciling daemon: a second daemon on the same host sees foreign
+	// workers only through its in-flight blind spot, and that blind spot
+	// must never be the evidence a kill rides on. Written once at Launch;
+	// manifests from before the field existed carry no owner, which an
+	// identified daemon treats as foreign (quarantine, never kill).
+	DaemonID string `json:"daemon_id,omitempty"`
 	// ConvergedAt is set by the daemon task layer once a finished run's
 	// output and exit have been reported to the server and folded into the
 	// task's final state (RUYI-464). Reconciliation skips converged runs;
