@@ -161,7 +161,7 @@ export function EnvEditor({ agentId, canManage, keyCount }: Props) {
 
   // --- Revealed: editable rows ---
   return (
-    <ScrollView className="flex-1" contentContainerClassName="px-4 pt-3 pb-8 gap-3">
+    <ScrollView className="flex-1" contentContainerClassName="px-4 pt-3 pb-8 gap-3" nestedScrollEnabled>
       {rows.length === 0 ? (
         <Text className="text-sm text-muted-foreground py-2">
           {t(
@@ -253,7 +253,7 @@ export function EnvEditor({ agentId, canManage, keyCount }: Props) {
       >
         <Text className="text-sm font-medium text-primary-foreground">
           {saving
-            ? t("webhooks.form_saving", "Saving…")
+            ? t("tab_body.common.saving", "Saving…")
             : t("tab_body.common.save", "Save")}
         </Text>
       </Pressable>

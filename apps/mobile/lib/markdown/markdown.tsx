@@ -45,12 +45,17 @@ import { useCallback, useMemo } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
+import {
+  dedupeIssueReferences,
+  extractIssueReferences,
+} from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
+import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
@@ -146,6 +151,17 @@ export function Markdown({
     const processed = preprocessMobileMarkdown(content);
     return splitMarkdown(processed);
   }, [content]);
+
+  // RUYI-635 tail aggregation. Scanned from the RAW content, not the
+  // preprocessed text: the demote pass has already stripped the mention links
+  // by the time splitting runs, and the extractor shares its skip rules
+  // (code, links, URLs) with web's pipeline, so both ends collect exactly the
+  // same tokens from the same source. Raw-dedup keeps first occurrences;
+  // cross-form collapse by resolved issue id happens in IssueReferenceList.
+  const issueReferences = useMemo(
+    () => dedupeIssueReferences(extractIssueReferences(content)),
+    [content],
+  );
 
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
   // unit-tested — `link-route.ts`); this callback only performs the effect.
@@ -246,7 +262,10 @@ export function Markdown({
               />
             );
         }
-      })}
-    </View>
+        })}
+        {issueReferences.length > 0 && (
+          <IssueReferenceList references={issueReferences} />
+        )}
+      </View>
   );
 }

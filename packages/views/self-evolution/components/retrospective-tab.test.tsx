@@ -6,7 +6,6 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { I18nProvider } from "@multica/core/i18n/react";
-import { WorkspaceSlugProvider } from "@multica/core/paths";
 import type { Agent, RetrospectiveConfig, RetrospectiveRun } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
@@ -49,6 +48,16 @@ const state = vi.hoisted(() => ({
 
 vi.mock("@multica/core/permissions", () => ({
   useCurrentMember: () => ({ role: state.role }),
+}));
+
+// RUYI-673: the per-run results entry builds its href through the shared
+// path builders; RUYI-663's detail-sheet issue links do the same. The stub
+// pins both shapes and keeps the test free of workspace-route context.
+vi.mock("@multica/core/paths", () => ({
+  useWorkspacePaths: () => ({
+    selfEvolutionProposals: () => "/acme/self-evolution/proposals",
+    issueDetail: (id: string) => `/test-workspace/issues/${id}`,
+  }),
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
@@ -122,13 +131,11 @@ function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <WorkspaceSlugProvider slug="test-workspace">
-        <NavigationProvider value={makeAdapter()}>
-          <I18nProvider locale="en" resources={TEST_RESOURCES}>
-            <RetrospectiveTab wsId="ws-1" />
-          </I18nProvider>
-        </NavigationProvider>
-      </WorkspaceSlugProvider>
+      <NavigationProvider value={makeAdapter()}>
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <RetrospectiveTab wsId="ws-1" />
+        </I18nProvider>
+      </NavigationProvider>
     </QueryClientProvider>,
   );
 }
@@ -398,5 +405,33 @@ describe("run detail sheet", () => {
 
     await openDetail();
     expect(screen.getAllByText("None").length).toBe(2);
+  });
+});
+
+// RUYI-673: run rows adopt the agent-detail list's row language (readable
+// title + status icon + hover actions) and each row carries the results
+// entry — a link to the proposals view scoped to that run's batch, the same
+// surface the agent detail page's retrospective rows land on.
+describe("run rows link to the per-run results view", () => {
+  it("titles each run by its window stamp and links to the scoped results", async () => {
+    state.runs = [run({ id: "run-1", status: "succeeded" })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-runs");
+    expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
+    const link = screen.getByRole("link", { name: "View results" });
+    expect(link.getAttribute("href")).toBe("/acme/self-evolution/proposals?run=run-1");
+  });
+
+  it("keeps the failure line and the rerun affordance alongside the link", async () => {
+    state.runs = [run({ id: "run-2", detail: { reason: { code: "agent_archived" } } })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-run-error");
+    expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "View results" }).getAttribute("href"),
+    ).toContain("?run=run-2");
+    expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
   });
 });

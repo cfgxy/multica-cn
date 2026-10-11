@@ -1,0 +1,12 @@
+-- RUYI-641 stage C: retire agent webhooks (RUYI-52). The agent-scoped
+-- webhook trigger overlaps the autopilot trigger surface (see ADR
+-- docs/adr/006-autopilot-parameterized-webhook-api.md); production inventory
+-- is 0 rows. The generic capability lives on as autopilot webhooks
+-- (/api/webhooks/autopilots/{token}) plus the parameterized PAT API
+-- (POST /api/autopilots/{id}/trigger with params), so the agent_webhook
+-- table, its REST routes and its public ingress are all removed together.
+--
+-- The table carried workspace/agent/user FKs with ON DELETE CASCADE, so
+-- workspace teardown never needed an explicit sweep; dropping the table
+-- removes the manifest entry with it (workspace_delete_manifest_test.go).
+DROP TABLE IF EXISTS agent_webhook;
