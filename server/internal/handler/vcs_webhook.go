@@ -136,7 +136,7 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch provider.EventKind(r.Header) {
+	switch provider.EventKind(r.Header, body) {
 	case vcs.EventPullRequest:
 		if pr, err := provider.ParsePullRequest(body); err != nil {
 			slog.Warn("vcs: bad pull_request payload", "provider", conn.Provider, "err", err)

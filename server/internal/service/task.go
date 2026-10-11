@@ -2885,6 +2885,24 @@ func (s *TaskService) CancelRunsForCancelledIssue(ctx context.Context, issueID p
 	return nil
 }
 
+// UpdateQueuedTaskPrioritiesForIssue replays an issue's new priority onto its
+// still-queued task rows (RUYI-648). Priority is snapshotted at enqueue time
+// and ClaimAgentTask orders on the row's column, so a priority edit made
+// after enqueueing used to leave every queued row on the stale value — the
+// "just made urgent" issue kept waiting behind a FIFO of pri=0 rows. Rows the
+// daemon has already claimed keep their value: their ordering decision was
+// made, and only 'queued' rows are still competing for a claim.
+func (s *TaskService) UpdateQueuedTaskPrioritiesForIssue(ctx context.Context, issueID pgtype.UUID, priority string) (int64, error) {
+	rows, err := s.Queries.UpdateQueuedTaskPriorityForIssue(ctx, db.UpdateQueuedTaskPriorityForIssueParams{
+		Priority: priorityToInt(priority),
+		IssueID:  issueID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
 // distinctAgentIDs returns each agent id appearing in the cancelled rows once,
 // preserving first-seen order. Bulk cancellations frequently stop several tasks
 // owned by the same agent; reconciling per distinct agent (rather than per row)
@@ -3789,6 +3807,24 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if runtimeID.Valid && agent.RuntimeID != runtimeID {
 			outcome = "runtime_mismatch"
 			return nil
+		}
+
+		// RUYI-608: cheap freeze probe before the claim UPDATE. ClaimAgentTask
+		// re-enforces the fence authoritatively inside its own statement;
+		// this pre-check only makes the claim log distinguishable — without
+		// it a frozen agent's poll is indistinguishable from "queue empty".
+		if frozen, err := qtx.GetSchedulingPauseForAgent(ctx, db.GetSchedulingPauseForAgentParams{
+			WorkspaceID: agent.WorkspaceID,
+			AgentID:     agentID,
+		}); err == nil {
+			outcome = "scheduling_paused"
+			slog.Info("task claim: scheduling frozen",
+				"agent_id", util.UUIDToString(agentID),
+				"scope", schedulingPauseScopeOf(frozen))
+			return nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			outcome = "error_pause_probe"
+			return fmt.Errorf("probe scheduling pause: %w", err)
 		}
 
 		t0 = time.Now()
