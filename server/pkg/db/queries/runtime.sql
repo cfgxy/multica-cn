@@ -657,3 +657,10 @@ INSERT INTO agent_runtime (
     device_info, metadata, owner_id, profile_id, visibility, registration_source
 ) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
 RETURNING *;
+
+-- name: ListRuntimesWithCredentialRef :many
+-- Probe-refresh candidates (RUYI-692 D1): every instance pointing at a
+-- stored credential. Voice-family filtering and badge-state decisions stay
+-- in the handler — the query is the cheap superset the refresher walks.
+SELECT * FROM agent_runtime
+WHERE credential_ref IS NOT NULL;

@@ -906,6 +906,54 @@ func (q *Queries) ListOnlineRuntimesByWorkspace(ctx context.Context, workspaceID
 	return items, nil
 }
 
+const listRuntimesWithCredentialRef = `-- name: ListRuntimesWithCredentialRef :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+WHERE credential_ref IS NOT NULL
+`
+
+// Probe-refresh candidates (RUYI-692 D1): every instance pointing at a
+// stored credential. Voice-family filtering and badge-state decisions stay
+// in the handler — the query is the cheap superset the refresher walks.
+func (q *Queries) ListRuntimesWithCredentialRef(ctx context.Context) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listRuntimesWithCredentialRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+			&i.RegistrationSource,
+			&i.CredentialRef,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleOfflineRuntimeGCCandidates = `-- name: ListStaleOfflineRuntimeGCCandidates :many
 SELECT id FROM agent_runtime
 WHERE status = 'offline'

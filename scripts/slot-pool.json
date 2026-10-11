@@ -1,0 +1,18 @@
+{
+  "$comment": "RUYI-676 E3 skeleton: phase-to-template mapping for pool-backed slot leases. ttl_minutes here are client-side defaults until E1 lands per-template TTL server-side (tpl-multica-dev wide / tpl-multica-qa tight). guest_ports mirror the local slot ports (scripts/slots.json) inside the lease VM; published_ports (E4) will map them per lease. inline_limit_bytes matches the pool's docs/03 inline threshold: packages at or below it ride upload_package.content_base64, larger ones go through the PUT URL.",
+  "dev": {
+    "template": "tpl-multica-dev",
+    "ttl_minutes": 480
+  },
+  "qa": {
+    "template": "tpl-multica-qa",
+    "ttl_minutes": 60
+  },
+  "guest_ports": {
+    "api": 21801,
+    "web": 13801,
+    "desktop": 57801,
+    "mcp": 13001
+  },
+  "inline_limit_bytes": 16777216
+}
