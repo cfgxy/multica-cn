@@ -16,6 +16,7 @@ import type { GitHubPullRequest, Issue } from "@multica/core/types";
 import {
   buildReferenceTailRows,
   groupReferenceTailRows,
+  shouldCloseSheetOnDragRelease,
 } from "./issue-reference-rows";
 
 const UUID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
@@ -133,5 +134,24 @@ describe("groupReferenceTailRows", () => {
     expect(groups.grouped).toBe(false);
     expect(groups.tasks).toHaveLength(2);
     expect(groups.prs).toHaveLength(0);
+  });
+});
+
+describe("shouldCloseSheetOnDragRelease", () => {
+  it("closes when the release point travels past the distance threshold", () => {
+    expect(shouldCloseSheetOnDragRelease(80, 0)).toBe(true);
+  });
+
+  it("closes on a downward fling even from a short drag", () => {
+    expect(shouldCloseSheetOnDragRelease(12, 0.8)).toBe(true);
+  });
+
+  it("stays open below both thresholds", () => {
+    expect(shouldCloseSheetOnDragRelease(40, 0.1)).toBe(false);
+  });
+
+  it("never closes on an upward drag or upward fling", () => {
+    expect(shouldCloseSheetOnDragRelease(-120, 0)).toBe(false);
+    expect(shouldCloseSheetOnDragRelease(8, -2)).toBe(false);
   });
 });
