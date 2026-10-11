@@ -118,7 +118,7 @@ func (d *Daemon) setupSupervisor() {
 		d.logger.Info("worker supervision disabled: systemd user manager unavailable; workers stay legacy children", "error", err)
 		return
 	}
-	sup, err := supervisor.New(mgr, sys, binPath, d.supervisorIdentity(), d.logger)
+	sup, err := supervisor.New(mgr, sys, binPath, d.cfg.DaemonID, d.supervisorIdentity(), d.logger)
 	if err != nil {
 		d.logger.Warn("worker supervision disabled: supervisor init failed", "error", err)
 		return
@@ -186,6 +186,10 @@ func (d *Daemon) reconcileSupervisedRuns(ctx context.Context) {
 		// irreversible action in the matrix never runs on incomplete
 		// evidence.
 		TaskInFlight: func(taskID string) bool { return listFailed || inFlight[taskID] },
+		// The kill branch additionally requires the manifest to attribute
+		// the unit to this daemon (RUYI-592 fix 1): a foreign daemon's
+		// in-flight blind spot must never be the evidence a kill rides on.
+		DaemonID: d.cfg.DaemonID,
 	}
 	results, err := rec.Run(ctx)
 	if err != nil {

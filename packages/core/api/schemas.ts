@@ -4,7 +4,6 @@ import type {
   AgentBuilderSession,
   AgentBuilderSessionSummary,
   AgentEnvResponse,
-  AgentWebhook,
   Attachment,
   AutopilotRun,
   BillingBalance,
@@ -51,6 +50,7 @@ import type {
   GroupedIssuesResponse,
   GitHubConnectResponse,
   GitHubPullRequest,
+  IssueRelationsResponse,
   InboxItem,
   InboxWorkspaceUnread,
   Label,
@@ -1676,6 +1676,40 @@ export const ChildIssueProgressResponseSchema = z.object({
     .default([]),
 }).loose();
 
+// Structured issue relations (RUYI-689). Server guarantees the five edge
+// arrays are always present, but default([]) keeps older/odd payloads
+// rendering as "no relations" instead of tripping the fallback.
+export const IssueRelationRefSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  status: z.string(),
+}).loose();
+
+export const IssueRelationsResponseSchema = z.object({
+  issue_id: z.string(),
+  identifier: z.string(),
+  revision: z.number(),
+  parent: IssueRelationRefSchema.nullable().default(null),
+  blocks: z.array(IssueRelationRefSchema).default([]),
+  blocked_by: z.array(IssueRelationRefSchema).default([]),
+  relates_to: z.array(IssueRelationRefSchema).default([]),
+  supersedes: z.array(IssueRelationRefSchema).default([]),
+  superseded_by: z.array(IssueRelationRefSchema).default([]),
+}).loose();
+
+export const EMPTY_ISSUE_RELATIONS: IssueRelationsResponse = {
+  issue_id: "",
+  identifier: "",
+  revision: 0,
+  parent: null,
+  blocks: [],
+  blocked_by: [],
+  relates_to: [],
+  supersedes: [],
+  superseded_by: [],
+};
+
 export const CloudRuntimeNodeSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
@@ -2320,39 +2354,6 @@ export const AgentEnvResponseSchema = z.object({
   custom_env: z.record(z.string(), z.string()).default({}),
 }).loose();
 export const EMPTY_AGENT_ENV: AgentEnvResponse = { agent_id: "", custom_env: {} };
-
-// Agent webhooks (RUYI-52) — public trigger URLs bound to a fixed prompt.
-// webhook_token/path/url come back only for managers; the server strips them
-// for anyone else, so the three fields are nullable/optional and the UI keys
-// its "can manage" affordances off their presence (not off workspace role).
-export const AgentWebhookSchema = z.object({
-  id: z.string(),
-  agent_id: z.string().default(""),
-  name: z.string().default(""),
-  prompt: z.string().default(""),
-  enabled: z.boolean().default(true),
-  created_at: z.string().default(""),
-  updated_at: z.string().default(""),
-  webhook_path_masked: z.string().default(""),
-  webhook_token: z.string().nullable().optional().transform((v) => v ?? null),
-  webhook_path: z.string().nullable().optional().transform((v) => v ?? null),
-  webhook_url: z.string().nullable().optional().transform((v) => v ?? null),
-}).loose();
-export const AgentWebhookListSchema = z.array(AgentWebhookSchema).default([]);
-export const EMPTY_AGENT_WEBHOOK_LIST: AgentWebhook[] = [];
-export const EMPTY_AGENT_WEBHOOK: AgentWebhook = {
-  id: "",
-  agent_id: "",
-  name: "",
-  prompt: "",
-  enabled: true,
-  created_at: "",
-  updated_at: "",
-  webhook_path_masked: "",
-  webhook_token: null,
-  webhook_path: null,
-  webhook_url: null,
-};
 
 // Squad members — GET/POST /api/squads/:id/members, PATCH .../members/role.
 // Members are addressed by the (member_type, member_id) pair, never by row
@@ -4883,6 +4884,10 @@ export const RetrospectiveRunSchema = z.object({
   // untyped). Null-safe: rows predating the column serialize null.
   detail: z.unknown().nullable().optional(),
   created_at: z.string(),
+  // RUYI-663: transcript anchor — null for runs that failed before enqueue
+  // and rows predating the column (935); absent on old servers.
+  task_id: z.string().nullable().optional(),
+  finished_at: z.string().nullable().optional(),
 }).loose();
 
 export const RetrospectiveRunListSchema = z.array(RetrospectiveRunSchema);

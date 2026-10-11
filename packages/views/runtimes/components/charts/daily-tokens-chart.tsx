@@ -6,6 +6,11 @@ import {
   CartesianGrid,
 } from "recharts";
 import {
+  useBarSelection,
+  dailyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -32,14 +37,37 @@ export const tokenStackConfig = {
   cacheWrite: { label: "Cache write", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
-export function DailyTokensChart({ data }: { data: DailyTokenData[] }) {
+export function DailyTokensChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: DailyTokenData[];
+  // Analytics-page selection wiring — optional so call sites without it
+  // (the runtime usage section) render exactly as before.
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
   const { t } = useT("runtimes");
   const locale = useLocale();
+  const barSel = useBarSelection({
+    spans: dailyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  const barCells = barSel.cells(data.length, {
+    keyOf: (i) => data[i]?.date ?? String(i),
+  });
+
   // No internal empty-state — same convention as DailyCostChart: the parent
   // decides what to render when there's nothing to show.
   return (
     <ChartContainer config={tokenStackConfig} className="aspect-[3/1] w-full">
-      <BarChart data={data} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -88,25 +116,33 @@ export function DailyTokensChart({ data }: { data: DailyTokenData[] }) {
           stackId="tokens"
           fill="var(--color-input)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="output"
           stackId="tokens"
           fill="var(--color-output)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="cacheRead"
           stackId="tokens"
           fill="var(--color-cacheRead)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="cacheWrite"
           stackId="tokens"
           fill="var(--color-cacheWrite)"
           radius={[3, 3, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
       </BarChart>
     </ChartContainer>
   );

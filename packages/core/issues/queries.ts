@@ -133,6 +133,11 @@ export const issueKeys = {
     [...issueKeys.childrenByParentsAll(wsId), parentIds] as const,
   childProgress: (wsId: string) =>
     [...issueKeys.all(wsId), "child-progress"] as const,
+  /** PREFIX for every per-issue structured-relations query. */
+  relationsAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "relations"] as const,
+  relations: (wsId: string, id: string) =>
+    [...issueKeys.relationsAll(wsId), id] as const,
   /** Prefix-match keys for invalidating the per-issue caches below across
    *  all issues. These keys carry no wsId, so `issueKeys.all(wsId)` does NOT
    *  cover them — WS reconnect recovery must invalidate these `*All`
@@ -475,6 +480,36 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
   });
 }
 
+/**
+ * Anchor lookup for cross-issue comment references (RUYI-643). Given a
+ * `mention://comment/<id>` target the local render context cannot resolve,
+ * `GET /api/comments/{id}/anchor` returns the owning issue's identifier plus
+ * the author/time/excerpt triple, or 404. The 404 maps to null — the server
+ * makes unknown/deleted/foreign-workspace misses indistinguishable, so null
+ * must stay the ONLY alternative the UI acts on (render the degraded chip).
+ *
+ * Anchor mapping (comment id → issue) is effectively immutable; a moderate
+ * staleTime keeps repeated chips on one request without freezing out a comment
+ * deleted moments ago.
+ */
+export function commentAnchorOptions(commentId: string) {
+  return queryOptions({
+    queryKey: ["comment-anchor", commentId] as const,
+    queryFn: async ({ signal }) => {
+      try {
+        return await api.getCommentAnchor(commentId, { signal });
+      } catch (err) {
+        // Unreachable target → the degraded chip. Any other failure (401/5xx/
+        // abort) keeps propagating so retries/cancellation still work and the
+        // miss is never cached as "no such comment".
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function childIssueProgressOptions(wsId: string) {
   return queryOptions({
     queryKey: issueKeys.childProgress(wsId),
@@ -498,6 +533,18 @@ export function childIssuesOptions(wsId: string, id: string) {
     // desktop tab is showing another workspace). The global Infinity
     // staleTime would otherwise reuse an incomplete children snapshot when
     // the parent is opened again, with no later event guaranteed to heal it.
+    refetchOnMount: "always",
+  });
+}
+
+export function issueRelationsOptions(wsId: string, id: string) {
+  return queryOptions({
+    queryKey: issueKeys.relations(wsId, id),
+    queryFn: () => api.getIssueRelations(id),
+    // Relation edges emit no WS event (the server only bumps the anchor
+    // revisions — see server/internal/handler/issue_relation.go), so a
+    // cached snapshot would never heal while the page stays mounted.
+    // Same contract as childIssuesOptions: every mount re-pulls.
     refetchOnMount: "always",
   });
 }

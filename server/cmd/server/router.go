@@ -1329,6 +1329,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProviderWSBaseURL = v
 	}
 
+	// One-shot dictation transcription provider origin (RUYI-710).
+	// MULTICA_GEMINI_ASR_BASE_URL lets air-gapped deployments and tests aim
+	// the generateContent hop at a stub; empty env keeps the public default.
+	h.VoiceASRBaseURL = handler.DefaultVoiceASRBaseURL
+	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_ASR_BASE_URL")); v != "" {
+		h.VoiceASRBaseURL = v
+	}
+
+	// Voice provider egress proxy (RUYI-692 D1 ①): MULTICA_GEMINI_PROXY_URL
+	// names the per-connection proxy the Gemini Live dial and the credential
+	// probe use — `socks5://` preferred, `http(s)://` accepted. The value may
+	// carry user:pass credentials; it lives only in the server environment
+	// and is never logged. Empty (or unusable) means direct dial: the gateway
+	// never inherits the environment's own proxy variables.
+	h.VoiceProviderProxyURL = strings.TrimSpace(os.Getenv("MULTICA_GEMINI_PROXY_URL"))
+
 	// Plugin secrets use a dedicated deployment key. Keeping this separate from
 	// VCS and channel secrets gives operators an isolated rotation and blast
 	// radius; without it, saving a `secret` config field fails closed rather
@@ -1624,11 +1640,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// purpose: the bearer token in the URL path IS the credential. Workspace
 	// context is derived from the trigger row, never from request headers.
 	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
-	// Agent webhook ingress (RUYI-52). Same bearer-URL credential model; the
-	// bound prompt alone starts a fresh chat session, so the body is never
-	// read and GET (browser test) and POST (workflow step) are equivalent.
-	r.Get("/api/webhooks/agents/{token}", h.HandleAgentWebhook)
-	r.Post("/api/webhooks/agents/{token}", h.HandleAgentWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
@@ -1708,6 +1719,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
+		r.Post("/tasks/{taskId}/comment", h.AddTaskComment)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
 		r.Post("/workspaces/{workspaceId}/issues/gc-check", h.BatchIssueGCCheck)
@@ -1907,6 +1919,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
+					// Workspace scheduling freeze state (RUYI-608):
+					// member-visible — the agents list and workspace DTO
+					// already expose the same flag; freeze/resume writes
+					// stay in the owner/admin group below.
+					r.Get("/scheduling-pause", h.GetWorkspaceSchedulingPause)
 					// The instance directory is browse-only and
 					// member-visible, for the same reason the installed list
 					// is: a member seeing what this instance offers is how
@@ -1984,10 +2001,43 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/plugins/{installationId}/config", h.ConfigurePlugin)
 					r.Post("/plugins/{installationId}/enable", h.EnablePlugin)
 					r.Post("/plugins/{installationId}/disable", h.DisablePlugin)
+					// Workspace-level scheduling freeze (RUYI-608): one
+					// switch holds every agent in the workspace. Writes are
+					// owner/admin (middleware below + the handler's
+					// human-only backstop); the state read is member-visible
+					// in the group above.
+					r.Post("/scheduling-pause", h.PauseWorkspaceScheduling)
+					r.Delete("/scheduling-pause", h.ResumeWorkspaceScheduling)
 					// Both outlive plugins_v1: they are the two cleanup levers.
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
+				// Voice provider pool (RUYI-693): the listing is
+				// member-visible — the settings page renders the pool for
+				// everyone — while pool writes are workspace-admin state,
+				// the same split as the workspace settings themselves.
+				r.Route("/voice-providers", func(r chi.Router) {
+					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
+					r.Group(func(r chi.Router) {
+						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+						r.Post("/", h.CreateVoiceProvider)
+						r.Route("/{providerId}", func(r chi.Router) {
+							r.Patch("/", h.UpdateVoiceProvider)
+							r.Delete("/", h.DeleteVoiceProvider)
+							// The key itself never round-trips: it enters
+							// here (and probes on save) and is only ever
+							// read back as the coarse status badge.
+							r.Put("/credentials/{credentialKey}", h.PutVoiceProviderCredential)
+							r.Delete("/credentials/{credentialKey}", h.DeleteVoiceProviderCredential)
+							r.Post("/credential-probe", h.RunVoiceProviderProbe)
+						})
+					})
+				})
+				// One-shot dictation transcription (RUYI-710): any workspace
+				// member may dictate — the same membership the settings
+				// page itself renders under. The ASR provider key rides
+				// only the server→provider hop; nothing is persisted.
+				r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Post("/voice-transcriptions", h.CreateVoiceTranscription)
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
@@ -2555,6 +2605,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/", h.UpdateAutopilot)
 					r.Delete("/", h.DeleteAutopilot)
 					r.Post("/trigger", h.TriggerAutopilot)
+					r.Get("/params", h.ListAutopilotParams)
+					r.Put("/params", h.ReplaceAutopilotParams)
 					r.Get("/runs", h.ListAutopilotRuns)
 					r.Get("/runs/{runId}", h.GetAutopilotRun)
 					r.Get("/deliveries", h.ListAutopilotDeliveries)
@@ -2605,6 +2657,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Comments
 			r.Route("/api/comments/{commentId}", func(r chi.Router) {
+				r.With(handler.RequireHumanActor).Get("/anchor", h.ResolveCommentAnchor)
 				r.With(handler.RequireHumanActor).Get("/sub-issue-preview", h.PreviewCommentSubIssue)
 				r.With(handler.RequireHumanActor).Post("/sub-issues", h.CreateCommentSubIssue)
 				r.Put("/", h.UpdateComment)
@@ -2630,12 +2683,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
 					r.Post("/cancel-tasks", h.CancelAgentTasks)
-					// Voice direct-session handoff (RUYI-626): mints the
-					// live_session row behind the same rule-3 gate as the
-					// gateway path, then hands the provider websocket URL,
-					// the credential and the setup parameters to the mobile
-					// client, which dials Google itself.
-					r.Post("/voice-direct-session", h.StartVoiceDirectSession)
+					// (RUYI-626's POST /voice-direct-session hand-off was
+					// retired in RUYI-692 D1: it handed the plaintext
+					// provider key to the client; every session now rides
+					// the gateway websocket.)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
 					r.Get("/skills", h.ListAgentSkills)
@@ -2662,18 +2713,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// internal/handler/agent_env.go.
 					r.Get("/env", h.GetAgentEnv)
 					r.Put("/env", h.UpdateAgentEnv)
-					// Agent webhooks (RUYI-52): list for any viewer of the
-					// agent (credential fields stripped for non-managers);
-					// writes gate through canManageAgent. See
-					// internal/handler/agent_webhook.go.
-					r.Get("/webhooks", h.ListAgentWebhooks)
-					r.Post("/webhooks", h.CreateAgentWebhook)
-					r.Route("/webhooks/{webhookId}", func(r chi.Router) {
-						r.Put("/", h.UpdateAgentWebhook)
-						r.Put("/enabled", h.SetAgentWebhookEnabled)
-						r.Post("/rotate", h.RotateAgentWebhook)
-						r.Delete("/", h.DeleteAgentWebhook)
-					})
+					// Scheduling freeze (RUYI-608): freeze/unfreeze this
+					// agent's task consumption. Queued tasks keep queueing;
+					// only ClaimAgentTask is fenced. Writes are workspace
+					// owner/admin, human-only — the handler enforces both
+					// (machine-credential backstop + role gate); reads are
+					// member-visible.
+					r.Post("/scheduling-pause", h.PauseAgentScheduling)
+					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
+					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
 				})
 			})
 
@@ -2787,13 +2835,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
 			})
 
-			// Voice direct-session completion (RUYI-626): the mobile client
-			// relays the transcript / resumption handle it collected from
-			// its own provider websocket so the live_session row reaches
-			// the same terminal state (transcript, summary write-back) the
-			// gateway path produces. Caller ownership is enforced in the
-			// handler; replays after the row is terminal are idempotent.
-			r.Post("/api/voice-sessions/{sessionId}/complete", h.CompleteVoiceDirectSession)
+			// (RUYI-626's POST /api/voice-sessions/{id}/complete was retired
+			// in RUYI-692 D1 along with the direct hand-off: the gateway owns
+			// every session's terminal write-back again.)
 
 			// Runtimes
 			r.Route("/api/runtimes", func(r chi.Router) {
@@ -2839,11 +2883,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// instance payload only carries the credential_status badge.
 					r.Put("/credentials/{credentialKey}", h.PutRuntimeCredential)
 					r.Delete("/credentials/{credentialKey}", h.DeleteRuntimeCredential)
-					// Client-reported credential connectivity probe
-					// (RUYI-626): on the direct path the device runs the
-					// models.list probe itself, so the credential_status
-					// badge is recorded from the client's reported outcome.
-					r.Post("/credential-probe", h.ReportCredentialProbe)
+					// Credential re-probe (RUYI-692 D1): the SERVER runs the
+					// models.list probe now — the RUYI-626 client-reported
+					// outcome retired with the direct path. Same route so
+					// existing entry points keep working; a legacy client
+					// body is ignored, and the operator trigger plus the
+					// background sweep share the handler.
+					r.Post("/credential-probe", h.RunCredentialProbe)
 				})
 			})
 

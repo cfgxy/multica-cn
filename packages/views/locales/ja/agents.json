@@ -78,7 +78,8 @@
     "fallback_runtime_cloud": "クラウド",
     "fallback_runtime_local": "ローカル",
     "actions_aria": "行の操作",
-    "task_count_other": "{{count}} 件の作業"
+    "task_count_other": "{{count}} 件の作業",
+    "paused_other": "一時停止中 · {{count}} 件"
   },
   "activity_tooltip": {
     "created_today": "今日作成",
@@ -118,7 +119,18 @@
     "archive_dialog_title": "\"{{name}}\" をアーカイブしますか？",
     "archive_dialog_description": "このエージェントは割り当てやメンションができなくなり、アクティブな作業はすべてキャンセルされます。履歴はすべて保持され、後で復元できます。",
     "archive_dialog_cancel": "キャンセル",
-    "archive_dialog_confirm": "アーカイブ"
+    "archive_dialog_confirm": "アーカイブ",
+    "pause_scheduling": "スケジューリングを一時停止",
+    "resume_scheduling": "スケジューリングを再開",
+    "paused_by_workspace": "ワークスペース単位で一時停止中",
+    "pause_dialog_title": "{{name}} のスケジューリングを一時停止しますか？",
+    "pause_dialog_description": "キュー内のタスクは保持され、実行中のタスクは通常どおり完了しますが、再開するまで新しいタスクは取得されません。この操作は監査ログに記録されます。",
+    "pause_dialog_cancel": "キャンセル",
+    "pause_dialog_confirm": "一時停止",
+    "agent_paused_toast": "エージェントのスケジューリングを一時停止しました",
+    "agent_resumed_toast_other": "スケジューリングを再開 — {{count}} 件のタスクが流れます",
+    "pause_failed_toast": "スケジューリングの一時停止に失敗しました",
+    "resume_failed_toast": "スケジューリングの再開に失敗しました"
   },
   "detail": {
     "back_to_agents": "エージェント",
@@ -150,7 +162,15 @@
     "runtime_required_toast": "このエージェントを実行する前にランタイムを設定してください。",
     "assign_work": "作業を割り当てる",
     "more_actions_aria": "エージェントの操作",
-    "updated": "{{when}}に更新"
+    "updated": "{{when}}に更新",
+    "paused_banner_other": "スケジューリング一時停止中 — {{count}} 件のタスクがキューで待機中。キューのタスクは統合され続け、実行中のタスクは通常どおり完了します。",
+    "paused_by_workspace_banner": "ワークスペース全体のスケジューリングが一時停止中。ワークスペース設定から再開してください — エージェント単位の再開では解除できません。",
+    "resume_scheduling": "スケジューリングを再開",
+    "more_pause_scheduling": "スケジューリングを一時停止",
+    "agent_paused_toast": "エージェントのスケジューリングを一時停止しました",
+    "agent_resumed_toast_other": "スケジューリングを再開 — {{count}} 件のタスクが流れます",
+    "pause_failed_toast": "スケジューリングの一時停止に失敗しました",
+    "resume_failed_toast": "スケジューリングの再開に失敗しました"
   },
   "inspector": {
     "section_profile": "プロフィール",
@@ -279,8 +299,7 @@
     "discard_dialog_title": "保存していない変更を破棄しますか？",
     "discard_dialog_description": "このタブに保存していない変更があります。今移動すると変更は破棄されます。",
     "discard_keep": "編集を続ける",
-    "discard_confirm": "変更を破棄",
-    "webhooks": "Webhook"
+    "discard_confirm": "変更を破棄"
   },
   "create_dialog": {
     "title_create": "エージェントを作成",
@@ -371,7 +390,8 @@
     "common": {
       "save": "保存",
       "add": "追加",
-      "unsaved_changes": "保存していない変更"
+      "unsaved_changes": "保存していない変更",
+      "saving": "保存中…"
     },
     "instructions": {
       "intro": "すべての作業で使用する System Prompt を設定します。Markdown に対応しています。",
@@ -648,6 +668,9 @@
       "source_creating_issue": "タスクを作成中",
       "source_chat_session": "チャットセッション",
       "source_autopilot_run": "オートパイロット実行",
+      "source_retrospective": "毎日のふりかえり",
+      "retro_title": "毎日のふりかえり{{stamp}}",
+      "view_results_tooltip": "ふりかえりの成果を見る",
       "issue_short_fallback": "タスク {{prefix}}...",
       "triggered_by": "トリガーした人",
       "open_issue_aria": "タスクを開く",
@@ -794,6 +817,7 @@
     "kind_tool": "ツール",
     "kind_thinking": "思考",
     "kind_error": "エラー",
+    "kind_watchdog": "ウォッチドッグ",
     "group_calls_other": "{{count}} 回の呼び出し",
     "step_running": "実行中",
     "step_input": "入力",
@@ -983,51 +1007,6 @@
     "selected_other": "{{count}} 件選択中",
     "clear_selection": "選択を解除"
   },
-  "webhooks": {
-    "intro": "HTTP 経由でこのエージェントをトリガー：各 Webhook は固定プロンプトに紐付き、サインイン不要の一意なリンクを生成します。リンクにアクセスするたびに、そのプロンプトで新しいチャットセッションが開始されます。",
-    "security_hint": "⚠ リンクは認証情報です：リンクを知る誰もがエージェントを実行しリソースを消費できます。パスワードと同じように取り扱ってください。",
-    "add": "Webhook を追加",
-    "limit_reached": "上限に到達（エージェントあたり最大 {{max}} 件）",
-    "load_failed": "Webhook の読み込みに失敗しました",
-    "retry": "再試行",
-    "disabled_badge": "無効",
-    "prompt_prefix": "プロンプト：",
-    "edit": "名前とプロンプトを編集",
-    "rotate": "リンクを再生成",
-    "delete": "削除",
-    "delete_title": "Webhook「{{name}}」を削除しますか？",
-    "delete_description": "削除するとリンクは直ちに無効になり、GitHub などの外部連携はトリガーに失敗します。紐付けられたプロンプトも削除されます。この操作は元に戻せません。",
-    "delete_confirm": "削除",
-    "deleting": "削除中…",
-    "rotate_title": "リンクを再生成しますか？",
-    "rotate_description": "古いリンクは直ちに無効になります。GitHub などの外部システムで新しいリンクに更新してください。再生成後に新しいリンクをコピーしてください。",
-    "rotate_confirm": "再生成",
-    "rotating": "再生成中…",
-    "cancel": "キャンセル",
-    "empty_title": "Webhook はまだありません",
-    "empty_description": "追加するとサインイン不要の一意なリンクが生成され、アクセスごとに紐付けられたプロンプトで新しいセッションが始まります。",
-    "empty_readonly": "このエージェントには Webhook が設定されていません。",
-    "form_title": "Webhook を追加",
-    "form_name_label": "名前",
-    "form_name_placeholder": "例：GitHub push トリガー",
-    "form_name_too_long": "名前は 50 文字以内にしてください",
-    "form_prompt_label": "プロンプト",
-    "form_prompt_placeholder": "Webhook にアクセスすると、エージェントはこのプロンプトで新しいセッションを開始します。例：リポジトリの最新コミットを確認し、変更点とリスクを要約する。",
-    "form_prompt_too_long": "プロンプトは 4000 文字以内にしてください",
-    "form_create": "作成",
-    "form_creating": "作成中…",
-    "form_save": "保存",
-    "form_saving": "保存中…",
-    "form_submit_failed": "問題が発生しました。もう一度お試しください。",
-    "created_title": "Webhook を作成しました",
-    "created_description": "下のリンクをコピーして GitHub などの外部システムに設定してください。アクセスするたびに、紐付けられたプロンプトで新しいチャットセッションが作成されます。",
-    "url_label": "Webhook リンク",
-    "created_warning": "リンクは認証情報です。公開で共有しないでください。このパネルを閉じた後、リンクはリスト内でマスク表示され、いつでも再コピーできます。",
-    "created_test_hint": "ヒント：リンクをブラウザで直接開くとトリガーをテストできます。",
-    "created_done": "完了",
-    "edit_title": "Webhook を編集",
-    "edit_url_unchanged": "リンクとトークンは変更されません。名前とプロンプトのみが更新されます。"
-  },
   "mobile": {
     "tasks": {
       "empty": "現在実行中のタスクはありません。",
@@ -1039,7 +1018,8 @@
     "detail": {
       "section_history": "実行履歴",
       "edit_profile": "プロフィールを編集",
-      "tab_active": "進行中",
+      "tab_active": "タスク履歴",
+      "section_active": "進行中",
       "fact_status": "ステータス",
       "fact_runtime_unbound": "ランタイム未設定",
       "bind_runtime": "ランタイムをバインド",
@@ -1058,7 +1038,9 @@
     },
     "run_history": {
       "load_more": "さらに読み込む",
-      "empty": "実行履歴はまだありません。"
+      "empty": "実行履歴はまだありません。",
+      "queued_backpressure": "ランタイムの復帰待ち",
+      "other_agents": "{{count}} 体のエージェントが稼働中"
     },
     "edit": {
       "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します",
@@ -1070,10 +1052,6 @@
     },
     "env": {
       "add_row": "変数を追加"
-    },
-    "webhooks": {
-      "copy_aria": "Webhookリンクをコピー",
-      "rotated_title": "新しいリンクを生成しました"
     },
     "integrations": {
       "bound_here": "このエージェントにバインド済み",
