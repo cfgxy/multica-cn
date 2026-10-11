@@ -992,16 +992,18 @@ func (h *Handler) AnswerDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Audit the step that just landed (decision 2's two-step audit trail:
-	// authorization events are separate from the execution events the
-	// advance pass writes).
-	service.TryAppendAuditEvents(r.Context(), h.Queries, auditEventForDecisionRequest(
-		service.AuditAgentDecisionAuthorized, answered,
-		decisionRequestAuditDetails(answered, map[string]any{
-			"answered_by":   authorID,
-			"answer_source": decisionSourceCardClick,
-			"decision":      decision,
-		})))
+	if decision == decisionReqApproved {
+		// Per-step authorization audit; the deny path's group-level
+		// decision_denied event is written by the advance pass. Naming
+		// mirrors the card path: only approvals write decision_authorized.
+		service.TryAppendAuditEvents(r.Context(), h.Queries, auditEventForDecisionRequest(
+			service.AuditAgentDecisionAuthorized, answered,
+			decisionRequestAuditDetails(answered, map[string]any{
+				"answered_by":   authorID,
+				"answer_source": decisionSourceCardClick,
+				"decision":      decision,
+			})))
+	}
 
 	// The response reports the step the caller just landed; the group advance
 	// (and, on the final step, the whitelisted execution) runs after the body
