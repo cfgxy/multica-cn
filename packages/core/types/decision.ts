@@ -137,6 +137,8 @@ export interface DecisionRequest {
   detail: string;
   origin_workspace_id: string;
   origin_agent_id: string;
+  /** Server-resolved name — the origin agent is not in this workspace's roster. */
+  origin_agent_name: string | null;
   origin_task_id: string | null;
   /** Title-level reference only — the summary never carries issue content. */
   origin_issue_id: string | null;

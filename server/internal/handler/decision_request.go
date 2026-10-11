@@ -19,6 +19,7 @@ package handler
 // group in one transaction — clients never read across spaces.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -131,6 +132,11 @@ type DecisionRequestResponse struct {
 	// origin issue's body or comments (决策中心点击不进 Issue).
 	OriginWorkspaceID string          `json:"origin_workspace_id"`
 	OriginAgentID     string          `json:"origin_agent_id"`
+	// Resolved server-side: the origin agent lives in the origin workspace's
+	// roster, which a target-space client never loads, so the name rides on
+	// the wire (RUYI-630 QA defect#3). Null only for an agent row that no
+	// longer resolves.
+	OriginAgentName   *string         `json:"origin_agent_name"`
 	OriginTaskID      *string         `json:"origin_task_id"`
 	OriginIssueID     *string         `json:"origin_issue_id"`
 	OriginIssueTitle  *string         `json:"origin_issue_title"`
@@ -258,6 +264,43 @@ func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
 		resp.ExecutionError = &v
 	}
 	return resp
+}
+
+// originAgentNames resolves display names for the distinct origin agents
+// across the given rows. Every row of a group shares one origin agent, so a
+// group's detail collapses to a single lookup; names the agent row no longer
+// resolves are simply absent and the response field stays null.
+func (h *Handler) originAgentNames(ctx context.Context, rows []db.DecisionRequest) map[string]string {
+	ids := make([]pgtype.UUID, 0, len(rows))
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		id := uuidToString(row.OriginAgentID)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, row.OriginAgentID)
+	}
+	names := make(map[string]string, len(ids))
+	for _, id := range ids {
+		agent, err := h.Queries.GetAgent(ctx, id)
+		if err != nil {
+			continue
+		}
+		names[uuidToString(id)] = agent.Name
+	}
+	return names
+}
+
+// attachOriginAgentName stamps the resolved name onto one mapped response.
+func attachOriginAgentName(names map[string]string, resp *DecisionRequestResponse) {
+	if name, ok := names[resp.OriginAgentID]; ok {
+		v := name
+		resp.OriginAgentName = &v
+	}
 }
 
 // parseUUIDJSONArray decodes a JSONB array of UUID strings; corrupt rows
@@ -616,12 +659,17 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		Request: decisionRequestToResponse(originRow),
 		Steps:   make([]DecisionRequestResponse, 0, len(rows)),
 	}
+	agentNames := h.originAgentNames(r.Context(), rows)
+	attachOriginAgentName(agentNames, &resp.Request)
 	if card != nil {
 		cardResp := decisionToResponse(*card)
 		resp.Card = &cardResp
 	}
 	for _, row := range rows {
 		resp.Steps = append(resp.Steps, decisionRequestToResponse(row))
+	}
+	for i := range resp.Steps {
+		attachOriginAgentName(agentNames, &resp.Steps[i])
 	}
 	// Fan the creation out to every row's own workspace channel: the target
 	// space's decision center learns of its step in real time, and each
@@ -695,8 +743,13 @@ func (h *Handler) GetDecisionRequest(w http.ResponseWriter, r *http.Request) {
 		Request: decisionRequestToResponse(row),
 		Steps:   make([]DecisionRequestResponse, 0, len(group)),
 	}
+	agentNames := h.originAgentNames(r.Context(), group)
+	attachOriginAgentName(agentNames, &resp.Request)
 	for _, step := range group {
 		resp.Steps = append(resp.Steps, decisionRequestToResponse(step))
+	}
+	for i := range resp.Steps {
+		attachOriginAgentName(agentNames, &resp.Steps[i])
 	}
 	if row.OriginIssueID.Valid && uuidToString(row.WorkspaceID) == uuidToString(row.OriginWorkspaceID) {
 		if card, err := h.Queries.GetAuthorizationCardForGroup(r.Context(), db.GetAuthorizationCardForGroupParams{
@@ -763,6 +816,10 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 	items := make([]DecisionRequestResponse, 0, len(rows))
 	for _, row := range rows {
 		items = append(items, decisionRequestToResponse(row))
+	}
+	agentNames := h.originAgentNames(r.Context(), rows)
+	for i := range items {
+		attachOriginAgentName(agentNames, &items[i])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items,

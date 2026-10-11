@@ -130,7 +130,10 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const actionKey = ACTION_LABEL_KEYS[request.action_type];
   const riskKey = RISK_LABEL_KEYS[request.risk_tier];
   const isPending = request.status === "pending";
-  const originName = getActorName("agent", request.origin_agent_id);
+  // The wire name wins: a cross-space origin agent is never in this
+  // workspace's roster, so local resolution alone renders "Unknown Agent".
+  const originName =
+    request.origin_agent_name || getActorName("agent", request.origin_agent_id);
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
