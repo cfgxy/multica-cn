@@ -54,6 +54,7 @@ import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { preprocessMobileMarkdown } from "./preprocess";
@@ -64,6 +65,10 @@ import { MarkdownImage } from "./markdown-image";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { TableBlock } from "./table-block";
 import { resolveLinkAction } from "./link-route";
+
+// Log-gate shape only — cheap over-match is harmless (the extractor does the
+// real, skip-rule-aware scan); this just avoids logging for plain content.
+const BARE_IDENTIFIER_SHAPE = /[A-Z][A-Z0-9]*-\d/;
 
 interface Props {
   content: string;
@@ -158,9 +163,37 @@ export function Markdown({
   // (code, links, URLs) with web's pipeline, so both ends collect exactly the
   // same tokens from the same source. Raw-dedup keeps first occurrences;
   // cross-form collapse by resolved issue id happens in IssueReferenceList.
+  //
+  // Bare identifiers are gated on the current workspace's `issue_prefix`
+  // (RUYI-705): acceptance-criteria numbering like `AC-1` is not a reference,
+  // and without the gate each fake row also fired a resolution query. The
+  // prefix resolves slug-first (the route identity the API layer already
+  // trusts) with the id mirror as fallback — see lib/workspace-prefix.ts for
+  // why the first cut's id-only lookup broke on device. An unknown prefix
+  // (list still loading, both mirrors empty) falls through and the resolver's
+  // exact match stays the backstop.
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const workspacePrefix = useWorkspaceIssuePrefix();
+  if (__DEV__ && BARE_IDENTIFIER_SHAPE.test(content)) {
+    // Diagnostics for the gate QA could not observe from the outside (the
+    // 2026-10-11 FAIL report's black-box boundary): any identifier-bearing
+    // content logs exactly what the gate saw, once per content change.
+    // Release builds dead-code-eliminate the whole branch with __DEV__.
+    console.info(
+      "[markdown-ref-gate]",
+      JSON.stringify({
+        workspacePrefix,
+        slug: wsSlug,
+        id: wsId,
+      }),
+    );
+  }
   const issueReferences = useMemo(
-    () => dedupeIssueReferences(extractIssueReferences(content)),
-    [content],
+    () =>
+      dedupeIssueReferences(
+        extractIssueReferences(content, { workspacePrefix }),
+      ),
+    [content, workspacePrefix],
   );
 
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
