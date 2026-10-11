@@ -3374,7 +3374,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
               : null;
             return {
               ...agentConfigBrief(agent),
-              active_profile_entry_matches: drift,
+              is_drifted: drift,
             };
           }),
         };
