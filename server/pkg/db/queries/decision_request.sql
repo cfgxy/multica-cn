@@ -29,9 +29,10 @@ ORDER BY created_at ASC, id ASC;
 
 -- name: ListDecisionRequestsForWorkspace :many
 -- Decision-center rows for one workspace (one row PER SPACE-LEVEL REQUEST).
--- NULL status lists every status; a set status filters to it. Visibility
--- (restricted tiers) is enforced by the handler after the fetch — the row
--- carries everything the check needs.
+-- NULL status lists every status; a set status filters to it. Row visibility
+-- is workspace-membership scoped at the route: every member of this space
+-- sees its rows; operator tiers gate who may ANSWER (the answer endpoint's
+-- tier check), never who may see.
 SELECT * FROM decision_requests
 WHERE workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
@@ -98,17 +99,20 @@ WHERE request_group_id = @request_group_id
   AND status IN ('pending', 'approved')
 RETURNING *;
 
--- ExpireDueDecisionRequests flips every group whose window lapsed before all
--- required steps approved (lazy expiry — no scheduler). A group qualifies
--- only while ALL its rows are still in flight; a denied or executed group is
--- already terminal and stays put.
+-- ExpireDueDecisionRequests flips every group whose window lapsed before
+-- all required steps approved (lazy expiry — no scheduler). A group
+-- qualifies only while a pending step remains: a fully-approved group is
+-- already past consent — its advance/execute pass just hasn't landed yet —
+-- and expiring it there would void captured human approvals and misreport
+-- the terminal callback. Groups with no pending row are otherwise terminal
+-- and stay put.
 -- name: ExpireDueDecisionRequests :many
 WITH due_groups AS (
     SELECT request_group_id
     FROM decision_requests
     WHERE expires_at <= now() AND status IN ('pending', 'approved')
     GROUP BY request_group_id
-    HAVING count(*) FILTER (WHERE status NOT IN ('pending', 'approved')) = 0
+    HAVING count(*) FILTER (WHERE status = 'pending') > 0
 )
 UPDATE decision_requests SET status = 'expired', updated_at = now()
 WHERE request_group_id IN (SELECT request_group_id FROM due_groups)
