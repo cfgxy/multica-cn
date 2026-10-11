@@ -51,7 +51,7 @@ Agent 在任务执行中会遇到需要人类授权的敏感操作：读取另�
 
 ## 5. 来源标记与答案通道
 
-`answer_source` 三通道枚举（`card_click` / `text_token` / `batch`），全部由服务端在写入时判定，**禁止解析用户文本推断来源**（MUL-2600 对齐）。授权链接卡（issue_decisions 上 `decision_kind='authorization'` 的卡）只有按钮点击一条路：`AnswerAuthorizationDecisionCard` 固定写 `card_click`，CAS 防双击，且在同一事务内同步 origin 投影行（卡与行一个真相；行已终态则回滚卡答备）。步骤回声评论不带 mention——发起 run 只在终态回调唤醒一次。
+`answer_source` 四通道枚举（`card_click` / `text_token` / `batch` / `decision_center`），全部由服务端在写入时判定，**禁止解析用户文本推断来源**（MUL-2600 对齐）。授权链接卡（issue_decisions 上 `decision_kind='authorization'` 的卡）只有按钮点击一条路：`AnswerAuthorizationDecisionCard` 固定写 `card_click`，CAS 防双击，且在同一事务内同步 origin 投影行（卡与行一个真相；行已终态则回滚卡答备）。行答端点（决策中心行按钮与裸 API 共用的 `POST /decision-requests/{id}/answer`）是独立通道：行与审批审计写 `decision_center`（迁移 967 放宽 `decision_requests` 的 CHECK；该端点并非卡片点击，940 起硬编码 `card_click` 系 RUYI-630 复盘补正）。步骤回声评论不带 mention——发起 run 只在终态回调唤醒一次。
 
 既有问题卡面同步升级：三通道 answer_source 写入、`visible_tier` 可见档位过滤（members/restricted，机器身份不可见 restricted 卡）、`operator_tier`+`named_approver_ids` 档位闸、自定义双按钮标签。问题卡三态语义（open/answered/cancelled）不变，存量行回填 `decision_kind='question'` 默认值，零破坏。
 

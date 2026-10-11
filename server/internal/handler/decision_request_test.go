@@ -677,6 +677,15 @@ func TestDecisionRequestCardChannels(t *testing.T) {
 		if detail.Request.Status != "executed" {
 			t.Fatalf("origin row after card answer = %s, want executed", detail.Request.Status)
 		}
+		// The mirrored origin row keeps the card path's channel label.
+		if detail.Request.AnswerSource == nil || *detail.Request.AnswerSource != "card_click" {
+			t.Fatalf("mirrored origin row answer_source = %v, want card_click", func() any {
+				if detail.Request.AnswerSource != nil {
+					return *detail.Request.AnswerSource
+				}
+				return nil
+			}())
+		}
 		if detail.Request.ExecutionResult == nil || !strings.Contains(string(detail.Request.ExecutionResult), "workspace") {
 			t.Fatalf("execution_result = %s, want workspace payload", detail.Request.ExecutionResult)
 		}
@@ -1023,6 +1032,64 @@ func TestDecisionRequestRowDenyAuditNaming(t *testing.T) {
 	if n := countAudits("agent.decision_denied"); n != 1 {
 		t.Fatalf("denied audits after row deny = %d, want 1", n)
 	}
+}
+
+// The row answer endpoint (decision-center row buttons and the bare API) is
+// its own answer channel: the server labels the row and its approval audit
+// decision_center — no card-surface value may pretend a card click happened.
+func TestDecisionRequestRowAnswerSource(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	seed := func(t *testing.T, title string) string {
+		t.Helper()
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type": "workspace_info_read", "title": title,
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed create: %d %s", w.Code, w.Body.String())
+		}
+		return decodeDecisionRequestDetail(t, w).Request.ID
+	}
+
+	t.Run("row approval labels the row and its audit decision_center", func(t *testing.T) {
+		rowID := seed(t, "row answer source approve")
+		if w := answerDecisionRequestFor(t, testWorkspaceID, rowID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+		}
+		_, detail := getDecisionRequestFor(t, testWorkspaceID, rowID)
+		if detail.Request.AnswerSource == nil || *detail.Request.AnswerSource != "decision_center" {
+			t.Fatalf("row answer_source = %v, want decision_center", func() any {
+				if detail.Request.AnswerSource != nil {
+					return *detail.Request.AnswerSource
+				}
+				return nil
+			}())
+		}
+		var auditSource string
+		dbfx.QueryRow(t, `
+			SELECT details->>'answer_source' FROM audit_event
+			WHERE trigger_kind = 'decision_request' AND trigger_ref = $1
+			  AND event_type = 'agent.decision_authorized'
+		`, detail.Request.RequestGroupID).Scan(&auditSource)
+		if auditSource != "decision_center" {
+			t.Fatalf("approval audit answer_source = %q, want decision_center", auditSource)
+		}
+	})
+	t.Run("row deny labels the row decision_center too", func(t *testing.T) {
+		rowID := seed(t, "row answer source deny")
+		if w := answerDecisionRequestFor(t, testWorkspaceID, rowID, "", "deny"); w.Code != http.StatusOK {
+			t.Fatalf("deny: %d %s", w.Code, w.Body.String())
+		}
+		_, detail := getDecisionRequestFor(t, testWorkspaceID, rowID)
+		if detail.Request.AnswerSource == nil || *detail.Request.AnswerSource != "decision_center" {
+			t.Fatalf("row answer_source = %v, want decision_center", func() any {
+				if detail.Request.AnswerSource != nil {
+					return *detail.Request.AnswerSource
+				}
+				return nil
+			}())
+		}
+	})
 }
 
 // ── agent polling access ────────────────────────────────────────────────────

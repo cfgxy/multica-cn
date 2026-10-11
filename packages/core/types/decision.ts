@@ -119,7 +119,7 @@ export type DecisionRequestStatus =
 export type DecisionRequestRole = "origin" | "target";
 
 /** answer_source discriminates HOW a human acted (server-authoritative). */
-export type DecisionAnswerSource = "card_click" | "text_token" | "batch";
+export type DecisionAnswerSource = "card_click" | "text_token" | "batch" | "decision_center";
 
 export interface DecisionRequest {
   id: string;

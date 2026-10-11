@@ -56,12 +56,15 @@ const (
 	decisionReqRoleTarget = "target"
 )
 
-// Answer sources. Only card_click reaches authorization rows/cards today;
-// the question-card surface also records text_token and batch.
+// Answer sources. card_click covers the authorization-card click path (and
+// its mirrored origin rows); the question-card surface also records
+// text_token and batch; decision_center labels the row answer endpoint
+// (decision-center row buttons and the bare API), which is no card click.
 const (
-	decisionSourceCardClick = "card_click"
-	decisionSourceTextToken = "text_token"
-	decisionSourceBatch     = "batch"
+	decisionSourceCardClick     = "card_click"
+	decisionSourceTextToken     = "text_token"
+	decisionSourceBatch         = "batch"
+	decisionSourceDecisionCenter = "decision_center"
 )
 
 const (
@@ -996,11 +999,13 @@ func (h *Handler) AnswerDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		// Per-step authorization audit; the deny path's group-level
 		// decision_denied event is written by the advance pass. Naming
 		// mirrors the card path: only approvals write decision_authorized.
+		// The channel is this endpoint (decision-center row buttons / bare
+		// API), not a card click.
 		service.TryAppendAuditEvents(r.Context(), h.Queries, auditEventForDecisionRequest(
 			service.AuditAgentDecisionAuthorized, answered,
 			decisionRequestAuditDetails(answered, map[string]any{
 				"answered_by":   authorID,
-				"answer_source": decisionSourceCardClick,
+				"answer_source": decisionSourceDecisionCenter,
 				"decision":      decision,
 			})))
 	}
