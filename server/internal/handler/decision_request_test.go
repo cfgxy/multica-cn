@@ -1000,6 +1000,31 @@ func TestDecisionRequestAuditChain(t *testing.T) {
 	}
 }
 
+// A row-path denial must follow the card path's naming: no per-step
+// decision_authorized event, the denial lands once as the advance pass's
+// group-level decision_denied event.
+func TestDecisionRequestRowDenyAuditNaming(t *testing.T) {
+	f := newDecisionFixture(t)
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": "workspace_info_read", "title": "row deny audit naming",
+	})
+	detail := decodeDecisionRequestDetail(t, w)
+	if dw := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "deny"); dw.Code != http.StatusOK {
+		t.Fatalf("deny: %d", dw.Code)
+	}
+	countAudits := func(eventType string) int {
+		var n int
+		dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind = 'decision_request' AND trigger_ref = $1 AND event_type = $2`, detail.Request.RequestGroupID, eventType).Scan(&n)
+		return n
+	}
+	if n := countAudits("agent.decision_authorized"); n != 0 {
+		t.Fatalf("authorized audits after row deny = %d, want 0", n)
+	}
+	if n := countAudits("agent.decision_denied"); n != 1 {
+		t.Fatalf("denied audits after row deny = %d, want 1", n)
+	}
+}
+
 // ── agent polling access ────────────────────────────────────────────────────
 
 func TestDecisionRequestAgentPolling(t *testing.T) {
