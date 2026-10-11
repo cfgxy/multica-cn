@@ -2846,6 +2846,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// body is ignored, and the operator trigger plus the
 					// background sweep share the handler.
 					r.Post("/credential-probe", h.RunCredentialProbe)
+					// Per-runtime cost budget (RUYI-665): read for anyone with
+					// runtime read access, write for the runtime owner only.
+					r.Get("/budget", h.GetRuntimeCostBudget)
+					r.Put("/budget", h.PutRuntimeCostBudget)
 				})
 			})
 

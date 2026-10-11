@@ -128,6 +128,11 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 	if _, err := qtx.DeleteRuntimeCredentialsByInstance(ctx, runtimeID); err != nil {
 		return out, fmt.Errorf("delete stored credentials: %w", err)
 	}
+	// Runtime cost budgets (RUYI-665) have no runtime foreign key; without this
+	// prune they would outlive the runtime they cap.
+	if err := qtx.DeleteRuntimeCostBudgetsForRuntime(ctx, runtimeID); err != nil {
+		return out, fmt.Errorf("delete runtime cost budgets: %w", err)
+	}
 
 	unboundIDs := make([]pgtype.UUID, len(unbound))
 	for i, agent := range unbound {

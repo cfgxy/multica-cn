@@ -209,6 +209,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// workspace's runtime set in the same statement that deletes the
 	// runtimes. Destroying the workspace destroys its secrets.
 	"runtime_credential": workspaceDelete,
+	// Per-runtime cost budgets (RUYI-665) carry workspace_id and no FKs
+	// (house rule); DeleteWorkspaceRuntimesAndProjects deletes them by
+	// workspace_id in the same statement that deletes the runtimes.
+	"runtime_cost_budget": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery":        workspaceDelete,

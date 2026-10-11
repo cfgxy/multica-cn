@@ -66,6 +66,10 @@ export function useTypeLabels(): Record<InboxItemType, string> {
       "types.autopilot_quota_exceeded",
       "Autopilot run limit reached",
     ),
+    runtime_budget_exceeded: t(
+      "types.runtime_budget_exceeded",
+      "Runtime cost budget reached",
+    ),
   };
 }
 

@@ -511,6 +511,8 @@
     "trigger_blocked_short_runtime_offline": "런타임 오프라인",
     "trigger_blocked_short_runtime_unusable": "CLI 실행 불가",
     "trigger_blocked_short_agent_runtime_required": "런타임 필요",
+    "trigger_blocked_budget_exceeded": "이 대상의 런타임이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
+    "trigger_blocked_short_budget_exceeded": "한도 도달",
     "trigger_blocked_short_generic": "트리거 안 됨",
     "send_reply_failed": "답글을 보내지 못했습니다",
     "delete_failed": "댓글을 삭제하지 못했습니다",
