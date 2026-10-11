@@ -145,8 +145,9 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web /
-  // Related PRs / Delete.
+  // Three-dot menu: Pin/Unpin / Edit details / Copy title / Copy
+  // description / Copy link / Open on web / Related PRs / Relations /
+  // Delete.
   // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
   const issueLink = issue && wsSlug
     ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
@@ -181,6 +182,15 @@ export default function IssueDetail() {
   const onOpenPullRequests = useCallback(() => {
     if (wsSlug && issue) {
       router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
+    }
+  }, [wsSlug, issue]);
+  // Structured relations (RUYI-689) — mobile counterpart of the web
+  // sidebar's Relations section (blocks/blocked_by/relates_to/supersedes/
+  // superseded_by + parent/children). Markdown @mentions aggregate in the
+  // timeline tail instead; the two never mix (acceptance 6).
+  const onOpenRelations = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/relations`);
     }
   }, [wsSlug, issue]);
   // Quick property setters (RUYI-129). The header menu reuses the very
@@ -329,6 +339,11 @@ export default function IssueDetail() {
                               "detail.section_pull_requests",
                               "Pull requests",
                             )}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenRelations}>
+                          <Text>
+                            {t("detail.section_relations", "Relations")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />

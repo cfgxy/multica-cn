@@ -53,6 +53,7 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   Issue,
+  IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
   IssueLabelsResponse,
@@ -113,6 +114,7 @@ import {
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_ISSUE_RELATIONS,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_SQUAD,
@@ -121,6 +123,8 @@ import {
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
   IssuePullRequestsResponseSchema,
+  IssueRelationsResponseSchema,
+  ChildIssuesResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
@@ -1658,6 +1662,37 @@ class ApiClient {
       EMPTY_ISSUE_FALLBACK,
       { ...opts, endpoint: "getIssue" },
     );
+  }
+
+  // Structured relations (RUYI-689) — mirrors web packages/core/api/client.ts
+  // getIssueRelations → GET /api/issues/:id/relations. Read-only: edge
+  // creation/deletion stays an API concern, no mobile write counterpart.
+  async getIssueRelations(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IssueRelationsResponse> {
+    return this.fetchValidated(
+      `/api/issues/${id}/relations`,
+      IssueRelationsResponseSchema,
+      EMPTY_ISSUE_RELATIONS,
+      { ...opts, endpoint: "getIssueRelations" },
+    );
+  }
+
+  // Sub-issues of a parent — mirrors web packages/core/api/client.ts
+  // listChildIssues → GET /api/issues/:id/children. Backs the children
+  // group of the Relations page (RUYI-689); the relations endpoint covers
+  // parent + edge views but deliberately not children.
+  async listChildIssues(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ issues: Issue[] }> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/children`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
+      endpoint: "GET /api/issues/:id/children",
+    });
   }
 
   // Write endpoint — mirrors POST /api/issues
