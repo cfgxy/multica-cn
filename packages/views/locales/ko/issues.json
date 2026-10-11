@@ -592,7 +592,9 @@
       "menu_label": "빠른 답장",
       "menu_empty": "워크스페이스 관리자가 아직 빠른 답장을 설정하지 않았습니다",
       "insert_aria": "빠른 답장 \"{{name}}\" 삽입"
-    }
+    },
+    "trigger_blocked_budget_exceeded": "이 대상의 런타임이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
+    "trigger_blocked_short_budget_exceeded": "한도 도달"
   },
   "reply": {
     "placeholder": "답글 남기기..."

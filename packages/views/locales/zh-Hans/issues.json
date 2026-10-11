@@ -592,7 +592,9 @@
       "menu_label": "快速回复",
       "menu_empty": "空间管理员还没有配置快速回复",
       "insert_aria": "插入快速回复“{{name}}”"
-    }
+    },
+    "trigger_blocked_budget_exceeded": "该目标所在运行时已达费用额度，请在周期重置后重试",
+    "trigger_blocked_short_budget_exceeded": "额度已满"
   },
   "reply": {
     "placeholder": "回复..."

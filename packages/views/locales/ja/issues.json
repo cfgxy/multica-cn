@@ -592,7 +592,9 @@
       "menu_label": "クイック返信",
       "menu_empty": "ワークスペース管理者によってクイック返信はまだ設定されていません",
       "insert_aria": "クイック返信「{{name}}」を挿入"
-    }
+    },
+    "trigger_blocked_budget_exceeded": "この対象のランタイムは費用予算の上限に達しています — 期間がリセットされてから再試行してください",
+    "trigger_blocked_short_budget_exceeded": "予算上限"
   },
   "reply": {
     "placeholder": "返信を残す..."
