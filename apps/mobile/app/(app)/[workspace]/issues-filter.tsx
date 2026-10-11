@@ -14,8 +14,8 @@
  *
  * Self-contained: reads/writes the store directly, no callback passing.
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { Pressable, ScrollView, Switch, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
@@ -149,13 +149,12 @@ export default function IssuesFilterRoute() {
   const myHasActive = statusFilters.length > 0 || priorityFilters.length > 0;
   const hasActive = resolvedScope === "tasks" ? taskHasActive : myHasActive;
 
-  const insets = useSafeAreaInsets();
   const tabLabel = (tab: TaskTab) => t(`mobile.tasks.tabs.${tab}`);
 
   return (
     <View className="flex-1">
-      {/* 顶部让出系统状态栏（RUYI-563）。 */}
-      <View className="flex-row items-center justify-between px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
+      {/* 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
+      <SheetHeader className="flex-row items-center justify-between px-4 pb-3" gap={16}>
         <Text className="text-base font-semibold text-foreground">
           {t("filters.tooltip", "Filter")}
         </Text>
@@ -170,7 +169,7 @@ export default function IssuesFilterRoute() {
             </Text>
           </Pressable>
         ) : null}
-      </View>
+      </SheetHeader>
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false} nestedScrollEnabled>
         {statusLocked ? (
           // Non-全部 tabs own their status window server-side; show it as a

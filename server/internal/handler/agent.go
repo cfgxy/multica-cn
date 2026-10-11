@@ -68,6 +68,14 @@ type AgentResponse struct {
 	// for dispatch arrives with the voice adapter.
 	VoiceRuntimeID    string `json:"voice_runtime_id"`
 	VoiceRuntimeBound bool   `json:"voice_runtime_bound"`
+	// VoiceProviderID/VoiceModel/VoiceAdvanced are the D2 override triple
+	// (RUYI-693): the agent-level voice configuration, level-wise atomic —
+	// bound and unbound as one unit. Empty id = no override; the workspace
+	// default (settings.voice) applies next, and the official vanilla form
+	// is the final fallback.
+	VoiceProviderID string          `json:"voice_provider_id"`
+	VoiceModel      string          `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage `json:"voice_advanced"`
 	Name              string `json:"name"`
 	Description       string `json:"description"`
 	// Instructions is what this agent's owner wrote. For a system agent it
@@ -242,6 +250,9 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		RuntimeBound:             a.RuntimeID.Valid,
 		VoiceRuntimeID:           uuidToString(a.VoiceRuntimeID),
 		VoiceRuntimeBound:        a.VoiceRuntimeID.Valid,
+		VoiceProviderID:          uuidToString(a.VoiceProviderID),
+		VoiceModel:               a.VoiceModel.String,
+		VoiceAdvanced:            json.RawMessage(a.VoiceAdvanced),
 		Name:                     a.Name,
 		Description:              a.Description,
 		Instructions:             a.Instructions,
@@ -1381,6 +1392,14 @@ type CreateAgentRequest struct {
 	// historical text-only shape. The target must be a workspace runtime whose
 	// protocol family declares realtime_voice, and must differ from runtime_id.
 	VoiceRuntimeID string            `json:"voice_runtime_id"`
+	// VoiceProviderID optionally points the D2 voice override at a
+	// workspace voice_provider pool entry (RUYI-693). Non-empty requires the
+	// entry to exist in this workspace, be enabled, and speak a family the
+	// gateway serves today; VoiceModel/VoiceAdvanced refine the override and
+	// are stored with it (level-wise atomic).
+	VoiceProviderID string            `json:"voice_provider_id"`
+	VoiceModel      string            `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage   `json:"voice_advanced"`
 	RuntimeConfig  any               `json:"runtime_config"`
 	CustomEnv      map[string]string `json:"custom_env"`
 	CustomArgs     []string          `json:"custom_args"`
@@ -1602,6 +1621,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// RUYI-693: the D2 override triple's provider leg. Same save-time gate
+	// the binding path applies; the session-start chain re-derives every
+	// fact it checks (the gate is a living property).
+	voiceProviderUUID, voiceModelText, voiceAdvancedRaw, ok := h.validateAgentVoiceProviderRef(w, r, wsUUID, req.VoiceProviderID, req.VoiceModel, req.VoiceAdvanced)
+	if !ok {
+		return
+	}
 
 	// Probe workspace agent count BEFORE the insert so the funnel has a
 	// clean "first agent ever in this workspace" signal — Step 4 of
@@ -1702,6 +1728,9 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
 		VoiceRuntimeID:           voiceRuntimeUUID,
+		VoiceProviderID:          voiceProviderUUID,
+		VoiceModel:               voiceModelText,
+		VoiceAdvanced:            voiceAdvancedRaw,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1822,6 +1851,22 @@ type UpdateAgentRequest struct {
 	//     scope, then bind. The decode-time raw fields map distinguishes
 	//     "omitted" from "explicitly cleared".
 	VoiceRuntimeID *string `json:"voice_runtime_id"`
+	// VoiceProviderID is the D2 override triple's level switch (RUYI-693):
+	//   - field omitted → no change
+	//   - field present with ""/null → unbind: the WHOLE triple clears
+	//     (ClearAgentVoiceProviderOverride) — level-wise atomic
+	//   - field present with a provider id → bind, validated by
+	//     validateAgentVoiceProviderRef (exists + workspace + enabled +
+	//     gateway-servable). voice_model / voice_advanced in the same
+	//     request refine the new override.
+	// VoiceModel / VoiceAdvanced sent WITHOUT a provider id only refine the
+	// already-bound override; with no override bound they are rejected so a
+	// half-configured level can never exist. voice_advanced keeps the
+	// not-set semantics of agentVoiceAdvancedRaw: null/"" preserves (the
+	// COALESCE contract), {} stores an explicit empty refinement.
+	VoiceProviderID *string          `json:"voice_provider_id"`
+	VoiceModel      *string          `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage  `json:"voice_advanced"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -2179,6 +2224,72 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			params.VoiceRuntimeID = voiceUUID
 		}
 	}
+	// RUYI-693: the D2 override triple (see UpdateAgentRequest for the
+	// level-wise atomic contract).
+	shouldClearVoiceProvider := false
+	if rawVP, ok := rawFields["voice_provider_id"]; ok {
+		var requested string
+		if err := json.Unmarshal(rawVP, &requested); err != nil {
+			writeError(w, http.StatusBadRequest, "voice_provider_id must be a provider id or an empty string")
+			return
+		}
+		if requested == "" {
+			if _, hasModel := rawFields["voice_model"]; hasModel {
+				writeError(w, http.StatusBadRequest, "voice_model cannot be combined with clearing voice_provider_id: the override unbinds as one unit")
+				return
+			}
+			if _, hasAdvanced := rawFields["voice_advanced"]; hasAdvanced {
+				writeError(w, http.StatusBadRequest, "voice_advanced cannot be combined with clearing voice_provider_id: the override unbinds as one unit")
+				return
+			}
+			shouldClearVoiceProvider = true
+		} else {
+			bindModel := ""
+			if rawModel, hasModel := rawFields["voice_model"]; hasModel {
+				if err := json.Unmarshal(rawModel, &bindModel); err != nil {
+					writeError(w, http.StatusBadRequest, "voice_model must be a model name or an empty string")
+					return
+				}
+			}
+			providerUUID, modelText, advancedRaw, ok := h.validateAgentVoiceProviderRef(w, r, existing.WorkspaceID, requested, bindModel, req.VoiceAdvanced)
+			if !ok {
+				return
+			}
+			params.VoiceProviderID = providerUUID
+			params.VoiceModel = modelText
+			params.VoiceAdvanced = advancedRaw
+		}
+	} else {
+		if rawModel, hasModel := rawFields["voice_model"]; hasModel {
+			var m string
+			if err := json.Unmarshal(rawModel, &m); err != nil {
+				writeError(w, http.StatusBadRequest, "voice_model must be a model name or an empty string")
+				return
+			}
+			normalized := normalizeVoiceModel(m)
+			if len(normalized) > maxVoiceModelLen {
+				writeError(w, http.StatusBadRequest, errVoiceRefModelTooLong.Error())
+				return
+			}
+			if !existing.VoiceProviderID.Valid {
+				writeError(w, http.StatusBadRequest, "voice_model refines an existing voice_provider_id override; set voice_provider_id first")
+				return
+			}
+			params.VoiceModel = strToText(normalized)
+		}
+		if rawAdvanced, hasAdvanced := rawFields["voice_advanced"]; hasAdvanced {
+			if _, hasModel := rawFields["voice_model"]; !hasModel && !existing.VoiceProviderID.Valid {
+				writeError(w, http.StatusBadRequest, "voice_advanced refines an existing voice_provider_id override; set voice_provider_id first")
+				return
+			}
+			advancedRaw, err := agentVoiceAdvancedRaw(rawAdvanced)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			params.VoiceAdvanced = advancedRaw
+		}
+	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
 	// who can run their agent — the overlay uses the owner's own Composio
@@ -2501,6 +2612,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent voice_runtime_id failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to unbind the voice runtime: "+err.Error())
+			return
+		}
+	}
+	if shouldClearVoiceProvider {
+		updated, err = h.Queries.ClearAgentVoiceProviderOverride(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent voice_provider override failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to unbind the voice provider: "+err.Error())
 			return
 		}
 	}
