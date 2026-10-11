@@ -21,11 +21,17 @@ vi.mock("../issues/hooks", () => ({
 // is stubbed to "unresolved" so its rows degrade to plain text; this suite
 // pins the body-text behaviour, not resolution (see issue-reference-footer
 // and issue-mention-aggregation tests for that).
-vi.mock("../issues/hooks/use-issue-reference-resolutions", () => ({
-  useIssueReferenceResolutions: (
-    references: { form: string; ref: string }[],
-  ) => new Map(references.map((ref) => [`${ref.form}:${ref.ref}`, null])),
-}));
+vi.mock(
+  "../issues/hooks/use-issue-reference-resolutions",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../issues/hooks/use-issue-reference-resolutions")
+    >()),
+    useIssueReferenceResolutions: (
+      references: { form: string; ref: string }[],
+    ) => new Map(references.map((ref) => [`${ref.form}:${ref.ref}`, null])),
+  }),
+);
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",

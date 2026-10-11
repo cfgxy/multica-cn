@@ -17,6 +17,11 @@ import LinkifyIt from "linkify-it";
  *     readonly preprocessor rewrites these to mention links at render time, on
  *     mobile they stay plain text in the body, and both ends list them here.
  *
+ * A third form, `pull_request` (`owner/repo#N`, RUYI-635 增量), rides the same
+ * skip rules and aggregation: the token stays plain text in the body, and the
+ * tail list resolves it against the workspace's known PRs (degrading to plain
+ * text when the platform has never seen that PR).
+ *
  * Skip rules are ported from `packages/ui/markdown` so a token listed in the
  * tail is exactly a token the web body would have chipped: fenced/inline code
  * and math (`findCodeRanges`), existing markdown links
@@ -34,7 +39,7 @@ import LinkifyIt from "linkify-it";
  * an unresolved reference degrades to plain text.
  */
 
-export type IssueReferenceForm = "mention" | "identifier";
+export type IssueReferenceForm = "mention" | "identifier" | "pull_request";
 
 export interface IssueReference {
   /** UUID (mention form) or bare identifier (identifier form). */
@@ -274,6 +279,17 @@ function detectLinks(text: string): DetectedLink[] {
 // uppercase prefix + `-` + digits, standalone token on both sides.
 const IDENTIFIER_RE = /(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9_-])/g;
 
+// `owner/repo#N` — the GitHub-style PR text reference (RUYI-635 增量, Owner
+// point ②). Owner/repo follow GitHub's loose lexical shape (alphanumeric start,
+// hyphens; dots inside the repo between alphanumerics). The left lookbehind
+// rejects path (`/x/y/repo#1`) and dotted-name (`file.x/repo#1`) contexts, the
+// same boundaries the bare-identifier rule enforces. Latin letter glue on the
+// left (`seexowner/repo#1`) is indistinguishable from a legitimate owner and
+// is absorbed — resolution misses degrade to plain text, so over-detection is
+// harmless. `form: "pull_request"`, `ref` = the full `owner/repo#N` token.
+const PR_REFERENCE_RE =
+  /(?<![A-Za-z0-9_.\-/])([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)#(\d+)(?![A-Za-z0-9])/g;
+
 // Label allows backslash-escaped metacharacters and excludes bare backslash so
 // the alternatives cannot backtrack against each other (ReDoS, web #4881).
 const ISSUE_MENTION_LINK_RE =
@@ -327,6 +343,28 @@ export function extractIssueReferences(text: string): IssueReference[] {
     hits.push({ ref: identifier, label: null, form: "identifier", start });
   }
 
+  PR_REFERENCE_RE.lastIndex = 0;
+  while ((match = PR_REFERENCE_RE.exec(text)) !== null) {
+    const token = match[0];
+    if (!token) continue;
+    const start = match.index;
+    const end = start + token.length;
+    const range = { start, end };
+
+    if (isInsideCode(start, codeRanges)) continue;
+    if (linkRanges.some((r) => rangesOverlap(range, r))) continue;
+    if (detectedLinks.some((l) => rangesOverlap(range, l))) continue;
+
+    // Same dotted-continuation tail check as identifiers: `repo#338.tar.gz`
+    // is an artifact name, not a reference. A sentence-final `.` stays.
+    const after = text[end];
+    if (after === "." && /[A-Za-z0-9]/.test(text[end + 1] ?? "")) continue;
+    // `repo#338/commits` — a following `/` is a deeper path, not a reference.
+    if (after === "/") continue;
+
+    hits.push({ ref: token, label: null, form: "pull_request", start });
+  }
+
   return hits
     .sort((a, b) => a.start - b.start)
     .map(({ start: _start, ...ref }) => ref);
@@ -357,6 +395,28 @@ export function dedupeIssueReferences(refs: IssueReference[]): IssueReference[] 
  */
 export function isIssueIdentifier(value: string): boolean {
   return /^[A-Z][A-Z0-9]*-\d+$/.test(value);
+}
+
+export interface PullRequestRefParts {
+  owner: string;
+  repo: string;
+  number: number;
+}
+
+/**
+ * Split a `pull_request`-form reference token (`owner/repo#N`) into the parts
+ * a PR lookup needs, or `null` when the token is not that shape (an issue
+ * identifier, a mention UUID, garbage). Pure and total — render layers call
+ * this before spending a query.
+ */
+export function parsePullRequestReference(
+  ref: string,
+): PullRequestRefParts | null {
+  const match = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9_.-]*)#(\d+)$/.exec(
+    ref,
+  );
+  if (!match) return null;
+  return { owner: match[1]!, repo: match[2]!, number: Number(match[3]) };
 }
 
 function demoteMatch(_match: string, label: string, ref: string): string {
