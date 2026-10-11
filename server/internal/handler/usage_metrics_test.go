@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -214,5 +215,104 @@ func TestPlanUsageMetricsWindow(t *testing.T) {
 		if plan.End != now || !plan.Start.Equal(now.Add(-tc.window)) {
 			t.Fatalf("window %s: range mismatch: %+v", tc.window, plan)
 		}
+	}
+}
+
+// unescapePromQLStringLiteral scans a PromQL double-quoted string literal and
+// returns its content, applying the escapes promquery.EscapeLabelValue emits.
+// A raw `"` before the literal's end means the matcher built an invalid
+// query — the exact fail-closed failure the escape order must prevent.
+func unescapePromQLStringLiteral(t *testing.T, literal string) string {
+	t.Helper()
+	if len(literal) < 2 || literal[0] != '"' {
+		t.Fatalf("matcher %q is not a double-quoted literal", literal)
+	}
+	var out []byte
+	for i := 1; i < len(literal); i++ {
+		switch c := literal[i]; c {
+		case '\\':
+			if i+1 >= len(literal) {
+				t.Fatalf("matcher %q ends on a dangling backslash", literal)
+			}
+			i++
+			switch literal[i] {
+			case '\\':
+				out = append(out, '\\')
+			case '"':
+				out = append(out, '"')
+			case 'n':
+				out = append(out, '\n')
+			default:
+				t.Fatalf("matcher %q carries unknown escape \\%c", literal, literal[i])
+			}
+		case '"':
+			if i != len(literal)-1 {
+				t.Fatalf("matcher %q terminates its string literal early — invalid PromQL", literal)
+			}
+			return string(out)
+		default:
+			out = append(out, c)
+		}
+	}
+	t.Fatalf("matcher %q never closes its string literal", literal)
+	return ""
+}
+
+// TestDaemonMatcherEscapeOrder pins the escaping order in daemonMatcher:
+// regex-quote FIRST (so metacharacters in user-controlled ids can only match
+// themselves), then PromQL string-literal escaping (so quotes and
+// backslashes survive the literal intact). The reverse order builds illegal
+// PromQL for ids containing quotes.
+func TestDaemonMatcherEscapeOrder(t *testing.T) {
+	ids := []string{
+		`plain-uuid`,
+		`a"b`,           // quote: the discriminator — wrong order emits invalid PromQL
+		`a\b`,           // backslash: double-escape must still match the exact id
+		`say "hi"\path`, // combined
+		`a.b|c+d`,       // regex metacharacters must not widen the match
+		`host(.local)*`, // metacharacters plus a paren group
+	}
+	for _, id := range ids {
+		matcher := daemonMatcher([]string{id})
+		if !strings.HasPrefix(matcher, `daemon=~"`) || !strings.HasSuffix(matcher, `"`) {
+			t.Fatalf("id %q: matcher %q has unexpected shape", id, matcher)
+		}
+		regex := unescapePromQLStringLiteral(t, strings.TrimPrefix(matcher, `daemon=~`))
+		re, err := regexp.Compile(regex)
+		if err != nil {
+			t.Fatalf("id %q: decoded regex %q does not compile: %v", id, regex, err)
+		}
+		if !re.MatchString(id) {
+			t.Fatalf("id %q: matcher %q must match its own id", id, matcher)
+		}
+	}
+
+	// Metacharacters stay pinned to the literal id: a dot must not eat an
+	// arbitrary character and alternation must not split the pattern.
+	matcher := daemonMatcher([]string{`a.b|c`})
+	regex := unescapePromQLStringLiteral(t, strings.TrimPrefix(matcher, `daemon=~`))
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		t.Fatalf("regex %q does not compile: %v", regex, err)
+	}
+	for _, neighbour := range []string{`axb|c`, `a.bXc`, `a`, `c`} {
+		if re.MatchString(neighbour) {
+			t.Fatalf("matcher %q must not match neighbour %q", matcher, neighbour)
+		}
+	}
+
+	// Multiple ids keep the alternation and each id keeps exact-match
+	// semantics.
+	both := daemonMatcher([]string{`d"1`, `d.2`})
+	regex = unescapePromQLStringLiteral(t, strings.TrimPrefix(both, `daemon=~`))
+	re, err = regexp.Compile(regex)
+	if err != nil {
+		t.Fatalf("alternation regex %q does not compile: %v", regex, err)
+	}
+	if !re.MatchString(`d"1`) || !re.MatchString(`d.2`) {
+		t.Fatalf("alternation %q must match both ids", both)
+	}
+	if re.MatchString(`dX2`) {
+		t.Fatalf("alternation %q must not widen d.2", both)
 	}
 }

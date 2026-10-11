@@ -65,11 +65,14 @@ func planUsageMetricsWindow(window time.Duration, now time.Time) usageMetricsPla
 
 // daemonMatcher builds a PromQL label matcher restricted to the workspace's
 // daemons. Regex metacharacters in daemon ids (hostnames are user-controlled)
-// are quoted so a crafted id can only ever match itself.
+// are quoted so a crafted id can only ever match itself; the quoted form is
+// then escaped for the PromQL string literal, so quotes and backslashes in
+// an id survive the round-trip instead of terminating the literal early
+// (the literal escaping must be the LAST step — see TestDaemonMatcherEscapeOrder).
 func daemonMatcher(daemonIDs []string) string {
 	escaped := make([]string, 0, len(daemonIDs))
 	for _, id := range daemonIDs {
-		escaped = append(escaped, regexp.QuoteMeta(promquery.EscapeLabelValue(id)))
+		escaped = append(escaped, promquery.EscapeLabelValue(regexp.QuoteMeta(id)))
 	}
 	return `daemon=~"` + strings.Join(escaped, "|") + `"`
 }

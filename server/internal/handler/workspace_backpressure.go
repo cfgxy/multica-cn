@@ -44,24 +44,51 @@ func backpressureConfigFromRow(row db.WorkspaceBackpressureSetting) *protocol.Da
 	}
 }
 
-// backpressureSettings resolves the effective card: the saved row when
-// present, the code defaults otherwise. Storage failures degrade to defaults
-// with a log — settings must never break a read or a heartbeat.
-func (h *Handler) backpressureSettings(ctx context.Context, workspaceID pgtype.UUID) backpressureSettingsResponse {
-	row, err := h.Queries.GetWorkspaceBackpressureSettings(ctx, workspaceID)
-	if err == nil {
+// backpressureSettingsFromRead resolves a storage read outcome into the
+// effective card for the settings API: the saved row when present, the code
+// defaults otherwise. ANY read failure — including transient storage errors —
+// degrades to defaults with custom=false, so the form keeps rendering through
+// a database hiccup.
+func backpressureSettingsFromRead(row *db.WorkspaceBackpressureSetting, err error) backpressureSettingsResponse {
+	if err == nil && row != nil {
 		return backpressureSettingsResponse{
-			DaemonBackpressureConfig: *backpressureConfigFromRow(row),
+			DaemonBackpressureConfig: *backpressureConfigFromRow(*row),
 			Custom:                   true,
 		}
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("read workspace backpressure settings", "workspace_id", uuidToString(workspaceID), "error", err)
 	}
 	return backpressureSettingsResponse{
 		DaemonBackpressureConfig: *protocol.DefaultDaemonBackpressureConfig(),
 		Custom:                   false,
 	}
+}
+
+// backpressureWireCard resolves a storage read outcome into the heartbeat
+// delivery card: the saved row when present, the code defaults for a
+// never-saved workspace (ErrNoRows — a genuine no-row is the owner's reset,
+// not a failure). A storage FAILURE delivers nil: the ack then carries no
+// card and the daemon keeps its current one. Re-arming the defaults on a
+// transient error would briefly override an owner-saved card (in particular
+// enabled=false) — worst exactly under the load that exhausted the pool,
+// i.e. when backpressure matters most.
+func backpressureWireCard(row *db.WorkspaceBackpressureSetting, err error) *protocol.DaemonBackpressureConfig {
+	if err == nil && row != nil {
+		return backpressureConfigFromRow(*row)
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	return protocol.DefaultDaemonBackpressureConfig()
+}
+
+// backpressureSettings resolves the effective card: the saved row when
+// present, the code defaults otherwise. Storage failures degrade to defaults
+// with a log — settings must never break a read or a heartbeat.
+func (h *Handler) backpressureSettings(ctx context.Context, workspaceID pgtype.UUID) backpressureSettingsResponse {
+	row, err := h.Queries.GetWorkspaceBackpressureSettings(ctx, workspaceID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("read workspace backpressure settings", "workspace_id", uuidToString(workspaceID), "error", err)
+	}
+	return backpressureSettingsFromRead(&row, err)
 }
 
 // GetWorkspaceBackpressureSettings — GET /api/workspace/backpressure-settings
@@ -146,10 +173,15 @@ func (h *Handler) PutWorkspaceBackpressureSettings(w http.ResponseWriter, r *htt
 
 // backpressureWireConfig is the heartbeat-side read of the effective card
 // (RUYI-618): every ack carries it so running daemons converge on the
-// workspace value within one beat. Best-effort like the rest of the ack —
-// a settings read failure degrades to defaults, never fails the heartbeat.
+// workspace value within one beat. A no-row workspace delivers the code
+// defaults; a storage failure delivers nil — the daemon keeps its current
+// card rather than re-arming the defaults (see backpressureWireCard). The
+// ack path is best-effort: the card never fails the heartbeat.
 func (h *Handler) backpressureWireConfig(ctx context.Context, workspaceID pgtype.UUID) *protocol.DaemonBackpressureConfig {
-	resp := h.backpressureSettings(ctx, workspaceID)
-	cfg := resp.DaemonBackpressureConfig
-	return &cfg
+	row, err := h.Queries.GetWorkspaceBackpressureSettings(ctx, workspaceID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("read workspace backpressure settings for heartbeat; daemon keeps its current card",
+			"workspace_id", uuidToString(workspaceID), "error", err)
+	}
+	return backpressureWireCard(&row, err)
 }
