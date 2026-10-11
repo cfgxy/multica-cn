@@ -130,6 +130,15 @@ var surfaceShapes = []scopeShape{
 	{[]string{"issues", "*", "task-runs"}, shapeReadOnly},
 	{[]string{"issues", "*", "tasks", "*"}, shapeReadOnly},
 
+	// Decision cards (RUYI-688): the answer flow the decision tools drive.
+	// The workspace inbox and the issue-scoped card list are read-only; the
+	// batch answer is the one write and stays under the handler's own
+	// member-only gate. Card creation and cancel stay off-surface — cards are
+	// raised by runs and withdrawn by members, never by an MCP client.
+	{[]string{"workspaces", "*", "decision-inbox"}, shapeReadOnly},
+	{[]string{"issues", "*", "decisions"}, shapeReadOnly},
+	{[]string{"issues", "*", "decisions", "answer-batch"}, shapeReadWrite},
+
 	{[]string{"comments", "*"}, shapeReadWrite},
 
 	// Squads: list/create, per-squad read/update/archive. The members route
