@@ -274,13 +274,13 @@ vi.mock("../../runtimes/components/charts", () => {
   };
   const stub =
     (testId: string, overhang: boolean) =>
-    ({
+    function StubChart({
       data,
       onSelectionChange,
     }: {
       data: { date?: string; weekStart?: string; weekEnd?: string }[];
       onSelectionChange?: (next: { start: string; end: string }) => void;
-    }) => {
+    }) {
       if (!onSelectionChange) return null;
       const first = data[0];
       const last = data[data.length - 1];
@@ -340,6 +340,26 @@ vi.mock("@multica/core/auth", () => {
     { getState: state },
   );
   return { useAuthStore };
+});
+
+// The page anchors every quick window on `todayIso(viewTZ)`. Pin it to a ref
+// so the rollover test can advance the calendar day deterministically
+// instead of racing the wall clock across a timezone boundary. While the ref
+// is empty the real implementation runs — every other test sees exactly the
+// windows it always did.
+const todayRef = vi.hoisted(() => ({ current: "" }));
+
+vi.mock("../../runtimes/utils", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../runtimes/utils")>();
+  return {
+    ...actual,
+    todayIso: (tz: string) => todayRef.current || actual.todayIso(tz),
+  };
+});
+
+afterEach(() => {
+  todayRef.current = "";
 });
 
 vi.mock("@multica/core/runtimes/custom-pricing-store", () => {
@@ -1085,6 +1105,45 @@ describe("DashboardPage — the leaderboard follows the bar selection", () => {
     // The shifted period's queries are all full-window again — a stale
     // selection must not ride along to windows its bars no longer exist in.
     expect(new Set(askedWindows()).size).toBe(1);
+  });
+
+  it("drops a stored selection once the day rolls over past its window", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+
+    // The weekly stub only renders on the Weekly cut, and its overhanging
+    // Mon–Sun span clamps to exactly the stat window: the stored selection
+    // covers the whole window.
+    const dims = within(screen.getByRole("group", { name: "Dimension" }));
+    await user.click(dims.getByRole("button", { name: "Weekly" }));
+    await user.click(screen.getByRole("button", { name: "stub:weekly-tokens" }));
+    expect(
+      screen.getByRole("button", { name: "Clear selection" }),
+    ).toBeInTheDocument();
+
+    // Midnight: the quick window re-anchors on the new day with no handler
+    // firing — the explicit-change clear sites never run. The stored
+    // whole-window span starts before the shifted window's first day, so it
+    // no longer overlaps and must read as no selection: no chip, every query
+    // back on the one visible window, no off-axis leaderboard.
+    todayRef.current = addDaysIso(todayIso(), 1);
+    lbWindowRef.current = JSON.stringify(full);
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("tab", { name: /Errors/ }));
+    await user.click(screen.getByRole("tab", { name: "Usage" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Clear selection" }),
+    ).not.toBeInTheDocument();
+    expect(new Set(askedWindows()).size).toBe(1);
+    expect(askedWindows()).not.toContain(JSON.stringify(full));
+    expect(
+      within(screen.getByRole("list", { name: "Leaderboard" })).getByText(
+        "Agent One",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shares one selection across the Usage and Errors tabs", async () => {
