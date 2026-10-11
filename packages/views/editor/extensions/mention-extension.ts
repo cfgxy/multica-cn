@@ -1,8 +1,18 @@
 import Mention from "@tiptap/extension-mention";
+import type { MentionOptions } from "@tiptap/extension-mention";
 import { mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer } from "@tiptap/react";
 import { MentionView } from "./mention-view";
 import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
+
+type DemotableMentionOptions = Partial<MentionOptions> & {
+  /**
+   * RUYI-635: render issue mention nodes as plain text instead of chips
+   * (the issue body, whose editor IS the rendered content). Display-only;
+   * composers keep the chip default.
+   */
+  demoteIssueMentions: boolean;
+};
 
 const MENTION_LINK_MARKER = "](mention://";
 
@@ -41,7 +51,13 @@ function findMentionStart(src: string): number {
   return -1;
 }
 
-export const BaseMentionExtension = Mention.extend({
+export const BaseMentionExtension = Mention.extend<DemotableMentionOptions>({
+  addOptions() {
+    return {
+      ...this.parent?.(),
+      demoteIssueMentions: false as boolean,
+    };
+  },
   addNodeView() {
     return ReactNodeViewRenderer(MentionView);
   },
@@ -52,7 +68,7 @@ export const BaseMentionExtension = Mention.extend({
       "span",
       mergeAttributes(
         { "data-type": "mention" },
-        this.options.HTMLAttributes,
+        this.options.HTMLAttributes ?? {},
         HTMLAttributes,
         {
           "data-mention-type": node.attrs.type ?? "member",
