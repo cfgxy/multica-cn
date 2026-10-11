@@ -13,10 +13,6 @@
  *   3. X-Request-ID per request + structured logger (debug + tracing)
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
-import type {
-  VoiceDirectSessionHandoff,
-  VoiceSessionCompleteRequest,
-} from "@multica/core/voice";
 import i18n from "i18next";
 import type {
   Agent,
@@ -257,6 +253,26 @@ export interface FileAsset {
   uri: string;
   name: string;
   type: string;
+}
+
+/** Pool row of `GET /api/workspaces/:id/voice-providers` (RUYI-693 D2) —
+ *  mirrors server VoiceProviderResponse. No secret material: the credential
+ *  surfaces only as the coarse badge + last probe verdict. */
+export interface VoiceProvider {
+  id: string;
+  workspace_id: string;
+  display_name: string;
+  provider_type: string;
+  enabled: boolean;
+  credential_status: string;
+  credential_probe?: {
+    status: string;
+    http_status?: number;
+    checked_at: string;
+  } | null;
+  source_runtime_id?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
@@ -654,6 +670,15 @@ class ApiClient {
     });
   }
 
+  // GET /api/workspaces/:id/voice-providers (RUYI-693 D2 pool) —
+  // member-visible; carries no secret material, only the coarse
+  // credential_status badge and the last probe verdict (RUYI-694 D3
+  // availability gate).
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -909,34 +934,6 @@ class ApiClient {
       `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
       { method: "DELETE" },
     );
-  }
-
-  // POST /api/agents/:id/voice-direct-session (RUYI-626) — the §4.4 rule-3
-  // gate plus the live_session row, then the provider hand-off (decrypted
-  // key, provider websocket URL, setup inputs). Deliberately NOT routed
-  // through parseWithFallback: the 409 gate rejection carries
-  // `VOICE_UNAVAILABLE:<reason>` in `body.code` and must surface as an
-  // ApiError the voice layer maps to its degrade copy.
-  async startVoiceDirectSession(
-    agentId: string,
-  ): Promise<VoiceDirectSessionHandoff> {
-    return this.fetch<VoiceDirectSessionHandoff>(
-      `/api/agents/${agentId}/voice-direct-session`,
-      { method: "POST" },
-    );
-  }
-
-  // POST /api/voice-sessions/:id/complete (RUYI-626) — the terminal
-  // write-back with the client-collected transcript and resumption handle.
-  // Idempotent server-side, so a client retry never double-writes.
-  async completeVoiceDirectSession(
-    sessionId: string,
-    record: VoiceSessionCompleteRequest,
-  ): Promise<void> {
-    await this.fetch<void>(`/api/voice-sessions/${sessionId}/complete`, {
-      method: "POST",
-      body: JSON.stringify(record),
-    });
   }
 
   // POST /api/runtimes/:id/credential-probe (RUYI-626) — the device-side
