@@ -24,8 +24,12 @@ import ReanimatedSwipeable, {
 } from "react-native-gesture-handler/ReanimatedSwipeable";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import type { AgentTask } from "@multica/core/types";
+import type { AgentTask, Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
+import {
+  type IssueOtherAgentsActivity,
+  NO_OTHER_AGENTS,
+} from "@/lib/issue-agent-activity";
 import { useT } from "@/lib/use-t";
 import { AgentTaskRow } from "./agent-task-row";
 
@@ -33,9 +37,11 @@ const ACTION_WIDTH = 80;
 
 interface Props {
   task: AgentTask;
-  /** Resolved issue title; null falls through to the short-id fallback. */
-  issueTitle: string | null;
+  /** Resolved issue; null falls through to the short-id fallback. */
+  issue: Issue | null;
   wsSlug: string | null;
+  /** Other agents active on the same issue (row-3 stack passthrough). */
+  otherAgents?: IssueOtherAgentsActivity;
   /** False renders the plain row — swipe is a manager+active-task affordance. */
   cancellable: boolean;
   /** Fire the per-task cancel (the row closes itself first). */
@@ -44,8 +50,9 @@ interface Props {
 
 export function SwipeableAgentTaskRow({
   task,
-  issueTitle,
+  issue,
   wsSlug,
+  otherAgents = NO_OTHER_AGENTS,
   cancellable,
   onCancel,
 }: Props) {
@@ -60,7 +67,14 @@ export function SwipeableAgentTaskRow({
   };
 
   if (!cancellable) {
-    return <AgentTaskRow task={task} issueTitle={issueTitle} wsSlug={wsSlug} />;
+    return (
+      <AgentTaskRow
+        task={task}
+        issue={issue}
+        wsSlug={wsSlug}
+        otherAgents={otherAgents}
+      />
+    );
   }
 
   return (
@@ -72,7 +86,12 @@ export function SwipeableAgentTaskRow({
         <CancelAction onPress={fireCancel} drag={drag} t={t} />
       )}
     >
-      <AgentTaskRow task={task} issueTitle={issueTitle} wsSlug={wsSlug} />
+      <AgentTaskRow
+        task={task}
+        issue={issue}
+        wsSlug={wsSlug}
+        otherAgents={otherAgents}
+      />
     </ReanimatedSwipeable>
   );
 }
