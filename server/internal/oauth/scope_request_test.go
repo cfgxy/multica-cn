@@ -39,6 +39,8 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/issues/i-1/active-task", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/relations", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/relations/blocks/i-2", ScopeNeedRead},
+		{"GET", "/api/workspaces/ws-1/decision-inbox", ScopeNeedRead},
+		{"GET", "/api/issues/i-1/decisions", ScopeNeedRead},
 		{"HEAD", "/api/issues", ScopeNeedRead},
 
 		// Write surface.
@@ -73,6 +75,14 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"PUT", "/api/workspaces/ws-1/execution-profiles/p-1/entries", ScopeNeedWrite},
 		{"DELETE", "/api/workspaces/ws-1/execution-profiles/p-1/entries/ag-1", ScopeNeedWrite},
 		{"POST", "/api/workspaces/ws-1/execution-profiles/p-1/activate", ScopeNeedWrite},
+
+		// Decision-card write surface (RUYI-688): the batch answer is the one
+		// write the decision tools drive. Card creation and cancel stay
+		// off-surface — cards are raised by runs and withdrawn by members.
+		{"POST", "/api/issues/i-1/decisions/answer-batch", ScopeNeedWrite},
+		{"POST", "/api/issues/i-1/decisions", ScopeUnknown},
+		{"POST", "/api/issues/i-1/decisions/d-1/answer", ScopeUnknown},
+		{"POST", "/api/issues/i-1/decisions/d-1/cancel", ScopeUnknown},
 
 		// Run surface: dispatch and run steering must NOT be reachable with
 		// mcp:write — that is the whole point of the third tier. The run
