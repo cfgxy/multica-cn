@@ -793,6 +793,12 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
 	}
+	// RUYI-660: the outer-loop stall sweep is the consistency net for plan
+	// continuations the synchronous terminal hook could not land. Inert while
+	// outer_loop is disabled or no issue carries a running plan.
+	if err := schedulerMgr.Register(scheduler.OuterLoopStallSweepJob(h.TaskService)); err != nil {
+		slog.Warn("scheduler: failed to register outerloop_stall_sweep job", "error", err)
+	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
 	}()
