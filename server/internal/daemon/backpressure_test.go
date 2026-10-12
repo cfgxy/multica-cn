@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"fmt"
 	"log/slog"
 	"os"
@@ -112,6 +113,23 @@ func bpPSITestThresholds() backpressureThresholds {
 	th.PSIHighPct = 50
 	th.PSIRecoveryPct = 20
 	return th
+}
+
+// backpressureTestCard renders thresholds as the wire card the runtime
+// container consumes (RUYI-729): enabled, 1s cadence so tests move fast,
+// PSI band mirrored from the thresholds.
+func backpressureTestCard(th backpressureThresholds) protocol.DaemonBackpressureConfig {
+	return protocol.DaemonBackpressureConfig{
+		Enabled:               true,
+		MemHighPct:            th.MemHighPct,
+		MemRecoveryPct:        th.MemRecoveryPct,
+		SwapHighPct:           th.SwapHighPct,
+		SwapRecoveryPct:       th.SwapRecoveryPct,
+		PSIHighPct:            th.PSIHighPct,
+		PSIRecoveryPct:        th.PSIRecoveryPct,
+		SampleIntervalSeconds: 1,
+		WindowSize:            1,
+	}
 }
 
 func sample(memAvail, swapUsed float64) memSample {
@@ -412,7 +430,7 @@ func newBackpressureTestDaemon(t *testing.T) (*Daemon, string) {
 		SwapsPath:    filepath.Join(dir, "swaps"),
 		PressurePath: filepath.Join(dir, "pressure"),
 	}
-	d.bpMachine = newBackpressureMachine(bpTestThresholds(), 1)
+	d.bpRuntime.Store(newBackpressureRuntime(backpressureTestCard(bpTestThresholds()), bpTestThresholds()))
 	return d, dir
 }
 
@@ -560,7 +578,7 @@ func fixtureDir(d *Daemon) string {
 
 func TestBackpressureGate_PSITripAndRecover(t *testing.T) {
 	d, dir := newBackpressureTestDaemon(t)
-	d.bpMachine = newBackpressureMachine(bpPSITestThresholds(), 1)
+	d.bpRuntime.Store(newBackpressureRuntime(backpressureTestCard(bpPSITestThresholds()), bpPSITestThresholds()))
 
 	d.backpressureTick()
 	if d.backpressureBlocked() {

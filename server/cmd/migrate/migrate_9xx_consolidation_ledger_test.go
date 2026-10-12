@@ -143,6 +143,7 @@ var postConsolidationStems = []string{
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
 	"961_voice_provider_config",                      // RUYI-693
 	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
+	"969_daemon_backpressure_settings",               // RUYI-729 (daemon-level gate card + trigger/recovery event history)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

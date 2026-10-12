@@ -1213,10 +1213,11 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 // unchanged report a no-op (sql.ErrNoRows), so per-beat calls only touch the
 // row when the report actually changed. Best-effort by design: heartbeat and
 // claim must not fail because observability storage did.
-func (h *Handler) recordBackpressure(ctx context.Context, runtimeID pgtype.UUID, report *protocol.DaemonBackpressureReport) {
-	if report == nil || !runtimeID.Valid {
+func (h *Handler) recordBackpressure(ctx context.Context, rt db.AgentRuntime, report *protocol.DaemonBackpressureReport) {
+	if report == nil || !rt.ID.Valid {
 		return
 	}
+	runtimeID := rt.ID
 	raw, err := json.Marshal(report)
 	if err != nil {
 		slog.Warn("marshal backpressure report", "runtime_id", uuidToString(runtimeID), "error", err)
@@ -1243,6 +1244,10 @@ func (h *Handler) recordBackpressure(ctx context.Context, runtimeID pgtype.UUID,
 		// Watermarks drifted but no state flip — not an audit event.
 		return
 	}
+	// Trigger/recovery history (RUYI-729 ④): one row per observed
+	// transition, with hit detail and the effective config snapshot, so
+	// "why did everything stall at noon" has a queryable answer.
+	h.recordBackpressureEvent(ctx, rt, report)
 	if report.Active {
 		slog.Warn("daemon backpressure ENTERED — new task claims paused",
 			"runtime_id", uuidToString(runtimeID),
@@ -1323,7 +1328,7 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 	// before anything else — it is the only per-beat channel while claims
 	// are paused, so a lost beat would leave the UI showing stale state.
 	// Best-effort: a storage failure must never fail the heartbeat.
-	h.recordBackpressure(ctx, rt.ID, backpressure)
+	h.recordBackpressure(ctx, rt, backpressure)
 
 	updateStart := time.Now()
 	if err := h.recordHeartbeat(ctx, rt); err != nil {
@@ -1339,6 +1344,10 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		Status:             "ok",
 		ServerCapabilities: []string{protocol.DaemonCapabilityRPCV1},
 	}
+	// Saved backpressure settings (RUYI-729 stage 1) ride every ack; nil
+	// means no row and the daemon keeps its boot config. Lookup failure
+	// just defers delivery to the next beat.
+	ack.BackpressureConfig = h.effectiveBackpressureConfig(ctx, rt.DaemonID.String)
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
 	hasUpdate, probeUpdateErr := h.UpdateStore.HasPending(probeUpdateCtx, runtimeID)
@@ -1755,7 +1764,9 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	// BEFORE the max_tasks=0 early return — a backpressured daemon polls with
 	// zero free slots, so that poll is exactly when the report matters most.
 	for _, rtID := range authorized {
-		h.recordBackpressure(r.Context(), rtID, req.Backpressure)
+		if rt, ok := runtimeByID[uuidToString(rtID)]; ok {
+			h.recordBackpressure(r.Context(), rt, req.Backpressure)
+		}
 	}
 
 	// max_tasks semantics (MUL-4257 review): zero is a valid "no free slots"

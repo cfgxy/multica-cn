@@ -2865,6 +2865,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					// Daemon host backpressure settings + trigger history
+					// (RUYI-729 stage 1): reads member-visible, saves
+					// owner/admin-only, delivery over the heartbeat ack.
+					r.Get("/backpressure-settings", h.GetRuntimeBackpressureSettings)
+					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
+					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
+					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)
