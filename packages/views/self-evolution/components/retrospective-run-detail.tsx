@@ -18,6 +18,7 @@ import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { formatDuration } from "../../agents/components/agent-activity-hover-content";
 import { TranscriptButton } from "../../common/task-transcript";
+import { IssueChip } from "../../issues/components/issue-chip";
 import { runErrorLine } from "./retrospective-run-error";
 
 type SelfEvolutionT = ReturnType<typeof useT<"self-evolution">>["t"];
@@ -62,22 +63,61 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
+/**
+ * The five counters are terminal-state columns: the runner only writes them
+ * in finishRun, while the detail membership lists go live at trigger time
+ * (RUYI-742). Mid-run, deriving scanned/analyzed from those lists and holding
+ * the three still-unknown counters at an em dash keeps this line consistent
+ * with the lists below it, instead of reading 「扫描 0」 beside 20 scanned
+ * issues. Terminal runs read the authoritative columns.
+ */
+export function runStatsLine(run: RetrospectiveRun, t: SelfEvolutionT): string {
+  const cells =
+    run.status === "running"
+      ? [
+          String(readIssueIds(run.detail, "issue_ids").length),
+          String(readIssueIds(run.detail, "analyzed_issue_ids").length),
+          "—",
+          "—",
+          "—",
+        ]
+      : [
+          String(run.issues_scanned),
+          String(run.issues_analyzed),
+          String(run.proposals_created),
+          String(run.proposals_merged),
+          String(run.duplicates_skipped),
+        ];
+  const labels = [
+    t(($) => $.retrospective.scanned),
+    t(($) => $.retrospective.analyzed),
+    t(($) => $.retrospective.created),
+    t(($) => $.retrospective.merged),
+    t(($) => $.retrospective.duplicates),
+  ];
+  return labels.map((label, i) => `${label} ${cells[i]}`).join(" · ");
+}
+
 function IssueLinkList({ ids }: { ids: string[] }) {
   const { t } = useT("self-evolution");
   const paths = useWorkspacePaths();
   if (ids.length === 0) {
     return <span className="text-muted-foreground">{t(($) => $.retrospective.noIssues)}</span>;
   }
+  // Platform-common issue rows (RUYI-742): each id renders as the shared
+  // IssueChip (status icon + identifier + truncated title) — the same shell
+  // the proposal tab wraps in an AppLink — never the bare UUID. An id that
+  // no longer resolves keeps its slot as the raw id inside the chip.
   return (
     <ul className="flex flex-col gap-1">
       {ids.map((id) => (
         <li key={id}>
           <AppLink
             href={paths.issueDetail(id)}
-            className="text-primary break-all"
+            className="rounded-md hover:bg-accent"
             data-testid={`retrospective-issue-link-${id}`}
           >
-            {id}
+            <IssueChip issueId={id} fallbackLabel={id} />
           </AppLink>
         </li>
       ))}
@@ -186,12 +226,8 @@ export function RetrospectiveRunDetailSheet({
 
             <div className="flex flex-col gap-1 border-t pt-3">
               <span className="text-caption text-muted-foreground">{t(($) => $.retrospective.statsLabel)}</span>
-              <div className="text-body">
-                {t(($) => $.retrospective.scanned)} {run.issues_scanned} ·{" "}
-                {t(($) => $.retrospective.analyzed)} {run.issues_analyzed} ·{" "}
-                {t(($) => $.retrospective.created)} {run.proposals_created} ·{" "}
-                {t(($) => $.retrospective.merged)} {run.proposals_merged} ·{" "}
-                {t(($) => $.retrospective.duplicates)} {run.duplicates_skipped}
+              <div className="text-body" data-testid="retrospective-detail-stats">
+                {runStatsLine(run, t)}
               </div>
             </div>
 
