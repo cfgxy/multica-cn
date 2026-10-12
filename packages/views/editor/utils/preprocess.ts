@@ -4,6 +4,7 @@ import {
   preprocessFileCards,
   preprocessIssueIdentifiers,
 } from "@multica/ui/markdown";
+import { autolinkReferenceTokens } from "@multica/core/markdown";
 import { stripChannelMediaMarkers } from "@multica/core/types";
 
 /**
@@ -17,17 +18,19 @@ import { stripChannelMediaMarkers } from "@multica/core/types";
  * 1. Legacy mention shortcodes [@ id="..." label="..."] → [@Label](mention://member/id)
  *    (old serialization format in database, migrated on read)
  * 2. (readonly only) Bare issue identifiers MUL-123 → [MUL-123](mention://issue/MUL-123)
- * 3. Raw URLs → markdown links via linkify-it (so they render as clickable Link nodes)
- * 4. File card syntax (new !file[name](url) + legacy [name](cdnUrl)) → HTML div for
+ * 3. (readonly only, RUYI-728) `MR !N` → [MR !N](mention://merge-request/N) and
+ *    `owner/repo#N` → its canonical GitHub PR URL
+ * 4. Raw URLs → markdown links via linkify-it (so they render as clickable Link nodes)
+ * 5. File card syntax (new !file[name](url) + legacy [name](cdnUrl)) → HTML div for
  *    fileCard node parsing
  *
  * Shared by the Tiptap editor and the read-only react-markdown renderer so both
- * linkify identically. `autolinkIssueIdentifiers` is the one deliberate
- * asymmetry: it is OPT-IN and MUST stay off for the editable Tiptap path, since
- * rewriting a bare identifier there would create a mention node whose id is the
- * identifier string (not a real UUID) and corrupt the saved markdown. Only the
- * readonly renderer (which resolves the identifier to a UUID at render time)
- * passes it.
+ * linkify identically. `autolinkIssueIdentifiers` and `autolinkReferenceTokens`
+ * are deliberate asymmetries: both are OPT-IN and MUST stay off for the
+ * editable Tiptap path, since rewriting a bare identifier there would create a
+ * mention node whose id is the identifier string (not a real UUID) and corrupt
+ * the saved markdown. Only the readonly renderer (which resolves identifiers
+ * and merge-request numbers at render time) passes them.
  *
  * `cdnDomain` is an explicit parameter rather than an imperative
  * `configStore.getState()` read inside this function. The CDN config arrives
@@ -40,7 +43,14 @@ import { stripChannelMediaMarkers } from "@multica/core/types";
  */
 export function preprocessMarkdown(
   markdown: string,
-  opts: { cdnDomain: string; autolinkIssueIdentifiers?: boolean },
+  opts: {
+    cdnDomain: string;
+    autolinkIssueIdentifiers?: boolean;
+    /** RUYI-728: `MR !N` and `owner/repo#N` body autolinking (readonly only). */
+    autolinkReferenceTokens?: boolean;
+    /** Current workspace `issue_prefix`; gates bare-identifier autolinking (RUYI-705). */
+    issueIdentifierPrefix?: string | null;
+  },
 ): string {
   if (!markdown) return "";
   const { cdnDomain } = opts;
@@ -51,9 +61,14 @@ export function preprocessMarkdown(
   const visibleMarkdown = stripChannelMediaMarkers(markdown);
   const step1 = preprocessMentionShortcodes(visibleMarkdown);
   const step2 = opts?.autolinkIssueIdentifiers
-    ? preprocessIssueIdentifiers(step1)
+    ? preprocessIssueIdentifiers(step1, {
+        workspacePrefix: opts.issueIdentifierPrefix,
+      })
     : step1;
-  const step3 = preprocessLinks(step2);
-  const step4 = preprocessFileCards(step3, cdnDomain);
-  return step4;
+  const step3 = opts?.autolinkReferenceTokens
+    ? autolinkReferenceTokens(step2)
+    : step2;
+  const step4 = preprocessLinks(step3);
+  const step5 = preprocessFileCards(step4, cdnDomain);
+  return step5;
 }

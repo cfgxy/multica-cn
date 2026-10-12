@@ -72,6 +72,9 @@ type Agent struct {
 	ResourceWeight         int32       `json:"resource_weight"`
 	Revision               int64       `json:"revision"`
 	VoiceRuntimeID         pgtype.UUID `json:"voice_runtime_id"`
+	VoiceProviderID        pgtype.UUID `json:"voice_provider_id"`
+	VoiceModel             pgtype.Text `json:"voice_model"`
+	VoiceAdvanced          []byte      `json:"voice_advanced"`
 }
 
 type AgentBuilderDraft struct {
@@ -215,6 +218,7 @@ type AgentTaskQueue struct {
 	CancelReason            pgtype.Text        `json:"cancel_reason"`
 	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
 	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
+	LocalDirectoryScope     []byte             `json:"local_directory_scope"`
 }
 
 type AgentToLabel struct {
@@ -713,6 +717,42 @@ type DaemonToken struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type DecisionRequest struct {
+	ID                 pgtype.UUID        `json:"id"`
+	RequestGroupID     pgtype.UUID        `json:"request_group_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Role               string             `json:"role"`
+	Operable           bool               `json:"operable"`
+	Status             string             `json:"status"`
+	ActionType         string             `json:"action_type"`
+	ActionParams       []byte             `json:"action_params"`
+	RiskTier           string             `json:"risk_tier"`
+	Title              string             `json:"title"`
+	Detail             string             `json:"detail"`
+	OriginWorkspaceID  pgtype.UUID        `json:"origin_workspace_id"`
+	OriginAgentID      pgtype.UUID        `json:"origin_agent_id"`
+	OriginTaskID       pgtype.UUID        `json:"origin_task_id"`
+	OriginIssueID      pgtype.UUID        `json:"origin_issue_id"`
+	OriginIssueTitle   pgtype.Text        `json:"origin_issue_title"`
+	OperatorTier       string             `json:"operator_tier"`
+	NamedApproverIds   []byte             `json:"named_approver_ids"`
+	ApproveLabel       pgtype.Text        `json:"approve_label"`
+	DenyLabel          pgtype.Text        `json:"deny_label"`
+	ExpiresAt          pgtype.Timestamptz `json:"expires_at"`
+	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
+	AnswerSource       pgtype.Text        `json:"answer_source"`
+	ExecutedAt         pgtype.Timestamptz `json:"executed_at"`
+	ExecutionResult    []byte             `json:"execution_result"`
+	ExecutionError     pgtype.Text        `json:"execution_error"`
+	TerminalCallbackAt pgtype.Timestamptz `json:"terminal_callback_at"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DingtalkBotIdentity struct {
 	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
 	InstallationID   pgtype.UUID        `json:"installation_id"`
@@ -920,25 +960,40 @@ type Issue struct {
 }
 
 type IssueDecision struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	IssueID            pgtype.UUID        `json:"issue_id"`
-	SourceCommentID    pgtype.UUID        `json:"source_comment_id"`
-	Question           string             `json:"question"`
-	Options            []byte             `json:"options"`
-	MultiSelect        bool               `json:"multi_select"`
-	RecommendedIndices []byte             `json:"recommended_indices"`
-	Status             string             `json:"status"`
-	SelectedIndices    []byte             `json:"selected_indices"`
-	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
-	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
-	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
-	AnswerCommentID    pgtype.UUID        `json:"answer_comment_id"`
-	CreatedByType      string             `json:"created_by_type"`
-	CreatedByID        pgtype.UUID        `json:"created_by_id"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	ClientRequestID    pgtype.Text        `json:"client_request_id"`
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	IssueID               pgtype.UUID        `json:"issue_id"`
+	SourceCommentID       pgtype.UUID        `json:"source_comment_id"`
+	Question              string             `json:"question"`
+	Options               []byte             `json:"options"`
+	MultiSelect           bool               `json:"multi_select"`
+	RecommendedIndices    []byte             `json:"recommended_indices"`
+	Status                string             `json:"status"`
+	SelectedIndices       []byte             `json:"selected_indices"`
+	AnsweredByType        pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID          pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt            pgtype.Timestamptz `json:"answered_at"`
+	AnswerCommentID       pgtype.UUID        `json:"answer_comment_id"`
+	CreatedByType         string             `json:"created_by_type"`
+	CreatedByID           pgtype.UUID        `json:"created_by_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	ClientRequestID       pgtype.Text        `json:"client_request_id"`
+	DecisionKind          string             `json:"decision_kind"`
+	VisibleTier           string             `json:"visible_tier"`
+	OperatorTier          string             `json:"operator_tier"`
+	NamedApproverIds      []byte             `json:"named_approver_ids"`
+	ApproveLabel          pgtype.Text        `json:"approve_label"`
+	DenyLabel             pgtype.Text        `json:"deny_label"`
+	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
+	AnswerSource          pgtype.Text        `json:"answer_source"`
+	AuthState             pgtype.Text        `json:"auth_state"`
+	PendingRequestGroupID pgtype.UUID        `json:"pending_request_group_id"`
+	PendingActionType     pgtype.Text        `json:"pending_action_type"`
+	PendingActionParams   []byte             `json:"pending_action_params"`
+	ExecutionResult       []byte             `json:"execution_result"`
+	ExecutionError        pgtype.Text        `json:"execution_error"`
+	ExecutedAt            pgtype.Timestamptz `json:"executed_at"`
 }
 
 type IssueDependency struct {
@@ -1552,6 +1607,14 @@ type PromptProposal struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	JevAdvisory         []byte             `json:"jev_advisory"`
+	// RUYI-723: what friction this draft removes, short text (≤100 chars from the retrospective contract); NULL for manual proposals and pre-723 rows.
+	Problem pgtype.Text `json:"problem"`
+	// RUYI-723: the expected effect once enacted, short text (≤100 chars); NULL = unset.
+	ExpectedEffect pgtype.Text `json:"expected_effect"`
+	// RUYI-723: how large the expected gain is, short text (≤100 chars); NULL = unset.
+	ExpectedGain pgtype.Text `json:"expected_gain"`
+	// RUYI-723: 1-5 integer reference score (5 = caused a delivery rollback/blocking or repeated cross-issue friction; 4 = one rework or acceptance failure; 3 = notable verification cost; 2 = minor improvement; 1 = nice-to-have); NULL = unrated. Reference only, never a gate.
+	ValueScore pgtype.Int4 `json:"value_score"`
 }
 
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.
@@ -2118,6 +2181,20 @@ type VerificationCode struct {
 	Attempts  int32              `json:"attempts"`
 }
 
+type VoiceProvider struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	DisplayName     string             `json:"display_name"`
+	ProviderType    string             `json:"provider_type"`
+	CredentialRef   pgtype.Text        `json:"credential_ref"`
+	Metadata        []byte             `json:"metadata"`
+	Enabled         bool               `json:"enabled"`
+	SourceRuntimeID pgtype.UUID        `json:"source_runtime_id"`
+	CreatedBy       pgtype.UUID        `json:"created_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type WebhookDelivery struct {
 	ID                     pgtype.UUID        `json:"id"`
 	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
@@ -2166,6 +2243,33 @@ type Workspace struct {
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
 	// Execution profile most recently activated in this workspace (RUYI-57). Display state only: it records which profile last wrote the agents' runtime/model/thinking_level, not a live binding. Cleared when that profile is deleted; the agents keep the configuration the activation wrote. No FK, app-layer integrity.
 	ActiveExecutionProfileID pgtype.UUID `json:"active_execution_profile_id"`
+}
+
+// Workspace-level host-backpressure gate settings (RUYI-618): the single authority for the watermarks that pause new task claims on daemon hosts; delivered to daemons over heartbeat acks. No row = daemon code defaults.
+type WorkspaceBackpressureSetting struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// Gate master switch: false pauses nothing regardless of the watermarks.
+	Enabled bool `json:"enabled"`
+	// MemAvailable%% below which new claims pause, percent of total (0,100].
+	MemHighPct float64 `json:"mem_high_pct"`
+	// MemAvailable%% above which claiming resumes; must exceed mem_high_pct (hysteresis).
+	MemRecoveryPct float64 `json:"mem_recovery_pct"`
+	// SwapUsed%% above which new claims pause; <=0 disables the swap condition.
+	SwapHighPct float64 `json:"swap_high_pct"`
+	// SwapUsed%% below which claiming resumes; must sit below swap_high_pct when enabled.
+	SwapRecoveryPct float64 `json:"swap_recovery_pct"`
+	// Memory PSI some-avg10%% above which new claims pause; <=0 disables the PSI condition.
+	PsiHighPct float64 `json:"psi_high_pct"`
+	// PSI some-avg10%% below which claiming resumes; must sit below psi_high_pct when enabled.
+	PsiRecoveryPct float64 `json:"psi_recovery_pct"`
+	// Proc sampling cadence for the watermark gate, in seconds (>=1).
+	SampleIntervalSeconds int32 `json:"sample_interval_seconds"`
+	// Smoothing window in samples before thresholds are evaluated on the mean (>=1).
+	WindowSize int32 `json:"window_size"`
+	// Member who last saved this row; plain UUID on purpose (rows survive member deletion).
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkspaceInvitation struct {

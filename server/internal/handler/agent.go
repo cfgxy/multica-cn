@@ -68,6 +68,14 @@ type AgentResponse struct {
 	// for dispatch arrives with the voice adapter.
 	VoiceRuntimeID    string `json:"voice_runtime_id"`
 	VoiceRuntimeBound bool   `json:"voice_runtime_bound"`
+	// VoiceProviderID/VoiceModel/VoiceAdvanced are the D2 override triple
+	// (RUYI-693): the agent-level voice configuration, level-wise atomic —
+	// bound and unbound as one unit. Empty id = no override; the workspace
+	// default (settings.voice) applies next, and the official vanilla form
+	// is the final fallback.
+	VoiceProviderID string          `json:"voice_provider_id"`
+	VoiceModel      string          `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage `json:"voice_advanced"`
 	Name              string `json:"name"`
 	Description       string `json:"description"`
 	// Instructions is what this agent's owner wrote. For a system agent it
@@ -242,6 +250,9 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		RuntimeBound:             a.RuntimeID.Valid,
 		VoiceRuntimeID:           uuidToString(a.VoiceRuntimeID),
 		VoiceRuntimeBound:        a.VoiceRuntimeID.Valid,
+		VoiceProviderID:          uuidToString(a.VoiceProviderID),
+		VoiceModel:               a.VoiceModel.String,
+		VoiceAdvanced:            json.RawMessage(a.VoiceAdvanced),
 		Name:                     a.Name,
 		Description:              a.Description,
 		Instructions:             a.Instructions,
@@ -544,6 +555,12 @@ type AgentTaskResponse struct {
 	ProjectDescription  string                `json:"project_description,omitempty"`  // durable project-level context injected into the brief
 	ProjectInstructions string                `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
 	ProjectResources    []ProjectResourceData `json:"project_resources,omitempty"`    // resources attached to the project
+	// LocalDirectoryScope is the task's RUYI-669 snapshot declaration, passed
+	// through verbatim from agent_task_queue.local_directory_scope. The daemon
+	// re-validates it with the shared wire parser before trusting it; nil for
+	// undeclared tasks (primary-resource fallback, lock-free whole-root
+	// snapshot). Mirror field: internal/daemon/types.go, same JSON name.
+	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
 	CreatedAt           string                `json:"created_at"`
 	PriorSessionID      string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
 	PriorWorkDir        string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
@@ -635,10 +652,17 @@ type AgentTaskResponse struct {
 	QuizPrompt               string                      `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt      string                      `json:"retrospective_prompt,omitempty"`        // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — read issues, submit drafts, create nothing
 	HandoffNote              string                      `json:"handoff_note,omitempty"`                // assignment handoff instruction; rendered into the run's opening prompt + issue_context.md (omitempty so old daemons ignore it)
-	SquadID                  string                      `json:"squad_id,omitempty"`                    // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
-	SquadName                string                      `json:"squad_name,omitempty"`                  // display name for the picker squad
-	ParentIssueID            string                      `json:"parent_issue_id,omitempty"`             // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
-	ParentIssueIdentifier    string                      `json:"parent_issue_identifier,omitempty"`     // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	// DecisionAnswers (RUYI-719) is the typed answer context for the decision
+	// cards whose answer echoes are among this run's delivered trigger/coalesced
+	// comments. Read from issue_decisions at claim time; empty when none of the
+	// delivered comments is a decision echo (including the pointer-missing
+	// degradation, where the echo text alone keeps the pre-RUYI-719 behavior).
+	// Mirror field: internal/daemon/types.go, same JSON name.
+	DecisionAnswers       []DecisionAnswerContextData `json:"decision_answers,omitempty"`
+	SquadID               string                      `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
+	SquadName             string                      `json:"squad_name,omitempty"`              // display name for the picker squad
+	ParentIssueID         string                      `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier string                      `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
@@ -1005,6 +1029,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		DeliveredCommentIDs:     uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:          textToPtr(t.TriggerSummary),
 		HandoffNote:             handoffNote,
+		LocalDirectoryScope:     jsonRawOrEmpty(t.LocalDirectoryScope),
 		WorkDir:                 workDir,
 		RelativeWorkDir:         relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
 		DurableWorkDir:          durableWorkDir,
@@ -1381,6 +1406,14 @@ type CreateAgentRequest struct {
 	// historical text-only shape. The target must be a workspace runtime whose
 	// protocol family declares realtime_voice, and must differ from runtime_id.
 	VoiceRuntimeID string            `json:"voice_runtime_id"`
+	// VoiceProviderID optionally points the D2 voice override at a
+	// workspace voice_provider pool entry (RUYI-693). Non-empty requires the
+	// entry to exist in this workspace, be enabled, and speak a family the
+	// gateway serves today; VoiceModel/VoiceAdvanced refine the override and
+	// are stored with it (level-wise atomic).
+	VoiceProviderID string            `json:"voice_provider_id"`
+	VoiceModel      string            `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage   `json:"voice_advanced"`
 	RuntimeConfig  any               `json:"runtime_config"`
 	CustomEnv      map[string]string `json:"custom_env"`
 	CustomArgs     []string          `json:"custom_args"`
@@ -1602,6 +1635,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// RUYI-693: the D2 override triple's provider leg. Same save-time gate
+	// the binding path applies; the session-start chain re-derives every
+	// fact it checks (the gate is a living property).
+	voiceProviderUUID, voiceModelText, voiceAdvancedRaw, ok := h.validateAgentVoiceProviderRef(w, r, wsUUID, req.VoiceProviderID, req.VoiceModel, req.VoiceAdvanced)
+	if !ok {
+		return
+	}
 
 	// Probe workspace agent count BEFORE the insert so the funnel has a
 	// clean "first agent ever in this workspace" signal — Step 4 of
@@ -1702,6 +1742,9 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		ConversationStarters:     sp,
 		ComposioToolkitAllowlist: allowlist,
 		VoiceRuntimeID:           voiceRuntimeUUID,
+		VoiceProviderID:          voiceProviderUUID,
+		VoiceModel:               voiceModelText,
+		VoiceAdvanced:            voiceAdvancedRaw,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -1822,6 +1865,22 @@ type UpdateAgentRequest struct {
 	//     scope, then bind. The decode-time raw fields map distinguishes
 	//     "omitted" from "explicitly cleared".
 	VoiceRuntimeID *string `json:"voice_runtime_id"`
+	// VoiceProviderID is the D2 override triple's level switch (RUYI-693):
+	//   - field omitted → no change
+	//   - field present with ""/null → unbind: the WHOLE triple clears
+	//     (ClearAgentVoiceProviderOverride) — level-wise atomic
+	//   - field present with a provider id → bind, validated by
+	//     validateAgentVoiceProviderRef (exists + workspace + enabled +
+	//     gateway-servable). voice_model / voice_advanced in the same
+	//     request refine the new override.
+	// VoiceModel / VoiceAdvanced sent WITHOUT a provider id only refine the
+	// already-bound override; with no override bound they are rejected so a
+	// half-configured level can never exist. voice_advanced keeps the
+	// not-set semantics of agentVoiceAdvancedRaw: null/"" preserves (the
+	// COALESCE contract), {} stores an explicit empty refinement.
+	VoiceProviderID *string          `json:"voice_provider_id"`
+	VoiceModel      *string          `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage  `json:"voice_advanced"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)
@@ -2179,6 +2238,72 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			params.VoiceRuntimeID = voiceUUID
 		}
 	}
+	// RUYI-693: the D2 override triple (see UpdateAgentRequest for the
+	// level-wise atomic contract).
+	shouldClearVoiceProvider := false
+	if rawVP, ok := rawFields["voice_provider_id"]; ok {
+		var requested string
+		if err := json.Unmarshal(rawVP, &requested); err != nil {
+			writeError(w, http.StatusBadRequest, "voice_provider_id must be a provider id or an empty string")
+			return
+		}
+		if requested == "" {
+			if _, hasModel := rawFields["voice_model"]; hasModel {
+				writeError(w, http.StatusBadRequest, "voice_model cannot be combined with clearing voice_provider_id: the override unbinds as one unit")
+				return
+			}
+			if _, hasAdvanced := rawFields["voice_advanced"]; hasAdvanced {
+				writeError(w, http.StatusBadRequest, "voice_advanced cannot be combined with clearing voice_provider_id: the override unbinds as one unit")
+				return
+			}
+			shouldClearVoiceProvider = true
+		} else {
+			bindModel := ""
+			if rawModel, hasModel := rawFields["voice_model"]; hasModel {
+				if err := json.Unmarshal(rawModel, &bindModel); err != nil {
+					writeError(w, http.StatusBadRequest, "voice_model must be a model name or an empty string")
+					return
+				}
+			}
+			providerUUID, modelText, advancedRaw, ok := h.validateAgentVoiceProviderRef(w, r, existing.WorkspaceID, requested, bindModel, req.VoiceAdvanced)
+			if !ok {
+				return
+			}
+			params.VoiceProviderID = providerUUID
+			params.VoiceModel = modelText
+			params.VoiceAdvanced = advancedRaw
+		}
+	} else {
+		if rawModel, hasModel := rawFields["voice_model"]; hasModel {
+			var m string
+			if err := json.Unmarshal(rawModel, &m); err != nil {
+				writeError(w, http.StatusBadRequest, "voice_model must be a model name or an empty string")
+				return
+			}
+			normalized := normalizeVoiceModel(m)
+			if len(normalized) > maxVoiceModelLen {
+				writeError(w, http.StatusBadRequest, errVoiceRefModelTooLong.Error())
+				return
+			}
+			if !existing.VoiceProviderID.Valid {
+				writeError(w, http.StatusBadRequest, "voice_model refines an existing voice_provider_id override; set voice_provider_id first")
+				return
+			}
+			params.VoiceModel = strToText(normalized)
+		}
+		if rawAdvanced, hasAdvanced := rawFields["voice_advanced"]; hasAdvanced {
+			if _, hasModel := rawFields["voice_model"]; !hasModel && !existing.VoiceProviderID.Valid {
+				writeError(w, http.StatusBadRequest, "voice_advanced refines an existing voice_provider_id override; set voice_provider_id first")
+				return
+			}
+			advancedRaw, err := agentVoiceAdvancedRaw(rawAdvanced)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			params.VoiceAdvanced = advancedRaw
+		}
+	}
 	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
 	// agent property a workspace admin may NOT change (only the owner decides
 	// who can run their agent — the overlay uses the owner's own Composio
@@ -2501,6 +2626,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			slog.Warn("clear agent voice_runtime_id failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 			writeError(w, http.StatusInternalServerError, "failed to unbind the voice runtime: "+err.Error())
+			return
+		}
+	}
+	if shouldClearVoiceProvider {
+		updated, err = h.Queries.ClearAgentVoiceProviderOverride(r.Context(), updated.ID)
+		if err != nil {
+			slog.Warn("clear agent voice_provider override failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
+			writeError(w, http.StatusInternalServerError, "failed to unbind the voice provider: "+err.Error())
 			return
 		}
 	}
@@ -3018,6 +3151,11 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	// RUYI-397/700: same admission decoration as the execution-log read — a
+	// queued row whose agent's bound runtime sits under a fresh backpressure
+	// hold carries the reason, so the mobile task history renders "waiting
+	// for runtime recovery" instead of a silent stall.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
@@ -3294,6 +3432,10 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
 	}
+	// RUYI-700: the mobile task history renders active queued rows straight
+	// from this snapshot, so apply the same backpressure decoration as the
+	// list reads — otherwise those queued rows stall silently.
+	h.hydrateQueuedBackpressureReasons(r.Context(), resp)
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)

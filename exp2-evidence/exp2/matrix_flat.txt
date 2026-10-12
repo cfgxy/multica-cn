@@ -1,0 +1,99 @@
+== exp2 matrix ==
+=== COMBO ext42ext4 opts='defaults' ===
+MOUNT ext42ext4 OK 0.016s
+CHECK create_write_read_delete PASS 
+CHECK copy_up_modify PASS 
+CHECK whiteout_delete PASS 
+CHECK rename_lower_file PASS 
+CHECK rename_lower_dir PASS 
+CHECK hardlink_copyup FAIL rc=1 
+CHECK symlink_ops PASS 
+CHECK mmap_shared_write FAIL rc=1 Traceback (most recent call last):
+CHECK xattr_user FAIL rc=127 bash: line 1: setfattr: command not found
+CHECK xattr_trusted FAIL rc=1 sudo: setfattr: command not found
+CHECK fsync_write_basic PASS 
+CHECK fsync_data_present PASS 
+CHECK fifo_create_use PASS 
+CHECK st_ino_stability PASS view_ino=2752539 lower_ino=2752539
+CHECK o_direct PASS 16+0 records in
+CHECK reflink PASS 
+CHECK copy_file_range FAIL rc=1 Traceback (most recent call last):
+CHECK append_concurrent PASS 
+CHECK statfs PASS overlay        overlay  80901592 14224056  62521992  19% /home/agent/workspace/exp2/view_ext42ext4
+CHECK compile_exec PASS 
+ino_record view_big=2752539 upper_big=2752550 lower_big=2752539
+=== COMBO ext42tmpfs opts='defaults' ===
+MOUNT ext42tmpfs OK 0.013s
+CHECK create_write_read_delete PASS 
+CHECK copy_up_modify PASS 
+CHECK whiteout_delete PASS 
+CHECK rename_lower_file PASS 
+CHECK rename_lower_dir PASS 
+CHECK hardlink_copyup FAIL rc=1 
+CHECK symlink_ops PASS 
+CHECK mmap_shared_write FAIL rc=1 Traceback (most recent call last):
+CHECK xattr_user FAIL rc=127 bash: line 1: setfattr: command not found
+CHECK xattr_trusted FAIL rc=1 sudo: setfattr: command not found
+CHECK fsync_write_basic PASS 
+CHECK fsync_data_present PASS 
+CHECK fifo_create_use PASS 
+CHECK st_ino_stability PASS view_ino=9223372036857528347 lower_ino=2752539
+CHECK o_direct PASS 16+0 records in
+CHECK reflink PASS 
+CHECK copy_file_range FAIL rc=1 Traceback (most recent call last):
+CHECK append_concurrent PASS 
+CHECK statfs PASS overlay        overlay   1048576    80   1048496   1% /home/agent/workspace/exp2/view_ext42tmpfs
+CHECK compile_exec PASS 
+ino_record view_big=9223372036857528347 upper_big=16 lower_big=2752539
+=== COMBO tmpfs2ext4 opts='defaults' ===
+MOUNT tmpfs2ext4 OK 0.010s
+CHECK create_write_read_delete PASS 
+CHECK copy_up_modify PASS 
+CHECK whiteout_delete PASS 
+CHECK rename_lower_file PASS 
+CHECK rename_lower_dir PASS 
+CHECK hardlink_copyup FAIL rc=1 
+CHECK symlink_ops PASS 
+CHECK mmap_shared_write FAIL rc=1 Traceback (most recent call last):
+CHECK xattr_user FAIL rc=127 bash: line 1: setfattr: command not found
+CHECK xattr_trusted FAIL rc=1 sudo: setfattr: command not found
+CHECK fsync_write_basic PASS 
+CHECK fsync_data_present PASS 
+CHECK fifo_create_use PASS 
+CHECK st_ino_stability PASS view_ino=9223372036854775838 lower_ino=30
+CHECK o_direct PASS 16+0 records in
+CHECK reflink PASS 
+CHECK copy_file_range FAIL rc=1 Traceback (most recent call last):
+CHECK append_concurrent PASS 
+CHECK statfs PASS overlay        overlay  80901592 14224160  62521888  19% /home/agent/workspace/exp2/view_tmpfs2ext4
+CHECK compile_exec PASS 
+ino_record view_big=9223372036854775838 upper_big=2752565 lower_big=30
+=== COMBO ext42xfs opts='defaults' ===
+MOUNT ext42xfs FAIL (see raw)
+=== COMBO xfs2ext4 opts='defaults' ===
+MOUNT xfs2ext4 FAIL (see raw)
+=== COMBO ext42tmpfs_idx opts='index=on,redirect_dir=on' ===
+MOUNT ext42tmpfs_idx OK 0.011s
+CHECK create_write_read_delete PASS 
+CHECK copy_up_modify PASS 
+CHECK whiteout_delete PASS 
+CHECK rename_lower_file PASS 
+CHECK rename_lower_dir PASS 
+CHECK hardlink_copyup FAIL rc=1 
+CHECK symlink_ops PASS 
+CHECK mmap_shared_write FAIL rc=1 Traceback (most recent call last):
+CHECK xattr_user FAIL rc=127 bash: line 1: setfattr: command not found
+CHECK xattr_trusted FAIL rc=1 sudo: setfattr: command not found
+CHECK fsync_write_basic PASS 
+CHECK fsync_data_present PASS 
+CHECK fifo_create_use PASS 
+CHECK st_ino_stability PASS view_ino=9223372036857528347 lower_ino=2752539
+CHECK o_direct PASS 16+0 records in
+CHECK reflink PASS 
+CHECK copy_file_range FAIL rc=1 Traceback (most recent call last):
+CHECK append_concurrent PASS 
+CHECK statfs PASS overlay        overlay   1048576   236   1048340   1% /home/agent/workspace/exp2/view_ext42tmpfs_idx
+CHECK compile_exec PASS 
+ino_record view_big=9223372036857528347 upper_big=48 lower_big=2752539
+=== COMBO ext42xfs_idx opts='index=on,redirect_dir=on' ===
+MOUNT ext42xfs_idx FAIL (see raw)

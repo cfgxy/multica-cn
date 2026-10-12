@@ -312,33 +312,33 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		statusCategory = i.Status
 	}
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
+		ID:              uuidToString(i.ID),
+		WorkspaceID:     uuidToString(i.WorkspaceID),
+		Number:          i.Number,
+		Identifier:      identifier,
+		Title:           i.Title,
+		Description:     textToPtr(i.Description),
+		Status:          i.Status,
+		StatusCategory:  statusCategory,
+		Priority:        i.Priority,
+		AssigneeType:    textToPtr(i.AssigneeType),
+		AssigneeID:      uuidToPtr(i.AssigneeID),
+		CreatorType:     i.CreatorType,
+		CreatorID:       uuidToString(i.CreatorID),
+		ParentIssueID:   uuidToPtr(i.ParentIssueID),
+		ProjectID:       uuidToPtr(i.ProjectID),
+		Position:        i.Position,
+		Stage:           int4ToPtr(i.Stage),
+		StartDate:       dateToPtr(i.StartDate),
+		DueDate:         dateToPtr(i.DueDate),
+		CreatedAt:       timestampToString(i.CreatedAt),
+		UpdatedAt:       timestampToString(i.UpdatedAt),
+		Revision:        i.Revision,
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		Properties:      parseIssueProperties(i.Properties),
 	}
 }
 
@@ -351,33 +351,33 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 	}
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
+		ID:              uuidToString(i.ID),
+		WorkspaceID:     uuidToString(i.WorkspaceID),
+		Number:          i.Number,
+		Identifier:      identifier,
+		Title:           i.Title,
+		Description:     textToPtr(i.Description),
+		Status:          i.Status,
+		StatusCategory:  statusCategory,
+		Priority:        i.Priority,
+		AssigneeType:    textToPtr(i.AssigneeType),
+		AssigneeID:      uuidToPtr(i.AssigneeID),
+		CreatorType:     i.CreatorType,
+		CreatorID:       uuidToString(i.CreatorID),
+		ParentIssueID:   uuidToPtr(i.ParentIssueID),
+		ProjectID:       uuidToPtr(i.ProjectID),
+		Position:        i.Position,
+		Stage:           int4ToPtr(i.Stage),
+		StartDate:       dateToPtr(i.StartDate),
+		DueDate:         dateToPtr(i.DueDate),
+		CreatedAt:       timestampToString(i.CreatedAt),
+		UpdatedAt:       timestampToString(i.UpdatedAt),
+		Revision:        i.Revision,
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		Properties:      parseIssueProperties(i.Properties),
 	}
 }
 
@@ -422,33 +422,33 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 	}
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
+		ID:              uuidToString(i.ID),
+		WorkspaceID:     uuidToString(i.WorkspaceID),
+		Number:          i.Number,
+		Identifier:      identifier,
+		Title:           i.Title,
+		Description:     textToPtr(i.Description),
+		Status:          i.Status,
+		StatusCategory:  statusCategory,
+		Priority:        i.Priority,
+		AssigneeType:    textToPtr(i.AssigneeType),
+		AssigneeID:      uuidToPtr(i.AssigneeID),
+		CreatorType:     i.CreatorType,
+		CreatorID:       uuidToString(i.CreatorID),
+		ParentIssueID:   uuidToPtr(i.ParentIssueID),
+		ProjectID:       uuidToPtr(i.ProjectID),
+		Position:        i.Position,
+		Stage:           int4ToPtr(i.Stage),
+		StartDate:       dateToPtr(i.StartDate),
+		DueDate:         dateToPtr(i.DueDate),
+		CreatedAt:       timestampToString(i.CreatedAt),
+		UpdatedAt:       timestampToString(i.UpdatedAt),
+		Revision:        i.Revision,
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		Properties:      parseIssueProperties(i.Properties),
 	}
 }
 
@@ -2474,6 +2474,11 @@ type QuickCreateIssueRequest struct {
 	ProjectID     string   `json:"project_id,omitempty"`
 	ParentIssueID string   `json:"parent_issue_id,omitempty"`
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
+	// LocalDirectoryScope is the optional RUYI-669 declaration of which
+	// snapshot-mode project resources and subdirectories the new task
+	// claims. Validated against the picked project's resources below; the
+	// daemon re-validates at claim time. Requires project_id.
+	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
 }
 
 // QuickCreateIssueResponse echoes the queued task id so the frontend can
@@ -2672,7 +2677,17 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		parentIssueUUID = pid
 	}
 
-	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs)
+	// RUYI-669: optional snapshot directory declaration. Validated against
+	// the picked project's snapshot resources here; the daemon runs the same
+	// wire parser again at claim time, so a hand-forged task row cannot
+	// widen its write set past what this check approved.
+	scopeJSON, status, msg := h.validateQuickCreateDirectoryScope(r.Context(), projectUUID, req.LocalDirectoryScope)
+	if status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+
+	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs, scopeJSON)
 	if err != nil {
 		if writeIssueLimitReached(w, err) {
 			return

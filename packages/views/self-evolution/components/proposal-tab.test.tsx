@@ -5,6 +5,7 @@ import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
 import type { PromptProposal, PromptProposalPreview, RetrospectiveRun } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
@@ -15,7 +16,7 @@ import {
 import { ProposalTab } from "./proposal-tab";
 
 /**
- * The legislation tab's wiring (RUYI-305 E2).
+ * The legislation tab's wiring (RUYI-305 E2, loop-first narrative RUYI-551).
  *
  * The state machine, permissions and gate semantics are enforced by the
  * server and covered by its handler tests. What only a mount can show is
@@ -23,7 +24,9 @@ import { ProposalTab } from "./proposal-tab";
  * statuses they are legal on, a non-owner sees no lifecycle controls at all
  * while creation stays available, and — the injection defense — the approve
  * button stays disabled until the full-text diff preview has rendered and
- * the reviewer ticked the confirmation.
+ * the reviewer ticked the confirmation. RUYI-551 adds the loop-first page
+ * header, the source filter (manual / daily retrospective / merged) and the
+ * empty-pool guidance link to the retrospective config.
  */
 
 const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
@@ -35,6 +38,15 @@ const state = vi.hoisted(() => ({
   batchApproved: [] as { ids: string[]; confirmDiffPreviewed: boolean }[],
   retroRuns: [] as RetrospectiveRun[],
   proposalCalls: [] as { status?: string; runId?: string }[],
+}));
+
+// The chip shell is mocked: this suite asserts the anchor *linking* (href +
+// degrade), which the tab owns — the chip's own resolution behavior is
+// covered by its own suite.
+vi.mock("../../issues/components/issue-chip", () => ({
+  IssueChip: ({ issueId }: { issueId: string }) => (
+    <span data-testid={`issue-chip-${issueId}`}>{issueId.slice(0, 8)}</span>
+  ),
 }));
 
 vi.mock("@multica/core/permissions", () => ({
@@ -126,11 +138,13 @@ function mount(opts: { run?: string } = {}) {
   };
   return render(
     <QueryClientProvider client={client}>
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <NavigationProvider value={navigation}>
-          <ProposalTab wsId="ws-1" />
-        </NavigationProvider>
-      </I18nProvider>
+      <WorkspaceSlugProvider slug="test-workspace">
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <NavigationProvider value={navigation}>
+            <ProposalTab wsId="ws-1" />
+          </NavigationProvider>
+        </I18nProvider>
+      </WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
 }
@@ -267,6 +281,76 @@ it("gates the batch approval behind per-id diffs and the same confirmation", asy
   );
 });
 
+it("leads with the loop narrative and filters the list by source", async () => {
+  state.role = "member";
+  state.proposals = [
+    proposal({ id: "p-manual", source: "manual", clause_name: "manual clause" }),
+    proposal({ id: "p-retro", source: "retrospective", clause_name: "retro clause" }),
+    proposal({
+      id: "p-merged",
+      source: "manual",
+      clause_name: "merged clause",
+      merged_from: [{ issue_id: "i-1", run_id: "r-1" }],
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+
+  // Page header (RUYI-551): the automatic loop is the first sentence.
+  expect(screen.getByTestId("legislation-intro").textContent).toContain(
+    "enter the pool automatically",
+  );
+
+  // Unfiltered: every row (the merged row carries the merged marker).
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-merged").textContent).toContain("Merged");
+
+  // Source filter (manual / daily retrospective / merged): the segments
+  // drive exactly the matching subset. Radix Tabs needs the full pointer
+  // sequence, so these go through userEvent.
+  await userEvent.click(screen.getByRole("tab", { name: "Daily retrospective" }));
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-manual")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-merged")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "Manual" }));
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-retro")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-merged")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "Merged" }));
+  expect(screen.getByTestId("legislation-row-p-merged")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-manual")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-retro")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "All sources" }));
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-merged")).toBeTruthy();
+});
+
+it("points an empty unfiltered pool at the retrospective config and hides the link when filtered", async () => {
+  state.role = "member";
+  state.proposals = [];
+  const first = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
+  const link = screen.getByTestId("legislation-empty-retro-link") as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("/test-workspace/self-evolution/retrospective");
+  first.unmount();
+
+  // A filtered empty is an honest empty: filtering a manual-only pool by
+  // "Daily retrospective" yields no rows, but the config guidance stays out
+  // of the way — it only points at the config from the unfiltered view.
+  state.proposals = [proposal({ id: "p-manual", source: "manual", clause_name: "manual clause" })];
+  const second = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  await userEvent.click(screen.getByRole("tab", { name: "Daily retrospective" }));
+  await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
+  expect(screen.queryByTestId("legislation-empty-retro-link")).toBeNull();
+  second.unmount();
+});
+
 // RUYI-673: the results view scoped to one retrospective run's batch.
 it("scopes the pool to the run in the URL and shows the run filter", async () => {
   state.role = "owner";
@@ -306,4 +390,89 @@ it("updates the scoped run when the filter changes", async () => {
   await waitFor(() =>
     expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }),
   );
+});
+
+// RUYI-723 A: evidence anchors render as issue chips that link to the issue
+// detail (list card and detail view); merged_from accumulates into aggregate
+// anchors; a row without anchors renders no chip block, and legacy rows
+// without the decision-context fields degrade to "—" instead of blanks.
+const CHIP_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const CHIP_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const CHIP_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+function anchorLinks(id: string): HTMLAnchorElement[] {
+  // The tab renders anchors in both the list card and (by default) the
+  // detail pane, so every chip instance must sit inside a correct link.
+  return screen
+    .queryAllByTestId(`issue-chip-${id}`)
+    .map((el) => el.closest("a"))
+    .filter((a): a is HTMLAnchorElement => a !== null);
+}
+
+it("renders evidence anchors as links to the issue detail", async () => {
+  state.proposals = [
+    proposal({
+      evidence_anchors: [{ issue_id: CHIP_A, ref: "release script fix", note: "root cause" }],
+      problem: "release script breaks on spaces",
+      expected_effect: "script survives spaced paths",
+      expected_gain: "no more manual fixes",
+      value_score: 4,
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  const links = anchorLinks(CHIP_A);
+  expect(links.length).toBeGreaterThan(0);
+  for (const link of links) {
+    expect(link.getAttribute("href")).toBe(`/test-workspace/issues/${CHIP_A}`);
+  }
+  // The detail view renders the decision-context fields and the score.
+  await userEvent.click(screen.getByTestId("legislation-row-prop-1"));
+  await waitFor(() => expect(screen.getByText("release script breaks on spaces")).toBeTruthy());
+  expect(screen.getByText("script survives spaced paths")).toBeTruthy();
+  expect(screen.getByText("no more manual fixes")).toBeTruthy();
+  expect(screen.getByText("4 / 5")).toBeTruthy();
+});
+
+it("renders aggregate anchors from merged_from", async () => {
+  state.proposals = [
+    proposal({
+      evidence_anchors: [],
+      merged_from: [
+        { issue_id: CHIP_B, run_id: "run-1" },
+        { issue_id: CHIP_C, run_id: "run-2" },
+      ],
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  for (const id of [CHIP_B, CHIP_C]) {
+    const links = anchorLinks(id);
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe(`/test-workspace/issues/${id}`);
+    }
+  }
+});
+
+it("degrades without anchors: no chip block renders", async () => {
+  state.proposals = [proposal({})];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  expect(screen.queryByTestId(`issue-chip-${CHIP_A}`)).toBeNull();
+  await userEvent.click(screen.getByTestId("legislation-row-prop-1"));
+  await waitFor(() => expect(screen.getByText("Final clause text")).toBeTruthy());
+  expect(screen.queryByText("Source issues")).toBeNull();
+});
+
+it("renders — for legacy rows without the decision-context fields", async () => {
+  state.proposals = [proposal({ problem: undefined })];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  await userEvent.click(screen.getByTestId("legislation-row-prop-1"));
+  await waitFor(() => expect(screen.getByText("Problem")).toBeTruthy());
+  for (const label of ["Problem", "Expected effect", "Expected gain", "Value score"]) {
+    const dt = screen.getByText(label);
+    expect(dt.nextElementSibling?.textContent).toBe("—");
+  }
 });

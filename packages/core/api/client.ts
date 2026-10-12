@@ -2,6 +2,9 @@ import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
+  DecisionRequest,
+  DecisionRequestDetail,
+  DecisionRequestsList,
   IssueDecision,
   BatchDecisionAnswerResult,
   BatchIssueDecisionAnswer,
@@ -12,6 +15,7 @@ import type {
   UpdateIssueRequest,
   GroupedIssuesResponse,
   ListIssuesResponse,
+  IssueRelationsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   UpdateMeRequest,
@@ -82,6 +86,8 @@ import type {
   SelfEvolutionConfigValidation,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -129,6 +135,9 @@ import type {
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
   DashboardUsageDaily,
+  DashboardUsageResources,
+  DashboardUsageTraffic,
+  DashboardUsageTrafficDim,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
@@ -337,9 +346,14 @@ import {
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
+  IssueRelationsResponseSchema,
+  EMPTY_ISSUE_RELATIONS,
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
   IssueDecisionsListSchema,
+  DecisionRequestDetailSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   WorkspaceDecisionInboxSchema,
   BatchDecisionAnswersSchema,
@@ -358,6 +372,8 @@ import {
   DashboardFailureByAgentListSchema,
   DashboardUsageByAgentListSchema,
   DashboardUsageDailyListSchema,
+  DashboardUsageResourcesSchema,
+  DashboardUsageTrafficSchema,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
@@ -518,7 +534,9 @@ import {
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
   IssuePullRequestsResponseSchema,
+  PullRequestLookupResponseSchema,
   ResourceLabelsResponseSchema,
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
@@ -601,6 +619,7 @@ import {
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionModelConfigSchema,
+  WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
   PromptGovernanceVersionListSchema,
@@ -1581,6 +1600,16 @@ export class ApiClient {
     });
   }
 
+  /** Structured relations: parent + the five edge views (RUYI-689).
+   *  Read-only — creating/deleting edges is a server-side/API concern;
+   *  no write counterpart exists in this client by design. */
+  async getIssueRelations(id: string): Promise<IssueRelationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations`);
+    return parseWithFallback(raw, IssueRelationsResponseSchema, EMPTY_ISSUE_RELATIONS, {
+      endpoint: "GET /api/issues/:id/relations",
+    });
+  }
+
   /** Batched variant — returns children for multiple parents in one request.
    *  Avoids an N-request fan-out in Swimlane (one per visible parent lane).
    *  parentIds must be non-empty; pass a sorted, deduplicated list so the
@@ -1729,6 +1758,56 @@ export class ApiClient {
     });
     if (!inbox) throw new Error("Invalid decision inbox response");
     return inbox;
+  }
+
+  // Agent authorization requests (RUYI-630). Listing/detail are the
+  // decision-center's summary surface; answering/cancelling are human acts —
+  // the server refuses agent callers regardless of what the client sends.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async getDecisionRequest(workspaceId: string, requestId: string): Promise<DecisionRequestDetail> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}`);
+    const detail = parseWithFallback(raw, DecisionRequestDetailSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests/:requestId",
+    });
+    if (!detail) throw new Error("Invalid decision request response");
+    return detail;
+  }
+
+  async answerDecisionRequest(workspaceId: string, requestId: string, decision: "approve" | "deny"): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(workspaceId: string, requestId: string): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
@@ -2867,6 +2946,41 @@ export class ApiClient {
       DashboardUsageDailyListSchema,
       [],
       { endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  // System-resource panel (RUYI-618): Prometheus-proxied per-daemon series
+  // for the usage page. A 200 with configured=false is the "no observability
+  // stack" normal state, not an error.
+  async getDashboardUsageResources(
+    params: { window?: string },
+  ): Promise<DashboardUsageResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/resources?${search}`);
+    return parseWithFallback<DashboardUsageResources>(
+      raw,
+      DashboardUsageResourcesSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Model-traffic panel (RUYI-618): token/cost/task rates by runtime,
+  // provider, or model, aggregated server-side from the task-usage
+  // exposition.
+  async getDashboardUsageTraffic(
+    params: { window?: string; by?: DashboardUsageTrafficDim },
+  ): Promise<DashboardUsageTraffic> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    if (params.by) search.set("by", params.by);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/traffic?${search}`);
+    return parseWithFallback<DashboardUsageTraffic>(
+      raw,
+      DashboardUsageTrafficSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/traffic" },
     );
   }
 
@@ -6263,6 +6377,68 @@ export class ApiClient {
     );
   }
 
+  /**
+   * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
+   * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never
+   * seen this PR — returns `null` so the tail degrades the token to plain
+   * text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({ owner, repo, number: String(number) });
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+    );
+    return parsed.pull_request;
+  }
+
+  /**
+   * Resolve one `MR !N` text reference to a PR in the workspace snapshot by
+   * number alone (RUYI-728, body autolink + reference tail). A 404 — the
+   * platform has never seen this number — and a 409 — the number is
+   * ambiguous across repos — both return `null` so the token degrades to
+   * plain text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+  ): Promise<GitHubPullRequest | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${number}`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+        return null;
+      }
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+    );
+    return parsed.pull_request;
+  }
+
   // VCS integration (Forgejo / Gitea / GitLab)
   async listVCSConnections(workspaceId: string): Promise<ListVCSConnectionsResponse> {
     return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`);
@@ -6666,5 +6842,53 @@ export class ApiClient {
       EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
       { endpoint: "POST /api/telegram/binding/redeem" },
     );
+  }
+
+  /**
+   * The workspace's effective host-backpressure card (RUYI-618): the saved
+   * settings when an owner ever saved the form, the daemon code defaults
+   * (custom=false) otherwise.
+   */
+  async getWorkspaceBackpressureSettings(): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings");
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      enabled: true,
+      mem_high_pct: 15,
+      mem_recovery_pct: 25,
+      swap_high_pct: 80,
+      swap_recovery_pct: 60,
+      psi_high_pct: 50,
+      psi_recovery_pct: 20,
+      sample_interval_seconds: 5,
+      window_size: 6,
+      custom: false,
+    }, { endpoint: "GET /api/workspace/backpressure-settings" });
+  }
+
+  /**
+   * Save the workspace's backpressure card (owner-only server-side). A 422
+   * carries the shared hysteresis-validation message and nothing persisted —
+   * surface it through the mutation error so the form can show the reason.
+   */
+  async putWorkspaceBackpressureSettings(save: WorkspaceBackpressureSettingsSave): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: save.enabled,
+        mem_high_pct: save.mem_high_pct,
+        mem_recovery_pct: save.mem_recovery_pct,
+        swap_high_pct: save.swap_high_pct,
+        swap_recovery_pct: save.swap_recovery_pct,
+        psi_high_pct: save.psi_high_pct,
+        psi_recovery_pct: save.psi_recovery_pct,
+        sample_interval_seconds: save.sample_interval_seconds,
+        window_size: save.window_size,
+      }),
+    });
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      ...save,
+      custom: true,
+    }, { endpoint: "PUT /api/workspace/backpressure-settings" });
   }
 }

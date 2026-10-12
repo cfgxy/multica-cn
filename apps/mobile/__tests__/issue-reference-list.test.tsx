@@ -12,7 +12,7 @@
  * bound to this suite's own QueryClientProvider tree.
  */
 import React from "react";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { notifyManager } from "@tanstack/react-query";
 
@@ -47,7 +47,13 @@ jest.mock("expo-router", () => ({
 }));
 
 jest.mock("@/data/api", () => ({
-  api: { getIssue: (...args: unknown[]) => mockGetIssue(...args) },
+  api: {
+    getIssue: (...args: unknown[]) => mockGetIssue(...args),
+    // useWorkspaceIssuePrefix (RUYI-705 rework) reads the workspace list for
+    // the prefix gate; an empty list means "unknown prefix", so resolution
+    // falls through to the exact match these fixtures were written against.
+    listWorkspaces: () => Promise.resolve([]),
+  },
 }));
 
 jest.mock("@/data/workspace-store", () => ({
@@ -59,7 +65,10 @@ jest.mock("@/data/workspace-store", () => ({
 }));
 
 jest.mock("@/lib/use-issue-statuses", () => ({
-  useIssueStatuses: () => ({ colorOf: () => "#123456" }),
+  useIssueStatuses: () => ({
+    colorOf: () => "#123456",
+    categoryOf: () => "in_progress",
+  }),
 }));
 
 jest.mock("@/lib/use-t", () => ({
@@ -67,6 +76,12 @@ jest.mock("@/lib/use-t", () => ({
     t: (key: string, fallback?: string) =>
       typeof fallback === "string" ? fallback : key,
   }),
+}));
+
+// The 增量 sheet (RUYI-635) reads insets for its bottom padding; jest renders
+// need a deterministic value.
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
 }));
 
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
@@ -99,15 +114,16 @@ beforeEach(() => {
 });
 
 describe("IssueReferenceList", () => {
-  it("renders a resolved mention as one tappable row that routes to the issue", async () => {
-    const { findByLabelText } = await renderList([
+  it("renders a resolved mention as a preview row that does NOT navigate (anti-mistouch)", async () => {
+    const { findByTestId } = await renderList([
       { ref: UUID_A, label: "MUL-7", form: "mention" },
     ]);
 
-    const row = await findByLabelText("MUL-7 Fix the thing");
-    fireEvent.press(row);
-
-    expect(mockPush).toHaveBeenCalledWith(`/ws/issue/${UUID_A}`);
+    // 增量 anti-mistouch contract: the preview row itself is not pressable —
+    // pressing it must NOT navigate (routing moved to the bottom sheet).
+    const previewRow = await findByTestId("issue-reference-row");
+    fireEvent.press(previewRow);
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it("collapses a UUID mention and the bare identifier of the same issue into one row", async () => {
@@ -132,10 +148,11 @@ describe("IssueReferenceList", () => {
       expect(getAllByTestId("issue-reference-row")).toHaveLength(2),
     );
 
-    const labels = getAllByTestId("issue-reference-row").map(
-      (row) => row.props.accessibilityLabel,
-    );
-    expect(labels).toEqual(["MUL-9 Later issue", "MUL-7 Fix the thing"]);
+    // Preview rows render `<icon> <identifier> <title>`; order is
+    // first-mention order. (The a11y label lives on the sheet rows, not here.)
+    const rows = getAllByTestId("issue-reference-row");
+    expect(within(rows[0]).getByText("MUL-9")).toBeTruthy();
+    expect(within(rows[1]).getByText("MUL-7")).toBeTruthy();
   });
 
   it("degrades an unresolved reference to plain text that is not tappable", async () => {
@@ -151,5 +168,22 @@ describe("IssueReferenceList", () => {
   it("renders nothing when there are no references", async () => {
     const { queryByLabelText } = await renderList([]);
     expect(queryByLabelText("Referenced issues")).toBeNull();
+  });
+
+  // Deliberately LAST: it opens the bottom-sheet Modal, and a Modal still
+  // visible at cleanup (jest-expo fake timers never settle the slide
+  // animation) poisons every render this suite does afterwards.
+  it("routes to the issue only from the sheet row", async () => {
+    const utils = await renderList([
+      { ref: UUID_A, label: "MUL-7", form: "mention" },
+    ]);
+
+    // Level 2: the block opens the bottom sheet, whose issue row routes
+    // through the same resolveLinkAction prose links take.
+    fireEvent.press(utils.getByTestId("issue-reference-block"));
+    const sheetRow = await utils.findByTestId("reference-sheet-issue-row");
+    expect(sheetRow.props.accessibilityLabel).toBe("MUL-7 Fix the thing");
+    fireEvent.press(sheetRow);
+    expect(mockPush).toHaveBeenCalledWith(`/ws/issue/${UUID_A}`);
   });
 });

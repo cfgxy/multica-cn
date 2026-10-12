@@ -324,6 +324,11 @@
     "desc_placeholder": "설명 추가...",
     "current_issue": "현재 태스크",
     "referenced_issues": "참조된 태스크",
+    "reference_tail_header": "참조 · {{count}}",
+    "reference_tail_more": "참조 {{count}}개 더 보기",
+    "reference_tail_more_with_pr": "참조 {{count}}개 더 보기 (PR {{prCount}}개 포함)",
+    "reference_group_tasks": "태스크",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "하위 태스크",
     "sub_issue_of": "상위 태스크",
     "add_sub_issues": "하위 태스크 추가",
@@ -334,6 +339,12 @@
     "section_properties": "속성",
     "section_parent_issue": "상위 태스크",
     "section_pull_requests": "Pull requests",
+    "section_relations": "관련 태스크",
+    "relations_blocks": "블로킹",
+    "relations_blocked_by": "블로크됨",
+    "relations_relates_to": "관련",
+    "relations_supersedes": "대체 중",
+    "relations_superseded_by": "대체됨",
     "section_metadata": "메타데이터",
     "section_details": "세부 정보",
     "section_quick_actions": "퀵 액션",
@@ -969,6 +980,7 @@
       "actions_a11y": "태스크 작업",
       "edit_details": "세부 정보 편집",
       "open_on_web": "웹에서 열기",
+      "relations_empty": "아직 구조화된 관련이 없습니다. 블로킹, 관련, 대체 링크가 여기에 표시됩니다.",
       "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
       "not_found": "찾을 수 없음",
       "retry": "다시 시도",
@@ -983,6 +995,7 @@
       "comments_no_match": "일치하는 댓글이 없습니다.",
       "comments_open_a11y": "댓글 찾아보기",
       "pull_request_open_failed": "이 Pull request를 열 수 없습니다.",
+      "reference_sheet_close": "닫기",
       "pull_request_card_label": "Pull request"
     },
     "picker": {
@@ -1182,6 +1195,15 @@
     "answer_failed": "답변 제출 실패",
     "cancel_failed": "카드 취소 실패",
     "batch_title": "일괄 답변",
-    "batch_submit": "모두 제출"
+    "batch_submit": "모두 제출",
+    "auth_title": "승인 요청",
+    "auth_state_approved": "승인됨",
+    "auth_state_denied": "거부됨",
+    "auth_state_executed": "실행됨",
+    "auth_state_execute_failed": "실행 실패",
+    "auth_approve_default": "승인",
+    "auth_deny_default": "거부",
+    "auth_execute_failed": "실행 실패: {{reason}}",
+    "auth_answer_failed": "승인 작업에 실패했습니다"
   }
 }

@@ -623,12 +623,25 @@ type Daemon struct {
 	// bpState is nil until the watcher's first sample lands (gate fails
 	// open); bpWakeup points at the batch poller's wakeup channel so a
 	// recovery can nudge it instead of waiting out a backoff interval.
-	bpMachine  *backpressureMachine
-	bpSource   memSampleSource
-	bpState    atomic.Pointer[backpressureObservation]
-	bpDeferred atomic.Int64
-	bpWakeup   atomic.Pointer[chan struct{}]
-	bpLastWarn atomic.Int64
+	// bpRuntime carries the BOOT-DEFAULT card: it seeds the gate until each
+	// bound workspace's heartbeat ack delivers the workspace's own settings,
+	// and it remains the fallback for workspaces that have not delivered a
+	// card yet. Per-workspace applied cards live in bpWorkspaces (RUYI-618,
+	// F1): a copy-on-write map keyed by workspace ID, so two workspaces on
+	// one daemon apply different cards without overwriting each other. The
+	// watcher feeds one host sample into every enabled gate; claims filter
+	// per workspace and reports attribute per runtime's workspace.
+	// bpApplyMu serializes map swaps; bpReload is the closed-per-swap channel
+	// the watcher selects on for an immediate resample.
+	bpRuntime    atomic.Pointer[backpressureRuntime]
+	bpWorkspaces atomic.Pointer[map[string]*backpressureWorkspaceState]
+	bpReload     atomic.Pointer[chan struct{}]
+	bpApplyMu    sync.Mutex
+	bpSource     memSampleSource
+	bpState      atomic.Pointer[backpressureObservation]
+	bpDeferred   atomic.Int64
+	bpWakeup     atomic.Pointer[chan struct{}]
+	bpLastWarn   atomic.Int64
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -750,11 +763,17 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
 	}
-	// Host memory backpressure (RUYI-393): nil machine = disabled, the claim
-	// gate fails open and the watcher goroutine is never started.
+	// Host memory backpressure (RUYI-393): nil runtime config = disabled, the
+	// claim gate fails open and the watcher goroutine is never started. The
+	// workspace's saved settings (RUYI-618) replace these boot defaults on
+	// the first heartbeat ack.
 	if cfg.BackpressureEnabled {
-		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
 		d.bpSource = newMemSampleSource()
+		d.bpRuntime.Store(&backpressureRuntime{
+			enabled:  true,
+			interval: cfg.BackpressureSampleInterval,
+			machine:  newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize),
+		})
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2170,8 +2189,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
 	// and advances the hysteresis gate fed into the claim path below. nil
-	// machine = disabled by config, no goroutine.
-	if d.bpMachine != nil {
+	// runtime config = disabled by config, no goroutine.
+	if d.bpRuntime.Load() != nil {
 		go d.runBackpressureWatcher(ctx)
 	}
 
@@ -4205,6 +4224,11 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 			}
 			delete(d.workspaces, id)
 			d.mu.Unlock()
+			// The workspace's applied backpressure card must not outlive the
+			// workspace (RUYI-618/F1): a stale latch would suppress a future
+			// re-bind's pre-ack claims. Called outside d.mu — the drop takes
+			// the apply lock, never the daemon lock.
+			d.dropBackpressureWorkspace(id)
 			d.logger.Info("stopped watching workspace", "workspace_id", id)
 			removed++
 		}
@@ -4336,7 +4360,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport())
+	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReportForRuntime(rid))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4379,6 +4403,14 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			"local_skills", resp.PendingLocalSkills != nil,
 			"local_skill_import", resp.PendingLocalSkillImport != nil,
 		)
+	}
+	// Workspace backpressure settings (RUYI-618) ride every ack. Applied
+	// synchronously under the runtime's own workspace key — the swap is a
+	// few pointer writes and the ack path has no reason to outrun it.
+	// A runtime whose workspace cannot be resolved (mid-deregistration)
+	// skips the apply; sibling runtimes re-deliver the card.
+	if resp.BackpressureConfig != nil {
+		d.applyBackpressureConfig(d.runtimeWorkspaceID(runtimeID), runtimeID, resp.BackpressureConfig)
 	}
 	if resp.PendingUpdate != nil {
 		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
@@ -4481,7 +4513,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport())
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReportForRuntime(runtimeID))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -5005,25 +5037,26 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 		"runtime_id", runtimeID, "update_id", updateID, "error", lastErr)
 }
 
-// tryEnterClaim records the intent to call ClaimTask. Returns true if the
-// caller may proceed, false if the auto-update barrier is in effect or host
-// memory backpressure (RUYI-393) is active. Every successful call MUST be
-// paired with an exitClaim() on every exit path — either right after a
-// failed/empty claim, or via the handleTask goroutine's defer once the task
-// is handed off.
+// tryEnterClaimFor records the intent to call ClaimTask for a batch of
+// runtimes. Returns true if the caller may proceed, false if the auto-update
+// barrier is in effect or any of the batch's workspaces is under host memory
+// backpressure (RUYI-393; per-workspace since RUYI-618/F1). Every successful
+// call MUST be paired with an exitClaim() on every exit path — either right
+// after a failed/empty claim, or via the handleTask goroutine's defer once
+// the task is handed off.
 //
 // The two refusals are orthogonal: releaseClaimBarrier only ever clears
 // pauseClaims, and backpressure lives in its own state, so neither path can
 // accidentally release the other. Auto-update does not consult backpressure
 // — blocked claims drain claimsInFlight on their own, which is the only
 // state the update barrier waits on.
-func (d *Daemon) tryEnterClaim() bool {
+func (d *Daemon) tryEnterClaimFor(runtimeIDs []string) bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
 	if d.pauseClaims {
 		return false
 	}
-	if d.backpressureBlocked() {
+	if d.anyBackpressureBlocked(runtimeIDs) {
 		return false
 	}
 	d.claimsInFlight++
@@ -5233,22 +5266,24 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			return
 		}
 
-		// Host memory backpressure (RUYI-393): while the gate is active,
-		// skip the whole claim cycle — don't even wait for slots — and
-		// back off like the capacity path. Queued tasks stay queued
-		// server-side; already-running tasks are untouched. tryEnterClaim
-		// re-checks the same gate as the authoritative pre-claim barrier.
-		if d.backpressureBlocked() {
-			d.bpDeferred.Add(1)
-			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
+		// Host memory backpressure (RUYI-393; per-workspace since
+		// RUYI-618/F1): runtimes whose workspace gate is active drop out of
+		// the batch — other workspaces on this host keep claiming. Only when
+		// EVERY bound workspace is held does the cycle defer entirely.
+		// Queued tasks stay queued server-side; already-running tasks are
+		// untouched. tryEnterClaimFor re-checks the same gate as the
+		// authoritative pre-claim barrier.
+		runtimeIDs := d.allRuntimeIDs()
+		if len(runtimeIDs) == 0 {
+			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
 				return
 			}
 			continue
 		}
-
-		runtimeIDs := d.allRuntimeIDs()
+		runtimeIDs = d.filterBackpressureClaimable(runtimeIDs)
 		if len(runtimeIDs) == 0 {
-			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
+			d.bpDeferred.Add(1)
+			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
 				return
 			}
 			continue
@@ -5273,7 +5308,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 
 		// Auto-update barrier: refuse to claim while an update prepares to roll
 		// the process (paired with the re-check in tryAutoUpdate).
-		if !d.tryEnterClaim() {
+		if !d.tryEnterClaimFor(runtimeIDs) {
 			releaseSlots(slots)
 			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
 				return

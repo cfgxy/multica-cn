@@ -1,0 +1,46 @@
+== A. fuse-overlayfs view at DIFFERENT path ==
+T A01_git_status_parent RECORD(rc=0, see raw)
+T A01b_git_status_long RECORD(rc=0, see raw)
+T A02_worktree_list_in_view RECORD(rc=0, see raw)
+T A03_nested_commit_in_view PASS
+T A04_pristine_nested_head_unchanged PASS
+T A05_vendor_wt_gitdir_pointer RECORD(rc=1, see raw)
+T A06_vendor_wt_silent_wrong_target PASS
+T A06b_vendor_wt_status_from_view RECORD(rc=0, see raw)
+T A07_worktree_add_in_view PASS
+T A08_worktree_list_after_add RECORD(rc=0, see raw)
+T A09_commit_from_new_wt PASS
+T A10_new_wt_branch_visible_from_view_main_repo PASS
+T A11_worktree_remove_in_view PASS
+T A12_prune_keeps_pristine_intact PASS
+T A13_submodule_status RECORD(rc=0, see raw)
+T A14_submodule_update_rel RECORD(rc=1, see raw)
+T A15_submodule_update_abs RECORD(rc=1, see raw)
+T A16_git_log_show_history PASS
+T A17_git_gc_fsck PASS
+T A18_parent_commit_in_view PASS
+T A19_pristine_parent_untouched FAIL(rc=2)
+T A20_branch_switch_in_view FAIL(rc=1)
+T A21_clean_dry_run RECORD(rc=0, see raw)
+T A22_index_lock_probe RECORD(rc=0, see raw)
+== B. kernel overlayfs view at DIFFERENT path (same-fs ext4) ==
+T B01_git_status_parent RECORD(rc=128, see raw)
+T B02_worktree_list_in_view RECORD(rc=128, see raw)
+T B03_nested_commit_in_view FAIL(rc=1)
+T B04_pristine_lower2_untouched PASS
+T B05_vendor_wt_silent_wrong_target FAIL(rc=1)
+T B06_worktree_add_in_view FAIL(rc=1)
+T B07_gc_fsck FAIL(rc=128)
+== C. kernel overlayfs SAME-PATH view (mount over the lower dir itself) ==
+T C01_git_status_same_path FAIL(rc=128)
+T C02_vendor_wt_targets_view FAIL(rc=1)
+T C03_pristine_alias_not_touched PASS
+T C04_external_wt_resolves_into_view PASS
+T C05_ext_commit_lands_in_view_not_pristine FAIL(rc=1)
+T C06_pristine_alias_commits_unchanged FAIL(rc=1)
+== D. teardown checks ==
+T D01_pristine_lower_fsck FAIL(rc=1)
+T D02_remaining_mounts RECORD(rc=0, see raw)
+== summary ==
+PASS=14
+FAIL=11

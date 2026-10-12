@@ -31,6 +31,7 @@ import {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
@@ -53,12 +54,14 @@ import type {
   PromptProposalCarrierScope,
   PromptProposalDraftRequest,
 } from "@multica/core/types";
+import { IssueChip } from "../../issues/components/issue-chip";
 import { ProposalPreviewDialog } from "./proposal-preview-dialog";
-import { useNavigation } from "../../navigation";
+import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
+import { useWorkspacePaths } from "@multica/core/paths";
 
 /**
- * The prompt legislation pool (RUYI-305 E2).
+ * The prompt legislation pool (RUYI-305 E2, loop-first narrative RUYI-551).
  *
  * A proposal is a clause-level draft against one of the four prompt carriers;
  * the draft carries the content-gate five answers and evidence anchors before
@@ -68,6 +71,12 @@ import { useT } from "../../i18n";
  * by the server, and the UI refuses to send the flag before the checkbox),
  * then the legislation gate decides between enacted and gate_failed. Rejected
  * rows stay on the record; a gate-failed row returns to draft via rework.
+ *
+ * The pool grows two ways (RUYI-551): the daily retrospective (E3) proposes
+ * automatically (source "retrospective"), and members draft by hand (source
+ * "manual") — the page says so first, filters by source (a merged row is any
+ * source that absorbed same-topic candidates, merged_from non-empty), and an
+ * empty unfiltered pool points at the retrospective config.
  *
  * Writing is a member-level action. Approve/batch-approve/reject/restore/
  * enact are owner-only on the server, so those controls are hidden rather
@@ -104,13 +113,32 @@ function statusTone(status: string): "default" | "secondary" | "destructive" | "
   }
 }
 
+// Evidence anchors (RUYI-723 A): the retrospective's direct anchors plus the
+// merged_from accumulation, deduplicated in first-seen order. Rows without
+// either (manual proposals, legacy data) yield [] and the anchor block is
+// skipped entirely.
+function proposalAnchorIssueIds(p: PromptProposal): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const push = (id?: string) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const a of p.evidence_anchors) push(a.issue_id);
+  for (const m of p.merged_from) push(m.issue_id);
+  return ids;
+}
+
 export function ProposalTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
   const currentMember = useCurrentMember(wsId);
   const canManage = currentMember.role === "owner";
+  const paths = useWorkspacePaths();
   const navigation = useNavigation();
 
   const [status, setStatus] = useState("");
+  const [source, setSource] = useState("");
   // RUYI-673: the run filter scopes the pool to one retrospective run's
   // batch. Seeded from `?run=` so the two deep-link entries (the agent
   // detail page's retrospective run rows and the retrospective page's run
@@ -140,12 +168,26 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   const enact = useEnactPromptProposal(wsId);
 
   const proposals = list.data ?? [];
+  // Source filter (RUYI-551): client-side over the fetched pool — every row
+  // carries its source and merged_from, so "merged" (a row that absorbed
+  // same-topic candidates) needs no second server predicate. The segments
+  // partition: manual / retrospective exclude absorbed rows, merged lists
+  // only those, so each row appears under exactly one segment.
+  const visible = useMemo(
+    () =>
+      source === ""
+        ? proposals
+        : source === "merged"
+          ? proposals.filter((p) => p.merged_from.length > 0)
+          : proposals.filter((p) => p.source === source && p.merged_from.length === 0),
+    [proposals, source],
+  );
   const selected: PromptProposal | undefined =
-    proposals.find((p) => p.id === selectedId) ?? proposals[0];
+    visible.find((p) => p.id === selectedId) ?? visible[0];
 
   const pendingIds = useMemo(
-    () => proposals.filter((p) => p.status === "pending_owner").map((p) => p.id),
-    [proposals],
+    () => visible.filter((p) => p.status === "pending_owner").map((p) => p.id),
+    [visible],
   );
 
   const statusLabel = (s: string) => {
@@ -236,6 +278,13 @@ export function ProposalTab({ wsId }: { wsId: string }) {
 
   return (
     <div className="flex flex-col gap-6" data-testid="legislation-tab">
+      {/* Page header (RUYI-551): the automatic loop is the first sentence —
+          proposals enter the pool from the daily retrospective's analysis,
+          and manual drafting stays the secondary path. */}
+      <p className="text-body text-muted-foreground" data-testid="legislation-intro">
+        {t(($) => $.legislation.description)}
+      </p>
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Select
@@ -316,20 +365,49 @@ export function ProposalTab({ wsId }: { wsId: string }) {
         <Button onClick={openCreate}>{t(($) => $.legislation.create)}</Button>
       </div>
 
+      {/* Source filter (RUYI-551): manual drafts, retrospective proposals,
+          and rows that absorbed same-topic candidates ("merged"). */}
+      <div data-testid="legislation-source-filter">
+        <Tabs
+          value={source}
+          onValueChange={(next) => {
+            if (typeof next === "string") setSource(next);
+          }}
+        >
+          <TabsList aria-label={t(($) => $.legislation.sourceFilterLabel)}>
+            <TabsTrigger value="">{t(($) => $.legislation.sourceFilterAll)}</TabsTrigger>
+            <TabsTrigger value="manual">{t(($) => $.legislation.source.manual)}</TabsTrigger>
+            <TabsTrigger value="retrospective">
+              {t(($) => $.legislation.source.retrospective)}
+            </TabsTrigger>
+            <TabsTrigger value="merged">{t(($) => $.legislation.source.merged)}</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+
       {list.isPending ? (
         <Skeleton className="h-32 w-full" data-testid="legislation-loading" />
-      ) : proposals.length === 0 ? (
+      ) : visible.length === 0 ? (
         <Empty data-testid="legislation-empty">
           <EmptyHeader>
             <EmptyMedia variant="icon">§</EmptyMedia>
             <EmptyTitle>{t(($) => $.legislation.empty)}</EmptyTitle>
             <EmptyDescription>{t(($) => $.legislation.emptyHint)}</EmptyDescription>
+            {status === "" && source === "" ? (
+              <AppLink
+                href={paths.selfEvolutionRetrospective()}
+                className="text-primary underline underline-offset-4"
+                data-testid="legislation-empty-retro-link"
+              >
+                {t(($) => $.legislation.emptyConfig)}
+              </AppLink>
+            ) : null}
           </EmptyHeader>
         </Empty>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <ul className="flex flex-col gap-2" data-testid="legislation-list">
-            {proposals.map((p) => {
+            {visible.map((p) => {
               const canCheck = canManage && p.status === "pending_owner";
               return (
                 <li key={p.id}>
@@ -358,6 +436,7 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                       type="button"
                       className="min-w-0 flex-1 text-left"
                       onClick={() => setSelectedId(p.id)}
+                      data-testid={`legislation-row-${p.id}`}
                     >
                       <div className="flex items-center gap-2">
                         <Badge variant={statusTone(p.status)}>{statusLabel(p.status)}</Badge>
@@ -369,7 +448,23 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                         {p.source === "retrospective"
                           ? ` · ${t(($) => $.legislation.source.retrospective)}`
                           : null}
+                        {p.merged_from.length > 0
+                          ? ` · ${t(($) => $.legislation.source.merged)}`
+                          : null}
                       </div>
+                      {proposalAnchorIssueIds(p).length > 0 ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          {proposalAnchorIssueIds(p).map((id) => (
+                            <AppLink
+                              key={id}
+                              href={paths.issueDetail(id)}
+                              className="rounded-md hover:bg-accent"
+                            >
+                              <IssueChip issueId={id} />
+                            </AppLink>
+                          ))}
+                        </div>
+                      ) : null}
                     </button>
                   </div>
                 </li>
@@ -388,6 +483,38 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                 <dd>{t(($) => $.legislation.carrierScope[selected.carrier_scope])}</dd>
                 <dt className="text-muted-foreground">{t(($) => $.legislation.changeKindLabel)}</dt>
                 <dd>{t(($) => $.legislation.changeKind[selected.change_kind])}</dd>
+                {proposalAnchorIssueIds(selected).length > 0 ? (
+                  <>
+                    <dt className="text-muted-foreground">
+                      {t(($) => $.legislation.sourceIssuesLabel)}
+                    </dt>
+                    <dd className="flex flex-wrap items-center gap-1">
+                      {proposalAnchorIssueIds(selected).map((id) => (
+                        <AppLink
+                          key={id}
+                          href={paths.issueDetail(id)}
+                          className="rounded-md hover:bg-accent"
+                        >
+                          <IssueChip issueId={id} />
+                        </AppLink>
+                      ))}
+                    </dd>
+                  </>
+                ) : null}
+                <dt className="text-muted-foreground">{t(($) => $.legislation.problemLabel)}</dt>
+                <dd>{selected.problem || "—"}</dd>
+                <dt className="text-muted-foreground">
+                  {t(($) => $.legislation.expectedEffectLabel)}
+                </dt>
+                <dd>{selected.expected_effect || "—"}</dd>
+                <dt className="text-muted-foreground">
+                  {t(($) => $.legislation.expectedGainLabel)}
+                </dt>
+                <dd>{selected.expected_gain || "—"}</dd>
+                <dt className="text-muted-foreground">
+                  {t(($) => $.legislation.valueScoreLabel)}
+                </dt>
+                <dd>{typeof selected.value_score === "number" ? `${selected.value_score} / 5` : "—"}</dd>
                 {selected.clause_text ? (
                   <>
                     <dt className="text-muted-foreground">{t(($) => $.legislation.clauseTextLabel)}</dt>

@@ -11,6 +11,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 var (
@@ -111,6 +112,17 @@ func main() {
 	// cobra command on purpose — it must be invisible and unguessable.
 	if len(os.Args) == 2 && os.Args[1] == supervisor.LauncherSubcommand {
 		os.Exit(supervisor.RunWorkerLauncher())
+	}
+	// Hidden snapshot-worker entrypoint (RUYI-669): stage 2 of the snapshot
+	// launch. The spawner (daemon or supervised launcher) cloned this process
+	// into fresh user+mount namespaces; here the overlay views are
+	// materialized and the agent command exec'd inside them. Invisible for
+	// the same reason as the launcher.
+	if len(os.Args) >= 2 && os.Args[1] == agent.SnapshotWorkerSubcommand {
+		os.Exit(execenv.RunSnapshotWorker(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == agent.SnapshotProbeSubcommand {
+		os.Exit(execenv.RunSnapshotProbe(os.Args[2:]))
 	}
 	cli.CleanupStaleUpdateArtifacts()
 	if err := rootCmd.Execute(); err != nil {
