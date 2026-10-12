@@ -1365,6 +1365,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceRuntimesAndProjects(ctx, requester.WorkspaceID) },
 		},
 		{
+			// Ops command ledger (RUYI-645): workspace-scoped evidence rows
+			// with no FK by design, swept explicitly. The daemon's service
+			// inventory is a daemon-keyed machine fact and stays.
+			name: "delete ops command channel data",
+			run:  func() error { return qtx.DeleteWorkspaceOpsCommands(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete administration data",
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
 		},

@@ -55,25 +55,33 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_chat_context_generation": workspaceDelete,
 	// Run-trigger intents (RUYI-304) own nothing outside the database: the
 	// cascade deletes them directly instead of settling through a reconciler.
-	"channel_chat_run_intent":         workspaceDelete,
-	"channel_chat_session_binding":    workspaceDelete,
-	"channel_inbound_audit":           workspaceDelete,
-	"channel_inbound_message_dedup":   workspaceDelete,
-	"channel_installation":            workspaceDelete,
-	"channel_media_pending_object":    workspaceDeleteSettle,
-	"channel_outbound_card_message":   workspaceDelete,
-	"channel_outbound_message":        workspaceDelete,
-	"channel_task_delivery":           workspaceDelete,
-	"channel_user_binding":            workspaceDelete,
-	"chat_draft_restore":              workspaceDelete,
-	"chat_message":                    workspaceDelete,
-	"chat_pinned_agent":               workspaceDelete,
-	"chat_session":                    workspaceDelete,
-	"client_usage_daily":              workspaceDeleteDetach,
-	"comment":                         workspaceDelete,
-	"comment_reaction":                workspaceDelete,
-	"contact_sales_inquiry":           workspaceDeleteKeep,
-	"daemon_connection":               workspaceDelete,
+	"channel_chat_run_intent":       workspaceDelete,
+	"channel_chat_session_binding":  workspaceDelete,
+	"channel_inbound_audit":         workspaceDelete,
+	"channel_inbound_message_dedup": workspaceDelete,
+	"channel_installation":          workspaceDelete,
+	"channel_media_pending_object":  workspaceDeleteSettle,
+	"channel_outbound_card_message": workspaceDelete,
+	"channel_outbound_message":      workspaceDelete,
+	"channel_task_delivery":         workspaceDelete,
+	"channel_user_binding":          workspaceDelete,
+	"chat_draft_restore":            workspaceDelete,
+	"chat_message":                  workspaceDelete,
+	"chat_pinned_agent":             workspaceDelete,
+	"chat_session":                  workspaceDelete,
+	"client_usage_daily":            workspaceDeleteDetach,
+	"comment":                       workspaceDelete,
+	"comment_reaction":              workspaceDelete,
+	"contact_sales_inquiry":         workspaceDeleteKeep,
+	"daemon_connection":             workspaceDelete,
+	// Ops command ledger (RUYI-645): workspace-scoped operational evidence
+	// with no foreign keys by design, swept explicitly through the
+	// application-layer deletion graph like the other evidence leaves.
+	"daemon_ops_command": workspaceDelete,
+	// The daemon's last service inventory is a machine fact keyed by
+	// daemon_id with no workspace_id: it survives workspace teardown and is
+	// overwritten by the daemon's next report cycle (RUYI-645).
+	"daemon_service_inventory":        workspaceDeleteKeep,
 	"daemon_token":                    workspaceDelete,
 	"dingtalk_group_presence":         workspaceDelete,
 	"dingtalk_bot_identity":           workspaceDelete,
@@ -94,11 +102,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// tables, registered knowledge directories, their read-only mirror
 	// entries and the scan log all go with the workspace
 	// (DeleteWorkspaceSelfEvolutionData).
-	"knowledge_dir":                 workspaceDelete,
-	"knowledge_entry":               workspaceDelete,
-	"knowledge_scan_batch":          workspaceDelete,
-	"prompt_proposal":               workspaceDelete,
-	"prompt_structure_baseline":     workspaceDelete,
+	"knowledge_dir":             workspaceDelete,
+	"knowledge_entry":           workspaceDelete,
+	"knowledge_scan_batch":      workspaceDelete,
+	"prompt_proposal":           workspaceDelete,
+	"prompt_structure_baseline": workspaceDelete,
 	// Module model-service config (RUYI-551): workspace-keyed gateway
 	// credentials; the encrypted key material is destroyed with the workspace.
 	"self_evolution_model_config":   workspaceDelete,

@@ -85,6 +85,50 @@
       "toast_saved": "已重命名机器",
       "toast_cleared": "已清除机器名称",
       "toast_failed": "重命名机器失败"
+    },
+    "ops": {
+      "title": "节点运维",
+      "subtitle": "对这台机器的只读诊断：服务状态、日志与快照。仅工作区 Owner/管理员可用。",
+      "sensitive_notice": "节点原始输出，可能含敏感信息，分享前请先审阅。",
+      "inventory_title": "服务清单",
+      "inventory_as": "更新于 {{time}}",
+      "inventory_empty": "节点未上报任何服务。",
+      "inventory_unavailable": "尚未收到该节点的服务清单。",
+      "loading": "加载中…",
+      "run_title": "执行只读命令",
+      "offline_hint": "机器当前离线，重新连接前无法下发命令。",
+      "kind_label": "命令",
+      "unit_label": "服务单元",
+      "unit_placeholder": "选择服务单元",
+      "lines_label": "行数",
+      "minutes_label": "分钟",
+      "run_button": "执行",
+      "submit_failed": "提交被拒绝，详情见命令历史。",
+      "exit_code": "退出码 {{code}}",
+      "history_title": "命令历史",
+      "history_empty": "还没有命令记录。",
+      "show_output": "查看输出",
+      "hide_output": "收起输出",
+      "truncated": "输出已截断",
+      "terminal_note": "该命令已不在执行中。",
+      "status": {
+        "pending": "等待领取",
+        "claimed": "执行中",
+        "succeeded": "已成功",
+        "failed": "失败",
+        "rejected": "已拒绝",
+        "timeout": "已超时",
+        "expired": "已过期"
+      },
+      "kinds": {
+        "systemctl_status": "systemd 服务状态",
+        "journalctl_tail": "journalctl 日志尾部",
+        "ps_snapshot": "进程快照",
+        "df_report": "磁盘用量",
+        "launchctl_list": "launchd 服务列表",
+        "mac_log_show": "macOS 日志",
+        "docker_ps": "Docker 容器列表"
+      }
     }
   },
   "health": {
