@@ -174,6 +174,24 @@ describe("IssueReferenceTail", () => {
     expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(1);
   });
 
+  it("aggregates a resolved MR reference into the same PR row shape (RUYI-728)", () => {
+    resolutions = { "merge_request:MR !468": pr(468) };
+    const { container } = renderTail("合入 MR !468 后看效果。");
+
+    const rows = container.querySelectorAll(".issue-reference-row");
+    expect(rows).toHaveLength(1);
+    // The row shows the resolved PR's own identity, not the authored token.
+    expect(rows[0]!.textContent).toContain("cfgxy/multica-cn#468");
+  });
+
+  it("degrades an unresolved MR reference to a plain-text row (RUYI-728)", () => {
+    resolutions = {};
+    const { container } = renderTail("合入 MR !468 后看效果。");
+
+    const degraded = container.querySelector(".issue-reference-degraded")!;
+    expect(degraded.textContent).toBe("MR !468");
+  });
+
   it("degrades an unresolved mention to its authored label", () => {
     const { container } = renderTail(`见 [QA-2](mention://issue/${UUID})。`);
 

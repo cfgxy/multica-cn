@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  autolinkReferenceTokens,
   dedupeIssueReferences,
-  demoteIssueMentionLinks,
   extractIssueReferences,
   identifierMatchesPrefix,
   isIssueIdentifier,
+  parseMergeRequestReference,
   parsePullRequestReference,
 } from "./issue-references";
 
@@ -198,56 +199,6 @@ describe("dedupeIssueReferences", () => {
   });
 });
 
-/**
- * demoteIssueMentionLinks — the mobile body-text half of RUYI-635. The display
- * token must match web's plain-text mention rendering exactly: identifier form
- * shows the identifier, a UUID mention shows its authored label. Code spans and
- * fenced blocks keep their literal link text (same skip contract as the
- * extractor), and every other mention scheme is untouched.
- */
-describe("demoteIssueMentionLinks", () => {
-  it("demotes an identifier-form mention to the bare identifier", () => {
-    expect(demoteIssueMentionLinks("See [MUL-7](mention://issue/MUL-7).")).toBe(
-      "See MUL-7.",
-    );
-  });
-
-  it("demotes a UUID mention to its authored label", () => {
-    expect(
-      demoteIssueMentionLinks(`See [MUL-7](mention://issue/${UUID}).`),
-    ).toBe("See MUL-7.");
-  });
-
-  it("falls back to the id segment when a UUID mention has an empty label", () => {
-    expect(demoteIssueMentionLinks(`[](${`mention://issue/${UUID}`})`)).toBe(
-      `mention://issue/${UUID}`.split("/").pop()!,
-    );
-  });
-
-  it("leaves code spans and fenced blocks literal", () => {
-    const inline = "use `[MUL-7](mention://issue/MUL-7)` here";
-    expect(demoteIssueMentionLinks(inline)).toBe(inline);
-    const fenced = "```\n[MUL-7](mention://issue/MUL-7)\n```";
-    expect(demoteIssueMentionLinks(fenced)).toBe(fenced);
-  });
-
-  it("leaves non-issue mention schemes alone", () => {
-    const text = [
-      `[@Bob](mention://agent/${UUID})`,
-      `[项目](mention://project/${UUID})`,
-      `[锚点](mention://comment/${UUID})`,
-    ].join("\n");
-    expect(demoteIssueMentionLinks(text)).toBe(text);
-  });
-
-  it("is idempotent — demoted text passes through unchanged", () => {
-    const once = demoteIssueMentionLinks(
-      `See [MUL-7](mention://issue/${UUID}) and MUL-8.`,
-    );
-    expect(demoteIssueMentionLinks(once)).toBe(once);
-  });
-});
-
 describe("isIssueIdentifier", () => {
   it("accepts uppercase prefix + digits", () => {
     expect(isIssueIdentifier("MUL-7")).toBe(true);
@@ -344,5 +295,138 @@ describe("parsePullRequestReference", () => {
     expect(parsePullRequestReference("owner/repo")).toBeNull();
     expect(parsePullRequestReference("owner/repo#abc")).toBeNull();
     expect(parsePullRequestReference("")).toBeNull();
+  });
+});
+
+describe("extractIssueReferences — MR text references (RUYI-728)", () => {
+  it("collects a plain MR !N token as merge_request-form with a normalized ref", () => {
+    expect(extractIssueReferences("已合并 MR !468。")).toEqual([
+      { ref: "MR !468", label: null, form: "merge_request" },
+    ]);
+  });
+
+  it("normalizes the no-space MR!N spelling to MR !N", () => {
+    expect(extractIssueReferences("见 MR!69 说明。")).toEqual([
+      { ref: "MR !69", label: null, form: "merge_request" },
+    ]);
+  });
+
+  it("dedupes the spaced and no-space spellings to one token", () => {
+    const refs = dedupeIssueReferences(
+      extractIssueReferences("MR !468 与 MR!468 是同一个。"),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toEqual({ ref: "MR !468", label: null, form: "merge_request" });
+  });
+
+  it("collects MR refs alongside issue refs in first-appearance order", () => {
+    const refs = extractIssueReferences(
+      "IDAT-55 已由 MR !468 修复，IDAT-54 跟进 MR !69。",
+    );
+    expect(refs.map((r) => `${r.form}:${r.ref}`)).toEqual([
+      "identifier:IDAT-55",
+      "merge_request:MR !468",
+      "identifier:IDAT-54",
+      "merge_request:MR !69",
+    ]);
+  });
+
+  it("keeps sentence-final punctuation and CJK adjacency", () => {
+    expect(extractIssueReferences("(MR !468) 已归档。")).toEqual([
+      { ref: "MR !468", label: null, form: "merge_request" },
+    ]);
+  });
+
+  it("rejects lowercase spelling", () => {
+    expect(extractIssueReferences("mr !468 不是引用。")).toEqual([]);
+  });
+
+  it("skips MR refs inside code spans and fenced blocks", () => {
+    expect(extractIssueReferences("跑 `git MR !468` 看看。")).toEqual([]);
+    expect(extractIssueReferences("```\nMR !468\n```")).toEqual([]);
+  });
+
+  it("skips MR refs inside an existing markdown link", () => {
+    expect(
+      extractIssueReferences("[MR !468](https://gitlab.test/a/b/-/merge_requests/468)"),
+    ).toEqual([]);
+  });
+
+  it("skips MR refs that are part of a URL", () => {
+    expect(extractIssueReferences("打开 https://example.com/MR !468 查看。")).toEqual([]);
+  });
+
+  it("skips an MR ref whose number runs into a dotted name or path", () => {
+    expect(extractIssueReferences("artifact MR !468.tar.gz 跳过。")).toEqual([]);
+    expect(extractIssueReferences("MR !468/commits 跳过。")).toEqual([]);
+  });
+});
+
+describe("parseMergeRequestReference", () => {
+  it("returns the number", () => {
+    expect(parseMergeRequestReference("MR !468")).toEqual({ number: 468 });
+    expect(parseMergeRequestReference("MR !69")).toEqual({ number: 69 });
+  });
+
+  it("returns null for tokens the extractor would never emit", () => {
+    expect(parseMergeRequestReference("MR !")).toBeNull();
+    expect(parseMergeRequestReference("MR !abc")).toBeNull();
+    expect(parseMergeRequestReference("MUL-7")).toBeNull();
+    expect(parseMergeRequestReference("")).toBeNull();
+  });
+});
+
+describe("autolinkReferenceTokens (RUYI-728 readonly body rewrite)", () => {
+  it("rewrites MR !N into a mention://merge-request link", () => {
+    expect(autolinkReferenceTokens("已合并 MR !468。")).toBe(
+      "已合并 [MR !468](mention://merge-request/468)。",
+    );
+  });
+
+  it("keeps the authored no-space spelling as the visible label", () => {
+    expect(autolinkReferenceTokens("见 MR!69 说明。")).toBe(
+      "见 [MR!69](mention://merge-request/69) 说明。",
+    );
+  });
+
+  it("rewrites owner/repo#N into the canonical GitHub pull URL", () => {
+    expect(autolinkReferenceTokens("Fix landed in cfgxy/multica-cn#338.")).toBe(
+      "Fix landed in [cfgxy/multica-cn#338](https://github.com/cfgxy/multica-cn/pull/338).",
+    );
+  });
+
+  it("rewrites both forms in one pass, leaving other text alone", () => {
+    expect(
+      autolinkReferenceTokens("IDAT-55 由 MR !468 修复，对照 cfgxy/multica-cn#338。"),
+    ).toBe(
+      "IDAT-55 由 [MR !468](mention://merge-request/468) 修复，对照 [cfgxy/multica-cn#338](https://github.com/cfgxy/multica-cn/pull/338)。",
+    );
+  });
+
+  it("skips code spans, existing links and bare URLs", () => {
+    const fenced = "```\nMR !468\n```";
+    expect(autolinkReferenceTokens(fenced)).toBe(fenced);
+    expect(autolinkReferenceTokens("跑 `git MR !468` 看看。")).toBe(
+      "跑 `git MR !468` 看看。",
+    );
+    expect(
+      autolinkReferenceTokens("[MR !468](https://gitlab.test/a/b/-/merge_requests/468)"),
+    ).toBe("[MR !468](https://gitlab.test/a/b/-/merge_requests/468)");
+    expect(
+      autolinkReferenceTokens("打开 https://github.com/cfgxy/multica-cn#338 查看。"),
+    ).toBe("打开 https://github.com/cfgxy/multica-cn#338 查看。");
+  });
+
+  it("skips dotted tails and path continuations", () => {
+    expect(autolinkReferenceTokens("artifact MR !468.tar.gz 跳过。")).toBe(
+      "artifact MR !468.tar.gz 跳过。",
+    );
+    expect(autolinkReferenceTokens("MR !468/commits 跳过。")).toBe(
+      "MR !468/commits 跳过。",
+    );
+  });
+
+  it("does not touch bare issue identifiers (the identifier pass owns those)", () => {
+    expect(autolinkReferenceTokens("IDAT-55 修复了。")).toBe("IDAT-55 修复了。");
   });
 });
