@@ -197,7 +197,14 @@ export function DecisionCenterPage() {
         </div>
       </div>
 
-      {(isPending || requestsPending) && (
+      {/*
+        RUYI-738: the skeleton stands in for the page body, so it may only
+        hold while the page would otherwise be blank — the inbox itself still
+        loading, or an empty inbox that cannot yet be declared empty because
+        the auxiliary decision-requests query has not settled. It must never
+        cover a rendered list while decision-requests is still in flight.
+      */}
+      {(isPending || (!isError && (data?.items.length ?? 0) === 0 && requestsPending)) && (
         <div className="flex flex-col gap-2 px-4 py-3" data-testid="decision-center-loading">
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
