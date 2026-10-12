@@ -243,4 +243,28 @@ describe("issue-reference CSS scope (RUYI-730)", () => {
       ),
     ).toEqual([]);
   });
+
+  // The card radius must ride `var(--radius)`: packages/ui/styles/tokens.css
+  // defines --radius-lg, but that file never reaches the web bundle (RUYI-730
+  // QA probe measured 0px on all three surfaces) — an undefined custom
+  // property silently falls back to the initial value. `--radius` IS in the
+  // bundle and equals the official `rounded-lg` (10px).
+  it("binds the card radius to --radius, a token the web bundle actually ships", () => {
+    const css = readFileSync("rich-content/rich-content.css", "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const footerRule = css
+      .split("}")
+      .find((block) =>
+        block
+          .split("{")[0]!
+          .trim()
+          .split(",")
+          .some((selector) => selector.trim() === ".issue-reference-footer"),
+      );
+    expect(footerRule).toBeDefined();
+    expect(footerRule).toMatch(/border-radius:\s*var\(--radius\)/);
+    expect(footerRule).not.toMatch(/var\(--radius-lg\)/);
+  });
 });

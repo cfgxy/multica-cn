@@ -60,7 +60,10 @@
  *
  * RUYI-730 rebuilds the visuals on the native sub-issues block's language
  * (issue-detail.tsx). Token mapping, official class → CSS value:
- *   rounded-lg         → var(--radius-lg)
+ *   rounded-lg         → var(--radius) — tokens.css also defines --radius-lg
+ *                        (= --radius), but that file never reaches the web
+ *                        bundle, so the card must reference --radius directly
+ *                        (QA probe: --radius-lg fell back to 0px)
  *   border             → 1px solid var(--border)
  *   bg-card/30         → color-mix(in oklab, var(--card) 30%, transparent)
  *   divide-border/60   → color-mix(in oklab, var(--border) 60%, transparent)
@@ -79,7 +82,7 @@
   margin-top: 0.75rem;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius);
   background: color-mix(in oklab, var(--card) 30%, transparent);
   color: inherit;
   font: inherit;
