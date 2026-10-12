@@ -268,6 +268,9 @@ describe("IssueReferenceFooter", () => {
     ).toHaveLength(0);
     const degraded = container.querySelector(".issue-reference-degraded")!;
     expect(degraded.tagName).toBe("SPAN");
+    // RUYI-730: the degraded slot keeps a placeholder glyph so its text
+    // starts on the same grid as resolved rows (icon column aligned).
+    expect(degraded.querySelector("svg")).not.toBeNull();
   });
 
   it("drops a reference that resolves to the current issue (self-filter)", () => {
