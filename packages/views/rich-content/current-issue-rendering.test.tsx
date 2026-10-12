@@ -203,14 +203,14 @@ describe("RichContent current-issue rendering", () => {
     ).toBe("MUL-8");
     expect(container.querySelector("[data-issue-mention-text]")).toBeNull();
 
-    // RUYI-724 (desktop width): resolved rows are direct links — the
+    // RUYI-731: the current issue's own mention builds no footer row, and
+    // the row that remains is the navigation surface (an anchor) — the
     // aggregation contract is row count + content.
     const rows = Array.from(
       container.querySelectorAll(".issue-reference-row"),
     );
-    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(2);
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     expect(rows.map((row) => row.textContent)).toEqual([
-      "MUL-7Issue MUL-7",
       "MUL-8Issue MUL-8",
     ]);
   });
