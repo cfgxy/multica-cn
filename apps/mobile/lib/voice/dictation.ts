@@ -14,8 +14,8 @@
  *   transcribing  降级分支：录音交后端转写，条内「转写中…」
  *
  * 出口三支：取消（废弃）、过短/空转写（toast「未识别到语音」回 rest）、
- * 非空（sendText 以文本发送）。降级转写失败 toast 后回 rest（录音不跨次
- * 保留；「保留录音重试」留待降级链路落地时一并裁定）。
+ * 非空（sendText 以文本发送）。降级转写失败 toast 后回 rest，重新按住
+ * 即重试（设计板 1 语义：失败 toast 重试；录音不跨次保留）。
  */
 
 /** 按住此时长才起录，轻点不算。 */
@@ -24,6 +24,43 @@ export const RECORD_ARM_MS = 120;
 export const CANCEL_ARM_DP = 48;
 /** 短于该时长的录音视为误触，不进入识别。 */
 export const MIN_RECORD_MS = 500;
+
+/**
+ * 听写入口模式（RUYI-710 阶段 2 放开降级）。probe 结果 + 转写通道是否
+ * 接好 → 入口呈现：
+ *
+ *   - probing        探测未回来，入口隐藏
+ *   - ondevice       端侧识别可用（与降级接入无关，行为回归面）
+ *   - degraded       端侧不可用但录音上传转写可行：api_level（API<31 无
+ *                    端侧识别器）/ module_missing（识别服务缺失）——
+ *                    「识别失败的设备」即此设备级语义，录音交后端转写
+ *   - hidden         不可用：非 Android（platform，采集模块同样缺失）/
+ *                    权限被拒（两条路径都要麦克风）/ 其余未知原因 /
+ *                    转写通道未接（收窄行为保持）
+ */
+export type DictationEntryMode =
+  | "probing"
+  | "ondevice"
+  | "degraded"
+  | "hidden";
+
+export function resolveDictationEntry(
+  availability: { available: boolean; reason: string } | null,
+  transcribeWired: boolean,
+): DictationEntryMode {
+  if (!availability) return "probing";
+  if (availability.available) return "ondevice";
+  if (!transcribeWired) return "hidden";
+  switch (availability.reason) {
+    case "api_level":
+    case "module_missing":
+      return "degraded";
+    default:
+      // permission（无麦克风两态皆不可行）、platform（非 Android，采集
+      // 模块缺失）与未来未知原因一律收敛隐藏。
+      return "hidden";
+  }
+}
 
 export type DictationPhase =
   | "rest"
@@ -71,7 +108,7 @@ export type DictationCommand =
   | { type: "startCapture" }
   | { type: "stopCapture" }
   | { type: "cancelCapture" }
-  /** 降级分支：上传录音请求后端转写（端点待后续单落地）。 */
+  /** 降级分支：上传录音请求后端转写（POST /api/workspaces/{id}/voice-transcriptions）。 */
   | { type: "requestBackendTranscription" }
   | { type: "sendText"; text: string }
   | { type: "toast"; kind: "not_recognized" | "transcribe_failed" };
