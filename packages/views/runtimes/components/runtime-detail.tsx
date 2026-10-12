@@ -43,6 +43,7 @@ import { AppLink, useNavigation } from "../../navigation";
 import { availabilityConfig, workloadConfig } from "../../agents/presence";
 import { HealthBadge } from "./shared";
 import { ProviderLogo } from "./provider-logo";
+import { BudgetSection } from "./budget-section";
 import { UsageSection } from "./usage-section";
 import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
@@ -213,6 +214,7 @@ export function RuntimeDetail({
                 canEdit={!!canEditRuntime}
               />
             )}
+            {canReadRuntime && <BudgetSection runtime={runtime} />}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 

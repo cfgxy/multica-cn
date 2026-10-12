@@ -730,6 +730,13 @@ DELETE FROM agent WHERE agent.workspace_id = $1;
 
 -- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+-- runtime_cost_budget (RUYI-665) has no FK to agent_runtime (house rule), so
+-- the sweep owns it; it carries workspace_id directly, so it needs no runtime
+-- set join.
+deleted_runtime_cost_budgets AS (
+    DELETE FROM runtime_cost_budget
+    WHERE runtime_cost_budget.workspace_id = $1
+),
 -- runtime_credential has no FK to agent_runtime (house rule), so the sweep
 -- owns it: matched through the runtime set rather than a workspace column
 -- (same construction as execution_profile_entry below). The encrypted
