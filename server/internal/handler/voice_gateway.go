@@ -364,7 +364,32 @@ func (h *Handler) voiceDisablePollInterval() time.Duration {
 	return 3 * time.Second
 }
 
-// watchVoiceInstanceDisabled polls the voice instance's disabled flag while
+// voiceDisablePollCheck builds the mid-session disable predicate for the
+// session's resolved entity. Pool sessions record the voice_provider id in
+// runtime_instance_id, so the poll reads that row's enabled toggle — the
+// same flag the start gate rejects on (RUYI-717: looking the id up in
+// agent_runtime never matches a row there). Legacy bridge sessions keep
+// watching the runtime instance's metadata.disabled flag, unchanged.
+func (h *Handler) voiceDisablePollCheck(target *voiceTarget) func(ctx context.Context) (bool, error) {
+	if target.provider != nil {
+		return func(ctx context.Context) (bool, error) {
+			vp, err := h.Queries.GetVoiceProvider(ctx, target.provider.ID)
+			if err != nil {
+				return false, err
+			}
+			return !vp.Enabled, nil
+		}
+	}
+	return func(ctx context.Context) (bool, error) {
+		rt, err := h.getAgentRuntime(ctx, obsmetrics.RuntimeLookupSourceVoiceGateway, target.runtime.ID)
+		if err != nil {
+			return false, err
+		}
+		return runtimeMetadataFlag(rt, "disabled"), nil
+	}
+}
+
+// watchVoiceInstanceDisabled polls the session entity's disabled state while
 // the relay is in flight. The moment the operator's toggle lands, both sides
 // get a normal-close frame (1000) and the pumps unblock — teardown flows
 // through the relay's single endLiveSession defer, so the write-back
@@ -375,6 +400,7 @@ func watchVoiceInstanceDisabled(
 	ctx context.Context,
 	h *Handler,
 	instanceID pgtype.UUID,
+	checkDisabled func(ctx context.Context) (bool, error),
 	providerConn, clientConn *websocket.Conn,
 	stop <-chan struct{},
 	interval time.Duration,
@@ -388,14 +414,14 @@ func watchVoiceInstanceDisabled(
 		case <-stop:
 			return
 		case <-ticker.C:
-			rt, err := h.getAgentRuntime(ctx, obsmetrics.RuntimeLookupSourceVoiceGateway, instanceID)
+			disabled, err := checkDisabled(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
 					slog.Warn("voice disable poll failed", "instance_id", uuidToString(instanceID), "error", err)
 				}
 				continue
 			}
-			if !runtimeMetadataFlag(rt, "disabled") {
+			if !disabled {
 				continue
 			}
 			for _, conn := range []*websocket.Conn{clientConn, providerConn} {
@@ -686,7 +712,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, providerConn, conn)
+	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, conn)
 }
 
 // dialVoiceProvider opens the provider relay hop. The key rides the
@@ -780,15 +806,18 @@ func (h *Handler) relayVoiceSession(
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, providerConn, clientConn)
+	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, clientConn)
 }
 
 // relayVoiceSessionConn is the pump shared by both start paths; it owns two
 // already-live connections (the provider hop and the upgraded client) and
-// every teardown flows through the single endLiveSession defer.
+// every teardown flows through the single endLiveSession defer. The resolved
+// target rides along so the disable poll watches the entity the session
+// actually runs under.
 func (h *Handler) relayVoiceSessionConn(
 	r *http.Request,
 	session db.LiveSession,
+	target *voiceTarget,
 	providerConn, clientConn *websocket.Conn,
 ) {
 	defer providerConn.Close()
@@ -803,7 +832,7 @@ func (h *Handler) relayVoiceSessionConn(
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
 	go watchVoiceInstanceDisabled(r.Context(), h, session.RuntimeInstanceID,
-		providerConn, clientConn, stopWatch, h.voiceDisablePollInterval())
+		h.voiceDisablePollCheck(target), providerConn, clientConn, stopWatch, h.voiceDisablePollInterval())
 
 	var transcript []voiceTranscriptEntry
 	// Tool interactions feed the facts write-back (stage 4); both pumps parse
