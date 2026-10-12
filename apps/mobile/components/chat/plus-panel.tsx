@@ -28,6 +28,7 @@ import Animated, {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Text } from "@/components/ui/text";
+import { withAlphaColor } from "@/lib/color-alpha";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -226,12 +227,14 @@ function BigTile({
       style={{
         height: 86,
         backgroundColor: accent
-          ? // 品牌色 10% 底：双主题都用 primary 透明度近似。
-            ((theme.primary ?? "#2563eb") + "1A") as string
+          ? // 品牌色 10% 底：THEME token 是 hsl 串，hex alpha 不能直接
+            // 拼接（Android 渲染非法色为黑），须经 withAlphaColor 生成
+            // 合法 rgba（RUYI-741）。
+            withAlphaColor(theme.brand, 0.1)
           : theme.secondary,
       }}
     >
-      <Ionicons name={icon} size={22} color={theme.primary} />
+      <Ionicons name={icon} size={22} color={theme.brand} />
       <Text className="text-sm font-medium text-foreground">{label}</Text>
     </Pressable>
   );
