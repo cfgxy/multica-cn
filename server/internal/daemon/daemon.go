@@ -628,14 +628,19 @@ type Daemon struct {
 	// carries the active card (thresholds + cadence + machine); every
 	// heartbeat ack delivers the saved settings and applyBackpressureConfig
 	// swaps it in, so a save in the Runtime page lands within one beat
-	// without a restart. bpApplyMu serializes that swap.
-	bpRuntime  atomic.Pointer[backpressureRuntime]
-	bpApplyMu  sync.Mutex
-	bpSource   memSampleSource
-	bpState    atomic.Pointer[backpressureObservation]
-	bpDeferred atomic.Int64
-	bpWakeup   atomic.Pointer[chan struct{}]
-	bpLastWarn atomic.Int64
+	// without a restart. bpApplyMu serializes that swap. bpDBManaged
+	// remembers having ever applied a saved (source=db) card: once set, an
+	// ack that stops carrying one means the row was deleted, and the gate
+	// converges back to the boot config instead of keeping the last saved
+	// thresholds forever.
+	bpRuntime   atomic.Pointer[backpressureRuntime]
+	bpApplyMu   sync.Mutex
+	bpSource    memSampleSource
+	bpState     atomic.Pointer[backpressureObservation]
+	bpDeferred  atomic.Int64
+	bpWakeup    atomic.Pointer[chan struct{}]
+	bpLastWarn  atomic.Int64
+	bpDBManaged atomic.Bool
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -4370,9 +4375,13 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	// Saved backpressure settings (RUYI-729) ride every ack. Applied
 	// synchronously — the swap is a few pointer writes under one mutex and
 	// the ack path has no reason to outrun it; a changed card takes effect
-	// on the watcher's next cycle.
+	// on the watcher's next cycle. A missing card after a saved one means
+	// the owner deleted the settings row: converge back to the boot config
+	// (RUYI-729 rework) instead of keeping the carved thresholds forever.
 	if resp.BackpressureConfig != nil {
 		d.applyBackpressureConfig(runtimeID, resp.BackpressureConfig)
+	} else {
+		d.applyBackpressureConfigFallback(runtimeID)
 	}
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",

@@ -470,6 +470,10 @@ func (d *Daemon) applyBackpressureConfig(runtimeID string, card *protocol.Daemon
 	d.bpApplyMu.Lock()
 	defer d.bpApplyMu.Unlock()
 
+	if card.Source == protocol.BackpressureSourceDB {
+		d.bpDBManaged.Store(true)
+	}
+
 	prev := d.bpRuntime.Load()
 	if prev != nil && prev.config.ConfigVersion == card.ConfigVersion && prev.config.Source == card.Source &&
 		prev.config == *card {
@@ -537,6 +541,28 @@ func (d *Daemon) applyBackpressureConfig(runtimeID string, card *protocol.Daemon
 			"swap_high_pct", card.SwapHighPct,
 			"psi_high_pct", card.PSIHighPct)
 	}
+}
+
+// applyBackpressureConfigFallback converges the gate back to the boot config
+// (env overrides or code defaults) when a heartbeat ack stops carrying a
+// card. For a daemon that once carried a saved card that nil means the owner
+// deleted the settings row — keeping the last carved thresholds forever was
+// the D1 defect (RUYI-729 rework): held runtimes must release and deferred
+// claims must stop without a restart. A daemon that never received a saved
+// card keeps its boot config; "no card" there is just the unconfigured
+// state, not a reset signal. Repeat calls converge on the equal-check inside
+// applyBackpressureConfig, so beating here costs a pointer comparison.
+func (d *Daemon) applyBackpressureConfigFallback(runtimeID string) {
+	if !d.bpDBManaged.Load() {
+		return
+	}
+	if prev := d.bpRuntime.Load(); prev != nil && prev.config.Source == protocol.BackpressureSourceDB {
+		d.logger.Info("backpressure settings removed — restoring boot config",
+			"runtime_id", runtimeID,
+			"prev_config_version", prev.config.ConfigVersion)
+	}
+	boot := d.cfg.backpressureCard()
+	d.applyBackpressureConfig(runtimeID, &boot)
 }
 
 // validateBackpressureThresholds rejects configs whose hysteresis bands are

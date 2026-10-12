@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -158,5 +159,85 @@ func TestApplyBackpressureConfig_SamplingIntervalHotSwaps(t *testing.T) {
 
 	if got := d.bpInterval(); got != 30*time.Second {
 		t.Fatalf("cadence after save = %v, want 30s", got)
+	}
+}
+
+// backpressureBootConfig mirrors newBackpressureTestDaemon's boot card so
+// the fallback path (d.cfg.backpressureCard) rebuilds the same gate the
+// daemon booted with.
+func backpressureBootConfig() Config {
+	th := bpTestThresholds()
+	return Config{
+		BackpressureEnabled:         true,
+		BackpressureMemHighPct:      th.MemHighPct,
+		BackpressureMemRecoveryPct:  th.MemRecoveryPct,
+		BackpressureSwapHighPct:     th.SwapHighPct,
+		BackpressureSwapRecoveryPct: th.SwapRecoveryPct,
+		BackpressurePSIHighPct:      th.PSIHighPct,
+		BackpressurePSIRecoveryPct:  th.PSIRecoveryPct,
+		BackpressureSampleInterval:  time.Second,
+		BackpressureWindowSize:      1,
+	}
+}
+
+// D1 rework (RUYI-729): after the owner deletes the saved settings row the
+// ack stops carrying a card. A daemon that once carried a saved card must
+// converge back to its boot config (env overrides or code defaults) on the
+// next beat — held runtimes release and deferred claims stop without a
+// restart. Keeping the carved thresholds forever is the defect.
+func TestHeartbeatAckWithoutCardRestoresBootConfigAfterDBCard(t *testing.T) {
+	d, dir := newBackpressureTestDaemon(t)
+	d.cfg = backpressureBootConfig()
+
+	// Host saved settings: a DB card at version 2 with thresholds carved
+	// above the boot lines (mem trips at 35 instead of 15).
+	card := bpCardWith(2, func(c *protocol.DaemonBackpressureConfig) {
+		c.MemHighPct = 35
+		c.MemRecoveryPct = 55
+	})
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{BackpressureConfig: &card})
+	if rt := d.bpRuntime.Load(); rt == nil || rt.config.ConfigVersion != 2 || rt.config.MemHighPct != 35 {
+		t.Fatalf("saved card not applied first: %+v", d.bpRuntime.Load())
+	}
+	writeWatermarkFixtures(t, fixtureDir(d), 30, 10)
+	d.backpressureTick()
+	if !d.backpressureBlocked() {
+		t.Fatal("fixture setup: 30% available must block under the carved 35% line")
+	}
+
+	// Owner deletes the row: the next heartbeat ack delivers no card.
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{})
+
+	rt := d.bpRuntime.Load()
+	if rt == nil || rt.machine == nil {
+		t.Fatal("gate must stay enabled after the settings row is removed")
+	}
+	if rt.config.ConfigVersion != 0 || rt.config.Source != "" || rt.config.MemHighPct != 15 {
+		t.Fatalf("gate not restored to boot config: version=%d source=%q mem_high=%g",
+			rt.config.ConfigVersion, rt.config.Source, rt.config.MemHighPct)
+	}
+
+	// The restored gate judges samples by the boot lines: the same 30% host
+	// that was backpressured under the carved lines is healthy again — the
+	// hold releases without a restart.
+	d.backpressureTick()
+	if d.backpressureBlocked() {
+		t.Fatal("30%% available must not block under the restored boot lines")
+	}
+	_ = dir
+}
+
+// The other half of the D1 semantic: a daemon that never received a saved
+// card keeps its boot config when the ack carries no card — "no settings
+// row" is just the unconfigured state, not a reset signal.
+func TestHeartbeatAckWithoutCardKeepsBootWhenNeverManaged(t *testing.T) {
+	d, _ := newBackpressureTestDaemon(t)
+	d.cfg = backpressureBootConfig()
+	before := d.bpRuntime.Load()
+
+	d.handleHeartbeatActions(context.Background(), "rt-1", &HeartbeatResponse{})
+
+	if d.bpRuntime.Load() != before {
+		t.Fatal("a daemon that never received a saved card must keep its boot config")
 	}
 }
