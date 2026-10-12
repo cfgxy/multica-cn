@@ -689,6 +689,82 @@ func (q *Queries) GetIssueDecisionByIdempotencyKey(ctx context.Context, arg GetI
 	return i, err
 }
 
+const listIssueDecisionsByAnswerComments = `-- name: ListIssueDecisionsByAnswerComments :many
+SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at FROM issue_decisions
+WHERE workspace_id = $1 AND issue_id = $2
+  AND decision_kind = 'question'
+  AND answer_comment_id = ANY($3::uuid[])
+ORDER BY created_at ASC, id ASC
+`
+
+type ListIssueDecisionsByAnswerCommentsParams struct {
+	WorkspaceID      pgtype.UUID   `json:"workspace_id"`
+	IssueID          pgtype.UUID   `json:"issue_id"`
+	AnswerCommentIds []pgtype.UUID `json:"answer_comment_ids"`
+}
+
+// RUYI-719: typed claim-time answer context. Locates the question cards whose
+// answer echo is one of the comments delivered with this claim (trigger +
+// coalesced). Authorization cards never take the echo pointer (their terminal
+// callback is a system comment) and are excluded explicitly by kind, so a
+// future pointer fill can never leak approve/deny answers into this
+// question-card surface. Deterministic order keeps a retried claim's payload
+// byte-stable.
+func (q *Queries) ListIssueDecisionsByAnswerComments(ctx context.Context, arg ListIssueDecisionsByAnswerCommentsParams) ([]IssueDecision, error) {
+	rows, err := q.db.Query(ctx, listIssueDecisionsByAnswerComments, arg.WorkspaceID, arg.IssueID, arg.AnswerCommentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueDecision{}
+	for rows.Next() {
+		var i IssueDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueDecisionsForIssue = `-- name: ListIssueDecisionsForIssue :many
 SELECT id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at FROM issue_decisions
 WHERE issue_id = $1 AND workspace_id = $2

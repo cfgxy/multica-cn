@@ -2618,6 +2618,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// coverage for this claim. The trigger snapshot CAS below also rejects a
 		// concurrent edit/delete that changes the FK after this read.
 		deliveredCommentIDs = commentDataIDs(deliveredComments)
+		// RUYI-719: typed answer context for decision-card echoes among the
+		// delivered comments. Keyed on the ids actually embedded above, so
+		// injection follows delivery (a comment dropped by the payload budget
+		// gets no decision context either) and a retried claim — which
+		// inherits the trigger/coalesced plan — recomputes the identical
+		// payload from the immutable answered rows.
+		resp.DecisionAnswers = h.decisionAnswerContextForComments(r.Context(), issue.WorkspaceID, task.IssueID, deliveredCommentIDs)
 		// taskToResponse exposes the enqueue plan to UI task-list callers. A
 		// daemon claim must instead advertise only the structured ids actually
 		// present in this payload, especially when the delivery budget truncates.
