@@ -79,6 +79,11 @@ deleted_pins AS (
 deleted_daemon_tokens AS (
     DELETE FROM daemon_token WHERE daemon_token.workspace_id = $1
 ),
+detach_computer_bindings AS (
+    UPDATE computer_binding SET workspace_id = NULL, state = 'detached',
+        last_error = 'Workspace removed; select a workspace and provision again'
+    WHERE workspace_id = $1
+),
 detached_feedback AS (
     UPDATE feedback
     SET workspace_id = NULL

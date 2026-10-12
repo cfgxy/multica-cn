@@ -2858,3 +2858,83 @@ describe("ApiClient prompt governance versions (RUYI-285)", () => {
     );
   });
 });
+
+
+describe("admin Computer API compatibility", () => {
+  it("rejects malformed public keys before they reach the clipboard", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ pubkey: 42 }))));
+    await expect(new ApiClient("https://api.example.test").getAdminSshPubKey()).rejects.toThrow("SSH public key response is invalid");
+  });
+
+  it("fails closed for malformed connection checks", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: "true", checks: null })))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.checkAdminComputer("machine")).toEqual({ ok: false, facts: {}, checks: [] });
+    expect(await client.checkAdminComputerDraft({ name: "Host", host: "host", port: 22, ssh_user: "operator" })).toEqual({ ok: false, facts: {}, checks: [] });
+  });
+
+  it("defaults older runtime responses and addresses the owned binding", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify([
+      { id: "omp", display_name: "Oh-My-Pi", installed_version: "", can_install: true },
+    ])));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").listComputerBindingRuntimes("binding");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/me/computer-bindings/binding/runtimes");
+    expect(result[0]).toMatchObject({ version_required: true, probe_error: "" });
+  });
+
+  it("reports malformed runtime responses as errors", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ runtimes: null }))));
+    await expect(new ApiClient("https://api.example.test").listComputerBindingRuntimes("binding")).rejects.toThrow("Runtime list response is invalid");
+  });
+
+  it("does not report a malformed Linux User check as a missing account", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ present: "false" }))));
+    await expect(new ApiClient("https://api.example.test").checkAdminLinuxUser("binding")).rejects.toThrow("Linux User check response is invalid");
+  });
+});
+
+it("rejects malformed Linux User detail, operation, lifecycle and discovery responses", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => Response.json({unexpected:true}, {status:200})));
+  const client = new ApiClient("https://api.example.test");
+  await expect(client.getComputerBindingDetail("binding")).rejects.toThrow("Could not read Linux User details");
+  await expect(client.listComputerOperations("binding")).rejects.toThrow("Could not read remote operations");
+  await expect(client.discoverComputerBinding("binding")).rejects.toThrow("Could not read discovery operation");
+  await expect(client.installComputerBindingRuntime("binding", "codex", "latest")).rejects.toThrow("Could not read the installation operation");
+  await expect(client.checkLinuxUser("binding")).rejects.toThrow("Linux User check response is invalid");
+  await expect(client.computerBindingLifecycle("binding", {action:"archive",confirm_username:"alice"})).rejects.toThrow("Could not read lifecycle operation");
+});
+
+it("requests an asynchronous runtime receipt and retains its durable operation ID", async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({operation_id:"operation-1",state:"queued"}, {status:202}));
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await new ApiClient("https://api.example.test").installComputerBindingRuntime("binding", "codex", "latest");
+  expect(result).toEqual({operation_id:"operation-1",state:"queued"});
+  expect(new Headers(fetchMock.mock.calls[0]?.[1].headers).get("Prefer")).toBe("respond-async");
+});
+
+
+describe("runtime execution source response compatibility", () => {
+  const runtime = { id: "rt", workspace_id: "ws", name: "Claude (host)", provider: "claude", status: "online" };
+  async function read(value: unknown) {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+    return new ApiClient("https://api.example.test").listRuntimes();
+  }
+  it("accepts old servers and defaults unknown access and availability conservatively", async () => {
+    const result = (await read([{ ...runtime, status: "future", visibility: "future" }]))[0]!;
+    expect(result.execution_source).toBeNull();
+    expect(result.status).toBe("offline");
+    expect(result.visibility).toBe("private");
+  });
+  it("validates source metadata without discarding a valid runtime", async () => {
+    expect((await read([{ ...runtime, execution_source: { linux_user: 42 } }]))[0]!.execution_source).toBeNull();
+    const source = { binding_id: "binding", linux_user: "mas_glite", host: "host", preferred: true };
+    expect((await read([{ ...runtime, execution_source: source }]))[0]!.execution_source).toEqual(source);
+    expect((await read([{ ...runtime, execution_source: { ...source, preferred: "true" } }]))[0]!.execution_source?.preferred).toBe(false);
+    expect(await read({ runtimes: null })).toEqual([]);
+  });
+  it("rejects malformed runtime mutation receipts", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "rt" }))));
+    await expect(new ApiClient("https://api.example.test").updateRuntime("rt", { custom_name: "CLI" })).rejects.toThrow("Could not read the updated runtime");
+  });
+});

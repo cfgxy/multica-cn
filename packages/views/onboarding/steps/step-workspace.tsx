@@ -92,7 +92,7 @@ export function StepWorkspace({
   onBusyChange,
 }: {
   existing?: Workspace | null;
-  onCreated: (workspace: Workspace) => void | Promise<void>;
+  onCreated: (workspace: Workspace, created: boolean) => void | Promise<void>;
   /** Reports the create request's in-flight state to the flow, which owns
    *  the shell: Back and the rail have to lock while a workspace is being
    *  created, and only this step knows when that is. */
@@ -210,7 +210,7 @@ export function StepWorkspace({
         issue_prefix: effectivePrefix,
       },
       {
-        onSuccess: onCreated,
+        onSuccess: (created) => onCreated(created, true),
         onError: (error) => {
           if (isWorkspaceSlugConflict(error)) {
             setSlugServerError(t(($) => $.step_workspace.slug_taken_error));
@@ -254,7 +254,7 @@ export function StepWorkspace({
     hint = t(($) => $.step_workspace.hint_opening, { name: reusing.name });
     continueLabel = t(($) => $.step_workspace.cta_open, { name: reusing.name });
     continueDisabled = isCreating;
-    onContinue = () => onCreated(reusing);
+    onContinue = () => onCreated(reusing, false);
   } else if (creatingActive) {
     if (isCreating) {
       hint = t(($) => $.step_workspace.hint_creating_pending, {

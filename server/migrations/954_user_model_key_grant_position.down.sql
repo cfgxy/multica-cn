@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_user_model_key_grant_user_position;
