@@ -14,16 +14,11 @@ import { describe, expect, it } from "vitest";
  *     uses (data identity: same state vocabulary). Unknown states → null
  *     so the caller renders the raw server value instead of guessing
  *     ("API Response Compatibility": never silently drop a category).
- *   - `pullRequestStateVisual` — mobile's icon + theme token per state,
- *     derived from `derivePullRequestStateVisual` in core (RUYI-635 增量:
- *     ONE state→semantics derivation shared with web and the reference
- *     tail; this module only maps the spec onto mobile glyphs/tokens).
- *     Hue mapping is token-based (success / muted / violet / destructive),
- *     not web's literal hex — mobile theming diverges by design, semantics
- *     must not (open=growing, merged=integrated, closed=terminated).
- *     Merged rides the new `violet` token (was info blue): the design
- *     review unified both ends on violet, GitHub's merged identity.
- *     `dimmed` mirrors web's `opacity-80` draft row.
+ *   - `pullRequestStateVisual` — mobile's icon + theme token per state.
+ *     Hue mapping is token-based (success / muted / info / destructive),
+ *     not web's literal emerald/violet hex — mobile theming diverges by
+ *     design, semantics must not (open=growing, merged=integrated,
+ *     closed=terminated). `dimmed` mirrors web's `opacity-80` draft row.
  *   - `formatPullRequestSubtitle` — exact subtitle composition parity
  *     with the web row, including the conditional `@author` segment.
  */
@@ -65,10 +60,10 @@ describe("pullRequestStateVisual", () => {
     });
   });
 
-  it("renders merged as the merge icon in the violet token (both ends unified)", () => {
+  it("renders merged as the merge icon", () => {
     expect(pullRequestStateVisual("merged")).toEqual({
       icon: "git-merge-outline",
-      themeKey: "violet",
+      themeKey: "info",
       dimmed: false,
     });
   });

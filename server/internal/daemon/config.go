@@ -16,7 +16,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/pkg/agent"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const (
@@ -101,31 +100,31 @@ const (
 	// Host memory backpressure (RUYI-393). These are INITIAL SAFETY
 	// PARAMETERS chosen from the RUYI-392 incident profile (32G host, ~1.3G
 	// available / swap 100% at the time of the连环 OOM), NOT calibrated
-	// final values — tune per workspace from the settings UI (RUYI-618);
-	// the values themselves live in protocol so the boot path, the
-	// heartbeat delivery, and the settings API read one source.
+	// final values — tune via env as GTI field data comes in.
 	//
 	// Trigger (OR): MemAvailable% < MemHigh OR SwapUsed% > SwapHigh.
 	// Recovery (AND): MemAvailable% >= MemRecovery AND SwapUsed% <=
 	// SwapRecovery. SwapHighPct <= 0 disables the swap condition entirely.
-	DefaultBackpressureEnabled         = protocol.DefaultBackpressureEnabled
-	DefaultBackpressureMemHighPct      = protocol.DefaultBackpressureMemHighPct
-	DefaultBackpressureMemRecoveryPct  = protocol.DefaultBackpressureMemRecoveryPct
-	DefaultBackpressureSwapHighPct     = protocol.DefaultBackpressureSwapHighPct
-	DefaultBackpressureSwapRecoveryPct = protocol.DefaultBackpressureSwapRecoveryPct
+	DefaultBackpressureEnabled         = true
+	DefaultBackpressureMemHighPct      = 15.0
+	DefaultBackpressureMemRecoveryPct  = 25.0
+	DefaultBackpressureSwapHighPct     = 80.0
+	DefaultBackpressureSwapRecoveryPct = 60.0
 	// PSI memory pressure joins the gate as a third condition (RUYI-397):
 	// trigger OR, recovery AND, same hysteresis discipline as the
 	// watermarks. /proc/pressure/memory "some" avg10 is the share of
 	// wall-clock time at least one task stalled on memory — a host stalling
 	// half the time is starved even while MemAvailable still looks
 	// acceptable, because reclaimable caches evaporate exactly under the
-	// allocation bursts that matter (the RUYI-392 incident profile).
-	// PSIHighPct <= 0 disables the condition entirely, and an unreadable PSI
-	// source is skipped (degrades without blocking mem/swap).
-	DefaultBackpressurePSIHighPct     = protocol.DefaultBackpressurePSIHighPct
-	DefaultBackpressurePSIRecoveryPct = protocol.DefaultBackpressurePSIRecoveryPct
-	DefaultBackpressureSampleInterval = protocol.DefaultBackpressureSampleInterval
-	DefaultBackpressureWindowSize     = protocol.DefaultBackpressureWindowSize
+	// allocation bursts that matter (the RUYI-392 incident profile). 50/20
+	// are INITIAL SAFETY PARAMETERS pending GTI field calibration, same
+	// standing as the watermarks above; PSIHighPct <= 0 disables the
+	// condition entirely, and an unreadable PSI source is skipped (degrades
+	// without blocking mem/swap).
+	DefaultBackpressurePSIHighPct     = 50.0
+	DefaultBackpressurePSIRecoveryPct = 20.0
+	DefaultBackpressureSampleInterval = 5 * time.Second
+	DefaultBackpressureWindowSize     = 6 // samples; 6 × 5s = 30s smoothing window
 )
 
 // DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
@@ -178,6 +177,13 @@ type Config struct {
 	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
 	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
 	AutoReloadEnabled              bool                  // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
+	// PipeCrashSelfHealEnabled is the single kill switch for the Claude
+	// pipe-crash self-heal (RUYI-659): when a resumed run's CLI crashes
+	// before producing any session, the daemon retries in-turn with a fresh
+	// session (retiring the old pointer) instead of failing the task for a
+	// human to retry. Disabling restores pre-RUYI-659 behaviour exactly: the
+	// crash carries no rejection signal, the task fails, a human retries.
+	PipeCrashSelfHealEnabled bool
 	PollInterval                   time.Duration
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
@@ -529,20 +535,52 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		maxConcurrentTasks = overrides.MaxConcurrentTasks
 	}
 
-	// Host memory backpressure (RUYI-393): the gate boots on the code
-	// defaults, and the workspace-level backpressure settings delivered on
-	// every heartbeat ack (RUYI-618) are the single authoritative runtime
-	// source. There is deliberately no env override path — the systemd
-	// injection was retired so parameters cannot drift between two sources.
-	if err := validateBackpressureThresholds(backpressureThresholds{
-		MemHighPct:      DefaultBackpressureMemHighPct,
-		MemRecoveryPct:  DefaultBackpressureMemRecoveryPct,
-		SwapHighPct:     DefaultBackpressureSwapHighPct,
-		SwapRecoveryPct: DefaultBackpressureSwapRecoveryPct,
-		PSIHighPct:      DefaultBackpressurePSIHighPct,
-		PSIRecoveryPct:  DefaultBackpressurePSIRecoveryPct,
-	}, DefaultBackpressureSampleInterval, DefaultBackpressureWindowSize); err != nil {
+	// Host memory backpressure (RUYI-393) — thresholds are initial safety
+	// parameters, to be calibrated with GTI field data via these env knobs.
+	backpressureEnabled := boolFromEnv("MULTICA_DAEMON_BACKPRESSURE", DefaultBackpressureEnabled)
+	bpMemHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", DefaultBackpressureMemHighPct)
+	if err != nil {
 		return Config{}, err
+	}
+	bpMemRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", DefaultBackpressureMemRecoveryPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpSwapHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", DefaultBackpressureSwapHighPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpSwapRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT", DefaultBackpressureSwapRecoveryPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpPSIHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", DefaultBackpressurePSIHighPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpPSIRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", DefaultBackpressurePSIRecoveryPct)
+	if err != nil {
+		return Config{}, err
+	}
+	bpSampleInterval, err := durationFromEnv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", DefaultBackpressureSampleInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	bpWindowSize, err := intFromEnv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", DefaultBackpressureWindowSize)
+	if err != nil {
+		return Config{}, err
+	}
+	if backpressureEnabled {
+		if err := validateBackpressureThresholds(backpressureThresholds{
+			MemHighPct:      bpMemHigh,
+			MemRecoveryPct:  bpMemRecovery,
+			SwapHighPct:     bpSwapHigh,
+			SwapRecoveryPct: bpSwapRecovery,
+			PSIHighPct:      bpPSIHigh,
+			PSIRecoveryPct:  bpPSIRecovery,
+		}, bpSampleInterval, bpWindowSize); err != nil {
+			return Config{}, err
+		}
 	}
 
 	// Profile
@@ -693,6 +731,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
+	// RUYI-659: on by default — the self-heal only fires on the narrow
+	// pipe-crash evidence — with MULTICA_PIPE_CRASH_SELF_HEAL=0 as the
+	// operator's way back to "fail and wait for a human retry".
+	pipeCrashSelfHealEnabled := boolFromEnv("MULTICA_PIPE_CRASH_SELF_HEAL", true)
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -721,17 +764,18 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoUpdateEnabled:               autoUpdateEnabled,
 		AutoUpdateCheckInterval:         autoUpdateInterval,
 		AutoReloadEnabled:               autoReloadEnabled,
+		PipeCrashSelfHealEnabled:        pipeCrashSelfHealEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
-		BackpressureEnabled:             DefaultBackpressureEnabled,
-		BackpressureMemHighPct:          DefaultBackpressureMemHighPct,
-		BackpressureMemRecoveryPct:      DefaultBackpressureMemRecoveryPct,
-		BackpressureSwapHighPct:         DefaultBackpressureSwapHighPct,
-		BackpressureSwapRecoveryPct:     DefaultBackpressureSwapRecoveryPct,
-		BackpressurePSIHighPct:          DefaultBackpressurePSIHighPct,
-		BackpressurePSIRecoveryPct:      DefaultBackpressurePSIRecoveryPct,
-		BackpressureSampleInterval:      DefaultBackpressureSampleInterval,
-		BackpressureWindowSize:          DefaultBackpressureWindowSize,
+		BackpressureEnabled:             backpressureEnabled,
+		BackpressureMemHighPct:          bpMemHigh,
+		BackpressureMemRecoveryPct:      bpMemRecovery,
+		BackpressureSwapHighPct:         bpSwapHigh,
+		BackpressureSwapRecoveryPct:     bpSwapRecovery,
+		BackpressurePSIHighPct:          bpPSIHigh,
+		BackpressurePSIRecoveryPct:      bpPSIRecovery,
+		BackpressureSampleInterval:      bpSampleInterval,
+		BackpressureWindowSize:          bpWindowSize,
 		PollInterval:                    pollInterval,
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,

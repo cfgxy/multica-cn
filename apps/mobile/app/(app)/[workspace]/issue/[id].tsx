@@ -42,7 +42,6 @@ import {
   type TimelineListHandle,
 } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
-import { IssueMenuFieldItems } from "@/components/issue/issue-menu-field-items";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
 import {
   issueDetailOptions,
@@ -146,9 +145,8 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Edit details / Copy title / Copy
-  // description / Copy link / Open on web / Related PRs / Relations /
-  // Delete.
+  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web /
+  // Related PRs / Delete.
   // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
   const issueLink = issue && wsSlug
     ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
@@ -183,15 +181,6 @@ export default function IssueDetail() {
   const onOpenPullRequests = useCallback(() => {
     if (wsSlug && issue) {
       router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
-    }
-  }, [wsSlug, issue]);
-  // Structured relations (RUYI-689) — mobile counterpart of the web
-  // sidebar's Relations section (blocks/blocked_by/relates_to/supersedes/
-  // superseded_by + parent/children). Markdown @mentions aggregate in the
-  // timeline tail instead; the two never mix (acceptance 6).
-  const onOpenRelations = useCallback(() => {
-    if (wsSlug && issue) {
-      router.push(`/${wsSlug}/issue/${issue.id}/relations`);
     }
   }, [wsSlug, issue]);
   // Quick property setters (RUYI-129). The header menu reuses the very
@@ -290,63 +279,61 @@ export default function IssueDetail() {
                         />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
-                        {/* Quick property setters with live values
-                         *  (RUYI-697) — same value sources as the attribute
-                         *  chip row; pressing still opens the same picker
-                         *  routes (RUYI-129). Group ordering mirrors web's
-                         *  menu. */}
-                        <IssueMenuFieldItems
-                          issue={issue}
-                          onOpenPicker={openPicker}
-                        />
+                        {/* Quick property setters first — they're the
+                         *  frequent actions, and the group ordering
+                         *  mirrors web's menu (status / priority /
+                         *  assignee ahead of the pin / copy / delete
+                         *  block). */}
+                        <DropdownMenuItem
+                          onPress={() => openPicker("assignee")}
+                        >
+                          <Text>{t("actions.assignee", "Assignee")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={() => openPicker("status")}>
+                          <Text>{t("actions.status", "Status")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={() => openPicker("project")}>
+                          <Text>{t("detail.prop_project", "Project")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onPress={() => openPicker("priority")}
+                        >
+                          <Text>{t("actions.priority", "Priority")}</Text>
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        {/*
-                          Labels below stretch to the row (flex-1) instead of
-                          shrink-to-fit: with Fabric on Android, a shrink-to-fit
-                          Text measured at its exact-fit width can drop its
-                          final word at render time while keeping the reserved
-                          space (facebook/react-native#57110). Full-row width
-                          leaves slack, so measurement and layout agree;
-                          left-aligned single-line rendering is unchanged.
-                        */}
                         <DropdownMenuItem onPress={onTogglePin}>
-                          <Text className="flex-1">{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
+                          <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onEditDetails}>
-                          <Text className="flex-1">
+                          <Text>
                             {t("mobile.detail.edit_details", "Edit details")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyTitle}>
-                          <Text className="flex-1">{t("mobile.detail.copy_title", "Copy title")}</Text>
+                          <Text>{t("mobile.detail.copy_title", "Copy title")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyDescription}>
-                          <Text className="flex-1">{t("mobile.detail.copy_description", "Copy description")}</Text>
+                          <Text>{t("mobile.detail.copy_description", "Copy description")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyLink}>
-                          <Text className="flex-1">{t("actions.copy_link", "Copy link")}</Text>
+                          <Text>{t("actions.copy_link", "Copy link")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenOnWeb}>
-                          <Text className="flex-1">
+                          <Text>
                             {t("mobile.detail.open_on_web", "Open on web")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenPullRequests}>
-                          <Text className="flex-1">
+                          <Text>
                             {t(
                               "detail.section_pull_requests",
                               "Pull requests",
                             )}
                           </Text>
                         </DropdownMenuItem>
-                        <DropdownMenuItem onPress={onOpenRelations}>
-                          <Text>
-                            {t("detail.section_relations", "Relations")}
-                          </Text>
-                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem variant="destructive" onPress={onDelete}>
-                          <Text className="flex-1">{t("actions.delete_issue", "Delete issue")}</Text>
+                          <Text>{t("actions.delete_issue", "Delete issue")}</Text>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>

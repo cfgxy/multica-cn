@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   deriveChecksStatus,
   deriveMergeStatus,
-  derivePullRequestStateVisual,
   shouldShowPullRequestStats,
 } from "./pull-request-status";
 
@@ -167,38 +166,5 @@ describe("shouldShowPullRequestStats", () => {
     expect(shouldShowPullRequestStats({ deletions: 1 })).toBe(true);
     expect(shouldShowPullRequestStats({ changed_files: 1 })).toBe(true);
     expect(shouldShowPullRequestStats({ additions: 437, deletions: 6, changed_files: 6 })).toBe(true);
-  });
-});
-
-describe("derivePullRequestStateVisual", () => {
-  it("maps the five known states to their semantic color tokens", () => {
-    expect(derivePullRequestStateVisual("open")).toEqual({
-      state: "open",
-      colorToken: "success",
-      dimmed: false,
-    });
-    expect(derivePullRequestStateVisual("draft")).toEqual({
-      state: "draft",
-      colorToken: "muted",
-      dimmed: true,
-    });
-    expect(derivePullRequestStateVisual("merged")).toEqual({
-      state: "merged",
-      colorToken: "violet",
-      dimmed: false,
-    });
-    expect(derivePullRequestStateVisual("closed")).toEqual({
-      state: "closed",
-      colorToken: "destructive",
-      dimmed: false,
-    });
-  });
-
-  it("falls back to a neutral unknown for unrecognized, empty and nullish states", () => {
-    const unknown = { state: "unknown", colorToken: "neutral", dimmed: false };
-    expect(derivePullRequestStateVisual("reopened")).toEqual(unknown);
-    expect(derivePullRequestStateVisual("")).toEqual(unknown);
-    expect(derivePullRequestStateVisual(null)).toEqual(unknown);
-    expect(derivePullRequestStateVisual(undefined)).toEqual(unknown);
   });
 });

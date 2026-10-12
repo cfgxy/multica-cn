@@ -231,11 +231,9 @@ func TestVoiceSessionGate_VoiceUnavailableRejections(t *testing.T) {
 	credentialTestBox(t)
 	stubProbeTarget(t, http.StatusOK)
 
-	t.Run("voice_unconfigured", func(t *testing.T) {
-		// RUYI-693: an agent with no chain config and no legacy binding gets
-		// the chain's unified unconfigured verdict.
+	t.Run("no_voice_runtime", func(t *testing.T) {
 		agentID := dbfx.Agent(t, "Gate No Voice Agent", handlerTestRuntimeID(t))
-		expectVoiceUnavailable(t, "voice_unconfigured", startVoiceSession(t, agentID), "voice_unconfigured")
+		expectVoiceUnavailable(t, "no_voice_runtime", startVoiceSession(t, agentID), "no_voice_runtime")
 	})
 
 	t.Run("instance_disabled", func(t *testing.T) {
@@ -704,9 +702,8 @@ func TestVoiceSessionFirstFrameAuth(t *testing.T) {
 
 	t.Run("gate rejection as frame", func(t *testing.T) {
 		newStubVoiceProvider(t)
-		// An agent with no voice config — the same §4.4 fact the 409 path
-		// refuses, now delivered inside the websocket. RUYI-693: the chain's
-		// unified unconfigured verdict.
+		// An agent with no voice runtime — the same §4.4 fact the 409 path
+		// refuses, now delivered inside the websocket.
 		agentID := dbfx.Agent(t, "FirstFrame NoVoice Agent", handlerTestRuntimeID(t))
 		srv := voiceGatewayServer(t)
 
@@ -714,7 +711,7 @@ func TestVoiceSessionFirstFrameAuth(t *testing.T) {
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"auth","payload":{"token":"`+voiceFirstFrameToken(t)+`"}}`)); err != nil {
 			t.Fatalf("send auth frame: %v", err)
 		}
-		expectVoiceFrameCode(t, "gate rejection", conn, "VOICE_UNAVAILABLE:voice_unconfigured")
+		expectVoiceFrameCode(t, "gate rejection", conn, "VOICE_UNAVAILABLE:no_voice_runtime")
 	})
 
 	t.Run("workspace required", func(t *testing.T) {
@@ -732,14 +729,11 @@ func TestVoiceSessionFirstFrameAuth(t *testing.T) {
 
 // TestVoiceSessionHeaderPathKeeps409 pins the RUYI-425 contract that survived
 // the RUYI-449 rework: cookie-authenticated gate rejections are plain 409s
-// before any upgrade. RUYI-693: an agent with no voice config at all now gets
-// the chain's unified "unconfigured" verdict instead of the legacy
-// no_voice_runtime (which remains reserved for the legacy voice_runtime_id
-// bridge).
+// before any upgrade.
 func TestVoiceSessionHeaderPathKeeps409(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	agentID := dbfx.Agent(t, "Header Path NoVoice Agent", handlerTestRuntimeID(t))
-	expectVoiceUnavailable(t, "header path", startVoiceSession(t, agentID), "voice_unconfigured")
+	expectVoiceUnavailable(t, "header path", startVoiceSession(t, agentID), "no_voice_runtime")
 }

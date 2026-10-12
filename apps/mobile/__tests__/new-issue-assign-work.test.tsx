@@ -237,7 +237,6 @@ jest.mock("@/data/queries/runtimes", () => ({
 }));
 
 jest.mock("@tanstack/react-query", () => ({
-  queryOptions: (opts: Record<string, unknown>) => opts,
   useQuery: ({ queryKey }: { queryKey: string[] }) => {
     switch (queryKey[0]) {
       case "members":

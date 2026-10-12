@@ -22,7 +22,6 @@
  * then `router.replace(/${slug}/inbox)`. The downstream WorkspaceRouteLayout
  * handles `setCurrentWorkspace(slug, uuid)` on mount.
  */
-import { SheetHeader } from "@/components/ui/sheet-header";
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +30,7 @@ import {
   ScrollView,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Image as ExpoImage } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -53,6 +53,7 @@ export default function SwitchWorkspaceRoute() {
   const { data, isLoading } = useQuery(workspaceListOptions());
   const unreadWsIds = useWorkspaceUnreadIds(activeSlug);
   const { t } = useT("workspace");
+  const insets = useSafeAreaInsets();
 
   const onSelect = (ws: Workspace) => {
     if (ws.slug === activeSlug) return;
@@ -76,12 +77,12 @@ export default function SwitchWorkspaceRoute() {
 
   return (
     <View className="flex-1">
-      {/* 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
-      <SheetHeader className="px-4 pb-3" gap={16}>
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("mobile.switch.title", "Switch workspace")}
         </Text>
-      </SheetHeader>
+      </View>
       {isLoading ? (
         <View className="py-6 items-center">
           <ActivityIndicator />

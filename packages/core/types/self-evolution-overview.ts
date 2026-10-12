@@ -80,31 +80,10 @@ export interface SelfEvolutionOverviewSkills {
   invocations: number;
 }
 
-/**
- * The newest retrospective-sourced proposal in the pool (RUYI-551 wiring of
- * the RUYI-305 pool): the visible signature that the daily loop is actually
- * proposing. `source` is "retrospective" by construction.
- */
-export interface SelfEvolutionOverviewLastAutoProposal {
-  source: string;
-  created_at: string;
-}
-
-/** The proposal pool (RUYI-305 E2) as the overview card reads it. */
-export interface SelfEvolutionOverviewProposals {
-  /** The whole pool — the rows the legislation tab's "all" filter lists. */
-  total: number;
-  /** The owner-approval queue depth (status pending_owner). */
-  pending_owner: number;
-  /** The newest retrospective-proposed row; absent when the loop has none. */
-  last_auto_proposal?: SelfEvolutionOverviewLastAutoProposal;
-}
-
 export interface SelfEvolutionOverview {
   versions: SelfEvolutionOverviewTier[];
   quality: SelfEvolutionOverviewQuality;
   quiz: SelfEvolutionOverviewQuiz;
   knowledge: SelfEvolutionOverviewKnowledge;
   skills: SelfEvolutionOverviewSkills;
-  proposals: SelfEvolutionOverviewProposals;
 }

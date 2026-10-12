@@ -16,11 +16,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -47,52 +45,25 @@ const (
 	maxClauseNameRunes = 60
 	// maxTitleRunes bounds one issue title inside the context payload.
 	maxTitleRunes = 200
-	// maxDecisionFieldRunes bounds one decision-context field (RUYI-723):
-	// problem / expected_effect / expected_gain are short triage text, not
-	// essays — the contract says ≤100 chars and the server truncates.
-	maxDecisionFieldRunes = 100
-	// maxCarrierSections / maxSectionNameRunes bound one carrier's section
-	// list inside the context payload (RUYI-723): the lists exist so the
-	// model can copy a target_section verbatim, not to ship the whole
-	// carrier through the prompt.
-	maxCarrierSections  = 80
-	maxSectionNameRunes = 120
 )
 
 // TaskContextIssue is one scanned issue inside the task payload — id plus
-// title only. The agent fetches the real content itself. ProjectID (RUYI-723)
-// names the issue's project carrier, empty when the issue has none; the
-// server resolves a project-scoped draft's carrier_scope_id from it, so the
-// agent never copies carrier ids into its output.
+// title only. The agent fetches the real content itself.
 type TaskContextIssue struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	ProjectID string `json:"project_id,omitempty"`
-}
-
-// TaskContextCarrier is one prompt carrier the run's drafts may target
-// (RUYI-723): its scope, the carrier entity id, a display name and the
-// carrier's current `## ` section list. The list is the single legal source
-// of target_section values — verbatim copy or empty (document tail).
-type TaskContextCarrier struct {
-	Scope    string   `json:"scope"`
-	ScopeID  string   `json:"scope_id"`
-	Name     string   `json:"name,omitempty"`
-	Sections []string `json:"sections"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 // TaskContext is the JSONB payload the enqueued task carries: everything the
 // claim path needs to render the run's prompt, and nothing else — there is
-// no issue for this run, by design. Carriers (RUYI-723) is absent on tasks
-// enqueued before that change; those runs keep the workspace-only contract.
+// no issue for this run, by design.
 type TaskContext struct {
-	Kind        string               `json:"kind"`
-	RunID       string               `json:"run_id"`
-	WorkspaceID string               `json:"workspace_id"`
-	WindowStart string               `json:"window_start"` // RFC3339
-	WindowEnd   string               `json:"window_end"`   // RFC3339
-	Issues      []TaskContextIssue   `json:"issues"`
-	Carriers    []TaskContextCarrier `json:"carriers,omitempty"`
+	Kind        string             `json:"kind"`
+	RunID       string             `json:"run_id"`
+	WorkspaceID string             `json:"workspace_id"`
+	WindowStart string             `json:"window_start"` // RFC3339
+	WindowEnd   string             `json:"window_end"`   // RFC3339
+	Issues      []TaskContextIssue `json:"issues"`
 }
 
 // ParseTaskContext reports whether the raw context JSONB is a retrospective
@@ -120,9 +91,6 @@ func ParseTaskContext(raw []byte) (TaskContext, bool) {
 // JSONB. This is the claim path's entire assignment surface: boundaries
 // first (no issue may be created or commented), then the output contract —
 // the server parses the final message, so its shape is load-bearing.
-// With carriers present (RUYI-723) the prompt pins carrier_scope and
-// target_section to the listed carriers' verbatim sections; a legacy
-// context without carriers keeps rendering exactly the old contract.
 func PromptFromContext(raw []byte) (string, bool) {
 	tc, ok := ParseTaskContext(raw)
 	if !ok || len(tc.Issues) == 0 {
@@ -139,33 +107,13 @@ func PromptFromContext(raw []byte) (string, bool) {
 	fmt.Fprintf(&b, "Review window: %s to %s (issues last updated inside)\n\n", tc.WindowStart, tc.WindowEnd)
 	b.WriteString("Issues in scope — read each with `multica issue get <id> --output json`, and scan its comment threads with `multica issue comment list <id> --roots-only --summary --compact --output json` (expand only what matters):\n")
 	for _, issue := range tc.Issues {
-		if issue.ProjectID != "" {
-			fmt.Fprintf(&b, "- %s — %s (project_id: %s)\n", issue.ID, issue.Title, issue.ProjectID)
-		} else {
-			fmt.Fprintf(&b, "- %s — %s\n", issue.ID, issue.Title)
-		}
-	}
-	if len(tc.Carriers) > 0 {
-		b.WriteString("\nPrompt carriers you may target — the carrier_scope and the target_section of every draft must come from this list:\n")
-		for _, c := range tc.Carriers {
-			fmt.Fprintf(&b, "- carrier_scope=%s, carrier_scope_id=%s", c.Scope, c.ScopeID)
-			if c.Name != "" {
-				fmt.Fprintf(&b, " (name: %s)", c.Name)
-			}
-			fmt.Fprintf(&b, " — sections: %s\n", strings.Join(c.Sections, " | "))
-		}
-		b.WriteString("Carrier targeting rules:\n")
-		b.WriteString("- carrier_scope must be exactly \"workspace\" or \"project\", and only for carriers listed above; omitting carrier_scope defaults to the workspace carrier. Squad and agent carriers, and every off-platform target (handbooks, skills, external docs), do not accept drafts this iteration — when an improvement belongs there, skip it: keep the issue under analyzed_issue_ids and propose nothing for it.\n")
-		b.WriteString("- target_section must be copied VERBATIM from the chosen carrier's section list (exact characters, no paraphrase, no invented section); use the empty string to append the clause at the carrier's document tail instead.\n")
-		b.WriteString("- gate_answers.layer must agree with carrier_scope (层次归属): a workspace-carrier draft claims the workspace layer (workspace=…), a project-carrier draft claims the project layer (proj=…). An inconsistent pair is a defect.\n")
-		b.WriteString("- The project carrier of an issue is that issue's project_id above; an issue without a project_id only supports the workspace carrier.\n")
+		fmt.Fprintf(&b, "- %s — %s\n", issue.ID, issue.Title)
 	}
 	b.WriteString("\nFor each issue worth learning from, propose at most 3 drafts. A draft must be written as final, directly-enactable clause text (no revision marks, no weak wording), carry the five content-gate answers (layer / retention / cost / conflict / dedup) and cite its evidence. If an issue yields nothing worth proposing, still list its id in analyzed_issue_ids so it is not re-read by the next run.\n\n")
 	b.WriteString(`Output contract (the server rejects output it cannot parse, and the run then fails visibly):
-{"analyzed_issue_ids":["<issue id>"],"drafts":[{"issue_id":"<issue id>","carrier_scope":"workspace","target_section":"section name or empty string","change_kind":"add_clause|revise_clause|remove_clause","clause_name":"clause name","clause_text":"- **clause name**: clause body","problem":"≤100 chars: the friction this draft removes","expected_effect":"≤100 chars: what changes once it is enacted","expected_gain":"≤100 chars: how large the gain is","value_score":3,"gate_answers":{"layer":"...","retention":"...","cost":"...","conflict":"...","dedup":"..."},"evidence_ref":"issue title or comment summary","evidence_note":"one-sentence justification"}]}
+{"analyzed_issue_ids":["<issue id>"],"drafts":[{"issue_id":"<issue id>","carrier_scope":"workspace","target_section":"section name or empty string","change_kind":"add_clause|revise_clause|remove_clause","clause_name":"clause name","clause_text":"- **clause name**: clause body","gate_answers":{"layer":"...","retention":"...","cost":"...","conflict":"...","dedup":"..."},"evidence_ref":"issue title or comment summary","evidence_note":"one-sentence justification"}]}
 
 `)
-	b.WriteString("Decision-context rules (RUYI-723): problem / expected_effect / expected_gain are each at most 100 characters of plain text; value_score is an integer reference score for the owner's triage: 5 = caused a delivery rollback or blocking, or repeated cross-issue friction; 4 = caused one rework or an acceptance failure; 3 = notable recurring verification cost; 2 = minor improvement; 1 = nice-to-have. Omit value_score (or null) when unsure. The score is advisory only — it never gates anything.\n")
 	b.WriteString("Rules: every issue id (in analyzed_issue_ids and in each draft) must be one of the ids listed above; clause_name is at most 60 characters; a remove_clause draft may leave clause_text empty. Duplicates and already-covered clauses are deduplicated server-side — do not spend effort re-checking the current prompt content.\n")
 	return b.String(), true
 }
@@ -176,9 +124,7 @@ type RunOutput struct {
 	Drafts           []extractedDraft `json:"drafts"`
 }
 
-// extractedDraft mirrors one draft in the agent's JSON report. The four
-// decision-context fields (RUYI-723) are tolerant: missing stays zero, and
-// value_score coerces through flexValueScore instead of failing the report.
+// extractedDraft mirrors one draft in the agent's JSON report.
 type extractedDraft struct {
 	IssueID       string `json:"issue_id"`
 	CarrierScope  string `json:"carrier_scope"`
@@ -186,12 +132,7 @@ type extractedDraft struct {
 	ChangeKind    string `json:"change_kind"`
 	ClauseName    string `json:"clause_name"`
 	ClauseText    string `json:"clause_text"`
-	// RUYI-723 decision context for the owner's approval view.
-	Problem        string         `json:"problem"`
-	ExpectedEffect string         `json:"expected_effect"`
-	ExpectedGain   string         `json:"expected_gain"`
-	ValueScore     flexValueScore `json:"value_score"`
-	GateAnswers    struct {
+	GateAnswers   struct {
 		Layer     string `json:"layer"`
 		Retention string `json:"retention"`
 		Cost      string `json:"cost"`
@@ -200,30 +141,6 @@ type extractedDraft struct {
 	} `json:"gate_answers"`
 	EvidenceRef  string `json:"evidence_ref"`
 	EvidenceNote string `json:"evidence_note"`
-}
-
-// flexValueScore coerces the model's value_score (RUYI-723) instead of
-// failing the report: floats round into the 1-5 band, out-of-range clamps,
-// and anything unparseable, null or non-positive degrades to 0 (unrated) —
-// the score is a triage reference, never a gate.
-type flexValueScore int
-
-func (v *flexValueScore) UnmarshalJSON(raw []byte) error {
-	var f float64
-	if err := json.Unmarshal(raw, &f); err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
-		*v = 0
-		return nil
-	}
-	n := int(math.Round(f))
-	switch {
-	case n < 1:
-		*v = 0
-	case n > 5:
-		*v = 5
-	default:
-		*v = flexValueScore(n)
-	}
-	return nil
 }
 
 // ParseRunOutput parses the agent's final message into a report. Tolerant of
@@ -387,16 +304,6 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 		}
 	}
 
-	// issueProjects (RUYI-723): the scanned set's issue → project carrier
-	// map, the resolution source for project-scoped drafts. Legacy tasks
-	// carry no project ids and yield an empty map here.
-	issueProjects := make(map[string]string, len(tc.Issues))
-	for _, issue := range tc.Issues {
-		if issue.ProjectID != "" {
-			issueProjects[issue.ID] = issue.ProjectID
-		}
-	}
-
 	// Breadcrumbs: run detail carries the id lists, the server log carries
 	// the same accounting (warn for the dropped ids). IDs and counts only —
 	// never report text (RUYI-561 discipline).
@@ -472,7 +379,7 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 			continue
 		}
 		for _, d := range drafts {
-			if err := r.upsertDraft(ctx, tc.WorkspaceID, tc.RunID, issueID, d, liveClauses, stats, watermarkEligible, issueProjects); err != nil {
+			if err := r.upsertDraft(ctx, tc.WorkspaceID, tc.RunID, issueID, d, liveClauses, stats, watermarkEligible); err != nil {
 				return stats, err
 			}
 		}
@@ -526,46 +433,11 @@ func (r *Runner) classifyReportedIDs(ctx context.Context, workspaceID string, re
 	return kinds, resolvedByID, corrections, nil
 }
 
-// draftCarrier resolves the write target of a draft's declared scope
-// (RUYI-723): workspace is the default; project resolves to the scanned
-// issue's own project; squad/agent carriers and every off-platform target
-// produce no drafts this iteration. ok=false drops the draft (counted,
-// not fatal), so a mis-scoped draft never blocks the rest of the report.
-func draftCarrier(d extractedDraft, workspaceID string, issueProjects map[string]string) (scope, scopeID string, ok bool) {
-	switch d.CarrierScope {
-	case "", "workspace":
-		return "workspace", workspaceID, true
-	case "project":
-		if pid := issueProjects[d.IssueID]; pid != "" {
-			return "project", pid, true
-		}
-		return "", "", false
-	default:
-		return "", "", false
-	}
-}
-
 // upsertDraft is the two-layer dedup for one draft, one transaction: pool
 // merge beats a duplicate row; the watermark rides along so a crash cannot
 // re-analyze the issue. watermark is false for ids attributed outside the
 // scanned set (RUYI-674): their drafts land but the next pass may rescan.
-// issueProjects (RUYI-723) maps scanned issue ids to their project carrier
-// ids; it stays nil on legacy tasks, which pins every draft to the
-// workspace carrier.
-func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID string, d extractedDraft, liveClauses map[string]bool, stats *RunStats, watermark bool, issueProjects map[string]string) error {
-	scope, scopeID, ok := draftCarrier(d, workspaceID, issueProjects)
-	if !ok {
-		// 落点本期不产出（squad/agent/平台外）或 issue 无所属 project：
-		// 丢弃并计数，同 unknown change kind 的待遇——不致命、不阻塞。
-		stats.DuplicatesSkipped++
-		slog.Info("retrospective: draft carrier not producible this iteration",
-			"run_id", runID, "issue_id", issueID, "carrier_scope", d.CarrierScope)
-		if watermark {
-			return r.watermark(ctx, workspaceID, issueID, runID)
-		}
-		return nil
-	}
-
+func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID string, d extractedDraft, liveClauses map[string]bool, stats *RunStats, watermark bool) error {
 	if d.ChangeKind == "add_clause" && liveClauses[strings.ToLower(d.ClauseName)] {
 		// 现行条款重复预检: the clause already exists in the carrier.
 		stats.DuplicatesSkipped++
@@ -586,8 +458,8 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 	return r.withTx(ctx, func(q *db.Queries) error {
 		existing, err := q.FindMergablePromptProposal(ctx, db.FindMergablePromptProposalParams{
 			WorkspaceID:    util.MustParseUUID(workspaceID),
-			CarrierScope:   scope,
-			CarrierScopeID: util.MustParseUUID(scopeID),
+			CarrierScope:   "workspace",
+			CarrierScopeID: util.MustParseUUID(workspaceID),
 			ChangeKind:     d.ChangeKind,
 			ClauseName:     d.ClauseName,
 		})
@@ -614,8 +486,8 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 		}
 		if _, err := q.CreatePromptProposal(ctx, db.CreatePromptProposalParams{
 			WorkspaceID:         util.MustParseUUID(workspaceID),
-			CarrierScope:        scope,
-			CarrierScopeID:      util.MustParseUUID(scopeID),
+			CarrierScope:        "workspace",
+			CarrierScopeID:      util.MustParseUUID(workspaceID),
 			TargetSection:       d.TargetSection,
 			ChangeKind:          d.ChangeKind,
 			ClauseName:          d.ClauseName,
@@ -625,10 +497,6 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 			GateAnswerCost:      d.GateAnswers.Cost,
 			GateAnswerConflict:  d.GateAnswers.Conflict,
 			GateAnswerDedup:     d.GateAnswers.Dedup,
-			Problem:             pgtype.Text{String: truncateRunes(d.Problem, maxDecisionFieldRunes), Valid: strings.TrimSpace(d.Problem) != ""},
-			ExpectedEffect:      pgtype.Text{String: truncateRunes(d.ExpectedEffect, maxDecisionFieldRunes), Valid: strings.TrimSpace(d.ExpectedEffect) != ""},
-			ExpectedGain:        pgtype.Text{String: truncateRunes(d.ExpectedGain, maxDecisionFieldRunes), Valid: strings.TrimSpace(d.ExpectedGain) != ""},
-			ValueScore:          pgtype.Int4{Int32: int32(d.ValueScore), Valid: d.ValueScore > 0},
 			EvidenceAnchors:     anchors,
 			Source:              "retrospective",
 			CreatedByType:       "system",

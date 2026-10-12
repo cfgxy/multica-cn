@@ -525,15 +525,6 @@ deleted_channel_chat_run_intents AS (
 -- comment is a plain comment row and is swept with the rest of comment.
 deleted_issue_decisions AS (
     DELETE FROM issue_decisions WHERE workspace_id = $1
-),
--- Authorization requests (RUYI-630) are workspace-scoped rows with no FK and
--- no dependents outside this database: the executor only reads them, and
--- audit_event rows reference them by trigger_ref strings, not by FK. The
--- linked issue_decisions card is swept by the CTE above. Cascade directly.
--- Cross-space groups are revoked whole first — see
--- RevokeInFlightCrossSpaceDecisionRequests, which must run before this CTE.
-deleted_decision_requests AS (
-    DELETE FROM decision_requests WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from
@@ -549,33 +540,6 @@ SET state = CASE
     next_attempt_at = now(),
     last_error = NULL
 WHERE channel_media_pending_object.workspace_id = $1;
-
--- Host-backpressure settings (RUYI-618): one optional row per workspace,
--- plain UUID key without FK (same treatment as self_evolution_model_config),
--- so it is swept explicitly with the workspace.
-DELETE FROM workspace_backpressure_settings WHERE workspace_id = $1;
-
--- name: RevokeInFlightCrossSpaceDecisionRequests :many
--- RUYI-630: a cross-space authorization group torn down mid-flight on one
--- side must not keep advancing on the survivor. Left alone, the surviving
--- space's row degenerates to a single-row group, falls back to the deleted
--- origin row as its landing, and would execute against the deleted side's
--- context. Groups with an in-flight row HERE and any row in another space
--- get every still-in-flight row revoked in the caller's delete transaction;
--- single-space rows are swept by the cascade CTE above, and groups whose row
--- here is already terminal were settled before the teardown started.
-UPDATE decision_requests SET status = 'revoked', updated_at = now()
-WHERE status IN ('pending', 'approved')
-  AND request_group_id IN (
-      SELECT a.request_group_id
-      FROM decision_requests a
-      JOIN decision_requests b
-        ON b.request_group_id = a.request_group_id
-       AND b.workspace_id <> a.workspace_id
-      WHERE a.workspace_id = $1
-        AND a.status IN ('pending', 'approved')
-  )
-RETURNING *;
 
 -- name: DeleteWorkspaceChatMessages :exec
 DELETE FROM chat_message
@@ -766,20 +730,21 @@ DELETE FROM agent WHERE agent.workspace_id = $1;
 
 -- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+-- runtime_cost_budget (RUYI-665) has no FK to agent_runtime (house rule), so
+-- the sweep owns it; it carries workspace_id directly, so it needs no runtime
+-- set join.
+deleted_runtime_cost_budgets AS (
+    DELETE FROM runtime_cost_budget
+    WHERE runtime_cost_budget.workspace_id = $1
+),
 -- runtime_credential has no FK to agent_runtime (house rule), so the sweep
 -- owns it: matched through the runtime set rather than a workspace column
 -- (same construction as execution_profile_entry below). The encrypted
 -- payloads are destroyed with the workspace; nothing plaintext ever existed.
--- RUYI-693: voice_provider rows share the runtime_credential store (their
--- credential_ref points at '<provider-uuid>:<key>'), so their secret copies
--- are swept through the provider set in the same statement.
 deleted_runtime_credentials AS (
     DELETE FROM runtime_credential
     WHERE runtime_instance_id IN (
         SELECT id FROM agent_runtime WHERE agent_runtime.workspace_id = $1
-    )
-       OR runtime_instance_id IN (
-        SELECT id FROM voice_provider WHERE voice_provider.workspace_id = $1
     )
 ),
 deleted_runtimes AS (
@@ -787,13 +752,6 @@ deleted_runtimes AS (
 ),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
-),
--- voice_provider has no FK to workspace (house rule); teardown owns it.
--- Its agent overrides (agent.voice_provider_id) go away with the agent
--- sweep above, and workspace.settings voice references die with the
--- workspace row itself.
-deleted_voice_providers AS (
-    DELETE FROM voice_provider WHERE voice_provider.workspace_id = $1
 ),
 -- execution_profile has no FK to workspace (house rule), so teardown owns it.
 -- Entries are matched through the profile set rather than a workspace column:
@@ -823,6 +781,11 @@ deleted_pins AS (
 deleted_daemon_tokens AS (
     DELETE FROM daemon_token WHERE daemon_token.workspace_id = $1
 ),
+detach_computer_bindings AS (
+    UPDATE computer_binding SET workspace_id = NULL, state = 'detached',
+        last_error = 'Workspace removed; select a workspace and provision again'
+    WHERE workspace_id = $1
+),
 detached_feedback AS (
     UPDATE feedback
     SET workspace_id = NULL
@@ -836,10 +799,6 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
-),
-deleted_backpressure_settings AS (
-    DELETE FROM workspace_backpressure_settings
-    WHERE workspace_backpressure_settings.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;

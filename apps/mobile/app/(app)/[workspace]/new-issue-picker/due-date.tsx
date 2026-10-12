@@ -6,9 +6,8 @@
  * the route renders a tiny header with action buttons.
  */
 import { useRef } from "react";
-import { Platform } from "react-native";
-import { SheetHeader } from "@/components/ui/sheet-header";
 import { Pressable, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import {
@@ -23,11 +22,12 @@ export default function NewIssueDueDatePickerRoute() {
   const setDueDate = useNewIssueDraftStore((s) => s.setDueDate);
   const ref = useRef<DueDatePickerBodyHandle>(null);
   const { t } = useT("issues");
+  const insets = useSafeAreaInsets();
 
   return (
     <View className="flex-1">
-      {/* 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
-      <SheetHeader className="flex-row items-center justify-between px-4 pb-2" gap={16} initialAtLargeDetent={Platform.OS === "android"}>
+      {/* 顶部让出系统状态栏（RUYI-563）。 */}
+      <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
         <Text className="text-base font-semibold text-foreground">
           {t("detail.prop_due_date", "Due date")}
         </Text>
@@ -60,7 +60,7 @@ export default function NewIssueDueDatePickerRoute() {
             </Text>
           </Pressable>
         </View>
-      </SheetHeader>
+      </View>
       <DueDatePickerBody ref={ref} value={dueDate} />
     </View>
   );

@@ -377,18 +377,6 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
-        {/* Structured relations (RUYI-689) — full-page modal, same
-            container rationale as issue/[id]/pull-requests above: a browse
-            surface with a back-stack entry, not a picker row. Title reuses
-            the web sidebar section key `issues:detail.section_relations`,
-            localized in every bundle. */}
-        <Stack.Screen
-          name="issue/[id]/relations"
-          options={{
-            title: i18n.t("issues:detail.section_relations", "Relations"),
-            presentation: "modal",
-          }}
-        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"

@@ -31,11 +31,7 @@
     },
     "proposals": {
       "title": "Proposal pool",
-      "intro": "Proposals enter the pool automatically from the daily retrospective's analysis; drafting one by hand stays available.",
-      "counts": "{{total}} proposals · {{pending}} awaiting owner approval",
-      "lastAuto": "Latest automatic proposal (daily retrospective): {{date}}",
-      "noneAuto": "No automatic proposals yet.",
-      "empty": "The pool is empty. Once the daily retrospective is configured, proposals enter the pool automatically from each day's analysis."
+      "pendingModel": "Proposal metrics arrive with the new proposal model (RUYI-305)."
     },
     "knowledge": {
       "title": "Knowledge mirror",
@@ -386,10 +382,8 @@
   },
   "legislation": {
     "title": "Prompt legislation proposals",
-    "description": "Proposals enter the pool automatically from the daily retrospective's analysis, and drafting one by hand stays available. Each is a clause-level draft for one of the four prompt carriers: submitting sends it to the workspace owner, approval runs the legislation gate on a sandbox synthesis, and only a clean pass enacts.",
+    "description": "Clause-level drafts for the four prompt carriers. Submitting sends a proposal to the workspace owner; approval runs the legislation gate and enacts only on a clean pass.",
     "filterAll": "All",
-    "sourceFilterLabel": "Filter by source",
-    "sourceFilterAll": "All sources",
     "runFilterLabel": "Run",
     "runFilterAll": "All runs",
     "status": {
@@ -439,11 +433,6 @@
     "evidenceAdd": "Add evidence anchor",
     "evidenceIssue": "Issue id",
     "evidenceQuote": "Quote",
-    "sourceIssuesLabel": "Source issues",
-    "problemLabel": "Problem",
-    "expectedEffectLabel": "Expected effect",
-    "expectedGainLabel": "Expected gain",
-    "valueScoreLabel": "Value score",
     "cancel": "Cancel",
     "saveDraft": "Save draft",
     "submit": "Submit for approval",
@@ -480,7 +469,6 @@
     "ownerOnly": "Owner only",
     "empty": "No proposals here yet.",
     "emptyHint": "Draft one from real execution evidence, or let the daily retrospective propose.",
-    "emptyConfig": "Configure the daily retrospective",
     "error": "The write failed. Check your inputs and retry.",
     "batchPartial": "Some proposals in the batch did not enact — check the per-item results.",
     "jevAdvisoryLabel": "Local model advisory",
@@ -528,24 +516,6 @@
     "agentArchivedHint": "This agent is archived; pick another one or runs will fail.",
     "agentTriggerBlocked": "No execution agent configured: select an agent in the configuration above, then run again.",
     "emptyDescription": "Runs appear here after a scheduled or manual trigger.",
-    "viewDetail": "Details",
-    "detailTitle": "Run details",
-    "triggerLabel": "Trigger",
-    "triggerSource": {
-      "schedule": "Schedule",
-      "manual": "Manual"
-    },
-    "windowLabel": "Lookback window",
-    "startedAt": "Started",
-    "finishedAt": "Finished",
-    "duration": "Duration",
-    "durationRunning": "Running…",
-    "statsLabel": "Statistics",
-    "failureLabel": "Failure reason",
-    "scannedIssues": "Scanned issues",
-    "analyzedIssues": "Analyzed issues",
-    "noIssues": "None",
-    "viewLog": "View run log",
     "run_errors": {
       "agent_not_configured": "No execution agent is configured: select an agent in the configuration above, save, then run again.",
       "agent_missing": "The configured execution agent no longer exists: pick another agent in the configuration above, then save.",
@@ -721,16 +691,6 @@
     "modelError": {
       "title": "Model service validation failed",
       "action": "Review config"
-    },
-    "retrospectiveOff": {
-      "title": "The daily retrospective is not enabled",
-      "description": "The proposal loop does not run on its own; the pool only grows by manual drafts",
-      "action": "Configure"
-    },
-    "retrospectiveNoAgent": {
-      "title": "The daily retrospective has no executor agent",
-      "description": "Enabled, but with no agent to run it, no run can start",
-      "action": "Configure"
     },
     "discoveries": {
       "title": "{{count}} skill discoveries awaiting import",

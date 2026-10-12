@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Workspace decision inbox (RUYI-494): the aggregation is one row PER CARD,
@@ -272,62 +271,5 @@ func TestWorkspaceDecisionInboxNoCrossWorkspaceBleed(t *testing.T) {
 		if item.WorkspaceID != testWorkspaceID {
 			t.Fatalf("cross-workspace leak: card %q from %s in %s inbox", item.Question, item.WorkspaceID, testWorkspaceID)
 		}
-	}
-}
-
-func TestWorkspaceDecisionInboxAuthorizationCardExcluded(t *testing.T) {
-	// RUYI-630: authorization cards never aggregate into the decision inbox —
-	// their surface is the decision-requests list. The first QA round-trip
-	// caught the darker half of this rule: issueDecisionFromInboxRow carried
-	// no authorization-face columns, so decision_kind zero-valued to "", the
-	// filter never matched, and the client schema enum-rejected the empty
-	// string — the whole inbox failed to load. This test pins both halves:
-	// the authorization card stays out (items AND counts), and the question
-	// card's mapping carries the columns the wire schema requires.
-	issue := dbfx.Issue(t, "Inbox authorization issue")
-	agentID := dbfx.Agent(t, "inbox-auth-agent", "")
-	groupID := uuidToString(dbid.NewV7())
-
-	questionID := insertInboxCard(t, testWorkspaceID, issue, "plain question card", "open", "10 minutes")
-	authCardID := insertInboxCard(t, testWorkspaceID, issue, "authorization card", "open", "5 minutes",
-		testutil.Cols{
-			"decision_kind":            "authorization",
-			"visible_tier":             "members",
-			"operator_tier":            "owner",
-			"named_approver_ids":       testutil.Raw(`'[]'::jsonb`),
-			"auth_state":               "pending",
-			"pending_request_group_id": groupID,
-			"pending_action_type":      "prompt_restore",
-			"pending_action_params":    testutil.Raw(`'{}'::jsonb`),
-			"expires_at":               testutil.Raw("now() + interval '1 hour'"),
-			"created_by_type":          "agent",
-			"created_by_id":            agentID,
-		})
-
-	// Positive control: the authorization row really exists with its kind —
-	// the exclusions below must not pass vacuously.
-	if got := dbfx.Count(t, `SELECT count(*) FROM issue_decisions WHERE id = $1 AND decision_kind = 'authorization'`, authCardID); got != 1 {
-		t.Fatalf("authorization card seed = %d, want 1", got)
-	}
-
-	resp := decodeInbox(t, getInbox(t, testWorkspaceID, ""))
-
-	if len(resp.Items) != 1 || resp.Items[0].ID != questionID {
-		t.Fatalf("items = %+v, want only the question card (authorization card must not aggregate)", resp.Items)
-	}
-	// Counts agree with the items they badge: authorization cards leave the
-	// aggregation at the source, not just the item list.
-	if resp.Counts.Open != 1 || resp.Counts.Answered != 0 || resp.Counts.Cancelled != 0 {
-		t.Fatalf("counts = %+v, want only the question card's status counted", resp.Counts)
-	}
-	// The reassembly must carry the full card-face column set: the wire
-	// schema enum-rejects a zero-valued decision_kind, which is exactly what
-	// broke this endpoint before the fix.
-	q := resp.Items[0]
-	if q.DecisionKind != "question" || q.VisibleTier != "members" || q.OperatorTier != "owner" {
-		t.Fatalf("question card face = kind:%q visible:%q operator:%q, want question/members/owner (unmapped inbox column)", q.DecisionKind, q.VisibleTier, q.OperatorTier)
-	}
-	if q.AuthState != nil {
-		t.Fatalf("question card auth_state = %v, want null", q.AuthState)
 	}
 }

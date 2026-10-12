@@ -262,6 +262,7 @@
     "send_failure": {
       "no_permission": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다.",
       "runtime_required": "메시지를 보내기 전에 이 에이전트에 런타임을 바인딩하세요.",
+      "budget_reached": "이 런타임의 당기 비용 예산이 소진되어 메시지가 전송되지 않았습니다. 예산 기간이 초기화되면 다시 보낼 수 있습니다.",
       "generic": "메시지를 보내지 못했습니다. 다시 시도하세요."
     },
     "disabled_reason": {
@@ -337,17 +338,6 @@
     },
     "timeline": {
       "truncated": "…(잘림)"
-    },
-    "plus": {
-      "open": "추가",
-      "title": "메시지에 추가",
-      "camera": "카메라",
-      "image": "사진",
-      "files": "파일",
-      "mention": "멘션",
-      "skill": "스킬",
-      "quick_replies": "빠른 답변",
-      "close": "닫기"
     }
   }
 }

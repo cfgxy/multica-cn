@@ -8,16 +8,12 @@
  *      `@multica/core/markdown` (single source of truth — same regex web/
  *      desktop run).
  *
- *   2. Bare reference tokens `MR !N` / `owner/repo#N` → markdown links
- *      (RUYI-728): an MR number becomes `mention://merge-request/<N>` (the
- *      tap resolves the number to a PR and hands it to the OS — see
- *      `link-route.ts`), `owner/repo#N` becomes the canonical GitHub PR URL
- *      (GitHub redirects /pull/N ↔ /issues/N automatically). Issue mention
- *      links stay links — the RUYI-635 demote pass is gone: web now
- *      linkifies in-body references (rich-content.tsx) and mobile follows,
- *      while `IssueReferenceList` still aggregates the same tokens into the
- *      tail sheet. Lives in `@multica/core/markdown` so the token grammar
- *      can't drift from web.
+ *   2. Issue mention links `[label](mention://issue/id)` → plain body text
+ *      (RUYI-635): web renders mentions as plain text and aggregates the
+ *      references into a tail list; the demote pass applies the same body-text
+ *      contract here, and navigation moves to the tail list rendered by
+ *      `IssueReferenceList`. Also lives in `@multica/core/markdown` so the
+ *      display token can't drift from web.
  *
  *   3. File card lines `!file[name](url)` → standard link `[📎 name](url)`.
  *      marked.js doesn't recognize the `!file` prefix; web's preprocess
@@ -32,7 +28,7 @@
  * hyperlinks — same tap behavior, just no 📎 prefix. Acceptable degradation.
  */
 import {
-  autolinkReferenceTokens,
+  demoteIssueMentionLinks,
   preprocessMentionShortcodes,
 } from "@multica/core/markdown";
 
@@ -175,7 +171,7 @@ export function preprocessMobileMarkdown(input: string): string {
   return preprocessTaskListStrikethrough(
     preprocessCommentAnchors(
       preprocessFileCards(
-        autolinkReferenceTokens(
+        demoteIssueMentionLinks(
           preprocessMentionShortcodes(stripHtml(input)),
         ),
       ),

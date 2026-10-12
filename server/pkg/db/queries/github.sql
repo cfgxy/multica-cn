@@ -129,12 +129,6 @@ RETURNING *;
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
 
--- name: GetGitHubPullRequestsByNumber :many
--- Number-only lookup for `MR !N` text references (RUYI-728): the handler
--- enforces the unique-hit contract (0 rows → 404, >1 rows → 409 ambiguous).
-SELECT * FROM github_pull_request
-WHERE workspace_id = $1 AND pr_number = $2;
-
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the GitHub API snapshot (MUL-5265): the
 -- mergeability verdict, the CI rollup, and per-check counts for the PR's

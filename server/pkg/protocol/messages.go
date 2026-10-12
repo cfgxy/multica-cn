@@ -423,12 +423,6 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
-	// BackpressureConfig is the workspace's effective host-memory
-	// backpressure settings (RUYI-618), delivered on EVERY ack — saved card
-	// or code defaults — so running daemons converge on the workspace value
-	// within one heartbeat, no restart. Daemons that predate the field
-	// ignore it (standard JSON behavior).
-	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

@@ -15,9 +15,8 @@
  * touches raw transcript fields.
  */
 import { useMemo, useState } from "react";
-import { Platform } from "react-native";
-import { SheetHeader } from "@/components/ui/sheet-header";
 import { RefreshControl, ScrollView, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -91,7 +90,8 @@ export default function RunDetailRoute() {
   const durationMs = task ? runDurationMs(task) : null;
   const agentLabel = useAgentName(task);
 
-  // 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。
+  // 顶部让出系统状态栏（RUYI-563）。
+  const insets = useSafeAreaInsets();
   const [copiedAll, setCopiedAll] = useState(false);
   const copyAll = () => {
     void Clipboard.setStringAsync(runCopyAllText(items));
@@ -100,7 +100,7 @@ export default function RunDetailRoute() {
 
   return (
     <View className="flex-1">
-      <SheetHeader className="flex-row items-center gap-2 px-4 pb-2" gap={16} initialAtLargeDetent={Platform.OS === "android"}>
+      <View className="flex-row items-center gap-2 px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
         <Text className="flex-1 text-base font-semibold text-foreground" numberOfLines={1}>
           {t("mobile.run_detail.title", "Run details")}
         </Text>
@@ -116,7 +116,7 @@ export default function RunDetailRoute() {
           </Text>
         ) : null}
         <ModalCloseButton />
-      </SheetHeader>
+      </View>
       <ScrollView
         nestedScrollEnabled
         showsVerticalScrollIndicator={false}

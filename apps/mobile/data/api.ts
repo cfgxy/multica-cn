@@ -13,6 +13,10 @@
  *   3. X-Request-ID per request + structured logger (debug + tracing)
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
+import type {
+  VoiceDirectSessionHandoff,
+  VoiceSessionCompleteRequest,
+} from "@multica/core/voice";
 import i18n from "i18next";
 import type {
   Agent,
@@ -49,7 +53,6 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   Issue,
-  IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
   IssueLabelsResponse,
@@ -96,8 +99,6 @@ import type {
   User,
   Workspace,
   WorkspaceSubscriptionSummary,
-  DecisionRequest,
-  DecisionRequestsList,
 } from "@multica/core/types";
 import {
   parseTimelineTruncatedKinds,
@@ -112,8 +113,6 @@ import {
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
-  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
-  EMPTY_ISSUE_RELATIONS,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_SQUAD,
@@ -122,13 +121,10 @@ import {
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
   IssuePullRequestsResponseSchema,
-  IssueRelationsResponseSchema,
-  ChildIssuesResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   ListQuickRepliesResponseSchema,
-  PullRequestLookupResponseSchema,
   SquadMemberListSchema,
   SquadMemberSchema,
   SquadMemberStatusListResponseSchema,
@@ -147,12 +143,9 @@ import {
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
 } from "@multica/core/api/schemas";
-import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
   BatchDecisionAnswersSchema,
-  DecisionRequestSchema,
-  DecisionRequestsListSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
   WorkspaceDecisionInboxSchema,
@@ -266,26 +259,6 @@ export interface FileAsset {
   type: string;
 }
 
-/** Pool row of `GET /api/workspaces/:id/voice-providers` (RUYI-693 D2) —
- *  mirrors server VoiceProviderResponse. No secret material: the credential
- *  surfaces only as the coarse badge + last probe verdict. */
-export interface VoiceProvider {
-  id: string;
-  workspace_id: string;
-  display_name: string;
-  provider_type: string;
-  enabled: boolean;
-  credential_status: string;
-  credential_probe?: {
-    status: string;
-    http_status?: number;
-    checked_at: string;
-  } | null;
-  source_runtime_id?: string;
-  created_at: string;
-  updated_at: string;
-}
-
 /** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
  *  its own copy per the `mirror, don't import` rule in apps/mobile/CLAUDE.md. */
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
@@ -305,11 +278,6 @@ const FETCH_TIMEOUT_MS = 30_000;
  *  Applies only to sendCode / verifyCode / getMe; every other request keeps
  *  the 30s FETCH_TIMEOUT_MS ceiling. */
 const LOGIN_TIMEOUT_MS = 10_000;
-
-/** RUYI-710 阶段 2 降级听写转写预算：录音上限 60s（hook 的 MAX_RECORD_MS）
- *  ≈ 1.9MB（16kHz PCM16）上行，叠加服务端供应商转写一轮往返；60s 覆盖
- *  弱网上行 + 慢供应商，超时即走「转写失败，请重试」toast。 */
-const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /** Budget for `/api/upload-file` (RUYI-569). Much larger than
  *  FETCH_TIMEOUT_MS because the ceiling is MAX_FILE_SIZE (100MB) over a
@@ -373,18 +341,13 @@ class ApiClient {
     const method = init.method ?? "GET";
 
     const headers: Record<string, string> = {
+      "Content-Type": "application/json",
       "X-Client-Platform": "mobile",
       "X-Client-OS": this.options.clientOS ?? "ios",
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
       ...((init.headers as Record<string, string>) ?? {}),
     };
-    // FormData body 的 multipart boundary 由 fetch 的序列化层自己生成并
-    // 写入请求头（uploadFile 同一条先例注释）；客户端预设 Content-Type
-    // 会与实际 boundary 错位导致服务端解析失败。
-    if (!(init.body instanceof FormData) && !headers["Content-Type"]) {
-      headers["Content-Type"] = "application/json";
-    }
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
     }
@@ -691,44 +654,6 @@ class ApiClient {
     });
   }
 
-  // GET /api/workspaces/:id/voice-providers (RUYI-693 D2 pool) —
-  // member-visible; carries no secret material, only the coarse
-  // credential_status badge and the last probe verdict (RUYI-694 D3
-  // availability gate).
-  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
-    return this.fetch<VoiceProvider[]>(
-      `/api/workspaces/${workspaceId}/voice-providers`,
-    );
-  }
-
-  // POST /api/workspaces/:id/voice-transcriptions (RUYI-710 阶段 1 端点) —
-  // 降级听写：16kHz PCM16 WAV 一次上传，服务端走 workspace 的 voice.asr
-  // 解析链调供应商转写，返回 {"text"}。凭据只在服务端持有，端侧零凭据。
-  // 空 text（供应商未识别到语音）原样返回空串，由状态机收敛成
-  // 「未识别到语音」toast；非 2xx（含 409 VOICE_UNAVAILABLE、502 供应商
-  // 不可达）抛 ApiError，由 hook 统一收敛「转写失败」toast。
-  async transcribeVoiceAudio(
-    workspaceId: string,
-    audio: Blob,
-    opts?: { signal?: AbortSignal },
-  ): Promise<string> {
-    const formData = new FormData();
-    // Blob part（内存 WAV，不落盘）；文件名只进 Content-Disposition，
-    // 服务端按 magic 嗅探容器不读文件名。
-    formData.append("audio", audio, "dictation.wav");
-    const res = await this.fetchRaw(
-      `/api/workspaces/${workspaceId}/voice-transcriptions`,
-      {
-        method: "POST",
-        body: formData,
-        signal: opts?.signal,
-        timeoutMs: VOICE_TRANSCRIBE_TIMEOUT_MS,
-      },
-    );
-    const data = (await res.json()) as { text?: unknown };
-    return typeof data.text === "string" ? data.text : "";
-  }
-
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -984,6 +909,34 @@ class ApiClient {
       `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
       { method: "DELETE" },
     );
+  }
+
+  // POST /api/agents/:id/voice-direct-session (RUYI-626) — the §4.4 rule-3
+  // gate plus the live_session row, then the provider hand-off (decrypted
+  // key, provider websocket URL, setup inputs). Deliberately NOT routed
+  // through parseWithFallback: the 409 gate rejection carries
+  // `VOICE_UNAVAILABLE:<reason>` in `body.code` and must surface as an
+  // ApiError the voice layer maps to its degrade copy.
+  async startVoiceDirectSession(
+    agentId: string,
+  ): Promise<VoiceDirectSessionHandoff> {
+    return this.fetch<VoiceDirectSessionHandoff>(
+      `/api/agents/${agentId}/voice-direct-session`,
+      { method: "POST" },
+    );
+  }
+
+  // POST /api/voice-sessions/:id/complete (RUYI-626) — the terminal
+  // write-back with the client-collected transcript and resumption handle.
+  // Idempotent server-side, so a client retry never double-writes.
+  async completeVoiceDirectSession(
+    sessionId: string,
+    record: VoiceSessionCompleteRequest,
+  ): Promise<void> {
+    await this.fetch<void>(`/api/voice-sessions/${sessionId}/complete`, {
+      method: "POST",
+      body: JSON.stringify(record),
+    });
   }
 
   // POST /api/runtimes/:id/credential-probe (RUYI-626) — the device-side
@@ -1707,37 +1660,6 @@ class ApiClient {
     );
   }
 
-  // Structured relations (RUYI-689) — mirrors web packages/core/api/client.ts
-  // getIssueRelations → GET /api/issues/:id/relations. Read-only: edge
-  // creation/deletion stays an API concern, no mobile write counterpart.
-  async getIssueRelations(
-    id: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<IssueRelationsResponse> {
-    return this.fetchValidated(
-      `/api/issues/${id}/relations`,
-      IssueRelationsResponseSchema,
-      EMPTY_ISSUE_RELATIONS,
-      { ...opts, endpoint: "getIssueRelations" },
-    );
-  }
-
-  // Sub-issues of a parent — mirrors web packages/core/api/client.ts
-  // listChildIssues → GET /api/issues/:id/children. Backs the children
-  // group of the Relations page (RUYI-689); the relations endpoint covers
-  // parent + edge views but deliberately not children.
-  async listChildIssues(
-    id: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<{ issues: Issue[] }> {
-    const raw = await this.fetch<unknown>(`/api/issues/${id}/children`, {
-      signal: opts?.signal,
-    });
-    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
-      endpoint: "GET /api/issues/:id/children",
-    });
-  }
-
   // Write endpoint — mirrors POST /api/issues
   // (server/cmd/server/router.go:320, server/internal/handler/issue.go
   // CreateIssue). Mobile sends only the fields the form fills in; backend
@@ -2098,56 +2020,6 @@ class ApiClient {
     return inbox;
   }
 
-  // --- Agent authorization requests (RUYI-630) ---
-  // Mirrors packages/core/api/client.ts listDecisionRequests /
-  // answerDecisionRequest / cancelDecisionRequest: mobile-owned fetch
-  // wrapper, shared zod schemas, same endpoints and query-string contract.
-  async listDecisionRequests(
-    workspaceId: string,
-    params?: { limit?: number },
-  ): Promise<DecisionRequestsList> {
-    const qs = new URLSearchParams();
-    if (params?.limit != null) qs.set("limit", String(params.limit));
-    const query = qs.size > 0 ? `?${qs.toString()}` : "";
-    const raw = await this.fetch<unknown>(
-      `/api/workspaces/${workspaceId}/decision-requests${query}`,
-    );
-    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
-      endpoint: "GET /api/workspaces/:id/decision-requests",
-    });
-    if (!list) throw new Error("Invalid decision requests response");
-    return list;
-  }
-
-  async answerDecisionRequest(
-    workspaceId: string,
-    requestId: string,
-    decision: "approve" | "deny",
-  ): Promise<DecisionRequest> {
-    const raw = await this.fetch<unknown>(
-      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`,
-      { method: "POST", body: JSON.stringify({ decision }) },
-    );
-    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
-      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
-    });
-    if (!request) throw new Error("Invalid decision request answer response");
-    return request;
-  }
-
-  async cancelDecisionRequest(
-    workspaceId: string,
-    requestId: string,
-  ): Promise<{ status: string }> {
-    const raw = await this.fetch<unknown>(
-      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`,
-      { method: "POST", body: JSON.stringify({}) },
-    );
-    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
-      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
-    });
-  }
-
   // --- Labels ---
   async listLabels(opts?: {
     signal?: AbortSignal;
@@ -2259,75 +2131,6 @@ class ApiClient {
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { ...opts, endpoint: "GET /api/issues/:id/pull-requests" },
     );
-  }
-
-  /**
-   * Workspace-scoped PR point lookup by `owner/repo#N` (RUYI-635 增量) —
-   * mirrors packages/core/api/client.ts lookupPullRequest and its 404→null
-   * contract: a PR the platform has never seen is `null`, so the reference
-   * tail's row degrades to plain text instead of erroring.
-   */
-  async lookupPullRequest(
-    workspaceId: string,
-    owner: string,
-    repo: string,
-    number: number,
-    opts?: { signal?: AbortSignal },
-  ): Promise<GitHubPullRequest | null> {
-    const params = new URLSearchParams({
-      owner,
-      repo,
-      number: String(number),
-    });
-    try {
-      const raw = await this.fetch<unknown>(
-        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
-        { signal: opts?.signal },
-      );
-      return parseWithFallback(
-        raw,
-        PullRequestLookupResponseSchema,
-        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
-        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
-      ).pull_request;
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) return null;
-      throw err;
-    }
-  }
-
-  /**
-   * Workspace-scoped PR point lookup by bare number (RUYI-728) — mirrors
-   * packages/core/api/client.ts lookupPullRequestByNumber: a unique hit
-   * returns the PR; never-seen (404) AND cross-repo ambiguous (409) both
-   * read as `null`, so a body-text `MR !N` tap and the reference tail's row
-   * degrade silently instead of erroring.
-   */
-  async lookupPullRequestByNumber(
-    workspaceId: string,
-    number: number,
-    opts?: { signal?: AbortSignal },
-  ): Promise<GitHubPullRequest | null> {
-    try {
-      const raw = await this.fetch<unknown>(
-        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${encodeURIComponent(String(number))}`,
-        { signal: opts?.signal },
-      );
-      return parseWithFallback(
-        raw,
-        PullRequestLookupResponseSchema,
-        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
-        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
-      ).pull_request;
-    } catch (err) {
-      if (
-        err instanceof ApiError &&
-        (err.status === 404 || err.status === 409)
-      ) {
-        return null;
-      }
-      throw err;
-    }
   }
 
   // --- Projects ---

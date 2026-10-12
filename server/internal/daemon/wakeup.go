@@ -310,7 +310,7 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 			Payload: marshalRaw(protocol.DaemonHeartbeatRequestPayload{
 				RuntimeID:           rid,
 				SupportsBatchImport: true,
-				Backpressure:        d.backpressureReportForRuntime(rid),
+				Backpressure:        d.backpressureReport(),
 			}),
 		})
 		if err != nil {

@@ -1,4 +1,5 @@
 "use client";
+import { AdminAreaLink } from "../admin/admin-page";
 
 import { issueStatusCategory } from "@multica/core/issues";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -774,6 +775,7 @@ export function AppSidebar({ topSlot, searchSlot, serversSlot, headerClassName, 
                     </>
                   )}
                   <DropdownMenuSeparator />
+                  <AdminAreaLink />
                   <DropdownMenuGroup>
                     <DropdownMenuItem variant="destructive" onClick={logout}>
                       <LogOut className="h-3.5 w-3.5" />

@@ -460,25 +460,6 @@ describe("execution profile faces", () => {
     expect(calls.some((c) => c.method === "listExecutionProfiles")).toBe(true);
   });
 
-  it("answers an empty workspace with zero totals", async () => {
-    const { result } = await call("list_execution_profiles", {}, {
-      listExecutionProfiles: async () => [],
-    });
-    expect(result).toEqual({ profiles: [], total: 0 });
-  });
-
-  it("lists multiple profiles with accurate totals", async () => {
-    const { result } = await call("list_execution_profiles", {}, {
-      listExecutionProfiles: async () => [
-        profileFixture({ is_active: true }),
-        profileFixture({ id: "p2", name: "second", is_active: false, entries: [], entry_count: 0 }),
-        profileFixture({ id: "p3", name: "third", is_active: false, entries: [], entry_count: 4 }),
-      ],
-    });
-    expect(result.total).toBe(3);
-    expect(result.profiles).toHaveLength(3);
-  });
-
   it("reads a profile in full and answers 404 structurally", async () => {
     const { result } = await call("get_execution_profile", { profile_id: "p1" });
     expect(result.found).toBe(true);
@@ -666,10 +647,10 @@ describe("get_execution_topology", () => {
     const agents = (rt1?.agents as Array<Record<string, unknown>>);
     const a1 = agents.find((agent) => agent.id === A1);
     const a2 = agents.find((agent) => agent.id === A2);
-    // a1 matches its entry (rt-1 + claude-opus-5) → is_drifted false;
+    // a1 matches its entry (rt-1 + claude-opus-5) → false = no drift;
     // a2 has no entry in the active profile → null = unjudged.
-    expect(a1?.is_drifted).toBe(false);
-    expect(a2?.is_drifted).toBeNull();
+    expect(a1?.active_profile_entry_matches).toBe(false);
+    expect(a2?.active_profile_entry_matches).toBeNull();
     expect(result.drift_summary).toMatchObject({ drifted_agent_count: 0 });
     expect((result.unbound_agents as unknown[]).length).toBe(2);
   });
@@ -687,33 +668,6 @@ describe("get_execution_topology", () => {
     });
     expect(result.drift_summary).toMatchObject({ active_profile: null, drifted_agent_count: 0 });
     expect(result.active_profile).toBeNull();
-  });
-
-  // The list endpoint returns no entries (entry_count only), so drift must
-  // read the active profile's full detail instead of the list rows
-  // (RUYI-687: entries on list rows are always empty on the wire).
-  it("computes drift from the active profile's detail, not the entry-less list rows", async () => {
-    const { result, calls } = await call("get_execution_topology", {}, {
-      listAgentConfigs: async () => [agentFixture({ model: "claude-sonnet-5" })],
-      listExecutionProfiles: async () => [
-        profileFixture({ is_active: true, entries: [], entry_count: 1 }),
-      ],
-    });
-    expect(result.drift_summary).toMatchObject({ active_profile_id: "p1", drifted_agent_count: 1 });
-    expect(calls.some((c) => c.method === "getExecutionProfile")).toBe(true);
-  });
-
-  it("keeps the topology overview alive when the active profile vanishes before its detail read", async () => {
-    const { result } = await call("get_execution_topology", {}, {
-      listExecutionProfiles: async () => [
-        profileFixture({ is_active: true, entries: [], entry_count: 1 }),
-      ],
-      getExecutionProfile: async () => {
-        throw apiError(404, { error: "execution profile not found" });
-      },
-    });
-    expect(result.active_profile).toMatchObject({ id: "p1" });
-    expect(result.drift_summary).toMatchObject({ active_profile_id: "p1", drifted_agent_count: 0 });
   });
 });
 

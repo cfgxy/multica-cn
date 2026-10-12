@@ -143,27 +143,5 @@ if [ "$rc" != 0 ] && [ "$shell_state" = "absent" ] \
    && grep -q 'sha256 mismatch' <<<"$out"; then ok; else
   fail "no deploy shell: rc=$rc shell=$shell_state out=$out"; fi
 
-# --- 11. pass-2 failure is per-iteration: no cross-target trash restore --------
-# Regression pin (RUYI-680): the move-aside trash is per-iteration state.
-# Artifact 0 replaces an existing tree (so .trash.0 exists); artifact 1's swap
-# then fails via an mv shim. Recovery must not drag .trash.0 into artifact 1's
-# target — the old code leaked `trash` across iterations and did exactly that.
-deploy="$tmp_dir/deploy11"; mount="$tmp_dir/m11"
-mv_bin="$tmp_dir/mvbin"; mkdir -p "$mv_bin"
-printf '#!/usr/bin/env bash\ncase "$1" in *stage.1) exit 1 ;; esac\nexec /bin/mv "$@"\n' >"$mv_bin/mv"
-chmod +x "$mv_bin/mv"
-mkdir -p "$mount/s0" "$mount/s1" "$deploy/app"
-echo old >"$deploy/app/old.txt"
-echo new >"$mount/s0/new.txt"; echo tool >"$mount/s1/t.txt"
-make_zip "$mount/zero.zip" "$mount/s0"; make_zip "$mount/one.zip" "$mount/s1"
-cat >"$mount/manifest.json" <<EOF
-{"artifacts":[{"name":"zero.zip","sha256":"$(sha_of_file "$mount/zero.zip")","target":"app"},
-              {"name":"one.zip","sha256":"$(sha_of_file "$mount/one.zip")","target":"tool"}]}
-EOF
-rc=0; out="$(PATH="$mv_bin:$PATH" bash "$install_sh" "$mount" "$mount/manifest.json" "$deploy" 2>&1)" || rc=$?
-if [ "$rc" != 0 ] && [ -f "$deploy/app/new.txt" ] && [ ! -e "$deploy/tool" ] \
-   && grep -q 'cannot install' <<<"$out"; then ok; else
-  fail "pass-2 isolation: rc=$rc app=($(ls "$deploy/app" 2>/dev/null)) tool=$([ -e "$deploy/tool" ] && ls "$deploy/tool") out=$out"; fi
-
 printf '\nartifact-install.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

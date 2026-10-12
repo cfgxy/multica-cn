@@ -53,9 +53,7 @@ import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
-import { openExternalUrl } from "@/lib/pull-request-link";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { preprocessMobileMarkdown } from "./preprocess";
@@ -66,10 +64,6 @@ import { MarkdownImage } from "./markdown-image";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { TableBlock } from "./table-block";
 import { resolveLinkAction } from "./link-route";
-
-// Log-gate shape only — cheap over-match is harmless (the extractor does the
-// real, skip-rule-aware scan); this just avoids logging for plain content.
-const BARE_IDENTIFIER_SHAPE = /[A-Z][A-Z0-9]*-\d/;
 
 interface Props {
   content: string;
@@ -158,44 +152,15 @@ export function Markdown({
     return splitMarkdown(processed);
   }, [content]);
 
-  // RUYI-635 tail aggregation, carried forward under the RUYI-728 body
-  // contract. Scanned from the RAW content, not the preprocessed text: the
-  // autolink pass turns bare `MR !N` / `owner/repo#N` tokens into links, and
-  // the extractor shares its skip rules (code, links, URLs) with that pass,
-  // so the tail collects exactly the tokens the body linkifies, from the
-  // same source. Raw-dedup keeps first occurrences; cross-form collapse by
-  // resolved id happens in IssueReferenceList.
-  //
-  // Bare identifiers are gated on the current workspace's `issue_prefix`
-  // (RUYI-705): acceptance-criteria numbering like `AC-1` is not a reference,
-  // and without the gate each fake row also fired a resolution query. The
-  // prefix resolves slug-first (the route identity the API layer already
-  // trusts) with the id mirror as fallback — see lib/workspace-prefix.ts for
-  // why the first cut's id-only lookup broke on device. An unknown prefix
-  // (list still loading, both mirrors empty) falls through and the resolver's
-  // exact match stays the backstop.
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const workspacePrefix = useWorkspaceIssuePrefix();
-  if (__DEV__ && BARE_IDENTIFIER_SHAPE.test(content)) {
-    // Diagnostics for the gate QA could not observe from the outside (the
-    // 2026-10-11 FAIL report's black-box boundary): any identifier-bearing
-    // content logs exactly what the gate saw, once per content change.
-    // Release builds dead-code-eliminate the whole branch with __DEV__.
-    console.info(
-      "[markdown-ref-gate]",
-      JSON.stringify({
-        workspacePrefix,
-        slug: wsSlug,
-        id: wsId,
-      }),
-    );
-  }
+  // RUYI-635 tail aggregation. Scanned from the RAW content, not the
+  // preprocessed text: the demote pass has already stripped the mention links
+  // by the time splitting runs, and the extractor shares its skip rules
+  // (code, links, URLs) with web's pipeline, so both ends collect exactly the
+  // same tokens from the same source. Raw-dedup keeps first occurrences;
+  // cross-form collapse by resolved issue id happens in IssueReferenceList.
   const issueReferences = useMemo(
-    () =>
-      dedupeIssueReferences(
-        extractIssueReferences(content, { workspacePrefix }),
-      ),
-    [content, workspacePrefix],
+    () => dedupeIssueReferences(extractIssueReferences(content)),
+    [content],
   );
 
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
@@ -224,23 +189,6 @@ export function Markdown({
             fallbackUrl: action.fallbackUrl,
           });
           return;
-        case "mergeRequest": {
-          // RUYI-728: body-text `MR !N` links have no in-app page — resolve
-          // the number to a PR at tap time and hand the canonical URL to the
-          // OS (github.com App Links / Universal Links land in the GitHub
-          // app when installed, see lib/pull-request-link.ts). A miss (never
-          // synced / cross-repo ambiguous) and a failed open both stay
-          // silent — the same doctrine as the `external` branch; the
-          // reference sheet's degraded row is where the unresolved state is
-          // visible.
-          void api
-            .lookupPullRequestByNumber(wsId ?? "", action.number)
-            .then((pr) => {
-              if (pr) void openExternalUrl(pr.html_url, Linking);
-            })
-            .catch(() => {});
-          return;
-        }
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
           // keeps a stray tap from crashing the screen. Silent: failing
@@ -251,7 +199,7 @@ export function Markdown({
           return;
       }
     },
-    [wsSlug, commentAnchor, wsId],
+    [wsSlug, commentAnchor],
   );
 
   if (segments.length === 0) return null;

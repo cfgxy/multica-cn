@@ -427,17 +427,13 @@ describe("AgentDetailPage DM button", () => {
 
   it("hides the more-actions trigger when no menu actions are available", async () => {
     // The gate must survive a caller who genuinely CAN archive: an admin
-    // passes `canEditAgent`, so `canArchive` is true. A system agent gets no
-    // `onArchive`, and RUYI-608's pause-scheduling action deliberately covers
-    // system agents too (the server's PauseAgentScheduling has no system-key
-    // exclusion), so a plain `system_key` no longer empties the menu. An
-    // already-paused agent passes no `onPauseScheduling` either — with both
-    // actions absent the menu would be an empty shell, so the trigger must
-    // not render. Assert the real aria label (locale `detail.more_actions_aria`
-    // = "Agent actions"), so removing the `hasMoreActions` gate would render
-    // the empty shell and fail this test.
+    // passes `canEditAgent`, so `canArchive` is true. The only thing keeping
+    // the menu empty is the system agent's undefined `onArchive`. Assert the
+    // real aria label (locale `detail.more_actions_aria` = "Agent actions"),
+    // so removing the `hasMoreActions` gate would render the empty shell and
+    // fail this test.
     agentsRef.current = [
-      { ...baseAgent, system_key: "mika", scheduling_paused: true },
+      { ...baseAgent, system_key: "mika" },
     ];
     membersRef.current = [{ user_id: "user-1", role: "admin" }];
     renderPage();

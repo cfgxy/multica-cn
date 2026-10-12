@@ -371,7 +371,9 @@
     "credential_configured": "設定済み ✓",
     "credential_invalid": "キー無効",
     "credential_unreachable": "検証不可",
-    "credential_not_configured": "未設定"
+    "credential_not_configured": "未設定",
+    "runtime_credentials_help": "モデル認証には、選択したランタイムの OS ユーザー設定を使用します。CLI のインストールだけでは API キーは設定されません。",
+    "runtime_select": "ランタイムを選択"
   },
   "conversation_starters": {
     "label": "会話の開始例",
@@ -1018,8 +1020,7 @@
     "detail": {
       "section_history": "実行履歴",
       "edit_profile": "プロフィールを編集",
-      "tab_active": "タスク履歴",
-      "section_active": "進行中",
+      "tab_active": "進行中",
       "fact_status": "ステータス",
       "fact_runtime_unbound": "ランタイム未設定",
       "bind_runtime": "ランタイムをバインド",
@@ -1038,9 +1039,7 @@
     },
     "run_history": {
       "load_more": "さらに読み込む",
-      "empty": "実行履歴はまだありません。",
-      "queued_backpressure": "ランタイムの復帰待ち",
-      "other_agents": "{{count}} 体のエージェントが稼働中"
+      "empty": "実行履歴はまだありません。"
     },
     "edit": {
       "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します",

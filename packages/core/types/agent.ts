@@ -57,6 +57,12 @@ export interface AgentInvocationTargetInput {
 export type RuntimeVisibility = "private" | "public";
 
 export interface RuntimeDevice {
+  execution_source?: {
+    binding_id: string;
+    linux_user: string;
+    host: string;
+    preferred: boolean;
+  } | null;
   id: string;
   workspace_id: string;
   daemon_id: string | null;
@@ -118,6 +124,46 @@ export interface RuntimeDevice {
 }
 
 export type AgentRuntime = RuntimeDevice;
+
+// Runtime cost budget (`/api/runtimes/:id/budget`, RUYI-665). Periods are UTC
+// calendar windows; a null period is unlimited. `runtime` is the total scope
+// (blocks everyone), `users` are per-owner scopes. `can_manage` mirrors the
+// server's runtime-owner gate so the UI shows the editor only when a PUT would
+// succeed.
+export type RuntimeBudgetPeriodKey = "daily" | "weekly" | "monthly";
+
+export interface RuntimeBudgetPeriod {
+  limit_usd: number;
+  used_usd: number;
+  period_start: string;
+  reset_at: string;
+  reached: boolean;
+}
+
+export interface RuntimeBudgetScope {
+  user_id?: string;
+  daily: RuntimeBudgetPeriod | null;
+  weekly: RuntimeBudgetPeriod | null;
+  monthly: RuntimeBudgetPeriod | null;
+}
+
+export interface RuntimeCostBudget {
+  runtime: RuntimeBudgetScope | null;
+  users: RuntimeBudgetScope[];
+  can_manage: boolean;
+}
+
+export interface RuntimeBudgetScopeInput {
+  user_id?: string;
+  daily_usd: number | null;
+  weekly_usd: number | null;
+  monthly_usd: number | null;
+}
+
+export interface RuntimeCostBudgetInput {
+  runtime: RuntimeBudgetScopeInput | null;
+  users: RuntimeBudgetScopeInput[];
+}
 
 // RUYI-425 §4.4: a protocol family's capability declaration, mirrored from
 // server/pkg/agent/capabilities.go. Capabilities belong to the Type layer
@@ -1458,49 +1504,6 @@ export interface DashboardAgentRunTime {
   // remainder. A stopped run still occupied an agent and still spent
   // tokens, so its seconds belong in `total_seconds`.
   cancelled_count: number;
-}
-
-// One Prometheus sample on a usage-panel series: Unix seconds plus the
-// evaluated value (RUYI-618). The server proxy normalizes Prometheus's
-// string-encoded values to numbers already.
-export interface UsageMetricPoint {
-  t: number;
-  v: number;
-}
-
-// One labeled series from the usage-panel proxy endpoints. Which labels are
-// present depends on the query (resources carry daemon/mountpoint/mode,
-// traffic carries the chosen breakdown dimension).
-export interface UsageMetricSeries {
-  labels: Record<string, string>;
-  points: UsageMetricPoint[];
-}
-
-// System-resource panel payload (GET /api/dashboard/usage/resources).
-// `configured` is false when the server has no PROMETHEUS_URL — a normal
-// deployment without the observability stack, which the UI renders by
-// hiding the section. `series` is keyed by panel chart (cpu_cores,
-// memory_total_bytes, memory_available_bytes, swap_total_bytes,
-// swap_free_bytes, filesystem_size_bytes, filesystem_avail_bytes,
-// disk_read_bytes_per_second, disk_written_bytes_per_second).
-export interface DashboardUsageResources {
-  configured: boolean;
-  window?: string;
-  step_seconds?: number;
-  series?: Record<string, UsageMetricSeries[]>;
-}
-
-// Model-traffic panel payload (GET /api/dashboard/usage/traffic). Series are
-// rates (tokens/s, USD/s, tasks/s) aggregated server-side by the requested
-// dimension: runtime, provider, or model.
-export type DashboardUsageTrafficDim = "runtime" | "provider" | "model";
-
-export interface DashboardUsageTraffic {
-  configured: boolean;
-  window?: string;
-  by?: DashboardUsageTrafficDim;
-  step_seconds?: number;
-  series?: Record<string, UsageMetricSeries[]>;
 }
 
 // One (date) bucket of terminal-task run-time + counts for the workspace

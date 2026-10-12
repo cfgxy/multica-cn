@@ -158,8 +158,9 @@ func (c *client) markSeen(eventID string) bool {
 // HeartbeatHandler processes a daemon:heartbeat frame. It must verify that
 // runtimeID is one of identity.RuntimeIDs (the connection's authenticated
 // scope) and return the ack payload to send back. backpressure (RUYI-393) is
-// the daemon's optional host memory-watermark report. Returning an error
-// skips the ack and is logged at debug level.
+// the daemon's optional host memory-watermark report; nil when the daemon
+// predates the field or its sampler is disabled. Returning an error skips the
+// ack and is logged at debug level.
 type HeartbeatHandler func(ctx context.Context, identity ClientIdentity, runtimeID string, supportsBatchImport bool, backpressure *protocol.DaemonBackpressureReport) (*protocol.DaemonHeartbeatAckPayload, error)
 
 // RPCHandler processes a generic daemon:rpc_request (MUL-4257). It dispatches

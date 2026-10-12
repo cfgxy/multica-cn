@@ -526,7 +526,7 @@ func (q *Queries) SummarizePromptVersionsByWorkspace(ctx context.Context, worksp
 const updateAgentInstructionsForPromptVersion = `-- name: UpdateAgentInstructionsForPromptVersion :one
 UPDATE agent SET instructions = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
 `
 
 type UpdateAgentInstructionsForPromptVersionParams struct {
@@ -573,9 +573,6 @@ func (q *Queries) UpdateAgentInstructionsForPromptVersion(ctx context.Context, a
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
-		&i.VoiceProviderID,
-		&i.VoiceModel,
-		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -683,9 +680,9 @@ func (q *Queries) UpdateSkillContentForPromptVersion(ctx context.Context, arg Up
 }
 
 const updateSquadInstructionsForPromptVersion = `-- name: UpdateSquadInstructionsForPromptVersion :one
-UPDATE squad SET instructions = $2, updated_at = now()
+UPDATE squad SET instructions = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
-RETURNING id, workspace_id, name, description, leader_id, creator_id, created_at, updated_at, archived_at, archived_by, avatar_url, instructions, marketplace_prompt_state
+RETURNING id, workspace_id, name, description, leader_id, creator_id, created_at, updated_at, archived_at, archived_by, avatar_url, instructions, marketplace_prompt_state, revision
 `
 
 type UpdateSquadInstructionsForPromptVersionParams struct {
@@ -693,6 +690,8 @@ type UpdateSquadInstructionsForPromptVersionParams struct {
 	Instructions string      `json:"instructions"`
 }
 
+// Bumps revision (RUYI-666): same rationale as
+// UpdateWorkspaceContextForPromptVersion above.
 func (q *Queries) UpdateSquadInstructionsForPromptVersion(ctx context.Context, arg UpdateSquadInstructionsForPromptVersionParams) (Squad, error) {
 	row := q.db.QueryRow(ctx, updateSquadInstructionsForPromptVersion, arg.ID, arg.Instructions)
 	var i Squad
@@ -710,14 +709,15 @@ func (q *Queries) UpdateSquadInstructionsForPromptVersion(ctx context.Context, a
 		&i.AvatarUrl,
 		&i.Instructions,
 		&i.MarketplacePromptState,
+		&i.Revision,
 	)
 	return i, err
 }
 
 const updateWorkspaceContextForPromptVersion = `-- name: UpdateWorkspaceContextForPromptVersion :one
-UPDATE workspace SET context = $2, updated_at = now()
+UPDATE workspace SET context = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, active_execution_profile_id
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, active_execution_profile_id, revision
 `
 
 type UpdateWorkspaceContextForPromptVersionParams struct {
@@ -725,6 +725,10 @@ type UpdateWorkspaceContextForPromptVersionParams struct {
 	Context pgtype.Text `json:"context"`
 }
 
+// Bumps revision (RUYI-666): this is a real instruction write, so a client
+// holding an expected_revision from before the activation/rollback must lose
+// the race instead of overwriting the restored context. Same pattern as
+// UpdateProjectInstructionsForPromptVersion (RUYI-354).
 func (q *Queries) UpdateWorkspaceContextForPromptVersion(ctx context.Context, arg UpdateWorkspaceContextForPromptVersionParams) (Workspace, error) {
 	row := q.db.QueryRow(ctx, updateWorkspaceContextForPromptVersion, arg.ID, arg.Context)
 	var i Workspace
@@ -743,6 +747,7 @@ func (q *Queries) UpdateWorkspaceContextForPromptVersion(ctx context.Context, ar
 		&i.AvatarUrl,
 		&i.AttributionFailClosed,
 		&i.ActiveExecutionProfileID,
+		&i.Revision,
 	)
 	return i, err
 }

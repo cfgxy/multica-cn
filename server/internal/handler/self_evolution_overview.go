@@ -15,19 +15,19 @@ import (
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
 )
 
-// Self-evolution workspace overview (RUYI-284; proposal section wired on
-// RUYI-551 once RUYI-305's pool model landed).
+// Self-evolution workspace overview (RUYI-284).
 //
 // One read-only endpoint folding the real data planes the tabs already
 // serve — prompt versions, quality rollups, quiz readings, knowledge,
-// skills, and the RUYI-305 proposal pool — into a member-visible summary.
-// It adds no writer and no second caliber: quality folds through the same
-// Combine+Present path the quality tab uses, quiz verdicts come from the
-// shared baseline reader (promptQuizBaselineData), and the counts run over
-// the same tables and the same predicates as the list endpoints (the
-// proposal counts are the unfiltered pool the legislation tab's "all"
-// filter shows). Every number here must stay checkable against the tab
-// that owns it — that is what forbids a default or a placeholder below.
+// skills — into a member-visible summary. Proposal metrics are excluded on
+// purpose: the pool's model is being replaced by RUYI-305, and wiring the
+// current behavior-prophecy table would be rework the moment it lands. It adds no writer and no
+// second caliber: quality folds through the same Combine+Present path the
+// quality tab uses, quiz verdicts come from the shared baseline reader
+// (promptQuizBaselineData), and the counts run over the same tables and the
+// same predicates as the list endpoints. Every number here must stay
+// checkable against the tab that owns it — that is what forbids a default or
+// a placeholder below.
 
 type SelfEvolutionOverviewTier struct {
 	Scope        string `json:"scope"`
@@ -91,33 +91,12 @@ type SelfEvolutionOverviewSkills struct {
 	Invocations int64 `json:"invocations"`
 }
 
-// SelfEvolutionOverviewLastAutoProposal is the newest retrospective-sourced
-// row in the pool (RUYI-305 E2 / E3): the visible signature that the daily
-// loop is actually proposing. Source is "retrospective" by construction.
-type SelfEvolutionOverviewLastAutoProposal struct {
-	Source    string `json:"source"`
-	CreatedAt string `json:"created_at"`
-}
-
-type SelfEvolutionOverviewProposals struct {
-	// Total counts the whole pool — the rows the legislation tab's "all"
-	// filter lists (rejected rows stay on the record there and here).
-	Total int64 `json:"total"`
-	// PendingOwner is the owner-approval queue depth (status pending_owner).
-	PendingOwner int64 `json:"pending_owner"`
-	// LastAutoProposal is the newest retrospective-sourced proposal; nil
-	// means the loop has not produced one (a real state the card names
-	// rather than hiding).
-	LastAutoProposal *SelfEvolutionOverviewLastAutoProposal `json:"last_auto_proposal,omitempty"`
-}
-
 type SelfEvolutionOverviewResponse struct {
 	Versions  []SelfEvolutionOverviewTier    `json:"versions"`
 	Quality   SelfEvolutionOverviewQuality   `json:"quality"`
 	Quiz      SelfEvolutionOverviewQuiz      `json:"quiz"`
 	Knowledge SelfEvolutionOverviewKnowledge `json:"knowledge"`
 	Skills    SelfEvolutionOverviewSkills    `json:"skills"`
-	Proposals SelfEvolutionOverviewProposals `json:"proposals"`
 }
 
 // GetSelfEvolutionOverview — GET /api/self-evolution/overview?days=N
@@ -157,11 +136,6 @@ func (h *Handler) GetSelfEvolutionOverview(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to read skill usage")
 		return
 	}
-	proposals, err := h.selfEvolutionOverviewProposals(ctx, workspaceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read proposal pool")
-		return
-	}
 
 	writeJSON(w, http.StatusOK, SelfEvolutionOverviewResponse{
 		Versions:  versions,
@@ -169,7 +143,6 @@ func (h *Handler) GetSelfEvolutionOverview(w http.ResponseWriter, r *http.Reques
 		Quiz:      quiz,
 		Knowledge: knowledge,
 		Skills:    skills,
-		Proposals: proposals,
 	})
 }
 
@@ -332,37 +305,6 @@ JOIN LATERAL (
 WHERE a.workspace_id = $1 AND m.type = 'tool_use'
     AND m.tool IN ('Skill', 'functions.Skill')`, workspaceID).Scan(&out.Invocations)
 	if err != nil {
-		return out, err
-	}
-	return out, nil
-}
-
-func (h *Handler) selfEvolutionOverviewProposals(ctx context.Context, workspaceID pgtype.UUID) (SelfEvolutionOverviewProposals, error) {
-	out := SelfEvolutionOverviewProposals{}
-	// The unfiltered pool — the rows the legislation tab's "all" filter
-	// lists (modulo its 200-row page) — and the owner-approval queue depth.
-	if err := h.DB.QueryRow(ctx, `
-SELECT count(*), count(*) FILTER (WHERE status = 'pending_owner')
-FROM prompt_proposal WHERE workspace_id = $1`, workspaceID).
-		Scan(&out.Total, &out.PendingOwner); err != nil {
-		return out, err
-	}
-
-	var last SelfEvolutionOverviewLastAutoProposal
-	var createdAt pgtype.Timestamptz
-	err := h.DB.QueryRow(ctx, `
-SELECT source, created_at FROM prompt_proposal
-WHERE workspace_id = $1 AND source = 'retrospective'
-ORDER BY created_at DESC LIMIT 1`, workspaceID).
-		Scan(&last.Source, &createdAt)
-	switch {
-	case err == nil:
-		last.CreatedAt = createdAt.Time.UTC().Format(httpTimeFormat)
-		out.LastAutoProposal = &last
-	case errors.Is(err, pgx.ErrNoRows):
-		// The loop has not produced a proposal (or has never run): a real
-		// state the card names, not a zero to hide.
-	default:
 		return out, err
 	}
 	return out, nil

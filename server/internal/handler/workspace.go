@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
@@ -108,6 +109,7 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	Revision    int64   `json:"revision"`
 	// Workspace-level scheduling freeze (RUYI-608). The flag means the
 	// workspace-level switch itself is on — it does not aggregate
 	// agent-level freezes, which live on each agent resource. QueuedCount
@@ -146,6 +148,7 @@ func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
 		AvatarURL:   h.resolveAvatarURLPtr(textToPtr(w.AvatarUrl)),
 		CreatedAt:   timestampToString(w.CreatedAt),
 		UpdatedAt:   timestampToString(w.UpdatedAt),
+		Revision:    w.Revision,
 	}
 }
 
@@ -361,6 +364,11 @@ type UpdateWorkspaceRequest struct {
 	Repos       any     `json:"repos"`
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
+	// ExpectedRevision is the optimistic lock (RUYI-666): when set, the
+	// write only lands if the workspace still carries this revision, and a
+	// stale value answers 409 revision_conflict with the actual revision.
+	// Omitting it keeps the legacy unconditional write (opt-in).
+	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
 }
 
 type workspaceRepoRef struct {
@@ -420,6 +428,13 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	params := db.UpdateWorkspaceParams{
 		ID: idUUID,
 	}
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
@@ -436,20 +451,6 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Settings != nil {
 		s, _ := json.Marshal(req.Settings)
-		// RUYI-693: the settings bag gains a "voice" document (workspace
-		// default + ASR refs into the voice_provider pool). A foreign bag is
-		// untouched; a bag carrying "voice" gets the strict write validation
-		// (referenced providers must exist inside this workspace) before the
-		// whole blob replaces the stored one.
-		var bag map[string]json.RawMessage
-		if json.Unmarshal(s, &bag) == nil {
-			if _, hasVoice := bag[workspaceVoiceSettingsKey]; hasVoice {
-				if err := h.validateWorkspaceVoiceSettings(r.Context(), idUUID, bag); err != nil {
-					writeError(w, http.StatusBadRequest, err.Error())
-					return
-				}
-			}
-		}
 		params.Settings = s
 	}
 	if req.Repos != nil {
@@ -487,6 +488,20 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
 	if err != nil {
+		// 0 rows is ambiguous between "stale expected_revision" and
+		// "workspace gone"; re-read to answer the right structured outcome
+		// (RUYI-666). The conflict body carries revision metadata only —
+		// never any request payload.
+		if errors.Is(err, pgx.ErrNoRows) {
+			if req.ExpectedRevision != nil {
+				if current, getErr := h.Queries.GetWorkspace(r.Context(), idUUID); getErr == nil {
+					writeRevisionConflict(w, "workspace", current.ID, *req.ExpectedRevision, current.Revision)
+					return
+				}
+			}
+			writeError(w, http.StatusNotFound, "workspace not found")
+			return
+		}
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update workspace: "+err.Error())
 		return
@@ -1246,19 +1261,6 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			// data statement and the separate whole-workspace task delete.
 			name: "delete tasks",
 			run:  func() error { return deleteWorkspaceTasks(ctx, qtx, requester.WorkspaceID) },
-		},
-		{
-			// A cross-space authorization group with an in-flight row here
-			// dies with the space (RUYI-630): left alone, the surviving
-			// space's row would degenerate to a single-row group, fall back
-			// to the deleted origin row as its landing, and execute against
-			// the deleted side's context. Revoke the whole group in this
-			// transaction — surviving rows, the origin link card, the audit
-			// trail — before the cascade sweep deletes this side's rows.
-			name: "revoke cross-space decision request groups",
-			run: func() error {
-				return h.revokeCrossSpaceDecisionRequestsOnDelete(ctx, qtx, requester.WorkspaceID)
-			},
 		},
 		{
 			name: "delete leaf data",

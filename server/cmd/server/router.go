@@ -39,7 +39,6 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
-	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -74,6 +73,7 @@ var corsAllowedHeaders = []string{
 	"Content-Type",
 	"Idempotency-Key",
 	"If-Match",
+	"Prefer",
 	"X-Workspace-ID",
 	"X-Workspace-Slug",
 	"X-Request-ID",
@@ -292,11 +292,6 @@ type RouterOptions struct {
 	// any test that happened to have the variable set. nil means unset, which
 	// is what tests and NewRouter get.
 	LLMMaxRetries *llm.RetryOverride
-
-	// Prometheus backs the usage page's system-resource and model-traffic
-	// panels. main.go builds it from PROMETHEUS_URL; nil (or an empty URL)
-	// keeps both proxy endpoints reporting configured=false.
-	Prometheus *promquery.Client
 }
 
 func buildChannelSupervisor(
@@ -1335,14 +1330,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProviderWSBaseURL = v
 	}
 
-	// One-shot dictation transcription provider origin (RUYI-710).
-	// MULTICA_GEMINI_ASR_BASE_URL lets air-gapped deployments and tests aim
-	// the generateContent hop at a stub; empty env keeps the public default.
-	h.VoiceASRBaseURL = handler.DefaultVoiceASRBaseURL
-	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_ASR_BASE_URL")); v != "" {
-		h.VoiceASRBaseURL = v
-	}
-
 	// Voice provider egress proxy (RUYI-692 D1 ①): MULTICA_GEMINI_PROXY_URL
 	// names the per-connection proxy the Gemini Live dial and the credential
 	// probe use — `socks5://` preferred, `http(s)://` accepted. The value may
@@ -1401,9 +1388,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
-	}
-	if opts.Prometheus != nil {
-		h.Prometheus = opts.Prometheus
 	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
@@ -1582,6 +1566,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// The authenticated /api/attachments/{id}/download route below is
 	// unchanged — this one is purely additive.
 	r.Get("/api/attachments/{id}/signed-download", h.DownloadAttachmentWithCapability)
+	r.Get("/api/runtime-downloads/{operation}/{expiry}/{signature}/{source}/*", h.RuntimeDownload)
+	r.Head("/api/runtime-downloads/{operation}/{expiry}/{signature}/{source}/*", h.RuntimeDownload)
 
 	// Avatar serving. Public for the same reason as the capability download
 	// above: the auth cookie is SameSite=Strict, so an auth-gated URL cannot
@@ -1787,6 +1773,50 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// against it. Sits in the user-scoped group for that reason: there is
 		// no workspace in the path to gate on.
 		// --- User-scoped routes (no workspace context required) ---
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-settings", h.ComputerSettings)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings", h.ComputerBindings)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings", h.ComputerBindings)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}/runtimes", h.ComputerBindingRuntimes)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}", h.ComputerBindingDetail)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}/operations", h.ComputerBindingOperations)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/recover", h.RecoverComputerOperation)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/discover", h.DiscoverComputerBinding)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/check", h.CheckLinuxUser)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/lifecycle", h.ComputerBindingLifecycle)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/credentials/read", h.ReadComputerCredentials)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/credentials/write", h.WriteComputerCredentials)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/runtime-install", h.ComputerBindingRuntimeInstall)
+		r.With(handler.RequireHumanActor).Put("/api/me/computer-settings", h.ComputerSettings)
+		r.With(handler.RequireHumanActor).Get("/api/me/instance-access", h.InstanceAccess)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-ssh-pubkey", h.AdminSshPubKey)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computers", h.AdminComputers)
+		r.With(handler.RequireHumanActor).Get("/api/admin/runtime-cache", h.AdminRuntimeCache)
+		r.With(handler.RequireHumanActor).Get("/api/admin/model-key-users", h.AdminModelKeyUsers)
+		r.With(handler.RequireHumanActor).Get("/api/admin/model-key-source", h.AdminModelKeySource)
+		r.With(handler.RequireHumanActor).Put("/api/admin/model-key-source", h.AdminModelKeySource)
+		r.With(handler.RequireHumanActor).Get("/api/admin/model-key-directory", h.AdminModelKeyDirectory)
+		r.With(handler.RequireHumanActor).Post("/api/admin/model-key-directory/refresh", h.AdminModelKeyDirectoryRefresh)
+		r.With(handler.RequireHumanActor).Get("/api/admin/users/{id}/model-keys", h.AdminUserModelKeyGrants)
+		r.With(handler.RequireHumanActor).Put("/api/admin/users/{id}/model-keys", h.AdminUserModelKeyGrants)
+		r.With(handler.RequireHumanActor).Get("/api/admin/runtime-config-templates", h.AdminRuntimeConfigTemplateList)
+		r.With(handler.RequireHumanActor).Get("/api/admin/runtime-config-templates/{kind}", h.AdminRuntimeConfigTemplates)
+		r.With(handler.RequireHumanActor).Put("/api/admin/runtime-config-templates/{kind}", h.AdminRuntimeConfigTemplates)
+		r.With(handler.RequireHumanActor).Get("/api/me/computer-bindings/{id}/runtimes/{kind}/model-keys", h.MeModelKeyOptions)
+		r.With(handler.RequireHumanActor).Post("/api/me/computer-bindings/{id}/runtimes/{kind}/model-config/{action}", h.RuntimeModelConfig)
+		r.With(handler.RequireHumanActor).Post("/api/admin/runtime-cache/refresh", h.AdminRuntimeCacheRefresh)
+		r.With(handler.RequireHumanActor).Delete("/api/admin/runtime-cache", h.AdminRuntimeCacheClear)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computers", h.AdminComputers)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computers/check", h.CheckAdminComputerDraft)
+		r.With(handler.RequireHumanActor).Patch("/api/admin/computers/{id}", h.UpdateAdminComputer)
+		r.With(handler.RequireHumanActor).Delete("/api/admin/computers/{id}", h.DeleteAdminComputer)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computers/{id}/check", h.CheckAdminComputer)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-bindings", h.AdminComputerBindings)
+		r.With(handler.RequireHumanActor).Post("/api/admin/computer-bindings/{id}/check", h.AdminCheckLinuxUser)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-bindings/{id}", h.AdminBindingDetail)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-bindings/{id}/operations", h.AdminBindingOperations)
+		r.With(handler.RequireHumanActor).Get("/api/admin/computer-audit", h.AdminComputerAudit)
+		r.With(handler.RequireHumanActor).Get("/api/computers", h.Computers)
+		r.With(handler.RequireHumanActor).Post("/api/computers", h.Computers)
 		r.Get("/api/me", h.GetMe)
 		r.Patch("/api/me", h.UpdateMe)
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
@@ -1884,25 +1914,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// this middleware. Read-only; answering stays on the
 					// issue-scoped endpoints.
 					r.Get("/decision-inbox", h.ListWorkspaceDecisionInbox)
-					// RUYI-630: the sensitive-operation authorization carrier.
-					// Reads are member-visible; the answer route additionally
-					// sits behind RequireHumanActor — machine credentials
-					// never reach it even if a route lands here by mistake
-					// (the handler re-checks too).
-					r.Route("/decision-requests", func(r chi.Router) {
-						// Creation is agent-only in the handler (resolveActor
-						// must land on the creating agent; member credentials
-						// get 403) — the channel exists because agent
-						// credentials cannot reach the sensitive endpoint
-						// themselves.
-						r.Post("/", h.CreateDecisionRequest)
-						r.Get("/", h.ListDecisionRequests)
-						r.Route("/{requestId}", func(r chi.Router) {
-							r.Get("/", h.GetDecisionRequest)
-							r.With(handler.RequireHumanActor).Post("/answer", h.AnswerDecisionRequest)
-							r.Post("/cancel", h.CancelDecisionRequest)
-						})
-					})
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -1910,12 +1921,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
-					// PR text-reference lookup for the reference tail
-					// (RUYI-635 增量): member-visible, read-only, DB snapshot.
-					r.Get("/pull-requests/lookup", h.LookupPullRequestByRef)
-					// Number-only `MR !N` lookup for body links + tail rows
-					// (RUYI-728): same visibility and snapshot discipline.
-					r.Get("/pull-requests/lookup-by-number", h.LookupPullRequestByNumber)
 					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
@@ -2042,32 +2047,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
-				// Voice provider pool (RUYI-693): the listing is
-				// member-visible — the settings page renders the pool for
-				// everyone — while pool writes are workspace-admin state,
-				// the same split as the workspace settings themselves.
-				r.Route("/voice-providers", func(r chi.Router) {
-					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
-					r.Group(func(r chi.Router) {
-						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
-						r.Post("/", h.CreateVoiceProvider)
-						r.Route("/{providerId}", func(r chi.Router) {
-							r.Patch("/", h.UpdateVoiceProvider)
-							r.Delete("/", h.DeleteVoiceProvider)
-							// The key itself never round-trips: it enters
-							// here (and probes on save) and is only ever
-							// read back as the coarse status badge.
-							r.Put("/credentials/{credentialKey}", h.PutVoiceProviderCredential)
-							r.Delete("/credentials/{credentialKey}", h.DeleteVoiceProviderCredential)
-							r.Post("/credential-probe", h.RunVoiceProviderProbe)
-						})
-					})
-				})
-				// One-shot dictation transcription (RUYI-710): any workspace
-				// member may dictate — the same membership the settings
-				// page itself renders under. The ASR provider key rides
-				// only the server→provider hop; nothing is persisted.
-				r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Post("/voice-transcriptions", h.CreateVoiceTranscription)
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
@@ -2437,20 +2416,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
-			})
-		})
-
-		// Workspace-level host backpressure settings (RUYI-618): the
-		// watermarks pause task claiming on every daemon host in the
-		// workspace, so reads are member-visible but saves are owner-only.
-		// Delivered to daemons on heartbeat acks (see processHeartbeat).
-		r.Route("/api/workspace/backpressure-settings", func(r chi.Router) {
-			r.Use(handler.RequireHumanActor)
-			r.Use(middleware.RequireWorkspaceMember(queries))
-			r.Get("/", h.GetWorkspaceBackpressureSettings)
-			r.Group(func(r chi.Router) {
-				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
-				r.Put("/", h.PutWorkspaceBackpressureSettings)
 			})
 		})
 
@@ -2877,12 +2842,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
-				// Observability panels (RUYI-618): Prometheus-proxied
-				// system-resource and model-traffic series for the usage
-				// page. Both report configured=false when PROMETHEUS_URL
-				// is unset — the browser never talks to Prometheus.
-				r.Get("/usage/resources", h.GetDashboardUsageResources)
-				r.Get("/usage/traffic", h.GetDashboardUsageTraffic)
 			})
 
 			// (RUYI-626's POST /api/voice-sessions/{id}/complete was retired
@@ -2934,6 +2893,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// body is ignored, and the operator trigger plus the
 					// background sweep share the handler.
 					r.Post("/credential-probe", h.RunCredentialProbe)
+					// Per-runtime cost budget (RUYI-665): read for anyone with
+					// runtime read access, write for the runtime owner only.
+					r.Get("/budget", h.GetRuntimeCostBudget)
+					r.Put("/budget", h.PutRuntimeCostBudget)
 				})
 			})
 

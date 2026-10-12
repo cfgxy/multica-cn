@@ -60,6 +60,15 @@ const (
 	// gate remained in every such client and fails closed (default false) if
 	// the key stops being published.
 	resourceLabelsCompat = "settings_resource_labels"
+	// RuntimeCostBudgetWarnOnly degrades runtime cost budget enforcement
+	// (RUYI-665) to warn-only: limits are still evaluated and the "limit
+	// reached" notice still fires, but a spent budget logs a warning instead of
+	// refusing the enqueue. It is the operational escape hatch for a bad or
+	// mistyped limit, and defaults to false (enforce) — an unset or unreadable
+	// flag must never silently open the spending tap. It is a server-side
+	// switch (FF_RUNTIME_COST_BUDGET_WARN_ONLY) and deliberately not published
+	// to the frontend.
+	RuntimeCostBudgetWarnOnly = "runtime_cost_budget_warn_only"
 )
 
 var frontendPublicFlags = []string{
@@ -88,6 +97,12 @@ func MarketplaceV1Enabled(ctx context.Context, flags *featureflag.Service) bool 
 
 func MarketplacePublishV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, MarketplacePublishV1, true)
+}
+
+// RuntimeCostBudgetWarnOnlyEnabled defaults to false: budget enforcement is
+// the safe state, and warn-only has to be switched on deliberately.
+func RuntimeCostBudgetWarnOnlyEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, RuntimeCostBudgetWarnOnly, false)
 }
 
 // frontendPublicFlagDefaults holds the per-key default passed to IsEnabled

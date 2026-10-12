@@ -19,11 +19,9 @@ import {
   issuePullRequestsOptions,
   deriveChecksStatus,
   deriveMergeStatus,
-  derivePullRequestStateVisual,
   shouldShowPullRequestStats,
   type PullRequestChecksStatus,
   type PullRequestMergeStatus,
-  type PullRequestVisualState,
 } from "@multica/core/github";
 import type { GitHubPullRequest, GitHubPullRequestState } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -36,20 +34,14 @@ type IssuesT = ReturnType<typeof useT<"issues">>["t"];
 // collapse the rest once the section reaches 4 rows.
 const PR_LIMIT_BEFORE_COLLAPSE = 4;
 
-// Icon + color per visual state — WHICH state and dimmed-or-not come from
-// `derivePullRequestStateVisual` in core (RUYI-635 增量: one derivation shared
-// with the reference tail and mobile; this map is only this list's palette).
-// `open` rides the --success token (was hardcoded emerald-600); unknown keeps
-// a neutral fallback glyph instead of an ad-hoc `??` at the call site.
 const STATE_ICON: Record<
-  PullRequestVisualState,
+  GitHubPullRequestState,
   { icon: React.ComponentType<{ className?: string }>; className: string }
 > = {
-  open: { icon: GitPullRequestArrow, className: "text-success" },
+  open: { icon: GitPullRequestArrow, className: "text-emerald-600 dark:text-emerald-400" },
   draft: { icon: GitPullRequestDraft, className: "text-muted-foreground" },
   merged: { icon: GitMerge, className: "text-violet-600 dark:text-violet-400" },
   closed: { icon: GitPullRequestClosed, className: "text-rose-600 dark:text-rose-400" },
-  unknown: { icon: GitPullRequest, className: "text-muted-foreground" },
 };
 
 export function PullRequestList({ issueId, showGitHub = true }: { issueId: string; showGitHub?: boolean }) {
@@ -104,9 +96,9 @@ export function PullRequestList({ issueId, showGitHub = true }: { issueId: strin
 
 function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
   const { t } = useT("issues");
-  const visual = derivePullRequestStateVisual(pr.state);
-  const cfg = STATE_ICON[visual.state];
+  const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
   const StateIcon = cfg.icon;
+  const isDraft = pr.state === "draft";
   const stateLabel = getStateLabel(pr.state, t);
 
   return (
@@ -117,7 +109,7 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
       rel="noreferrer noopener"
       className={cn(
         "flex items-start gap-2 rounded-md px-2 py-1.5 -mx-2 hover:bg-accent/50 transition-colors group",
-        visual.dimmed ? "opacity-80" : null,
+        isDraft ? "opacity-80" : null,
       )}
     >
       <StateIcon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
