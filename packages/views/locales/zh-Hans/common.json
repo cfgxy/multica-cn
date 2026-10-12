@@ -197,5 +197,11 @@
       "mode_manual": "手动",
       "smart_hint": "由智能体起草标题和描述——完成后你会收到收件箱通知。"
     }
+  },
+  "long_text_editor": {
+    "expand": "展开大编辑",
+    "edit": "编辑",
+    "preview": "预览",
+    "done": "完成"
   }
 }
