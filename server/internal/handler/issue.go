@@ -4476,6 +4476,17 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
+		// RUYI-660 M1: the same per-issue outer-loop judgement UpdateIssue
+		// runs on closure — an agent closing a plan-carrying ticket without
+		// the STAGE_COMPLETE end marker is pulled back after the commit; a
+		// member closure just retires the plan. Inline per issue like the
+		// cancellation cascade above: the hook judges only this issue's
+		// before/after rows and has no sibling dependency, so unlike the
+		// parent notify below it needs no batch-final aggregation. Best-effort.
+		if statusChanged {
+			h.onOuterLoopIssueStatusChanged(r.Context(), prevIssue, issue, actorType, actorID)
+		}
+
 		// Platform-driven parent notification, mirrored from UpdateIssue
 		// (MUL-2538) but DEFERRED to after the loop. Evaluating the stage
 		// barrier here, per-child, would read a mid-batch sibling snapshot and

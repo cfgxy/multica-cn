@@ -243,6 +243,77 @@ func TestOuterLoopAgentCloseWithMarkerStopsPlan(t *testing.T) {
 	}
 }
 
+// A member closing the ticket through the batch endpoint is the same
+// intentional stop as the single-issue path: the plan retires, the closure
+// stands, and nothing enqueues. Batch must run the same outer-loop
+// judgement per issue — a missed hook here would leave the plan running on
+// a closed ticket and the sweep would keep continuing it by rounds.
+func TestOuterLoopMemberBatchCloseStopsPlanSilently(t *testing.T) {
+	issueID, agentID, _ := seedOuterLoopPlan(t, "running", 1, 3)
+	dbfx.Comment(t, issueID, "还没写完", testutil.Cols{"author_type": "agent", "author_id": agentID})
+
+	w := httptest.NewRecorder()
+	r := newRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID},
+		"updates":   map[string]any{"status": "done"},
+	})
+	testHandler.BatchUpdateIssues(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("member batch close: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
+		t.Fatalf("reload issue: %v", err)
+	}
+	if status != "done" {
+		t.Errorf("status = %q, want done (member closure is never reverted)", status)
+	}
+	if got := outerLoopState(t, issueID); got != "stopped" {
+		t.Errorf("plan state = %q, want stopped (batch closure retires the plan too)", got)
+	}
+	if got := systemCommentCount(t, issueID, "外循环拉回"); got != 0 {
+		t.Errorf("pullback comments = %d, want 0 (member stop is silent)", got)
+	}
+	if got := queuedTaskCount(t, issueID, agentID); got != 0 {
+		t.Errorf("queued tasks = %d, want 0 (a stopped plan never enqueues)", got)
+	}
+}
+
+// An agent closing the ticket through the batch endpoint without the end
+// marker is pulled back exactly as on the single-issue path: the status
+// reverts, the loop stays alive, and a system comment explains why.
+func TestOuterLoopPullbackAgentBatchCloseWithoutMarker(t *testing.T) {
+	issueID, agentID, actingTaskID := seedOuterLoopPlan(t, "running", 1, 3)
+	dbfx.Comment(t, issueID, "进度：实现推进中，还差测试", testutil.Cols{"author_type": "agent", "author_id": agentID})
+
+	w := httptest.NewRecorder()
+	r := agentIssueRequest("POST", "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID},
+		"updates":   map[string]any{"status": "done"},
+	}, agentID, actingTaskID)
+	testHandler.BatchUpdateIssues(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent batch close: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
+		t.Fatalf("reload issue: %v", err)
+	}
+	if status != "in_progress" {
+		t.Errorf("status after pullback = %q, want in_progress (reverted)", status)
+	}
+	if got := outerLoopState(t, issueID); got != "running" {
+		t.Errorf("plan state = %q, want running (pullback keeps the loop alive)", got)
+	}
+	if got := systemCommentCount(t, issueID, "外循环拉回"); got != 1 {
+		t.Errorf("system pullback comments = %d, want 1", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // M2: the auto-continuation verdicts
 // ---------------------------------------------------------------------------
