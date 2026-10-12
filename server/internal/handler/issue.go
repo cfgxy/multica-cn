@@ -3907,6 +3907,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if h.enteredDoneCategory(r.Context(), prevIssue, issue) {
 			h.ResumeSuspensionsWaitingOnIssue(r.Context(), issue)
 		}
+		// RUYI-660 M1: an agent closing a plan-carrying ticket without the
+		// STAGE_COMPLETE end marker gets pulled back after the commit; a
+		// member closure just retires the plan. Best-effort, judged on the
+		// committed before/after rows.
+		h.onOuterLoopIssueStatusChanged(r.Context(), prevIssue, issue, actorType, actorID)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
