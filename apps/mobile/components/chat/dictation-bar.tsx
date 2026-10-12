@@ -3,11 +3,12 @@
  * 阴影与主条一致。
  *
  *   - rest：[×][按住 说话 + 幽灵波][幽灵发送钮]
- *   - recording：[×][红点 + 计时 + 波形 + 转写预览][蓝发送钮]
+ *   - recording：[×][红点 + 计时 + 波形 + 转写预览][蓝发送钮]；降级
+ *     （degraded，RUYI-710）无预览，显「松开后转写」角标
  *   - cancelArmed：整条变红「松开取消」
  *   - finalizing：[×][spinner]（端侧 stop 后 flush，瞬时）
- *   - transcribing：[×][spinner + 转写中…][蓝发送钮]（降级分支，本单
- *     入口收窄后不可达，渲染保留）
+ *   - transcribing：[×][spinner + 转写中…][蓝发送钮]（降级分支：录音
+ *     已交后端转写）
  *
  * PTT 手势：按住条体任意处起录（120ms 起录门在 hook）、上滑 >48dp 转
  * 取消态、松开即结算；× 独立可点（子 responder 优先于父手势）。
@@ -232,7 +233,13 @@ function RecordingBody({
         {clock}
       </Text>
       <Waveform rms={rms} />
-      {state.preview ? (
+      {state.degraded ? (
+        // 降级录制（RUYI-710 板 1 五态）：端侧无识别，无预览，松开后
+        // 交后端转写——角标预告出口。
+        <Text className="flex-1 text-sm text-muted-foreground" numberOfLines={1}>
+          {t("dictation.release_to_transcribe", "Release to transcribe")}
+        </Text>
+      ) : state.preview ? (
         <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
           {state.preview}
         </Text>

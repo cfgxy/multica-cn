@@ -17,10 +17,15 @@ import LinkifyIt from "linkify-it";
  *     readonly preprocessor rewrites these to mention links at render time, on
  *     mobile they stay plain text in the body, and both ends list them here.
  *
- * A third form, `pull_request` (`owner/repo#N`, RUYI-635 增量), rides the same
- * skip rules and aggregation: the token stays plain text in the body, and the
- * tail list resolves it against the workspace's known PRs (degrading to plain
- * text when the platform has never seen that PR).
+ * Two further text-reference forms ride the same skip rules and aggregation
+ * (`form` distinguishes them, the render layer picks the resolver):
+ *   - `pull_request` (`owner/repo#N`, RUYI-635 增量) — resolved against the
+ *     workspace's known PR snapshot by owner/repo/number;
+ *   - `merge_request` (`MR !N`, RUYI-728) — the spoken GitLab-style form. It
+ *     carries no repo context, so resolution goes through the workspace's
+ *     by-number PR lookup and only a UNIQUE hit resolves; the ref is
+ *     normalised to `MR !N` so the spaced and no-space spellings dedupe to
+ *     one token.
  *
  * Skip rules are ported from `packages/ui/markdown` so a token listed in the
  * tail is exactly a token the web body would have chipped: fenced/inline code
@@ -51,7 +56,11 @@ import LinkifyIt from "linkify-it";
  * degrades to plain text.
  */
 
-export type IssueReferenceForm = "mention" | "identifier" | "pull_request";
+export type IssueReferenceForm =
+  | "mention"
+  | "identifier"
+  | "pull_request"
+  | "merge_request";
 
 export interface IssueReference {
   /** UUID (mention form) or bare identifier (identifier form). */
@@ -314,6 +323,15 @@ const IDENTIFIER_RE = /(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9_-])/g
 const PR_REFERENCE_RE =
   /(?<![A-Za-z0-9_.\-/])([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)#(\d+)(?![A-Za-z0-9])/g;
 
+// `MR !N` / `MR!N` — the spoken GitLab-style merge-request form (RUYI-728).
+// Case-sensitive `MR` on purpose, same rationale as IDENTIFIER_RE: lowercase
+// `mr` in prose is not an author-intent marker. The optional single space
+// mirrors how authors type it; both spellings normalise to the spaced form in
+// `ref` so they dedupe to one token. A preceding `/` is allowed to fall
+// through to the URL-overlap skip below (the `MR` inside a detected URL is
+// inside that URL's range, so the shared skip rules reject it).
+const MR_REFERENCE_RE = /(?<![A-Za-z0-9])MR ?!([0-9]+)(?![A-Za-z0-9])/g;
+
 // Label allows backslash-escaped metacharacters and excludes bare backslash so
 // the alternatives cannot backtrack against each other (ReDoS, web #4881).
 const ISSUE_MENTION_LINK_RE =
@@ -421,6 +439,28 @@ export function extractIssueReferences(
     hits.push({ ref: token, label: null, form: "pull_request", start });
   }
 
+  MR_REFERENCE_RE.lastIndex = 0;
+  while ((match = MR_REFERENCE_RE.exec(text)) !== null) {
+    const number = match[1];
+    if (!number) continue;
+    const start = match.index;
+    const end = start + match[0].length;
+    const range = { start, end };
+
+    if (isInsideCode(start, codeRanges)) continue;
+    if (linkRanges.some((r) => rangesOverlap(range, r))) continue;
+    if (detectedLinks.some((l) => rangesOverlap(range, l))) continue;
+
+    // Same dotted-continuation and path tails as the PR form.
+    const after = text[end];
+    if (after === "." && /[A-Za-z0-9]/.test(text[end + 1] ?? "")) continue;
+    if (after === "/") continue;
+
+    // Ref is the normalised spaced spelling so `MR!468` and `MR !468`
+    // collapse to one token in dedupeIssueReferences.
+    hits.push({ ref: `MR !${number}`, label: null, form: "merge_request", start });
+  }
+
   return hits
     .sort((a, b) => a.start - b.start)
     .map(({ start: _start, ...ref }) => ref);
@@ -475,52 +515,113 @@ export function parsePullRequestReference(
   return { owner: match[1]!, repo: match[2]!, number: Number(match[3]) };
 }
 
-function demoteMatch(_match: string, label: string, ref: string): string {
-  // Same display contract as web's plain-text mention rendering: identifier
-  // form shows the identifier, a UUID mention shows its authored label. An
-  // empty label falls back to the id segment so the reference never vanishes
-  // from the prose (web renders an empty span there; on mobile the link is
-  // gone entirely, so an empty demote would be a silent data loss).
-  return isIssueIdentifier(ref) ? ref : label || ref;
+/**
+ * Split a `merge_request`-form reference token (`MR !N`, the normalised
+ * spelling `extractIssueReferences` emits) into the parts a by-number PR
+ * lookup needs, or `null` for anything else. Pure and total, same contract
+ * as `parsePullRequestReference`.
+ */
+export function parseMergeRequestReference(
+  ref: string,
+): { number: number } | null {
+  const match = /^MR !(\d+)$/.exec(ref);
+  if (!match) return null;
+  return { number: Number(match[1]) };
 }
 
 /**
- * Rewrite issue mention links to the plain text the body should read
- * (RUYI-635, mobile half). Web renders mentions as plain text at the component
- * layer; mobile has no component layer in its markdown pipeline — only string
- * passes — so the rewrite happens here, and the SAME display contract applies:
- * `[MUL-7](mention://issue/MUL-7)` → `MUL-7`, `[label](mention://issue/<uuid>)`
- * → `label`. Navigation moves to the tail aggregation list.
+ * Rewrite text-form references into markdown links the readonly bodies can
+ * render as underlined links (RUYI-728, Owner points ①②):
  *
- * Code spans and fenced blocks keep their literal link text, matching both the
- * extractor's skip contract and web (where ReactMarkdown never parses link
- * syntax inside code). Other mention schemes are untouched.
+ *   - `MR !468` / `MR!468` → `[MR !468](mention://merge-request/468)` — the
+ *     render layer resolves the bare number against the workspace's by-number
+ *     PR lookup and keeps the token as plain text on a miss;
+ *   - `owner/repo#468` → `[owner/repo#468](https://github.com/owner/repo/pull/468)`
+ *     — a canonical external URL needs no resolution; GitHub itself redirects
+ *     `/pull/N` to `/issues/N` when the number belongs to an issue.
  *
- * Idempotent: demoted output contains no issue mention links to rewrite.
+ * The shared readonly preprocessing runs this on web (preprocessMarkdown,
+ * opt-in) and mobile (preprocessMobileMarkdown) so both bodies linkify the
+ * same tokens. Bare issue identifiers are NOT handled here — the ui-side
+ * `preprocessIssueIdentifiers` pass owns that form and runs before it.
+ *
+ * Skips the same contexts as the extractor: code/math, existing markdown
+ * links, detected URLs/emails/file paths, dotted tails and path
+ * continuations. Idempotent: the output's new links are skipped as existing
+ * markdown links on a second pass.
  */
-export function demoteIssueMentionLinks(text: string): string {
-  if (!text.includes("mention://issue/")) return text;
+export function autolinkReferenceTokens(text: string): string {
+  const hasMR = /(^|[^A-Za-z0-9])MR ?![0-9]/.test(text);
+  const hasPR = /(^|[^A-Za-z0-9_.\-/])[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*#[0-9]/.test(
+    text,
+  );
+  if (!hasMR && !hasPR) return text;
 
-  const codeRanges = findCodeRanges(text).sort((a, b) => a.start - b.start);
-  if (codeRanges.length === 0) {
-    return text.replace(ISSUE_MENTION_LINK_RE, demoteMatch);
+  const codeRanges = findCodeRanges(text);
+  const linkRanges = findMarkdownLinkRanges(text);
+  const detectedLinks = detectLinks(text);
+
+  interface Rewrite {
+    start: number;
+    end: number;
+    replacement: string;
+  }
+  const rewrites: Rewrite[] = [];
+
+  MR_REFERENCE_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = MR_REFERENCE_RE.exec(text)) !== null) {
+    const number = match[1];
+    if (!number) continue;
+    const start = match.index;
+    const end = start + match[0].length;
+    const range = { start, end };
+    if (isInsideCode(start, codeRanges)) continue;
+    if (linkRanges.some((r) => rangesOverlap(range, r))) continue;
+    if (detectedLinks.some((l) => rangesOverlap(range, l))) continue;
+    const after = text[end];
+    if (after === "." && /[A-Za-z0-9]/.test(text[end + 1] ?? "")) continue;
+    if (after === "/") continue;
+    rewrites.push({
+      start,
+      end,
+      replacement: `[${text.slice(start, end)}](mention://merge-request/${number})`,
+    });
   }
 
-  // Rebuild segment-wise: demote outside code ranges, keep ranges verbatim.
+  PR_REFERENCE_RE.lastIndex = 0;
+  while ((match = PR_REFERENCE_RE.exec(text)) !== null) {
+    const token = match[0];
+    if (!token) continue;
+    const start = match.index;
+    const end = start + token.length;
+    const range = { start, end };
+    if (isInsideCode(start, codeRanges)) continue;
+    if (linkRanges.some((r) => rangesOverlap(range, r))) continue;
+    if (detectedLinks.some((l) => rangesOverlap(range, l))) continue;
+    const after = text[end];
+    if (after === "." && /[A-Za-z0-9]/.test(text[end + 1] ?? "")) continue;
+    if (after === "/") continue;
+    const parts = parsePullRequestReference(token);
+    if (!parts) continue;
+    rewrites.push({
+      start,
+      end,
+      replacement: `[${token}](https://github.com/${parts.owner}/${parts.repo}/pull/${parts.number})`,
+    });
+  }
+
+  if (rewrites.length === 0) return text;
+  rewrites.sort((a, b) => a.start - b.start);
+
   let out = "";
   let cursor = 0;
-  for (const range of codeRanges) {
-    if (range.start < cursor) continue; // overlap guard — keep first claim
-    if (range.start > cursor) {
-      out += text
-        .slice(cursor, range.start)
-        .replace(ISSUE_MENTION_LINK_RE, demoteMatch);
-    }
-    out += text.slice(range.start, range.end);
-    cursor = range.end;
+  for (const rewrite of rewrites) {
+    if (rewrite.start < cursor) continue; // overlap guard — keep first claim
+    out += text.slice(cursor, rewrite.start);
+    out += rewrite.replacement;
+    cursor = rewrite.end;
   }
-  if (cursor < text.length) {
-    out += text.slice(cursor).replace(ISSUE_MENTION_LINK_RE, demoteMatch);
-  }
+  out += text.slice(cursor);
   return out;
 }

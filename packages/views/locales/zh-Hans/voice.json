@@ -31,6 +31,7 @@
     "close": "关闭听写",
     "hold_to_talk": "按住 说话",
     "release_to_cancel": "松开取消",
+    "release_to_transcribe": "松开后转写",
     "transcribing": "转写中…",
     "transcribe_failed": "转写失败，请重试",
     "not_recognized": "未识别到语音",

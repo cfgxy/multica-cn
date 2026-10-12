@@ -103,43 +103,47 @@ describe("preprocessMobileMarkdown — 评论锚点 chip", () => {
 });
 
 /**
- * Issue mention 降级为正文纯文本（RUYI-635 手机端半边）。
+ * 正文引用链接化（RUYI-728 手机端半边）。
  *
- * Web 端 mention 不再渲染内联卡片，正文按普通文本显示、引用聚合到尾部
- * 列表。手机端没有内联卡片可去——enriched 本来就把 mention 画成带下划线
- * 的链接——但「正文纯文本、引用只出现在尾部列表」的规则两端必须一致，
- * 所以管线里加一个 demote pass：issue mention 链接改写为显示 token
- * （编号形态显示编号，UUID mention 显示作者写的标签）。跳转由尾部聚合
- * 列表承担，不再依赖正文链接。
- *
- * 显示 token 的逻辑与 web 正文渲染（rich-content.tsx `data-issue-mention-text`）
- * 严格对齐，落点在 @multica/core/markdown 的共享实现，两端不可能漂移。
+ * Web 端新契约：issue mention 链接保持可点（App 内路由），正文里的
+ * `MR !N` 与 `owner/repo#N` 裸文本由 autolink pass 改写成链接——MR 走
+ * `mention://merge-request/<N>`（点击时按编号解析为 PR 后交系统打开），
+ * PR 走 canonical GitHub URL（GitHub 自动重定向 /pull/N ↔ /issues/N）。
+ * 跳转决策在 link-route.ts，这里锚定改写本身；实现落点在
+ * @multica/core/markdown 的共享 autolinkReferenceTokens，与 web/desktop
+ * 共用，两端不可能漂移。
  */
-describe("preprocessMobileMarkdown — issue mention demote（RUYI-635）", () => {
-  it("编号形态 mention 降级为编号纯文本", () => {
-    expect(preprocessMobileMarkdown("见 [MUL-7](mention://issue/MUL-7)。")).toBe(
-      "见 MUL-7。",
+describe("preprocessMobileMarkdown — 引用链接化（RUYI-728）", () => {
+  it("issue mention 链接保持为链接（不再降级为纯文本）", () => {
+    const link = `[MUL-7](mention://issue/MUL-7)`;
+    expect(preprocessMobileMarkdown(`见 ${link}。`)).toBe(`见 ${link}。`);
+  });
+
+  it("UUID mention 链接同样保持为链接", () => {
+    const link = `[任务单](mention://issue/${UUID})`;
+    expect(preprocessMobileMarkdown(`见 ${link}。`)).toBe(`见 ${link}。`);
+  });
+
+  it("裸 MR 编号改写为 mention://merge-request 链接", () => {
+    expect(preprocessMobileMarkdown("见 MR !468。")).toBe(
+      "见 [MR !468](mention://merge-request/468)。",
     );
   });
 
-  it("UUID mention 降级为作者写的标签", () => {
-    expect(
-      preprocessMobileMarkdown(`见 [任务单](mention://issue/${UUID})。`),
-    ).toBe("见 任务单。");
+  it("owner/repo#N 改写为 canonical GitHub PR 链接", () => {
+    expect(preprocessMobileMarkdown("见 cfgxy/multica-cn#338。")).toBe(
+      "见 [cfgxy/multica-cn#338](https://github.com/cfgxy/multica-cn/pull/338)。",
+    );
   });
 
-  it("空标签 UUID mention 回退到 id 段，引用不消失", () => {
-    expect(preprocessMobileMarkdown(`[](mention://issue/${UUID})`)).toBe(UUID);
-  });
-
-  it("代码内的 mention 链接保持字面", () => {
-    const inline = "用 `[MUL-7](mention://issue/MUL-7)` 标记";
+  it("代码内的引用 token 保持字面", () => {
+    const inline = "用 `MR !468` 与 `[MUL-7](mention://issue/MUL-7)` 标记";
     expect(preprocessMobileMarkdown(inline)).toBe(inline);
   });
 
-  it("降级后再过一遍管线不再变化（幂等）", () => {
+  it("改写后再过一遍管线不再变化（幂等）", () => {
     const once = preprocessMobileMarkdown(
-      `见 [MUL-7](mention://issue/${UUID}) 与 MUL-8。`,
+      "见 MR !468 与 cfgxy/multica-cn#338。",
     );
     expect(preprocessMobileMarkdown(once)).toBe(once);
   });

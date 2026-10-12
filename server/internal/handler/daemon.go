@@ -1338,6 +1338,10 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		RuntimeID:          runtimeID,
 		Status:             "ok",
 		ServerCapabilities: []string{protocol.DaemonCapabilityRPCV1},
+		// Workspace backpressure settings (RUYI-618): delivered on every
+		// ack — saved card or code defaults — so daemons converge on the
+		// workspace value within one beat, no restart.
+		BackpressureConfig: h.backpressureWireConfig(ctx, rt.WorkspaceID),
 	}
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)

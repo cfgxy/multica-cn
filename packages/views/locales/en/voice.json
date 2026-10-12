@@ -31,6 +31,7 @@
     "close": "Close dictation",
     "hold_to_talk": "Hold to talk",
     "release_to_cancel": "Release to cancel",
+    "release_to_transcribe": "Release to transcribe",
     "transcribing": "Transcribing…",
     "transcribe_failed": "Transcription failed, try again",
     "not_recognized": "No speech detected",
