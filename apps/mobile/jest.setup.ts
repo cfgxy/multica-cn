@@ -51,5 +51,23 @@ jest.mock("react-native-reanimated", () => {
     withRepeat: (animation: unknown) => animation,
     withTiming: (value: unknown) => value,
     runOnJS: (fn: unknown) => fn,
-  };
-});
+    // RUYI-694 merge union: the voice orb/overlay and the chat input area
+    // also use the entering/exiting builders, derived values, springs and
+    // easing curves — kept from the RUYI-694 side so one global fallback
+    // serves both suites (per-suite jest.mock still takes precedence).
+    FadeIn: { duration: () => ({}) },
+    FadeOut: { duration: () => ({}) },
+    SlideInDown: { duration: () => ({}) },
+    SlideOutDown: { duration: () => ({}) },
+    useDerivedValue: (fn: () => unknown) => ({ value: fn() }),
+    withDelay: () => 0,
+    withSpring: () => 0,
+    cancelAnimation: () => {},
+    Easing: {
+      linear: (v: unknown) => v,
+      ease: (v: unknown) => v,
+      in: (e: unknown) => e,
+      out: (e: unknown) => e,
+      inOut: (e: unknown) => e,
+    },
+  };});

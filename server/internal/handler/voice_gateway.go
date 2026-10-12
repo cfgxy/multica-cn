@@ -293,6 +293,25 @@ func isClientSetupFrame(data []byte) bool {
 	return ok
 }
 
+// isClientAuthFrame reports whether a client frame is the realtime first
+// frame auth envelope ({"type":"auth","payload":{...}}, the RUYI-429 shape).
+// The relay swallows it: identity is resolved on the gateway plane — from
+// the upgrade request on the header path, from the consumed first frame on
+// the first-frame path — so an envelope that still reaches the pump is a
+// dual-channel client (cookie jar + auth frame, e.g. mobile) or a redundant
+// re-auth. Neither is provider traffic: forwarding once killed the session
+// (Google closes on unknown message types) and would leak the session token
+// upstream besides.
+func isClientAuthFrame(data []byte) bool {
+	var frame struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return false
+	}
+	return frame.Type == "auth"
+}
+
 // liveServerFrame is the subset of provider→gateway frames the write-back
 // layer consumes; everything else relays untouched. SetupComplete marks the
 // point where the initial context turn rides upstream (RUYI-692 D1 ④);
@@ -844,6 +863,11 @@ func (h *Handler) relayVoiceSessionConn(
 				return
 			}
 			if isClientSetupFrame(data) {
+				continue
+			}
+			if isClientAuthFrame(data) {
+				slog.Debug("voice: swallowed client auth envelope at the relay",
+					"session_id", uuidToString(session.ID))
 				continue
 			}
 			var toolFrame liveClientToolFrame
