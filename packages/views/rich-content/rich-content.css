@@ -43,9 +43,15 @@
  * reference here instead: a card — header 「引用 · N」 plus at most two
  * preview rows plus a fold-count line — that is ONE button. The rows
  * themselves are spans and never navigate; pressing the block opens the
- * popover (styled inline in issue-reference-footer.tsx — it portals outside
- * this scope). The block is part of the content flow, so the compact
+ * popover (styled inline in issue-reference-footer.tsx — it portals out of
+ * the content flow). The block is part of the content flow, so the compact
  * density's `> :last-child` margin trim keeps it flush in chat bubbles.
+ *
+ * The rules below deliberately carry NO `.rich-text-editor` ancestor: the
+ * issue body mounts the tail as a sibling of <ContentEditor>
+ * (issue-detail.tsx), outside the editor scope, which left that surface
+ * totally unstyled (RUYI-730 QA probe). Keep these selectors self-contained
+ * — the block must style the same wherever a host mounts it.
  *
  * RUYI-730 rebuilds the visuals on the native sub-issues block's language
  * (issue-detail.tsx). Token mapping, official class → CSS value:
@@ -58,7 +64,7 @@
  * Row type scale follows SubIssueRow: identifier `text-micro` tabular, title
  * `text-body` (still clamped at two lines, Owner point ①).
  */
-.rich-text-editor .issue-reference-footer {
+.issue-reference-footer {
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -77,19 +83,19 @@
 }
 
 /* divide-y divide-border/60: separators between header, rows, fold line. */
-.rich-text-editor .issue-reference-footer > * + * {
+.issue-reference-footer > * + * {
   border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
 }
 
-.rich-text-editor .issue-reference-footer:hover {
+.issue-reference-footer:hover {
   background: color-mix(in oklab, var(--accent) 50%, transparent);
 }
 
-.rich-text-editor .issue-reference-footer:focus-visible {
+.issue-reference-footer:focus-visible {
   box-shadow: 0 0 0 2px var(--ring);
 }
 
-.rich-text-editor .issue-reference-header {
+.issue-reference-header {
   display: flex;
   align-items: center;
   gap: 0.375rem;
@@ -100,7 +106,7 @@
   color: var(--muted-foreground);
 }
 
-.rich-text-editor .issue-reference-chevron {
+.issue-reference-chevron {
   width: 0.875rem;
   height: 0.875rem;
   flex-shrink: 0;
@@ -108,19 +114,19 @@
   transition: transform 150ms;
 }
 
-.rich-text-editor .issue-reference-footer[aria-expanded="true"]
+.issue-reference-footer[aria-expanded="true"]
   .issue-reference-chevron {
   transform: rotate(180deg);
 }
 
-.rich-text-editor .issue-reference-collapsed {
+.issue-reference-collapsed {
   padding: 0.5rem 0.75rem;
   font-size: var(--text-caption);
   line-height: var(--text-caption--line-height);
   color: var(--muted-foreground);
 }
 
-.rich-text-editor .issue-reference-row {
+.issue-reference-row {
   display: flex;
   align-items: center;
   gap: 0.625rem;
@@ -132,7 +138,7 @@
   text-align: left;
 }
 
-.rich-text-editor .issue-reference-identifier {
+.issue-reference-identifier {
   flex-shrink: 0;
   font-size: var(--text-micro);
   line-height: var(--text-micro--line-height);
@@ -142,7 +148,7 @@
 }
 
 /* Owner point ①: full titles, wrap at two lines — no more ellipsis. */
-.rich-text-editor .issue-reference-title {
+.issue-reference-title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -152,6 +158,6 @@
   overflow-wrap: anywhere;
 }
 
-.rich-text-editor .issue-reference-degraded {
+.issue-reference-degraded {
   color: var(--muted-foreground);
 }
