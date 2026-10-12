@@ -1,42 +1,56 @@
 /**
- * Tail aggregation of issue references (RUYI-635 增量, mobile half;
- * flattened by RUYI-731).
+ * Tail aggregation of issue references (RUYI-635 增量, mobile half).
  *
  * Web renders every issue/PR mention as plain body text and lists the
  * collected references in a footer; mobile's demote pass
  * (`lib/markdown/preprocess.ts`) applies the same body-text contract, and
- * this component is the tail block. RUYI-731 retires the two-level
- * anti-mistouch surface (whole-block pressable + bottom sheet): the block is
- * now a flat list — separator + header 「引用 · N」 + EVERY reference as one
- * tappable row, in first-appearance order. Rows navigate directly, the same
- * landing paths the old sheet rows took:
+ * this component is the tail block. RUYI-731 (Owner correction 2026-10-12)
+ * scoped "flat, no second-level surface" to the web footer only — mobile
+ * keeps the anti-mistouch two-level surface (Owner points ①③④, Board 1 +
+ * Board 2):
  *
- *   - issue rows push the in-app route (`resolveLinkAction`, the same
- *     decision prose links take);
- *   - PR rows open the canonical URL through RUYI-634's `openExternalUrl`
- *     channel (GitHub App deep link when installed, browser otherwise) with
- *     a failure Alert;
- *   - unresolved references stay non-clickable plain-text slots — the same
- *     "miss reads as what the author typed" contract the web footer follows.
+ *   - Level 1 — ONE Pressable for the whole block (separator + header
+ *     「引用 · N」 + chevron + at most 2 preview rows + fold-count line).
+ *     Rows are plain Views/Texts: nothing inline navigates any more, and
+ *     any press just opens the sheet — a mistouch costs a modal, not a
+ *     page leave. Titles wrap at 2 lines (`numberOfLines={2}`).
+ *   - Level 2 — bottom sheet (transparent Modal, Board 2): title + close,
+ *     grouped 任务 / Pull Request only when both kinds mix (first-appearance
+ *     order kept, single-kind lists ungrouped), rows min-h 48 with inset
+ *     separators, mask / × / Android back all close. Issue rows push the
+ *     in-app route (`resolveLinkAction`, the same decision prose links
+ *     take); PR rows open the canonical URL through RUYI-634's
+ *     `openExternalUrl` channel (GitHub App deep link when installed,
+ *     browser otherwise) with a failure Alert; unresolved references stay
+ *     non-clickable plain-text slots.
  *
  * RUYI-731 self-filter: the current-issue context (`lib/current-issue-context`,
  * default null, mounted by the issue detail screen) makes a reference that
- * resolves to the CURRENT issue build no row; surfaces without the context
- * (chat, inbox) keep every row. The row-building policy (zip, cross-form
+ * resolves to the CURRENT issue build no row — it appears in neither the
+ * preview nor the sheet; surfaces without the context (chat, inbox) keep
+ * every row. The row-building / fold / grouping policy (zip, cross-form
  * collapse, self-filter, kinds) lives in `lib/issue-reference-rows.ts`
  * (node-testable); this component only resolves and draws.
  *
  * Extraction happens once in `Markdown` (raw content, shared core
  * extractor, raw-deduped); this component only resolves and renders.
  */
-import { useMemo, type ReactNode } from "react";
-import { Alert, Linking, Pressable, Text, View } from "react-native";
+import { useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Alert,
+  Linking,
+  Modal,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQueries } from "@tanstack/react-query";
-import {
-  parsePullRequestReference,
-} from "@multica/core/markdown";
+import { parsePullRequestReference } from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
 import { identifierMatchesPrefix } from "@multica/core/markdown";
 import {
@@ -49,6 +63,9 @@ import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
 import {
   buildReferenceTailRows,
+  groupReferenceTailRows,
+  partitionReferencePreview,
+  shouldCloseSheetOnDragRelease,
   type ReferenceTailRow,
 } from "@/lib/issue-reference-rows";
 import { useCurrentIssueId } from "@/lib/current-issue-context";
@@ -72,6 +89,57 @@ function prOrIssueTitle(row: ResolvedReferenceTailRow): string {
   return row.kind === "issue" ? row.issue.title : row.pr.title;
 }
 
+/**
+ * Shared actionable-row body (sheet level): icon + identifier + 2-line
+ * title + chevron. Branch-specific bits arrive pre-built so each kind
+ * keeps its own narrowed typing here.
+ */
+function renderActionableRow({
+  key,
+  testID,
+  onPress,
+  icon,
+  identifier,
+  title,
+  chevronColor,
+  showDivider,
+}: {
+  key: string;
+  testID: string;
+  onPress: () => void;
+  icon: ReactNode;
+  identifier: string;
+  title: string;
+  chevronColor: string;
+  showDivider: boolean;
+}) {
+  return (
+    <View key={key}>
+      {showDivider ? <View className="ml-12 h-px bg-border" /> : null}
+      <Pressable
+        testID={testID}
+        className="min-h-[48px] flex-row items-center gap-3 px-4 py-2 active:bg-accent"
+        accessibilityRole="link"
+        accessibilityLabel={`${identifier} ${title}`}
+        onPress={onPress}
+      >
+        {icon}
+        <Text className="text-[13px] font-medium text-muted-foreground">
+          {identifier}
+        </Text>
+        <Text className="flex-1 text-sm leading-5 text-foreground" numberOfLines={2}>
+          {title}
+        </Text>
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={chevronColor}
+        />
+      </Pressable>
+    </View>
+  );
+}
+
 export function IssueReferenceList({
   references,
 }: {
@@ -84,6 +152,22 @@ export function IssueReferenceList({
   const currentIssueId = useCurrentIssueId();
   const { colorOf } = useIssueStatuses();
   const { colorScheme } = useColorScheme();
+  const insets = useSafeAreaInsets();
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Board 2 close path #3: swipe down on the sheet header to dismiss. The
+  // responder only claims the gesture once a vertical drag emerges, so taps
+  // on the header (including the × button) still reach their Pressables; the
+  // threshold decision itself is node-tested policy.
+  const sheetDrag = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) =>
+        Math.abs(g.dy) > 8 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_e, g) => {
+        if (shouldCloseSheetOnDragRelease(g.dy, g.vy)) setSheetOpen(false);
+      },
+    }),
+  ).current;
 
   const results = useQueries({
     queries: useMemo(
@@ -130,14 +214,31 @@ export function IssueReferenceList({
     () => buildReferenceTailRows(references, results, currentIssueId),
     [references, results, currentIssueId],
   );
+  const { previews, hidden, hiddenPrCount } = useMemo(
+    () => partitionReferencePreview(rows),
+    [rows],
+  );
+  const groups = useMemo(() => groupReferenceTailRows(rows), [rows]);
 
   if (references.length === 0 || rows.length === 0) return null;
 
   const headerLabel = t("detail.reference_tail_header", "References · {{count}}", {
     count: rows.length,
   });
+  const collapsedLine =
+    hidden.length === 0
+      ? null
+      : hiddenPrCount > 0
+        ? t("detail.reference_tail_more_with_pr", "{{count}} more references (incl. {{prCount}} PRs)", {
+            count: hidden.length,
+            prCount: hiddenPrCount,
+          })
+        : t("detail.reference_tail_more", "{{count}} more references", {
+            count: hidden.length,
+          });
 
   const navigateToIssue = (row: Extract<ReferenceTailRow, { kind: "issue" }>) => {
+    setSheetOpen(false);
     const action = resolveLinkAction(
       `mention://issue/${row.issue.id}`,
       wsSlug ?? null,
@@ -186,65 +287,176 @@ export function IssueReferenceList({
     );
   };
 
-  return (
-    // Separator + gray envelope (visual envelope unchanged; RUYI-730 owns the
-    // rework). Rows are the only press targets — each navigates on its own.
-    <View className="mt-3 border-t border-border pt-2.5">
-      <View
-        testID="issue-reference-block"
-        className="flex-col gap-1 p-1"
-        accessibilityLabel={t(
-          "detail.referenced_issues",
-          "Referenced issues",
-        )}
-      >
-        <View className="flex-row items-center px-1 py-1">
-          <Text className="text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
-            {headerLabel}
-          </Text>
+  const renderSheetRow = (row: ReferenceTailRow, showDivider: boolean) => {
+    if (row.kind === "degraded") {
+      // Plain-text slot — never tappable (Board 2 walkthrough #4).
+      return (
+        <View key={row.key}>
+          {showDivider ? <View className="ml-12 h-px bg-border" /> : null}
+          <View className="min-h-[48px] flex-row items-center px-4 py-2">
+            <Text className="flex-1 text-sm text-muted-foreground" numberOfLines={2}>
+              {row.fallback}
+            </Text>
+          </View>
         </View>
-        {rows.map((row) => {
-          if (row.kind === "degraded") {
-            // Plain-text slot — never tappable.
+      );
+    }
+    let onPress: () => void;
+    let testID: string;
+    if (row.kind === "issue") {
+      onPress = () => navigateToIssue(row);
+      testID = "reference-sheet-issue-row";
+    } else {
+      onPress = () => void openPullRequest(row);
+      testID = "reference-sheet-pr-row";
+    }
+    return renderActionableRow({
+      key: row.key,
+      testID,
+      onPress,
+      icon: renderStateIcon(row, 16),
+      identifier: prOrIssueIdentifier(row),
+      title: prOrIssueTitle(row),
+      chevronColor: THEME[colorScheme].mutedForeground,
+      showDivider,
+    });
+  };
+
+  const sheetRows: ReferenceTailRow[] = groups.grouped
+    ? [
+        ...groups.tasks,
+        ...groups.prs,
+        ...groups.degraded,
+      ]
+    : rows;
+
+  return (
+    <>
+      {/* Board 1: separator + gray-tap whole block; rows are NOT pressables.
+          Self-filtered rows (RUYI-731) reach neither the previews nor the
+          sheet — the fold runs on post-filter rows. */}
+      <View className="mt-3 border-t border-border pt-2.5">
+        <Pressable
+          testID="issue-reference-block"
+          className="flex-col gap-1 rounded-[10px] p-1 active:bg-accent"
+          accessibilityRole="button"
+          accessibilityLabel={t(
+            "detail.referenced_issues",
+            "Referenced issues",
+          )}
+          onPress={() => setSheetOpen(true)}
+        >
+          <View className="flex-row items-center px-1 py-1">
+            <Text className="text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+              {headerLabel}
+            </Text>
+            <Ionicons
+              name="chevron-forward"
+              size={14}
+              color={THEME[colorScheme].mutedForeground}
+              style={{ marginLeft: "auto" }}
+            />
+          </View>
+          {previews.map((row) => {
+            if (row.kind === "degraded") {
+              return (
+                <Text
+                  key={row.key}
+                  className="px-1 text-xs text-muted-foreground"
+                  numberOfLines={2}
+                >
+                  {row.fallback}
+                </Text>
+              );
+            }
             return (
-              <Text
+              <View
                 key={row.key}
-                className="px-1 text-xs text-muted-foreground"
-                numberOfLines={2}
+                testID="issue-reference-row"
+                className="flex-row items-center gap-2 px-1"
               >
-                {row.fallback}
-              </Text>
+                {renderStateIcon(row, 14)}
+                <Text className="shrink-0 text-xs font-medium text-muted-foreground">
+                  {prOrIssueIdentifier(row)}
+                </Text>
+                <Text
+                  className="flex-1 text-xs leading-[18px] text-foreground"
+                  numberOfLines={2}
+                >
+                  {prOrIssueTitle(row)}
+                </Text>
+              </View>
             );
-          }
-          const identifier = prOrIssueIdentifier(row);
-          const title = prOrIssueTitle(row);
-          return (
-            <Pressable
-              key={row.key}
-              testID="issue-reference-row"
-              className="flex-row items-center gap-2 rounded-md px-1 active:bg-accent"
-              accessibilityRole="link"
-              accessibilityLabel={`${identifier} ${title}`}
-              onPress={
-                row.kind === "issue"
-                  ? () => navigateToIssue(row)
-                  : () => void openPullRequest(row)
-              }
-            >
-              {renderStateIcon(row, 14)}
-              <Text className="shrink-0 text-xs font-medium text-muted-foreground">
-                {identifier}
-              </Text>
-              <Text
-                className="flex-1 text-xs leading-[18px] text-foreground"
-                numberOfLines={2}
-              >
-                {title}
-              </Text>
-            </Pressable>
-          );
-        })}
+          })}
+          {collapsedLine ? (
+            <Text className="px-1 text-xs text-muted-foreground">
+              {collapsedLine}
+            </Text>
+          ) : null}
+        </Pressable>
       </View>
-    </View>
+
+      {/* Board 2: bottom sheet — the ONLY surface where rows navigate. */}
+      <Modal
+        visible={sheetOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSheetOpen(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/40"
+          onPress={() => setSheetOpen(false)}
+        >
+          <View
+            className="mt-auto rounded-t-2xl bg-popover"
+            style={{ maxHeight: "75%", paddingBottom: insets.bottom + 8 }}
+          >
+            <View
+              className="flex-row items-center border-b border-border px-4 py-3"
+              {...sheetDrag.panHandlers}
+            >
+              <Text className="flex-1 text-base font-bold text-foreground">
+                {headerLabel}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t(
+                  "mobile.detail.reference_sheet_close",
+                  "Close",
+                )}
+                hitSlop={12}
+                onPress={() => setSheetOpen(false)}
+                className="-mr-1 p-2"
+              >
+                <Ionicons
+                  name="close"
+                  size={20}
+                  color={THEME[colorScheme].mutedForeground}
+                />
+              </Pressable>
+            </View>
+            <ScrollView nestedScrollEnabled>
+              {groups.grouped ? (
+                <>
+                  <Text className="px-4 pt-3 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+                    {t("detail.reference_group_tasks", "Tasks")}
+                  </Text>
+                  {groups.tasks.map((row, i) =>
+                    renderSheetRow(row, i > 0),
+                  )}
+                  <Text className="px-4 pt-3 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+                    {t("detail.reference_group_prs", "Pull Request")}
+                  </Text>
+                  {groups.prs.map((row, i) => renderSheetRow(row, i > 0))}
+                  {groups.degraded.map((row) => renderSheetRow(row, false))}
+                </>
+              ) : (
+                sheetRows.map((row, i) => renderSheetRow(row, i > 0))
+              )}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
   );
 }

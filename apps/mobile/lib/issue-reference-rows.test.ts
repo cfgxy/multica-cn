@@ -4,15 +4,21 @@ import type { IssueReference } from "@multica/core/markdown";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
 
 /**
- * Pure row-building for the reference tail (RUYI-635 + RUYI-731).
+ * Pure row-building + folding + grouping for the reference tail (RUYI-635
+ * 增量 + RUYI-731).
  *
- * Mirrors the web footer's row union; the fold cut and the sheet grouping it
- * fed were retired with RUYI-731, so only the row union remains here. RN
- * components can't render in the node vitest lane, so the tail's policy
- * lives here where it CAN be tested for real — the component
- * (issue-reference-list.tsx) only resolves, self-filters, and draws.
+ * Mirrors the web footer's row union; RUYI-731 (Owner correction) kept the
+ * fold as mobile-only policy, so the preview cut and the sheet grouping live
+ * here too. RN components can't render in the node vitest lane, so the
+ * tail's policy is tested for real here — the component
+ * (issue-reference-list.tsx) only resolves and draws.
  */
-import { buildReferenceTailRows } from "./issue-reference-rows";
+import {
+  buildReferenceTailRows,
+  groupReferenceTailRows,
+  partitionReferencePreview,
+  shouldCloseSheetOnDragRelease,
+} from "./issue-reference-rows";
 
 const UUID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
 const UUID2 = "8f14e45f-ceea-4670-9b1c-0d3e4f5a6b7c";
@@ -133,5 +139,123 @@ describe("buildReferenceTailRows self-filter (RUYI-731)", () => {
     );
 
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe("partitionReferencePreview", () => {
+  it("shows every row when the list fits the preview budget", () => {
+    const rows = buildReferenceTailRows(
+      [bare("MUL-1"), prRef("cfgxy/multica-cn#338")],
+      [issue(UUID, "MUL-1"), pr(338)],
+    );
+    expect(partitionReferencePreview(rows)).toEqual({
+      previews: rows,
+      hidden: [],
+      hiddenPrCount: 0,
+    });
+  });
+
+  it("folds the tail beyond two rows and counts folded PRs", () => {
+    const rows = buildReferenceTailRows(
+      [
+        bare("MUL-1"),
+        prRef("cfgxy/multica-cn#338"),
+        bare("MUL-2"),
+        prRef("cfgxy/multica-cn#341"),
+        bare("MUL-3"),
+      ],
+      [issue(UUID, "MUL-1"), pr(338), issue(UUID2, "MUL-2"), pr(341), null],
+    );
+    const partition = partitionReferencePreview(rows);
+    expect(partition.previews.map((r) => r.kind)).toEqual(["issue", "pr"]);
+    expect(partition.hidden.map((r) => r.kind)).toEqual([
+      "issue",
+      "pr",
+      "degraded",
+    ]);
+    expect(partition.hiddenPrCount).toBe(1);
+  });
+
+  it("counts PRs that appear only inside the folded tail", () => {
+    const rows = buildReferenceTailRows(
+      [bare("MUL-1"), bare("MUL-2"), prRef("cfgxy/multica-cn#338")],
+      [issue(UUID, "MUL-1"), issue(UUID2, "MUL-2"), pr(338)],
+    );
+    const partition = partitionReferencePreview(rows);
+    expect(partition.hidden).toHaveLength(1);
+    expect(partition.hiddenPrCount).toBe(1);
+  });
+
+  it("returns empty slices for an empty list", () => {
+    expect(partitionReferencePreview([])).toEqual({
+      previews: [],
+      hidden: [],
+      hiddenPrCount: 0,
+    });
+  });
+
+  it("never surfaces a self-filtered row: the fold runs on post-filter rows", () => {
+    const rows = buildReferenceTailRows(
+      [
+        mention(UUID, "MUL-7"),
+        bare("MUL-9"),
+        bare("MUL-11"),
+        bare("MUL-12"),
+      ],
+      [issue(UUID, "MUL-7"), issue(UUID2, "MUL-9"), issue("u3", "MUL-11"), issue("u4", "MUL-12")],
+      UUID,
+    );
+    const partition = partitionReferencePreview(rows);
+    // The self row is gone BEFORE the cut: the two other issues fill the
+    // preview and only the third folds — the self row consumed no slot.
+    expect(partition.previews.map((r) => r.kind)).toEqual(["issue", "issue"]);
+    expect(partition.hidden).toHaveLength(1);
+  });
+});
+
+describe("groupReferenceTailRows", () => {
+  it("groups into tasks and pull requests only when both kinds mix", () => {
+    const rows = buildReferenceTailRows(
+      [bare("MUL-1"), prRef("cfgxy/multica-cn#338"), bare("MUL-404")],
+      [issue(UUID, "MUL-1"), pr(338, "merged"), null],
+    );
+    const groups = groupReferenceTailRows(rows);
+
+    expect(groups.grouped).toBe(true);
+    expect(groups.tasks.map((r) => r.kind)).toEqual(["issue"]);
+    expect(groups.prs.map((r) => r.kind)).toEqual(["pr"]);
+    // Degraded rows never join a group — plain-text slots after them.
+    expect(groups.degraded.map((r) => r.kind)).toEqual(["degraded"]);
+  });
+
+  it("keeps a single-kind list ungrouped", () => {
+    const rows = buildReferenceTailRows(
+      [bare("MUL-1"), bare("MUL-2")],
+      [issue(UUID, "MUL-1"), issue(UUID2, "MUL-2")],
+    );
+    const groups = groupReferenceTailRows(rows);
+
+    expect(groups.grouped).toBe(false);
+    expect(groups.tasks).toHaveLength(2);
+    expect(groups.prs).toHaveLength(0);
+  });
+});
+
+describe("shouldCloseSheetOnDragRelease", () => {
+  it("closes when the release point travels past the distance threshold", () => {
+    expect(shouldCloseSheetOnDragRelease(80, 0)).toBe(true);
+  });
+
+  it("closes on a downward fling even from a short drag", () => {
+    expect(shouldCloseSheetOnDragRelease(12, 0.8)).toBe(true);
+  });
+
+  it("stays open below both thresholds", () => {
+    expect(shouldCloseSheetOnDragRelease(40, 0.1)).toBe(false);
+  });
+
+  it("never closes on an upward drag or upward fling", () => {
+    expect(shouldCloseSheetOnDragRelease(-120, 0)).toBe(false);
+    expect(shouldCloseSheetOnDragRelease(8, -2)).toBe(false);
   });
 });
