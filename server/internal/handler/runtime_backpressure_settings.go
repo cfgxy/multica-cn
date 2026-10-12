@@ -416,7 +416,11 @@ func (h *Handler) ListRuntimeBackpressureEvents(w http.ResponseWriter, r *http.R
 		_ = json.Unmarshal(row.Hits, &event.Hits)
 		resp = append(resp, event)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": resp})
+	// Bare array, like every other list endpoint: the frontend consumes this
+	// through a z.array(...) schema whose parseWithFallback silently degrades
+	// a shape mismatch to an empty list (the D3 defect — the wrapper object
+	// made the timeline never render).
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // recordBackpressureEvent appends the transition history row (RUYI-729 ④).

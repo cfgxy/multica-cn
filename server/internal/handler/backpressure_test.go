@@ -80,6 +80,72 @@ func TestRecordBackpressure_NilAndInvalidNoop(t *testing.T) {
 	}
 }
 
+// D2 rework evidence (RUYI-729): a genuine recovery (active→inactive report
+// on a live heartbeat, no restart) must land a cleared row in
+// daemon_backpressure_event through the transition detector. The QA round
+// never saw a cleared row only because the D1 defect kept the daemon
+// reporting active:true forever — the transition never happened. This test
+// pins the recovery half of the chain so the D1 fix's end-to-end behavior
+// (fallback → inactive report → cleared row) has a checked seam.
+func TestRecordBackpressure_RecoveryTransitionWritesClearedEventRow(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := dbfx.Runtime(t, "BP cleared rt", testutil.Cols{
+		"device_info": "backpressure cleared fixture",
+	})
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM daemon_backpressure_event WHERE runtime_id = $1`,
+			mustParseUUID(t, runtimeID))
+	})
+	eventRows := func() []string {
+		t.Helper()
+		rows, err := testPool.Query(ctx,
+			`SELECT event_type FROM daemon_backpressure_event WHERE runtime_id = $1 ORDER BY occurred_at`,
+			mustParseUUID(t, runtimeID))
+		if err != nil {
+			t.Fatalf("query event rows: %v", err)
+		}
+		defer rows.Close()
+		var types []string
+		for rows.Next() {
+			var et string
+			if err := rows.Scan(&et); err != nil {
+				t.Fatalf("scan event_type: %v", err)
+			}
+			types = append(types, et)
+		}
+		return types
+	}
+
+	// Hold starts (deferred claims climbing), then a genuine recovery on the
+	// same live runtime: exactly one entered row and one cleared row.
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.1, 83, 36))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 30.2, 55, 93))
+
+	types := eventRows()
+	if len(types) != 2 || types[0] != "entered" || types[1] != "cleared" {
+		t.Fatalf("event rows = %v, want [entered cleared]", types)
+	}
+	var deferred int64
+	if err := testPool.QueryRow(ctx,
+		`SELECT deferred_claims FROM daemon_backpressure_event WHERE runtime_id = $1 AND event_type = 'cleared'`,
+		mustParseUUID(t, runtimeID),
+	).Scan(&deferred); err != nil {
+		t.Fatalf("read cleared row: %v", err)
+	}
+	if deferred != 93 {
+		t.Fatalf("cleared deferred_claims = %d, want 93", deferred)
+	}
+
+	// A same-state follow-up report is watermark drift only — no new rows.
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 29.7, 54, 93))
+	if got := eventRows(); len(got) != 2 {
+		t.Fatalf("event rows after drift = %v, want unchanged [entered cleared]", got)
+	}
+}
+
 func TestRecordBackpressure_PersistDedupeAndDrift(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
