@@ -122,6 +122,7 @@ export function AgentCreatePanel({
   const { t } = useT("modals");
   const { t: tIssues } = useT("issues");
   const { t: tProjects } = useT("projects");
+  const { t: tVoice } = useT("voice");
   const sendShortcut = useShortcut("send");
   const workspaceName = useCurrentWorkspace()?.name;
   const workspacePaths = useWorkspacePaths();
@@ -876,9 +877,13 @@ export function AgentCreatePanel({
               multiple
               onSelect={(file) => editorRef.current?.uploadFile(file)}
             />
+            {/* RUYI-626 stage 1: direct connect ships mobile-only — the
+                desktop/web entry is a disabled mic that says so (never
+                silent). */}
             <VoiceButton
               onStart={voice.start}
               disabled={submitting || gate.uploading}
+              disabledReason={tVoice(($) => $.button.disabled_stage1)}
             />
             {keepOpen && sentCount > 0 && (
               <span className="text-caption text-emerald-600 dark:text-emerald-400">

@@ -929,7 +929,15 @@
     "bp_window_aria": "Smoothing window in samples",
     "bp_toast_saved": "Backpressure settings saved — daemons pick them up on the next heartbeat.",
     "bp_toast_failed": "Failed to save backpressure settings.",
-    "bp_invalid": "Invalid settings:"
+    "bp_invalid": "Invalid settings:",
+    "scheduling_pause_label": "Pause task scheduling",
+    "scheduling_pause_hint": "When paused, no agent in this workspace claims new tasks. Queued tasks keep coalescing and running tasks drain normally. Owner/admin only; recorded in the audit log.",
+    "scheduling_paused_note_one": "Task scheduling is paused — {{count}} task queued across all agents.",
+    "scheduling_paused_note_other": "Task scheduling is paused — {{count}} tasks queued across all agents.",
+    "scheduling_paused_toast": "Workspace scheduling paused",
+    "scheduling_resumed_toast_one": "Workspace scheduling resumed — {{count}} task flowing",
+    "scheduling_resumed_toast_other": "Workspace scheduling resumed — {{count}} tasks flowing",
+    "scheduling_toggle_failed_toast": "Failed to change scheduling state"
   },
   "delete_workspace_dialog": {
     "title": "Delete workspace",

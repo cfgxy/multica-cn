@@ -80,6 +80,8 @@
     "breadcrumb_workspace_fallback": "Workspace",
     "empty_title": "No issues yet",
     "empty_hint": "Create an issue to get started.",
+    "scheduling_paused_banner_one": "Task scheduling is paused — {{count}} task queued across this workspace. Resume it in workspace settings.",
+    "scheduling_paused_banner_other": "Task scheduling is paused — {{count}} tasks queued across this workspace. Resume it in workspace settings.",
     "move_failed": "Failed to move issue"
   },
   "status": {
@@ -325,6 +327,12 @@
     "title_placeholder": "Issue title",
     "desc_placeholder": "Add description...",
     "current_issue": "This issue",
+    "referenced_issues": "Referenced issues",
+    "reference_tail_header": "References · {{count}}",
+    "reference_tail_more": "{{count}} more references",
+    "reference_tail_more_with_pr": "{{count}} more references (incl. {{prCount}} PRs)",
+    "reference_group_tasks": "Tasks",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "Sub-issues",
     "sub_issue_of": "Sub-issue of",
     "add_sub_issues": "Add sub-issues",
@@ -335,6 +343,12 @@
     "section_properties": "Properties",
     "section_parent_issue": "Parent issue",
     "section_pull_requests": "Pull requests",
+    "section_relations": "Relations",
+    "relations_blocks": "Blocks",
+    "relations_blocked_by": "Blocked by",
+    "relations_relates_to": "Related",
+    "relations_supersedes": "Supersedes",
+    "relations_superseded_by": "Superseded by",
     "section_metadata": "Metadata",
     "section_details": "Details",
     "section_quick_actions": "Quick Actions",
@@ -1004,6 +1018,7 @@
       "actions_a11y": "Issue actions",
       "edit_details": "Edit details",
       "open_on_web": "Open on web",
+      "relations_empty": "No structured relations yet. Blocks, related, and supersede links appear here.",
       "load_failed": "Failed to load issue: {{reason}}",
       "not_found": "not found",
       "retry": "Retry",
@@ -1017,7 +1032,9 @@
       "comments_empty": "No comments yet.",
       "comments_no_match": "No matching comments.",
       "comments_open_a11y": "Browse comments",
-      "pull_request_open_failed": "Couldn't open this pull request."
+      "pull_request_open_failed": "Couldn't open this pull request.",
+      "reference_sheet_close": "Close",
+      "pull_request_card_label": "Pull request"
     },
     "picker": {
       "unassigned": "Unassigned",
@@ -1095,8 +1112,7 @@
       "cancel_requested": "Stopping",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Cancelled",
-      "cancel_requested": "Stopping"
+      "cancelled": "Cancelled"
     },
     "runs": {
       "title": "Agent Runs",
@@ -1220,6 +1236,15 @@
     "answer_failed": "Failed to submit answer",
     "cancel_failed": "Failed to cancel card",
     "batch_title": "Batch answer",
-    "batch_submit": "Submit all"
+    "batch_submit": "Submit all",
+    "auth_title": "Authorization request",
+    "auth_state_approved": "Approved",
+    "auth_state_denied": "Denied",
+    "auth_state_executed": "Executed",
+    "auth_state_execute_failed": "Execution failed",
+    "auth_approve_default": "Approve",
+    "auth_deny_default": "Deny",
+    "auth_execute_failed": "Execution failed: {{reason}}",
+    "auth_answer_failed": "Failed to record your answer"
   }
 }

@@ -12,7 +12,7 @@
  * regression that reintroduces a Chat-only renderer fails here.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 
@@ -45,6 +45,9 @@ vi.mock("@multica/core/api", () => ({
 }));
 
 vi.mock("@multica/core/paths", () => ({
+  // RUYI-705: RichContent now reads the workspace prefix; null = unknown =
+  // fall-through, which is what these fixtures were written against.
+  useCurrentWorkspace: () => null,
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/test/issues/${id}`,
     projectDetail: (id: string) => `/test/projects/${id}`,
@@ -67,6 +70,27 @@ vi.mock("../issues/components/issue-mention-card", () => ({
     <span data-testid="issue-mention">{fallbackLabel ?? issueId}</span>
   ),
 }));
+
+// RUYI-635: the tail footer needs query/navigation infra this parity fixture
+// does not exercise — its behaviours are pinned in issue-reference-footer,
+// issue-reference-tail and issue-mention-aggregation tests. A stub keeps the
+// aggregation block present in the surface comparison without dragging those
+// providers in; the pure extractor decides presence exactly like the real
+// tail does.
+vi.mock("./issue-reference-footer", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./issue-reference-footer")>();
+  const { dedupeIssueReferences, extractIssueReferences } = await import(
+    "@multica/core/markdown"
+  );
+  return {
+    ...actual,
+    IssueReferenceTail: ({ content }: { content: string }) =>
+      dedupeIssueReferences(extractIssueReferences(content)).length > 0 ? (
+        <div data-issue-reference-footer="" />
+      ) : null,
+  };
+});
 
 vi.mock("../projects/components/project-chip", () => ({
   ProjectChip: ({ projectId }: { projectId: string }) => (
@@ -470,8 +494,14 @@ describe("semantic parity beyond Mermaid", () => {
       );
       // Ordinary language -> lowlight static code
       expect(container.querySelector("code.hljs")).not.toBeNull();
-      // Mention chip
-      expect(within(container).getByTestId("issue-mention")).toBeInTheDocument();
+      // RUYI-635: the issue mention reads as plain text in the body and
+      // aggregates into the tail footer — the same on both surfaces.
+      expect(
+        container.querySelector("[data-issue-mention-text]")?.textContent,
+      ).toBe("MUL-7");
+      expect(
+        container.querySelector("[data-issue-reference-footer]"),
+      ).not.toBeNull();
       // Highlight
       expect(container.querySelector("mark")?.textContent).toBe("highlighted");
       // Plain link

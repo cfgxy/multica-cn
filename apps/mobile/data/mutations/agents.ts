@@ -13,12 +13,10 @@
  * Cache shapes touched (see data/queries/agents.ts for the factory):
  *   - agentKeys.list(wsId)           → `Agent[]`
  *   - agentKeys.detail(wsId, id)     → `Agent` (skills array lives here)
- *   - agentKeys.webhooks(wsId, id)   → `AgentWebhook[]`
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
-  AgentWebhook,
   CreateAgentRequest,
   SetAgentSkillsRequest,
   UpdateAgentEnvRequest,
@@ -81,7 +79,7 @@ export function useUpdateAgent(agentId: string) {
       ]);
       const prevDetail = qc.getQueryData<Agent>(detailKey);
       const prevList = qc.getQueryData<Agent[]>(listKey);
-      // Profile fields only — skills/env/webhooks sub-resources are never in
+      // Profile fields only — skills/env sub-resources are never in
       // an UpdateAgentRequest, so a shallow merge can't clobber them. The
       // cast is cosmetic: TS can't narrow the spread of UpdateAgentRequest's
       // explicit-null "clear" fields down to Agent, and the merged value is
@@ -276,118 +274,6 @@ export function useRemoveAgentSkill(agentId: string) {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: agentKeys.detail(wsId, agentId) });
-    },
-  });
-}
-
-// --- Webhooks ---
-// Every webhook write returns the full AgentWebhook (rotate mints a new
-// token and returns the fresh row) — patch the cached list in place, settle
-// invalidate reconciles the manager-gated fields.
-
-function patchWebhookList(
-  qc: ReturnType<typeof useQueryClient>,
-  key: readonly unknown[],
-  next: AgentWebhook,
-) {
-  qc.setQueryData<import("@multica/core/types").AgentWebhook[]>(key, (old) =>
-    old ? old.map((w) => (w.id === next.id ? next : w)) : old,
-  );
-}
-
-export function useCreateAgentWebhook(agentId: string) {
-  const qc = useQueryClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const key = agentKeys.webhooks(wsId, agentId);
-
-  return useMutation({
-    mutationKey: ["createAgentWebhook", agentId] as const,
-    mutationFn: (body: { name: string; prompt: string }) =>
-      api.createAgentWebhook(agentId, body),
-    onSuccess: (webhook) => {
-      qc.setQueryData<AgentWebhook[]>(key, (old) =>
-        old ? [...old, webhook] : [webhook],
-      );
-    },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: key });
-    },
-  });
-}
-
-export function useUpdateAgentWebhook(agentId: string) {
-  const qc = useQueryClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const key = agentKeys.webhooks(wsId, agentId);
-
-  return useMutation({
-    mutationKey: ["updateAgentWebhook", agentId] as const,
-    mutationFn: ({
-      webhookId,
-      body,
-    }: {
-      webhookId: string;
-      body: { name: string; prompt: string };
-    }) => api.updateAgentWebhook(agentId, webhookId, body),
-    onSuccess: (webhook) => patchWebhookList(qc, key, webhook),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: key });
-    },
-  });
-}
-
-export function useToggleAgentWebhook(agentId: string) {
-  const qc = useQueryClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const key = agentKeys.webhooks(wsId, agentId);
-
-  return useMutation({
-    mutationKey: ["toggleAgentWebhook", agentId] as const,
-    mutationFn: ({ webhookId, enabled }: { webhookId: string; enabled: boolean }) =>
-      api.setAgentWebhookEnabled(agentId, webhookId, enabled),
-    onSuccess: (webhook) => patchWebhookList(qc, key, webhook),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: key });
-    },
-  });
-}
-
-export function useRotateAgentWebhook(agentId: string) {
-  const qc = useQueryClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const key = agentKeys.webhooks(wsId, agentId);
-
-  return useMutation({
-    mutationKey: ["rotateAgentWebhook", agentId] as const,
-    mutationFn: (webhookId: string) => api.rotateAgentWebhook(agentId, webhookId),
-    onSuccess: (webhook) => patchWebhookList(qc, key, webhook),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: key });
-    },
-  });
-}
-
-export function useDeleteAgentWebhook(agentId: string) {
-  const qc = useQueryClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const key = agentKeys.webhooks(wsId, agentId);
-
-  return useMutation({
-    mutationKey: ["deleteAgentWebhook", agentId] as const,
-    mutationFn: (webhookId: string) => api.deleteAgentWebhook(agentId, webhookId),
-    onMutate: async (webhookId) => {
-      await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<AgentWebhook[]>(key);
-      qc.setQueryData<AgentWebhook[]>(key, (old) =>
-        old ? old.filter((w) => w.id !== webhookId) : old,
-      );
-      return { prev, key };
-    },
-    onError: (_err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) qc.setQueryData(ctx.key, ctx.prev);
-    },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: key });
     },
   });
 }

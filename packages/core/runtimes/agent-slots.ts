@@ -32,12 +32,15 @@ export function runtimeSupportsCapability(
 export type RuntimeCredentialStatus =
   | "not_configured"
   | "configured"
-  | "invalid";
+  | "invalid"
+  | "unreachable";
 
 /**
  * Credential badge state for the voice preview row (§4.2). Older backends
  * omit the field; the badge then reads 未配置, matching a server that has no
- * credential stored.
+ * credential stored. `unreachable` (RUYI-619) means the probe could not
+ * verify the key (target unreachable / undecidable response) — distinct
+ * from `invalid`, where the provider explicitly rejected the key.
  */
 export function runtimeCredentialStatus(
   runtime: RuntimeDevice,

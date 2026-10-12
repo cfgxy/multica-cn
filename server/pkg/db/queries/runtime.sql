@@ -668,3 +668,10 @@ FROM agent_runtime
 WHERE workspace_id = $1
   AND daemon_id IS NOT NULL
   AND daemon_id <> '';
+
+-- name: ListRuntimesWithCredentialRef :many
+-- Probe-refresh candidates (RUYI-692 D1): every instance pointing at a
+-- stored credential. Voice-family filtering and badge-state decisions stay
+-- in the handler — the query is the cheap superset the refresher walks.
+SELECT * FROM agent_runtime
+WHERE credential_ref IS NOT NULL;

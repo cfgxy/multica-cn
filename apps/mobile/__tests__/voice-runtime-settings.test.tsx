@@ -4,16 +4,24 @@
  * facts stay read-only, the API-key tri-state (saved / probe-invalid /
  * failed) with its interpolated probe status, the clear action only when a
  * credential exists, the advanced-JSON client-side refusal, and the
- * metadata.disabled session-gate toggle.
+ * metadata.disabled session-gate toggle. Since RUYI-626 the probe verdict is
+ * the device's (direct path dials Google from the user's network), so the
+ * device probe is mocked per test.
  */
 import { Alert } from "react-native";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import VoiceRuntimeSettingsScreen from "@/app/(app)/[workspace]/more/runtimes/[id]";
+import { probeVoiceCredential } from "@/lib/voice/probe";
 import type { RuntimeDevice } from "@multica/core/types";
 
 const mockUpdateMutate = jest.fn();
 const mockPutMutate = jest.fn();
 const mockDeleteMutate = jest.fn();
+const mockProbeVoiceCredential = jest.mocked(probeVoiceCredential);
+
+jest.mock("@/lib/voice/probe", () => ({
+  probeVoiceCredential: jest.fn(),
+}));
 
 jest.mock("expo-router", () => ({
   Stack: { Screen: () => null },
@@ -155,6 +163,8 @@ jest.mock("@/data/mutations/runtimes", () => ({
 beforeEach(() => {
   jest.clearAllMocks();
   mockRuntimes = [voiceRuntime];
+  // Default device-probe verdict: reachable and valid (RUYI-626).
+  mockProbeVoiceCredential.mockResolvedValue({ status: "ok" });
   // Default mutation behavior: surface success so alert paths run.
   mockUpdateMutate.mockImplementation(
     (_action: unknown, opts?: { onSuccess?: () => void }) =>
@@ -219,15 +229,12 @@ describe("VoiceRuntimeSettingsScreen", () => {
 
   it("warns with the probe status when the connectivity check fails after a key update", async () => {
     const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
-    mockPutMutate.mockImplementation(
-      (_action: unknown, opts?: { onSuccess?: (res: unknown) => void }) =>
-        opts?.onSuccess?.({
-          runtime_id: "rt-1",
-          credential_key: "api_key",
-          credential_status: "invalid",
-          probe: { status: "invalid", http_status: 400 },
-        }),
-    );
+    // RUYI-626: the alert follows the DEVICE probe verdict, not the PUT
+    // response's server-side probe (that describes the server's egress).
+    mockProbeVoiceCredential.mockResolvedValue({
+      status: "invalid",
+      httpStatus: 400,
+    });
     await render(<VoiceRuntimeSettingsScreen />);
 
     await fireEvent.changeText(
@@ -249,6 +256,31 @@ describe("VoiceRuntimeSettingsScreen", () => {
         "Key saved, but the connectivity check failed (HTTP 400)",
       );
     });
+    alertSpy.mockRestore();
+  });
+
+  it("alerts could-not-verify wording when the probe reports unreachable, never invalid (RUYI-619)", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    // RUYI-626: unreachable comes from the DEVICE probe (the direct path
+    // dials Google from the user's network); the PUT response's server-side
+    // probe is ignored. A network verdict is not a credential verdict.
+    mockProbeVoiceCredential.mockResolvedValue({ status: "unreachable" });
+    await render(<VoiceRuntimeSettingsScreen />);
+
+    await fireEvent.changeText(
+      screen.getByPlaceholderText("Enter a new key to update"),
+      "qaFAKE-offline-key",
+    );
+    await fireEvent.press(screen.getByLabelText("Update key"));
+
+    await waitFor(() => {
+      expect(alertSpy).toHaveBeenCalledWith(
+        "Key saved, but this device couldn't reach Google to verify it — voice may not work on this network",
+      );
+    });
+    expect(alertSpy).not.toHaveBeenCalledWith(
+      "Key saved, but the connectivity check failed (HTTP )",
+    );
     alertSpy.mockRestore();
   });
 

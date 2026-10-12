@@ -90,16 +90,23 @@ export interface UseMentionChipInputReturn extends UseMentionInputReturn {
 export function useMentionInput(): UseMentionInputReturn;
 export function useMentionInput(options: {
   mentionMode?: "inline";
+  initialText?: string;
 }): UseMentionInputReturn;
 export function useMentionInput(options: {
   mentionMode: "chips";
+  initialText?: string;
 }): UseMentionChipInputReturn;
 export function useMentionInput({
   mentionMode = "inline",
+  initialText = "",
 }: {
   mentionMode?: "inline" | "chips";
+  /** Initial plain text, read once on mount (RUYI-605: prefilling the
+   *  manual form with a quick-create outcome's original prompt). Later
+   *  changes are ignored — the seed is fixed for the visit. */
+  initialText?: string;
 } = {}): UseMentionInputReturn | UseMentionChipInputReturn {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [selection, setSelection] = useState<{ start: number; end: number }>({
     start: 0,
     end: 0,

@@ -328,7 +328,21 @@
         "label": "실행만",
         "description": "태스크를 만들지 않고 조용히 실행합니다"
       }
-    }
+    },
+    "section_params": "파라미터",
+    "params_hint": "트리거 시 전달할 변수입니다. 제목 템플릿과 작업 설명에서 이중 중괄호로 이름을 참조합니다. 정기 실행에는 기본값이 사용됩니다.",
+    "param_name_ph": "이름 (예: city)",
+    "param_default_ph": "기본값",
+    "param_required": "필수",
+    "param_enum_ph": "옵션(쉼표로 구분)",
+    "param_add": "파라미터 추가",
+    "param_remove": "파라미터 삭제",
+    "param_type_string": "문자열",
+    "param_type_text": "긴 텍스트",
+    "param_type_number": "숫자",
+    "param_type_boolean": "불리언",
+    "param_type_enum": "열거형",
+    "param_type_label": "유형"
   },
   "schedule_editor": {
     "time_label": "시간",

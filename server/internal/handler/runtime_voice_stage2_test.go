@@ -206,8 +206,10 @@ func TestPutRuntimeCredential_ProbeFailureDoesNotBlockSave(t *testing.T) {
 		t.Fatalf("save must not be blocked by a dead probe target: got %d: %s", w.Code, w.Body.String())
 	}
 	voice := findRuntimeByID(t, listRuntimesForAssertions(t), instanceID)
-	if voice.CredentialStatus != "invalid" {
-		t.Errorf("badge after unreachable probe = %q, want invalid", voice.CredentialStatus)
+	// RUYI-619: an unreachable probe target is "could not verify", not a
+	// verdict on the key — its own badge state, never "invalid".
+	if voice.CredentialStatus != "unreachable" {
+		t.Errorf("badge after unreachable probe = %q, want unreachable", voice.CredentialStatus)
 	}
 }
 

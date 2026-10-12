@@ -18,14 +18,12 @@ import type {
   Agent,
   AgentEnvResponse,
   AgentTask,
-  AgentWebhook,
   Attachment,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
   Comment,
   CreateAgentRequest,
-  CreateAgentWebhookRequest,
   AddSquadMemberRequest,
   CreateIssueRequest,
   CreateLabelRequest,
@@ -51,6 +49,7 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   Issue,
+  IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
   IssueLabelsResponse,
@@ -91,13 +90,14 @@ import type {
   TaskMessagePayload,
   UpdateAgentEnvRequest,
   UpdateAgentRequest,
-  UpdateAgentWebhookRequest,
   UpdateIssueRequest,
   UpdateMeRequest,
   UpdateProjectRequest,
   User,
   Workspace,
   WorkspaceSubscriptionSummary,
+  DecisionRequest,
+  DecisionRequestsList,
 } from "@multica/core/types";
 import {
   parseTimelineTruncatedKinds,
@@ -105,17 +105,15 @@ import {
 } from "@multica/core/issues/timeline-query";
 import {
   AgentEnvResponseSchema,
-  AgentWebhookListSchema,
-  AgentWebhookSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
   EMPTY_AGENT_ENV,
-  EMPTY_AGENT_WEBHOOK,
-  EMPTY_AGENT_WEBHOOK_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+  EMPTY_ISSUE_RELATIONS,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_SQUAD,
@@ -124,10 +122,13 @@ import {
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
   IssuePullRequestsResponseSchema,
+  IssueRelationsResponseSchema,
+  ChildIssuesResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   ListQuickRepliesResponseSchema,
+  PullRequestLookupResponseSchema,
   SquadMemberListSchema,
   SquadMemberSchema,
   SquadMemberStatusListResponseSchema,
@@ -146,9 +147,12 @@ import {
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
 } from "@multica/core/api/schemas";
+import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
   BatchDecisionAnswersSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
   WorkspaceDecisionInboxSchema,
@@ -260,6 +264,26 @@ export interface FileAsset {
   uri: string;
   name: string;
   type: string;
+}
+
+/** Pool row of `GET /api/workspaces/:id/voice-providers` (RUYI-693 D2) —
+ *  mirrors server VoiceProviderResponse. No secret material: the credential
+ *  surfaces only as the coarse badge + last probe verdict. */
+export interface VoiceProvider {
+  id: string;
+  workspace_id: string;
+  display_name: string;
+  provider_type: string;
+  enabled: boolean;
+  credential_status: string;
+  credential_probe?: {
+    status: string;
+    http_status?: number;
+    checked_at: string;
+  } | null;
+  source_runtime_id?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
@@ -657,6 +681,15 @@ class ApiClient {
     });
   }
 
+  // GET /api/workspaces/:id/voice-providers (RUYI-693 D2 pool) —
+  // member-visible; carries no secret material, only the coarse
+  // credential_status badge and the last probe verdict (RUYI-694 D3
+  // availability gate).
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -914,6 +947,19 @@ class ApiClient {
     );
   }
 
+  // POST /api/runtimes/:id/credential-probe (RUYI-626) — the device-side
+  // connectivity verdict feeds the same credential_probe metadata badge the
+  // server-side probe writes; unreachable never gates a session start.
+  async reportCredentialProbe(
+    runtimeId: string,
+    probe: { status: "ok" | "invalid" | "unreachable"; http_status?: number },
+  ): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}/credential-probe`, {
+      method: "POST",
+      body: JSON.stringify(probe),
+    });
+  }
+
   // DELETE /api/runtimes/:id — direct instance delete (RUYI-566). The
   // server refuses with a structured 409
   // (`runtime_profile_instance_delete_unsupported`) while a live runtime
@@ -1063,65 +1109,6 @@ class ApiClient {
       { method: "PUT", body: JSON.stringify(data) },
       { endpoint: "updateAgentEnv" },
     );
-  }
-
-  // Agent webhooks (RUYI-52). webhook_token/path/url come back only for
-  // managers — the server strips them for anyone else; the UI keys its
-  // manage affordances off their presence.
-  async listAgentWebhooks(agentId: string, opts?: { signal?: AbortSignal }): Promise<AgentWebhook[]> {
-    return this.fetchValidated(
-      `/api/agents/${agentId}/webhooks`,
-      AgentWebhookListSchema,
-      EMPTY_AGENT_WEBHOOK_LIST,
-      { ...opts, endpoint: "listAgentWebhooks" },
-    );
-  }
-
-  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "POST", body: JSON.stringify(data) },
-      { endpoint: "createAgentWebhook" },
-    );
-  }
-
-  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "PUT", body: JSON.stringify(data) },
-      { endpoint: "updateAgentWebhook" },
-    );
-  }
-
-  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}/enabled`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "PUT", body: JSON.stringify({ enabled }) },
-      { endpoint: "setAgentWebhookEnabled" },
-    );
-  }
-
-  // POST rotate — mints a new token; the old URL stops working immediately.
-  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}/rotate`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "POST", body: JSON.stringify({}) },
-      { endpoint: "rotateAgentWebhook" },
-    );
-  }
-
-  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
-    await this.fetch<void>(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "DELETE",
-    });
   }
 
   // Incremental attach — POST /skills/add only inserts the given ids (server
@@ -1681,6 +1668,37 @@ class ApiClient {
     );
   }
 
+  // Structured relations (RUYI-689) — mirrors web packages/core/api/client.ts
+  // getIssueRelations → GET /api/issues/:id/relations. Read-only: edge
+  // creation/deletion stays an API concern, no mobile write counterpart.
+  async getIssueRelations(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IssueRelationsResponse> {
+    return this.fetchValidated(
+      `/api/issues/${id}/relations`,
+      IssueRelationsResponseSchema,
+      EMPTY_ISSUE_RELATIONS,
+      { ...opts, endpoint: "getIssueRelations" },
+    );
+  }
+
+  // Sub-issues of a parent — mirrors web packages/core/api/client.ts
+  // listChildIssues → GET /api/issues/:id/children. Backs the children
+  // group of the Relations page (RUYI-689); the relations endpoint covers
+  // parent + edge views but deliberately not children.
+  async listChildIssues(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ issues: Issue[] }> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/children`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
+      endpoint: "GET /api/issues/:id/children",
+    });
+  }
+
   // Write endpoint — mirrors POST /api/issues
   // (server/cmd/server/router.go:320, server/internal/handler/issue.go
   // CreateIssue). Mobile sends only the fields the form fills in; backend
@@ -2041,6 +2059,56 @@ class ApiClient {
     return inbox;
   }
 
+  // --- Agent authorization requests (RUYI-630) ---
+  // Mirrors packages/core/api/client.ts listDecisionRequests /
+  // answerDecisionRequest / cancelDecisionRequest: mobile-owned fetch
+  // wrapper, shared zod schemas, same endpoints and query-string contract.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests${query}`,
+    );
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async answerDecisionRequest(
+    workspaceId: string,
+    requestId: string,
+    decision: "approve" | "deny",
+  ): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    );
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(
+    workspaceId: string,
+    requestId: string,
+  ): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
+  }
+
   // --- Labels ---
   async listLabels(opts?: {
     signal?: AbortSignal;
@@ -2152,6 +2220,41 @@ class ApiClient {
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { ...opts, endpoint: "GET /api/issues/:id/pull-requests" },
     );
+  }
+
+  /**
+   * Workspace-scoped PR point lookup by `owner/repo#N` (RUYI-635 增量) —
+   * mirrors packages/core/api/client.ts lookupPullRequest and its 404→null
+   * contract: a PR the platform has never seen is `null`, so the reference
+   * tail's row degrades to plain text instead of erroring.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({
+      owner,
+      repo,
+      number: String(number),
+    });
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+      ).pull_request;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   // --- Projects ---

@@ -40,7 +40,7 @@ import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
-import { useWorkspaceSlug } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -57,6 +57,7 @@ import {
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
+import { IssueReferenceTail } from "./issue-reference-footer";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -113,6 +114,12 @@ function useIsFenceClosed(offset: number | undefined): boolean {
  * "open issue links in new tab" preference — is owned by the AppLink inside
  * IssueMentionCard; the wrapper only shields surrounding click handlers
  * (e.g. collapsed-comment expanders) from mention clicks.
+ *
+ * RUYI-635: markdown `mention://issue/…` links no longer reach this path —
+ * they render as plain body text and aggregate into the tail footer. The chip
+ * survives for the one remaining inline surface: a bare pasted in-app issue
+ * URL, where the author wrote a link and the unfurl keeps it navigable in
+ * place (see unfurlableEntityLink below).
  */
 function IssueMentionLink({ issueId, label }: { issueId: string; label?: string }) {
   return (
@@ -127,14 +134,12 @@ function IssueMentionLink({ issueId, label }: { issueId: string; label?: string 
  * Resolves it against the current workspace and renders a navigable mention on
  * a hit.
  *
- * Two entry points reach this, and they need DIFFERENT misses, which is why the
- * fallback is a prop rather than baked in:
- *   - the autolink preprocessor, which routes bare prose through
- *     `mention://issue/<identifier>` — a miss must go back to being the plain
- *     text the author typed;
- *   - a bare in-app issue URL, whose miss must stay the original anchor. The
- *     author wrote a link; degrading it to text would strip a working link off
- *     an issue this workspace simply cannot see.
+ * RUYI-635 narrowed this to ONE entry point: a bare in-app issue URL, whose
+ * miss must stay the original anchor — the author wrote a link; degrading it
+ * to text would strip a working link off an issue this workspace simply cannot
+ * see. (The autolink preprocessor's `mention://issue/<identifier>` form used
+ * to reach here too, but mentions now render as plain body text and aggregate
+ * into the tail footer instead.)
  *
  * A miss covers not-found, still-loading, and cross-workspace alike.
  */
@@ -222,26 +227,31 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
       /^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/,
     );
     if (match?.[1] === "issue" && match[2]) {
+      // RUYI-635: issue mentions read as plain text in the body — a bare
+      // identifier shows the identifier, a UUID mention shows its authored
+      // label — and every reference aggregates into the tail list rendered by
+      // IssueReferenceFooter below. No resolution, no chip: the body must not
+      // flicker while references resolve.
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
-      if (isIssueIdentifier(match[2])) {
-        return (
-          <IdentifierIssueMentionLink
-            identifier={match[2]}
-            fallback={match[2]}
-          />
-        );
-      }
-      return <IssueMentionLink issueId={match[2]} label={childrenToLabel(children)} />;
+      return (
+        <span data-issue-mention-text="">
+          {isIssueIdentifier(match[2]) ? match[2] : childrenToLabel(children)}
+        </span>
+      );
     }
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
     if (match?.[1] === "comment" && match[2]) {
-      // In-page anchor, not navigation (RUYI-108): the chip resolves against
-      // the comments this surface already holds and jumps within it. Outside
-      // an issue that hosts a comment list it renders degraded — see
-      // CommentMentionCard for why every miss must look the same.
+      // In-page anchor first (RUYI-108): the chip resolves against the
+      // comments this surface already holds and jumps within it, fetch-free.
+      // On a local miss — the target lives in another issue, or in a part of
+      // this one not fetched — an issue-hosting surface probes the server
+      // anchor endpoint once (RUYI-643) and renders a real link to the owning
+      // issue's `#comment-<id>` deep link. Everything unreachable folds into
+      // the degraded chip — see CommentMentionCard for why every miss must
+      // look the same.
       return (
         <CommentMentionCard
           commentId={match[2]}
@@ -531,13 +541,22 @@ export const RichContent = memo(function RichContent({
   // re-run it. Subscribing puts the value in the memo dependencies below, so a
   // late config arrival reprocesses exactly once.
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
+  // Same reactivity rule for the workspace's issue prefix (RUYI-705): the
+  // readonly autolink rewrite must not turn a wrong-prefix token (`AC-1`)
+  // into an issue reference, and a late workspace-list arrival has to
+  // reprocess content that rendered before the prefix was known.
+  const workspacePrefix = useCurrentWorkspace()?.issue_prefix || null;
 
   const processed = useMemo(
     () =>
       highlightToHtml(
-        preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true }),
+        preprocessMarkdown(content, {
+          cdnDomain,
+          autolinkIssueIdentifiers: true,
+          issueIdentifierPrefix: workspacePrefix,
+        }),
       ),
-    [content, cdnDomain],
+    [content, cdnDomain, workspacePrefix],
   );
 
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up
@@ -585,6 +604,7 @@ export const RichContent = memo(function RichContent({
         )}
       >
         {markdown}
+        <IssueReferenceTail content={content} />
         <LinkHoverCard {...hover} />
       </div>
     </AttachmentDownloadProvider>

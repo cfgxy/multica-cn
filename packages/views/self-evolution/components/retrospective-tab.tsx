@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Badge } from "@multica/ui/components/ui/badge";
+import { CheckCircle2, ClipboardList, Eye, Loader2, XCircle } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
@@ -23,18 +23,26 @@ import {
   SelectValue,
 } from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { ApiError, clientErrorMessage } from "@multica/core/api";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import {
+  formatRetrospectiveStamp,
   retrospectiveConfigOptions,
   retrospectiveRunsOptions,
   useTriggerRetrospectiveRun,
   useUpdateRetrospectiveConfig,
 } from "@multica/core/self-evolution";
 import type { RetrospectiveRun } from "@multica/core/types";
+import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
 import { runErrorLine } from "./retrospective-run-error";
+import {
+  RetrospectiveRunDetailSheet,
+  retrospectiveStatusLabel,
+} from "./retrospective-run-detail";
 
 /**
  * The daily retrospective tab (RUYI-305 E3).
@@ -51,6 +59,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
   const currentMember = useCurrentMember(wsId);
   const canManage = currentMember.role === "owner";
+  const paths = useWorkspacePaths();
 
   const config = useQuery(retrospectiveConfigOptions(wsId));
   const runs = useQuery(retrospectiveRunsOptions(wsId));
@@ -63,6 +72,9 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const [windowDays, setWindowDays] = useState(7);
   const [agentId, setAgentId] = useState("");
   const [loaded, setLoaded] = useState(false);
+  // The open detail sheet is keyed by run id (not the object) so a refetch —
+  // a running run reaching its terminal state — updates the sheet in place.
+  const [detailRunId, setDetailRunId] = useState<string | null>(null);
 
   useEffect(() => {
     if (config.data && !loaded) {
@@ -89,15 +101,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   };
 
   const runsList: RetrospectiveRun[] = runs.data ?? [];
-
-  const statusLabel = (s: string) => {
-    switch (s) {
-      case "succeeded": return t(($) => $.retrospective.status.succeeded);
-      case "failed": return t(($) => $.retrospective.status.failed);
-      case "running": return t(($) => $.retrospective.status.running);
-      default: return s;
-    }
-  };
+  const detailRun = runsList.find((r) => r.id === detailRunId) ?? null;
 
   // Archived agents stay listed when one is the saved selection (the server
   // still reports it), but only live agents are selectable going forward.
@@ -249,57 +253,139 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
             </EmptyHeader>
           </Empty>
         ) : (
-          <ul className="flex flex-col gap-2" data-testid="retrospective-runs">
+          <ul className="overflow-hidden rounded-lg border divide-y" data-testid="retrospective-runs">
             {runsList.map((run) => {
               const errorLine = runErrorLine(run, t);
+              // Same row language as the agent detail page's activity list
+              // (RUYI-673): status icon + tone, a readable title carrying the
+              // window-end stamp, and hover-only actions — one list idiom on
+              // both surfaces instead of two styling dialects.
+              const running = run.status === "running";
+              const StatusIcon =
+                run.status === "succeeded"
+                  ? CheckCircle2
+                  : run.status === "failed"
+                    ? XCircle
+                    : Loader2;
+              const statusColor =
+                run.status === "succeeded"
+                  ? "text-success"
+                  : run.status === "failed"
+                    ? "text-destructive"
+                    : "text-brand";
               return (
-              <li key={run.id} className="rounded-md border p-3 text-body">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    variant={run.status === "succeeded" ? "default" : run.status === "failed" ? "destructive" : "secondary"}
-                  >
-                    {statusLabel(run.status)}
-                  </Badge>
-                  <span className="text-muted-foreground text-caption">
-                    {new Date(run.window_start).toLocaleString()} –{" "}
-                    {new Date(run.window_end).toLocaleString()} · {run.trigger}
-                  </span>
-                </div>
-                <div className="text-muted-foreground mt-1 text-caption">
-                  {t(($) => $.retrospective.scanned)} {run.issues_scanned} ·{" "}
-                  {t(($) => $.retrospective.analyzed)} {run.issues_analyzed} ·{" "}
-                  {t(($) => $.retrospective.created)} {run.proposals_created} ·{" "}
-                  {t(($) => $.retrospective.merged)} {run.proposals_merged} ·{" "}
-                  {t(($) => $.retrospective.duplicates)} {run.duplicates_skipped}
-                </div>
-                {errorLine ? (
-                  <div className="text-destructive mt-1 text-caption" data-testid="retrospective-run-error">
-                    {t(($) => $.retrospective.errorLabel)}: {errorLine}
+              <li
+                key={run.id}
+                className="group flex items-center gap-3 px-3 py-3 transition-colors hover:bg-muted/30"
+              >
+                <StatusIcon
+                  className={`h-4 w-4 shrink-0 ${statusColor} ${
+                    running ? "animate-spin motion-reduce:animate-none" : ""
+                  }`}
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-body">
+                    {t(($) => $.retrospective.runTitle, {
+                      stamp: formatRetrospectiveStamp(run.window_end),
+                    })}
                   </div>
-                ) : null}
-                {canManage && run.status === "failed" ? (
-                  <div className="mt-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={trigger.isPending}
-                      onClick={() =>
-                        trigger.mutate(undefined, {
-                          onError: mutationError,
-                          onSuccess: () => toast.success(t(($) => $.retrospective.triggerOk)),
-                        })
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
+                    <span className={statusColor}>
+                      {retrospectiveStatusLabel(run.status, t)}
+                    </span>
+                    <span className="mx-1 text-faint-foreground">·</span>
+                    <span>
+                      {new Date(run.window_start).toLocaleString()} –{" "}
+                      {new Date(run.window_end).toLocaleString()} · {run.trigger}
+                    </span>
+                  </div>
+                  <div className="text-muted-foreground mt-1 text-caption">
+                    {t(($) => $.retrospective.scanned)} {run.issues_scanned} ·{" "}
+                    {t(($) => $.retrospective.analyzed)} {run.issues_analyzed} ·{" "}
+                    {t(($) => $.retrospective.created)} {run.proposals_created} ·{" "}
+                    {t(($) => $.retrospective.merged)} {run.proposals_merged} ·{" "}
+                    {t(($) => $.retrospective.duplicates)} {run.duplicates_skipped}
+                  </div>
+                  {errorLine ? (
+                    <div className="text-destructive mt-1 text-caption" data-testid="retrospective-run-error">
+                      {t(($) => $.retrospective.errorLabel)}: {errorLine}
+                    </div>
+                  ) : null}
+                  {canManage && run.status === "failed" ? (
+                    <div className="mt-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={trigger.isPending}
+                        onClick={() =>
+                          trigger.mutate(undefined, {
+                            onError: mutationError,
+                            onSuccess: () => toast.success(t(($) => $.retrospective.triggerOk)),
+                          })
+                        }
+                      >
+                        {t(($) => $.retrospective.rerun)}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Row actions, hover-only with focus-within for keyboard
+                    reach: the run detail sheet (RUYI-663) and the proposals
+                    view scoped to this run's batch (RUYI-673) — one action
+                    idiom carrying both entries. */}
+                <div className="ml-2 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100">
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          data-testid="retrospective-run-detail"
+                          aria-label={t(($) => $.retrospective.viewDetail)}
+                          onClick={() => setDetailRunId(run.id)}
+                          className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                        >
+                          <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                        </button>
                       }
-                    >
-                      {t(($) => $.retrospective.rerun)}
-                    </Button>
-                  </div>
-                ) : null}
+                    />
+                    <TooltipContent>
+                      {t(($) => $.retrospective.viewDetail)}
+                    </TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <AppLink
+                          href={`${paths.selfEvolutionProposals()}?run=${run.id}`}
+                          aria-label={t(($) => $.retrospective.viewResults)}
+                          className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                        >
+                          <ClipboardList className="h-3.5 w-3.5" aria-hidden="true" />
+                        </AppLink>
+                      }
+                    />
+                    <TooltipContent>
+                      {t(($) => $.retrospective.viewResults)}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
               </li>
               );
             })}
           </ul>
         )}
       </div>
+
+      <RetrospectiveRunDetailSheet
+        run={detailRun}
+        agentId={config.data?.agent_id ?? ""}
+        agentName={selectedAgent?.name ?? ""}
+        onOpenChange={(open) => {
+          if (!open) setDetailRunId(null);
+        }}
+      />
     </div>
   );
 }
