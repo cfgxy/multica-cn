@@ -31,6 +31,7 @@
     "close": "音声入力を閉じる",
     "hold_to_talk": "長押しで話す",
     "release_to_cancel": "指を離してキャンセル",
+    "release_to_transcribe": "離して文字起こし",
     "transcribing": "文字起こし中…",
     "transcribe_failed": "文字起こしに失敗しました。もう一度お試しください",
     "not_recognized": "音声が認識されませんでした",

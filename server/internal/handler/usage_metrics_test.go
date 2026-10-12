@@ -1,0 +1,318 @@
+package handler
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/internal/promquery"
+	"github.com/multica-ai/multica/server/internal/testutil"
+)
+
+// stubPrometheus is a fake Prometheus /api/v1/query_range endpoint that
+// records the queries it was asked and replies with one canned series.
+type stubPrometheus struct {
+	mu      sync.Mutex
+	queries []string
+	srv     *httptest.Server
+	client  *promquery.Client
+}
+
+// asked returns the PromQL queries the stub served so far.
+func (s *stubPrometheus) asked() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.queries...)
+}
+
+func newStubPrometheus(t *testing.T) *stubPrometheus {
+	t.Helper()
+	s := &stubPrometheus{}
+	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.queries = append(s.queries, r.URL.Query().Get("query"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+			{"metric":{"daemon":"d1"},"values":[[1760000000,"1"],[1760000015,"2"]]}
+		]}}`))
+	}))
+	t.Cleanup(s.srv.Close)
+	s.client = promquery.NewClient(s.srv.URL)
+	return s
+}
+
+// swapPrometheus installs the stub on the shared fixture handler for the
+// duration of the test.
+func (s *stubPrometheus) swap(t *testing.T) {
+	t.Helper()
+	prev := testHandler.Prometheus
+	testHandler.Prometheus = s.client
+	t.Cleanup(func() { testHandler.Prometheus = prev })
+}
+
+// TestDashboardUsagePanels_NotConfigured pins the contract deployments without
+// PROMETHEUS_URL rely on: 200 with configured=false, which the frontend
+// renders as a hidden section, never an error.
+func TestDashboardUsagePanels_NotConfigured(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler fixture unavailable")
+	}
+	prev := testHandler.Prometheus
+	testHandler.Prometheus = nil
+	t.Cleanup(func() { testHandler.Prometheus = prev })
+
+	for _, tc := range []struct {
+		name    string
+		handler func(w http.ResponseWriter, r *http.Request)
+	}{
+		{"resources", testHandler.GetDashboardUsageResources},
+		{"traffic", testHandler.GetDashboardUsageTraffic},
+	} {
+		w := httptest.NewRecorder()
+		tc.handler(w, newRequest("GET", "/api/dashboard/usage/"+tc.name, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", tc.name, w.Code, w.Body.String())
+		}
+		var body struct {
+			Configured bool `json:"configured"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("%s: decode: %v", tc.name, err)
+		}
+		if body.Configured {
+			t.Fatalf("%s: expected configured=false", tc.name)
+		}
+	}
+}
+
+// TestDashboardUsageResources_ScopesToWorkspaceDaemons proves the panel
+// queries Prometheus with a daemon matcher built from the workspace's own
+// daemon ids, and decodes the proxied series.
+func TestDashboardUsageResources_ScopesToWorkspaceDaemons(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	dbfx.Runtime(t, "UR panel rt", testutil.Cols{
+		"daemon_id":   "usage-res-daemon",
+		"device_info": "usage resources fixture",
+	})
+
+	stub := newStubPrometheus(t)
+	stub.swap(t)
+
+	w := httptest.NewRecorder()
+	testHandler.GetDashboardUsageResources(w, newRequest("GET", "/api/dashboard/usage/resources?window=6h", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Configured  bool                       `json:"configured"`
+		Window      string                     `json:"window"`
+		StepSeconds int                        `json:"step_seconds"`
+		Series      map[string]json.RawMessage `json:"series"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Configured || body.Window != "6h" {
+		t.Fatalf("header mismatch: %+v", body)
+	}
+	// The panel reads node-exporter's native series (RUYI-618 data-source
+	// rework): every query must target node_* metrics via the workspace
+	// daemon matcher, and the retired relayed multica_daemon_* family must
+	// not be referenced anywhere.
+	asked := stub.asked()
+	if len(asked) != 9 {
+		t.Fatalf("expected 9 resource queries, got %d", len(asked))
+	}
+	for _, q := range asked {
+		if !strings.Contains(q, "daemon=~") {
+			t.Fatalf("query missing daemon matcher: %s", q)
+		}
+		if !strings.Contains(q, "node_") || strings.Contains(q, "multica_daemon_") {
+			t.Fatalf("query must use node-exporter native metrics only: %s", q)
+		}
+	}
+	// One matcher per resource query — nine queries — each restricted to the
+	// workspace daemon. A cross-workspace daemon id must not appear.
+	for key, raw := range body.Series {
+		var series []promquery.Series
+		if err := json.Unmarshal(raw, &series); err != nil {
+			t.Fatalf("%s: decode series: %v", key, err)
+		}
+		if len(series) != 1 || series[0].Labels["daemon"] != "d1" || len(series[0].Points) != 2 {
+			t.Fatalf("%s: unexpected series payload: %s", key, raw)
+		}
+	}
+}
+
+// TestDashboardUsageTraffic_DimensionAndWindow pins traffic panel parameter
+// handling: the by dimension lands in the PromQL grouping, workspace scoping
+// rides the label matcher, and an unknown dimension is a 400.
+func TestDashboardUsageTraffic_DimensionAndWindow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler fixture unavailable")
+	}
+	stub := newStubPrometheus(t)
+	stub.swap(t)
+
+	w := httptest.NewRecorder()
+	testHandler.GetDashboardUsageTraffic(w, newRequest("GET", "/api/dashboard/usage/traffic?window=1h&by=model", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Configured bool   `json:"configured"`
+		By         string `json:"by"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Configured || body.By != "model" {
+		t.Fatalf("header mismatch: %+v", body)
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.GetDashboardUsageTraffic(w, newRequest("GET", "/api/dashboard/usage/traffic?by=bogus", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown by: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.GetDashboardUsageTraffic(w, newRequest("GET", "/api/dashboard/usage/traffic?window=bogus", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown window: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestPlanUsageMetricsWindow pins the step/rate math so the PromQL the panels
+// emit stays inside Prometheus's documented operating range at both window
+// extremes.
+func TestPlanUsageMetricsWindow(t *testing.T) {
+	now := time.Unix(1_760_000_000, 0)
+	for _, tc := range []struct {
+		window   time.Duration
+		wantStep time.Duration
+		wantRate time.Duration
+	}{
+		{time.Hour, 15 * time.Second, time.Minute},
+		{24 * time.Hour, 5 * time.Minute, 10 * time.Minute},
+		{7 * 24 * time.Hour, 5 * time.Minute, 10 * time.Minute},
+	} {
+		plan := planUsageMetricsWindow(tc.window, now)
+		if plan.Step != tc.wantStep {
+			t.Fatalf("window %s: step %s, want %s", tc.window, plan.Step, tc.wantStep)
+		}
+		if plan.RateWindow != tc.wantRate {
+			t.Fatalf("window %s: rate %s, want %s", tc.window, plan.RateWindow, tc.wantRate)
+		}
+		if plan.End != now || !plan.Start.Equal(now.Add(-tc.window)) {
+			t.Fatalf("window %s: range mismatch: %+v", tc.window, plan)
+		}
+	}
+}
+
+// unescapePromQLStringLiteral scans a PromQL double-quoted string literal and
+// returns its content, applying the escapes promquery.EscapeLabelValue emits.
+// A raw `"` before the literal's end means the matcher built an invalid
+// query — the exact fail-closed failure the escape order must prevent.
+func unescapePromQLStringLiteral(t *testing.T, literal string) string {
+	t.Helper()
+	if len(literal) < 2 || literal[0] != '"' {
+		t.Fatalf("matcher %q is not a double-quoted literal", literal)
+	}
+	var out []byte
+	for i := 1; i < len(literal); i++ {
+		switch c := literal[i]; c {
+		case '\\':
+			if i+1 >= len(literal) {
+				t.Fatalf("matcher %q ends on a dangling backslash", literal)
+			}
+			i++
+			switch literal[i] {
+			case '\\':
+				out = append(out, '\\')
+			case '"':
+				out = append(out, '"')
+			case 'n':
+				out = append(out, '\n')
+			default:
+				t.Fatalf("matcher %q carries unknown escape \\%c", literal, literal[i])
+			}
+		case '"':
+			if i != len(literal)-1 {
+				t.Fatalf("matcher %q terminates its string literal early — invalid PromQL", literal)
+			}
+			return string(out)
+		default:
+			out = append(out, c)
+		}
+	}
+	t.Fatalf("matcher %q never closes its string literal", literal)
+	return ""
+}
+
+// TestDaemonMatcherEscapeOrder pins the escaping order in daemonMatcher:
+// regex-quote FIRST (so metacharacters in user-controlled ids can only match
+// themselves), then PromQL string-literal escaping (so quotes and
+// backslashes survive the literal intact). The reverse order builds illegal
+// PromQL for ids containing quotes.
+func TestDaemonMatcherEscapeOrder(t *testing.T) {
+	ids := []string{
+		`plain-uuid`,
+		`a"b`,           // quote: the discriminator — wrong order emits invalid PromQL
+		`a\b`,           // backslash: double-escape must still match the exact id
+		`say "hi"\path`, // combined
+		`a.b|c+d`,       // regex metacharacters must not widen the match
+		`host(.local)*`, // metacharacters plus a paren group
+	}
+	for _, id := range ids {
+		matcher := daemonMatcher([]string{id})
+		if !strings.HasPrefix(matcher, `daemon=~"`) || !strings.HasSuffix(matcher, `"`) {
+			t.Fatalf("id %q: matcher %q has unexpected shape", id, matcher)
+		}
+		regex := unescapePromQLStringLiteral(t, strings.TrimPrefix(matcher, `daemon=~`))
+		re, err := regexp.Compile(regex)
+		if err != nil {
+			t.Fatalf("id %q: decoded regex %q does not compile: %v", id, regex, err)
+		}
+		if !re.MatchString(id) {
+			t.Fatalf("id %q: matcher %q must match its own id", id, matcher)
+		}
+	}
+
+	// Metacharacters stay pinned to the literal id: a dot must not eat an
+	// arbitrary character and alternation must not split the pattern.
+	matcher := daemonMatcher([]string{`a.b|c`})
+	regex := unescapePromQLStringLiteral(t, strings.TrimPrefix(matcher, `daemon=~`))
+	re, err := regexp.Compile(regex)
+	if err != nil {
+		t.Fatalf("regex %q does not compile: %v", regex, err)
+	}
+	for _, neighbour := range []string{`axb|c`, `a.bXc`, `a`, `c`} {
+		if re.MatchString(neighbour) {
+			t.Fatalf("matcher %q must not match neighbour %q", matcher, neighbour)
+		}
+	}
+
+	// Multiple ids keep the alternation and each id keeps exact-match
+	// semantics.
+	both := daemonMatcher([]string{`d"1`, `d.2`})
+	regex = unescapePromQLStringLiteral(t, strings.TrimPrefix(both, `daemon=~`))
+	re, err = regexp.Compile(regex)
+	if err != nil {
+		t.Fatalf("alternation regex %q does not compile: %v", regex, err)
+	}
+	if !re.MatchString(`d"1`) || !re.MatchString(`d.2`) {
+		t.Fatalf("alternation %q must match both ids", both)
+	}
+	if re.MatchString(`dX2`) {
+		t.Fatalf("alternation %q must not widen d.2", both)
+	}
+}

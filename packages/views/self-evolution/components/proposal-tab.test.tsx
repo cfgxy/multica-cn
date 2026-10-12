@@ -40,6 +40,15 @@ const state = vi.hoisted(() => ({
   proposalCalls: [] as { status?: string; runId?: string }[],
 }));
 
+// The chip shell is mocked: this suite asserts the anchor *linking* (href +
+// degrade), which the tab owns — the chip's own resolution behavior is
+// covered by its own suite.
+vi.mock("../../issues/components/issue-chip", () => ({
+  IssueChip: ({ issueId }: { issueId: string }) => (
+    <span data-testid={`issue-chip-${issueId}`}>{issueId.slice(0, 8)}</span>
+  ),
+}));
+
 vi.mock("@multica/core/permissions", () => ({
   useCurrentMember: () => ({ userId: "u-1", role: state.role, member: null, isLoading: false }),
 }));
@@ -381,4 +390,89 @@ it("updates the scoped run when the filter changes", async () => {
   await waitFor(() =>
     expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }),
   );
+});
+
+// RUYI-723 A: evidence anchors render as issue chips that link to the issue
+// detail (list card and detail view); merged_from accumulates into aggregate
+// anchors; a row without anchors renders no chip block, and legacy rows
+// without the decision-context fields degrade to "—" instead of blanks.
+const CHIP_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const CHIP_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const CHIP_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+function anchorLinks(id: string): HTMLAnchorElement[] {
+  // The tab renders anchors in both the list card and (by default) the
+  // detail pane, so every chip instance must sit inside a correct link.
+  return screen
+    .queryAllByTestId(`issue-chip-${id}`)
+    .map((el) => el.closest("a"))
+    .filter((a): a is HTMLAnchorElement => a !== null);
+}
+
+it("renders evidence anchors as links to the issue detail", async () => {
+  state.proposals = [
+    proposal({
+      evidence_anchors: [{ issue_id: CHIP_A, ref: "release script fix", note: "root cause" }],
+      problem: "release script breaks on spaces",
+      expected_effect: "script survives spaced paths",
+      expected_gain: "no more manual fixes",
+      value_score: 4,
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  const links = anchorLinks(CHIP_A);
+  expect(links.length).toBeGreaterThan(0);
+  for (const link of links) {
+    expect(link.getAttribute("href")).toBe(`/test-workspace/issues/${CHIP_A}`);
+  }
+  // The detail view renders the decision-context fields and the score.
+  await userEvent.click(screen.getByTestId("legislation-row-prop-1"));
+  await waitFor(() => expect(screen.getByText("release script breaks on spaces")).toBeTruthy());
+  expect(screen.getByText("script survives spaced paths")).toBeTruthy();
+  expect(screen.getByText("no more manual fixes")).toBeTruthy();
+  expect(screen.getByText("4 / 5")).toBeTruthy();
+});
+
+it("renders aggregate anchors from merged_from", async () => {
+  state.proposals = [
+    proposal({
+      evidence_anchors: [],
+      merged_from: [
+        { issue_id: CHIP_B, run_id: "run-1" },
+        { issue_id: CHIP_C, run_id: "run-2" },
+      ],
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  for (const id of [CHIP_B, CHIP_C]) {
+    const links = anchorLinks(id);
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link.getAttribute("href")).toBe(`/test-workspace/issues/${id}`);
+    }
+  }
+});
+
+it("degrades without anchors: no chip block renders", async () => {
+  state.proposals = [proposal({})];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  expect(screen.queryByTestId(`issue-chip-${CHIP_A}`)).toBeNull();
+  await userEvent.click(screen.getByTestId("legislation-row-prop-1"));
+  await waitFor(() => expect(screen.getByText("Final clause text")).toBeTruthy());
+  expect(screen.queryByText("Source issues")).toBeNull();
+});
+
+it("renders — for legacy rows without the decision-context fields", async () => {
+  state.proposals = [proposal({ problem: undefined })];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  await userEvent.click(screen.getByTestId("legislation-row-prop-1"));
+  await waitFor(() => expect(screen.getByText("Problem")).toBeTruthy());
+  for (const label of ["Problem", "Expected effect", "Expected gain", "Value score"]) {
+    const dt = screen.getByText(label);
+    expect(dt.nextElementSibling?.textContent).toBe("—");
+  }
 });
