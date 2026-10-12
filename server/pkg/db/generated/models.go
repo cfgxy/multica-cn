@@ -707,6 +707,38 @@ type DaemonConnection struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DaemonOpsCommand struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	DaemonID        string             `json:"daemon_id"`
+	Kind            string             `json:"kind"`
+	Args            []byte             `json:"args"`
+	Status          string             `json:"status"`
+	TimeoutS        int32              `json:"timeout_s"`
+	LeaseEpoch      int64              `json:"lease_epoch"`
+	ClaimedAt       pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
+	ExitCode        pgtype.Int4        `json:"exit_code"`
+	Result          []byte             `json:"result"`
+	RejectReason    pgtype.Text        `json:"reject_reason"`
+	SubmittedByType string             `json:"submitted_by_type"`
+	SubmittedByID   pgtype.UUID        `json:"submitted_by_id"`
+	SubmissionKey   pgtype.Text        `json:"submission_key"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonServiceInventory struct {
+	DaemonID      string             `json:"daemon_id"`
+	CollectStatus string             `json:"collect_status"`
+	Services      []byte             `json:"services"`
+	Error         pgtype.Text        `json:"error"`
+	LastReportAt  pgtype.Timestamptz `json:"last_report_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DaemonToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	TokenHash   string             `json:"token_hash"`
