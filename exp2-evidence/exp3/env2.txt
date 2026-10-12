@@ -1,5 +1,0 @@
-== exp3 v2 environment ==
-kernel=6.8.0-146-generic
-fuse_overlayfs=fusermount3 version: 3.14.0
-git=git version 2.43.0
-init_default_branch=unset

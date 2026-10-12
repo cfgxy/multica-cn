@@ -1,6 +1,0 @@
------ C01_git_status_same_path (rc=0) -----
------ C02_vendor_wt_targets_view (rc=0) -----
------ C03_pristine_alias_not_touched (rc=0) -----
------ C04_external_wt_resolves_into_view (rc=0) -----
------ C05_ext_commit_lands_in_view_not_pristine (rc=1) -----
------ C06_pristine_alias_commits_unchanged (rc=0) -----
