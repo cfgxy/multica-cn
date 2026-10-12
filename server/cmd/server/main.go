@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/scheduler"
@@ -561,11 +562,16 @@ func main() {
 	var larkMetrics *obsmetrics.LarkMetrics
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
-			Pool:     pool,
-			Realtime: realtime.M,
-			DaemonWS: daemonws.M,
-			Version:  version,
-			Commit:   commit,
+			Pool:      pool,
+			Realtime:  realtime.M,
+			DaemonWS:  daemonws.M,
+			TaskUsage: obsmetrics.NewUsageCollector(queries),
+			// Failure counters for the backpressure/observability surface
+			// (RUYI-618): window failure counts and rates per agent, model
+			// and failure class, queryable via PromQL.
+			TaskFailures: obsmetrics.NewTaskFailureCollector(queries),
+			Version:      version,
+			Commit:       commit,
 		})
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
@@ -615,6 +621,7 @@ func main() {
 		WecomRelayOutbound:  wecomRelayOutbound,
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
+		Prometheus:          promquery.NewClientFromEnv(),
 		LLMMaxRetries:       llmMaxRetries,
 	})
 

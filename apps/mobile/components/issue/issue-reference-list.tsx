@@ -50,14 +50,20 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQueries } from "@tanstack/react-query";
-import { parsePullRequestReference } from "@multica/core/markdown";
+import {
+  parseMergeRequestReference,
+  parsePullRequestReference,
+} from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
 import { identifierMatchesPrefix } from "@multica/core/markdown";
 import {
   issueDetailOptions,
   issueIdentifierOptions,
 } from "@/data/queries/issues";
-import { pullRequestLookupOptions } from "@/data/queries/github";
+import {
+  pullRequestLookupByNumberOptions,
+  pullRequestLookupOptions,
+} from "@/data/queries/github";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
@@ -199,6 +205,14 @@ export function IssueReferenceList({
               parts?.repo ?? "",
               parts?.number ?? 0,
             );
+          }
+          if (ref.form === "merge_request") {
+            // RUYI-728: body-text `MR !N` shares the tail's resolution —
+            // unique-hit by-number lookup; a miss (never synced, or the same
+            // number in several repos) reads as null and the row degrades,
+            // the same web-footer contract.
+            const parts = parseMergeRequestReference(ref.ref);
+            return pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0);
           }
           return issueDetailOptions(wsId, ref.ref);
         }),

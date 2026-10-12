@@ -37,7 +37,9 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
+
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -191,11 +193,17 @@ type Handler struct {
 	DaemonHub              *daemonws.Hub
 	DaemonProfileRefresh   RuntimeProfileRefreshNotifier
 	DaemonWorkspaceRefresh WorkspaceSetRefreshNotifier
-	Bus                    *events.Bus
-	TaskService            *service.TaskService
-	PluginService          *service.PluginService
-	IssueService           *service.IssueService
-	AutopilotService       *service.AutopilotService
+	// Prometheus serves the usage page's system-resource and model-traffic
+	// panels (RUYI-618) by proxying PromQL range queries. Optional: nil or
+	// an unconfigured client (PROMETHEUS_URL unset) makes both endpoints
+	// report configured=false, which the frontend renders as a hidden
+	// section rather than an error.
+	Prometheus       *promquery.Client
+	Bus              *events.Bus
+	TaskService      *service.TaskService
+	PluginService    *service.PluginService
+	IssueService     *service.IssueService
+	AutopilotService *service.AutopilotService
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
