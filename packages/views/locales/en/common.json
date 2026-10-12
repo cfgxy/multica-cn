@@ -198,5 +198,11 @@
       "mode_manual": "Manual",
       "smart_hint": "The agent drafts the title and description — you'll get an inbox notification when it's done."
     }
+  },
+  "long_text_editor": {
+    "expand": "Expand editor",
+    "edit": "Edit",
+    "preview": "Preview",
+    "done": "Done"
   }
 }
