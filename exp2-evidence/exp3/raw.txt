@@ -1,0 +1,117 @@
+----- A01_git_status_parent (rc=0) -----
+?? .gitmodules
+?? README.md
+?? code/
+?? sub-abs/
+?? sub-rel/
+?? vendor-nested/
+?? vendor-wt/
+----- A01b_git_status_long (rc=0) -----
+On branch master
+
+No commits yet
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.gitmodules
+	README.md
+	code/
+	sub-abs/
+	sub-rel/
+	vendor-nested/
+	vendor-wt/
+
+nothing added to commit but untracked files present (use "git add" to track)
+----- A02_worktree_list_in_view (rc=0) -----
+/home/agent/workspace/exp3/fuseview/proj  0000000 [master]
+/home/agent/workspace/exp3/wt-external    0000000 [extb]
+----- A03_nested_commit_in_view (rc=0) -----
+----- A04_pristine_nested_head_unchanged (rc=0) -----
+----- A05_vendor_wt_gitdir_pointer (rc=1) -----
+gitdir: /home/agent/workspace/exp3/base/lower/proj/vendor-nested/.git/worktrees/vendor-wt
+---
+cat: /home/agent/workspace/exp3/base/lower/proj/vendor-nested/.git/worktrees/vwmain/gitdir: No such file or directory
+----- A06_vendor_wt_silent_wrong_target (rc=0) -----
+----- A06b_vendor_wt_status_from_view (rc=0) -----
+?? probe.txt
+gitdir=/home/agent/workspace/exp3/base/lower/proj/vendor-nested/.git/worktrees/vendor-wt
+probe.txt
+----- A07_worktree_add_in_view (rc=0) -----
+No possible source branch, inferring '--orphan'
+Preparing worktree (new branch 'wtb')
+----- A08_worktree_list_after_add (rc=0) -----
+/home/agent/workspace/exp3/fuseview/proj      0000000 [master]
+/home/agent/workspace/exp3/fuseview/proj2-wt  0000000 [wtb]
+/home/agent/workspace/exp3/wt-external        0000000 [extb]
+----- A09_commit_from_new_wt (rc=0) -----
+----- A10_new_wt_branch_visible_from_view_main_repo (rc=0) -----
+----- A11_worktree_remove_in_view (rc=0) -----
+----- A12_prune_keeps_pristine_intact (rc=0) -----
+----- A13_submodule_status (rc=0) -----
+
+----- A14_submodule_update_rel (rc=1) -----
+error: pathspec 'sub-rel' did not match any file(s) known to git
+----- A15_submodule_update_abs (rc=1) -----
+error: pathspec 'sub-abs' did not match any file(s) known to git
+----- A16_git_log_show_history (rc=0) -----
+fatal: your current branch 'master' does not have any commits yet
+fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.
+Use '--' to separate paths from revisions, like this:
+'git <command> [<revision>...] -- [<file>...]'
+----- A17_git_gc_fsck (rc=0) -----
+notice: HEAD points to an unborn branch (master)
+notice: worktrees/wt-external/HEAD points to an unborn branch (extb)
+dangling blob 2769755c07b5b48203be68d6278fce4d65f028d3
+dangling blob 5398a105c3e5b1e43d6d0cbbfd566dd559e4a9e3
+dangling blob f7e582f82533be28c5813e8ea91918eb7fa61cdc
+----- A18_parent_commit_in_view (rc=0) -----
+----- A19_pristine_parent_untouched (rc=2) -----
+fatal: your current branch 'master' does not have any commits yet
+bash: line 1: [: too many arguments
+----- A20_branch_switch_in_view (rc=1) -----
+error: pathspec 'main' did not match any file(s) known to git
+----- A21_clean_dry_run (rc=0) -----
+Would remove .gitmodules
+Would remove code/
+----- A22_index_lock_probe (rc=0) -----
+error: 'sub-abs/' does not have a commit checked out
+fatal: adding files failed
+rc=128
+mount: /home/agent/workspace/exp3/kernview: mount point does not exist.
+       dmesg(1) may have more information after failed mount system call.
+----- B01_git_status_parent (rc=128) -----
+fatal: cannot change to '/home/agent/workspace/exp3/kernview/proj': No such file or directory
+----- B02_worktree_list_in_view (rc=128) -----
+fatal: cannot change to '/home/agent/workspace/exp3/kernview/proj': No such file or directory
+----- B03_nested_commit_in_view (rc=1) -----
+bash: line 1: cd: /home/agent/workspace/exp3/kernview/proj/vendor-nested: No such file or directory
+----- B04_pristine_lower2_untouched (rc=0) -----
+----- B05_vendor_wt_silent_wrong_target (rc=1) -----
+bash: line 1: cd: /home/agent/workspace/exp3/kernview/proj/vendor-wt: No such file or directory
+----- B06_worktree_add_in_view (rc=1) -----
+bash: line 1: cd: /home/agent/workspace/exp3/kernview/proj: No such file or directory
+----- B07_gc_fsck (rc=128) -----
+fatal: cannot change to '/home/agent/workspace/exp3/kernview/proj': No such file or directory
+mount: /home/agent/workspace/exp3/samelower: mount point does not exist.
+       dmesg(1) may have more information after failed mount system call.
+----- C01_git_status_same_path (rc=128) -----
+fatal: cannot change to '/home/agent/workspace/exp3/samelower/proj': No such file or directory
+----- C02_vendor_wt_targets_view (rc=1) -----
+bash: line 1: cd: /home/agent/workspace/exp3/samelower/proj/vendor-wt: No such file or directory
+----- C03_pristine_alias_not_touched (rc=0) -----
+----- C04_external_wt_resolves_into_view (rc=0) -----
+----- C05_ext_commit_lands_in_view_not_pristine (rc=1) -----
+fatal: cannot change to '/home/agent/workspace/exp3/samelower/proj': No such file or directory
+----- C06_pristine_alias_commits_unchanged (rc=1) -----
+fatal: not a git repository (or any of the parent directories): .git
+----- D01_pristine_lower_fsck (rc=1) -----
+notice: HEAD points to an unborn branch (master)
+notice: worktrees/wt-external/HEAD points to an unborn branch (extb)
+notice: No default references
+dangling blob 2769755c07b5b48203be68d6278fce4d65f028d3
+dangling blob 5398a105c3e5b1e43d6d0cbbfd566dd559e4a9e3
+dangling blob f7e582f82533be28c5813e8ea91918eb7fa61cdc
+fatal: your current branch 'master' does not have any commits yet
+----- D02_remaining_mounts (rc=0) -----
+fusectl on /sys/fs/fuse/connections type fusectl (rw,nosuid,nodev,noexec,relatime)
+overlay on /tmp/hl_v type overlay (rw,relatime,lowerdir=/tmp/hl_l,upperdir=/tmp/hl_u,workdir=/tmp/hl_w,uuid=on,nouserxattr)

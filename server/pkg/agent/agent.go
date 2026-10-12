@@ -333,6 +333,13 @@ type Config struct {
 	// Command boundary applies it to every process the package spawns, task
 	// launches and CLI probes alike. Backends never read it directly.
 	LaunchPrefix []string
+	// Snapshot, when set, routes the task's agent process through the stage-2
+	// namespace worker (RUYI-669): private user+mount namespaces with per-task
+	// overlay views over the user's directories. Only the task execution path
+	// sets it — version probes, model discovery and other auxiliary commands
+	// a backend spawns must keep running in the daemon's own namespaces.
+	// Applies to Command.exec via commandAt; every backend inherits it.
+	Snapshot *SnapshotWrap
 }
 
 // New creates a Backend for the given agent type.

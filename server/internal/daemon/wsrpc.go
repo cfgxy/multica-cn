@@ -344,7 +344,7 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		}
 		// Host memory backpressure (RUYI-393): optional machine-level report;
 		// servers that predate the field ignore it. nil = sampler not running.
-		if bp := d.backpressureReport(); bp != nil {
+		if bp := d.backpressureReportForClaim(runtimeIDs); bp != nil {
 			body["backpressure"] = bp
 		}
 		// batchClaimRequestTimeout is the server-side execution budget; the
@@ -370,7 +370,7 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		}
 		d.logger.Debug("ws claim failed; falling back to http", "error", err)
 	}
-	tasks, err := d.client.ClaimTasks(ctx, daemonID, runtimeIDs, maxTasks, d.backpressureReport())
+	tasks, err := d.client.ClaimTasks(ctx, daemonID, runtimeIDs, maxTasks, d.backpressureReportForClaim(runtimeIDs))
 	if err == nil {
 		return tasks, nil
 	}

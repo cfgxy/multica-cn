@@ -92,6 +92,10 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
+),
+deleted_backpressure_settings AS (
+    DELETE FROM workspace_backpressure_settings
+    WHERE workspace_backpressure_settings.workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
@@ -490,6 +494,9 @@ deleted_channel_chat_run_intents AS (
 ),
 deleted_issue_decisions AS (
     DELETE FROM issue_decisions WHERE workspace_id = $1
+),
+deleted_decision_requests AS (
+    DELETE FROM decision_requests WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -533,6 +540,12 @@ WHERE channel_media_pending_object.workspace_id = $1
 // instead of being handed to a reconciler.
 // Decision cards (RUYI-345) are issue-scoped with no FK; the answer echo
 // comment is a plain comment row and is swept with the rest of comment.
+// Authorization requests (RUYI-630) are workspace-scoped rows with no FK and
+// no dependents outside this database: the executor only reads them, and
+// audit_event rows reference them by trigger_ref strings, not by FK. The
+// linked issue_decisions card is swept by the CTE above. Cascade directly.
+// Cross-space groups are revoked whole first — see
+// RevokeInFlightCrossSpaceDecisionRequests, which must run before this CTE.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
@@ -618,12 +631,18 @@ deleted_runtime_credentials AS (
     WHERE runtime_instance_id IN (
         SELECT id FROM agent_runtime WHERE agent_runtime.workspace_id = $1
     )
+       OR runtime_instance_id IN (
+        SELECT id FROM voice_provider WHERE voice_provider.workspace_id = $1
+    )
 ),
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
+),
+deleted_voice_providers AS (
+    DELETE FROM voice_provider WHERE voice_provider.workspace_id = $1
 ),
 deleted_execution_profile_entries AS (
     DELETE FROM execution_profile_entry
@@ -639,6 +658,13 @@ DELETE FROM project WHERE project.workspace_id = $1
 // owns it: matched through the runtime set rather than a workspace column
 // (same construction as execution_profile_entry below). The encrypted
 // payloads are destroyed with the workspace; nothing plaintext ever existed.
+// RUYI-693: voice_provider rows share the runtime_credential store (their
+// credential_ref points at '<provider-uuid>:<key>'), so their secret copies
+// are swept through the provider set in the same statement.
+// voice_provider has no FK to workspace (house rule); teardown owns it.
+// Its agent overrides (agent.voice_provider_id) go away with the agent
+// sweep above, and workspace.settings voice references die with the
+// workspace row itself.
 // execution_profile has no FK to workspace (house rule), so teardown owns it.
 // Entries are matched through the profile set rather than a workspace column:
 // an entry only exists under a profile, and deleting both in one statement
@@ -1267,6 +1293,83 @@ WHERE webhook_delivery.workspace_id = $1
 func (q *Queries) PrepareWorkspaceDeletionLinks(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, prepareWorkspaceDeletionLinks, workspaceID)
 	return err
+}
+
+const revokeInFlightCrossSpaceDecisionRequests = `-- name: RevokeInFlightCrossSpaceDecisionRequests :many
+UPDATE decision_requests SET status = 'revoked', updated_at = now()
+WHERE status IN ('pending', 'approved')
+  AND request_group_id IN (
+      SELECT a.request_group_id
+      FROM decision_requests a
+      JOIN decision_requests b
+        ON b.request_group_id = a.request_group_id
+       AND b.workspace_id <> a.workspace_id
+      WHERE a.workspace_id = $1
+        AND a.status IN ('pending', 'approved')
+  )
+RETURNING id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at
+`
+
+// RUYI-630: a cross-space authorization group torn down mid-flight on one
+// side must not keep advancing on the survivor. Left alone, the surviving
+// space's row degenerates to a single-row group, falls back to the deleted
+// origin row as its landing, and would execute against the deleted side's
+// context. Groups with an in-flight row HERE and any row in another space
+// get every still-in-flight row revoked in the caller's delete transaction;
+// single-space rows are swept by the cascade CTE above, and groups whose row
+// here is already terminal were settled before the teardown started.
+func (q *Queries) RevokeInFlightCrossSpaceDecisionRequests(ctx context.Context, workspaceID pgtype.UUID) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, revokeInFlightCrossSpaceDecisionRequests, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.RequestGroupID,
+			&i.WorkspaceID,
+			&i.Role,
+			&i.Operable,
+			&i.Status,
+			&i.ActionType,
+			&i.ActionParams,
+			&i.RiskTier,
+			&i.Title,
+			&i.Detail,
+			&i.OriginWorkspaceID,
+			&i.OriginAgentID,
+			&i.OriginTaskID,
+			&i.OriginIssueID,
+			&i.OriginIssueTitle,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerSource,
+			&i.ExecutedAt,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.TerminalCallbackAt,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setWorkspaceTeardownMode = `-- name: SetWorkspaceTeardownMode :exec

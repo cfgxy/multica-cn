@@ -21,11 +21,17 @@ vi.mock("../issues/hooks", () => ({
 // is stubbed to "unresolved" so its rows degrade to plain text; this suite
 // pins the body-text behaviour, not resolution (see issue-reference-footer
 // and issue-mention-aggregation tests for that).
-vi.mock("../issues/hooks/use-issue-reference-resolutions", () => ({
-  useIssueReferenceResolutions: (
-    references: { form: string; ref: string }[],
-  ) => new Map(references.map((ref) => [`${ref.form}:${ref.ref}`, null])),
-}));
+vi.mock(
+  "../issues/hooks/use-issue-reference-resolutions",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../issues/hooks/use-issue-reference-resolutions")
+    >()),
+    useIssueReferenceResolutions: (
+      references: { form: string; ref: string }[],
+    ) => new Map(references.map((ref) => [`${ref.form}:${ref.ref}`, null])),
+  }),
+);
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
@@ -58,6 +64,9 @@ vi.mock("@multica/core/api", () => ({
 }));
 
 vi.mock("@multica/core/paths", () => ({
+  // RUYI-705: RichContent now reads the workspace prefix; null = unknown =
+  // fall-through, which is what these fixtures were written against.
+  useCurrentWorkspace: () => null,
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/test/issues/${id}`,
   }),
@@ -65,6 +74,11 @@ vi.mock("@multica/core/paths", () => ({
 }));
 
 vi.mock("../navigation", () => ({
+  // RUYI-728: RichContent's in-body reference links render through AppLink;
+  // the stub keeps a real <a href> so link assertions stay honest.
+  AppLink: ({ href, children }: { href: string; children?: React.ReactNode }) => (
+    <a href={href}>{children}</a>
+  ),
   useNavigation: () => ({ push: vi.fn(), openInNewTab: vi.fn() }),
   useOptionalNavigation: () => ({ push: vi.fn(), openInNewTab: vi.fn() }),
   resolveClickIntent: () => "push",
@@ -289,15 +303,19 @@ describe("ReadonlyContent highlight Markdown", () => {
 });
 
 describe("ReadonlyContent issue mention Markdown", () => {
-  it("renders an issue mention inside a task list as plain text, aggregated into the footer", () => {
+  it("renders an issue mention inside a task list as an in-app link, aggregated into the footer", () => {
+    // RUYI-728 contract: in-body mention links are real links (same as
+    // comments/chat); the footer still aggregates the reference, degraded
+    // here because the resolution query misses in this fixture.
     const { container } = render(
       <ReadonlyContent content="- [ ] [MUL-123](mention://issue/issue-123)" />,
     );
 
     expect(container.querySelector('input[type="checkbox"]')).not.toBeNull();
-    expect(container.querySelector("[data-issue-mention-text]")?.textContent).toBe(
-      "MUL-123",
-    );
+    const link = container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("/test/issues/issue-123");
+    expect(link?.textContent).toBe("MUL-123");
+    expect(container.querySelector("[data-issue-mention-text]")).toBeNull();
     expect(
       container.querySelector("[data-issue-reference-footer]"),
     ).not.toBeNull();

@@ -83,6 +83,17 @@ const (
 	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
 	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
 
+	// Agent domain, RUYI-630: the sensitive-operation authorization channel.
+	// One story per request_group_id: requested → authorized/denied (per
+	// step) → executed/execute_failed, with revoked and the sweep's expired
+	// alongside.
+	AuditAgentDecisionRequested     = "agent.decision_requested"
+	AuditAgentDecisionAuthorized    = "agent.decision_authorized"
+	AuditAgentDecisionDenied        = "agent.decision_denied"
+	AuditAgentDecisionRevoked       = "agent.decision_revoked"
+	AuditAgentDecisionExecuted      = "agent.decision_executed"
+	AuditAgentDecisionExecuteFailed = "agent.decision_execute_failed"
+
 	// Issue domain: mirror of the activity_log writes (dual-write until
 	// Phase 2 switches the timeline data source), plus the audit-only direct
 	// writes that previously had no queryable surface.

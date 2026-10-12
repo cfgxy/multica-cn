@@ -3,10 +3,13 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
-import { Columns3, Filter, FilterX, Gavel, List } from "lucide-react";
+import { Columns3, Filter, FilterX, Gavel, List, ShieldCheck } from "lucide-react";
 import {
   workspaceDecisionInboxQueryOptions,
 } from "@multica/core/issues/decisions";
+import {
+  workspaceDecisionRequestsQueryOptions,
+} from "@multica/core/issues/decision-requests";
 import {
   useCurrentWorkspace,
 } from "@multica/core/paths";
@@ -33,6 +36,7 @@ import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
 import { DecisionListView } from "./decision-list-view";
 import { DecisionBoardView } from "./decision-board-view";
+import { DecisionRequestRow } from "./decision-request-row";
 import {
   DECISION_STATUS_CONFIG,
   DECISION_STATUS_ORDER,
@@ -65,6 +69,13 @@ export function DecisionCenterPage() {
     workspaceDecisionInboxQueryOptions(workspace?.id),
   );
 
+  // Authorization requests (RUYI-630) render as their own section above the
+  // question-card surfaces: 决策5 keeps the authorization summary out of the
+  // card list/board buckets entirely, so its only toggle is presence.
+  const { data: requestsData, isPending: requestsPending } = useQuery(
+    workspaceDecisionRequestsQueryOptions(workspace?.id),
+  );
+
   const visibleStatuses = useMemo(
     () => DECISION_STATUS_ORDER.filter((s) => !hiddenStatuses.includes(s)),
     [hiddenStatuses],
@@ -73,10 +84,16 @@ export function DecisionCenterPage() {
     () => (data?.items ?? []).filter((item) => visibleStatuses.includes(item.status)),
     [data, visibleStatuses],
   );
+  const requestItems = useMemo(() => requestsData?.items ?? [], [requestsData]);
   const activeFilterCount = hiddenStatuses.length;
   const isFilteredEmpty = activeFilterCount > 0 && filteredItems.length === 0;
   const isEmpty =
-    !isPending && !isError && activeFilterCount === 0 && (data?.items.length ?? 0) === 0;
+    !isPending &&
+    !requestsPending &&
+    !isError &&
+    activeFilterCount === 0 &&
+    (data?.items.length ?? 0) === 0 &&
+    requestItems.length === 0;
 
   const ViewIcon = VIEW_ICON[viewMode];
 
@@ -180,7 +197,7 @@ export function DecisionCenterPage() {
         </div>
       </div>
 
-      {isPending && (
+      {(isPending || requestsPending) && (
         <div className="flex flex-col gap-2 px-4 py-3" data-testid="decision-center-loading">
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
@@ -223,6 +240,23 @@ export function DecisionCenterPage() {
           <p className="text-body">{t(($) => $.page.empty_title)}</p>
           <p className="text-caption">{t(($) => $.page.empty_description)}</p>
         </div>
+      )}
+
+      {!requestsPending && !isError && !isFilteredEmpty && !isEmpty && requestItems.length > 0 && (
+        <section className="px-4 pb-2" data-testid="decision-requests-section">
+          <div className="flex items-center gap-2 py-2">
+            <ShieldCheck className="size-3.5 text-brand" aria-hidden />
+            <h2 className="text-caption font-medium text-muted-foreground">
+              {t(($) => $.requests.section_title)}
+            </h2>
+            <span className="text-caption text-faint-foreground">{requestItems.length}</span>
+          </div>
+          <div className="flex flex-col">
+            {requestItems.map((request) => (
+              <DecisionRequestRow key={request.id} request={request} />
+            ))}
+          </div>
+        </section>
       )}
 
       {!isPending && !isError && !isFilteredEmpty && !isEmpty && (
