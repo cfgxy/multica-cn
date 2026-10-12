@@ -2257,6 +2257,40 @@ class ApiClient {
     }
   }
 
+  /**
+   * Workspace-scoped PR point lookup by bare number (RUYI-728) — mirrors
+   * packages/core/api/client.ts lookupPullRequestByNumber: a unique hit
+   * returns the PR; never-seen (404) AND cross-repo ambiguous (409) both
+   * read as `null`, so a body-text `MR !N` tap and the reference tail's row
+   * degrade silently instead of erroring.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${encodeURIComponent(String(number))}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+      ).pull_request;
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 409)
+      ) {
+        return null;
+      }
+      throw err;
+    }
+  }
+
   // --- Projects ---
   async listProjects(opts?: {
     signal?: AbortSignal;
