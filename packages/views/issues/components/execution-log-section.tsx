@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
-import { useTimeAgo } from "../../i18n";
+import { useLocale, useTimeAgo } from "../../i18n";
 import {
   Tooltip,
   TooltipContent,
@@ -35,6 +35,7 @@ import {
   formatUsd,
   summarizeTaskUsage,
   summarizeTaskUsageAcross,
+  type TaskUsageSummary,
 } from "../../runtimes/utils";
 import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 import { IssueUsageDialog } from "./issue-usage-dialog";
@@ -106,6 +107,43 @@ export function sortPastRuns(tasks: AgentTask[]): AgentTask[] {
   });
 }
 
+// One calendar day of past runs — the issue trend's own row. Tokens and cost
+// ride together in the day header because each answers what the other only
+// suggests: a spend rise cannot say whether more tokens burned or the model
+// got dearer, and a token count alone is exactly what hides cache reads
+// being the main term. `summary` carries the day's three states in one —
+// priced (a cost figure), unpriced (tokens real, no figure), silent (no
+// usage at all, no figures).
+export interface PastRunDayGroup {
+  /** Local midnight of the day, as both identity and sort key. */
+  dayMs: number;
+  /** Newest first, matching the list the groups came from. */
+  tasks: AgentTask[];
+  summary: TaskUsageSummary | null;
+}
+
+// Newest day first: the input is already newest-run first (sortPastRuns), so
+// a day is always first seen through its newest run. Day boundaries follow
+// the viewer's local calendar — the same clock the reader splits their own
+// days by.
+export function groupPastRunsByDay(tasks: readonly AgentTask[]): PastRunDayGroup[] {
+  const groups = new Map<number, PastRunDayGroup>();
+  for (const task of tasks) {
+    const day = new Date(task.completed_at ?? task.created_at);
+    day.setHours(0, 0, 0, 0);
+    let group = groups.get(day.getTime());
+    if (!group) {
+      group = { dayMs: day.getTime(), tasks: [], summary: null };
+      groups.set(day.getTime(), group);
+    }
+    group.tasks.push(task);
+  }
+  for (const group of groups.values()) {
+    group.summary = summarizeTaskUsageAcross(group.tasks.map((task) => task.usage));
+  }
+  return Array.from(groups.values());
+}
+
 // ─── Run list filters (RUYI-292) ───────────────────────────────────────────
 
 // Status filter values are the USER-VISIBLE states, not raw statuses: the
@@ -157,6 +195,7 @@ const PAST_PAGE_SIZE = 20;
 
 export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSectionProps) {
   const { t } = useT("issues");
+  const locale = useLocale();
   const [open, setOpen] = useState(true);
   const [showPast, setShowPast] = useState(false);
   const [usageOpen, setUsageOpen] = useState(false);
@@ -216,6 +255,29 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
   useEffect(() => {
     setVisiblePastCount(PAST_PAGE_SIZE);
   }, [statusFilter, triggerFilter]);
+
+  // Pagination applies to runs, grouping to the visible slice: a "show more"
+  // grows the days in place instead of reflowing the whole list.
+  const visiblePastGroups = useMemo(
+    () => groupPastRunsByDay(filteredPastTasks.slice(0, visiblePastCount)),
+    [filteredPastTasks, visiblePastCount],
+  );
+
+  // Today / Yesterday for the two days people actually scan for; older days
+  // get the compact calendar date. No year: this is a recent-runs rail, and
+  // a year on every divider is a figure the 260px rail cannot spare.
+  const dayLabel = useMemo(() => {
+    const fmt = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    return (dayMs: number) => {
+      if (dayMs === today.getTime()) return t(($) => $.execution_log.day_today);
+      if (dayMs === yesterday.getTime()) return t(($) => $.execution_log.day_yesterday);
+      return fmt.format(dayMs);
+    };
+  }, [locale, t]);
 
   const clearFilters = () => {
     setStatusFilter("");
@@ -318,13 +380,51 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
                     </div>
                   ) : (
                     <>
-                      {filteredPastTasks.slice(0, visiblePastCount).map((task) => (
-                        <PastRow
-                          key={task.id}
-                          task={task}
-                          issueId={issueId}
-                          onOpenDetail={() => setDetailTask(task)}
-                        />
+                      {visiblePastGroups.map((group) => (
+                        <section
+                          key={group.dayMs}
+                          aria-label={dayLabel(group.dayMs)}
+                          className="space-y-0.5"
+                        >
+                          {/* The trend's own row: the day's runs, tokens and
+                              cost read together, and the cost keeps the same
+                              three states a run row has — a day whose usage
+                              could not be priced is not a day that was free.
+                              Stats truncate, never the date: a clipped date
+                              would read as the wrong day entirely. */}
+                          <div className="flex items-baseline gap-2 border-b px-1 pb-0.5 text-micro text-muted-foreground">
+                            <span className="shrink-0 font-medium text-foreground">
+                              {dayLabel(group.dayMs)}
+                            </span>
+                            <span className="ml-auto truncate tabular-nums">
+                              {[
+                                t(($) => $.execution_log.day_runs, {
+                                  count: group.tasks.length,
+                                }),
+                                group.summary && group.summary.tokens > 0
+                                  ? formatTokens(group.summary.tokens)
+                                  : null,
+                                group.summary?.priced
+                                  ? formatUsd(group.summary.cost)
+                                  : group.summary
+                                    ? t(($) => $.execution_log.unpriced_rows, {
+                                        count: group.summary.unpricedRows,
+                                      })
+                                    : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </span>
+                          </div>
+                          {group.tasks.map((task) => (
+                            <PastRow
+                              key={task.id}
+                              task={task}
+                              issueId={issueId}
+                              onOpenDetail={() => setDetailTask(task)}
+                            />
+                          ))}
+                        </section>
                       ))}
                       {filteredPastTasks.length > visiblePastCount && (
                         <button
@@ -423,7 +523,23 @@ export function IssueUsageTotal({
           {formatTokens(total.tokens)}
         </span>
         <span className={`text-faint-foreground ${narrowTier}`}>·</span>
-        <span className="text-muted-foreground">{formatUsd(total.cost)}</span>
+        {/* "—" when nothing could be priced — never $0.00: a run whose model
+            has no rate recorded usage but has no cost figure, and rendering
+            that unknown as zero is what makes an unpriced issue read as a
+            free one. `priced` is answered once inside summarizeTaskUsage so
+            this gate and the usage dialog's can never disagree. */}
+        <span className="text-muted-foreground">
+          {total.priced ? formatUsd(total.cost) : "—"}
+        </span>
+        {/* Adjacent to the figure it qualifies, because a total that omits
+            rows is only honest while it says so. Always visible — hiding it
+            on narrow widths would reintroduce exactly the "$0 reads as free"
+            reading this exists to prevent. */}
+        {total.unpricedRows > 0 && (
+          <span className="whitespace-nowrap align-baseline text-caption font-medium text-warning">
+            {t(($) => $.execution_log.unpriced_rows, { count: total.unpricedRows })}
+          </span>
+        )}
       </TooltipTrigger>
       <TooltipContent>{t(($) => $.execution_log.usage_total_tooltip)}</TooltipContent>
     </Tooltip>

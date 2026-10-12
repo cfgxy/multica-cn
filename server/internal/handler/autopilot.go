@@ -334,6 +334,9 @@ type CreateAutopilotRequest struct {
 	ExecutionMode      string            `json:"execution_mode"`
 	IssueTitleTemplate *string           `json:"issue_title_template"`
 	Subscribers        []SubscriberInput `json:"subscribers"`
+	// Optional initial parameter definitions; validated and inserted in the
+	// create transaction. Omit for a zero-parameter autopilot.
+	Params []service.AutopilotParamInput `json:"params"`
 }
 
 type UpdateAutopilotRequest struct {
@@ -347,6 +350,9 @@ type UpdateAutopilotRequest struct {
 	IssueTitleTemplate *string `json:"issue_title_template"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
+	// Wholesale replacement when the key is present; omit to leave parameter
+	// definitions untouched. Same set-level semantics as PUT /params.
+	Params []service.AutopilotParamInput `json:"params"`
 }
 
 type SubscriberInput struct {
@@ -664,8 +670,22 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "execution_mode must be create_issue or run_only")
 		return
 	}
+	if err := service.ValidateAutopilotParamInputs(req.Params); err != nil {
+		writeAutopilotParamError(w, err)
+		return
+	}
+	// Templates validate against the whitelist THIS request defines: built-ins
+	// plus the parameter names submitted alongside them. The description is an
+	// interpolation surface too, so its tokens get the same check.
+	paramNames := templateParamNamesFromInputs(req.Params)
 	if req.IssueTitleTemplate != nil {
-		if err := service.ValidateIssueTitleTemplate(*req.IssueTitleTemplate); err != nil {
+		if err := service.ValidateTemplateTokens(*req.IssueTitleTemplate, paramNames); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if req.Description != nil {
+		if err := service.ValidateTemplateTokens(*req.Description, paramNames); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -762,6 +782,12 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 			UserID:      subscriber.UserID,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to add autopilot subscriber")
+			return
+		}
+	}
+	if len(req.Params) > 0 {
+		if err := writeAutopilotParamDefs(r.Context(), qtx, autopilot.WorkspaceID, autopilot.ID, req.Params); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create autopilot params")
 			return
 		}
 	}
@@ -916,12 +942,6 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		params.Description = ptrToText(req.Description)
 	}
 	if _, ok := rawFields["issue_title_template"]; ok {
-		if req.IssueTitleTemplate != nil {
-			if err := service.ValidateIssueTitleTemplate(*req.IssueTitleTemplate); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-		}
 		params.IssueTitleTemplate = ptrToText(req.IssueTitleTemplate)
 	}
 	if _, ok := rawFields["project_id"]; ok {
@@ -987,6 +1007,55 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		subscribers = validated
+	}
+
+	// Same wholesale-replacement semantics as subscribers: the `params` key
+	// present replaces the whole definition set; omitted leaves it untouched.
+	replaceParams := false
+	if _, sent := rawFields["params"]; sent {
+		replaceParams = true
+		if err := service.ValidateAutopilotParamInputs(req.Params); err != nil {
+			writeAutopilotParamError(w, err)
+			return
+		}
+	}
+
+	// Template surfaces (issue-title template, task instructions) must keep
+	// interpolating after this update: validate the texts this write leaves in
+	// force against the whitelist that will be in force — the submitted set
+	// when `params` is being replaced, the stored set otherwise. Needed whenever
+	// any of the three changes: a params replacement can orphans a stored
+	// token, and a template write can reference a missing name.
+	if replaceParams || rawFields["issue_title_template"] != nil || rawFields["description"] != nil {
+		paramNames := map[string]bool{}
+		if replaceParams {
+			paramNames = templateParamNamesFromInputs(req.Params)
+		} else {
+			defs, err := h.Queries.ListAutopilotParams(r.Context(), prev.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+				return
+			}
+			for _, def := range defs {
+				paramNames[def.Name] = true
+			}
+		}
+		nextTitle := prev.IssueTitleTemplate.String
+		if req.IssueTitleTemplate != nil {
+			nextTitle = *req.IssueTitleTemplate
+		}
+		nextDesc := prev.Description.String
+		if rawFields["description"] != nil && req.Description != nil {
+			nextDesc = *req.Description
+		}
+		if err := service.ValidateTemplateTokens(nextTitle, paramNames); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := service.ValidateTemplateTokens(nextDesc, paramNames); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
@@ -1088,6 +1157,12 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to add autopilot subscriber")
 				return
 			}
+		}
+	}
+	if replaceParams {
+		if err := writeAutopilotParamDefs(r.Context(), qtx, prev.WorkspaceID, autopilot.ID, req.Params); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update params")
+			return
 		}
 	}
 
@@ -2207,8 +2282,54 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 	if idempotencyKey == "" {
 		idempotencyKey = service.NewRequestIdempotencyKey()
 	}
-	run, reasonCode, err := h.AutopilotService.DispatchAutopilotManualWithKey(r.Context(), autopilot, pgtype.UUID{}, nil, memberActorUserID(actorType, actorID), idempotencyKey)
+
+	// Trigger-time parameters (RUYI-641 stage A): an optional `params` object
+	// in the request body. The raw object is wrapped into the dispatch
+	// payload; the service resolves it against the autopilot's definitions —
+	// a contract violation surfaces as *service.AutopilotParamError and maps
+	// to a 400 before any run is created.
+	var triggerBody struct {
+		Params map[string]json.RawMessage `json:"params"`
+	}
+	if r.Body != nil {
+		// Bound the read like every other inbound body surface: a missing cap
+		// would let an authenticated caller buffer an arbitrarily large body
+		// just to have it rejected by parameter validation afterwards.
+		r.Body = http.MaxBytesReader(w, r.Body, maxTriggerBodyBytes)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := json.Unmarshal(body, &triggerBody); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+		}
+	}
+	var payload []byte
+	if len(triggerBody.Params) > 0 {
+		var marshalErr error
+		payload, marshalErr = json.Marshal(map[string]any{"params": triggerBody.Params})
+		if marshalErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid params")
+			return
+		}
+	}
+
+	run, reasonCode, err := h.AutopilotService.DispatchAutopilotManualWithKey(r.Context(), autopilot, pgtype.UUID{}, payload, memberActorUserID(actorType, actorID), idempotencyKey)
 	if err != nil {
+		var paramErr *service.AutopilotParamError
+		if errors.As(err, &paramErr) {
+			writeError(w, http.StatusBadRequest, paramErr.Reason)
+			return
+		}
 		var quotaErr *service.AutopilotQuotaExceededError
 		if errors.As(err, &quotaErr) {
 			retryAfter := int64(time.Until(quotaErr.ResetAt).Seconds())

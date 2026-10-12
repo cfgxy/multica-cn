@@ -138,8 +138,14 @@ var postConsolidationStems = []string{
 	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
 	"937_live_session_mode",                          // RUYI-626
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
+	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
+	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
 	"945_plugin_public_listing",                      // RUYI-668 (renumbered from 457: yielded to upstream 457_task_message_output_truncated, upstream-sync fork-yield rule)
 	"946_plugin_package_public_index",                // RUYI-668 (renumbered from 458: yielded to upstream 458_agent_task_cancellation_actor, upstream-sync fork-yield rule)
+	"963_runtime_cost_budget",                        // RUYI-665 (renumbered 966->963 pre-merge, 963-965 idle across all three sources; original 962 yielded to RUYI-669's reserved 962_task_local_directory_scope — registry-reserved, not on main)
+	"964_runtime_cost_budget_pkey_index",             // RUYI-665
+	"965_runtime_cost_budget_primary_key",            // RUYI-665
+	"966_runtime_cost_budget_scope_index",            // RUYI-665
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

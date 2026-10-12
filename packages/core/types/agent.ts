@@ -119,6 +119,46 @@ export interface RuntimeDevice {
 
 export type AgentRuntime = RuntimeDevice;
 
+// Runtime cost budget (`/api/runtimes/:id/budget`, RUYI-665). Periods are UTC
+// calendar windows; a null period is unlimited. `runtime` is the total scope
+// (blocks everyone), `users` are per-owner scopes. `can_manage` mirrors the
+// server's runtime-owner gate so the UI shows the editor only when a PUT would
+// succeed.
+export type RuntimeBudgetPeriodKey = "daily" | "weekly" | "monthly";
+
+export interface RuntimeBudgetPeriod {
+  limit_usd: number;
+  used_usd: number;
+  period_start: string;
+  reset_at: string;
+  reached: boolean;
+}
+
+export interface RuntimeBudgetScope {
+  user_id?: string;
+  daily: RuntimeBudgetPeriod | null;
+  weekly: RuntimeBudgetPeriod | null;
+  monthly: RuntimeBudgetPeriod | null;
+}
+
+export interface RuntimeCostBudget {
+  runtime: RuntimeBudgetScope | null;
+  users: RuntimeBudgetScope[];
+  can_manage: boolean;
+}
+
+export interface RuntimeBudgetScopeInput {
+  user_id?: string;
+  daily_usd: number | null;
+  weekly_usd: number | null;
+  monthly_usd: number | null;
+}
+
+export interface RuntimeCostBudgetInput {
+  runtime: RuntimeBudgetScopeInput | null;
+  users: RuntimeBudgetScopeInput[];
+}
+
 // RUYI-425 §4.4: a protocol family's capability declaration, mirrored from
 // server/pkg/agent/capabilities.go. Capabilities belong to the Type layer
 // (the runtime profile), not the instance — two Gemini Live instances share
@@ -420,6 +460,17 @@ export interface AgentTask {
    * with a meaningful title instead of falling through to "Untracked").
    */
   kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct" | "retrospective";
+  /**
+   * Daily-retrospective runs (kind="retrospective") only: the
+   * retrospective_run row this task serves, from the task's context
+   * payload. The activity row links to the run's results view through it.
+   */
+  retrospective_run_id?: string;
+  /**
+   * Daily-retrospective runs only: RFC3339 window end — the trigger
+   * moment the readable title stamps (`每日复盘YYYYMMDD_HHmmss`).
+   */
+  retrospective_window_end?: string;
   /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
@@ -1721,41 +1772,4 @@ export interface RuntimeLocalSkillImportResult {
   status: "created" | "updated" | "conflict";
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
-}
-
-// ---------------------------------------------------------------------------
-// Agent webhooks (RUYI-52)
-//
-// A public, token-bearing trigger URL bound to a fixed prompt. Every visit to
-// the URL starts a fresh chat session whose first user message is the bound
-// prompt. The token is a bearer credential; the server strips the credential
-// fields for non-managers (only webhook_path_masked remains, safe to render).
-// ---------------------------------------------------------------------------
-
-export interface AgentWebhook {
-  id: string;
-  agent_id: string;
-  name: string;
-  prompt: string;
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
-  /** Ingress path with the token replaced by the fixed-width mask. */
-  webhook_path_masked: string;
-  /** Manager-only: the raw bearer token. Null for non-managers. */
-  webhook_token?: string | null;
-  /** Manager-only: "/api/webhooks/agents/{token}". */
-  webhook_path?: string | null;
-  /** Manager-only absolute URL, present only when the server has MULTICA_PUBLIC_URL. */
-  webhook_url?: string | null;
-}
-
-export interface CreateAgentWebhookRequest {
-  name: string;
-  prompt: string;
-}
-
-export interface UpdateAgentWebhookRequest {
-  name: string;
-  prompt: string;
 }

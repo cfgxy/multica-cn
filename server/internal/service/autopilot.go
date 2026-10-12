@@ -217,6 +217,40 @@ func (s *AutopilotService) AdmitAutopilotWebhookDelivery(
 		return run, nil
 	}
 
+	// Resolve trigger-time parameters before the idempotent run is created
+	// (RUYI-641 stage A): a payload whose `params` miss the definitions
+	// (missing required, type mismatch, unknown name) records a skipped run
+	// carrying the reason — the ingress answers 200 {"status":"skipped"} with
+	// that reason, so webhook retry machinery does not hammer a deterministic
+	// caller error. On success the resolved values are snapshotted into the
+	// stored payload.
+	resolvedPayload, err := s.resolveAutopilotTriggerParams(ctx, autopilot, payload)
+	if err != nil {
+		var paramErr *AutopilotParamError
+		if !errors.As(err, &paramErr) {
+			return nil, fmt.Errorf("admit webhook delivery: resolve parameters: %w", err)
+		}
+		run, rerr := s.recordSkippedRun(
+			ctx,
+			autopilot,
+			triggerID,
+			"webhook",
+			payload,
+			pgtype.Timestamptz{},
+			deliveryID,
+			err.Error(),
+		)
+		if rerr != nil {
+			return s.recoverConcurrentWebhookAdmission(
+				ctx,
+				deliveryID,
+				fmt.Errorf("admit webhook delivery: create skipped run: %w", rerr),
+			)
+		}
+		return run, nil
+	}
+	payload = resolvedPayload
+
 	initialStatus := "issue_created"
 	if autopilot.ExecutionMode == "run_only" {
 		initialStatus = "running"
@@ -532,6 +566,26 @@ func (s *AutopilotService) dispatchAutopilot(
 		return run, code, err
 	}
 
+	// Resolve trigger-time parameters against the autopilot's definitions
+	// (RUYI-641 stage A): schedule fires resolve defaults; webhook/manual/api
+	// callers pass a `params` object inside the payload. A missing required
+	// parameter or a type mismatch rejects the dispatch before any run is
+	// created — the manual surface returns the typed error so the handler can
+	// answer 400, automation sources record a skipped run carrying the reason.
+	resolvedPayload, err := s.resolveAutopilotTriggerParams(ctx, autopilot, payload)
+	if err != nil {
+		var paramErr *AutopilotParamError
+		if !errors.As(err, &paramErr) {
+			return nil, dispatch.ReasonInternalError, fmt.Errorf("resolve parameters: %w", err)
+		}
+		if source == "manual" {
+			return nil, "", err
+		}
+		skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, err.Error(), dispatch.ReasonParamInvalid)
+		return skipped, dispatch.ReasonParamInvalid, skipErr
+	}
+	payload = resolvedPayload
+
 	// Determine initial status based on execution mode.
 	initialStatus := "issue_created"
 	if autopilot.ExecutionMode == "run_only" {
@@ -657,6 +711,22 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	defer tx.Rollback(ctx)
 
 	qtx := s.Queries.WithTx(tx)
+
+	// RUYI-665: gate at the top of the transaction, before the duplicate guard
+	// or an issue number is burned. The post-commit enqueue re-checks, but that
+	// check cannot undo the issue a refusal would strand — without this
+	// pre-check a spent budget would mint an orphaned autopilot issue on every
+	// fire. A skip returns before any issue state is touched, so the tx commits
+	// nothing and the run is recorded as skipped with a typed reason. The
+	// notification inside the check writes through the auto-commit s.Queries,
+	// not qtx, so it survives this transaction's rollback.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, qtx, leader, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: budgetErr.PublicReason(), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
 
 	title := s.interpolateTemplate(ap, *run, triggerTimezone)
 	description := s.buildIssueDescription(ap, *run, triggerTimezone)
@@ -996,6 +1066,23 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, "workspace fail-closed: no accountable human for autopilot run"), code: dispatch.ReasonAttributionBlocked}
 	}
 	apSource, _, apEvidenceKind, apEvidenceRef := attributionCreateParams(autopilotAttr)
+
+	// RUYI-665: budget gate right before the task insert. dispatchRunOnly
+	// enqueues via Queries.CreateAutopilotTask, bypassing the TaskService
+	// enqueue helpers where phase 1 put the gate, so without this check a
+	// spent budget would never stop a run_only autopilot. A spent budget is a
+	// skip (typed reason, recorded skipped run), not a failure — the trigger
+	// schedule stays alive and the next fire retries after the period resets.
+	// A database error is NOT a skip: it fails the run loudly instead of
+	// silently spending under an unreadable budget.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: budgetErr.PublicReason(), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
+
 	task, err := s.Queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
 		ID:             dbid.NewV7(),
 		AgentID:        agent.ID,
@@ -1732,8 +1819,12 @@ func autopilotTriggerLocation(timezone string) (*time.Location, string) {
 // the agent only sees the issue body, never the run's trigger_payload).
 func (s *AutopilotService) buildIssueDescription(ap db.Autopilot, run db.AutopilotRun, triggerTimezone string) pgtype.Text {
 	triggeredAt := formatAutopilotRunTimestamp(run, triggerTimezone)
+	// The task instructions are an interpolation surface like the title
+	// template: {{date}} and defined parameters substitute from the run's
+	// resolved snapshot (RUYI-641).
+	instructions := s.interpolateAutopilotText(ap.Description.String, run, triggerTimezone)
 	var b strings.Builder
-	b.WriteString(ap.Description.String)
+	b.WriteString(instructions)
 	b.WriteString("\n\n---\n*Autopilot run triggered at ")
 	b.WriteString(triggeredAt)
 	b.WriteString(". After starting work, rename this issue to accurately reflect what you are doing.*")
@@ -1796,41 +1887,73 @@ func (s *AutopilotService) interpolateTemplate(ap db.Autopilot, run db.Autopilot
 	if ap.IssueTitleTemplate.Valid && ap.IssueTitleTemplate.String != "" {
 		tmpl = ap.IssueTitleTemplate.String
 	}
+	return s.interpolateAutopilotText(tmpl, run, triggerTimezone)
+}
+
+// SupportedIssueTitleTemplateVariables enumerates the built-in placeholders
+// that interpolateAutopilotText substitutes on every autopilot. Defined
+// autopilot parameters (RUYI-641) extend the whitelist per autopilot — see
+// ValidateTemplateTokens. Keep this in sync with the substitution logic and
+// with the docs in autopilots.mdx / autopilots.zh.mdx.
+var SupportedIssueTitleTemplateVariables = []string{"date"}
+
+// interpolateAutopilotText substitutes {{date}} and defined-parameter tokens
+// in an interpolation surface (issue title template, task instructions).
+// Whitespace inside the braces ({{ date }}) is tolerated so the render layer
+// accepts every form that ValidateTemplateTokens accepts — otherwise users
+// would save templates that pass validation but still emit a literal token at
+// trigger time. Parameter values come from the run's resolved snapshot
+// (autopilotParamValuesFromRun); a run without a snapshot only knows the
+// built-ins, and unknown tokens pass through literally — validation at
+// create/update already rejected those.
+func (s *AutopilotService) interpolateAutopilotText(tmpl string, run db.AutopilotRun, triggerTimezone string) string {
+	if !strings.Contains(tmpl, "{{") {
+		return tmpl
+	}
+	values := autopilotParamValuesFromRun(run)
 	triggerDate := formatAutopilotRunDate(run, triggerTimezone)
 	return issueTitleTemplateTokenRE.ReplaceAllStringFunc(tmpl, func(match string) string {
 		name := strings.TrimSpace(match[2 : len(match)-2])
-		switch name {
-		case "date":
+		switch {
+		case name == "date":
 			return triggerDate
 		default:
+			if v, ok := values[name]; ok {
+				return renderAutopilotParamValue(v)
+			}
 			return match
 		}
 	})
 }
 
-// SupportedIssueTitleTemplateVariables enumerates the placeholders that
-// interpolateTemplate will substitute. Keep this in sync with the
-// substitution logic above and with the docs in autopilots.mdx /
-// autopilots.zh.mdx.
-var SupportedIssueTitleTemplateVariables = []string{"date"}
-
 // ValidateIssueTitleTemplate rejects templates that contain any {{...}} token
-// other than the supported set. An empty template is valid (the autopilot
-// falls back to its own Title). The error message names the first offending
-// token to keep CLI feedback actionable.
+// other than the built-ins. An empty template is valid (the autopilot falls
+// back to its own Title). The error message names the first offending token
+// to keep CLI feedback actionable.
 func ValidateIssueTitleTemplate(tmpl string) error {
-	if tmpl == "" {
+	return ValidateTemplateTokens(tmpl, nil)
+}
+
+// ValidateTemplateTokens is the parameter-aware form of
+// ValidateIssueTitleTemplate: tokens naming an autopilot parameter are
+// accepted alongside the built-ins. Both interpolation surfaces — the
+// issue-title template and the task instructions (description) — validate
+// through this whitelist, so every token that passes validation also
+// interpolates at trigger time.
+func ValidateTemplateTokens(text string, paramNames map[string]bool) error {
+	if text == "" {
 		return nil
 	}
-	for _, m := range issueTitleTemplateTokenRE.FindAllStringSubmatch(tmpl, -1) {
+	for _, m := range issueTitleTemplateTokenRE.FindAllStringSubmatch(text, -1) {
 		name := m[1]
-		if !isSupportedIssueTitleVariable(name) {
-			return fmt.Errorf(
-				"unknown template variable %q; supported: {{%s}}",
-				name,
-				strings.Join(SupportedIssueTitleTemplateVariables, "}}, {{"),
-			)
+		if isSupportedIssueTitleVariable(name) || paramNames[name] {
+			continue
 		}
+		return paramErrf(
+			"unknown template variable %q; supported: {{date}}%s",
+			name,
+			paramNamesHint(paramNames),
+		)
 	}
 	return nil
 }

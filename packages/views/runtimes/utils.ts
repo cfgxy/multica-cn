@@ -151,26 +151,12 @@ export function formatUsd(n: number): string {
 // Cost estimation
 // ---------------------------------------------------------------------------
 
-// Pricing per million tokens (USD). Sources, each authoritative for the
-// rows tagged under it — keep in sync when providers release new models
-// or adjust prices.
+// Pricing per million tokens (USD).
 //
-//   Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
-//   OpenAI:    https://openai.com/api/pricing
-//   DeepSeek:  https://api-docs.deepseek.com/quick_start/pricing
-//   Moonshot:  https://www.kimi.com/resources/kimi-k2-6-pricing
-//   Zhipu:     https://docs.z.ai/guides/overview/pricing
-//   xAI:       https://docs.x.ai/developers/pricing
-//
-// Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input); the
-// daemon reports cache_creation_input_tokens without TTL metadata, so 5m is
-// the safest / cheapest assumption (matches the API default). DeepSeek,
-// Moonshot, Zhipu and xAI do not bill cache writes separately (cached input
-// is just discounted on subsequent reads), so cacheWrite mirrors input there.
-// OpenAI historically did the same, but its GPT-5.6+ generation bills cache
-// writes at 1.25× input (cache reads still get the 90% cached-input
-// discount), so those rows carry a distinct cacheWrite. Codex usage doesn't
-// yet stream cache-write tokens, so that rate isn't exercised today.
+// The rows live in ./model_pricing.generated.ts, generated from the
+// server's rate table (server/internal/metrics/pricing.go) — the copy the
+// server prices usage with. Rates and their sources are edited there, not
+// here; see RUYI-664.
 //
 // The resolver matches exact keys after stripping a trailing date snapshot
 // (see `resolvePricing` below). It deliberately does NOT do startsWith
@@ -188,191 +174,28 @@ export function formatUsd(n: number): string {
 // `${provider}/${model}` (e.g. `cursor/auto`). `resolvePricing` tries the
 // `${provider}/…` form first, then the bare form, so vendor-prefixed SKUs
 // stay unqualified and still resolve.
-const MODEL_PRICING: Record<
-  string,
-  { input: number; output: number; cacheRead: number; cacheWrite: number }
-> = {
-  // -- Anthropic: current generation. Sonnet 5 uses Anthropic's published
-  //    intro launch rate ($2 / $10 through 2026-08-31). This static map has
-  //    no future-dated pricing support yet, so update the row when the
-  //    post-intro $3 / $15 rate takes effect. Fable 5 and 5.1 are Mythos-class
-  //    SKUs at 10/50 (5.1 prices cache reads at 0.025x input, a quarter of the
-  //    usual 0.1x); Opus 4.5 through Opus 5 stay on the lower 5/25 Opus tier. --
-  "claude-sonnet-5":     { input: 2,    output: 10,   cacheRead: 0.20, cacheWrite: 2.50 },
-  "claude-fable-5-1":   { input: 10,   output: 50,   cacheRead: 0.25, cacheWrite: 12.50 },
-  "claude-fable-5":     { input: 10,   output: 50,   cacheRead: 1.00, cacheWrite: 12.50 },
-  "claude-opus-5":      { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-haiku-4-5":   { input: 1,    output: 5,    cacheRead: 0.10, cacheWrite: 1.25 },
-  "claude-sonnet-4-5":  { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75 },
-  "claude-sonnet-4-6":  { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75 },
-  "claude-opus-4-5":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-opus-4-6":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-opus-4-7":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-opus-4-8":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-
-  // -- Anthropic: pre-4.5 Opus (legacy, still served at original price tier) --
-  "claude-opus-4-1":    { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
-  "claude-opus-4":      { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
-
-  // -- Anthropic: Sonnet 4.0 (deprecated; same price as the 4.x family) --
-  "claude-sonnet-4":    { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75 },
-
-  // -- Anthropic: older Haiku tier (defensive entry for the rare runtime still on it) --
-  "claude-haiku-3-5":   { input: 0.80, output: 4,    cacheRead: 0.08, cacheWrite: 1.00 },
-
-  // -- OpenAI: dotted-minor Codex catalog SKUs. Each generation is priced
-  //    independently — no fallback to `gpt-5`. Entries track
-  //    `server/pkg/agent/models.go` (Codex provider list).
-  //    gpt-5.6 (sol/terra/luna) uses OpenAI's official announcement rates.
-  //    5.6+ is the first OpenAI generation to bill cache writes separately:
-  //    cacheRead = 0.1x input (90% cached-input discount), cacheWrite = 1.25x
-  //    input (see the header note above). Codex usage doesn't yet report
-  //    cache-write tokens, so cacheWrite isn't exercised today, but the rate
-  //    is kept correct for when it is.
-  "gpt-5.6-sol":        { input: 5,    output: 30,   cacheRead: 0.50,  cacheWrite: 6.25 },
-  "gpt-5.6-terra":      { input: 2.50, output: 15,   cacheRead: 0.25,  cacheWrite: 3.125 },
-  "gpt-5.6-luna":       { input: 1,    output: 6,    cacheRead: 0.10,  cacheWrite: 1.25 },
-  "gpt-5.5":            { input: 5,    output: 30,   cacheRead: 0.50,  cacheWrite: 5 },
-  "gpt-5.4-mini":       { input: 0.75, output: 4.50, cacheRead: 0.075, cacheWrite: 0.75 },
-  "gpt-5.4":            { input: 2.50, output: 15,   cacheRead: 0.25,  cacheWrite: 2.50 },
-  "gpt-5.3-codex":      { input: 1.75, output: 14,   cacheRead: 0.175, cacheWrite: 1.75 },
-
-  // -- OpenAI: GPT-5 family (Codex CLI's default is gpt-5-codex; -codex/-mini/-nano variants priced per OpenAI tiers) --
-  "gpt-5-codex":        { input: 1.25, output: 10,   cacheRead: 0.125, cacheWrite: 1.25 },
-  "gpt-5-mini":         { input: 0.25, output: 2,    cacheRead: 0.025, cacheWrite: 0.25 },
-  "gpt-5-nano":         { input: 0.05, output: 0.40, cacheRead: 0.005, cacheWrite: 0.05 },
-  "gpt-5":              { input: 1.25, output: 10,   cacheRead: 0.125, cacheWrite: 1.25 },
-
-  // -- OpenAI: o-series reasoning models --
-  "o3-mini":            { input: 1.10, output: 4.40, cacheRead: 0.55,  cacheWrite: 1.10 },
-  "o3":                 { input: 2,    output: 8,    cacheRead: 0.50,  cacheWrite: 2 },
-  "o4-mini":            { input: 1.10, output: 4.40, cacheRead: 0.275, cacheWrite: 1.10 },
-
-  // -- OpenAI: GPT-4o family (legacy, kept for runtimes still configured against it) --
-  "gpt-4o-mini":        { input: 0.15, output: 0.60, cacheRead: 0.075, cacheWrite: 0.15 },
-  "gpt-4o":             { input: 2.50, output: 10,   cacheRead: 1.25,  cacheWrite: 2.50 },
-
-  // -- DeepSeek (api-docs.deepseek.com/quick_start/pricing).
-  //    The official catalog lists exactly two current SKUs; `deepseek-chat`
-  //    and `deepseek-reasoner` are aliases that route to `deepseek-v4-flash`
-  //    (non-thinking and thinking mode respectively) per the same page.
-  //    `deepseek-v4-pro` is currently under a 75%-off promo that ends
-  //    2026-05-31 15:59 UTC; we price at the post-promo standard rate
-  //    ($1.74/$3.48) so the dashboard does not jump 4× on June 1 — accept
-  //    a brief over-estimate during the promo over a sudden cliff after it. --
-  "deepseek-v4-flash":  { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
-  "deepseek-v4-pro":    { input: 1.74, output: 3.48, cacheRead: 0.0145, cacheWrite: 1.74 },
-  "deepseek-chat":      { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
-  "deepseek-reasoner":  { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0.14 },
-
-  // -- Moonshot Kimi (kimi.com/resources/kimi-k2-6-pricing).
-  //    Only K2.6 is on the official price sheet today; earlier K2 variants
-  //    are intentionally omitted until Moonshot publishes their rates. --
-  "kimi-k2.6":          { input: 0.95, output: 4.00, cacheRead: 0.16,   cacheWrite: 0.95 },
-  // Kimi K3 (platform.kimi.ai/docs/pricing/chat-k3 via models.dev
-  // providers/moonshotai/models/kimi-k3.toml). Moonshot bills no separate
-  // cache write, so cacheWrite mirrors input (same convention as kimi-k2.6).
-  "kimi-k3":            { input: 3.0,  output: 15.0,  cacheRead: 0.30,   cacheWrite: 3.0 },
-  // Kimi Code CLI reports the same model as `kimi-code/k3`; provider-qualified
-  // because `k3` is a generic id (see the provider-qualified keys note above).
-  "kimi/k3":            { input: 3.0,  output: 15.0,  cacheRead: 0.30,   cacheWrite: 3.0 },
-
-  // -- Zhipu z.ai (docs.z.ai/guides/overview/pricing). Free flash tiers
-  //    are priced at 0 so they resolve cleanly instead of falling through
-  //    to the "unmapped" diagnostic. --
-  "glm-5.1":            { input: 1.4,  output: 4.4,  cacheRead: 0.26,   cacheWrite: 1.4 },
-  "glm-5":              { input: 1.0,  output: 3.2,  cacheRead: 0.2,    cacheWrite: 1.0 },
-  "glm-5-turbo":        { input: 1.2,  output: 4.0,  cacheRead: 0.24,   cacheWrite: 1.2 },
-  "glm-4.7":            { input: 0.6,  output: 2.2,  cacheRead: 0.11,   cacheWrite: 0.6 },
-  "glm-4.7-flashx":     { input: 0.07, output: 0.4,  cacheRead: 0.01,   cacheWrite: 0.07 },
-  "glm-4.7-flash":      { input: 0,    output: 0,    cacheRead: 0,      cacheWrite: 0 },
-  "glm-4.6":            { input: 0.6,  output: 2.2,  cacheRead: 0.11,   cacheWrite: 0.6 },
-  "glm-4.5":            { input: 0.6,  output: 2.2,  cacheRead: 0.11,   cacheWrite: 0.6 },
-  "glm-4.5-x":          { input: 2.2,  output: 8.9,  cacheRead: 0.45,   cacheWrite: 2.2 },
-  "glm-4.5-air":        { input: 0.2,  output: 1.1,  cacheRead: 0.03,   cacheWrite: 0.2 },
-  "glm-4.5-airx":       { input: 1.1,  output: 4.5,  cacheRead: 0.22,   cacheWrite: 1.1 },
-  "glm-4.5-flash":      { input: 0,    output: 0,    cacheRead: 0,      cacheWrite: 0 },
-
-  // -- Alibaba Qwen (International ≤256K tier; official sources:
-  //    alibabacloud.com/help/model-studio pricing sheet and
-  //    qwencloud.com/models/<model> pages, accessed 2026-08-12).
-  //    qwen3.7-plus: input $0.40 / output $1.60; qwen3.6-flash: input
-  //    $0.25 / output $1.50. Cache prices: Explicit Cache Creation = 1.25×
-  //    input (qwen3.7-plus $0.50, qwen3.6-flash $0.3125); Explicit Cache
-  //    Read = 10% of input (qwen3.7-plus $0.04, qwen3.6-flash $0.025).
-  // qwen3.8-max is priced at the published pay-as-you-go rate
-  // (qwencloud.com/models/qwen3.8-max: Input $2, Output $6, Implicit
-  // Cache $0.25, Creation $2.5, Explicit Cache Read $0.17; also listed on
-  // alibabacloud.com/help model-pricing) so the dashboard shows the
-  // absolute cost even though the runtime reaches it through an Alibaba
-  // Token/Coding Plan subscription. qwen3.8-max-preview stays at 0:
-  //    it is only served through the subscription (token-plan.cn-beijing.
-  //    maas.aliyuncs.com), which does not bill per token — 0 resolves
-  //    cleanly instead of tripping the unmapped diagnostic (same convention
-  //    as the free GLM flash tiers below). --
-  "qwen3.7-plus":       { input: 0.40,  output: 1.60,  cacheRead: 0.04,   cacheWrite: 0.50 },
-  "qwen3.6-flash":      { input: 0.25,  output: 1.50,  cacheRead: 0.025,  cacheWrite: 0.3125 },
-  "qwen3.8-max":        { input: 2.00,  output: 6.00,  cacheRead: 0.17,   cacheWrite: 2.5 },
-  "qwen3.8-max-preview":{ input: 0,      output: 0,     cacheRead: 0,      cacheWrite: 0 },
-
-  // -- Volcengine Ark (ark.cn-beijing.volces.com). `ark-code-latest` is a
-  //    rolling alias whose target the Volcengine console can switch between
-  //    model families, so it is not a stable model identity. Daemons report
-  //    the alias itself, not the resolved model, so there is no reliable
-  //    rate to attach — it deliberately stays unmapped (same philosophy as
-  //    xAI's `grok-composer-*`, see below), surfacing in the pricing dialog
-  //    instead of inheriting a guessed rate. --
-
-  // -- xAI Grok (docs.x.ai/developers/pricing). Rates below are the
-  //    short-context tier, and are now only a FALLBACK for Grok: xAI reports
-  //    its own price per turn and `estimateCost` prefers it. That matters
-  //    because xAI bills a request at 2x once its prompt reaches 200K tokens,
-  //    and a usage row aggregates every model call in a turn — so these rates
-  //    cannot tell which tier a request hit, while xAI's own figure already
-  //    has it priced in. These rows still apply to Grok usage recorded by a
-  //    daemon too old to report cost (the same trade-off the Anthropic `[1m]`
-  //    context tag takes, see `resolvePricing`).
-  //    `cacheRead` is xAI's published "Cached" input rate; there is no
-  //    separate cache-write rate on the page (writes bill as normal input),
-  //    so cacheWrite mirrors input per the header note. Grok ids are
-  //    vendor-prefixed, so these keys stay unqualified — which is what makes
-  //    them resolve at all, since the daemon tags the rows with the runtime
-  //    provider `grok`, not `xai`.
-  //    `grok-composer-*` ships in the Grok Build catalog
-  //    (server/pkg/agent/models.go) but is absent from the price sheet; it
-  //    deliberately stays unmapped rather than inheriting a guessed rate. --
-  "grok-4.6":                     { input: 2,    output: 6,    cacheRead: 0.50, cacheWrite: 2 },
-  "grok-4.5":                     { input: 2,    output: 6,    cacheRead: 0.30, cacheWrite: 2 },
-  "grok-4.3":                     { input: 1.25, output: 2.50, cacheRead: 0.20, cacheWrite: 1.25 },
-  "grok-build-0.1":               { input: 1,    output: 2,    cacheRead: 0.20, cacheWrite: 1 },
-  "grok-4.20-multi-agent-0309":   { input: 1.25, output: 2.50, cacheRead: 0.20, cacheWrite: 1.25 },
-  "grok-4.20-0309-reasoning":     { input: 1.25, output: 2.50, cacheRead: 0.20, cacheWrite: 1.25 },
-  "grok-4.20-0309-non-reasoning": { input: 1.25, output: 2.50, cacheRead: 0.20, cacheWrite: 1.25 },
-
-  // -- Cursor Composer / Auto (cursor.com/docs/models-and-pricing,
-  //    cursor.com/docs/models/cursor-composer-2,
-  //    cursor.com/docs/models/cursor-composer-2-5).
-  //    Cursor's model ids are all unprefixed generic names (`auto`,
-  //    `composer-*`) that collide with other providers (another provider
-  //    could also report `auto`), so they are provider-qualified under `cursor/`.
-  //    See the `provider-qualified keys` note above. Cursor result events
-  //    often omit `model`, so the daemon falls back to the configured
-  //    runtime model or the legacy key `cursor`. Cursor does not publish a
-  //    cache-write rate for these rows; keep it at 0 so reported
-  //    cache_write_tokens don't invent spend from input pricing.
-  "cursor/auto":              { input: 1.25, output: 6,    cacheRead: 0.25,   cacheWrite: 0 },
-  "cursor/composer-2.5-fast": { input: 3,    output: 15,   cacheRead: 0.5,    cacheWrite: 0 },
-  "cursor/composer-2.5":      { input: 0.5,  output: 2.5,  cacheRead: 0.2,    cacheWrite: 0 },
-  "cursor/composer-2-fast":   { input: 1.5,  output: 7.5,  cacheRead: 0.35,   cacheWrite: 0 },
-  "cursor/composer-2":        { input: 0.5,  output: 2.5,  cacheRead: 0.2,    cacheWrite: 0 },
-  "cursor/composer-1.5":      { input: 3.5,  output: 17.5, cacheRead: 0.35,   cacheWrite: 0 },
-  "cursor/composer-1":        { input: 1.25, output: 10,   cacheRead: 0.125,  cacheWrite: 0 },
-  // Legacy fallback bucket when neither the result event nor the runtime
-  // model is known — the daemon emits the literal `cursor`. This key equals
-  // the provider name itself, so it can't collide across providers and stays
-  // unqualified. Price at the current Composer 2.5 Fast default.
-  "cursor":                   { input: 3,    output: 15,   cacheRead: 0.5,    cacheWrite: 0 },
-};
+//
+// The table itself is GENERATED from the server's copy — see
+// ./model_pricing.generated.ts, and RUYI-664. Two hand-maintained copies
+// of a price table drifted in both directions (36 SKUs only the dashboard
+// priced, 7 only the server priced); now there is one source and the
+// dashboard imports it.
+//
+// The CONVENTIONS below still describe this table, and they are the part a
+// generator cannot own: they are a statement about what a key means, not a
+// list of rows.
+//
+//   - Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input).
+//     DeepSeek, Moonshot, Zhipu and xAI do not bill cache writes separately,
+//     so cacheWrite mirrors input there. OpenAI's GPT-5.6+ generation bills
+//     them at 1.25× input. MiniMax has its own explicit write rate.
+//   - A model whose rates are all 0 is a FREE tier, not a missing row. It is
+//     in the table on purpose: an id the table does not know is reported as
+//     unmapped, which is a different state from "costs nothing".
+//
+// Sources for the rates live with the rows, in
+// server/internal/metrics/pricing.go — that is where a rate is now edited.
+import { MODEL_PRICING } from "./model_pricing.generated";
 
 // Resolve a model string to its pricing tier. Exact match, with four
 // tolerances applied in order:
@@ -554,6 +377,52 @@ export function isModelPriced(model: string, provider?: string): boolean {
   return resolvePricing(model, provider) !== undefined;
 }
 
+// Whether this ONE row's cost is UNKNOWN rather than known-small.
+//
+// A row's cost is in one of four states — the same four the server's
+// `EstimateUsageCost` returns, and the distinction that matters is between
+// "known to be small" and "not known":
+//
+//   provider — the provider billed it (`cost_usd_ticks > 0`). Real money.
+//   table    — nothing billed, but the rate table prices the model. Estimated.
+//   zero     — nothing to price: no tokens consumed, or a free-tier row whose
+//              rates are all 0. Known-free, so it belongs in a total as a
+//              real 0 and must NOT raise "we couldn't price this".
+//   unpriced — tokens that need a rate, no rate on file, and no bill covering
+//              them. Only this state is unknown.
+//
+// The trap is that last state's second half. `estimateCost` is
+// `authoritative + estimate`, so one row can carry real money AND still have
+// unpriced tokens: the provider billed part of the turn and left the rest to
+// us. Dropping such a row from a total would throw away money that was
+// actually charged, so "no rate on file" must never decide this on its own —
+// only "no rate for tokens nobody else priced".
+//
+// The reverse trap is a row with no tokens at all: by the same test it looks
+// unpriced (no rate, nothing authoritative), but nothing was consumed, so it
+// is known-free. The server calls that `zero` and so do we — otherwise a
+// model with a missing rate would report "1 row we couldn't price" on an
+// issue that never spent anything.
+export function isUsageRowUnpriced(row: Priceable): boolean {
+  if (isModelPriced(row.model, row.provider)) return false;
+  // Priced in full by the provider: nothing left for us to estimate.
+  const uncosted = uncostedTokens(row);
+  const needsEstimate =
+    uncosted.input > 0 ||
+    uncosted.output > 0 ||
+    uncosted.cacheRead > 0 ||
+    uncosted.cacheWrite > 0;
+  if (!needsEstimate && (row.cost_usd_ticks ?? 0) > 0) return false;
+  // Nothing was consumed — known-free, not unknown.
+  const consumed =
+    row.input_tokens +
+    row.output_tokens +
+    row.cache_read_tokens +
+    row.cache_write_tokens;
+  if (consumed <= 0) return false;
+  return true;
+}
+
 // Returns the unique, sorted list of pricing keys present in `rows` that
 // don't resolve to a price. Keys are provider-qualified (`cursor/auto`) when
 // the row carries a provider, so the same bare model id reported by two
@@ -563,18 +432,22 @@ export function isModelPriced(model: string, provider?: string): boolean {
 // raise the "we can't price this model" warning — its cost is already exact,
 // and asking the user to supply a rate for it would be asking them to override
 // a real bill with a guess.
+//
+// The per-row question lives in `isUsageRowUnpriced` because the totals need
+// the same answer this banner does. Two copies of "can we price this" would
+// drift — the banner would name a model whose rows the total quietly counted
+// as $0, which is the whole failure mode this diagnostic exists to surface.
 export function collectUnmappedModels(rows: readonly Priceable[]): string[] {
   const set = new Set<string>();
   for (const r of rows) {
-    if (!r.model || isModelPriced(r.model, r.provider)) continue;
-    const uncosted = uncostedTokens(r);
-    const needsEstimate =
-      uncosted.input > 0 ||
-      uncosted.output > 0 ||
-      uncosted.cacheRead > 0 ||
-      uncosted.cacheWrite > 0;
-    if (!needsEstimate && (r.cost_usd_ticks ?? 0) > 0) continue;
-    set.add(pricingKey(r.model, r.provider));
+    if (!isUsageRowUnpriced(r)) continue;
+    // `pricingKey("")` degrades to `acme/` (or to nothing at all without a
+    // provider). An unnamed row groups under the provider name — or
+    // `unknown` — everywhere else (modelGroupingKey), so the banner names
+    // the same bucket the table shows.
+    set.add(
+      r.model ? pricingKey(r.model, r.provider) : normalizeProvider(r.provider) || "unknown",
+    );
   }
   return Array.from(set).toSorted();
 }
@@ -750,6 +623,27 @@ export interface TaskUsageSummary {
   cacheWrite: number;
   /** Distinct models this run touched, in first-seen order. Usually one. */
   models: string[];
+  /**
+   * Whether this summary carries a cost figure — not "has usage".
+   *
+   * False when every row is unpriced. Such a run recorded usage and still has
+   * no figure: its $0 is unknown, not spent, and rendering it as "$0.00" is
+   * what makes an unpriced issue read as a free one.
+   *
+   * True when any row was priced OR the cost is non-zero. That second clause
+   * covers a row the provider billed only PARTLY: it is unpriced (its
+   * remaining tokens have no rate) yet its billed half is real money, and
+   * hiding it would understate the issue more than showing an incomplete
+   * figure does.
+   *
+   * It cannot fire on run usage today — `TaskUsage` carries no `uncosted_*`
+   * split, so every billed row is billed in full and reads as `provider`.
+   * `RuntimeUsage` does carry the split, and this is here for the day run
+   * usage gets it too.
+   */
+  priced: boolean;
+  /** Rows that could not be priced. Counted; charging nothing. */
+  unpricedRows: number;
 }
 
 /**
@@ -774,6 +668,7 @@ export function summarizeTaskUsage(
     tokens: 0, cost: 0, cacheSavings: 0,
     input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
     models,
+    priced: false, unpricedRows: 0,
   };
 
   for (const slice of usage) {
@@ -783,10 +678,16 @@ export function summarizeTaskUsage(
     summary.cacheWrite += slice.cache_write_tokens;
     summary.cost += estimateCost(slice);
     summary.cacheSavings += estimateCacheSavings(slice);
+    if (isUsageRowUnpriced(slice)) summary.unpricedRows += 1;
     if (slice.model && !models.includes(slice.model)) models.push(slice.model);
   }
   summary.tokens =
     summary.input + summary.output + summary.cacheRead + summary.cacheWrite;
+  // Answered here, once, because every surface that shows a cost has to ask
+  // it and three copies of "can we price this" would drift — a header saying
+  // "$0.00" next to a banner naming the model it could not price is exactly
+  // the confusion this field exists to end.
+  summary.priced = summary.unpricedRows < usage.length || summary.cost > 0;
 
   return summary;
 }

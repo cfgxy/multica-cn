@@ -333,7 +333,7 @@ export default function ChatTab() {
               />
             ) : null
           }
-          contentContainerClassName="pb-6"
+          contentContainerClassName="pb-2"
           renderItem={({ item: session }) => (
             <ChatSessionRow
               session={session}

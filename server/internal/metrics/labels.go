@@ -53,6 +53,7 @@ var businessMetricLabels = map[string][]string{
 	"multica_llm_cost_usd_total":                       {labelProvider, labelModel, labelTokenType, labelRuntimeMode, labelSource},
 	"multica_llm_unpriced_tokens_total":                {labelProvider, labelModelAlias, labelTokenType},
 	"multica_llm_request_total":                        {labelProvider, labelModel, labelRuntimeMode},
+	"multica_llm_model_placeholder_total":              {labelProvider, labelKind},
 	"multica_task_queued_expired_total":                {labelSource, labelRuntimeMode},
 	"multica_task_lease_expired_total":                 {labelSource},
 	"multica_chat_claim_session_fallback_needed_total": {},
