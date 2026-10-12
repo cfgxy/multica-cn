@@ -37,30 +37,53 @@
 }
 
 /*
- * Issue reference tail aggregation (RUYI-635 + 增量 + RUYI-724).
+ * Issue reference tail aggregation (RUYI-635 + 增量, RUYI-724 interaction
+ * fork, RUYI-730 visual rebuild).
  *
  * RichContent renders issue/PR mentions as plain body text and lists every
- * reference here instead: a gray rounded container — header 「引用 · N」 plus
- * at most two preview rows plus a fold-count line. On mobile the block is ONE
- * button: rows are spans and never navigate; pressing the block opens the
- * popover (styled inline in issue-reference-footer.tsx — it portals outside
- * this scope). On desktop the block is not a control: resolved rows are
- * direct links (`a.issue-reference-row`) and only the folded
- * 「N more references」 line (`button.issue-reference-collapsed`) opens the
- * popover. The block is part of the content flow, so the compact density's
+ * reference here instead: a card — header 「引用 · N」 plus at most two
+ * preview rows plus, when rows fold, a collapsed count line. Per viewport
+ * (RUYI-724): on desktop the block is not a control — preview rows are
+ * direct links (`a.issue-reference-row`) and only the collapsed line
+ * (`button.issue-reference-collapsed`) opens the popover; on mobile the
+ * whole card stays ONE button (`button.issue-reference-footer`), rows are
+ * spans and never navigate. The popover itself is styled inline in
+ * issue-reference-footer.tsx — it portals out of the content flow. The
+ * block is part of the content flow, so the compact density's
  * `> :last-child` margin trim keeps it flush in chat bubbles.
+ *
+ * The rules below deliberately carry NO `.rich-text-editor` ancestor: the
+ * issue body mounts the tail as a sibling of <ContentEditor>
+ * (issue-detail.tsx), outside the editor scope, which left that surface
+ * totally unstyled (RUYI-730 QA probe). Keep these selectors self-contained
+ * — the block must style the same wherever a host mounts it.
+ *
+ * RUYI-730 rebuilds the visuals on the native sub-issues block's language
+ * (issue-detail.tsx). Token mapping, official class → CSS value:
+ *   rounded-lg         → var(--radius) — tokens.css also defines --radius-lg
+ *                        (= --radius), but that file never reaches the web
+ *                        bundle, so the card must reference --radius directly
+ *                        (QA probe: --radius-lg fell back to 0px)
+ *   border             → 1px solid var(--border)
+ *   bg-card/30         → color-mix(in oklab, var(--card) 30%, transparent)
+ *   divide-border/60   → color-mix(in oklab, var(--border) 60%, transparent)
+ *   px-3 py-2 / gap-2.5→ 0.75rem 0.5rem / 0.625rem
+ *   hover:bg-accent/50 → color-mix(in oklab, var(--accent) 50%, transparent)
+ * Row type scale follows SubIssueRow: identifier `text-micro` tabular, title
+ * `text-body` (still clamped at two lines, Owner point ①). Per RUYI-724 the
+ * desktop direct rows are links, so their hover/focus ride the same
+ * `bg-accent/50` token as SubIssueRow rows.
  */
-.rich-text-editor .issue-reference-footer {
+.issue-reference-footer {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 0.25rem;
   width: 100%;
   margin-top: 0.75rem;
-  padding: 0.5rem;
-  border: 0;
-  border-radius: 0.5rem;
-  background: color-mix(in oklab, var(--accent) 55%, transparent);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--card) 30%, transparent);
   color: inherit;
   font: inherit;
   text-align: left;
@@ -68,113 +91,132 @@
   transition: background-color 150ms;
 }
 
-/* Mobile trigger: the whole block is the press target. */
-.rich-text-editor button.issue-reference-footer {
+/* divide-y divide-border/60: separators between header, rows, fold line. */
+.issue-reference-footer > * + * {
+  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+/* Mobile trigger: the whole card is the press target (RUYI-724). On desktop
+   the block is a plain container — hover/focus/cursor belong to the button
+   form only, so a hover over the desktop block never implies clickability. */
+button.issue-reference-footer {
   cursor: pointer;
 }
 
-.rich-text-editor button.issue-reference-footer:hover {
-  background: var(--accent);
+button.issue-reference-footer:hover {
+  background: color-mix(in oklab, var(--accent) 50%, transparent);
 }
 
-.rich-text-editor button.issue-reference-footer:focus-visible {
+button.issue-reference-footer:focus-visible {
   box-shadow: 0 0 0 2px var(--ring);
+}
+
+.issue-reference-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+.issue-reference-chevron {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  transition: transform 150ms;
+}
+
+/* Chevron flip follows whichever element carries aria-expanded: the mobile
+   block button, or the desktop collapsed-line trigger (RUYI-724). */
+button.issue-reference-collapsed[aria-expanded="true"]
+  .issue-reference-chevron {
+  transform: rotate(180deg);
+}
+
+.issue-reference-footer[aria-expanded="true"]
+  .issue-reference-chevron {
+  transform: rotate(180deg);
+}
+
+/* Card strip layout shared by the mobile span and the desktop trigger. */
+.issue-reference-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  color: var(--muted-foreground);
+  text-align: left;
+  outline: none;
+}
+
+/* Desktop: the collapsed line is the only popover entry point. */
+button.issue-reference-collapsed {
+  cursor: pointer;
+}
+
+button.issue-reference-collapsed:hover {
+  color: var(--foreground);
+}
+
+/* Rows sit inside the overflow-hidden card, so outer box-shadows would clip:
+   focus rings use the inset form. */
+button.issue-reference-collapsed:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
+
+.issue-reference-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  min-width: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  color: var(--foreground);
+  text-align: left;
+  text-decoration: none;
 }
 
 /* Desktop direct rows (RUYI-724): neutralize the prose <a> treatment — the
    row reads as body content and picks up a hover pill, so it navigates in
-   one click without turning the block into a wall of blue links. */
-.rich-text-editor a.issue-reference-row {
+   one click without turning the block into a wall of blue links. The class
+   is doubled to out-rank `.rich-text-editor a` (prose.css) wherever the
+   block renders inside the editor scope, independent of bundle order. */
+a.issue-reference-row.issue-reference-row {
   color: var(--foreground);
   text-decoration: none;
-  border-radius: 0.375rem;
   cursor: pointer;
   outline: none;
 }
 
-.rich-text-editor a.issue-reference-row:hover {
-  background: color-mix(in oklab, var(--accent) 55%, transparent);
+a.issue-reference-row.issue-reference-row:hover {
+  background: color-mix(in oklab, var(--accent) 50%, transparent);
 }
 
-.rich-text-editor a.issue-reference-row:focus-visible {
-  box-shadow: 0 0 0 2px var(--ring);
+a.issue-reference-row.issue-reference-row:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ring);
 }
 
-/* Desktop collapsed-line trigger: the only popover entry point when rows
-   fold past the preview budget. */
-.rich-text-editor button.issue-reference-collapsed {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  outline: none;
-}
-
-.rich-text-editor button.issue-reference-collapsed:hover {
-  color: var(--foreground);
-}
-
-.rich-text-editor button.issue-reference-collapsed:focus-visible {
-  border-radius: 0.25rem;
-  box-shadow: 0 0 0 2px var(--ring);
-}
-
-.rich-text-editor button.issue-reference-collapsed[aria-expanded="true"]
-  .issue-reference-chevron {
-  transform: rotate(180deg);
-}
-
-.rich-text-editor .issue-reference-header {
-  display: flex;
-  align-items: center;
-  font-size: var(--text-micro);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--muted-foreground);
-}
-
-.rich-text-editor .issue-reference-chevron {
-  width: 0.875rem;
-  height: 0.875rem;
-  margin-left: auto;
-  transition: transform 150ms;
-}
-
-.rich-text-editor .issue-reference-footer[aria-expanded="true"]
-  .issue-reference-chevron {
-  transform: rotate(180deg);
-}
-
-.rich-text-editor .issue-reference-collapsed {
-  font-size: var(--text-caption);
-  color: var(--muted-foreground);
-}
-
-.rich-text-editor .issue-reference-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  min-width: 0;
-  max-width: 100%;
-  font-size: var(--text-label);
-  line-height: 1.25rem;
-  color: var(--foreground);
-  text-align: left;
-}
-
-.rich-text-editor .issue-reference-identifier {
+.issue-reference-identifier {
   flex-shrink: 0;
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
   color: var(--muted-foreground);
 }
 
 /* Owner point ①: full titles, wrap at two lines — no more ellipsis. */
-.rich-text-editor .issue-reference-title {
+.issue-reference-title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -184,6 +226,6 @@
   overflow-wrap: anywhere;
 }
 
-.rich-text-editor .issue-reference-degraded {
+.issue-reference-degraded {
   color: var(--muted-foreground);
 }

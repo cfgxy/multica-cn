@@ -10,6 +10,7 @@
  * issue-reference-footer.test.tsx.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { render } from "@testing-library/react";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
@@ -232,5 +233,56 @@ describe("IssueReferenceTail", () => {
 
     const row = container.querySelector(".issue-reference-degraded")!;
     expect(row.textContent).toBe("AC-1");
+  });
+});
+
+describe("issue-reference CSS scope (RUYI-730)", () => {
+  // The issue body mounts the tail as a SIBLING of <ContentEditor>
+  // (issue-detail.tsx), outside any .rich-text-editor — scoping these rules
+  // under the editor class left the body surface totally unstyled (QA probe,
+  // RUYI-730). The footer's stylesheet must stay self-contained: no rule may
+  // require an editor ancestor, wherever a host mounts the tail.
+  it("keeps every .issue-reference-* rule free of the editor ancestor selector", () => {
+    const css = readFileSync("rich-content/rich-content.css", "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const selectors = css
+      .split("{")
+      .slice(0, -1)
+      .map((part) => part.split("}").at(-1)!.trim());
+    const referenceRules = selectors.filter((selector) =>
+      selector.includes(".issue-reference-"),
+    );
+    expect(referenceRules.length).toBeGreaterThan(0);
+    expect(
+      referenceRules.filter((selector) =>
+        selector.includes(".rich-text-editor"),
+      ),
+    ).toEqual([]);
+  });
+
+  // The card radius must ride `var(--radius)`: packages/ui/styles/tokens.css
+  // defines --radius-lg, but that file never reaches the web bundle (RUYI-730
+  // QA probe measured 0px on all three surfaces) — an undefined custom
+  // property silently falls back to the initial value. `--radius` IS in the
+  // bundle and equals the official `rounded-lg` (10px).
+  it("binds the card radius to --radius, a token the web bundle actually ships", () => {
+    const css = readFileSync("rich-content/rich-content.css", "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const footerRule = css
+      .split("}")
+      .find((block) =>
+        block
+          .split("{")[0]!
+          .trim()
+          .split(",")
+          .some((selector) => selector.trim() === ".issue-reference-footer"),
+      );
+    expect(footerRule).toBeDefined();
+    expect(footerRule).toMatch(/border-radius:\s*var\(--radius\)/);
+    expect(footerRule).not.toMatch(/var\(--radius-lg\)/);
   });
 });

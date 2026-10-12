@@ -39,6 +39,7 @@ import { useMemo, useState } from "react";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import {
   ChevronDown,
+  CircleDashed,
   GitMerge,
   GitPullRequest,
   GitPullRequestArrow,
@@ -105,8 +106,9 @@ function prIdentifier(pr: GitHubPullRequest): string {
 // Popover content portals out of `.rich-text-editor`, so the scoped CSS file
 // can't reach it — these rows carry their own complete Tailwind class set.
 // The `issue-reference-popover-row` hook name stays on for tests and QA.
+// Hover rides `bg-accent/50`, the same token as SubIssueRow rows (RUYI-730).
 const POPOVER_ROW_CLASS =
-  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent focus-visible:bg-accent";
+  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent/50 focus-visible:bg-accent";
 const POPOVER_ROW_TITLE_CLASS =
   "min-w-0 line-clamp-2 text-body text-foreground";
 const POPOVER_ROW_IDENTIFIER_CLASS =
@@ -115,9 +117,10 @@ const POPOVER_ROW_IDENTIFIER_CLASS =
 // Icon/identifier/title glyph classes per surface. Inline (block preview +
 // desktop direct rows) renders inside `.rich-text-editor` scope and uses the
 // scoped CSS classes; popover rows are portaled outside that scope and carry
-// their own complete Tailwind set.
+// their own complete Tailwind set. Inline icons sit on the SubIssueRow grid:
+// 15px like the official sub-issue rows (RUYI-730 visual rebuild).
 const INLINE_ROW_CONTENT_CLASSES = {
-  icon: "h-3.5 w-3.5 shrink-0",
+  icon: "h-[15px] w-[15px] shrink-0",
   identifier: "issue-reference-identifier",
   title: "issue-reference-title",
 } as const;
@@ -260,11 +263,17 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         </span>
       );
     }
+    // Degraded slot keeps a placeholder glyph on the icon column so its text
+    // starts on the same grid as resolved rows (RUYI-730).
     return (
       <span
         key={row.key}
         className="issue-reference-row issue-reference-degraded"
       >
+        <CircleDashed
+          aria-hidden
+          className="h-[15px] w-[15px] shrink-0 text-muted-foreground opacity-60"
+        />
         {renderDegradedContents(row)}
       </span>
     );
