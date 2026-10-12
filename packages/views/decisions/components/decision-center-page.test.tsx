@@ -4,7 +4,7 @@ import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceDecisionInbox } from "@multica/core/types";
+import type { DecisionRequestsList, WorkspaceDecisionInbox } from "@multica/core/types";
 import { decisionCenterPrefsStore } from "@multica/core/issues/stores/decision-center-prefs-store";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
@@ -16,6 +16,7 @@ import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 // the row.
 
 const inboxRef = vi.hoisted(() => ({ current: null as WorkspaceDecisionInbox | null }));
+const requestsRef = vi.hoisted(() => ({ current: null as Promise<DecisionRequestsList> | null }));
 
 vi.mock("@multica/core/issues/decisions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/issues/decisions")>();
@@ -27,6 +28,28 @@ vi.mock("@multica/core/issues/decisions", async (importOriginal) => {
     }),
   };
 });
+
+vi.mock("@multica/core/issues/decision-requests", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/issues/decision-requests")>();
+  return {
+    ...actual,
+    workspaceDecisionRequestsQueryOptions: (workspaceId: string | null | undefined) => ({
+      queryKey: ["test", "decision-requests", workspaceId],
+      queryFn: () =>
+        requestsRef.current ??
+        Promise.resolve<DecisionRequestsList>({ items: [], counts: { pending: 0, closed: 0, executed: 0 } }),
+    }),
+  };
+});
+
+// The requests row resolves author names through the workspace directory
+// (member/agent/squad list queries); the row-shape test only needs a stable
+// name, not the directory.
+vi.mock("@multica/core/workspace/hooks", () => ({
+  useActorName: () => ({
+    getActorName: (type: string) => (type === "agent" ? "Seed Agent" : "Unknown"),
+  }),
+}));
 
 vi.mock("@multica/core/paths", () => ({
   DECISION_ANCHOR_PREFIX: "decision-",
@@ -90,6 +113,7 @@ beforeEach(() => {
   // The display-prefs store is a module singleton with persistence; every
   // test starts from the shipped defaults.
   decisionCenterPrefsStore.setState({ viewMode: "list", hiddenStatuses: [] });
+  requestsRef.current = null;
 });
 
 afterEach(() => {
@@ -343,5 +367,78 @@ describe("DecisionCenterPage view modes (RUYI-547)", () => {
     fireEvent.click(screen.getByTestId("decision-filter-clear"));
     expect(screen.getByTestId("decision-section-open")).toBeInTheDocument();
     expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual([]);
+  });
+});
+
+// RUYI-738: the authorization-requests surface (RUYI-630) is auxiliary. Its
+// query may settle long after the decision inbox (slow response, retry cycle
+// after a failure) — the page-level skeleton must never sit on top of the
+// already-rendered list while it waits, and the requests section must arrive
+// on its own schedule instead of gating the page body.
+
+function deferredRequests(value: DecisionRequestsList) {
+  let resolve!: (value: DecisionRequestsList) => void;
+  const promise = new Promise<DecisionRequestsList>((r) => {
+    resolve = r;
+  });
+  void promise.then((v) => void v, () => undefined);
+  return {
+    promise,
+    settle: () => resolve(value),
+  };
+}
+
+describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
+  it("does not hold the page skeleton over the rendered list while the requests query is still pending", async () => {
+    inboxRef.current = MIXED_INBOX;
+    requestsRef.current = new Promise<DecisionRequestsList>(() => undefined);
+    renderPage();
+
+    const rows = await screen.findAllByTestId("decision-inbox-row");
+    expect(rows.length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("decision-center-loading")).toBeNull();
+  });
+
+  it("keeps the skeleton while the page would otherwise be blank: empty inbox, requests still pending", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = new Promise<DecisionRequestsList>(() => undefined);
+    renderPage();
+
+    expect(await screen.findAllByTestId("decision-center-loading")).toBeTruthy();
+    expect(screen.queryByTestId("decision-inbox-row")).toBeNull();
+    expect(screen.queryByTestId("decision-center-empty")).toBeNull();
+  });
+
+  it("renders the requests section on its own schedule once the query settles", async () => {
+    inboxRef.current = MIXED_INBOX;
+    const deferred = deferredRequests({
+      items: [
+        {
+          id: "dr-1",
+          request_group_id: "rg-1",
+          workspace_id: "ws-1",
+          role: "origin",
+          status: "pending",
+          action_type: "workspace_info_read",
+          risk_tier: "write_low",
+          title: "Read workspace info",
+          detail: "",
+          origin_workspace_id: "ws-1",
+          origin_agent_id: "agent-1",
+          origin_issue_title: "Seed issue",
+          operable: true,
+          created_at: "2026-10-12T00:00:00Z",
+        } as unknown as DecisionRequestsList["items"][number],
+      ],
+      counts: { pending: 1, closed: 0, executed: 0 },
+    });
+    requestsRef.current = deferred.promise;
+    renderPage();
+
+    await screen.findAllByTestId("decision-inbox-row");
+    expect(screen.queryByTestId("decision-requests-section")).toBeNull();
+
+    deferred.settle();
+    expect(await screen.findByTestId("decision-requests-section")).toBeInTheDocument();
   });
 });
