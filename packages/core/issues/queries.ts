@@ -475,6 +475,36 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
   });
 }
 
+/**
+ * Anchor lookup for cross-issue comment references (RUYI-643). Given a
+ * `mention://comment/<id>` target the local render context cannot resolve,
+ * `GET /api/comments/{id}/anchor` returns the owning issue's identifier plus
+ * the author/time/excerpt triple, or 404. The 404 maps to null — the server
+ * makes unknown/deleted/foreign-workspace misses indistinguishable, so null
+ * must stay the ONLY alternative the UI acts on (render the degraded chip).
+ *
+ * Anchor mapping (comment id → issue) is effectively immutable; a moderate
+ * staleTime keeps repeated chips on one request without freezing out a comment
+ * deleted moments ago.
+ */
+export function commentAnchorOptions(commentId: string) {
+  return queryOptions({
+    queryKey: ["comment-anchor", commentId] as const,
+    queryFn: async ({ signal }) => {
+      try {
+        return await api.getCommentAnchor(commentId, { signal });
+      } catch (err) {
+        // Unreachable target → the degraded chip. Any other failure (401/5xx/
+        // abort) keeps propagating so retries/cancellation still work and the
+        // miss is never cached as "no such comment".
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function childIssueProgressOptions(wsId: string) {
   return queryOptions({
     queryKey: issueKeys.childProgress(wsId),

@@ -1,0 +1,419 @@
+diff --git a/android/src/main/java/com/swmansion/rnscreens/Screen.kt b/android/src/main/java/com/swmansion/rnscreens/Screen.kt
+index 6b3a81bcc386dd762f2437fa3a2b8271912ceb5e..34697efc66566a183c3a9a7cd36401ca3f0d8e76 100644
+--- a/android/src/main/java/com/swmansion/rnscreens/Screen.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/Screen.kt
+@@ -53,6 +53,44 @@ class Screen(
+     val sheetBehavior: BottomSheetBehavior<Screen>?
+         get() = (layoutParams as? CoordinatorLayout.LayoutParams)?.behavior as? BottomSheetBehavior<Screen>
+ 
++    // RUYI-637: when set, measure this Screen at exactly this height instead of
++    // the behavior-provided maxHeight. Material always measures the sheet child at
++    // maxHeight (0.95 * container) even while the sheet rests at a lower detent,
++    // so the RN content viewport includes a strip that is never visible — the
++    // scroll views inside report no scroll range and their bottom slice stays
++    // clipped. Keep the content measured to the settled detent height; driven
++    // from bottom-sheet state changes in SheetDelegate.
++    internal var sheetContentHeightOverride: Int? = null
++        set(value) {
++            if (field == value) {
++                return
++            }
++            field = value
++            requestLayout()
++        }
++
++    // RUYI-637: publish the intended sheet frame height to fabric explicitly.
++    // The stable-detent push races the re-measure (and the CoordinatorLayout
++    // reports changed=false on settling passes), so the pushed frame can stay
++    // at the pre-transition height and the RN viewport never follows.
++    internal fun publishSheetContentFrame(height: Int) {
++        post {
++            updateScreenSizeFabric(width, height, top + translationY.toInt())
++        }
++    }
++
++    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++        val override = sheetContentHeightOverride
++        if (override == null) {
++            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
++        } else {
++            super.onMeasure(
++                widthMeasureSpec,
++                View.MeasureSpec.makeMeasureSpec(override, View.MeasureSpec.EXACTLY),
++            )
++        }
++    }
++
+     val reactEventDispatcher: EventDispatcher?
+         get() = UIManagerHelper.getEventDispatcherForReactTag(reactContext, id)
+ 
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt
+index c71fa93a0811b909df9da9821897217eb8b52d99..4ab5031f638cbeb35853291609b4f8c627c03205 100644
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt
+@@ -47,6 +47,37 @@ class ScreenModalFragment :
+     private val behavior
+         get() = sheetDialog.behavior
+ 
++    /**
++     * Content view installed in the dialog. Valid after `onCreateDialog` runs.
++     */
++    private var contentRoot: BottomSheetDialogRootView? = null
++
++    /**
++     * RUYI-637: Material measures the sheet content once against maxHeight
++     * (0.95 * container), so a sheet resting at the first (collapsed) detent shows
++     * only the top slice of an oversized content view — the scroll views inside
++     * report canScrollVertically=false, so content cannot scroll and the
++     * nested-scroll gesture contract never engages. Keep the content measured to
++     * the settled detent height instead: collapsed → first detent height,
++     * expanded → no override (content measures against maxHeight again, so the
++     * sheet can grow back to the large detent).
++     */
++    private val detentHeightObserver =
++        object : BottomSheetBehavior.BottomSheetCallback() {
++            override fun onStateChanged(bottomSheet: View, newState: Int) {
++                val rootView = contentRoot ?: return
++                val containerHeight = tryResolveContainerHeight() ?: return
++                rootView.contentHeightOverride =
++                    when (newState) {
++                        BottomSheetBehavior.STATE_COLLAPSED -> screen.sheetDetents.firstHeight(containerHeight)
++                        BottomSheetBehavior.STATE_EXPANDED -> null
++                        else -> return
++                    }
++            }
++
++            override fun onSlide(bottomSheet: View, slideOffset: Float) {}
++        }
++
+     override val fragment: Fragment
+         get() = this
+ 
+@@ -80,6 +111,11 @@ class ScreenModalFragment :
+         rootView.addView(screen.recycle())
+         sheetDialog.setContentView(rootView)
+ 
++        contentRoot = rootView
++        behavior.addBottomSheetCallback(detentHeightObserver)
++        applyInitialDetentHeight(rootView)
++
++
+         rootView.parentAsView()?.clipToOutline = true
+ 
+         return sheetDialog
+@@ -206,6 +242,7 @@ class ScreenModalFragment :
+         return sheetDialog
+     }
+ 
++
+     /**
+      * This method might return slightly different values depending on code path,
+      * but during testing I've found this effect negligible. For practical purposes
+@@ -229,6 +266,22 @@ class ScreenModalFragment :
+         return null
+     }
+ 
++    /**
++     * RUYI-637: [detentHeightObserver] only fires on state changes, and the initial
++     * collapsed state is assigned in [configureBehaviour] before the content view
++     * exists — apply the first detent height eagerly when the sheet opens collapsed.
++     */
++    private fun applyInitialDetentHeight(rootView: BottomSheetDialogRootView) {
++        if (screen.sheetDetents.count < 2) {
++            return
++        }
++        if (screen.sheetInitialDetentIndex != 0) {
++            return
++        }
++        val containerHeight = tryResolveContainerHeight() ?: return
++        rootView.contentHeightOverride = screen.sheetDetents.firstHeight(containerHeight)
++    }
++
+     private fun configureBehaviour() {
+         val containerHeight = tryResolveContainerHeight()
+         check(containerHeight != null) { "[RNScreens] Failed to find window height during bottom sheet behaviour configuration" }
+@@ -236,6 +289,12 @@ class ScreenModalFragment :
+         behavior.apply {
+             isHideable = true
+             isDraggable = true
++            // RUYI-637: `sheetExpandsWhenScrolledToEdge` had no Android consumer —
++            // wire it to Material's nested-scroll dragging gate. false → nested
++            // swipes drive the content first (up scrolls it, down collapses the
++            // sheet once the content is at top) instead of always dragging the
++            // sheet to another detent.
++            isDraggableOnNestedScroll = screen.sheetExpandsWhenScrolledToEdge
+         }
+ 
+         when (screen.sheetDetents.count) {
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
+index 34f19a9bbceaa42ff1ca8f9b8d890ce60ac6b83d..189c2c8dd3df7cf1879e6c926e2c096d81f3b56d 100644
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
+@@ -28,6 +28,7 @@ import com.google.android.material.shape.CornerFamily
+ import com.google.android.material.shape.MaterialShapeDrawable
+ import com.google.android.material.shape.ShapeAppearanceModel
+ import com.swmansion.rnscreens.bottomsheet.BottomSheetTransitionCoordinator
++import com.swmansion.rnscreens.bottomsheet.SheetGestureBehavior
+ import com.swmansion.rnscreens.bottomsheet.BottomSheetWindowInsetListenerChain
+ import com.swmansion.rnscreens.bottomsheet.DimmingViewManager
+ import com.swmansion.rnscreens.bottomsheet.SheetDelegate
+@@ -353,7 +354,7 @@ class ScreenStackFragment :
+         return sheetDelegate.createSheetExitAnimator(sheetAnimationContext)
+     }
+ 
+-    private fun createBottomSheetBehaviour(): BottomSheetBehavior<Screen> = BottomSheetBehavior<Screen>()
++    private fun createBottomSheetBehaviour(): BottomSheetBehavior<Screen> = SheetGestureBehavior()
+ 
+     private fun resolveBackgroundColor(screen: Screen): Int? {
+         val screenColor =
+diff --git a/android/src/main/java/com/swmansion/rnscreens/bottomsheet/BottomSheetDialogRootView.kt b/android/src/main/java/com/swmansion/rnscreens/bottomsheet/BottomSheetDialogRootView.kt
+index b2eff737a372c4e4452136bf1eeb919197364311..7fbe86d7d6a0328c941087e1ab1405f0a219f745 100644
+--- a/android/src/main/java/com/swmansion/rnscreens/bottomsheet/BottomSheetDialogRootView.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/bottomsheet/BottomSheetDialogRootView.kt
+@@ -42,6 +42,35 @@ class BottomSheetDialogRootView(
+         }
+     }
+ 
++    /**
++     * RUYI-637: when set, measure the single child (Screen) to exactly this height
++     * instead of whatever the bottom sheet behavior offered (maxHeight = 0.95 *
++     * container). Material clamps the sheet content to maxHeight regardless of the
++     * settled detent, which leaves collapsed sheets with clipped, non-scrollable
++     * content; re-measuring to the detent height keeps content geometry and sheet
++     * geometry in sync (see ScreenModalFragment.detentHeightObserver).
++     */
++    internal var contentHeightOverride: Int? = null
++        set(value) {
++            if (field == value) {
++                return
++            }
++            field = value
++            requestLayout()
++        }
++
++    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
++        val override = contentHeightOverride
++        if (override == null) {
++            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
++        } else {
++            super.onMeasure(
++                widthMeasureSpec,
++                View.MeasureSpec.makeMeasureSpec(override, View.MeasureSpec.EXACTLY),
++            )
++        }
++    }
++
+     override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+         jsTouchDispatcher.handleTouchEvent(event, eventDispatcher)
+         jsPointerDispatcher?.handleMotionEvent(event, eventDispatcher, true)
+diff --git a/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetDelegate.kt b/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetDelegate.kt
+index 972de61fbdd34f079265773df51990ed60ca83ff..d2de7509ce6563cace9cc4b5a290796e514079ec 100644
+--- a/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetDelegate.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetDelegate.kt
+@@ -36,6 +36,7 @@ class SheetDelegate(
+     OnApplyWindowInsetsListener {
+     private var isKeyboardVisible: Boolean = false
+     private var keyboardState: KeyboardState = KeyboardNotVisible
++    private var appliedInitialContentOverride: Boolean = false
+ 
+     private var isSheetAnimationInProgress: Boolean = false
+ 
+@@ -115,6 +116,7 @@ class SheetDelegate(
+ 
+     private fun onSheetStateChanged(newState: Int) {
+         val isStable = SheetUtils.isStateStable(newState)
++        applyDetentContentOverride(newState)
+ 
+         if (isStable) {
+             lastStableState = newState
+@@ -190,6 +192,33 @@ class SheetDelegate(
+         behavior.updateMetrics(maxAllowedHeight, expandedOffsetFromTop)
+     }
+ 
++    // RUYI-637: keep the sheet content measured to the settled detent height so
++    // scroll views inside can reach everything that is visibly shown; the expanded
++    // detent clears the override so the sheet can grow to the large detent again.
++    private fun applyDetentContentOverride(
++        @BottomSheetBehavior.State newState: Int,
++    ) {
++        val behavior = sheetBehavior ?: return
++        if (screen.sheetDetents.count < 2) {
++            return
++        }
++        val override =
++            when (newState) {
++                // peekHeight is the exact first-detent height the behavior was
++                // configured with, so the collapsed content matches the sheet
++                // geometry instead of re-resolving the container here.
++                BottomSheetBehavior.STATE_COLLAPSED -> behavior.peekHeight
++                BottomSheetBehavior.STATE_EXPANDED -> null
++                else -> return
++            }
++        screen.sheetContentHeightOverride = override
++        // Deterministically publish the detent frame: collapsed publishes the
++        // peek height, expanded republishes the full maxHeight. Reading back
++        // the view height races the layout pass and has already been shown to
++        // pin the RN viewport at the stale size.
++        screen.publishSheetContentFrame(override ?: behavior.maxHeight)
++    }
++
+     internal fun configureBottomSheetBehaviour(
+         behavior: BottomSheetBehavior<Screen>,
+         keyboardState: KeyboardState = KeyboardNotVisible,
+@@ -203,6 +232,10 @@ class SheetDelegate(
+         behavior.apply {
+             isHideable = true
+             isDraggable = true
++            // RUYI-637: mirror ScreenModalFragment — expose Material's nested-scroll
++            // dragging gate through `sheetExpandsWhenScrolledToEdge` on this config
++            // path too.
++            isDraggableOnNestedScroll = screen.sheetExpandsWhenScrolledToEdge
+         }
+ 
+         // There is a guard internally that does not allow the callback to be duplicated.
+@@ -210,7 +243,7 @@ class SheetDelegate(
+ 
+         screen.footer?.registerWithSheetBehavior(behavior)
+ 
+-        return when (keyboardState) {
++        val configuredBehavior = when (keyboardState) {
+             is KeyboardNotVisible -> {
+                 when (screen.sheetDetents.count) {
+                     1 ->
+@@ -329,6 +362,29 @@ class SheetDelegate(
+                 }
+             }
+         }
++
++        // RUYI-637: the state observer only fires on transitions, and at first
++        // configure the behavior still reports STATE_HIDDEN (Material default),
++        // which the override resolver cannot map to a detent. Resolve the state
++        // from the configured initial detent instead; later reconfigurations
++        // (keyboard show/hide) run with a live behavior state.
++        if (appliedInitialContentOverride) {
++            applyDetentContentOverride(behavior.state)
++        } else {
++            appliedInitialContentOverride = true
++            val initialExpanded =
++                screen.sheetDetents.count >= 2 &&
++                    screen.sheetInitialDetentIndex == screen.sheetDetents.count - 1
++            applyDetentContentOverride(
++                if (initialExpanded) {
++                    BottomSheetBehavior.STATE_EXPANDED
++                } else {
++                    BottomSheetBehavior.STATE_COLLAPSED
++                },
++            )
++        }
++
++        return configuredBehavior
+     }
+ 
+     // This function calculates the Y offset to which the FormSheet should animate
+diff --git a/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetGestureBehavior.kt b/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetGestureBehavior.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5d4dc91cbec071585edee7ad9a07f81f21658cd
+--- /dev/null
++++ b/android/src/main/java/com/swmansion/rnscreens/bottomsheet/SheetGestureBehavior.kt
+@@ -0,0 +1,101 @@
++package com.swmansion.rnscreens.bottomsheet
++
++import android.view.MotionEvent
++import android.view.View
++import androidx.coordinatorlayout.widget.CoordinatorLayout
++import com.google.android.material.bottomsheet.BottomSheetBehavior
++import com.swmansion.rnscreens.Screen
++
++/**
++ * BottomSheetBehavior for the in-stack formSheet with two RUYI-637 gesture
++ * corrections on top of Material 1.13.
++ */
++class SheetGestureBehavior : BottomSheetBehavior<Screen>() {
++    // RUYI-637: RN's ScrollView claims touches inside the scrolling content even
++    // when it cannot scroll any further in the gesture direction (and on some
++    // versions does not dispatch nested scroll events at all), so Material never
++    // gets the chance to drag the sheet from the content area. Reproduce the
++    // nested-scroll hand-off manually: intercept the stream only when the
++    // scrolling child is exhausted toward the drag direction, letting the
++    // content scroll first.
++    private var gestureStartY = 0f
++    private var gestureScrollChild: View? = null
++    private var touchSlop = -1
++
++    private fun readScrollingChild(): View? {
++        var c: Class<*> = BottomSheetBehavior::class.java
++        while (c != Any::class.java) {
++            try {
++                val f = c.getDeclaredField("nestedScrollingChildRef")
++                f.isAccessible = true
++                return (f.get(this) as? java.lang.ref.WeakReference<*>)?.get() as? View
++            } catch (e: NoSuchFieldException) {
++                c = c.superclass ?: break
++            }
++        }
++        return null
++    }
++
++    override fun onInterceptTouchEvent(
++        parent: CoordinatorLayout,
++        child: Screen,
++        event: MotionEvent,
++    ): Boolean {
++        val superResult = super.onInterceptTouchEvent(parent, child, event)
++        when (event.actionMasked) {
++            MotionEvent.ACTION_DOWN -> {
++                gestureStartY = event.y
++                gestureScrollChild = readScrollingChild()
++                if (touchSlop < 0) {
++                    touchSlop = android.view.ViewConfiguration.get(parent.context).scaledTouchSlop
++                }
++            }
++
++            MotionEvent.ACTION_MOVE -> {
++                val scroll = gestureScrollChild
++                val dy = event.y - gestureStartY
++                if (!superResult &&
++                    scroll != null &&
++                    touchSlop > 0 &&
++                    kotlin.math.abs(dy) > touchSlop &&
++                    state != BottomSheetBehavior.STATE_DRAGGING &&
++                    state != BottomSheetBehavior.STATE_SETTLING &&
++                    parent.isPointInChildBounds(scroll, event.x.toInt(), event.y.toInt())
++                ) {
++                    val contentCanContinue =
++                        if (dy < 0) {
++                            scroll.canScrollVertically(1)
++                        } else {
++                            scroll.canScrollVertically(-1)
++                        }
++                    if (!contentCanContinue) {
++                        return true
++                    }
++                }
++            }
++        }
++        return superResult
++    }
++
++    override fun onStopNestedScroll(
++        coordinatorLayout: CoordinatorLayout,
++        child: Screen,
++        target: View,
++        type: Int,
++    ) {
++        // RUYI-637: the detent content override pins the collapsed sheet at
++        // peekHeight, which makes its top equal the fit-to-contents expanded
++        // offset; Material's stop shortcut then misreads the settled collapsed
++        // sheet as expanded, and the settle logic can also target EXPANDED from
++        // the merged position. End the nested scroll without the state flip
++        // while the sheet rests at its collapsed position — onStartNestedScroll
++        // re-initializes the nested-scroll flags on the next gesture, and a
++        // genuine drag or settle passes through untouched.
++        if (state == BottomSheetBehavior.STATE_COLLAPSED &&
++            child.top == super.getExpandedOffset()
++        ) {
++            return
++        }
++        super.onStopNestedScroll(coordinatorLayout, child, target, type)
++    }
++}

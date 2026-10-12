@@ -22,14 +22,12 @@ import type {
   Agent,
   AgentEnvResponse,
   AgentTask,
-  AgentWebhook,
   Attachment,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
   Comment,
   CreateAgentRequest,
-  CreateAgentWebhookRequest,
   AddSquadMemberRequest,
   CreateIssueRequest,
   CreateLabelRequest,
@@ -95,7 +93,6 @@ import type {
   TaskMessagePayload,
   UpdateAgentEnvRequest,
   UpdateAgentRequest,
-  UpdateAgentWebhookRequest,
   UpdateIssueRequest,
   UpdateMeRequest,
   UpdateProjectRequest,
@@ -109,13 +106,9 @@ import {
 } from "@multica/core/issues/timeline-query";
 import {
   AgentEnvResponseSchema,
-  AgentWebhookListSchema,
-  AgentWebhookSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
   EMPTY_AGENT_ENV,
-  EMPTY_AGENT_WEBHOOK,
-  EMPTY_AGENT_WEBHOOK_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
@@ -1108,65 +1101,6 @@ class ApiClient {
       { method: "PUT", body: JSON.stringify(data) },
       { endpoint: "updateAgentEnv" },
     );
-  }
-
-  // Agent webhooks (RUYI-52). webhook_token/path/url come back only for
-  // managers — the server strips them for anyone else; the UI keys its
-  // manage affordances off their presence.
-  async listAgentWebhooks(agentId: string, opts?: { signal?: AbortSignal }): Promise<AgentWebhook[]> {
-    return this.fetchValidated(
-      `/api/agents/${agentId}/webhooks`,
-      AgentWebhookListSchema,
-      EMPTY_AGENT_WEBHOOK_LIST,
-      { ...opts, endpoint: "listAgentWebhooks" },
-    );
-  }
-
-  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "POST", body: JSON.stringify(data) },
-      { endpoint: "createAgentWebhook" },
-    );
-  }
-
-  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "PUT", body: JSON.stringify(data) },
-      { endpoint: "updateAgentWebhook" },
-    );
-  }
-
-  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}/enabled`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "PUT", body: JSON.stringify({ enabled }) },
-      { endpoint: "setAgentWebhookEnabled" },
-    );
-  }
-
-  // POST rotate — mints a new token; the old URL stops working immediately.
-  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
-    return this.fetchValidatedWith(
-      `/api/agents/${agentId}/webhooks/${webhookId}/rotate`,
-      AgentWebhookSchema,
-      EMPTY_AGENT_WEBHOOK,
-      { method: "POST", body: JSON.stringify({}) },
-      { endpoint: "rotateAgentWebhook" },
-    );
-  }
-
-  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
-    await this.fetch<void>(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "DELETE",
-    });
   }
 
   // Incremental attach — POST /skills/add only inserts the given ids (server

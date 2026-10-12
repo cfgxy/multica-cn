@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -63,10 +64,11 @@ type BusinessMetrics struct {
 	taskInProgress   *prometheus.GaugeVec
 	taskIterations   *prometheus.HistogramVec
 
-	llmTokens         *prometheus.CounterVec
-	llmCostUSD        *prometheus.CounterVec
-	llmUnpricedTokens *prometheus.CounterVec
-	llmRequests       *prometheus.CounterVec
+	llmTokens           *prometheus.CounterVec
+	llmCostUSD          *prometheus.CounterVec
+	llmUnpricedTokens   *prometheus.CounterVec
+	llmRequests         *prometheus.CounterVec
+	llmModelPlaceholder *prometheus.CounterVec
 
 	taskQueuedExpired              *prometheus.CounterVec
 	taskLeaseExpired               *prometheus.CounterVec
@@ -199,6 +201,12 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Name:      "request_total",
 			Help:      "Total task usage reports by normalized LLM provider and model.",
 		}, metricLabels("multica_llm_request_total")),
+		llmModelPlaceholder: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica",
+			Subsystem: "llm",
+			Name:      "model_placeholder_total",
+			Help:      "Usage reports whose model name was a placeholder (empty or literal unknown), by provider and kind — collection-completeness accounting, no threshold attached.",
+		}, metricLabels("multica_llm_model_placeholder_total")),
 		taskQueuedExpired: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "multica",
 			Subsystem: "task",
@@ -345,6 +353,7 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.llmCostUSD,
 		m.llmUnpricedTokens,
 		m.llmRequests,
+		m.llmModelPlaceholder,
 		m.taskQueuedExpired,
 		m.taskLeaseExpired,
 		m.chatClaimSessionFallbackNeeded,
@@ -657,7 +666,23 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 	}
 	source = NormalizeTaskSource(source)
 	runtimeMode = NormalizeRuntimeMode(runtimeMode)
-	price, priced := PriceForModelAlias(modelAlias)
+	// Collection-completeness accounting: a usage row whose model name never
+	// landed is real spend with no identity attached. Counting the landings
+	// per provider is what surfaces a silent capture gap before someone has
+	// to notice it from a total that will not reconcile — the counter only
+	// reports, it carries no threshold.
+	if kind := placeholderModelKind(modelAlias); kind != "" {
+		m.llmModelPlaceholder.
+			WithLabelValues(NormalizeRuntimeProvider(rawProvider), kind).
+			Inc()
+	}
+	// Same resolution the web UI applies to the same usage row: the
+	// provider-qualified key first, the bare id second. Resolving the bare id
+	// alone would either borrow another provider's row (a generic `auto` at
+	// Cursor's rate) or drop a row the frontend does price — either way the
+	// aggregate here and the per-issue total there disagree, which is the
+	// two-sides-disagree failure the reconcile guards pin down elsewhere.
+	price, priced := PriceForModel(modelAlias, rawProvider)
 	if !priced {
 		provider := NormalizeRuntimeProvider(rawProvider)
 		alias := NormalizeModelAlias(modelAlias)
@@ -696,6 +721,22 @@ func (m *BusinessMetrics) RecordLLMUsage(source, runtimeMode, rawProvider, model
 	m.recordPricedTokens(price.Provider, price.Model, "cache_read", runtimeMode, source, cacheReadTokens, costs[2])
 	m.recordPricedTokens(price.Provider, price.Model, "cache_write", runtimeMode, source, cacheWriteTokens, costs[3])
 	m.llmRequests.WithLabelValues(price.Provider, price.Model, runtimeMode).Inc()
+}
+
+// placeholderModelKind names the placeholder shape a reported model id
+// matches, or "" when the id is a real model name. Only the two shapes that
+// mean "nothing was captured" count: the empty string (no model reported at
+// all) and the literal `unknown` (the harness filled the field without
+// knowing). A model merely missing from the rate table is NOT a placeholder —
+// that gap is the unpriced-tokens family's to report.
+func placeholderModelKind(model string) string {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "":
+		return "empty"
+	case "unknown":
+		return "unknown"
+	}
+	return ""
 }
 
 // distributeAuthoritativeCost rescales the per-token-type estimates so they

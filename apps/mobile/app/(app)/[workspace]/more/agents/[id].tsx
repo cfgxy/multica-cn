@@ -21,7 +21,7 @@
  *           initial 10 + 20 per tap) with failed-run retry and the same
  *           status badge as the issue runs sheet.
  *   - 设置   grouped navigation rows into the skills / access / custom args /
- *           env / webhooks sub-screens plus the capability rows with the
+ *           env sub-screens plus the capability rows with the
  *           same visibility conditions as web's agent overview pane
  *           (RUYI-418 B3): MCP (`providerSupportsMcpConfig` or unbound),
  *           MCP Apps (composio feature flag + owner), Integrations (any of
@@ -1021,20 +1021,9 @@ export default function AgentDetailPage() {
                       params: { workspace: wsSlug, id: a.id },
                     })
                   }
+                  last
                 />
               ) : null}
-              <SettingsRow
-                icon="link-outline"
-                label={t("tabs.webhooks", "Webhook")}
-                onPress={() =>
-                  wsSlug &&
-                  router.push({
-                    pathname: "/[workspace]/more/agents/[id]/webhooks",
-                    params: { workspace: wsSlug, id: a.id },
-                  })
-                }
-                last
-              />
             </View>
           </ScrollView>
         </TabsContent>

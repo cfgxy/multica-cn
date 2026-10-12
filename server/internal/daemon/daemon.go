@@ -8382,7 +8382,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -8396,69 +8396,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
-	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
-		firstResult := result
-		firstUsage := result.Usage
-		firstTools := tools
-		if !result.ResumeRejectedTransient {
-			retiredSessionID = task.PriorSessionID
-		}
-		taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
-
-		// Rebuild cold-session context before the single retry. The prior
-		// provider transcript is gone (missing, account-mismatched, or —
-		// GH #5975 — carrying history the provider now refuses), so the
-		// fresh process must NOT be told it is resuming a conversation:
-		//   - taskCtx.PriorSessionResumed=false + re-injecting the runtime
-		//     brief rewrites the on-disk AGENTS.md so it no longer claims
-		//     "You're resuming the prior session" (which file-based backends
-		//     like Kiro load themselves).
-		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
-		//     comment-reading path instead of the warm resumed one.
-		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
-		//     continuity notice for this surface, so the agent knows not to
-		//     assume continuity it no longer has. This is now the ONLY injector
-		//     on the retry path: the backend's own copy is suppressed below,
-		//     because before MUL-5722 both fired and the turn carried the same
-		//     paragraph twice.
-		// task and taskCtx are local (runTask takes task by value), so these
-		// mutations only affect the retry.
-		execOpts.ResumeSessionID = ""
-		task.PriorSessionID = ""
-		task.PriorSessionResumeUnavailable = true
-		execOpts.ResumeContinuityNotice = ""
-		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
-			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
-		} else {
-			runtimeBrief = freshBrief
-			if providerNeedsInlineSystemPrompt(provider) {
-				execOpts.SystemPrompt = runtimeBrief
-			}
-		}
-		freshPrompt := BuildPrompt(task, provider, promptOptions...)
-		// The previous supervised worker exited with its budget stop recorded
-		// in its manifest; planSupervisedRun steps to the next generation so
-		// this retry launches a fresh unit instead of reentering the old one.
-		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
-
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
-		if retryErr != nil {
-			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
-		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
-			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original poisoned result",
-				"retry_status", retryResult.Status,
-				"retry_error", retryResult.Error,
-			)
-		}
-		// The poisoned prior session id lives ONLY on firstResult (classified
-		// unrecoverable, so GetLastTaskSession excludes it). reconcile never
-		// grafts it onto the retry result: a retry that establishes a new
-		// session wins with its own id; a retry that fails without a new
-		// session keeps firstResult so the bad session stays excluded rather
-		// than being relabeled resumable by a benign-looking second error.
-		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
-	}
+	// The fresh-session retry loop (single retry until RUYI-659; the
+	// pipe-crash self-heal extends the budget — see freshSessionRetryLoop).
+	// task is passed by pointer because the retry CLEARS PriorSessionID and
+	// the failure path further down reads that cleared value to skip its own
+	// belt-and-braces retire.
+	result, tools, retryRetired := d.freshSessionRetryLoop(ctx, backend, promptOptions, execOpts, taskLog, &task, taskCtx, env, runtimeBrief, &msgSeq, result, tools, provider)
+	retiredSessionID = retryRetired
 
 	elapsed := time.Since(taskStart).Round(time.Second)
 	taskLog.Info("agent finished",
@@ -8746,8 +8690,186 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 }
 
+// maxPipeCrashConsecutiveFailures bounds the Claude pipe-crash self-heal
+// (RUYI-659): a crash still reproducing on the attempt that reaches this
+// many consecutive failures stops the in-turn retries and the task fails for
+// a human. Two automatic retries — the reference design's "retry while
+// consecutive failures < 3" budget — ride inside it.
+const maxPipeCrashConsecutiveFailures = 3
+
+// freshSessionRetryLoop runs the failed attempt's fresh-session retries and
+// returns the authoritative result, the final tool count, and the session id
+// this run abandoned ("" when none).
+//
+// Until RUYI-659 this was the single retry block in runTask. The loop keeps
+// every property of that block and adds the pipe-crash budget:
+//
+//   - Eligibility stays anchored on shouldRetryWithFreshSession. The claude
+//     backend now sets ResumeRejected for a resumed run whose CLI crashed
+//     before producing any session, so the first crash retry flows through
+//     the same positive-evidence branch as every other rejection.
+//   - A crash that survives a fresh retry stands OUTSIDE that predicate: the
+//     retry requested no resume, so there is no prior pointer to abandon and
+//     no rejection to prove. What qualifies the next attempt instead is the
+//     crash itself — still failing, still no session established, still no
+//     observed tool side effect (tools == 0), and the consecutive-failure
+//     streak under maxPipeCrashConsecutiveFailures. Each crash retry posts a
+//     progress message to the task timeline so the automatic recovery is
+//     visible, and every crash retry retires the pointer it was handed (a
+//     transcript the CLI keeps dying on is not one later lookups should
+//     resume).
+//   - d.cfg.PipeCrashSelfHealEnabled=false is the kill switch, and it
+//     restores pre-RUYI-659 behaviour exactly: the crash loses the backend
+//     signal this feature added, no retry fires, no session is retired, and
+//     the task fails for a human. Rejection evidence from the pre-existing
+//     phrase list is untouched — a crash text never carries those phrases.
+//
+// The one hard invariant is inherited from the single-retry block: the
+// poisoned prior session id — carried only on `first`, whose failure is
+// classified unrecoverable so GetLastTaskSession excludes it — must NEVER be
+// grafted onto a retry's result (GH #5975 review). firstResult/firstTools
+// stay fixed across attempts and usage accumulates, so billing stays
+// complete no matter how many attempts ran.
+func (d *Daemon) freshSessionRetryLoop(
+	ctx context.Context,
+	backend agent.Backend,
+	promptOptions []PromptOption,
+	execOpts agent.ExecOptions,
+	taskLog *slog.Logger,
+	task *Task,
+	taskCtx execenv.TaskContextForEnv,
+	env *execenv.Environment,
+	runtimeBrief string,
+	msgSeq *atomic.Int32,
+	result agent.Result,
+	tools int32,
+	provider string,
+) (agent.Result, int32, string) {
+	firstResult := result
+	firstUsage := result.Usage
+	firstTools := tools
+	mergedUsage := firstUsage
+	retiredSessionID := ""
+
+	// crashStreak counts CONSECUTIVE attempts whose failure names a pipe
+	// crash. Any non-crash outcome resets it: the budget exists to bound one
+	// transient failure mode, not to tax unrelated retries.
+	crashStreak := 0
+	noteCrash := func(r agent.Result) {
+		if r.Status == "failed" && taskfailure.ClaudePipelineCrash(r.Error) {
+			crashStreak++
+		} else {
+			crashStreak = 0
+		}
+	}
+	noteCrash(result)
+
+	for attempt := 1; ; attempt++ {
+		gate := result
+		crashRetry := d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1
+		if !d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1 {
+			gate.ResumeRejected = false
+		}
+		if !shouldRetryWithFreshSession(gate, task.PriorSessionID, tools, provider) {
+			if !(crashRetry &&
+				crashStreak < maxPipeCrashConsecutiveFailures &&
+				result.Status == "failed" &&
+				result.SessionID == "" &&
+				tools == 0) {
+				return result, tools, retiredSessionID
+			}
+		}
+		if task.PriorSessionID != "" && !result.ResumeRejectedTransient {
+			retiredSessionID = task.PriorSessionID
+		}
+		if crashRetry {
+			d.reportPipeCrashRetryNotice(task.ID, taskLog, msgSeq, crashStreak)
+		} else {
+			taskLog.Warn("session resume failed, retrying with fresh session", "error", result.Error)
+		}
+
+		// Rebuild cold-session context before the retry. The prior provider
+		// transcript is gone (missing, account-mismatched, — GH #5975 —
+		// carrying history the provider now refuses, or the CLI keeps dying
+		// on it), so the fresh process must NOT be told it is resuming a
+		// conversation:
+		//   - taskCtx.PriorSessionResumed=false + re-injecting the runtime
+		//     brief rewrites the on-disk AGENTS.md so it no longer claims
+		//     "You're resuming the prior session" (which file-based backends
+		//     like Kiro load themselves).
+		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
+		//     comment-reading path instead of the warm resumed one.
+		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
+		//     continuity notice for this surface, so the agent knows not to
+		//     assume continuity it no longer has. This is now the ONLY injector
+		//     on the retry path: the backend's own copy is suppressed below,
+		//     because before MUL-5722 both fired and the turn carried the same
+		//     paragraph twice.
+		// task is runTask's local copy and taskCtx a value parameter, so these
+		// mutations only affect the retries.
+		execOpts.ResumeSessionID = ""
+		task.PriorSessionID = ""
+		task.PriorSessionResumeUnavailable = true
+		execOpts.ResumeContinuityNotice = ""
+		taskCtx.PriorSessionResumed = false
+		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
+		} else {
+			runtimeBrief = freshBrief
+			if providerNeedsInlineSystemPrompt(provider) {
+				execOpts.SystemPrompt = runtimeBrief
+			}
+		}
+		freshPrompt := BuildPrompt(*task, provider, promptOptions...)
+		// The previous supervised worker exited with its budget stop recorded
+		// in its manifest; planSupervisedRun steps to the next generation so
+		// this retry launches a fresh unit instead of reentering the old one.
+		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, attempt+1)
+
+		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, msgSeq)
+		if retryErr != nil {
+			taskLog.Error("fresh session also failed to start; keeping the original result", "error", retryErr)
+		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
+			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original result",
+				"retry_status", retryResult.Status,
+				"retry_error", retryResult.Error,
+			)
+		}
+		// The abandoned prior session id lives ONLY on firstResult (classified
+		// unrecoverable, so GetLastTaskSession excludes it). reconcile never
+		// grafts it onto the retry result: a retry that establishes a new
+		// session wins with its own id; a retry that fails without a new
+		// session keeps firstResult so the bad session stays excluded rather
+		// than being relabeled resumable by a benign-looking second error.
+		result, tools = reconcileFreshRetryResult(firstResult, mergedUsage, firstTools, retryResult, retryTools, retryErr)
+		mergedUsage = result.Usage
+		noteCrash(result)
+	}
+}
+
+// reportPipeCrashRetryNotice posts the progress message that makes an
+// automatic pipe-crash retry visible in the task timeline (RUYI-659). A
+// recovery the user cannot see reads as flapping, so the message states what
+// was detected, which attempt this is, and where the automatic budget stops.
+// Best effort: a failed report costs a timeline row, never the retry itself.
+func (d *Daemon) reportPipeCrashRetryNotice(taskID string, taskLog *slog.Logger, msgSeq *atomic.Int32, crashStreak int) {
+	if d.client == nil {
+		return
+	}
+	content := fmt.Sprintf(
+		"检测到 Claude CLI 管道崩溃（会话未能建立），自动换新会话重试（第 %d 次，最多 %d 次；连续 %d 次失败将停止自动重试并转人工处理）",
+		crashStreak, maxPipeCrashConsecutiveFailures-1, maxPipeCrashConsecutiveFailures,
+	)
+	s := msgSeq.Add(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.client.ReportTaskMessages(ctx, taskID, []TaskMessageData{{Seq: int(s), Type: "text", Content: content}}); err != nil {
+		taskLog.Debug("failed to report pipe-crash retry notice", "error", err)
+	}
+}
+
 // shouldRetryWithFreshSession reports whether a failed run that requested
-// --resume should be retried once from a fresh session.
+// --resume should be retried from a fresh session.
 //
 // Two independent questions have to both answer yes, and conflating them is
 // how this went wrong before:
@@ -8941,7 +9063,7 @@ func freshSessionMayHelp(errText string) bool {
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
-func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome, provider string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
 	// drain loop with a single cancel. Without this layer the backend would
@@ -9011,8 +9133,83 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	}
 	var idleWatchdogThreshold atomic.Int64
 	idleWatchdogThreshold.Store(int64(idleWindow))
+
+	// Watchdog observation state (RUYI-593 round 2). The pending-call tracker
+	// and the transcript batch share the drain mutex, so watchdog events get
+	// their seq from the same msgSeq counter and interleave monotonically
+	// with the message stream. The observer is pure visibility — it never
+	// touches lastActivityAt (self-produced events are not backend activity;
+	// feeding them back would let each event defer its own kill) — and is
+	// fully inert when every knob is zero, which leaves the watchdog
+	// byte-for-byte on its pre-round behavior.
+	var mu sync.Mutex
+	var batch []TaskMessageData
+	watchTracker := newToolCallTracker()
+	emitWatchdogEvent := func(input map[string]any, tool string) {
+		s := msgSeq.Add(1)
+		mu.Lock()
+		batch = append(batch, TaskMessageData{
+			Seq:   int(s),
+			Type:  "watchdog",
+			Tool:  tool,
+			Input: input,
+		})
+		mu.Unlock()
+	}
+	observer := newWatchdogObserver(d.cfg, watchTracker)
+	// postSilenceAlertComment is the ALERT tier's human-reachable leg: the
+	// transcript event alone is agent-visible, so the alert also lands as an
+	// issue comment through the daemon task-comment endpoint. Best-effort and
+	// bounded: a comment failure is logged and swallowed — it must never
+	// disturb the run or the watchdog.
+	postSilenceAlertComment := func(content string) {
+		commentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.client.AddTaskComment(commentCtx, taskID, content); err != nil {
+			taskLog.Warn("failed to post silence alert comment", "error", err)
+		}
+	}
+	// recordForceStopSnapshot is the pre-mortem leg (RUYI-593): at the moment
+	// the watchdog decides to kill, take one atomic snapshot and deliver it
+	// three ways — a transcript event (via the shared batch, so its seq
+	// interleaves monotonically with the message stream), the structured kill
+	// log, and the terminal message wording (premortemSummary, read by the
+	// terminal branches after the drain tail has flushed). The kill itself is
+	// untouched: the caller fires it exactly where it always did.
+	var premortemSummary atomic.Value // string
+	recordForceStopSnapshot := func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool) {
+		mu.Lock()
+		pendingCount := len(watchTracker.pendingLocked())
+		ev := observer.collectPremortem(now, idleFor, threshold, toolInFlight, provider, toolCount.Load())
+		mu.Unlock()
+		emitWatchdogEvent(ev.input, ev.tool)
+		summary := premortemSummaryText(ev.input)
+		premortemSummary.Store(summary)
+		taskLog.Warn("watchdog force-stop pre-mortem",
+			"provider", provider,
+			"threshold", threshold.String(),
+			"idle_for", idleFor.Round(time.Millisecond).String(),
+			"tool_in_flight", toolInFlight,
+			"pending_tools", pendingCount,
+			"detail", summary,
+		)
+	}
+	var observe func(now time.Time, idleFor time.Duration, toolInFlight bool)
+	if observer.marksEnabled() || observer.silenceEnabled() {
+		observe = func(now time.Time, idleFor time.Duration, toolInFlight bool) {
+			mu.Lock()
+			events := observer.collectEvents(now, idleFor, toolInFlight)
+			mu.Unlock()
+			for _, ev := range events {
+				emitWatchdogEvent(ev.input, ev.tool)
+				if ev.comment != "" {
+					postSilenceAlertComment(ev.comment)
+				}
+			}
+		}
+	}
 	if idleWindow > 0 {
-		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog)
+		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog, observe, recordForceStopSnapshot)
 	}
 
 	// drainFinished closes after the drain goroutine has flushed the last
@@ -9021,11 +9218,11 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	drainFinished := make(chan struct{})
 	go func() {
 		defer close(drainFinished)
-		var mu sync.Mutex
+		// mu and batch live at executeAndDrain scope, shared with the
+		// watchdog's observation events so every reported row — transcript
+		// and watchdog alike — drains through one mutex-guarded batch.
 		var pendingText strings.Builder
 		var pendingThinking strings.Builder
-		var batch []TaskMessageData
-		callIDToTool := map[string]string{}
 
 		flush := func() {
 			mu.Lock()
@@ -9092,6 +9289,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// slow downstream call (mu.Lock contention, batch resize)
 				// can't be misattributed to backend silence.
 				lastActivityAt.Store(time.Now().UnixNano())
+				// A backend message means the run recovered from any silent
+				// segment: re-arm the warn/alert escalation so the next
+				// silence escalates on its own again.
+				mu.Lock()
+				observer.observeActivity()
+				mu.Unlock()
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
@@ -9130,11 +9333,15 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					n := toolCount.Add(1)
 					inFlightTools.Add(1)
 					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
-					if msg.CallID != "" {
-						mu.Lock()
-						callIDToTool[msg.CallID] = msg.Tool
-						mu.Unlock()
-					}
+					mu.Lock()
+					// Track the call for the watchdog's observation tier:
+					// in-flight marks and the force-stop pre-mortem both
+					// describe runs through this pending set. Calls without
+					// an id are tracked under a synthetic key (CallID stays
+					// empty) so they still show up even though no result can
+					// ever match them exactly.
+					watchTracker.register(msg.CallID, msg.Tool, time.Now())
+					mu.Unlock()
 					s := msgSeq.Add(1)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
@@ -9174,11 +9381,20 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						output = output[:8192]
 					}
 					toolName := msg.Tool
-					if toolName == "" && msg.CallID != "" {
-						mu.Lock()
-						toolName = callIDToTool[msg.CallID]
-						mu.Unlock()
+					mu.Lock()
+					// Retire the pending call this result pairs with: exact
+					// call_id match first, then the frontend folder's
+					// same-tool-FIFO fallback for results that lost their id.
+					// The retired record supplies the display name when the
+					// result itself is nameless.
+					if msg.CallID != "" {
+						if tr := watchTracker.take(msg.CallID); tr != nil && toolName == "" {
+							toolName = tr.Tool
+						}
+					} else {
+						watchTracker.retireOldest(msg.Tool)
 					}
+					mu.Unlock()
 					taskLog.Info("tool_result observed", "seq", s, "tool", toolName, "call_id", msg.CallID)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
@@ -9253,6 +9469,17 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 
+	// watchdogTerminalError composes the terminal wording: the fixed watchdog
+	// sentence plus the pre-mortem snapshot summary (read after waitForDrain,
+	// so the snapshot event has already been written before the run reports).
+	watchdogTerminalError := func() string {
+		msg := idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+		if s, ok := premortemSummary.Load().(string); ok && s != "" {
+			msg += "; " + s
+		}
+		return msg
+	}
+
 	select {
 	case result := <-session.Result:
 		waitForDrain()
@@ -9264,7 +9491,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			// generic "agent_error" bucket the aborted path falls into.
 			result.Status = "idle_watchdog"
 			if result.Error == "" {
-				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+				result.Error = watchdogTerminalError()
 			}
 		}
 		return result, toolCount.Load(), nil
@@ -9281,7 +9508,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		if idleWatchdogFired.Load() {
 			return agent.Result{
 				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
+				Error:  watchdogTerminalError(),
 			}, toolCount.Load(), nil
 		}
 		// Distinguish external cancellation (e.g. server-initiated cancel
@@ -9354,7 +9581,7 @@ func idleWatchdogTickInterval(window time.Duration) time.Duration {
 //
 // Polling rate comes from idleWatchdogTickInterval, so a run is force-stopped
 // somewhere between its budget and budget + tick, never earlier.
-func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger) {
+func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, observe func(now time.Time, idleFor time.Duration, toolInFlight bool), snapshot func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool)) {
 	ticker := time.NewTicker(idleWatchdogTickInterval(window))
 	defer ticker.Stop()
 	for {
@@ -9366,16 +9593,26 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 			// silent (a long build/install/test emits nothing between
 			// tool_use and tool_result), so it gets the larger toolWindow;
 			// toolWindow <= 0 disables the in-flight bound entirely.
-			threshold := window
+			now := time.Now()
 			toolInFlight := inFlightTools.Load() > 0
+			last := time.Unix(0, lastActivityAt.Load())
+			idleFor := now.Sub(last)
+			// Observation hook (RUYI-593 round 2): pure visibility on every
+			// tick, including ones the kill checks below skip — a tool in
+			// flight with toolWindow <= 0 never force-stops, and that is
+			// exactly the regime where in-flight marks matter most. The hook
+			// reads the same clocks the kill path does but never mutates
+			// them, so force-stop semantics are unchanged.
+			if observe != nil {
+				observe(now, idleFor, toolInFlight)
+			}
+			threshold := window
 			if toolInFlight {
 				if toolWindow <= 0 {
 					continue
 				}
 				threshold = toolWindow
 			}
-			last := time.Unix(0, lastActivityAt.Load())
-			idleFor := time.Since(last)
 			if idleFor < threshold {
 				continue
 			}
@@ -9392,6 +9629,12 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 				"tool_in_flight", toolInFlight,
 			)
 			firedThreshold.Store(int64(threshold))
+			// Take the pre-mortem snapshot before firing so the transcript
+			// event, log record, and terminal summary all describe the exact
+			// kill decision (same now, same idleFor, same threshold).
+			if snapshot != nil {
+				snapshot(now, idleFor, threshold, toolInFlight)
+			}
 			fired.Store(true)
 			cancel()
 			return

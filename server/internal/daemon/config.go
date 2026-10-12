@@ -55,7 +55,17 @@ const (
 	// real work short, so this is 2h.
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
-	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentIdleWatchdog = 2 * time.Hour
+
+	// RUYI-593 round 2: observation-tier defaults. In-flight tool marks give a
+	// stalled call a transcript presence from minute 15; the silence
+	// warn/alert tiers separate a healthy-but-quiet run from the dead-channel
+	// form hours before the 2h kill. Pure visibility: none of them stops a
+	// run, and every one honors 0 = off.
+	DefaultAgentToolMarkAfter             = 15 * time.Minute
+	DefaultAgentToolMarkEvery             = 30 * time.Minute
+	DefaultAgentSilenceWarnAfter          = 15 * time.Minute
+	DefaultAgentSilenceAlertAfter         = time.Hour
 	DefaultRuntimeName                    = "Local Agent"
 	DefaultWorkspaceBootstrapSyncInterval = 30 * time.Second
 	DefaultWorkspaceLegacySyncInterval    = 5 * time.Minute
@@ -167,6 +177,13 @@ type Config struct {
 	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
 	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
 	AutoReloadEnabled              bool                  // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
+	// PipeCrashSelfHealEnabled is the single kill switch for the Claude
+	// pipe-crash self-heal (RUYI-659): when a resumed run's CLI crashes
+	// before producing any session, the daemon retries in-turn with a fresh
+	// session (retiring the old pointer) instead of failing the task for a
+	// human to retry. Disabling restores pre-RUYI-659 behaviour exactly: the
+	// crash carries no rejection signal, the task fails, a human retries.
+	PipeCrashSelfHealEnabled bool
 	PollInterval                   time.Duration
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
@@ -182,11 +199,19 @@ type Config struct {
 	OpenCodeIdleWatchdog            time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog               time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog               time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
-	ClaudeArgs                      []string
-	CodexArgs                       []string
-	CodebuddyArgs                   []string
-	QwenArgs                        []string
-	QwenpawArgs                     []string
+	// RUYI-593 round 2 observation knobs — pure visibility, never kill paths.
+	AgentToolMarkAfter time.Duration // emit a tool_in_flight transcript event when a tool_use has been unpaired this long (0 = off)
+	AgentToolMarkEvery time.Duration // repeat the in-flight tool mark on this base interval, exponentially backed off to a 8× cap (0 = first mark only)
+	// Silence tiers apply only while no tool is in flight — a run inside a
+	// tool call is not silent. warn is a transcript event; alert is the same
+	// event at alert severity plus a human-reachable task comment.
+	AgentSilenceWarnAfter  time.Duration // transcript silence_warn once the no-tool silence crosses this (0 = off)
+	AgentSilenceAlertAfter time.Duration // transcript silence_alert + task comment once crossed (0 = off)
+	ClaudeArgs             []string
+	CodexArgs              []string
+	CodebuddyArgs          []string
+	QwenArgs               []string
+	QwenpawArgs            []string
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
@@ -389,6 +414,27 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// run longer than the model may think" case, and 0 keeps its meaning: never
 	// force-stop while a tool is in flight.
 	agentToolWatchdog, err := durationFromEnv("MULTICA_AGENT_TOOL_WATCHDOG", agentIdleWatchdog)
+	if err != nil {
+		return Config{}, err
+	}
+
+	// RUYI-593 round 2 observation-tier knobs. Each zero disables exactly its
+	// own mechanism; with all of them zero the watchdog produces nothing and
+	// behaves exactly as before this round. Events and comments produced here
+	// never feed back into the silence clock.
+	agentToolMarkAfter, err := durationFromEnv("MULTICA_AGENT_TOOL_MARK_AFTER", DefaultAgentToolMarkAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	agentToolMarkEvery, err := durationFromEnv("MULTICA_AGENT_TOOL_MARK_EVERY", DefaultAgentToolMarkEvery)
+	if err != nil {
+		return Config{}, err
+	}
+	agentSilenceWarnAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_WARN_AFTER", DefaultAgentSilenceWarnAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	agentSilenceAlertAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_ALERT_AFTER", DefaultAgentSilenceAlertAfter)
 	if err != nil {
 		return Config{}, err
 	}
@@ -685,6 +731,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		autoReloadEnabled = false
 	}
 
+	// RUYI-659: on by default — the self-heal only fires on the narrow
+	// pipe-crash evidence — with MULTICA_PIPE_CRASH_SELF_HEAL=0 as the
+	// operator's way back to "fail and wait for a human retry".
+	pipeCrashSelfHealEnabled := boolFromEnv("MULTICA_PIPE_CRASH_SELF_HEAL", true)
+
 	return Config{
 		ServerBaseURL:                   serverBaseURL,
 		DaemonID:                        daemonID,
@@ -713,6 +764,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoUpdateEnabled:               autoUpdateEnabled,
 		AutoUpdateCheckInterval:         autoUpdateInterval,
 		AutoReloadEnabled:               autoReloadEnabled,
+		PipeCrashSelfHealEnabled:        pipeCrashSelfHealEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
 		BackpressureEnabled:             backpressureEnabled,
@@ -734,6 +786,10 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,
+		AgentToolMarkAfter:              agentToolMarkAfter,
+		AgentToolMarkEvery:              agentToolMarkEvery,
+		AgentSilenceWarnAfter:           agentSilenceWarnAfter,
+		AgentSilenceAlertAfter:          agentSilenceAlertAfter,
 		ClaudeArgs:                      claudeArgs,
 		CodexArgs:                       codexArgs,
 		CodebuddyArgs:                   codebuddyArgs,

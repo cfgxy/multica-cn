@@ -26,6 +26,9 @@ export interface WelcomeSignal {
 
 interface WelcomeStoreState {
   signal: WelcomeSignal | null;
+  connectionWorkspaceId: string | null;
+  setConnectionWorkspace: (workspaceId: string) => void;
+  dismissConnection: () => void;
   /**
    * True after the user has explicitly engaged with the Welcome surface —
    * opened the runtime guide or closed the Skip modal.
@@ -64,8 +67,11 @@ interface WelcomeStoreState {
  */
 export const useWelcomeStore = create<WelcomeStoreState>((set) => ({
   signal: null,
+  connectionWorkspaceId: null,
   dismissed: false,
   set: (signal) => set({ signal, dismissed: false }),
+  setConnectionWorkspace: (workspaceId) => set({ connectionWorkspaceId: workspaceId }),
+  dismissConnection: () => set({ connectionWorkspaceId: null }),
   dismiss: () => set({ dismissed: true }),
-  reset: () => set({ signal: null, dismissed: false }),
+  reset: () => set({ signal: null, connectionWorkspaceId: null, dismissed: false }),
 }));

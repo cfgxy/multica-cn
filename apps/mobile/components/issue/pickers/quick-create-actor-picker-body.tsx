@@ -117,6 +117,7 @@ export function QuickCreateActorPickerBody({ value, query, onChange }: Props) {
   // FlatList is returned as the route's direct child — see file header.
   return (
     <FlatList
+      nestedScrollEnabled
       ref={listRef}
       data={rows}
       className="flex-1"
