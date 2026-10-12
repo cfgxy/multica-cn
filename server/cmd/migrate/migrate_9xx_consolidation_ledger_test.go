@@ -140,6 +140,7 @@ var postConsolidationStems = []string{
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
+	"944_workspace_squad_revision",                   // RUYI-666
 	"947_computer_management",                        // RUYI-670 (ported from trustbe-cn 536+538-540+545+546+554-556)
 	"948_computer_binding_account",                   // RUYI-670 (from trustbe-cn 537)
 	"949_computer_operation_id",                      // RUYI-670 (from trustbe-cn 541)

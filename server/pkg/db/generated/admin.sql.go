@@ -205,7 +205,7 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]L
 }
 
 const listAllWorkspaces = `-- name: ListAllWorkspaces :many
-SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.context, w.repos, w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed, w.active_execution_profile_id,
+SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.context, w.repos, w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed, w.active_execution_profile_id, w.revision,
        u2.id AS owner_id, u2.name AS owner_name, u2.email AS owner_email,
        COALESCE(mc.member_count, 0) AS member_count
 FROM workspace w
@@ -252,6 +252,7 @@ type ListAllWorkspacesRow struct {
 	AvatarUrl                pgtype.Text        `json:"avatar_url"`
 	AttributionFailClosed    bool               `json:"attribution_fail_closed"`
 	ActiveExecutionProfileID pgtype.UUID        `json:"active_execution_profile_id"`
+	Revision                 int64              `json:"revision"`
 	OwnerID                  pgtype.UUID        `json:"owner_id"`
 	OwnerName                pgtype.Text        `json:"owner_name"`
 	OwnerEmail               pgtype.Text        `json:"owner_email"`
@@ -286,6 +287,7 @@ func (q *Queries) ListAllWorkspaces(ctx context.Context, arg ListAllWorkspacesPa
 			&i.AvatarUrl,
 			&i.AttributionFailClosed,
 			&i.ActiveExecutionProfileID,
+			&i.Revision,
 			&i.OwnerID,
 			&i.OwnerName,
 			&i.OwnerEmail,
