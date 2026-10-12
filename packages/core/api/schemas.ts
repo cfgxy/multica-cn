@@ -513,6 +513,17 @@ export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: { pull_requests: GitHubPullRequ
   pull_requests: [],
 };
 
+// Single-PR lookup for the reference tail (RUYI-635 增量): the server answers
+// `null` only as absent-field fallback — a miss is a 404 the client turns
+// into `null` before parsing.
+export const PullRequestLookupResponseSchema = z.object({
+  pull_request: GitHubPullRequestSchema.nullish().default(null),
+}).loose();
+
+export const EMPTY_PULL_REQUEST_LOOKUP_RESPONSE: { pull_request: GitHubPullRequest | null } = {
+  pull_request: null,
+};
+
 // Label responses are consumed by settings tables and resource pickers. Keep
 // the resource type lenient so newer server scopes do not break older clients,
 // while defaulting fields that predate scoped label catalogs.

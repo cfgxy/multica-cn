@@ -5,7 +5,14 @@ export {
   extractIssueReferences,
   identifierMatchesPrefix,
   isIssueIdentifier,
+  parsePullRequestReference,
   type ExtractIssueReferencesOptions,
   type IssueReference,
   type IssueReferenceForm,
+  type PullRequestRefParts,
 } from "./issue-references";
+export {
+  partitionReferencePreview,
+  type ReferencePreviewPartition,
+  type ReferenceRowKind,
+} from "./reference-preview";

@@ -116,6 +116,7 @@ import {
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
   EMPTY_ISSUE_RELATIONS,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
@@ -131,6 +132,7 @@ import {
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   ListQuickRepliesResponseSchema,
+  PullRequestLookupResponseSchema,
   SquadMemberListSchema,
   SquadMemberSchema,
   SquadMemberStatusListResponseSchema,
@@ -2221,6 +2223,41 @@ class ApiClient {
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { ...opts, endpoint: "GET /api/issues/:id/pull-requests" },
     );
+  }
+
+  /**
+   * Workspace-scoped PR point lookup by `owner/repo#N` (RUYI-635 增量) —
+   * mirrors packages/core/api/client.ts lookupPullRequest and its 404→null
+   * contract: a PR the platform has never seen is `null`, so the reference
+   * tail's row degrades to plain text instead of erroring.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({
+      owner,
+      repo,
+      number: String(number),
+    });
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+      ).pull_request;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   // --- Projects ---

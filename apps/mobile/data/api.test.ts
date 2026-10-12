@@ -671,3 +671,36 @@ describe("X-Client-OS header", () => {
     await expect(captureJsonRequestHeaderOS()).resolves.toBe("ios");
   });
 });
+
+describe("ApiClient.lookupPullRequest", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // RUYI-635 返工：端点注册在 /api/workspaces/{id} 路由组内
+  // （server/cmd/server/router.go），core 同口径见
+  // packages/core/api/client.ts lookupPullRequest。路径缺 workspaces 段时
+  // 请求命中不存在的顶层路由 → 404 → 被「404→null」降级契约吞掉 →
+  // PR 引用永远静默降级为纯文本。此测试锚定请求 URL 本身，防止两端
+  // 端点口径再漂移（单测 mock 掉 api 模块时结构性拦不住这类接缝缺陷）。
+  it("requests the workspace-scoped lookup route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ pull_request: null }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequest("ws-1", "cfgxy", "multica-cn", 350),
+    ).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.example.test/api/workspaces/ws-1/pull-requests/lookup?owner=cfgxy&repo=multica-cn&number=350",
+    );
+  });
+});
