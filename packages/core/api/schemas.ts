@@ -4903,6 +4903,11 @@ export const PromptProposalSchema = z.object({
   gate_answer_cost: z.string(),
   gate_answer_conflict: z.string(),
   gate_answer_dedup: z.string(),
+  // RUYI-723 decision context: retrospective drafts only, absent elsewhere.
+  problem: z.string().optional(),
+  expected_effect: z.string().optional(),
+  expected_gain: z.string().optional(),
+  value_score: z.number().optional(),
   evidence_anchors: z.array(z.record(z.string(), z.unknown())),
   status: z.string(),
   gate_errors: z.array(LegislationGateFindingSchema),

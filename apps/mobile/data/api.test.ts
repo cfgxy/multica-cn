@@ -704,3 +704,73 @@ describe("ApiClient.lookupPullRequest", () => {
     );
   });
 });
+
+describe("ApiClient.transcribeVoiceAudio (RUYI-710 阶段 2 降级听写)", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(body: unknown, ok = true, status = 200) {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    return fetchMock;
+  }
+
+  it("POST workspace 作用域转写端点，multipart body 且不带预设 Content-Type", async () => {
+    const fetchMock = stubFetch({ text: "你好世界" });
+
+    await expect(
+      api.transcribeVoiceAudio("ws-1", new Blob([new Uint8Array([1, 2])], { type: "audio/wav" })),
+    ).resolves.toBe("你好世界");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example.test/api/workspaces/ws-1/voice-transcriptions");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
+    const headers = init.headers as Record<string, string>;
+    // 无预设 Content-Type：boundary 由 RN/undici 的 FormData 序列化生成，
+    // 客户端预设会与之错位（uploadFile 同一条注释先例）。
+    expect(headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("text 字段缺失或非字符串一律收敛空串（空转写分支语义）", async () => {
+    stubFetch({});
+    await expect(
+      api.transcribeVoiceAudio("ws-1", new Blob([])),
+    ).resolves.toBe("");
+  });
+
+  it("非 2xx 抛 ApiError 携带状态码（hook 层统一 toast）", async () => {
+    stubFetch(
+      { error: "voice_unavailable", message: "voice not configured" },
+      false,
+      409,
+    );
+    const err = await api
+      .transcribeVoiceAudio("ws-1", new Blob([]))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+  });
+
+  it("鉴权头随 token 注入", async () => {
+    api.setToken("tok-1");
+    const fetchMock = stubFetch({ text: "x" });
+
+    await api.transcribeVoiceAudio("ws-1", new Blob([]));
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer tok-1",
+    );
+  });
+});
