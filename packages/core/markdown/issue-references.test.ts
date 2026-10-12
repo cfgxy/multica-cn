@@ -5,6 +5,7 @@ import {
   extractIssueReferences,
   identifierMatchesPrefix,
   isIssueIdentifier,
+  parsePullRequestReference,
 } from "./issue-references";
 
 const UUID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
@@ -258,5 +259,90 @@ describe("isIssueIdentifier", () => {
     expect(isIssueIdentifier("mul-7")).toBe(false);
     expect(isIssueIdentifier("MUL-")).toBe(false);
     expect(isIssueIdentifier("M-UL7")).toBe(false);
+  });
+});
+
+describe("extractIssueReferences — pull request references", () => {
+  it("collects a plain owner/repo#N token as pull_request-form", () => {
+    expect(extractIssueReferences("Fix landed in cfgxy/multica-cn#338.")).toEqual([
+      { ref: "cfgxy/multica-cn#338", label: null, form: "pull_request" },
+    ]);
+  });
+
+  it("collects PR refs alongside issue refs in first-appearance order", () => {
+    const refs = extractIssueReferences(
+      "RUYI-635 fixed by cfgxy/multica-cn#338, see also MUL-9.",
+    );
+    expect(refs.map((r) => `${r.form}:${r.ref}`)).toEqual([
+      "identifier:RUYI-635",
+      "pull_request:cfgxy/multica-cn#338",
+      "identifier:MUL-9",
+    ]);
+  });
+
+  it("accepts digits and hyphens in owner, dots in repo", () => {
+    expect(extractIssueReferences("See 2k/mono.repo#12 done.")).toEqual([
+      { ref: "2k/mono.repo#12", label: null, form: "pull_request" },
+    ]);
+  });
+
+  it("keeps sentence-final punctuation and CJK adjacency", () => {
+    expect(extractIssueReferences("已合并 cfgxy/multica-cn#338。")).toEqual([
+      { ref: "cfgxy/multica-cn#338", label: null, form: "pull_request" },
+    ]);
+    expect(extractIssueReferences("(cfgxy/multica-cn#338) 已归档。")).toEqual([
+      { ref: "cfgxy/multica-cn#338", label: null, form: "pull_request" },
+    ]);
+  });
+
+  it("skips PR refs inside code spans", () => {
+    expect(extractIssueReferences("跑 `git cfgxy/multica-cn#338` 看看。")).toEqual([]);
+  });
+
+  it("skips PR refs that are part of a URL (fragment or path)", () => {
+    expect(
+      extractIssueReferences("https://github.com/cfgxy/multica-cn/pull/338#issuecomment-1"),
+    ).toEqual([]);
+    expect(
+      extractIssueReferences("打开 https://github.com/cfgxy/multica-cn#338 查看。"),
+    ).toEqual([]);
+  });
+
+  it("skips path-segment shapes (owner/repo#N inside a larger path)", () => {
+    expect(extractIssueReferences("mirror at backup/cfgxy/multica-cn#338 跳过。")).toEqual([]);
+    expect(extractIssueReferences("cfgxy/multica-cn#338/commits 跳过。")).toEqual([]);
+  });
+
+  it("skips a PR ref whose number runs into a dotted name", () => {
+    expect(extractIssueReferences("artifact cfgxy/multica-cn#338.tar.gz 跳过。")).toEqual([]);
+  });
+
+  it("skips a PR ref glued to a dotted name on the left", () => {
+    expect(extractIssueReferences("见 file.cfgxy/multica-cn#338 跳过。")).toEqual([]);
+  });
+
+  it("dedupes repeated PR tokens to the first occurrence", () => {
+    const refs = dedupeIssueReferences(
+      extractIssueReferences("cfgxy/multica-cn#338 又提一次 cfgxy/multica-cn#338。"),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toEqual({ ref: "cfgxy/multica-cn#338", label: null, form: "pull_request" });
+  });
+});
+
+describe("parsePullRequestReference", () => {
+  it("splits owner, repo and number", () => {
+    expect(parsePullRequestReference("cfgxy/multica-cn#338")).toEqual({
+      owner: "cfgxy",
+      repo: "multica-cn",
+      number: 338,
+    });
+  });
+
+  it("returns null for tokens the extractor would never emit", () => {
+    expect(parsePullRequestReference("MUL-7")).toBeNull();
+    expect(parsePullRequestReference("owner/repo")).toBeNull();
+    expect(parsePullRequestReference("owner/repo#abc")).toBeNull();
+    expect(parsePullRequestReference("")).toBeNull();
   });
 });

@@ -1027,6 +1027,47 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	})
 }
 
+// ── Lookup a PR by owner/repo/number ────────────────────────────────────────
+
+// LookupPullRequestByRef backs the reference tail's PR rows (RUYI-635 增量,
+// Owner point ②): prose that TEXT-references `owner/repo#N` needs that PR's
+// title, state and canonical URL so the tail row can render a state icon and
+// a link. Read-only and DB-only — GetGitHubPullRequest reads the
+// webhook/refresh-maintained github_pull_request snapshot; a PR the platform
+// has never seen 404s and the client degrades the reference to plain text
+// (the same miss-reads-as-typed contract the issue tail follows).
+func (h *Handler) LookupPullRequestByRef(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	owner := strings.TrimSpace(q.Get("owner"))
+	repo := strings.TrimSpace(q.Get("repo"))
+	number, err := strconv.ParseInt(strings.TrimSpace(q.Get("number")), 10, 32)
+	if owner == "" || repo == "" || err != nil || number <= 0 {
+		writeError(w, http.StatusBadRequest, "owner, repo and a positive number are required")
+		return
+	}
+	pr, err := h.Queries.GetGitHubPullRequest(r.Context(), db.GetGitHubPullRequestParams{
+		WorkspaceID: wsUUID,
+		RepoOwner:   owner,
+		RepoName:    repo,
+		PrNumber:    int32(number),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "pull request not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to look up pull request")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pull_request": githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
+	})
+}
+
 // ── Webhook ─────────────────────────────────────────────────────────────────
 
 // identifierRe extracts identifiers like "MUL-1510" from text. Case-insensitive
