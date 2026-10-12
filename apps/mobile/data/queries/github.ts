@@ -26,6 +26,9 @@ export const githubKeys = {
     repo: string,
     number: number,
   ) => ["github", "pull-request-lookup", wsId, owner, repo, number] as const,
+  /** RUYI-728: point lookup by bare number for body-text `MR !N` links. */
+  pullRequestLookupByNumber: (wsId: string | null, number: number) =>
+    ["github", "pull-request-lookup-by-number", wsId, number] as const,
 };
 
 export const issuePullRequestsOptions = (issueId: string | null) =>
@@ -54,4 +57,18 @@ export const pullRequestLookupOptions = (
       repo.length > 0 &&
       Number.isInteger(number) &&
       number > 0,
+  });
+
+// Same gate shape as web's pullRequestLookupByNumberOptions (packages/core/
+// github/queries.ts): a malformed number never spends a query — its row just
+// degrades to plain text.
+export const pullRequestLookupByNumberOptions = (
+  wsId: string | null,
+  number: number,
+) =>
+  queryOptions({
+    queryKey: githubKeys.pullRequestLookupByNumber(wsId, number),
+    queryFn: ({ signal }) =>
+      api.lookupPullRequestByNumber(wsId ?? "", number, { signal }),
+    enabled: !!wsId && Number.isInteger(number) && number > 0,
   });

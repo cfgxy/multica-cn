@@ -1,24 +1,50 @@
 /**
- * Issue mention aggregation through the full RichContent pipeline (RUYI-635).
+ * Issue mention aggregation through the full RichContent pipeline (RUYI-635,
+ * reworked by RUYI-728).
  *
  * Pins the body-side contract on the real renderer: markdown `mention://issue`
- * links and bare identifiers read as plain text in the body (no chip, no link),
- * the references surface as a tail block, and everything the extractor must
- * skip (code spans and fences, member mentions, pasted in-app URLs) stays out
- * of it. Resolution is stubbed at the hook seam — see issue-reference-footer
- * tests for the footer's internal policy.
+ * links read as underlined in-app links in the body (a bare identifier only
+ * once it resolves; a miss keeps the plain-text degradation), `MR !N` and
+ * `owner/repo#N` autolink to GitHub, and every reference still aggregates
+ * into the tail block. Everything the extractor must skip (code spans and
+ * fences, member mentions, pasted in-app URLs) stays out of it. Resolution is
+ * stubbed at the hook seams — see issue-reference-footer tests for the
+ * footer's internal policy.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
-import type { Issue } from "@multica/core/types";
+import type { GitHubPullRequest, Issue } from "@multica/core/types";
 import type { IssueReference } from "@multica/core/markdown";
 
 const UUID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
 const APP_ORIGIN = "https://app.multica.ai";
 
-let resolvedByRef: Record<string, Issue> = {};
+let resolvedByRef: Record<string, Issue | GitHubPullRequest> = {};
+// `useResolveIssueIdentifier` seam — a resolved bare identifier renders as a
+// navigable link (RUYI-728); `null` keeps the miss-degrades-to-text contract.
+let resolvedIdentifier: Issue | null = null;
+
+function prFixture(number: number): GitHubPullRequest {
+  return {
+    id: `pr-${number}`,
+    workspace_id: "ws-1",
+    repo_owner: "cfgxy",
+    repo_name: "multica-cn",
+    number,
+    title: `Pull request #${number}`,
+    state: "open",
+    html_url: `https://github.com/cfgxy/multica-cn/pull/${number}`,
+    branch: null,
+    author_login: null,
+    author_avatar_url: null,
+    merged_at: null,
+    closed_at: null,
+    pr_created_at: "",
+    pr_updated_at: "",
+  } as unknown as GitHubPullRequest;
+}
 
 vi.mock(
   "../issues/hooks/use-issue-reference-resolutions",
@@ -37,7 +63,7 @@ vi.mock(
 );
 
 vi.mock("../issues/hooks", () => ({
-  useResolveIssueIdentifier: () => null,
+  useResolveIssueIdentifier: () => resolvedIdentifier,
 }));
 
 vi.mock("../i18n", async () => {
@@ -120,27 +146,77 @@ function renderContent(content: string) {
 
 beforeEach(() => {
   resolvedByRef = {};
+  resolvedIdentifier = null;
 });
 
-describe("issue mentions read as plain text in the body", () => {
-  it("renders a UUID mention as its authored label, not a chip", () => {
+// RUYI-728: issue mentions read as underlined in-app links in the body — the
+// same real-anchor family as the PR/GitHub links. The tail block below is
+// unchanged (rows stay non-navigating spans).
+describe("issue mentions render as links in the body", () => {
+  it("renders a UUID mention as an in-app link with its authored label", () => {
     const { container, queryByTestId } = renderContent(
       `See [MUL-7](mention://issue/${UUID}) please.`,
     );
 
     expect(queryByTestId("issue-chip")).toBeNull();
-    const text = container.querySelector("[data-issue-mention-text]")!;
-    expect(text.textContent).toBe("MUL-7");
-    // Plain text — not a link.
-    expect(text.closest("a")).toBeNull();
+    const link = container.querySelector(`a[href='/acme/issues/${UUID}']`)!;
+    expect(link.textContent).toBe("MUL-7");
   });
 
-  it("renders an autolinked bare identifier as plain text", () => {
+  it("renders a resolved bare identifier as an in-app link", () => {
+    resolvedIdentifier = {
+      id: UUID,
+      identifier: "MUL-7",
+      title: "Fix the thing",
+      status: "in_progress",
+    } as Issue;
     const { container, queryByTestId } = renderContent("Blocked by MUL-7.");
 
     expect(queryByTestId("issue-chip")).toBeNull();
+    const link = container.querySelector(`a[href='/acme/issues/${UUID}']`)!;
+    expect(link.textContent).toBe("MUL-7");
+  });
+
+  it("keeps an unresolved bare identifier as plain text", () => {
+    const { container } = renderContent("Blocked by MUL-404.");
+
     const text = container.querySelector("[data-issue-mention-text]")!;
-    expect(text.textContent).toBe("MUL-7");
+    expect(text.textContent).toBe("MUL-404");
+    expect(text.closest("a")).toBeNull();
+  });
+});
+
+// RUYI-728: `MR !N` and `owner/repo#N` autolink to GitHub in the readonly
+// body. A resolved MR renders the authored text as a real anchor; a miss
+// (never seen / ambiguous / still loading) degrades to plain text — no dead
+// GitHub links.
+describe("MR and PR text references linkify in the body", () => {
+  it("renders a resolved MR reference as a GitHub pull-request link", () => {
+    resolvedByRef["merge_request:MR !468"] = prFixture(468);
+    const { container } = renderContent("合入 MR !468 后看效果。");
+
+    const link = container.querySelector(
+      "a[href='https://github.com/cfgxy/multica-cn/pull/468']",
+    )!;
+    expect(link.textContent).toBe("MR !468");
+  });
+
+  it("keeps an unresolved MR reference as plain text", () => {
+    const { container } = renderContent("合入 MR !468 后看效果。");
+
+    expect(container.querySelector("a[href*='github.com']")).toBeNull();
+    expect(
+      container.querySelector("[data-issue-mention-text]")!.textContent,
+    ).toBe("MR !468");
+  });
+
+  it("renders a pasted owner/repo#N as a GitHub pull-request link", () => {
+    const { container } = renderContent("看 cfgxy/multica-cn#338 的实现。");
+
+    const link = container.querySelector(
+      "a[href='https://github.com/cfgxy/multica-cn/pull/338']",
+    )!;
+    expect(link.textContent).toBe("cfgxy/multica-cn#338");
   });
 });
 
@@ -169,6 +245,21 @@ describe("tail aggregation block", () => {
     const row = footer.querySelector(".issue-reference-row")!;
     expect(row.textContent).toContain("MUL-7");
     expect(row.textContent).toContain("Fix the thing");
+  });
+
+  it("aggregates a resolved MR reference into a PR row", () => {
+    resolvedByRef["merge_request:MR !468"] = prFixture(468);
+    const { container } = renderContent("合入 MR !468 后看效果。");
+
+    const footer = container.querySelector("[data-issue-reference-footer]")!;
+    // MR !468 resolves to the same snapshot row the owner/repo#N form shows:
+    // the row carries the PR's own identity; at desktop width (RUYI-724)
+    // the resolved row is a direct link, same as the owner/repo#N form.
+    expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
+    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
+    expect(footer.querySelector(".issue-reference-row")!.textContent).toContain(
+      "cfgxy/multica-cn#468",
+    );
   });
 
   it("renders no tail block when there are no references", () => {

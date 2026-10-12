@@ -9,6 +9,8 @@ export const githubKeys = {
   pullRequests: (issueId: string) => ["github", "pull-requests", issueId] as const,
   pullRequestLookup: (wsId: string, owner: string, repo: string, number: number) =>
     [...githubKeys.all(wsId), "pull-requests", "lookup", owner, repo, number] as const,
+  pullRequestLookupByNumber: (wsId: string, number: number) =>
+    [...githubKeys.all(wsId), "pull-requests", "lookup-by-number", number] as const,
 };
 
 export const githubInstallationsOptions = (wsId: string) =>
@@ -56,5 +58,19 @@ export const pullRequestLookupOptions = (
   queryOptions({
     queryKey: githubKeys.pullRequestLookup(wsId, owner, repo, number),
     queryFn: () => api.lookupPullRequest(wsId, owner, repo, number),
+    enabled: !!wsId && Number.isInteger(number) && number > 0,
+  });
+
+/**
+ * One `MR !N` text-reference lookup (RUYI-728) — the number-only variant of
+ * `pullRequestLookupOptions` for tokens authored without a repo. `null` data
+ * = no unique PR for this number in the workspace snapshot (never seen, or
+ * ambiguous across repos); both degrade the token to plain text. Disabled
+ * when the workspace or the number is missing.
+ */
+export const pullRequestLookupByNumberOptions = (wsId: string, number: number) =>
+  queryOptions({
+    queryKey: githubKeys.pullRequestLookupByNumber(wsId, number),
+    queryFn: () => api.lookupPullRequestByNumber(wsId, number),
     enabled: !!wsId && Number.isInteger(number) && number > 0,
   });
