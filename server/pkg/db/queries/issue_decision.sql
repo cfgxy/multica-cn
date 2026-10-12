@@ -28,6 +28,20 @@ SELECT * FROM issue_decisions
 WHERE issue_id = $1 AND workspace_id = $2
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListIssueDecisionsByAnswerComments :many
+-- RUYI-719: typed claim-time answer context. Locates the question cards whose
+-- answer echo is one of the comments delivered with this claim (trigger +
+-- coalesced). Authorization cards never take the echo pointer (their terminal
+-- callback is a system comment) and are excluded explicitly by kind, so a
+-- future pointer fill can never leak approve/deny answers into this
+-- question-card surface. Deterministic order keeps a retried claim's payload
+-- byte-stable.
+SELECT * FROM issue_decisions
+WHERE workspace_id = $1 AND issue_id = $2
+  AND decision_kind = 'question'
+  AND answer_comment_id = ANY(@answer_comment_ids::uuid[])
+ORDER BY created_at ASC, id ASC;
+
 -- name: AnswerIssueDecision :one
 -- CAS on status: only an open card can be answered. A concurrent answer (or a
 -- cancel racing an answer) loses here with sql.ErrNoRows instead of silently
