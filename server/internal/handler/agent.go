@@ -646,10 +646,17 @@ type AgentTaskResponse struct {
 	QuizPrompt               string                      `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt      string                      `json:"retrospective_prompt,omitempty"`        // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — read issues, submit drafts, create nothing
 	HandoffNote              string                      `json:"handoff_note,omitempty"`                // assignment handoff instruction; rendered into the run's opening prompt + issue_context.md (omitempty so old daemons ignore it)
-	SquadID                  string                      `json:"squad_id,omitempty"`                    // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
-	SquadName                string                      `json:"squad_name,omitempty"`                  // display name for the picker squad
-	ParentIssueID            string                      `json:"parent_issue_id,omitempty"`             // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
-	ParentIssueIdentifier    string                      `json:"parent_issue_identifier,omitempty"`     // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	// DecisionAnswers (RUYI-719) is the typed answer context for the decision
+	// cards whose answer echoes are among this run's delivered trigger/coalesced
+	// comments. Read from issue_decisions at claim time; empty when none of the
+	// delivered comments is a decision echo (including the pointer-missing
+	// degradation, where the echo text alone keeps the pre-RUYI-719 behavior).
+	// Mirror field: internal/daemon/types.go, same JSON name.
+	DecisionAnswers       []DecisionAnswerContextData `json:"decision_answers,omitempty"`
+	SquadID               string                      `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
+	SquadName             string                      `json:"squad_name,omitempty"`              // display name for the picker squad
+	ParentIssueID         string                      `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier string                      `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
