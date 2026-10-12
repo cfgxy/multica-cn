@@ -3404,3 +3404,14 @@ FROM victims
 WHERE task.id = victims.id
   AND task.status = 'cancel_requested'
 RETURNING task.*;
+
+-- name: GetLastTerminalTaskCompletedAtForIssueAndAgent :one
+-- RUYI-660: when the (issue, agent) pair's most recent terminal task
+-- settled. The stall sweep uses it as the grace window — a task that just
+-- terminalized is still within the completion hook's evaluation window and
+-- the sweep must not race it. pgx.ErrNoRows means no terminal task exists.
+SELECT completed_at FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status IN ('completed', 'failed', 'cancelled')
+  AND completed_at IS NOT NULL
+ORDER BY completed_at DESC
+LIMIT 1;
