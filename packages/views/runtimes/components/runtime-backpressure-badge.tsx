@@ -24,6 +24,14 @@ export function BackpressureBadge({ runtime }: { runtime: AgentRuntime }) {
     swap: t(($) => $.detail.bp_reason_swap),
     psi: t(($) => $.detail.bp_reason_psi),
   };
+  const condLabel = (condition: string): string => {
+    const map: Record<string, string> = {
+      mem: t(($) => $.detail.bp_cond_mem),
+      swap: t(($) => $.detail.bp_cond_swap),
+      psi: t(($) => $.detail.bp_cond_psi),
+    };
+    return map[condition] ?? condition;
+  };
   const reasonText = bp.reason
     .split("+")
     .map((tok) => tokenText[tok.trim()] ?? tok.trim())
@@ -52,6 +60,23 @@ export function BackpressureBadge({ runtime }: { runtime: AgentRuntime }) {
         {bp.psiReadOK && (
           <span className="block">
             {t(($) => $.detail.backpressure_psi_hint, { psi: bp.psiSomeAvg10 })}
+          </span>
+        )}
+        {/* Stage-1 daemons echo the card they judged (RUYI-729): pair every
+            reading with its threshold so "is 62% bad?" needs no guessing.
+            Pre-stage-1 reports have neither field — degrade to the bare
+            numbers above, never inventing a threshold. */}
+        {bp.conditions && bp.conditions.length > 0 && (
+          <span className="mt-1 block border-t border-white/15 pt-1">
+            {bp.conditions.map((c) => (
+              <span key={c.condition} className="block">
+                {condLabel(c.condition)}:{" "}
+                {t(($) => $.detail.bp_vs_threshold, {
+                  value: c.value,
+                  threshold: c.threshold,
+                })}
+              </span>
+            ))}
           </span>
         )}
       </TooltipContent>

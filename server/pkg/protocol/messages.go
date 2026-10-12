@@ -385,6 +385,18 @@ type DaemonBackpressureReport struct {
 	// active in the current episode — a diagnostic for how long new work
 	// has been waiting, not a task count.
 	DeferredClaims int64 `json:"deferred_claims"`
+	// Config is the gate configuration currently in force on the daemon
+	// (RUYI-729 stage 1): the DB-delivered settings card, or the daemon's
+	// boot config when no row was ever saved. Optional — absent on daemons
+	// predating this field, which servers and UIs must degrade for
+	// gracefully. The event history snapshots this card so past episodes
+	// stay interpretable after the settings change.
+	Config *DaemonBackpressureConfig `json:"config,omitempty"`
+	// Conditions lists every gate condition's reading at report time:
+	// smoothed value, the high watermark it is judged against, and whether
+	// it is past the line. Nil when Config is absent (old daemons); the
+	// "+"-joined Reason remains the authoritative trigger summary.
+	Conditions []DaemonBackpressureCondition `json:"conditions,omitempty"`
 }
 
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket
@@ -418,6 +430,11 @@ type DaemonHeartbeatAckPayload struct {
 	PendingModelList        *DaemonHeartbeatPendingModelList        `json:"pending_model_list,omitempty"`
 	PendingLocalSkills      *DaemonHeartbeatPendingLocalSkills      `json:"pending_local_skills,omitempty"`
 	PendingLocalSkillImport *DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_import,omitempty"`
+	// BackpressureConfig (RUYI-729 stage 1) carries the daemon host's saved
+	// gate settings on every ack; the daemon hot-applies a changed card
+	// within one beat. Nil when the host never saved a settings row — the
+	// daemon then keeps its boot (env/code-default) configuration.
+	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
 	// PendingLocalSkillImports carries multiple import requests in a single
 	// heartbeat so the daemon can process them concurrently. Old daemons
 	// that don't know this field silently ignore it (standard JSON behavior)

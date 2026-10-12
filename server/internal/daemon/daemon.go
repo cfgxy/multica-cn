@@ -623,7 +623,14 @@ type Daemon struct {
 	// bpState is nil until the watcher's first sample lands (gate fails
 	// open); bpWakeup points at the batch poller's wakeup channel so a
 	// recovery can nudge it instead of waiting out a backoff interval.
-	bpMachine  *backpressureMachine
+	//
+	// RUYI-729 stage 1: the gate parameters are hot-reloadable. bpRuntime
+	// carries the active card (thresholds + cadence + machine); every
+	// heartbeat ack delivers the saved settings and applyBackpressureConfig
+	// swaps it in, so a save in the Runtime page lands within one beat
+	// without a restart. bpApplyMu serializes that swap.
+	bpRuntime  atomic.Pointer[backpressureRuntime]
+	bpApplyMu  sync.Mutex
 	bpSource   memSampleSource
 	bpState    atomic.Pointer[backpressureObservation]
 	bpDeferred atomic.Int64
@@ -750,11 +757,13 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
 	}
-	// Host memory backpressure (RUYI-393): nil machine = disabled, the claim
-	// gate fails open and the watcher goroutine is never started.
+	// Host memory backpressure (RUYI-393): nil runtime = disabled, the claim
+	// gate fails open and the watcher goroutine is never started. The boot
+	// card is the env-overridden config (RUYI-393 discipline); a saved
+	// settings row replaces it on the first heartbeat ack (RUYI-729).
 	if cfg.BackpressureEnabled {
-		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
 		d.bpSource = newMemSampleSource()
+		d.bpRuntime.Store(newBackpressureRuntime(cfg.backpressureCard(), cfg.backpressureThresholds()))
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2157,8 +2166,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
 	// and advances the hysteresis gate fed into the claim path below. nil
-	// machine = disabled by config, no goroutine.
-	if d.bpMachine != nil {
+	// runtime = disabled by config, no goroutine.
+	if d.bpRuntime.Load() != nil {
 		go d.runBackpressureWatcher(ctx)
 	}
 
@@ -4357,6 +4366,13 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse) {
 	if resp == nil {
 		return
+	}
+	// Saved backpressure settings (RUYI-729) ride every ack. Applied
+	// synchronously — the swap is a few pointer writes under one mutex and
+	// the ack path has no reason to outrun it; a changed card takes effect
+	// on the watcher's next cycle.
+	if resp.BackpressureConfig != nil {
+		d.applyBackpressureConfig(runtimeID, resp.BackpressureConfig)
 	}
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
