@@ -51,6 +51,11 @@ jest.mock("@/lib/markdown/markdown-style", () => ({
 jest.mock("@/lib/use-issue-statuses", () => ({
   useIssueStatuses: () => ({ colorOf: () => "#000" }),
 }));
+// IssueReferenceList's 增量 sheet (RUYI-635) reads insets for its bottom
+// padding; jest renders need a deterministic value.
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }),
+}));
 jest.mock("@/lib/use-t", () => ({
   useT: () => ({ t: (key: string, fallback?: string) => fallback ?? key }),
 }));

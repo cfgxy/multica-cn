@@ -3338,3 +3338,90 @@ func TestWebhook_UninstallDeletesAllBindings(t *testing.T) {
 		t.Errorf("deleted broadcasts must cover both workspaces; saw %v", seen)
 	}
 }
+
+// TestLookupPullRequestByRef covers the reference tail's PR lookup
+// (RUYI-635 增量): a workspace-known PR resolves to its snapshot fields, an
+// unknown PR 404s (the client degrades the reference to plain text), and a
+// malformed number is a 400.
+func TestLookupPullRequestByRef(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+
+	var prID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha)
+		VALUES ($1, 1, 'acme', 'widget', 4321, 'Fix the flux capacitor', 'merged', 'https://github.com/acme/widget/pull/4321', now(), now(), '')
+		RETURNING id
+	`, testWorkspaceID).Scan(&prID); err != nil {
+		t.Fatalf("seed PR: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id = $1`, prID)
+	})
+
+	call := func(t *testing.T, query string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/pull-requests/lookup"+query, nil)
+		req = withURLParam(req, "id", testWorkspaceID)
+		req = req.WithContext(middleware.SetMemberContext(req.Context(), testWorkspaceID, db.Member{Role: "member"}))
+		w := httptest.NewRecorder()
+		testHandler.LookupPullRequestByRef(w, req)
+		return w
+	}
+
+	t.Run("known PR resolves to its snapshot fields", func(t *testing.T) {
+		w := call(t, "?owner=acme&repo=widget&number=4321")
+		if w.Code != http.StatusOK {
+			t.Fatalf("lookup: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			PullRequest struct {
+				RepoOwner string `json:"repo_owner"`
+				RepoName  string `json:"repo_name"`
+				Number    int32  `json:"number"`
+				Title     string `json:"title"`
+				State     string `json:"state"`
+				HtmlURL   string `json:"html_url"`
+			} `json:"pull_request"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		pr := body.PullRequest
+		if pr.RepoOwner != "acme" || pr.RepoName != "widget" || pr.Number != 4321 {
+			t.Errorf("identity = %s/%s#%d, want acme/widget#4321", pr.RepoOwner, pr.RepoName, pr.Number)
+		}
+		if pr.Title != "Fix the flux capacitor" || pr.State != "merged" {
+			t.Errorf("snapshot = %q / %q, want merged fixture", pr.Title, pr.State)
+		}
+		if pr.HtmlURL != "https://github.com/acme/widget/pull/4321" {
+			t.Errorf("html_url = %q", pr.HtmlURL)
+		}
+	})
+
+	t.Run("unknown PR is 404 (client degrades to plain text)", func(t *testing.T) {
+		if w := call(t, "?owner=acme&repo=widget&number=999999"); w.Code != http.StatusNotFound {
+			t.Fatalf("unknown lookup: %d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("malformed number is 400", func(t *testing.T) {
+		if w := call(t, "?owner=acme&repo=widget&number=abc"); w.Code != http.StatusBadRequest {
+			t.Fatalf("malformed number: %d %s", w.Code, w.Body.String())
+		}
+		if w := call(t, "?owner=acme&repo=widget&number=0"); w.Code != http.StatusBadRequest {
+			t.Fatalf("zero number: %d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("missing owner or repo is 400", func(t *testing.T) {
+		if w := call(t, "?owner=&repo=widget&number=4321"); w.Code != http.StatusBadRequest {
+			t.Fatalf("missing owner: %d %s", w.Code, w.Body.String())
+		}
+		if w := call(t, "?owner=acme&repo=&number=4321"); w.Code != http.StatusBadRequest {
+			t.Fatalf("missing repo: %d %s", w.Code, w.Body.String())
+		}
+	})
+}
