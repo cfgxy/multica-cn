@@ -60,7 +60,8 @@ INSERT INTO agent (
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
     session_max_context_tokens, session_compact_pct, resource_weight,
-    voice_runtime_id
+    voice_runtime_id,
+    voice_provider_id, voice_model, voice_advanced
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -80,7 +81,13 @@ INSERT INTO agent (
     -- RUYI-425: the optional voice slot. NULL unless the request binds a
     -- voice runtime; the handler validates capability and workspace scope
     -- before the request reaches here.
-    sqlc.narg('voice_runtime_id')
+    sqlc.narg('voice_runtime_id'),
+    -- RUYI-693: the optional voice override triple. NULL voice_provider_id =
+    -- no override (resolution falls through to the workspace default); the
+    -- handler validates pool membership and workspace scope first.
+    sqlc.narg('voice_provider_id'),
+    sqlc.narg('voice_model'),
+    sqlc.narg('voice_advanced')::jsonb
 )
 RETURNING *;
 
@@ -155,6 +162,15 @@ UPDATE agent SET
     -- request = keep the current binding; an explicit unbind routes through
     -- ClearAgentVoiceRuntime below (COALESCE can't restore NULL).
     voice_runtime_id = COALESCE(sqlc.narg('voice_runtime_id'), voice_runtime_id),
+    -- RUYI-693: the voice override triple preserves field-wise, but an
+    -- override SET (voice_provider_id present) replaces the whole triple and
+    -- an explicit clear routes through ClearAgentVoiceProvider — the triple
+    -- is level-wise atomic, so a provider id never pairs with a stale model
+    -- from another level. The handler enforces that pairing before this
+    -- COALESCE ever sees a partial triple.
+    voice_provider_id = COALESCE(sqlc.narg('voice_provider_id'), voice_provider_id),
+    voice_model = COALESCE(sqlc.narg('voice_model'), voice_model),
+    voice_advanced = COALESCE(sqlc.narg('voice_advanced')::jsonb, voice_advanced),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
@@ -246,6 +262,16 @@ RETURNING *;
 -- the voice runtime" here — same two-query pattern as thinking_level and
 -- composio_toolkit_allowlist.
 UPDATE agent SET voice_runtime_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentVoiceProviderOverride :one
+-- Explicit NULL-clear of the agent's D2 voice override triple (RUYI-693).
+-- The override is level-wise atomic (provider_id + model + advanced move as
+-- one unit), so unbinding drops the whole triple — no half-override survives.
+UPDATE agent SET
+    voice_provider_id = NULL, voice_model = NULL, voice_advanced = NULL,
+    updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -738,6 +764,42 @@ ON CONFLICT (issue_id, agent_id) WHERE status IN ('queued', 'dispatched')
 DO NOTHING
 RETURNING *;
 
+-- name: ArmFailedTaskRetryReevaluation :exec
+-- RUYI-579 W3: a retryable task failed while a successor held the pending
+-- slot, so the retry was skipped. Arm a future re-evaluation on the FAILED
+-- parent (status stays failed — the user keeps seeing the failure): the
+-- runtime sweeper re-runs the retry decision after fire_at, by which time
+-- the successor has usually reached a terminal state. Harmless no-op when
+-- the row is no longer failed (re-rerun, cancel) — the WHERE clause is the
+-- guard.
+UPDATE agent_task_queue
+SET fire_at = @fire_at
+WHERE id = @id AND status = 'failed';
+
+-- name: ClearFailedTaskRetryReevaluation :exec
+-- RUYI-579 W3: retire a failed task's retry re-evaluation marker. The
+-- `fire_at <= now()` predicate is the concurrency guard: a re-evaluation
+-- pass that re-armed the row (successor still pending) wrote a FUTURE
+-- fire_at, and this statement must not erase that newer marker — only the
+-- expired one this pass was started by.
+UPDATE agent_task_queue
+SET fire_at = NULL
+WHERE id = @id AND status = 'failed' AND fire_at <= now();
+
+-- name: ListFailedTasksForRetryReevaluation :many
+-- RUYI-579 W3: failed tasks whose deferred retry decision is due for a
+-- re-run. Only rows the auto-retry path recognises at all (the reason
+-- allowlist is passed in from the Go side so the two lists cannot drift);
+-- budget and eligibility are re-checked per row by MaybeRetryFailedTask.
+-- Backed by idx_agent_task_queue_failed_retry_reeval (migration 936), a
+-- partial index whose row set is near-empty in steady state.
+SELECT * FROM agent_task_queue
+WHERE status = 'failed'
+  AND fire_at IS NOT NULL AND fire_at <= now()
+  AND failure_reason = ANY(@failure_reasons::text[])
+ORDER BY fire_at
+LIMIT @max_per_tick;
+
 -- name: CreateManualQuickCreateRetryTask :one
 -- A human retry of an issue-less quick-create is a new direct_human run, not
 -- an automatic retry. It preserves the immutable quick-create context JSON
@@ -797,6 +859,19 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancel_reason = 'issue_deleted', cancel_actor_type = 'system'
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
+
+-- name: UpdateQueuedTaskPriorityForIssue :execrows
+-- RUYI-648: an issue's priority is snapshotted onto its queue rows at enqueue
+-- time (priorityToInt(issue.Priority) at every CreateAgentTask* path) and the
+-- claim ordering reads the row's column, so an issue edited after enqueueing
+-- left its queued rows on the stale value and the agent kept serving the old
+-- urgency. The priority_changed handler replays the new value onto the rows
+-- still competing for a claim; rows a daemon already claimed
+-- (dispatched/running/waiting_local_directory/deferred) and terminal rows
+-- keep the snapshot their ordering decision was made on.
+UPDATE agent_task_queue
+SET priority = $1
+WHERE issue_id = $2 AND status = 'queued';
 
 -- name: CancelOpenAgentTasksByIssueCancellation :many
 -- RUYI-384: the cascade an issue→cancelled flip runs against its open runs.
@@ -1032,6 +1107,19 @@ WHERE id = (
               WHERE ci.id = atq.issue_id
                 AND issue_effective_status(ci.workspace_id, ci.status) = 'cancelled'
           )
+      )
+      -- RUYI-608: a scheduling freeze on the agent's workspace (workspace-
+      -- level row, agent_id NULL) or on this agent (agent-level row) blocks
+      -- claiming. Evaluated inside the claim statement so freeze and claim
+      -- cannot both win — the same atomicity argument as the RUYI-384 fence
+      -- above. Enqueue and coalesce never read scheduling_pause: tasks keep
+      -- queueing (and coalescing) while frozen and flow on resume in this
+      -- query's existing created_at ASC order. A paused agent still finishes
+      -- dispatched/running work: complete/fail paths never consult this table.
+      AND NOT EXISTS (
+          SELECT 1 FROM scheduling_pause sp
+          WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = @agent_id)
+            AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
       )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1

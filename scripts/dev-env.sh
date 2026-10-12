@@ -8,7 +8,7 @@
 #   scripts/dev-env.sh dev1 status             # what is running, and whose
 #   scripts/dev-env.sh list                    # every slot on this machine
 #   scripts/dev-env.sh audit                   # bypass sweep: stray multica_% dbs + servers
-#   scripts/dev-env.sh dev1 down               # stop the processes, keep the data
+#   scripts/dev-env.sh dev1 down               # stop the processes, keep the data (before lock-release)
 #   scripts/dev-env.sh dev1 orphans            # leftover procs/ports/worktrees
 #   scripts/dev-env.sh dev1 destroy            # stop, then drop slot db + account
 #
@@ -42,6 +42,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Recycle guard (RUYI-594): scan-before-recycle + evidence for destroy/gc.
+# shellcheck source=scripts/lib-recycle-guard.sh
+source "$REPO_ROOT/scripts/lib-recycle-guard.sh"
 
 SLOTS_FILE="$REPO_ROOT/scripts/slots.json"
 SLOT_HOME="${MULTICA_SLOTS_HOME:-$HOME/.multica/slots}"
@@ -371,10 +375,19 @@ caller_owner() { printf '%s' "${MULTICA_CALLER_OWNER:-}"; }
 # Write verbs are lease-gated fail-closed: without an issue identity nothing
 # may allocate, start, stop or destroy a slot, and a slot held by another
 # issue is off limits until lock-recover proves that issue left in_progress.
+# require_lease [mode]: mode "active" (used by down) demands an existing
+# lease file and must never mint one — the acquire-on-miss below would
+# resurrect a released lease with a fresh ACQUIRED_AT and no history line,
+# stranding the slot behind a ghost holder (RUYI-712).
 require_lease() {
+  local lease_mode="${1:-acquire}"
   local owner
   owner="$(caller_owner)"
   [ -n "$owner" ] || die "MULTICA_CALLER_OWNER is not set. Write commands must name the owning issue, e.g. MULTICA_CALLER_OWNER=RUYI-333 scripts/dev-env.sh $SLOT up."
+
+  if [ "$lease_mode" = active ] && [ ! -f "$SLOT_LOCK_FILE" ]; then
+    die "Slot $SLOT has no active lease (already released or never acquired) — nothing to stop. Run down while the lease is held, then free the slot with '$0 $SLOT lock-release'."
+  fi
 
   local current="" phase=""
   if [ -f "$SLOT_LOCK_FILE" ]; then
@@ -386,6 +399,12 @@ require_lease() {
     # shellcheck disable=SC1090
     . "$SLOT_MANIFEST"
     current="${ISSUE:-}"
+    # No live lease: fall back to the manifest's last known phase. gc writes
+    # its own lease while collecting, so a guard-blocked destroy (RUYI-594)
+    # leaves a `gc`-owned lock behind — the retry on the next cycle must see
+    # the slot's real qa phase, not silently become a dev slot gc skips
+    # forever.
+    phase="${PHASE:-}"
   fi
 
   if [ -n "$current" ] && [ "$current" != "$owner" ]; then
@@ -701,6 +720,10 @@ generate_slot_env() {
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
     printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
+    # E2E fixture dependency (RUYI-632): e2e/agent-mcp.spec.ts asserts the
+    # creator-only MCP Apps tab, which the composio_mcp_apps flag gates off by
+    # default. Slots exist to run the E2E/dev surface, so the flag ships on.
+    printf 'FF_COMPOSIO_MCP_APPS=true\n'
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
 }
@@ -725,7 +748,24 @@ ensure_slot_env() {
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }MULTICA_MCP_PORT"
   fi
+  if ! grep -q '^FF_COMPOSIO_MCP_APPS=' "$SLOT_ENV_FILE"; then
+    printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
+    appended="${appended:+$appended }FF_COMPOSIO_MCP_APPS"
+  fi
   [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
+}
+
+# Materialize the slot env as the worktree's .env.worktree (RUYI-632): the
+# E2E harness (e2e/env.ts → playwright.config.ts) reads .env.worktree from
+# the checkout root and derives its API base from NEXT_PUBLIC_API_URL —
+# without this file those values depend on whichever shell launched
+# Playwright, which is how QA round 4 ran with an unpredictable API base.
+# The file is gitignored and carries the same secrets as the slot env, so
+# keep it 600 and refresh it on every use.
+materialize_worktree_env() {
+  [ -n "${DIR:-}" ] && [ "$DIR" != "$REPO_ROOT" ] && [ -f "$SLOT_ENV_FILE" ] || return 0
+  (umask 077 && cat "$SLOT_ENV_FILE" > "$DIR/.env.worktree")
+  ok "materialized $DIR/.env.worktree from the slot env (E2E API base pinned to NEXT_PUBLIC_API_URL)"
 }
 
 env_file_field() {
@@ -1118,7 +1158,18 @@ start_web() {
   fi
 
   resource_env_args web
-  launch_detached web env "${RE_ARGS[@]}" make -C "$DIR" -s web-dev ENV_FILE="$SLOT_ENV_FILE"
+  # MULTICA_WEB_MODE=release serves the prebuilt production bundle instead of
+  # the dev server — the verifiable E2E entry (RUYI-632). The build must
+  # exist before up; building is e2e-release-entry.sh's job, not the slot's.
+  local web_target="web-dev"
+  if [ "${MULTICA_WEB_MODE:-dev}" = "release" ]; then
+    web_target="web-release"
+    if [ ! -f "$DIR/apps/web/.next/BUILD_ID" ]; then
+      die "MULTICA_WEB_MODE=release needs a production build first: bash scripts/e2e-release-entry.sh $SLOT build (runbook: e2e/README.md)"
+    fi
+    info "web mode: release (BUILD_ID $(cat "$DIR/apps/web/.next/BUILD_ID"))"
+  fi
+  launch_detached web env "${RE_ARGS[@]}" make -C "$DIR" -s "$web_target" ENV_FILE="$SLOT_ENV_FILE"
   info "web launching (pid $(cat "$(pid_file web)")), log: $(log_file web)"
 
   while [ "$waited" -lt 300 ]; do
@@ -1289,7 +1340,11 @@ start_daemon() {
   MULTICA_BIN="$DIR/server/bin/multica"
 
   resource_env_args daemon
+  # RUYI-606: the slot daemon gets its own supervisor run store. The shared
+  # default (~/.multica/supervisor-runs) is where production workers live;
+  # enumerating them at startup is the RUYI-592 cross-daemon kill blind spot.
   "${CLEAN_ENV[@]}" MULTICA_WORKSPACES_ROOT="$SLOT_WORKSPACES_ROOT" \
+    MULTICA_SUPERVISOR_RUNS_DIR="$SLOT_DIR/supervisor-runs" \
     "${RE_ARGS[@]}" "$MULTICA_BIN" daemon start --profile "$SLOT_PROFILE" 2>&1 | sed 's/^/    /' || true
 
   status="$("${CLEAN_ENV[@]}" MULTICA_WORKSPACES_ROOT="$SLOT_WORKSPACES_ROOT" \
@@ -1786,6 +1841,7 @@ cmd_use() {
   DESKTOP_ENV_FILE="$DIR/apps/desktop/.env.development.local"
   mkdir -p "$SLOT_DIR"
   ensure_slot_env "$(random_hex 16)"
+  materialize_worktree_env
   save_manifest
   bind_paths
   ok "slot $SLOT now runs $CODE_SOURCE $CODE_SHA from $DIR"
@@ -1908,7 +1964,7 @@ cmd_down() {
       *) die "Unexpected argument for down: $1 (the slot is the first argument: dev-env.sh $SLOT down)" ;;
     esac
   done
-  require_lease
+  require_lease active
   resolve_slot_for_read
   export DATABASE_URL="$(env_file_field DATABASE_URL)" POSTGRES_DB="$SLOT_DB"
 
@@ -1925,7 +1981,12 @@ cmd_down() {
 # A slot worktree may hold a QA session's uncommitted work or a checked-out
 # branch; neither may vanish behind destroy's back. Detached + clean trees hold
 # no unique commits (they live in the source repository), so they are the only
-# removable shape.
+# removable shape — and the recycle guard (RUYI-594) proves it per tree before
+# destroy proceeds: sole-reference commits block, stash blocks or is noted by
+# topology, and git that cannot be read blocks too (fail-closed — an
+# unreadable tree used to scan as "empty output"). Every scan, pass or not,
+# lands an evidence file under ~/.multica/recycle-evidence/ answering "what
+# did the guard see" after the fact.
 slot_worktrees_removable() {
   local wt
   [ -d "$SLOT_WORKTREE_ROOT" ] || return 0
@@ -1936,8 +1997,30 @@ slot_worktrees_removable() {
       warn "worktree $wt is on a branch; destroy refuses to remove it."
       return 1
     fi
-    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | head -n 1)" ]; then
+    # .env.worktree is slot-system-owned state (RUYI-632: the materialized
+    # E2E env, gitignored) — it must not read as an uncommitted change here
+    # or destroy would refuse every slot worktree from now on.
+    if [ -n "$(git -C "$wt" status --porcelain -- . ':!.env.worktree' 2>/dev/null | head -n 1)" ]; then
       warn "worktree $wt has uncommitted changes; destroy refuses to remove it."
+      return 1
+    fi
+    RG_TOOL="dev-env destroy"
+    if recycle_guard_scan_worktree "$wt" slot-worktree 0; then
+      if [ -n "$RG_NOTES" ]; then
+        local note
+        while IFS= read -r note; do info "worktree $wt: $note"; done <<< "$RG_NOTES"
+      fi
+      if [ -n "$RG_EVIDENCE_FILE" ]; then
+        info "recycle evidence: $RG_EVIDENCE_FILE"
+      fi
+    else
+      warn "recycle guard blocks removing worktree $wt:"
+      local reason
+      while IFS= read -r reason; do warn "  $reason"; done <<< "$RG_REASONS"
+      warn "  preserve the work (push, branch, or bundle), then re-run destroy once with MULTICA_RECYCLE_OVERRIDE=1"
+      if [ -n "$RG_EVIDENCE_FILE" ]; then
+        warn "  evidence: $RG_EVIDENCE_FILE"
+      fi
       return 1
     fi
   done
@@ -2296,6 +2379,32 @@ cmd_orphans() {
   fi
 }
 
+# Dry-run companion of the destroy-path guard (RUYI-594): the same scan, the
+# same evidence files (marked dry_run: true), nothing deleted — the report
+# answers "what would the guard say" before any real recycle is attempted.
+recycle_guard_gc_dry_scan() {
+  local wt any_blocked=0 line
+  [ -d "$SLOT_WORKTREE_ROOT" ] || return 0
+  for wt in "$SLOT_WORKTREE_ROOT"/*/; do
+    [ -d "$wt" ] || continue
+    [ -e "$wt/.git" ] || continue
+    RG_TOOL="dev-env gc --dry-run"
+    if recycle_guard_scan_worktree "$wt" slot-worktree 1; then
+      info "guard: $RG_VERDICT — $wt ($RG_COUNTS)"
+      [ -n "$RG_EVIDENCE_FILE" ] && info "  evidence: $RG_EVIDENCE_FILE"
+    else
+      info "guard: blocked — $wt"
+      while IFS= read -r line; do info "  $line"; done <<< "$RG_REASONS"
+      info "  evidence: $RG_EVIDENCE_FILE"
+      any_blocked=1
+    fi
+  done
+  if [ "$any_blocked" = 1 ]; then
+    info "destroy of $slot would be REFUSED by the recycle guard: preserve the listed work, then re-run destroy once with MULTICA_RECYCLE_OVERRIDE=1"
+  fi
+  return 0
+}
+
 # Expired qa slots are collected on every gc (and opportunistically on every
 # `up`): a busy slot slides its expiry forward on each use/up, a forgotten one
 # dies ttl_hours_qa after its last use. dev slots have no TTL — they are
@@ -2310,6 +2419,10 @@ cmd_gc() {
     esac
     shift
   done
+
+  # Evidence housekeeping: the TTL sweep is the only deleter of recycle
+  # evidence, on either track.
+  recycle_guard_sweep
 
   local names slot
   names="$(node -e '
@@ -2339,6 +2452,7 @@ cmd_gc() {
       [ -n "$reason" ] || exit 0
       if [ "$dry_run" = 1 ]; then
         printf '%s would be collected: %s\n' "$slot" "$reason"
+        recycle_guard_gc_dry_scan
       else
         printf '%s: %s\n' "$slot" "$reason"
         if ! MULTICA_SLOT_GC_INTERNAL=1 MULTICA_CALLER_OWNER="${MULTICA_CALLER_OWNER:-gc}" \
@@ -2559,7 +2673,7 @@ usage() {
 Fixed-slot local development environments (fact source: scripts/slots.json).
 
   dev-env.sh <slot> up      [--components api,web,daemon,desktop] [--all]
-  dev-env.sh <slot> down    [--components ...]
+  dev-env.sh <slot> down    [--components ...]  # stop a held slot — run BEFORE lock-release
   dev-env.sh <slot> status  [--json]
   dev-env.sh <slot> use     [sha]        # bind this checkout, or load a revision
   dev-env.sh <slot> handoff --to dev|qa [--note ...]  # role handover, same issue
@@ -2586,7 +2700,10 @@ window is the one shape where ONE issue holds BOTH slots: arm each slot's
 lease with `use --phase qa`, run the two servers, then close the window by
 releasing both leases with `lock-release` right away — a qa-phase holder may
 release while its issue is still in_progress (the dev phase releases only at
-issue closure). `audit` reports Multica-shaped activity outside this model:
+issue closure). Verbs that stop things act on a held lease — the order is
+`down` first, `lock-release` second; `down` on a slot with no active lease
+is refused, so it can never resurrect a released lease (RUYI-712).
+`audit` reports Multica-shaped activity outside this model:
 unregistered multica_% databases on the shared instance, and listeners off
 the registered ports whose DATABASE_URL names an unregistered multica_%
 database, whose cwd sits under the QA/slot home, or that are a cmd/api

@@ -48,6 +48,11 @@ vi.mock("@multica/core/projects/queries", () => ({
 }));
 
 vi.mock("@multica/core/autopilots/queries", () => ({
+  autopilotParamsOptions: () => ({
+    queryKey: ["autopilot-params"],
+    queryFn: async () => ({ params: [] }),
+    retry: false,
+  }),
   cronPreviewOptions: (wsId: string, expr: string, tz: string) => ({
     queryKey: ["cron-preview", wsId, expr, tz],
     queryFn: async () => ({ next_runs: ["2126-07-14T01:00:00Z"] }),
@@ -60,6 +65,7 @@ vi.mock("@multica/core/autopilots/mutations", () => ({
   useCreateAutopilotTrigger: () => ({ mutateAsync: mockCreateTrigger }),
   useUpdateAutopilot: () => ({ mutateAsync: mockUpdateAutopilot }),
   useUpdateAutopilotTrigger: () => ({ mutateAsync: mockUpdateTrigger }),
+  useReplaceAutopilotParams: () => ({ mutateAsync: vi.fn() }),
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));

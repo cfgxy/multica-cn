@@ -13,6 +13,7 @@ import {
   WeeklyTasksChart,
 } from "../../runtimes/components/charts";
 import { aggregateByWeek } from "../../runtimes/utils";
+import type { BarSelection } from "../../runtimes/components/charts";
 import { useT } from "../../i18n";
 import {
   aggregateDailyCost,
@@ -48,6 +49,8 @@ export function UsageTrendCard({
   weeklyTime,
   weeklyTasks,
   lessThanMinuteLabel,
+  selection,
+  onSelectionChange,
 }: {
   allowedDims: readonly Dim[];
   dailyCost: ReturnType<typeof aggregateDailyCost>;
@@ -59,6 +62,10 @@ export function UsageTrendCard({
   weeklyTime: ReturnType<typeof aggregateWeeklyTime>;
   weeklyTasks: ReturnType<typeof aggregateWeeklyTasks>;
   lessThanMinuteLabel: string;
+  // The page-level bar selection — forwarded to whichever chart is active so
+  // every metric/dim cut reads and writes the same span.
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
 }) {
   const { t } = useT("usage");
   const [metric, setMetric] = useState<UsageMetric>("tokens");
@@ -139,30 +146,46 @@ export function UsageTrendCard({
           </div>
         ) : weekly ? (
           metric === "cost" ? (
-            <WeeklyCostChart data={weeklyCost} />
+            <WeeklyCostChart data={weeklyCost}
+              selection={selection}
+              onSelectionChange={onSelectionChange} />
           ) : metric === "tokens" ? (
-            <WeeklyTokensChart data={weeklyTokens} />
+            <WeeklyTokensChart data={weeklyTokens}
+              selection={selection}
+              onSelectionChange={onSelectionChange} />
           ) : metric === "time" ? (
             <WeeklyTimeChart
               data={weeklyTime}
+              selection={selection}
+              onSelectionChange={onSelectionChange}
               formatY={(s) => formatDuration(s, lessThanMinuteLabel)}
               formatTooltip={(s) => formatDuration(s, lessThanMinuteLabel)}
             />
           ) : (
-            <WeeklyTasksChart data={weeklyTasks} />
+            <WeeklyTasksChart data={weeklyTasks}
+              selection={selection}
+              onSelectionChange={onSelectionChange} />
           )
         ) : metric === "cost" ? (
-          <DailyCostChart data={dailyCost} />
+          <DailyCostChart data={dailyCost}
+            selection={selection}
+            onSelectionChange={onSelectionChange} />
         ) : metric === "tokens" ? (
-          <DailyTokensChart data={dailyTokens} />
+          <DailyTokensChart data={dailyTokens}
+            selection={selection}
+            onSelectionChange={onSelectionChange} />
         ) : metric === "time" ? (
           <DailyTimeChart
             data={dailyTime}
+            selection={selection}
+            onSelectionChange={onSelectionChange}
             formatY={(s) => formatDuration(s, lessThanMinuteLabel)}
             formatTooltip={(s) => formatDuration(s, lessThanMinuteLabel)}
           />
         ) : (
-          <DailyTasksChart data={dailyTasks} />
+          <DailyTasksChart data={dailyTasks}
+            selection={selection}
+            onSelectionChange={onSelectionChange} />
         )}
       </div>
     </div>

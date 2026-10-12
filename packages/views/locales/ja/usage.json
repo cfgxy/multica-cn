@@ -94,6 +94,8 @@
     "sort_label": "エージェントの並び順",
     "deleted_agents": "削除済みエージェント",
     "other_agents": "その他のエージェント",
+    "selected_range": "選択中: {{range}}",
+    "clear_selection": "選択を解除",
     "header_agent": "エージェント",
     "header_tokens": "トークン",
     "header_cost": "コスト",

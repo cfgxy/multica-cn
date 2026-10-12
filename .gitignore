@@ -102,3 +102,6 @@ pat.txt
 # RUYI-563: 自测产物禁止入库
 /.r563-cli/
 /shot-*.png
+
+# RUYI-632: E2E release-entry artifacts (manifest + per-file hashes), runtime-local
+e2e-artifacts/

@@ -41,6 +41,7 @@
     "./issues/canonical-id": "./issues/canonical-id.ts",
     "./issues/queries": "./issues/queries.ts",
     "./issues/decisions": "./issues/decisions.ts",
+    "./issues/decision-requests": "./issues/decision-requests.ts",
     "./issues/mutations": "./issues/mutations.ts",
     "./issues/timeline-sort": "./issues/timeline-sort.ts",
     "./issues/timeline-query": "./issues/timeline-query.ts",
@@ -188,6 +189,7 @@
   },
   "dependencies": {
     "@formatjs/intl-localematcher": "catalog:",
+    "linkify-it": "^5.0.0",
     "@tanstack/react-query": "catalog:",
     "i18next": "catalog:",
     "posthog-js": "catalog:",
@@ -203,6 +205,7 @@
     "@multica/eslint-config": "workspace:*",
     "@multica/tsconfig": "workspace:*",
     "@testing-library/react": "catalog:",
+    "@types/linkify-it": "^5.0.0",
     "@types/react": "catalog:",
     "jsdom": "catalog:",
     "react": "catalog:",

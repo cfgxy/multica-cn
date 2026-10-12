@@ -2622,6 +2622,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// coverage for this claim. The trigger snapshot CAS below also rejects a
 		// concurrent edit/delete that changes the FK after this read.
 		deliveredCommentIDs = commentDataIDs(deliveredComments)
+		// RUYI-719: typed answer context for decision-card echoes among the
+		// delivered comments. Keyed on the ids actually embedded above, so
+		// injection follows delivery (a comment dropped by the payload budget
+		// gets no decision context either) and a retried claim — which
+		// inherits the trigger/coalesced plan — recomputes the identical
+		// payload from the immutable answered rows.
+		resp.DecisionAnswers = h.decisionAnswerContextForComments(r.Context(), issue.WorkspaceID, task.IssueID, deliveredCommentIDs)
 		// taskToResponse exposes the enqueue plan to UI task-list callers. A
 		// daemon claim must instead advertise only the structured ids actually
 		// present in this payload, especially when the delivery budget truncates.
@@ -4937,6 +4944,35 @@ type TaskFailRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+}
+
+// AddTaskComment posts a daemon-authored system comment on the task's issue —
+// the ALERT tier's human-reachable leg (RUYI-593). Same channel the
+// strong-stop path uses (FailTask's fixed wording lands as a system comment
+// through the service), opened to pre-terminal watchdog alerts. Best-effort
+// downstream: the service redacts/sanitizes and swallows non-infra problems,
+// and the daemon logs failures without retrying.
+func (h *Handler) AddTaskComment(w http.ResponseWriter, r *http.Request) {
+	taskID := chi.URLParam(r, "taskId")
+
+	// Verify the caller owns this task's workspace.
+	if _, _, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID); !ok {
+		return
+	}
+
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := h.TaskService.AddDaemonTaskSystemComment(r.Context(), parseUUID(taskID), req.Content); err != nil {
+		slog.Warn("add task comment failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {

@@ -2885,6 +2885,24 @@ func (s *TaskService) CancelRunsForCancelledIssue(ctx context.Context, issueID p
 	return nil
 }
 
+// UpdateQueuedTaskPrioritiesForIssue replays an issue's new priority onto its
+// still-queued task rows (RUYI-648). Priority is snapshotted at enqueue time
+// and ClaimAgentTask orders on the row's column, so a priority edit made
+// after enqueueing used to leave every queued row on the stale value — the
+// "just made urgent" issue kept waiting behind a FIFO of pri=0 rows. Rows the
+// daemon has already claimed keep their value: their ordering decision was
+// made, and only 'queued' rows are still competing for a claim.
+func (s *TaskService) UpdateQueuedTaskPrioritiesForIssue(ctx context.Context, issueID pgtype.UUID, priority string) (int64, error) {
+	rows, err := s.Queries.UpdateQueuedTaskPriorityForIssue(ctx, db.UpdateQueuedTaskPriorityForIssueParams{
+		Priority: priorityToInt(priority),
+		IssueID:  issueID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rows, nil
+}
+
 // distinctAgentIDs returns each agent id appearing in the cancelled rows once,
 // preserving first-seen order. Bulk cancellations frequently stop several tasks
 // owned by the same agent; reconciling per distinct agent (rather than per row)
@@ -3789,6 +3807,24 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if runtimeID.Valid && agent.RuntimeID != runtimeID {
 			outcome = "runtime_mismatch"
 			return nil
+		}
+
+		// RUYI-608: cheap freeze probe before the claim UPDATE. ClaimAgentTask
+		// re-enforces the fence authoritatively inside its own statement;
+		// this pre-check only makes the claim log distinguishable — without
+		// it a frozen agent's poll is indistinguishable from "queue empty".
+		if frozen, err := qtx.GetSchedulingPauseForAgent(ctx, db.GetSchedulingPauseForAgentParams{
+			WorkspaceID: agent.WorkspaceID,
+			AgentID:     agentID,
+		}); err == nil {
+			outcome = "scheduling_paused"
+			slog.Info("task claim: scheduling frozen",
+				"agent_id", util.UUIDToString(agentID),
+				"scope", schedulingPauseScopeOf(frozen))
+			return nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			outcome = "error_pause_probe"
+			return fmt.Errorf("probe scheduling pause: %w", err)
 		}
 
 		t0 = time.Now()
@@ -5121,6 +5157,15 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	// reaches FailTask without going through request decoding.
 	errMsg = util.SanitizeTextForPostgres(errMsg)
 
+	// RUYI-579 W3: a delivery_guard refusal arrives with the daemon's
+	// machine-readable trailer naming its shape and self-heal outcome. Split
+	// it at this boundary: the classifier and the persisted error column see
+	// only the plain text, while the task:failed event published below keeps
+	// the original message so taskFailedFields can lift the trailer into the
+	// structured guard_kind / guard_heal_attempted fields.
+	eventErrMsg := errMsg
+	errMsg = taskfailure.StripGuardMeta(errMsg)
+
 	// MUL-2946: synthesise a refined reason from the error text whenever the
 	// caller didn't supply one. This is the last write-path guard against
 	// "agent_error" coarse rows ending up in agent_task_queue.failure_reason
@@ -5325,6 +5370,18 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 					"agent_id", util.UUIDToString(t.AgentID),
 				)
 				createRetry = false
+				// RUYI-579 W3: not a silent drop any more — arm the sweeper's
+				// re-evaluation in this same transaction (the row is already
+				// failed here) so the retry is built once the successor
+				// reaches a terminal state. Best-effort: a failed arm only
+				// loses the automatic rebuild, the manual rerun still works.
+				if aerr := qtx.ArmFailedTaskRetryReevaluation(ctx, db.ArmFailedTaskRetryReevaluationParams{
+					ID:     taskID,
+					FireAt: pgtype.Timestamptz{Time: time.Now().Add(successorReevaluationDelay), Valid: true},
+				}); aerr != nil {
+					slog.Warn("fail task auto-retry: arm successor re-evaluation failed",
+						"task_id", util.UUIDToString(taskID), "error", aerr)
+				}
 			}
 		}
 		if createRetry {
@@ -5549,8 +5606,11 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	// Broadcast. Channel subscribers need the same redacted failure text that
 	// was persisted in the chat transcript. A retry-pending attempt stays silent
-	// because its child reports the eventual terminal outcome.
-	s.broadcastTaskFailedEvent(ctx, task, errMsg, failureReason, retried != nil)
+	// because its child reports the eventual terminal outcome. The message
+	// still carries the daemon's guard trailer (if any): taskFailedFields
+	// lifts it into structured fields and emits the stripped text, which is
+	// exactly what was persisted above.
+	s.broadcastTaskFailedEvent(ctx, task, eventErrMsg, failureReason, retried != nil)
 
 	return &task, nil
 }
@@ -5619,6 +5679,19 @@ const (
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
 	providerNetworkFinalRetryWait = 5 * time.Second
+	// successorReevaluationDelay backs off the retry re-evaluation of a task
+	// whose immediate retry was impossible because a successor held the
+	// pending slot (RUYI-579 W3). The runtime sweeper re-runs the decision
+	// after this long; a successor still running by then just re-arms the
+	// marker for another round. Five minutes keeps the successor-driven
+	// stall (RUYI-564: 9.5 hours of silent waiting for a manual nudge)
+	// bounded at minutes while costing one indexed probe per tick per
+	// armed row.
+	successorReevaluationDelay = 5 * time.Minute
+	// successorReevalBatchSize caps the re-evaluation sweep per tick so a
+	// large backlog of armed rows cannot monopolise the runtime sweep tick
+	// (same shape as queuedExpireBatchSize).
+	successorReevalBatchSize = 50
 )
 
 // retryAttemptCeiling reports how many attempts the auto-retry path allows for
@@ -5838,10 +5911,22 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		slog.Warn("task auto-retry: successor check failed; attempting retry anyway",
 			"parent_task_id", util.UUIDToString(parent.ID), "error", herr)
 	} else if successor {
-		slog.Info("task auto-retry skipped: a successor is already pending",
+		// RUYI-579 W3: no silent drop. Arm a future re-evaluation on the
+		// failed parent; the runtime sweeper re-runs this decision once the
+		// successor has reached a terminal state. Best-effort: a failed arm
+		// only loses the automatic rebuild (logged), never the manual rerun.
+		if armErr := s.Queries.ArmFailedTaskRetryReevaluation(ctx, db.ArmFailedTaskRetryReevaluationParams{
+			ID:     parent.ID,
+			FireAt: pgtype.Timestamptz{Time: time.Now().Add(successorReevaluationDelay), Valid: true},
+		}); armErr != nil {
+			slog.Warn("task auto-retry: arm successor re-evaluation failed",
+				"parent_task_id", util.UUIDToString(parent.ID), "error", armErr)
+		}
+		slog.Info("task auto-retry deferred: a successor is pending; re-evaluation armed",
 			"parent_task_id", util.UUIDToString(parent.ID),
 			"issue_id", util.UUIDToString(parent.IssueID),
 			"agent_id", util.UUIDToString(parent.AgentID),
+			"reevaluate_at", time.Now().Add(successorReevaluationDelay).Format(time.RFC3339),
 		)
 		return nil, nil
 	}
@@ -5895,6 +5980,12 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}); err != nil {
 		return nil, fmt.Errorf("copy auto-retry channel delivery: %w", err)
 	}
+	// RUYI-579 W3: the retry now exists — retire the re-evaluation marker in
+	// the same transaction so the sweeper does not re-decide this task every
+	// tick. The expiry guard makes this a no-op when no marker was armed.
+	if err := qtx.ClearFailedTaskRetryReevaluation(ctx, parent.ID); err != nil {
+		return nil, fmt.Errorf("task auto-retry: clear re-evaluation marker: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("task auto-retry: commit: %w", err)
 	}
@@ -5937,6 +6028,56 @@ func transferPendingSourceContextToRetry(ctx context.Context, q *db.Queries, par
 		NewTaskID: child.ID, WorkspaceID: workspaceID, ID: contextID, OldTaskID: parent.ID,
 	})
 	return err
+}
+
+// ReevaluateFailedTaskRetries re-runs the auto-retry decision for failed
+// tasks whose successor-deferred re-evaluation marker (fire_at) has expired
+// (RUYI-579 W3). The marker was armed when a still-pending successor made an
+// immediate retry impossible; by now that successor has usually reached a
+// terminal state and the retry can be built. Budget and eligibility re-run
+// per row inside MaybeRetryFailedTask, and a re-arm there (successor still
+// pending) writes a FUTURE fire_at that this pass's expiry-guarded clear
+// spares — so a row this pass cannot retry has its stale marker retired
+// without ever erasing a newer one, and stops occupying the sweep. Returns
+// the rows examined and the retry children created. Called by the
+// runtime sweeper every tick; no new scheduling primitive.
+func (s *TaskService) ReevaluateFailedTaskRetries(ctx context.Context) (examined, created int) {
+	reasons := make([]string, 0, len(retryableReasons))
+	for reason := range retryableReasons {
+		reasons = append(reasons, reason)
+	}
+	rows, err := s.Queries.ListFailedTasksForRetryReevaluation(ctx, db.ListFailedTasksForRetryReevaluationParams{
+		FailureReasons: reasons,
+		MaxPerTick:     successorReevalBatchSize,
+	})
+	if err != nil {
+		slog.Warn("task retry re-evaluation: list due tasks failed", "error", err)
+		return 0, 0
+	}
+	created = 0
+	for _, parent := range rows {
+		child, err := s.MaybeRetryFailedTask(ctx, parent)
+		if err != nil {
+			slog.Warn("task retry re-evaluation: retry decision failed",
+				"parent_task_id", util.UUIDToString(parent.ID), "error", err)
+			continue
+		}
+		if child != nil {
+			created++
+			continue
+		}
+		// No retry this pass and the row was not re-armed inside
+		// MaybeRetryFailedTask (a re-arm writes a future fire_at the
+		// expiry guard below spares): retire the stale marker.
+		if err := s.Queries.ClearFailedTaskRetryReevaluation(ctx, parent.ID); err != nil {
+			slog.Warn("task retry re-evaluation: clear marker failed",
+				"parent_task_id", util.UUIDToString(parent.ID), "error", err)
+		}
+	}
+	if created > 0 {
+		slog.Info("task retry re-evaluation: retries created", "count", created)
+	}
+	return len(rows), created
 }
 
 // RerunIssue creates a fresh queued task for an agent on the issue. Used by
@@ -7612,10 +7753,23 @@ func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, 
 // task event consumers. Error text is redacted and omitted while an automatic
 // retry is pending, so consumers can distinguish an intermediate failed
 // attempt from a user-visible terminal failure.
+//
+// A delivery_guard refusal's message may carry the daemon's machine-readable
+// trailer (RUYI-579 W3): its shape and self-heal outcome become the
+// structured guard_kind / guard_heal_attempted fields and the trailer itself
+// never reaches the user-facing error text. Messages without the trailer are
+// returned untouched.
 func taskFailedFields(errMsg, failureReason string, retryPending bool) map[string]any {
 	fields := map[string]any{
 		"failure_reason": failureReason,
 		"retry_pending":  retryPending,
+	}
+	if kind, healAttempted, remainder, ok := taskfailure.ParseGuardMeta(errMsg); ok {
+		if kind != "" {
+			fields["guard_kind"] = kind
+		}
+		fields["guard_heal_attempted"] = healAttempted
+		errMsg = remainder
 	}
 	if errMsg != "" && !retryPending {
 		fields["error"] = redact.Text(errMsg)
@@ -7785,6 +7939,30 @@ func commentEventFields(c db.Comment) map[string]any {
 		"source_task_id": util.UUIDToPtr(c.SourceTaskID),
 		"created_at":     util.TimestampToString(c.CreatedAt),
 	}
+}
+
+// AddDaemonTaskSystemComment posts a system comment on the issue behind a
+// daemon task, attributed to the task's agent — the service-side half of the
+// daemon task-comment endpoint (RUYI-593). The strong-stop path has always
+// reached humans this way (FailTask's fixed wording); this exposes the same
+// channel to pre-terminal watchdog alerts. Same redact-then-sanitize pipeline
+// as FailTask, and best-effort by contract: a task with no issue backing
+// (autopilot / quick-create) has no thread to comment on and returns nil, so
+// the daemon's alert loop is never disturbed by delivery problems here.
+func (s *TaskService) AddDaemonTaskSystemComment(ctx context.Context, taskID pgtype.UUID, content string) error {
+	content = util.SanitizeTextForPostgres(redact.Text(content))
+	if content == "" {
+		return nil
+	}
+	task, err := s.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !task.IssueID.Valid || !task.AgentID.Valid {
+		return nil
+	}
+	s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "system", task.TriggerCommentID, task.ID)
+	return nil
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {

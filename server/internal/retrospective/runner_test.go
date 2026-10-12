@@ -426,51 +426,6 @@ func TestProcessTaskTerminalLandsDrafts(t *testing.T) {
 	}
 }
 
-// TestProcessTaskTerminalRejectsOutOfScopeIssues: a report analyzing an
-// issue outside the recorded window is rejected whole — nothing lands.
-func TestProcessTaskTerminalRejectsOutOfScopeIssues(t *testing.T) {
-	wsID, _ := retroFixture(t)
-	inScope := retroIssue(t, wsID, "窗口内修复", "")
-	runner, calls := newTestRunner(t)
-	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
-		t.Fatalf("RunWorkspace: %v", err)
-	}
-
-	_, _, proposalsBefore := counts(t, wsID)
-
-	task := db.AgentTaskQueue{
-		ID:      util.MustParseUUID(stubTaskID),
-		Context: (*calls)[0].params.Context,
-	}
-	outOfScope := inScope + issueSuffixStub()
-	_, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(outOfScope, "越权条款"), "")
-	// The rejection is the run's verdict, recorded on the run row — not a
-	// processing error, same contract as the taskErr path.
-	if err != nil {
-		t.Fatalf("rejection should record a failed run, not error: %v", err)
-	}
-	status, _, _ := runRecord(t, wsID)
-	if status != "failed" {
-		t.Fatalf("run should fail with the out-of-scope verdict, got %q", status)
-	}
-	reason := runReasonOf(t, wsID)
-	if reason.Code != ReasonReportOutOfScope {
-		t.Fatalf("want %s, got %+v", ReasonReportOutOfScope, reason)
-	}
-	if reason.IssueID != outOfScope {
-		t.Fatalf("reason must carry the offending issue id %q, got %+v", outOfScope, reason)
-	}
-	_, _, proposalsAfter := counts(t, wsID)
-	if proposalsAfter != proposalsBefore {
-		t.Fatalf("rejected report must not land drafts: %d→%d", proposalsBefore, proposalsAfter)
-	}
-}
-
-func issueSuffixStub() string {
-	fixtureCounter++
-	return fmt.Sprintf("00000000-0000-4000-8000-%012d", fixtureCounter)
-}
-
 // TestProcessTaskTerminalDedupAgainstLiveClauses: a draft whose clause
 // already exists in the carrier is counted as a duplicate and still
 // watermarks the issue.

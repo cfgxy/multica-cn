@@ -119,9 +119,15 @@ import {
   interleaveDecisions,
   type TimelineListItem,
 } from "@/lib/timeline-decisions";
+import {
+  interleavePullRequests,
+  type TimelineFeedItem,
+} from "@/lib/timeline-pull-requests";
 import { issueDecisionsOptions } from "@/data/queries/decisions";
+import { issuePullRequestsOptions } from "@/data/queries/github";
 import { DecisionCard } from "./decision-card";
 import { DecisionBatchBar } from "./decision-batch-bar";
+import { PullRequestCard } from "./pull-request-card";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -277,6 +283,19 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     () => interleaveDecisions(data, decisionsData ?? []),
     [data, decisionsData],
   );
+  // Linked PR cards (RUYI-634): same per-issue cache the pull-requests
+  // modal reads (data/queries/github.ts — no WS subscription, pull-to-
+  // refresh catches missed events). Runs AFTER the decisions merge; the
+  // interleave never inserts past the trailing decision batch bar, so
+  // RUYI-534's "bar is the very last row" invariant survives.
+  const { data: pullRequestsData } = useQuery(
+    issuePullRequestsOptions(issue.id),
+  );
+  const feed = useMemo<TimelineFeedItem[]>(
+    () =>
+      interleavePullRequests(merged, pullRequestsData?.pull_requests ?? []),
+    [merged, pullRequestsData],
+  );
   const canChangeTimelineSort =
     (timelineRowsModel?.stats.threadBlockCount ?? 0) >= 1 &&
     (timelineRowsModel?.stats.sortableBlockCount ?? 0) >= 2;
@@ -308,7 +327,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     return blocks;
   }, [issue.description, issueAttachments, data]);
 
-  const listRef = useRef<FlashListRef<TimelineListItem>>(null);
+  const listRef = useRef<FlashListRef<TimelineFeedItem>>(null);
   // Gates single-shot per (commentId, nonce) tuple. Re-tap from inbox
   // bumps the nonce → ref no longer matches → effect re-fires.
   const lastStampRef = useRef<string | null>(null);
@@ -329,10 +348,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     if (!snapshot) return null;
     // First entry strictly newer than the snapshot anchors the divider;
     // divider draws ABOVE this row. If everything is older, no divider.
-    // Scans the merged list so a decision card can anchor it too.
-    const found = merged.find((r) => r.entry.created_at > snapshot);
+    // Scans the rendered feed so a decision or PR card can anchor it too.
+    const found = feed.find((r) => r.entry.created_at > snapshot);
     return found ? found.entry.id : null;
-  }, [merged]);
+  }, [feed]);
   const dividerScrolledPastRef = useRef(false);
 
   useEffect(() => {
@@ -592,10 +611,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // FlatList wants a flat data[] and a stable key per row. Rather than
   // teach the renderer about "items + dividers" via a union type, fake a
   // TimelineRow with a sentinel id; renderItem checks the id first.
-  const dataWithDivider = useMemo<TimelineListItem[]>(() => {
-    if (!dividerAnchorId) return merged;
-    const anchorIdx = merged.findIndex((r) => r.entry.id === dividerAnchorId);
-    if (anchorIdx <= 0) return merged;
+  const dataWithDivider = useMemo<TimelineFeedItem[]>(() => {
+    if (!dividerAnchorId) return feed;
+    const anchorIdx = feed.findIndex((r) => r.entry.id === dividerAnchorId);
+    if (anchorIdx <= 0) return feed;
     const divider: TimelineListItem = {
       // Cast: this entry is a synthetic marker, not a real TimelineEntry —
       // renderItem keys off `id === DIVIDER_ID` and never reads other fields.
@@ -608,8 +627,8 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       } as unknown as TimelineEntry,
       replies: [],
     };
-    return [...merged.slice(0, anchorIdx), divider, ...merged.slice(anchorIdx)];
-  }, [merged, dividerAnchorId]);
+    return [...feed.slice(0, anchorIdx), divider, ...feed.slice(anchorIdx)];
+  }, [feed, dividerAnchorId]);
 
   // ── Bounded-locate controller wiring (RUYI-28) ────────────────────────
   // Sequencing lives in lib/comment-locate.ts; this block only injects
@@ -641,6 +660,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
               ("decision" in r && r.decision.id === rootId) ||
               (!("decision" in r) &&
                 !("batchBar" in r) &&
+                !("pullRequest" in r) &&
                 r.entry.type === "comment" &&
                 r.entry.id === rootId),
           );
@@ -685,6 +705,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
                   ("decision" in r && r.decision.id === rootId) ||
                   (!("decision" in r) &&
                     !("batchBar" in r) &&
+                    !("pullRequest" in r) &&
                     r.entry.type === "comment" &&
                     r.entry.id === rootId),
               );
@@ -784,10 +805,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const lastDecisionStampRef = useRef<string | null>(null);
   const decisionNonceRef = useRef(0);
   useEffect(() => {
-    if (!highlightDecisionId || merged.length === 0) return;
+    if (!highlightDecisionId || feed.length === 0) return;
     const stamp = `${highlightDecisionId}:${highlightNonce ?? ""}`;
     if (lastDecisionStampRef.current === stamp) return;
-    const present = merged.some(
+    const present = feed.some(
       (item) => "decision" in item && item.decision.id === highlightDecisionId,
     );
     if (!present) return;
@@ -803,7 +824,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   }, [
     highlightDecisionId,
     highlightNonce,
-    merged,
+    feed,
     issue.id,
     locateController,
   ]);
@@ -1190,6 +1211,9 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
               <DecisionBatchBar issueId={issue.id} open={item.batchBar.open} />
             );
           }
+          if ("pullRequest" in item) {
+            return <PullRequestCard pr={item.pullRequest} />;
+          }
           return item.entry.type === "comment" ? (
             <CommentCard
               entry={item.entry}
@@ -1212,6 +1236,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           if (item.entry.id === DIVIDER_ID) return "divider";
           if ("decision" in item) return "decision";
           if ("batchBar" in item) return "decision-batch-bar";
+          if ("pullRequest" in item) return "pull-request";
           return item.entry.type;
         }}
         onScroll={handleScroll}

@@ -1,4 +1,15 @@
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from "recharts";
+import {
+  useBarSelection,
+  dailyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
 import {
   ChartContainer,
   ChartTooltip,
@@ -27,14 +38,35 @@ export interface DailyErrorsData extends FailureClassCounts, FailureBucketTotals
  * chart series it would be dominated by low-volume days, where a single
  * failure out of one task reads as a 100% outage.
  */
-export function DailyErrorsChart({ data }: { data: DailyErrorsData[] }) {
+export function DailyErrorsChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: DailyErrorsData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
   const { t } = useT("usage");
   const config = useFailureClassConfig();
   const classes = activeFailureClasses(data);
+  const barSel = useBarSelection({
+    spans: dailyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  const barCells = barSel.cells(data.length, {
+    keyOf: (i) => data[i]?.date ?? String(i),
+  });
+
 
   return (
     <ChartContainer config={config} className="aspect-[3/1] w-full">
-      <BarChart data={data} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -81,7 +113,9 @@ export function DailyErrorsChart({ data }: { data: DailyErrorsData[] }) {
             // Only the topmost segment gets rounded corners, so the stack
             // reads as one bar rather than a pile of pills.
             radius={i === classes.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
-          />
+          >
+            {barCells}
+          </Bar>
         ))}
       </BarChart>
     </ChartContainer>

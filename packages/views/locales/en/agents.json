@@ -89,7 +89,9 @@
     "fallback_runtime_local": "Local",
     "actions_aria": "Row actions",
     "task_count_one": "{{count}} task",
-    "task_count_other": "{{count}} tasks"
+    "task_count_other": "{{count}} tasks",
+    "paused_one": "Paused · {{count}} task",
+    "paused_other": "Paused · {{count}} tasks"
   },
   "activity_tooltip": {
     "created_today": "Created today",
@@ -135,7 +137,19 @@
     "archive_dialog_title": "Archive \"{{name}}\"?",
     "archive_dialog_description": "The agent won't be assignable or mentionable, and any active tasks will be cancelled. All history is preserved and you can restore it later.",
     "archive_dialog_cancel": "Cancel",
-    "archive_dialog_confirm": "Archive"
+    "archive_dialog_confirm": "Archive",
+    "pause_scheduling": "Pause scheduling",
+    "resume_scheduling": "Resume scheduling",
+    "paused_by_workspace": "Paused workspace-wide",
+    "pause_dialog_title": "Pause scheduling for {{name}}?",
+    "pause_dialog_description": "Queued tasks stay in the queue and running tasks finish normally, but no new task is claimed until you resume. The freeze is recorded in the audit log.",
+    "pause_dialog_cancel": "Cancel",
+    "pause_dialog_confirm": "Pause scheduling",
+    "agent_paused_toast": "Agent scheduling paused",
+    "agent_resumed_toast_one": "Scheduling resumed — {{count}} task flowing",
+    "agent_resumed_toast_other": "Scheduling resumed — {{count}} tasks flowing",
+    "pause_failed_toast": "Failed to pause scheduling",
+    "resume_failed_toast": "Failed to resume scheduling"
   },
   "detail": {
     "back_to_agents": "Agents",
@@ -167,7 +181,17 @@
     "runtime_required_toast": "Bind a runtime before running this agent.",
     "assign_work": "Assign work",
     "more_actions_aria": "Agent actions",
-    "updated": "Updated {{when}}"
+    "updated": "Updated {{when}}",
+    "paused_banner_one": "Scheduling paused — {{count}} task queued and waiting. Queued tasks keep coalescing; running tasks drain normally.",
+    "paused_banner_other": "Scheduling paused — {{count}} tasks queued and waiting. Queued tasks keep coalescing; running tasks drain normally.",
+    "paused_by_workspace_banner": "Scheduling paused workspace-wide. Resume it in workspace settings — an agent-level resume cannot lift a workspace freeze.",
+    "resume_scheduling": "Resume scheduling",
+    "more_pause_scheduling": "Pause scheduling",
+    "agent_paused_toast": "Agent scheduling paused",
+    "agent_resumed_toast_one": "Scheduling resumed — {{count}} task flowing",
+    "agent_resumed_toast_other": "Scheduling resumed — {{count}} tasks flowing",
+    "pause_failed_toast": "Failed to pause scheduling",
+    "resume_failed_toast": "Failed to resume scheduling"
   },
   "inspector": {
     "section_profile": "Profile",
@@ -297,8 +321,7 @@
     "discard_dialog_title": "Discard unsaved changes?",
     "discard_dialog_description": "You have unsaved changes in this tab. Leaving now will discard them.",
     "discard_keep": "Keep editing",
-    "discard_confirm": "Discard changes",
-    "webhooks": "Webhook"
+    "discard_confirm": "Discard changes"
   },
   "creation_studio": {
     "title": "Create an agent",
@@ -469,6 +492,7 @@
     "voice_empty": "No voice-capable instance",
     "credential_configured": "Configured ✓",
     "credential_invalid": "Key invalid",
+    "credential_unreachable": "Can't verify",
     "credential_not_configured": "Not configured"
   },
   "conversation_starters": {
@@ -488,7 +512,8 @@
     "common": {
       "save": "Save",
       "add": "Add",
-      "unsaved_changes": "Unsaved changes"
+      "unsaved_changes": "Unsaved changes",
+      "saving": "Saving…"
     },
     "instructions": {
       "intro": "Set the system prompt used for every task. Markdown is supported.",
@@ -769,6 +794,9 @@
       "source_creating_issue": "Creating issue",
       "source_chat_session": "Chat session",
       "source_autopilot_run": "Autopilot run",
+      "source_retrospective": "Daily retrospective",
+      "retro_title": "Daily retrospective {{stamp}}",
+      "view_results_tooltip": "View retrospective results",
       "issue_short_fallback": "Issue {{prefix}}…",
       "triggered_by": "Triggered by",
       "open_issue_aria": "Open issue",
@@ -917,6 +945,7 @@
     "kind_tool": "Tool",
     "kind_thinking": "Thinking",
     "kind_error": "Error",
+    "kind_watchdog": "Watchdog",
     "group_calls_one": "{{count}} call",
     "group_calls_other": "{{count}} calls",
     "step_running": "Still running",
@@ -1004,51 +1033,6 @@
     "selected_other": "{{count}} selected",
     "clear_selection": "Clear selection"
   },
-  "webhooks": {
-    "intro": "Trigger this agent over HTTP: each webhook binds a fixed prompt and gets a unique, sign-in-free link. Every visit starts a new chat session with that prompt.",
-    "security_hint": "⚠ A link is a credential: anyone who holds it can trigger this agent and consume run resources. Treat links like passwords.",
-    "add": "Add webhook",
-    "limit_reached": "Limit reached (max {{max}} per agent)",
-    "load_failed": "Couldn't load webhooks",
-    "retry": "Retry",
-    "disabled_badge": "Disabled",
-    "prompt_prefix": "Prompt: ",
-    "edit": "Edit name and prompt",
-    "rotate": "Regenerate link",
-    "delete": "Delete",
-    "delete_title": "Delete webhook “{{name}}”?",
-    "delete_description": "The link stops working immediately and external integrations (such as GitHub) will fail to trigger. The bound prompt is removed too. This cannot be undone.",
-    "delete_confirm": "Delete",
-    "deleting": "Deleting…",
-    "rotate_title": "Regenerate link?",
-    "rotate_description": "The old link stops working immediately and must be updated in the external system (such as GitHub). Copy the new link after regenerating.",
-    "rotate_confirm": "Regenerate",
-    "rotating": "Regenerating…",
-    "cancel": "Cancel",
-    "empty_title": "No webhooks yet",
-    "empty_description": "Add one to get a sign-in-free unique link; every visit starts a new session with the bound prompt.",
-    "empty_readonly": "This agent has no webhooks configured.",
-    "form_title": "Add webhook",
-    "form_name_label": "Name",
-    "form_name_placeholder": "e.g. GitHub push trigger",
-    "form_name_too_long": "Name must be at most 50 characters",
-    "form_prompt_label": "Prompt",
-    "form_prompt_placeholder": "When the webhook is visited, the agent starts a new session with this prompt. e.g. Check the repository's latest commits and summarize changes and risks.",
-    "form_prompt_too_long": "Prompt must be at most 4000 characters",
-    "form_create": "Create",
-    "form_creating": "Creating…",
-    "form_save": "Save",
-    "form_saving": "Saving…",
-    "form_submit_failed": "Something went wrong. Please try again.",
-    "created_title": "Webhook created",
-    "created_description": "Copy the link below and configure it in GitHub or any other external system. Every visit starts a new chat session with the bound prompt.",
-    "url_label": "Webhook link",
-    "created_warning": "A link is a credential — do not share it publicly. After this panel closes the link is masked in the list; you can copy it again at any time.",
-    "created_test_hint": "Tip: open the link directly in a browser to test the trigger.",
-    "created_done": "Done",
-    "edit_title": "Edit webhook",
-    "edit_url_unchanged": "The link and its token stay the same — only the name and prompt change."
-  },
   "mobile": {
     "tasks": {
       "empty": "No active runs right now.",
@@ -1060,7 +1044,8 @@
     "detail": {
       "section_history": "Run history",
       "edit_profile": "Edit Profile",
-      "tab_active": "Active",
+      "tab_active": "History",
+      "section_active": "Active",
       "fact_status": "Status",
       "fact_runtime_unbound": "No runtime",
       "bind_runtime": "Bind runtime",
@@ -1069,11 +1054,19 @@
       "forbidden_title": "No access to this agent",
       "runtime_unbound_banner": "This agent has no runtime bound yet — bind one to start running it.",
       "forbidden_body": "You don't have permission to view this agent. Ask its owner to share it with you.",
-      "instructions_empty": "No instructions yet"
+      "instructions_empty": "No instructions yet",
+      "instructions_edit": "Edit instructions",
+      "instructions_saved": "Instructions saved",
+      "unsaved_title": "Unsaved changes",
+      "unsaved_body": "Your edits to the instructions haven't been saved yet.",
+      "unsaved_keep": "Keep editing",
+      "unsaved_discard": "Discard"
     },
     "run_history": {
       "load_more": "Load more",
-      "empty": "No runs yet."
+      "empty": "No runs yet.",
+      "queued_backpressure": "Waiting for runtime recovery",
+      "other_agents": "{{count}} agents active"
     },
     "edit": {
       "model_placeholder": "Leave empty for the runtime default",
@@ -1085,10 +1078,6 @@
     },
     "env": {
       "add_row": "Add variable"
-    },
-    "webhooks": {
-      "copy_aria": "Copy webhook link",
-      "rotated_title": "New link generated"
     },
     "integrations": {
       "bound_here": "Bound to this agent",

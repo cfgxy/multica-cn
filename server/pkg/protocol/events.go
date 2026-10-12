@@ -24,11 +24,24 @@ const (
 	// created, answered, cancelled — the payload's status field says which.
 	EventDecisionUpdated = "decision:updated"
 
+	// Decision request events (RUYI-630): the per-space row lifecycle of the
+	// sensitive-operation authorization channel. Emitted to each involved
+	// workspace's own channel; payloads never bridge spaces.
+	EventDecisionRequestUpdated = "decision_request:updated"
+
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
+
+	// Scheduling freeze events (RUYI-608). Payload carries workspace_id,
+	// scope ("agent"|"workspace"), paused, queued_count and, for agent-level
+	// freezes, agent_id. An agent-level event invalidates one agent card; a
+	// workspace-level one (agent_id absent) invalidates the workspace
+	// surface and the agents list.
+	EventAgentSchedulingPaused  = "agent:scheduling_paused"
+	EventAgentSchedulingResumed = "agent:scheduling_resumed"
 
 	// Task events (server <-> daemon).
 	// Each event maps to a status transition on agent_task_queue. Front-end
@@ -43,7 +56,7 @@ const (
 	EventTaskCompleted             = "task:completed" // running → completed
 	EventTaskFailed                = "task:failed"    // running → failed
 	EventTaskMessage               = "task:message"
-	EventTaskCancelled             = "task:cancelled" // * → cancelled
+	EventTaskCancelled             = "task:cancelled"        // * → cancelled
 	EventTaskCancelRequested       = "task:cancel_requested" // in-flight → cancel_requested (RUYI-292 two-phase cancel acceptance)
 
 	// Inbox events

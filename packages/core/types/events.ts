@@ -4,6 +4,7 @@ import type { Agent } from "./agent";
 import type { InboxItem } from "./inbox";
 import type { Comment, Reaction } from "./comment";
 import type { TimelineEntry } from "./activity";
+import type { DecisionRequest } from "./decision";
 import type { IssueDecision } from "./decision";
 import type { Workspace, MemberWithUser, Invitation } from "./workspace";
 import type { Project } from "./project";
@@ -24,6 +25,8 @@ export type WSEventType =
   | "agent:created"
   | "agent:archived"
   | "agent:restored"
+  | "agent:scheduling_paused"
+  | "agent:scheduling_resumed"
   | "task:queued"
   | "task:dispatch"
   | "task:running"
@@ -59,6 +62,7 @@ export type WSEventType =
   | "issue_reaction:added"
   | "issue_reaction:removed"
   | "decision:updated"
+  | "decision_request:updated"
   | "chat:message"
   | "chat:done"
   | "chat:quick_actions"
@@ -185,6 +189,22 @@ export interface AgentRestoredPayload {
   agent: Agent;
 }
 
+/**
+ * Scheduling freeze state change (RUYI-608). Broadcast workspace-wide for
+ * BOTH scopes — `scope` says which freeze flipped, `agent_id` is set only
+ * for the agent-level one. Carries the effective queue depth at flip time
+ * rather than an agent object: consumers refetch the agents/workspace
+ * queries (the DTO enrichment is a server-side join, not a diffable entity).
+ */
+export interface AgentSchedulingPausePayload {
+  workspace_id: string;
+  scope: "agent" | "workspace";
+  paused: boolean;
+  queued_count: number;
+  reason?: string;
+  agent_id?: string;
+}
+
 export interface InboxNewPayload {
   item: InboxItem;
 }
@@ -227,6 +247,16 @@ export interface DecisionUpdatedPayload {
   decision: IssueDecision;
   issue_id: string;
   issue_title?: string;
+}
+
+// Authorization request lifecycle event (RUYI-630) — created/answered/
+// executed/failed/expired/revoked all publish the row's fresh state; the
+// request_group_id ties the per-space rows together. The info-stream
+// authorization card separately arrives as a decision:updated payload from
+// the same server transition.
+export interface DecisionRequestUpdatedPayload {
+  request: DecisionRequest;
+  request_group_id: string;
 }
 
 export interface CommentCreatedPayload {
@@ -300,7 +330,7 @@ export interface TaskMessagePayload {
   issue_id: string;
   chat_session_id?: string;
   seq: number;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "watchdog";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;
@@ -587,6 +617,7 @@ export interface WSEventPayloadMap {
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "decision:updated": DecisionUpdatedPayload;
+  "decision_request:updated": DecisionRequestUpdatedPayload;
   "comment:created": CommentCreatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;
@@ -598,6 +629,8 @@ export interface WSEventPayloadMap {
   "agent:created": AgentCreatedPayload;
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
+  "agent:scheduling_paused": AgentSchedulingPausePayload;
+  "agent:scheduling_resumed": AgentSchedulingPausePayload;
   "task:queued": TaskQueuedPayload;
   "task:dispatch": TaskDispatchPayload;
   "task:running": TaskRunningPayload;

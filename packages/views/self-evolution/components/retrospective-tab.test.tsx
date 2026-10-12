@@ -9,6 +9,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, RetrospectiveConfig, RetrospectiveRun } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
+import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import { RetrospectiveTab } from "./retrospective-tab";
 
 /**
@@ -47,6 +48,16 @@ const state = vi.hoisted(() => ({
 
 vi.mock("@multica/core/permissions", () => ({
   useCurrentMember: () => ({ role: state.role }),
+}));
+
+// RUYI-673: the per-run results entry builds its href through the shared
+// path builders; RUYI-663's detail-sheet issue links do the same. The stub
+// pins both shapes and keeps the test free of workspace-route context.
+vi.mock("@multica/core/paths", () => ({
+  useWorkspacePaths: () => ({
+    selfEvolutionProposals: () => "/acme/self-evolution/proposals",
+    issueDetail: (id: string) => `/test-workspace/issues/${id}`,
+  }),
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
@@ -101,13 +112,30 @@ function config(overrides: Partial<RetrospectiveConfig> = {}): RetrospectiveConf
   };
 }
 
+function makeAdapter(
+  overrides: Partial<NavigationAdapter> = {},
+): NavigationAdapter {
+  return {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/test-workspace/self-evolution",
+    searchParams: new URLSearchParams(),
+    hash: "",
+    getShareableUrl: (p) => p,
+    ...overrides,
+  };
+}
+
 function renderTab() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <RetrospectiveTab wsId="ws-1" />
-      </I18nProvider>
+      <NavigationProvider value={makeAdapter()}>
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <RetrospectiveTab wsId="ws-1" />
+        </I18nProvider>
+      </NavigationProvider>
     </QueryClientProvider>,
   );
 }
@@ -292,5 +320,118 @@ describe("run failure reason rendering", () => {
 
     await screen.findByTestId("retrospective-runs");
     expect(screen.queryByTestId("retrospective-run-error")).toBeNull();
+  });
+});
+
+// The run-detail sheet (RUYI-663): one affordance per row opens the full
+// record — status, trigger, window, timing, counters, the localized failure
+// verdict, per-issue links, and the transcript entry that only exists for
+// runs that actually enqueued a platform task.
+describe("run detail sheet", () => {
+  async function openDetail() {
+    fireEvent.click(await screen.findByTestId("retrospective-run-detail"));
+    return screen.findByTestId("retrospective-detail-status");
+  }
+
+  it("renders window, timing and per-issue links for a historical run", async () => {
+    state.runs = [
+      run({
+        status: "succeeded",
+        finished_at: "2026-10-08T01:00:00Z",
+        detail: {
+          issue_ids: ["aaaa-1", "bbbb-2"],
+          analyzed_issue_ids: ["cccc-3"],
+        },
+      }),
+    ];
+    renderTab();
+
+    await openDetail();
+    // Every scanned issue links into the issue page, including ones the run
+    // did not analyze; the analyzed list renders its own links below.
+    expect(screen.getByTestId("retrospective-issue-link-aaaa-1")).toHaveAttribute(
+      "href",
+      "/test-workspace/issues/aaaa-1",
+    );
+    expect(screen.getByTestId("retrospective-issue-link-bbbb-2")).toHaveAttribute(
+      "href",
+      "/test-workspace/issues/bbbb-2",
+    );
+    expect(screen.getByTestId("retrospective-issue-link-cccc-3")).toHaveAttribute(
+      "href",
+      "/test-workspace/issues/cccc-3",
+    );
+    // A terminal run shows its finish time and duration, and — with no
+    // enqueued task — no transcript entry.
+    expect(screen.getByText("Finished")).toBeTruthy();
+    expect(screen.getByText("Duration")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "View run log" })).toBeNull();
+  });
+
+  it("keeps the localized failure verdict and hides the log entry for a taskless failed run", async () => {
+    state.runs = [run({ error: "扫描窗口失败: pq: relation does not exist" })];
+    renderTab();
+
+    await openDetail();
+    const line = screen.getByTestId("retrospective-detail-error");
+    // Same runErrorLine semantics as the row: the generic localized verdict,
+    // never the legacy raw server text.
+    expect(line).toHaveTextContent("This run failed");
+    expect(line).not.toHaveTextContent("扫描窗口失败");
+    expect(screen.queryByRole("button", { name: "View run log" })).toBeNull();
+  });
+
+  it("offers the run log for an in-flight run that has a task", async () => {
+    state.runs = [
+      run({
+        status: "running",
+        task_id: "4a2e8d1c-7f9b-4e2a-9c1d-123456789abc",
+        finished_at: null,
+      }),
+    ];
+    renderTab();
+
+    const status = await openDetail();
+    expect(status).toHaveTextContent("Running");
+    // A running run has no finish time yet — the placeholders carry the
+    // running copy — and the transcript entry streams live.
+    expect(screen.getAllByText("Running…").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "View run log" })).toBeTruthy();
+  });
+
+  it("shows the issue-less fallback when the detail carries no membership", async () => {
+    state.runs = [run({ status: "succeeded", detail: {} })];
+    renderTab();
+
+    await openDetail();
+    expect(screen.getAllByText("None").length).toBe(2);
+  });
+});
+
+// RUYI-673: run rows adopt the agent-detail list's row language (readable
+// title + status icon + hover actions) and each row carries the results
+// entry — a link to the proposals view scoped to that run's batch, the same
+// surface the agent detail page's retrospective rows land on.
+describe("run rows link to the per-run results view", () => {
+  it("titles each run by its window stamp and links to the scoped results", async () => {
+    state.runs = [run({ id: "run-1", status: "succeeded" })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-runs");
+    expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
+    const link = screen.getByRole("link", { name: "View results" });
+    expect(link.getAttribute("href")).toBe("/acme/self-evolution/proposals?run=run-1");
+  });
+
+  it("keeps the failure line and the rerun affordance alongside the link", async () => {
+    state.runs = [run({ id: "run-2", detail: { reason: { code: "agent_archived" } } })];
+    renderTab();
+
+    await screen.findByTestId("retrospective-run-error");
+    expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "View results" }).getAttribute("href"),
+    ).toContain("?run=run-2");
+    expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
   });
 });

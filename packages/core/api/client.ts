@@ -2,6 +2,9 @@ import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
+  DecisionRequest,
+  DecisionRequestDetail,
+  DecisionRequestsList,
   IssueDecision,
   BatchDecisionAnswerResult,
   BatchIssueDecisionAnswer,
@@ -12,6 +15,7 @@ import type {
   UpdateIssueRequest,
   GroupedIssuesResponse,
   ListIssuesResponse,
+  IssueRelationsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   UpdateMeRequest,
@@ -27,6 +31,7 @@ import type {
   IssueTableRowsResponse,
   Agent,
   MikaBootstrapResponse,
+  SchedulingPauseState,
   CreateAgentRequest,
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
@@ -58,6 +63,7 @@ import type {
   InboxWorkspaceUnread,
   IssueSubscriber,
   Comment,
+  CommentAnchor,
   CommentTriggerPreview,
   IssueTriggerPreview,
   IssueTriggerPreviewParams,
@@ -120,9 +126,6 @@ import type {
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   SetAgentRuntimeSkillEnabledRequest,
-  AgentWebhook,
-  CreateAgentWebhookRequest,
-  UpdateAgentWebhookRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
@@ -213,6 +216,8 @@ import type {
   CronPreviewResponse,
   GetAutopilotResponse,
   AutopilotCollaboratorsResponse,
+  AutopilotParamsResponse,
+  AutopilotParamInput,
   ListAutopilotRunsResponse,
   ListWebhookDeliveriesResponse,
   WebhookDelivery,
@@ -341,9 +346,14 @@ import {
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
+  IssueRelationsResponseSchema,
+  EMPTY_ISSUE_RELATIONS,
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
   IssueDecisionsListSchema,
+  DecisionRequestDetailSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   WorkspaceDecisionInboxSchema,
   BatchDecisionAnswersSchema,
@@ -524,7 +534,9 @@ import {
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
   IssuePullRequestsResponseSchema,
+  PullRequestLookupResponseSchema,
   ResourceLabelsResponseSchema,
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
@@ -1588,6 +1600,16 @@ export class ApiClient {
     });
   }
 
+  /** Structured relations: parent + the five edge views (RUYI-689).
+   *  Read-only — creating/deleting edges is a server-side/API concern;
+   *  no write counterpart exists in this client by design. */
+  async getIssueRelations(id: string): Promise<IssueRelationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations`);
+    return parseWithFallback(raw, IssueRelationsResponseSchema, EMPTY_ISSUE_RELATIONS, {
+      endpoint: "GET /api/issues/:id/relations",
+    });
+  }
+
   /** Batched variant — returns children for multiple parents in one request.
    *  Avoids an N-request fan-out in Swimlane (one per visible parent lane).
    *  parentIds must be non-empty; pass a sorted, deduplicated list so the
@@ -1738,6 +1760,56 @@ export class ApiClient {
     return inbox;
   }
 
+  // Agent authorization requests (RUYI-630). Listing/detail are the
+  // decision-center's summary surface; answering/cancelling are human acts —
+  // the server refuses agent callers regardless of what the client sends.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async getDecisionRequest(workspaceId: string, requestId: string): Promise<DecisionRequestDetail> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}`);
+    const detail = parseWithFallback(raw, DecisionRequestDetailSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests/:requestId",
+    });
+    if (!detail) throw new Error("Invalid decision request response");
+    return detail;
+  }
+
+  async answerDecisionRequest(workspaceId: string, requestId: string, decision: "approve" | "deny"): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(workspaceId: string, requestId: string): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
+  }
+
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments/trigger-preview`, {
       method: "POST",
@@ -1817,6 +1889,19 @@ export class ApiClient {
 
   async resolveComment(commentId: string): Promise<Comment> {
     return this.fetch(`/api/comments/${commentId}/resolve`, { method: "POST" });
+  }
+
+  /**
+   * Resolve which issue hosts a comment and how to label a jump to it
+   * (RUYI-643). Backs cross-issue `mention://comment/<id>` chips: the local
+   * render context only knows the current issue's comments, so a miss there
+   * probes this endpoint. 404 covers every miss uniformly — unknown, deleted,
+   * or hosted by another workspace.
+   */
+  async getCommentAnchor(commentId: string, options?: { signal?: AbortSignal }): Promise<CommentAnchor> {
+    return this.fetch<CommentAnchor>(`/api/comments/${commentId}/anchor`, {
+      signal: options?.signal,
+    });
   }
 
   async unresolveComment(commentId: string): Promise<Comment> {
@@ -2078,6 +2163,54 @@ export class ApiClient {
   // surfaces can clear their live cards.
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
+  }
+
+  /**
+   * Freezes this agent's task claiming (RUYI-608). Queued tasks keep
+   * coalescing and running tasks drain; nothing new is claimed until
+   * {@link resumeAgentScheduling}. Idempotent — re-pausing a paused agent
+   * keeps the original freeze row. Workspace owner/admin ONLY: agent owners
+   * without the workspace role, plain members, and every machine credential
+   * (including the agent itself) get 403.
+   */
+  async pauseAgentScheduling(id: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts an agent-level scheduling freeze (RUYI-608). The server
+   * invalidates the runtime's cached empty-claim verdict, so queued tasks
+   * flow on the agent's next poll. No-op success when not paused; still
+   * returns the queue depth. A workspace-level freeze is NOT lifted here.
+   * Same owner/admin-only permission as pause.
+   */
+  async resumeAgentScheduling(id: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, { method: "DELETE" });
+  }
+
+  /**
+   * Freezes task claiming for EVERY agent in the workspace (RUYI-608).
+   * Workspace owner/admin only. See {@link pauseAgentScheduling} for the
+   * frozen-state semantics; an agent-level resume does not lift this.
+   */
+  async pauseWorkspaceScheduling(workspaceId: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts the workspace-level scheduling freeze (RUYI-608) and invalidates
+   * every runtime's empty-claim cache in the workspace, so all agents pick
+   * queued tasks back up on their next poll. No-op success when not paused.
+   * Workspace owner/admin only.
+   */
+  async resumeWorkspaceScheduling(workspaceId: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, { method: "DELETE" });
   }
 
   async listRuntimes(
@@ -4661,9 +4794,11 @@ export class ApiClient {
     });
   }
 
-  async listPromptProposals(params?: { status?: string }): Promise<PromptProposal[]> {
+  async listPromptProposals(params?: { status?: string; runId?: string }): Promise<PromptProposal[]> {
     const query = new URLSearchParams();
     if (params?.status) query.set("status", params.status);
+    // RUYI-673: scope the pool to one retrospective run's batch.
+    if (params?.runId) query.set("run_id", params.runId);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals${suffix}`);
     return parseWithFallback(raw, PromptProposalListSchema, [], {
@@ -4936,48 +5071,7 @@ export class ApiClient {
 	async setAgentSkillEnabled(agentId: string, skillId: string, enabled: boolean): Promise<void> {
 		await this.fetch(`/api/agents/${agentId}/skills/${skillId}/enabled`, {
 			method: "PUT",
-			body: JSON.stringify({ enabled }),
-		});
-	}
-
-  // Agent webhooks (RUYI-52): public trigger URLs bound to a fixed prompt.
-  // webhook_token / webhook_path / webhook_url come back only for managers —
-  // the server strips them for anyone else.
-  async listAgentWebhooks(agentId: string): Promise<AgentWebhook[]> {
-    return this.fetch(`/api/agents/${agentId}/webhooks`);
-  }
-
-  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks`, {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
-  }
-
-  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    });
-  }
-
-  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/enabled`, {
-      method: "PUT",
       body: JSON.stringify({ enabled }),
-    });
-  }
-
-  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
-    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/rotate`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-  }
-
-  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
-    await this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
-      method: "DELETE",
     });
   }
 
@@ -6039,6 +6133,20 @@ export class ApiClient {
     await this.fetch(`/api/autopilots/${id}`, { method: "DELETE" });
   }
 
+  // Parameter definitions (RUYI-641): read by any member who can view the
+  // autopilot; replaced as a whole set by writers. A validation rejection is
+  // a 400 whose error message names the offending parameter (never a value).
+  async listAutopilotParams(id: string): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`);
+  }
+
+  async replaceAutopilotParams(id: string, params: AutopilotParamInput[]): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`, {
+      method: "PUT",
+      body: JSON.stringify({ params }),
+    });
+  }
+
   // Grant a workspace member explicit write access to the autopilot. Both
   // grant and revoke return the full updated collaborator list so callers can
   // refresh without a second round-trip.
@@ -6267,6 +6375,37 @@ export class ApiClient {
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { endpoint: "GET /api/issues/:id/pull-requests" },
     );
+  }
+
+  /**
+   * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
+   * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never
+   * seen this PR — returns `null` so the tail degrades the token to plain
+   * text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({ owner, repo, number: String(number) });
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+    );
+    return parsed.pull_request;
   }
 
   // VCS integration (Forgejo / Gitea / GitLab)

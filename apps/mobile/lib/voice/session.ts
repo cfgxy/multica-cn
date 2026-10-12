@@ -1,102 +1,61 @@
 /**
- * Mobile voice-session glue (RUYI-449). Reuses the shared
- * @multica/core/voice controller (same wire format, same degrade mapping as
- * web/desktop) over two mobile-specific halves:
+ * Mobile voice-session glue — gateway edition (RUYI-694 D3). Reuses the
+ * shared @multica/core/voice controller in gateway mode over the
+ * mobile-specific halves:
  *
- * - Transport: a plain RN WebSocket to
- *   `/api/agents/{id}/voice-session?workspace_slug=…`. RN sockets cannot set
- *   headers, so the session token travels as the FIRST auth frame — the
- *   gateway's header-less path (same pattern as /ws). The token never goes
- *   in the URL.
+ * - Endpoint: the D1 gateway's `GET /api/agents/{id}/voice-session`
+ *   websocket upgrade (see session-gateway.ts for the transport + URL
+ *   wiring). Identity rides the first frame `{"type":"auth"}` — the token
+ *   never touches the URL, and no provider credential ever reaches the
+ *   device (the D2 model: credentials live server-side).
+ * - Gate rejections and provider-dial failures arrive as one
+ *   `{"error","code"}` frame post-upgrade, which the controller maps onto
+ *   the same typed degrade vocabulary the retired direct path produced.
+ * - The server also owns the terminal transcript write-back (gateway
+ *   teardown projection), so there is no client-side `complete` relay —
+ *   the RUYI-626 direct hand-off and its plaintext-key transport are gone.
  * - Audio: the VoiceAudio native module — 16 kHz PCM16 mic chunks upstream,
  *   24 kHz PCM16 playback downstream, `interruptPlayback` on barge-in.
  */
 import {
-  buildVoiceSessionUrl,
-  VoiceRejectionError,
   VoiceSessionController,
   type VoiceRejection,
   type VoiceSessionState,
 } from "@multica/core/voice";
 import { getApiUrl, useServerStore } from "@/data/server-store";
 import { getToken } from "@/data/secure-storage";
-import { probeHandshakeRejection } from "./handshake-reason";
 import { getVoiceAudioModule } from "./native-audio";
-
-/** RN WebSocket implementation of the core transport contract. */
-class MobileVoiceTransport {
-  private ws: WebSocket | null = null;
-
-  onFrame: ((data: string) => void) | null = null;
-  onClose: ((code: number) => void) | null = null;
-
-  connect(url: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
-      this.ws = ws;
-      let opened = false;
-      let deciding = false;
-      ws.onopen = () => {
-        opened = true;
-        resolve();
-      };
-      ws.onmessage = (event: WebSocketMessageEvent) => {
-        this.onFrame?.(typeof event.data === "string" ? event.data : "");
-      };
-      ws.onclose = (event: WebSocketCloseEvent) => {
-        this.ws = null;
-        if (opened) {
-          this.onClose?.(event.code ?? 1006);
-          return;
-        }
-        // Handshake-level rejection (e.g. the header-auth path's plain HTTP
-        // 409): the socket API hides the body, so recover the precise
-        // reason with a plain authenticated GET on the same URL before
-        // failing. Null keeps the generic degrade copy. The controller's
-        // connect-catch owns the failure, so the close is NOT forwarded.
-        if (deciding) return;
-        deciding = true;
-        void probeHandshakeRejection(url).then((rejection) => {
-          reject(
-            rejection
-              ? new VoiceRejectionError(rejection)
-              : new Error(`voice websocket closed (${event.code})`),
-          );
-        });
-      };
-      ws.onerror = () => {
-        // onclose always follows; nothing actionable here.
-      };
-    });
-  }
-
-  send(data: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(data);
-  }
-
-  close(): void {
-    const ws = this.ws;
-    this.ws = null;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.close(1000);
-  }
-}
+import { buildGatewayVoiceSessionConfig, MobileVoiceTransport } from "./session-gateway";
 
 export interface MobileVoiceSessionCallbacks {
   onStateChange?: (state: VoiceSessionState) => void;
   onUserTranscriptDelta?: (delta: string) => void;
   onAssistantTranscriptDelta?: (delta: string) => void;
   onUserTurn?: (text: string) => void;
+  /** User barged in — playback stopped; UI shows the interrupted transient. */
+  onInterrupted?: () => void;
   onDegrade?: (rejection: VoiceRejection | null) => void;
   onEnded?: () => void;
 }
 
 /**
- * Drives one mobile voice session. Create, then call `start()`; `end()` hangs
- * up and releases the mic. Exactly one controller per instance.
+ * 100ms of 16 kHz mono PCM16 silence, base64 (3200 zero bytes). The muted
+ * keepalive chunk: the provider tears a live session down after ~2min with
+ * zero upstream realtimeInput (QA round 3 — muted sessions died at 2m04s
+ * and 3m00s), so mute swaps real mic chunks for this fixed silent frame
+ * instead of dropping the upstream.
+ */
+const MUTED_KEEPALIVE_CHUNK = `${"A".repeat(4264)}AAA=`;
+
+/**
+ * Drives one mobile voice session through the D1 gateway. Create, then call
+ * `start()`; `end()` hangs up and releases the mic. Exactly one controller
+ * per instance.
  */
 export class MobileVoiceSession {
   private controller: VoiceSessionController | null = null;
   private unsubscribeChunk: (() => void) | null = null;
+  private muted = false;
 
   constructor(
     private readonly agentId: string,
@@ -112,14 +71,18 @@ export class MobileVoiceSession {
     const permission = await audio.requestPermissionsAsync();
     if (!permission.granted) throw new Error("VOICE_PERMISSION_DENIED");
 
+    // Per-server session snapshot, same contract as the realtime hub: the
+    // token rides the first websocket frame, never the URL.
     const token = await getToken(useServerStore.getState().activeServerId);
-    if (!token) throw new Error("VOICE_AUTH_MISSING");
+    if (!token) throw new Error("VOICE_TOKEN_MISSING");
 
     const controller = new VoiceSessionController({
-      url: buildVoiceSessionUrl(getApiUrl(), this.agentId, {
-        workspaceSlug: this.workspaceSlug || undefined,
+      ...buildGatewayVoiceSessionConfig({
+        apiUrl: getApiUrl(),
+        agentId: this.agentId,
+        workspaceSlug: this.workspaceSlug,
+        token,
       }),
-      authToken: token,
       transport: new MobileVoiceTransport(),
       callbacks: {
         onStateChange: (state) => {
@@ -127,7 +90,10 @@ export class MobileVoiceSession {
           if (state === "live") {
             this.unsubscribeChunk?.();
             const sub = audio.addListener("onAudioChunk", (event) => {
-              controller.sendAudio(event.data);
+              // 静音（RUYI-694 板3 右上键）：上行换发固定静音帧——上游在
+              // 收不到任何 realtimeInput 约 2 分钟后断链，换发静音帧让会
+              // 话保持 live，真实音频不出设备，下行播放不受影响。
+              controller.sendAudio(this.muted ? MUTED_KEEPALIVE_CHUNK : event.data);
             });
             this.unsubscribeChunk = () => sub.remove();
             void audio.start().catch(() => {
@@ -145,6 +111,7 @@ export class MobileVoiceSession {
         },
         onInterrupted: () => {
           void audio.interruptPlayback().catch(() => {});
+          this.callbacks.onInterrupted?.();
         },
         onDegrade: (rejection) => this.callbacks.onDegrade?.(rejection ?? null),
         onEnded: () => {
@@ -163,6 +130,11 @@ export class MobileVoiceSession {
     this.controller?.end();
     this.controller = null;
     this.releaseAudio();
+  }
+
+  /** 板3 右上静音键：上行静默，下行不受影响。 */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
   }
 
   private releaseAudio(): void {

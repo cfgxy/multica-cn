@@ -41,6 +41,7 @@ import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/u
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { ContentEditor, type ContentEditorRef, TitleEditor, type TitleEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useEditorUpload, ImageSequenceProvider } from "../../editor";
+import { IssueReferenceTail } from "../../rich-content";
 import { collectImageSequence, type ImageSequenceBlock } from "@multica/core/attachments/image-sequence";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import {
@@ -75,6 +76,7 @@ import {
 import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon, PriorityIcon, StatusPicker, PriorityPicker, StagePicker, StartDatePicker, DueDatePicker, AssigneePicker, LabelPicker } from ".";
+import { IssueRelationsSection } from "./issue-relations-section";
 import { maxSiblingStage } from "./pickers/stage-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
@@ -2399,11 +2401,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
 
   // Comment-anchor resolution (RUYI-108). Answers strictly out of the timeline
-  // this client already holds: a hit renders the chip with author/time/excerpt,
-  // and everything else — deleted, not permitted, another issue's comment, or
-  // simply not fetched yet — returns null and renders identically degraded.
-  // No fetch, not even a HEAD: a probe would leak through timing exactly what
-  // the indistinguishable miss is there to withhold.
+  // this client already holds: a hit renders the chip with author/time/excerpt.
+  // Everything else — deleted, not permitted, another issue's comment, or
+  // simply not fetched yet — returns null. Since RUYI-643 a null no longer
+  // pins the chip's fate: the card may probe the server anchor endpoint once
+  // and become a cross-issue link. This callback itself stays fetch-free; a
+  // probe here would leak through timing exactly what the server's uniform
+  // 404 exists to withhold.
   const resolveAnchorComment = useCallback(
     (commentId: string): ResolvedAnchorComment | null => {
       const entry = timeline.find(
@@ -2769,6 +2773,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>}
         </div>
       )}
+
+      {/* Structured edge relations (RUYI-689) — blocks/blocked_by/
+          relates_to/supersedes/superseded_by. Parent and children keep
+          their dedicated sections; this card covers the five edge types
+          and hides itself entirely when none exist. Self-contained: owns
+          its query and collapse state. */}
+      <IssueRelationsSection issueId={id} />
 
       {/* GitHub settings do not suppress linked self-hosted VCS pull requests. */}
       {shouldShowPullRequestSection(githubSettings.prSidebar, vcsAvailable, linkedPullRequests?.pull_requests ?? []) && (
@@ -3292,6 +3303,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               key={id}
               value={issue.description ?? ""}
               placeholder={t(($) => $.detail.desc_placeholder)}
+              // RUYI-635: this editor IS the body's rendered content — issue
+              // mentions read as plain text here, exactly as they do on the
+              // markdown surfaces, and navigation lives in the tail list
+              // rendered right below.
+              demoteIssueMentions
               onUpdate={(md, baseMarkdown) => {
                 // Bind any pending uploads still referenced in the markdown
                 // so they appear in `issueAttachments` after refresh and the
@@ -3328,6 +3344,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               currentIssueId={id}
               attachments={descEditorAttachments}
             />
+
+            {/* RUYI-635: the body's tail aggregation. The editor pipeline has
+                no footer of its own, so the host mounts the same tail block
+                RichContent uses — dedup and degradation policies stay shared,
+                and content without references renders nothing here. */}
+            <IssueReferenceTail content={issue.description ?? ""} />
 
             <div className="flex items-center gap-1 mt-3">
               <ReactionBar
