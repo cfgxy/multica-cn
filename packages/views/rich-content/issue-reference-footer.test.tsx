@@ -302,6 +302,9 @@ describe("IssueReferenceFooter", () => {
     expect(container.querySelector("a.issue-reference-row")).toBeNull();
     const row = container.querySelector(".issue-reference-degraded")!;
     expect(row.textContent).toBe("MUL-404");
+    // RUYI-730: the degraded slot keeps a placeholder glyph so its text
+    // starts on the same grid as resolved rows (icon column aligned).
+    expect(row.querySelector("svg")).not.toBeNull();
   });
 
   it("degrades an unresolved UUID mention to its authored label", () => {

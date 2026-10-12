@@ -36,6 +36,7 @@
 import { useMemo, useState } from "react";
 import {
   ChevronDown,
+  CircleDashed,
   GitMerge,
   GitPullRequest,
   GitPullRequestArrow,
@@ -102,8 +103,9 @@ function prIdentifier(pr: GitHubPullRequest): string {
 // Popover content portals out of `.rich-text-editor`, so the scoped CSS file
 // can't reach it — these rows carry their own complete Tailwind class set.
 // The `issue-reference-popover-row` hook name stays on for tests and QA.
+// Hover rides `bg-accent/50`, the same token as SubIssueRow rows (RUYI-730).
 const POPOVER_ROW_CLASS =
-  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent focus-visible:bg-accent";
+  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent/50 focus-visible:bg-accent";
 const POPOVER_ROW_TITLE_CLASS =
   "min-w-0 line-clamp-2 text-body text-foreground";
 const POPOVER_ROW_IDENTIFIER_CLASS =
@@ -187,7 +189,7 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
             status={row.issue.status}
             category={issueStatusCategory(row.issue) ?? undefined}
             color={statusColorOf(row.issue.status)}
-            className="h-3.5 w-3.5 shrink-0"
+            className="h-[15px] w-[15px] shrink-0"
           />
           <span className="issue-reference-identifier" translate="no">
             {row.issue.identifier}
@@ -204,7 +206,7 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         <span key={row.key} className="issue-reference-row">
           <Icon
             aria-hidden
-            className={`h-3.5 w-3.5 shrink-0 ${className} ${
+            className={`h-[15px] w-[15px] shrink-0 ${className} ${
               derivePullRequestStateVisual(row.pr.state).dimmed
                 ? "opacity-80"
                 : ""
@@ -217,11 +219,17 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         </span>
       );
     }
+    // Degraded slot keeps a placeholder glyph on the icon column so its text
+    // starts on the same grid as resolved rows (RUYI-730).
     return (
       <span
         key={row.key}
         className="issue-reference-row issue-reference-degraded"
       >
+        <CircleDashed
+          aria-hidden
+          className="h-[15px] w-[15px] shrink-0 text-muted-foreground opacity-60"
+        />
         {row.fallback}
       </span>
     );
@@ -295,8 +303,8 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         className="issue-reference-footer"
       >
         <span className="issue-reference-header">
-          {header}
           <ChevronDown aria-hidden className="issue-reference-chevron" />
+          {header}
         </span>
         {previews.map(renderInlineRow)}
         {collapsedLine ? (
