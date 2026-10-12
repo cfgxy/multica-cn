@@ -94,11 +94,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// tables, registered knowledge directories, their read-only mirror
 	// entries and the scan log all go with the workspace
 	// (DeleteWorkspaceSelfEvolutionData).
-	"knowledge_dir":                 workspaceDelete,
-	"knowledge_entry":               workspaceDelete,
-	"knowledge_scan_batch":          workspaceDelete,
-	"prompt_proposal":               workspaceDelete,
-	"prompt_structure_baseline":     workspaceDelete,
+	"knowledge_dir":             workspaceDelete,
+	"knowledge_entry":           workspaceDelete,
+	"knowledge_scan_batch":      workspaceDelete,
+	"prompt_proposal":           workspaceDelete,
+	"prompt_structure_baseline": workspaceDelete,
 	// Module model-service config (RUYI-551): workspace-keyed gateway
 	// credentials; the encrypted key material is destroyed with the workspace.
 	"self_evolution_model_config":   workspaceDelete,
@@ -217,20 +217,20 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"runtime_credential": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
-	"runtime_skill_discovery":        workspaceDelete,
-	"schema_migrations":              workspaceDeleteKeep,
-	"seat_capacity_outbox":           workspaceDeleteSettle,
-	"skill":                          workspaceDelete,
-	"skill_file":                     workspaceDelete,
-	"skill_version":                  workspaceDelete,
-	"skill_to_label":                 workspaceDelete,
+	"runtime_skill_discovery": workspaceDelete,
+	"schema_migrations":       workspaceDeleteKeep,
+	"seat_capacity_outbox":    workspaceDeleteSettle,
+	"skill":                   workspaceDelete,
+	"skill_file":              workspaceDelete,
+	"skill_version":           workspaceDelete,
+	"skill_to_label":          workspaceDelete,
 	// Scheduling freezes (RUYI-608) are pure operational state owned by the
 	// workspace; no FK (house rule), swept explicitly by DeleteWorkspace's
 	// cleared_scheduling_pauses CTE. A freeze has no meaning once the
 	// workspace (and its agents) are gone.
-	"scheduling_pause": workspaceDelete,
-	"squad":            workspaceDelete,
-	"squad_member":     workspaceDelete,
+	"scheduling_pause":               workspaceDelete,
+	"squad":                          workspaceDelete,
+	"squad_member":                   workspaceDelete,
 	"sys_cron_executions":            workspaceDeleteKeep,
 	"task_message":                   workspaceDelete,
 	"task_token":                     workspaceDelete,
@@ -248,11 +248,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Their credentials live in runtime_credential keyed by the provider id
 	// and are swept by the deleted_runtime_credentials CTE in
 	// DeleteWorkspaceRuntimesAndProjects (which also covers provider rows).
-	"voice_provider":                 workspaceDelete,
-	"webhook_delivery":               workspaceDelete,
-	"workspace":                      workspaceDelete,
-	"workspace_invitation":           workspaceDelete,
-	"workspace_share_link":           workspaceDelete,
+	"voice_provider":                  workspaceDelete,
+	"webhook_delivery":                workspaceDelete,
+	"workspace":                       workspaceDelete,
+	"workspace_backpressure_settings": workspaceDelete,
+	"workspace_invitation":            workspaceDelete,
+	"workspace_share_link":            workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
