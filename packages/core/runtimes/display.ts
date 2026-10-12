@@ -3,13 +3,16 @@ import type { AgentRuntime } from "../types";
 /**
  * The name to show for a runtime (MUL-4217): the user's custom override when
  * set, otherwise the daemon-proposed default. Defends against older backends
- * that omit custom_name and against whitespace-only overrides.
+ * that omit custom_name and against whitespace-only overrides. Managed runtime
+ * labels always include their execution account, including with an alias.
  */
 export function runtimeDisplayName(
-  runtime: Pick<AgentRuntime, "name" | "custom_name">,
+  runtime: Pick<AgentRuntime, "name" | "custom_name" | "execution_source">,
 ): string {
   const custom = runtime.custom_name?.trim();
-  return custom ? custom : runtime.name;
+  const name = custom ? custom : runtime.name;
+  const source = runtimeSourceLabel(runtime);
+  return source ? `${name} · ${source}` : name;
 }
 
 /**
@@ -22,7 +25,10 @@ export function runtimeDisplayName(
  * ("Codex (host) (codex)").
  */
 export function runtimeDisplayLabel(
-  runtime: Pick<AgentRuntime, "name" | "custom_name" | "provider">,
+  runtime: Pick<
+    AgentRuntime,
+    "name" | "custom_name" | "provider" | "execution_source"
+  >,
 ): string {
   const display = runtimeDisplayName(runtime);
   const hasCustom = !!runtime.custom_name?.trim();
@@ -63,4 +69,11 @@ export function providerDisplayName(provider: string): string {
   const known = PROVIDER_DISPLAY_NAMES[provider];
   if (known) return known;
   return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+export function runtimeSourceLabel(
+  runtime: Pick<AgentRuntime, "execution_source">,
+): string | null {
+  const source = runtime.execution_source;
+  return source ? `${source.linux_user}@${source.host}` : null;
 }
