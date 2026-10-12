@@ -280,30 +280,32 @@ func TestListRuntimeBackpressureEvents_NewestFirst(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET events: got %d — %s", w.Code, w.Body.String())
 	}
-	var resp struct {
-		Events []struct {
-			EventType      string `json:"event_type"`
-			Reason         string `json:"reason"`
-			DeferredClaims int64  `json:"deferred_claims"`
-			EffectiveConf  struct {
-				MemHighPct float64 `json:"mem_high_pct"`
-			} `json:"effective_config"`
-		} `json:"events"`
+	// D3 rework (RUYI-729): the response body is a bare JSON array, matching
+	// this repo's list-endpoint convention and the frontend's z.array(...)
+	// consumer schema — the former {"events": [...]} wrapper silently parsed
+	// as an empty fallback and the timeline never rendered.
+	var events []struct {
+		EventType      string `json:"event_type"`
+		Reason         string `json:"reason"`
+		DeferredClaims int64  `json:"deferred_claims"`
+		EffectiveConf  struct {
+			MemHighPct float64 `json:"mem_high_pct"`
+		} `json:"effective_config"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
+		t.Fatalf("decode response as bare array: %v — body: %s", err, w.Body.String())
 	}
-	if len(resp.Events) != 2 {
-		t.Fatalf("events = %d, want 2", len(resp.Events))
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2", len(events))
 	}
-	if resp.Events[0].EventType != "cleared" || resp.Events[1].EventType != "entered" {
+	if events[0].EventType != "cleared" || events[1].EventType != "entered" {
 		t.Fatalf("order = [%s %s], want cleared first (newest-first)",
-			resp.Events[0].EventType, resp.Events[1].EventType)
+			events[0].EventType, events[1].EventType)
 	}
-	if resp.Events[0].DeferredClaims != 7 {
-		t.Fatalf("cleared deferred_claims = %d, want 7", resp.Events[0].DeferredClaims)
+	if events[0].DeferredClaims != 7 {
+		t.Fatalf("cleared deferred_claims = %d, want 7", events[0].DeferredClaims)
 	}
-	if resp.Events[1].Reason != "mem" {
-		t.Fatalf("entered reason = %q, want mem", resp.Events[1].Reason)
+	if events[1].Reason != "mem" {
+		t.Fatalf("entered reason = %q, want mem", events[1].Reason)
 	}
 }
