@@ -199,6 +199,17 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
   if (decision.decision_kind === "authorization") {
     return <AuthorizationCard decision={decision} />;
   }
+  return <AnswerableDecisionCard decision={decision} />;
+}
+
+/**
+ * Question-card face — every card that takes free picks. Split from the
+ * dispatcher above because hooks must run unconditionally per component:
+ * returning <AuthorizationCard /> before these calls is a render-phase
+ * branch between two components, not an early return inside one
+ * (react-hooks/rules-of-hooks).
+ */
+function AnswerableDecisionCard({ decision }: { decision: IssueDecision }) {
   const { t } = useT("issues");
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
