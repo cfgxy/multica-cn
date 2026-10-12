@@ -103,11 +103,11 @@ function prIdentifier(pr: GitHubPullRequest): string {
 // can't reach it — these rows carry their own complete Tailwind class set.
 // The `issue-reference-popover-row` hook name stays on for tests and QA.
 const POPOVER_ROW_CLASS =
-  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[13px] no-underline outline-none hover:bg-accent focus-visible:bg-accent";
+  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent focus-visible:bg-accent";
 const POPOVER_ROW_TITLE_CLASS =
-  "min-w-0 line-clamp-2 text-[14px] leading-5 text-foreground";
+  "min-w-0 line-clamp-2 text-body text-foreground";
 const POPOVER_ROW_IDENTIFIER_CLASS =
-  "shrink-0 text-[13px] font-medium text-muted-foreground";
+  "shrink-0 text-label font-medium text-muted-foreground";
 
 function IssueReferenceFooter({ references }: { references: IssueReference[] }) {
   const { t } = useT("issues");
@@ -309,11 +309,11 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
       >
         {grouped ? (
           <>
-            <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+            <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-micro font-medium tracking-[0.06em] text-muted-foreground">
               {t(($) => $.detail.reference_group_tasks)}
             </div>
             {issueRows.map(renderPopoverRow)}
-            <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+            <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-micro font-medium tracking-[0.06em] text-muted-foreground">
               {t(($) => $.detail.reference_group_prs)}
             </div>
             {prRows.map(renderPopoverRow)}
