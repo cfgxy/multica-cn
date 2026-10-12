@@ -79,8 +79,6 @@ import {
 import { UsageTrendCard } from "./usage-trend-card";
 import { Leaderboard } from "./leaderboard";
 import { ErrorsTab } from "./errors-tab";
-import { UsageResourcesCard } from "./usage-resources-card";
-import { UsageTrafficCard } from "./usage-traffic-card";
 import { cn } from "@multica/ui/lib/utils";
 
 // Stable references — `data ?? []` would create a new empty array on
@@ -702,108 +700,93 @@ export function DashboardPage() {
           <TabsContent value="usage" className="space-y-5">
             {usageLoading ? (
               <DashboardSkeleton />
+            ) : usageHasNoData ? (
+              <DashboardEmpty />
             ) : (
               <>
-                {usageHasNoData ? (
-                  <DashboardEmpty />
-                ) : (
-                  <>
-                    {/* KPI row — same 3-divide-x card grid the runtime usage
-                        section uses, expanded to four tiles. */}
-                    <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
-                      <KpiCard
-                        label={t(($) => $.kpi.cost_label, { days: windowLen })}
-                        value={<CurrencyNumberFlow value={totals.cost} locales={locales} />}
-                      />
-                      <KpiCard
-                        label={t(($) => $.kpi.tokens_label, { days: windowLen })}
+                {/* KPI row — same 3-divide-x card grid the runtime usage
+                    section uses, expanded to four tiles. */}
+                <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+                  <KpiCard
+                    label={t(($) => $.kpi.cost_label, { days: windowLen })}
+                    value={<CurrencyNumberFlow value={totals.cost} locales={locales} />}
+                  />
+                  <KpiCard
+                    label={t(($) => $.kpi.tokens_label, { days: windowLen })}
+                    value={
+                      <CompactNumberFlow
                         value={
-                          <CompactNumberFlow
-                            value={
-                              totals.input +
-                              totals.output +
-                              totals.cacheRead +
-                              totals.cacheWrite
-                            }
-                            locales={locales}
-                          />
+                          totals.input +
+                          totals.output +
+                          totals.cacheRead +
+                          totals.cacheWrite
                         }
-                        hint={t(($) => $.kpi.tokens_hint, {
-                          input: formatTokens(totals.input),
-                          output: formatTokens(totals.output),
-                        })}
+                        locales={locales}
                       />
-                      <KpiCard
-                        label={t(($) => $.kpi.run_time_label, { days: windowLen })}
-                        value={
-                          <DurationNumberFlow
-                            seconds={runTimeTotals.totalSeconds}
-                            lessThanMinuteLabel={lessThanMinuteLabel}
-                            locales={locales}
-                          />
-                        }
-                        hint={t(($) => $.kpi.run_time_hint, {
-                          tasks: runTimeTotals.taskCount,
-                        })}
+                    }
+                    hint={t(($) => $.kpi.tokens_hint, {
+                      input: formatTokens(totals.input),
+                      output: formatTokens(totals.output),
+                    })}
+                  />
+                  <KpiCard
+                    label={t(($) => $.kpi.run_time_label, { days: windowLen })}
+                    value={
+                      <DurationNumberFlow
+                        seconds={runTimeTotals.totalSeconds}
+                        lessThanMinuteLabel={lessThanMinuteLabel}
+                        locales={locales}
                       />
-                      <KpiCard
-                        label={t(($) => $.kpi.tasks_label, { days: windowLen })}
-                        value={
-                          <NumberFlow
-                            value={runTimeTotals.taskCount}
-                            locales={locales}
-                            format={{ maximumFractionDigits: 0 }}
-                            aria-label={String(runTimeTotals.taskCount)}
-                          />
-                        }
-                        // Deliberately sourced from `runTimeTotals`, not the
-                        // failure rollup: the tile's own value counts started tasks
-                        // only, so quoting the failure rollup's larger failure count
-                        // here would put two different denominators in one tile. The
-                        // Errors tab states its rate with the denominator spelled
-                        // out instead.
-                        hint={t(($) => $.kpi.tasks_hint, {
-                          failed: runTimeTotals.failedCount,
-                        })}
+                    }
+                    hint={t(($) => $.kpi.run_time_hint, {
+                      tasks: runTimeTotals.taskCount,
+                    })}
+                  />
+                  <KpiCard
+                    label={t(($) => $.kpi.tasks_label, { days: windowLen })}
+                    value={
+                      <NumberFlow
+                        value={runTimeTotals.taskCount}
+                        locales={locales}
+                        format={{ maximumFractionDigits: 0 }}
+                        aria-label={String(runTimeTotals.taskCount)}
                       />
-                    </div>
+                    }
+                    // Deliberately sourced from `runTimeTotals`, not the
+                    // failure rollup: the tile's own value counts started tasks
+                    // only, so quoting the failure rollup's larger failure count
+                    // here would put two different denominators in one tile. The
+                    // Errors tab states its rate with the denominator spelled
+                    // out instead.
+                    hint={t(($) => $.kpi.tasks_hint, {
+                      failed: runTimeTotals.failedCount,
+                    })}
+                  />
+                </div>
 
-                    <UsageTrendCard
-                      allowedDims={allowedDims}
-                      dailyCost={dailyCost}
-                      dailyTokens={dailyTokens}
-                      dailyTime={dailyTime}
-                      dailyTasks={dailyTasks}
-                      weeklyCost={weeklyCost}
-                      weeklyTokens={weeklyTokens}
-                      weeklyTime={weeklyTime}
-                      weeklyTasks={weeklyTasks}
-                      lessThanMinuteLabel={lessThanMinuteLabel}
-                      selection={activeBarSelection}
-                      onSelectionChange={handleBarSelection}
-                    />
+                <UsageTrendCard
+                  allowedDims={allowedDims}
+                  dailyCost={dailyCost}
+                  dailyTokens={dailyTokens}
+                  dailyTime={dailyTime}
+                  dailyTasks={dailyTasks}
+                  weeklyCost={weeklyCost}
+                  weeklyTokens={weeklyTokens}
+                  weeklyTime={weeklyTime}
+                  weeklyTasks={weeklyTasks}
+                  lessThanMinuteLabel={lessThanMinuteLabel}
+                  selection={activeBarSelection}
+                  onSelectionChange={handleBarSelection}
+                />
 
-                    <Leaderboard
-                      rows={visibleAgentRows}
-                      agents={agents}
-                      deletedAgentCount={deletedAgentCount}
-                      lessThanMinuteLabel={lessThanMinuteLabel}
-                      selectedRange={selectedRangeLabel}
-                      onClearSelection={() => setBarSelection(null)}
-                    />
-                  </>
-                )}
-
-                {/* Live metric panels — mounted regardless of the task-usage
-                    state above: they read Prometheus, not the calendar rollups,
-                    so a workspace with no spend yet still has live host and
-                    traffic data to show (and its own panel-level empty state
-                    when it doesn't). Hidden entirely (each renders null) when
-                    the deployment has no Prometheus backend. They run on their
-                    own relative windows, so they sit outside the
-                    calendar-window data flow above. */}
-                <UsageResourcesCard wsId={wsId} />
-                <UsageTrafficCard wsId={wsId} />
+                <Leaderboard
+                  rows={visibleAgentRows}
+                  agents={agents}
+                  deletedAgentCount={deletedAgentCount}
+                  lessThanMinuteLabel={lessThanMinuteLabel}
+                  selectedRange={selectedRangeLabel}
+                  onClearSelection={() => setBarSelection(null)}
+                />
               </>
             )}
           </TabsContent>

@@ -712,6 +712,22 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 
 	qtx := s.Queries.WithTx(tx)
 
+	// RUYI-665: gate at the top of the transaction, before the duplicate guard
+	// or an issue number is burned. The post-commit enqueue re-checks, but that
+	// check cannot undo the issue a refusal would strand — without this
+	// pre-check a spent budget would mint an orphaned autopilot issue on every
+	// fire. A skip returns before any issue state is touched, so the tx commits
+	// nothing and the run is recorded as skipped with a typed reason. The
+	// notification inside the check writes through the auto-commit s.Queries,
+	// not qtx, so it survives this transaction's rollback.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, qtx, leader, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: budgetErr.PublicReason(), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
+
 	title := s.interpolateTemplate(ap, *run, triggerTimezone)
 	description := s.buildIssueDescription(ap, *run, triggerTimezone)
 
@@ -1050,6 +1066,23 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, "workspace fail-closed: no accountable human for autopilot run"), code: dispatch.ReasonAttributionBlocked}
 	}
 	apSource, _, apEvidenceKind, apEvidenceRef := attributionCreateParams(autopilotAttr)
+
+	// RUYI-665: budget gate right before the task insert. dispatchRunOnly
+	// enqueues via Queries.CreateAutopilotTask, bypassing the TaskService
+	// enqueue helpers where phase 1 put the gate, so without this check a
+	// spent budget would never stop a run_only autopilot. A spent budget is a
+	// skip (typed reason, recorded skipped run), not a failure — the trigger
+	// schedule stays alive and the next fire retries after the period resets.
+	// A database error is NOT a skip: it fails the run loudly instead of
+	// silently spending under an unreadable budget.
+	if err := s.TaskSvc.checkRuntimeCostBudget(ctx, s.Queries, agent, time.Now()); err != nil {
+		var budgetErr *RuntimeBudgetExceededError
+		if errors.As(err, &budgetErr) {
+			return &errDispatchSkipped{reason: budgetErr.PublicReason(), code: dispatch.ReasonBudgetExceeded}
+		}
+		return fmt.Errorf("check runtime cost budget: %w", err)
+	}
+
 	task, err := s.Queries.CreateAutopilotTask(ctx, db.CreateAutopilotTaskParams{
 		ID:             dbid.NewV7(),
 		AgentID:        agent.ID,

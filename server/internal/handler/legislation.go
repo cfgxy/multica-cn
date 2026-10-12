@@ -53,39 +53,33 @@ import (
 // gate answers and the engine report ride through as raw JSON — the client
 // renders them verbatim.
 type PromptProposalResponse struct {
-	ID                  string `json:"id"`
-	WorkspaceID         string `json:"workspace_id"`
-	CarrierScope        string `json:"carrier_scope"`
-	CarrierScopeID      string `json:"carrier_scope_id"`
-	TargetSection       string `json:"target_section"`
-	ChangeKind          string `json:"change_kind"`
-	ClauseName          string `json:"clause_name"`
-	ClauseText          string `json:"clause_text"`
-	GateAnswerLayer     string `json:"gate_answer_layer"`
-	GateAnswerRetention string `json:"gate_answer_retention"`
-	GateAnswerCost      string `json:"gate_answer_cost"`
-	GateAnswerConflict  string `json:"gate_answer_conflict"`
-	GateAnswerDedup     string `json:"gate_answer_dedup"`
-	// Decision-context fields (RUYI-723 B): absent (omitempty) when NULL —
-	// legacy rows and manual proposals predate them and the client renders "—".
-	Problem         *string         `json:"problem,omitempty"`
-	ExpectedEffect  *string         `json:"expected_effect,omitempty"`
-	ExpectedGain    *string         `json:"expected_gain,omitempty"`
-	ValueScore      *int32          `json:"value_score,omitempty"`
-	EvidenceAnchors json.RawMessage `json:"evidence_anchors"`
-	Status          string          `json:"status"`
-	GateErrors      json.RawMessage `json:"gate_errors"`
-	GateWarnings    json.RawMessage `json:"gate_warnings"`
-	JevAdvisory     json.RawMessage `json:"jev_advisory,omitempty"`
-	EnactedVersion  *int32          `json:"enacted_version,omitempty"`
-	RollbackReason  string          `json:"rollback_reason"`
-	MergedFrom      json.RawMessage `json:"merged_from"`
-	Source          string          `json:"source"`
-	CreatedByType   string          `json:"created_by_type"`
-	CreatedByID     string          `json:"created_by_id,omitempty"`
-	AuditLog        json.RawMessage `json:"audit_log"`
-	CreatedAt       string          `json:"created_at"`
-	UpdatedAt       string          `json:"updated_at"`
+	ID                  string          `json:"id"`
+	WorkspaceID         string          `json:"workspace_id"`
+	CarrierScope        string          `json:"carrier_scope"`
+	CarrierScopeID      string          `json:"carrier_scope_id"`
+	TargetSection       string          `json:"target_section"`
+	ChangeKind          string          `json:"change_kind"`
+	ClauseName          string          `json:"clause_name"`
+	ClauseText          string          `json:"clause_text"`
+	GateAnswerLayer     string          `json:"gate_answer_layer"`
+	GateAnswerRetention string          `json:"gate_answer_retention"`
+	GateAnswerCost      string          `json:"gate_answer_cost"`
+	GateAnswerConflict  string          `json:"gate_answer_conflict"`
+	GateAnswerDedup     string          `json:"gate_answer_dedup"`
+	EvidenceAnchors     json.RawMessage `json:"evidence_anchors"`
+	Status              string          `json:"status"`
+	GateErrors          json.RawMessage `json:"gate_errors"`
+	GateWarnings        json.RawMessage `json:"gate_warnings"`
+	JevAdvisory         json.RawMessage `json:"jev_advisory,omitempty"`
+	EnactedVersion      *int32          `json:"enacted_version,omitempty"`
+	RollbackReason      string          `json:"rollback_reason"`
+	MergedFrom          json.RawMessage `json:"merged_from"`
+	Source              string          `json:"source"`
+	CreatedByType       string          `json:"created_by_type"`
+	CreatedByID         string          `json:"created_by_id,omitempty"`
+	AuditLog            json.RawMessage `json:"audit_log"`
+	CreatedAt           string          `json:"created_at"`
+	UpdatedAt           string          `json:"updated_at"`
 }
 
 func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
@@ -118,22 +112,6 @@ func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
 	if p.EnactedVersion.Valid {
 		v := p.EnactedVersion.Int32
 		resp.EnactedVersion = &v
-	}
-	if p.Problem.Valid {
-		v := p.Problem.String
-		resp.Problem = &v
-	}
-	if p.ExpectedEffect.Valid {
-		v := p.ExpectedEffect.String
-		resp.ExpectedEffect = &v
-	}
-	if p.ExpectedGain.Valid {
-		v := p.ExpectedGain.String
-		resp.ExpectedGain = &v
-	}
-	if p.ValueScore.Valid {
-		v := p.ValueScore.Int32
-		resp.ValueScore = &v
 	}
 	if p.CreatedAt.Valid {
 		resp.CreatedAt = p.CreatedAt.Time.UTC().Format(httpTimeFormat)
@@ -1132,14 +1110,6 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 	}
 	if run.FinishedAt.Valid {
 		resp["finished_at"] = run.FinishedAt.Time.UTC().Format(httpTimeFormat)
-	}
-	// RUYI-663: the platform task enqueued for this run, so the UI can offer
-	// the run's execution transcript. Null when no task exists — runs that
-	// failed before enqueue, and rows written before the column (935).
-	if run.TaskID.Valid {
-		resp["task_id"] = uuidToString(run.TaskID)
-	} else {
-		resp["task_id"] = nil
 	}
 	return resp
 }

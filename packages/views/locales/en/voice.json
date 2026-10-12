@@ -25,37 +25,5 @@
       "credential_missing": "Voice isn't fully configured for this agent (missing credentials). A workspace admin needs to finish setup.",
       "credential_invalid": "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them."
     }
-  },
-  "dictation": {
-    "open": "Dictation",
-    "close": "Close dictation",
-    "hold_to_talk": "Hold to talk",
-    "release_to_cancel": "Release to cancel",
-    "release_to_transcribe": "Release to transcribe",
-    "transcribing": "Transcribing…",
-    "transcribe_failed": "Transcription failed, try again",
-    "not_recognized": "No speech detected",
-    "listening": "Listening…",
-    "stop_agent": "Stop agent"
-  },
-  "orb": {
-    "connecting": "Connecting…",
-    "listening": "Listening",
-    "user_speaking": "Listening to you",
-    "thinking": "Thinking",
-    "speaking": "Responding",
-    "interrupted": "Interrupted",
-    "disconnected": "Disconnected",
-    "failed": "Voice isn't available",
-    "mute": "Mute microphone",
-    "unmute": "Unmute microphone",
-    "immerse": "Immersive view",
-    "collapse": "Collapse to mini orb",
-    "reconnect": "Reconnect",
-    "hangup": "Hang up",
-    "disconnect_hint": "Connection lost — reconnect or hang up.",
-    "toast_saved": "Voice conversation saved",
-    "toast_saved_idle": "Voice conversation saved (idle timeout)",
-    "toast_saved_background": "Voice conversation saved (backgrounded too long)"
   }
 }

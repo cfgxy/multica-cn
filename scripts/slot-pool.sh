@@ -27,21 +27,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POOL_URL="${MULTICA_POOL_URL:-http://192.168.2.130:8772}"
 POOL_TOKEN="${MULTICA_POOL_TOKEN:-}"
-
-die() { printf 'slot-pool: %s\n' "$1" >&2; exit 1; }
-
-# Token file fallback (RUYI-680 rider): when the env var is unset, read a single
-# line from POOL_AUTH_FILE (default ~/.multica/pool-auth). Fail-closed on file
-# mode: anything other than 600 is refused (never read, never echoed); the
-# resolved value only ever goes out as a Bearer header, never logged.
-POOL_AUTH_FILE="${POOL_AUTH_FILE:-$HOME/.multica/pool-auth}"
-if [ -z "$POOL_TOKEN" ] && [ -f "$POOL_AUTH_FILE" ]; then
-  _pa_mode="$(stat -c %a "$POOL_AUTH_FILE" 2>/dev/null || printf '0')"
-  [ "$_pa_mode" = "600" ] ||
-    die "pool-auth file $POOL_AUTH_FILE must be mode 600 (got $_pa_mode); fix permissions or set MULTICA_POOL_TOKEN"
-  POOL_TOKEN="$(head -n1 "$POOL_AUTH_FILE" | tr -d '[:space:]')"
-  unset _pa_mode
-fi
 POOL_HOME="${MULTICA_SLOT_POOL_HOME:-$HOME/.multica/slot-pool}"
 POOL_CONFIG="${SLOT_POOL_CONFIG:-$SCRIPT_DIR/slot-pool.json}"
 EVIDENCE_DIR="${MULTICA_RECYCLE_EVIDENCE_DIR:-$HOME/.multica/recycle-evidence}"
@@ -52,6 +37,7 @@ WORKSPACE_ROOT="/home/agent/workspace"
 RENEW_AHEAD="${SLOT_POOL_RENEW_AHEAD_SECONDS:-1800}"
 HTTP_TIMEOUT="${SLOT_POOL_HTTP_TIMEOUT:-120}"
 
+die() { printf 'slot-pool: %s\n' "$1" >&2; exit 1; }
 caller_owner() { printf '%s' "${MULTICA_CALLER_OWNER:-}"; }
 require_owner() {
   [ -n "$(caller_owner)" ] || die "MULTICA_CALLER_OWNER is not set. Write commands must name the owning issue, e.g. MULTICA_CALLER_OWNER=RUYI-680 scripts/slot-pool.sh $POOL_SLOT use."
@@ -454,12 +440,10 @@ cmd_gc() {
       continue
     }
     state="$(jq -r '.state // empty' <<<"$lease_out" 2>/dev/null)"
-    # Only an explicit server-side "expired" clears the manifest; empty or
-    # unexpected states are treated as unknown and kept (never GC on ambiguity).
     case "$state" in
-      expired)
+      expired|"")
         if [ "$dry" = 1 ]; then
-          printf 'slot-pool: gc would clear %s (%s, state=%s)\n' "$dir" "$lease_id" "$state"
+          printf 'slot-pool: gc would clear %s (%s, state=%s)\n' "$dir" "$lease_id" "${state:-unknown}"
         else
           rm -f "$m"
           printf 'slot-pool: gc cleared manifest %s (%s)\n' "$dir" "$lease_id"

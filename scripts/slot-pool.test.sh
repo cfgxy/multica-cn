@@ -260,52 +260,5 @@ if [ "$rc" = 0 ] && grep -q '"name": *"app.zip"' <<<"$body" \
    && grep -q '^ARTIFACT_PACKAGE=app.zip$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
   fail "load: rc=$rc body=$body out=$out manifest=$(cat "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" 2>/dev/null)"; fi
 
-# --- 16. pool-auth file fallback: 600 file used when env unset ------------------
-reset_log
-unset MULTICA_POOL_TOKEN
-mkdir -p "$home/.multica"
-printf 'file-token-abc\n' >"$home/.multica/pool-auth"
-chmod 600 "$home/.multica/pool-auth"
-rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pauth use --phase dev --template tpl-test-dev --ttl 60 2>&1)" || rc=$?
-pa_req="$(reqs acquire_lease | head -1)"
-pa_hdr=""
-[ -n "$pa_req" ] && pa_hdr="$(sed -n '1p' "$log_dir/req.$pa_req")"
-if [ "$rc" = 0 ] && grep -q 'Authorization: Bearer file-token-abc' <<<"$pa_hdr"; then ok; else
-  fail "pool-auth fallback: rc=$rc hdr=$pa_hdr out=$out"; fi
-
-# --- 17. pool-auth fallback: wrong mode refused before anything is sent ---------
-reset_log
-chmod 644 "$home/.multica/pool-auth"
-rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pauth2 use --phase dev --template tpl-test-dev --ttl 60 2>&1)" || rc=$?
-if [ "$rc" != 0 ] && grep -q 'must be mode 600' <<<"$out" \
-   && [ -z "$(reqs initialize)" ]; then ok; else
-  fail "pool-auth 644: rc=$rc out=$out reqs=$(reqs initialize | tr '\n' ' ')"; fi
-rm -f "$home/.multica/pool-auth"
-export MULTICA_POOL_TOKEN="test-token"
-
-# --- 18. gc: only an explicit server-side expired clears the manifest -----------
-gc_home="$tmp_dir/gc-home"; mkdir -p "$gc_home"
-reset_log
-tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active"}'
-MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST \
-  bash "$pool" pgc use --phase dev --template tpl-test-dev --ttl 60 >/dev/null
-rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
-if [ "$rc" = 0 ] && [ -f "$gc_home/pgc/lease.env" ]; then ok; else
-  fail "gc keeps active: rc=$rc out=$out"; fi
-
-reset_log
-tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"expired"}'
-rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
-if [ "$rc" = 0 ] && [ ! -f "$gc_home/pgc/lease.env" ] \
-   && grep -q 'gc cleared manifest' <<<"$out"; then ok; else
-  fail "gc clears expired: rc=$rc out=$out"; fi
-
-mkdir -p "$gc_home/pgc2"
-printf 'LEASE_ID=ls-1\nISSUE=RUYI-TEST\nPHASE=dev\nTEMPLATE=tpl-test-dev\n' >"$gc_home/pgc2/lease.env"
-tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1"}'
-rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
-if [ "$rc" = 0 ] && [ -f "$gc_home/pgc2/lease.env" ]; then ok; else
-  fail "gc keeps unknown state: rc=$rc out=$out"; fi
-
 printf '\nslot-pool.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

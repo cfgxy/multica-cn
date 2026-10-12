@@ -550,27 +550,6 @@ func buildCommentPrompt(task Task, provider string) string {
 			fmt.Fprintf(&b, "⚠️ **Squad leader no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT. DO NOT post any comment — not even one that says \"no action needed\" or \"exiting silently\". The squad activity call records your decision; a comment is redundant noise. The comment prohibition is conditional on that call SUCCEEDING: if it exits non-zero, your decision has no trace anywhere, so post exactly ONE short comment stating the outcome and the error instead of exiting silently. That failure comment is this turn's only comment — it does not license a second one.\n\n", task.IssueID)
 		}
 	}
-	// Decision card answer context (RUYI-719): the server read the answered
-	// decision cards behind this run's echo comments straight from its
-	// decision records at claim time and attached the typed answer here. The
-	// echo text above stays the human-readable record; this block is the
-	// authoritative machine-readable one. Rendered outside the trigger-content
-	// branch on purpose: a deleted echo can still deliver its decision
-	// context through the coalesced set.
-	if len(task.DecisionAnswers) > 0 {
-		b.WriteString("## Decision card answers\n\n")
-		b.WriteString("The comment(s) above answered decision card(s) on this issue. The platform resolved each card's typed answer at claim time from its decision records — treat the entries below as the authoritative answer content; you do NOT need to re-read the comment thread to recover what was chosen. Act on the decision as the human's call; a rejected/other-option outcome means you must not proceed with the un-picked alternatives:\n\n")
-		for _, da := range task.DecisionAnswers {
-			fmt.Fprintf(&b, "- Question: %s\n", da.Question)
-			if da.MultiSelect {
-				b.WriteString("  (multi-select card)\n")
-			}
-			for _, sel := range da.Selected {
-				fmt.Fprintf(&b, "  - Selected: option %d — %s\n", sel.Position, sel.Label)
-			}
-		}
-		b.WriteString("\n")
-	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then decide how to proceed.\n\n", task.IssueID)
 	// Comment-reading pointer. Warm path with new comments: issue-wide
 	// since-delta count, but steer the agent to read the triggering thread

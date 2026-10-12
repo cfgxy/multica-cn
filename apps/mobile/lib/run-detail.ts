@@ -197,9 +197,7 @@ export interface RunCallStepView extends RunStepViewBase {
 }
 
 export interface RunMessageStepView extends RunStepViewBase {
-  /** Mirrors TraceMessageStep.kind — RUYI-593 added "watchdog" there. The
-   *  timeline renders watchdog rows through the plain-message branch. */
-  kind: "text" | "thinking" | "error" | "watchdog";
+  kind: "text" | "thinking" | "error";
   /** Full content, clamped + redacted. */
   body: ClampedBody;
 }

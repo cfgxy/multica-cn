@@ -41,30 +41,6 @@ export const issueDetailOptions = (wsId: string | null, id: string) =>
     enabled: !!wsId && !!id,
   });
 
-// Structured relations (RUYI-689): parent + five edge views in one payload.
-// Relation writes emit no WS event (server only bumps the anchor revisions),
-// so every mount re-pulls — same contract as web's issueRelationsOptions in
-// packages/core/issues/queries.ts.
-export const issueRelationsOptions = (wsId: string | null, id: string) =>
-  queryOptions({
-    queryKey: issueKeys.relations(wsId, id),
-    queryFn: ({ signal }) => api.getIssueRelations(id, { signal }),
-    enabled: !!wsId && !!id,
-    refetchOnMount: "always",
-  });
-
-// Sub-issues of a parent — backs the children group of the Relations page
-// (RUYI-689). Same refetchOnMount contract as its web sibling
-// childIssuesOptions: child creation can happen off-subscription and no
-// event is guaranteed to heal a stale snapshot.
-export const childIssuesOptions = (wsId: string | null, id: string) =>
-  queryOptions({
-    queryKey: issueKeys.children(wsId, id),
-    queryFn: ({ signal }) => api.listChildIssues(id, { signal }),
-    enabled: !!wsId && !!id,
-    refetchOnMount: "always",
-  });
-
 /**
  * Resolve a bare issue identifier ("MUL-123") to its issue, or `null`.
  *

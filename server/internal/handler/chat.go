@@ -944,6 +944,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// invoke gate.
 	sent, err := h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
 	if err != nil {
+		var budgetErr *service.RuntimeBudgetExceededError
 		switch {
 		case errors.Is(err, service.ErrChatSessionArchived):
 			writeError(w, http.StatusConflict, "chat session is archived")
@@ -951,6 +952,11 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "chat agent is archived")
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			writeError(w, http.StatusConflict, "chat agent has no runtime")
+		case errors.As(err, &budgetErr):
+			// RUYI-665: the default branch would echo err.Error() — which
+			// carries amounts — into a 500. Route the refusal through the
+			// amount-free blocked-admission body instead.
+			h.writeDispatchBlocked(w, http.StatusConflict, ReasonBudgetExceeded)
 		default:
 			writeError(w, http.StatusInternalServerError, "failed to send chat message: "+err.Error())
 		}

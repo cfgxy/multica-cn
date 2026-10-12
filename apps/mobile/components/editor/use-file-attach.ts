@@ -296,9 +296,6 @@ export function useFileAttach({
   return {
     attachments,
     pickAndUploadImages,
-    // RUYI-694 板2「+」面板：相机大按钮直启拍照（原 RUYI-477 只经
-    // chooseImageSource 的源选择弹层可达）。
-    takeAndUploadPhoto,
     pickAndUploadFiles,
     // RUYI-477: 贴图按钮入口——弹出「相册 / 拍照」源选择（相册在前，
     // RUYI-553）；imageSourceModalProps 供消费方挂载 <ActionSheetModal />。

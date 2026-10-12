@@ -25,10 +25,9 @@ import { useWorkspacePaths } from "@multica/core/paths";
  * lens, not a surface: there is deliberately no write control anywhere in this
  * tree, and the component test holds that line.
  *
- * Proposal metrics (RUYI-551) read the RUYI-305 pool the legislation tab
- * serves: the automatic loop is the first narrative, then the exact pool
- * counts, then the newest retrospective-proposed row. A pool with no
- * retrospective row says so instead of silently looking fully manual.
+ * Proposal metrics keep their section slot but stay deliberately unwired
+ * (Leader boundary on RUYI-284, 2026-09-30): the pool's model is being
+ * replaced by RUYI-305, and reading the current table would be rework.
  *
  * Three kinds of emptiness stay distinguishable, per the acceptance spec: a
  * plane with nothing in it says so in its own section; a plane whose sample is
@@ -285,38 +284,13 @@ export function OverviewTab({ wsId }: { wsId: string }) {
             {t(($) => $.overview.viewAll)}
           </AppLink>
         </div>
-        {/* The automatic loop is the first narrative (RUYI-551): proposals
-            enter the pool from the daily retrospective's analysis, drafting
-            by hand stays available, and the numbers are the same rows the
-            legislation tab's "all" filter lists. */}
+        {/* Deliberately unwired: the pool's model is being replaced by
+            RUYI-305, so reading the current behavior-prophecy table here
+            would be rework the moment it lands. The section keeps its slot
+            with an explicit pending note instead of a lying zero. */}
         <p className="text-body text-muted-foreground">
-          {t(($) => $.overview.proposals.intro)}
+          {t(($) => $.overview.proposals.pendingModel)}
         </p>
-        {data.proposals.total === 0 ? (
-          <p className="text-body text-muted-foreground">
-            {t(($) => $.overview.proposals.empty)}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-1">
-            <p className="text-body">
-              {t(($) => $.overview.proposals.counts, {
-                total: data.proposals.total,
-                pending: data.proposals.pending_owner,
-              })}
-            </p>
-            {data.proposals.last_auto_proposal ? (
-              <p className="text-caption text-muted-foreground">
-                {t(($) => $.overview.proposals.lastAuto, {
-                  date: new Date(data.proposals.last_auto_proposal.created_at).toLocaleString(locale),
-                })}
-              </p>
-            ) : (
-              <p className="text-caption text-muted-foreground">
-                {t(($) => $.overview.proposals.noneAuto)}
-              </p>
-            )}
-          </div>
-        )}
       </section>
 
       <section

@@ -1,14 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { Markdown } from "@multica/ui/markdown";
 import { ReadonlyContent } from "./readonly-content";
-
-// RUYI-705: RichContent now reads the workspace prefix; null = unknown =
-// fall-through, which is what these fixtures were written against.
-vi.mock("@multica/core/paths", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@multica/core/paths")>()),
-  useCurrentWorkspace: () => null,
-}));
 
 // Prose with two dollar amounts and `~` (approximately) markers. With
 // remark-math's default single-dollar parsing, everything between the two

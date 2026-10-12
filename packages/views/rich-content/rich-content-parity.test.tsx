@@ -45,9 +45,6 @@ vi.mock("@multica/core/api", () => ({
 }));
 
 vi.mock("@multica/core/paths", () => ({
-  // RUYI-705: RichContent now reads the workspace prefix; null = unknown =
-  // fall-through, which is what these fixtures were written against.
-  useCurrentWorkspace: () => null,
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/test/issues/${id}`,
     projectDetail: (id: string) => `/test/projects/${id}`,
@@ -494,11 +491,10 @@ describe("semantic parity beyond Mermaid", () => {
       );
       // Ordinary language -> lowlight static code
       expect(container.querySelector("code.hljs")).not.toBeNull();
-      // RUYI-728: the resolved issue mention renders as an underlined in-app
-      // link in the body and still aggregates into the tail footer — the same
-      // on both surfaces.
+      // RUYI-635: the issue mention reads as plain text in the body and
+      // aggregates into the tail footer — the same on both surfaces.
       expect(
-        container.querySelector("a[href='/test/issues/issue-7']")?.textContent,
+        container.querySelector("[data-issue-mention-text]")?.textContent,
       ).toBe("MUL-7");
       expect(
         container.querySelector("[data-issue-reference-footer]"),

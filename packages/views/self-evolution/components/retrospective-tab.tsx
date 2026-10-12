@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CheckCircle2, ClipboardList, Eye, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, ClipboardList, Loader2, XCircle } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
@@ -39,10 +39,6 @@ import type { RetrospectiveRun } from "@multica/core/types";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
 import { runErrorLine } from "./retrospective-run-error";
-import {
-  RetrospectiveRunDetailSheet,
-  retrospectiveStatusLabel,
-} from "./retrospective-run-detail";
 
 /**
  * The daily retrospective tab (RUYI-305 E3).
@@ -72,9 +68,6 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   const [windowDays, setWindowDays] = useState(7);
   const [agentId, setAgentId] = useState("");
   const [loaded, setLoaded] = useState(false);
-  // The open detail sheet is keyed by run id (not the object) so a refetch —
-  // a running run reaching its terminal state — updates the sheet in place.
-  const [detailRunId, setDetailRunId] = useState<string | null>(null);
 
   useEffect(() => {
     if (config.data && !loaded) {
@@ -101,7 +94,15 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
   };
 
   const runsList: RetrospectiveRun[] = runs.data ?? [];
-  const detailRun = runsList.find((r) => r.id === detailRunId) ?? null;
+
+  const statusLabel = (s: string) => {
+    switch (s) {
+      case "succeeded": return t(($) => $.retrospective.status.succeeded);
+      case "failed": return t(($) => $.retrospective.status.failed);
+      case "running": return t(($) => $.retrospective.status.running);
+      default: return s;
+    }
+  };
 
   // Archived agents stay listed when one is the saved selection (the server
   // still reports it), but only live agents are selectable going forward.
@@ -291,9 +292,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                     })}
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
-                    <span className={statusColor}>
-                      {retrospectiveStatusLabel(run.status, t)}
-                    </span>
+                    <span className={statusColor}>{statusLabel(run.status)}</span>
                     <span className="mx-1 text-faint-foreground">·</span>
                     <span>
                       {new Date(run.window_start).toLocaleString()} –{" "}
@@ -331,29 +330,12 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                   ) : null}
                 </div>
 
-                {/* Row actions, hover-only with focus-within for keyboard
-                    reach: the run detail sheet (RUYI-663) and the proposals
-                    view scoped to this run's batch (RUYI-673) — one action
-                    idiom carrying both entries. */}
+                {/* Results entry (RUYI-673): the proposals view opened
+                    filtered to this run's batch — the same surface the agent
+                    detail page's retrospective rows land on, so both routes
+                    converge. Hover-only like the activity list, with
+                    focus-within keeping it keyboard reachable. */}
                 <div className="ml-2 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100">
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <button
-                          type="button"
-                          data-testid="retrospective-run-detail"
-                          aria-label={t(($) => $.retrospective.viewDetail)}
-                          onClick={() => setDetailRunId(run.id)}
-                          className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
-                        >
-                          <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-                        </button>
-                      }
-                    />
-                    <TooltipContent>
-                      {t(($) => $.retrospective.viewDetail)}
-                    </TooltipContent>
-                  </Tooltip>
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -377,15 +359,6 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
           </ul>
         )}
       </div>
-
-      <RetrospectiveRunDetailSheet
-        run={detailRun}
-        agentId={config.data?.agent_id ?? ""}
-        agentName={selectedAgent?.name ?? ""}
-        onOpenChange={(open) => {
-          if (!open) setDetailRunId(null);
-        }}
-      />
     </div>
   );
 }

@@ -22,10 +22,11 @@ import (
 )
 
 type AgentRuntimeResponse struct {
-	ID          string  `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	DaemonID    *string `json:"daemon_id"`
-	Name        string  `json:"name"`
+	ExecutionSource *RuntimeExecutionSource `json:"execution_source"`
+	ID              string                  `json:"id"`
+	WorkspaceID     string                  `json:"workspace_id"`
+	DaemonID        *string                 `json:"daemon_id"`
+	Name            string                  `json:"name"`
 	// CustomName is the user-set display override (MUL-4217); null when the
 	// runtime still uses its daemon-proposed Name. Clients show
 	// CustomName ?? Name and seed the rename field from this raw value.
@@ -811,7 +812,12 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, runtimeToResponse(rt))
+	resp := []AgentRuntimeResponse{runtimeToResponse(rt)}
+	if err := h.enrichRuntimeSources(r.Context(), uuidToString(rt.WorkspaceID), resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load runtime source")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp[0])
 }
 
 func canEditRuntime(member db.Member, rt db.AgentRuntime) bool {
@@ -968,6 +974,10 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 	resp := make([]AgentRuntimeResponse, len(runtimes))
 	for i, rt := range runtimes {
 		resp[i] = runtimeToResponseWithProfiles(rt, profiles)
+	}
+	if err := h.enrichRuntimeSources(r.Context(), workspaceID, resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load runtime sources")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, resp)

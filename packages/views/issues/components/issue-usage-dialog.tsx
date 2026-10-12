@@ -127,8 +127,19 @@ export function IssueUsageDialog({
             <div className="grid grid-cols-3 divide-x rounded-lg border bg-card">
               <KpiCard
                 label={t(($) => $.usage_detail.kpi_cost)}
-                value={formatUsd(total.cost)}
-                hint={<CostConcentrationHint tasks={priced} total={total} />}
+                /* "—" when nothing could be priced — never $0.00, and the
+                    unpriced count rides along: a total that omits rows is
+                    only honest while it says so. */
+                value={total.priced ? formatUsd(total.cost) : "—"}
+                hint={
+                  total.unpricedRows > 0 ? (
+                    <span className="text-warning">
+                      {t(($) => $.usage_detail.kpi_unpriced, { count: total.unpricedRows })}
+                    </span>
+                  ) : (
+                    <CostConcentrationHint tasks={priced} total={total} />
+                  )
+                }
               />
               <KpiCard
                 label={t(($) => $.usage_detail.kpi_cache)}
@@ -325,7 +336,14 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
             <td>{formatTokens(total.cacheWrite)}</td>
             <td colSpan={4} />
             <td className="!pr-16">{formatTokens(total.tokens)}</td>
-            <td className="!pr-0">{formatUsd(total.cost)}</td>
+            <td className="!pr-0">
+              {total.priced ? formatUsd(total.cost) : "—"}
+              {total.unpricedRows > 0 && (
+                <span className="ml-1.5 font-normal text-warning">
+                  {t(($) => $.usage_detail.kpi_unpriced, { count: total.unpricedRows })}
+                </span>
+              )}
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -404,7 +422,11 @@ function RunRow({ task, maxTokens }: { task: AgentTask; maxTokens: number }) {
           </span>
         </div>
       </td>
-      <td className="!pr-0 font-medium">{formatUsd(summary.cost)}</td>
+      {/* "—" when nothing in this run could be priced — never $0.00. The
+          why is named by the unmapped-models footnote below the table. */}
+      <td className="!pr-0 font-medium">
+        {summary.priced ? formatUsd(summary.cost) : "—"}
+      </td>
     </tr>
   );
 }

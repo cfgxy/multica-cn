@@ -266,6 +266,7 @@
     "send_failure": {
       "no_permission": "You no longer have permission to run this agent, so the message was not sent.",
       "runtime_required": "Bind a runtime to this agent before sending a message.",
+      "budget_reached": "The runtime's cost budget is spent for this period, so the message was not sent. It can be sent again once the budget period resets.",
       "generic": "Your message could not be sent. Please try again."
     },
     "disabled_reason": {
@@ -341,17 +342,6 @@
     },
     "timeline": {
       "truncated": "…(truncated)"
-    },
-    "plus": {
-      "open": "Add",
-      "title": "Add to message",
-      "camera": "Camera",
-      "image": "Photos",
-      "files": "Files",
-      "mention": "Mention",
-      "skill": "Skill",
-      "quick_replies": "Quick replies",
-      "close": "Close"
     }
   }
 }

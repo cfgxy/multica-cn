@@ -136,7 +136,7 @@ func TestTryAutoUpdate_ReleasesBarrierOnUpgradeFailure(t *testing.T) {
 func TestTryEnterClaim_RespectsBarrier(t *testing.T) {
 	d := &Daemon{}
 
-	if !d.tryEnterClaimFor(nil) {
+	if !d.tryEnterClaim() {
 		t.Fatal("tryEnterClaim should succeed when barrier is unset")
 	}
 	d.exitClaim()
@@ -147,11 +147,11 @@ func TestTryEnterClaim_RespectsBarrier(t *testing.T) {
 	if !d.trySetClaimBarrier() {
 		t.Fatal("trySetClaimBarrier should succeed when idle")
 	}
-	if d.tryEnterClaimFor(nil) {
+	if d.tryEnterClaim() {
 		t.Fatal("tryEnterClaim must refuse while barrier is held")
 	}
 	d.releaseClaimBarrier()
-	if !d.tryEnterClaimFor(nil) {
+	if !d.tryEnterClaim() {
 		t.Fatal("tryEnterClaim should succeed after barrier release")
 	}
 	d.exitClaim()

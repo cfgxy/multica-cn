@@ -226,7 +226,7 @@ function MessageRow({
   italic,
   error,
 }: {
-  view: Extract<RunStepView, { kind: "text" | "thinking" | "error" | "watchdog" }>;
+  view: Extract<RunStepView, { kind: "text" | "thinking" | "error" }>;
   italic?: boolean;
   error?: boolean;
 }) {

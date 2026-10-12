@@ -60,8 +60,7 @@ INSERT INTO agent (
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
     session_max_context_tokens, session_compact_pct, resource_weight,
-    voice_runtime_id,
-    voice_provider_id, voice_model, voice_advanced
+    voice_runtime_id
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -81,13 +80,7 @@ INSERT INTO agent (
     -- RUYI-425: the optional voice slot. NULL unless the request binds a
     -- voice runtime; the handler validates capability and workspace scope
     -- before the request reaches here.
-    sqlc.narg('voice_runtime_id'),
-    -- RUYI-693: the optional voice override triple. NULL voice_provider_id =
-    -- no override (resolution falls through to the workspace default); the
-    -- handler validates pool membership and workspace scope first.
-    sqlc.narg('voice_provider_id'),
-    sqlc.narg('voice_model'),
-    sqlc.narg('voice_advanced')::jsonb
+    sqlc.narg('voice_runtime_id')
 )
 RETURNING *;
 
@@ -162,15 +155,6 @@ UPDATE agent SET
     -- request = keep the current binding; an explicit unbind routes through
     -- ClearAgentVoiceRuntime below (COALESCE can't restore NULL).
     voice_runtime_id = COALESCE(sqlc.narg('voice_runtime_id'), voice_runtime_id),
-    -- RUYI-693: the voice override triple preserves field-wise, but an
-    -- override SET (voice_provider_id present) replaces the whole triple and
-    -- an explicit clear routes through ClearAgentVoiceProvider — the triple
-    -- is level-wise atomic, so a provider id never pairs with a stale model
-    -- from another level. The handler enforces that pairing before this
-    -- COALESCE ever sees a partial triple.
-    voice_provider_id = COALESCE(sqlc.narg('voice_provider_id'), voice_provider_id),
-    voice_model = COALESCE(sqlc.narg('voice_model'), voice_model),
-    voice_advanced = COALESCE(sqlc.narg('voice_advanced')::jsonb, voice_advanced),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
@@ -262,16 +246,6 @@ RETURNING *;
 -- the voice runtime" here — same two-query pattern as thinking_level and
 -- composio_toolkit_allowlist.
 UPDATE agent SET voice_runtime_id = NULL, updated_at = now()
-WHERE id = $1
-RETURNING *;
-
--- name: ClearAgentVoiceProviderOverride :one
--- Explicit NULL-clear of the agent's D2 voice override triple (RUYI-693).
--- The override is level-wise atomic (provider_id + model + advanced move as
--- one unit), so unbinding drops the whole triple — no half-override survives.
-UPDATE agent SET
-    voice_provider_id = NULL, voice_model = NULL, voice_advanced = NULL,
-    updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -2683,6 +2657,13 @@ RETURNING *;
 -- promoted by a later tick once the slot frees, so nothing is lost — the human's
 -- rerun simply goes first. Chat / quick-create rows (issue_id NULL) are outside
 -- the index and bypass both fences.
+--
+-- RUYI-665: the runtime cost budget gate runs just before this query and
+-- passes the task IDs it vetoes via excluded_ids, which the due CTE drops
+-- here. A vetoed row stays deferred with fire_at in the past — the same
+-- "promoted by a later tick" recovery the occupant fence relies on, so the
+-- task comes back once the budget period resets. An empty array vetoes
+-- nothing (id <> ALL('{}') is vacuously true).
 WITH due AS (
     SELECT t.id,
            t.issue_id,
@@ -2694,6 +2675,7 @@ WITH due AS (
     WHERE t.runtime_id = @runtime_id
       AND t.status = 'deferred'
       AND t.fire_at <= now()
+      AND t.id <> ALL(@excluded_ids::uuid[])
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
         WHERE r.id = t.runtime_id
@@ -2753,7 +2735,9 @@ ORDER BY atq.priority DESC, atq.created_at ASC;
 -- name: PromoteDueDeferredTasksForRuntimes :many
 -- Batch variant of PromoteDueDeferredTasksForRuntime (MUL-4257): promotes all
 -- due deferred tasks across the runtime set in one UPDATE. Carries the same two
--- fences as the singular query; see its comment for why.
+-- fences as the singular query; see its comment for why. The singular query's
+-- RUYI-665 budget veto applies here identically: excluded_ids carries the
+-- blocked task IDs and a vetoed row stays deferred for a later tick.
 WITH due AS (
     SELECT t.id,
            t.issue_id,
@@ -2765,6 +2749,7 @@ WITH due AS (
     WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
       AND t.status = 'deferred'
       AND t.fire_at <= now()
+      AND t.id <> ALL(@excluded_ids::uuid[])
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
         WHERE r.id = t.runtime_id
@@ -2787,6 +2772,28 @@ UPDATE agent_task_queue
 SET status = 'queued'
 WHERE id IN (SELECT id FROM due WHERE issue_id IS NULL OR rn = 1)
 RETURNING *;
+
+-- name: ListDueDeferredTasksForBudgetGate :many
+-- The due set the deferred-fallback promoters are about to promote, read just
+-- before them so the runtime cost budget gate (RUYI-665) can veto rows whose
+-- agent's runtime budget is spent. Mirrors the status / fire_at / online
+-- fence of the promoters' due CTE, but deliberately omits the occupant and
+-- rn fences: the budget verdict is per agent, and a row that would lose its
+-- slot race anyway still names its agent — dropping it here could hide the
+-- only due row of a blocked agent. Cheap by construction: deferred rows are
+-- rare and the verdict is computed once per distinct agent, not per row.
+SELECT t.id, t.runtime_id, t.agent_id
+FROM agent_task_queue t
+WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now()
+  AND EXISTS (
+    SELECT 1 FROM agent_runtime r
+    WHERE r.id = t.runtime_id
+      AND r.status = 'online'
+      AND COALESCE(r.last_seen_at, r.updated_at) >=
+          now() - make_interval(secs => @runtime_stale_secs::double precision)
+  );
 
 -- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue

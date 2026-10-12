@@ -5,13 +5,6 @@ import { ApiError } from "@multica/core/api";
 import enIssues from "../locales/en/issues.json";
 import { SourceContextPreviewCard } from "./source-context-preview";
 
-// RUYI-705: RichContent now reads the workspace prefix; null = unknown =
-// fall-through, which is what these fixtures were written against.
-vi.mock("@multica/core/paths", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@multica/core/paths")>()),
-  useCurrentWorkspace: () => null,
-}));
-
 describe("SourceContextPreviewCard", () => {
   it("emphasizes a comment's left quote border on hover", () => {
     render(

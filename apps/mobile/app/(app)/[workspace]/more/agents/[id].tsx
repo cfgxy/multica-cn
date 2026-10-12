@@ -19,11 +19,7 @@
  *           only, replacing the batch cancel-tasks button) — and 运行历史
  *           — the paginated terminal-run history (`selectAgentRunHistory`,
  *           initial 10 + 20 per tap) with failed-run retry and the same
- *           status badge as the issue runs sheet. RUYI-700 renamed the
- *           TAB to 任务历史 (badge still counts active tasks), and both
- *           sections share the three-line row (issue status icon +
- *           identifier + title / trigger summary / run badge + time +
- *           other agents' avatar stack).
+ *           status badge as the issue runs sheet.
  *   - 设置   grouped navigation rows into the skills / access / custom args /
  *           env sub-screens plus the capability rows with the
  *           same visibility conditions as web's agent overview pane
@@ -52,7 +48,7 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { providerSupportsMcpConfig } from "@multica/core/agents/mcp-support";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
-import type { Agent, AgentTask, Issue } from "@multica/core/types";
+import type { Agent, AgentTask } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { InstructionsPreview } from "@/components/ui/instructions-preview";
@@ -87,9 +83,6 @@ import {
 import {
   canCancelAgentTask,
   selectAgentActiveTasks,
-  selectIssueOtherAgentsActivity,
-  type IssueOtherAgentsActivity,
-  NO_OTHER_AGENTS,
 } from "@/lib/issue-agent-activity";
 import {
   RUN_HISTORY_INITIAL,
@@ -187,42 +180,28 @@ export default function AgentDetailPage() {
   );
   const hasMoreHistory = runHistory.length > visibleHistory.length;
 
-  // Issue lookup, per-issue detail queries — an issue beyond the 100-row
+  // Title lookup, per-issue detail queries — an issue beyond the 100-row
   // list window still resolves here (RUYI-538 ④ root cause: the old
   // issueListOptions lookup fell back to 「任务不可见」 exactly there). An
-  // error must NOT blank the rows; unresolved issues fall back to the
-  // issue's short id, mirroring web's activity tab. RUYI-700 widened the
-  // map from bare titles to whole issues — rows 1 now render the status
-  // icon + identifier, from the same queries (zero new requests).
+  // error must NOT blank the rows; unresolved titles fall back to the
+  // issue's short id, mirroring web's activity tab.
   const issueIds = useMemo(() => {
     const ids = new Set<string>();
     for (const task of activeTasks) if (task.issue_id) ids.add(task.issue_id);
     for (const task of visibleHistory) if (task.issue_id) ids.add(task.issue_id);
     return [...ids];
   }, [activeTasks, visibleHistory]);
-  const issueQueries = useQueries({
+  const issueTitleQueries = useQueries({
     queries: issueIds.map((issueId) => issueDetailOptions(wsId, issueId)),
   });
-  const issueById = useMemo(() => {
-    const map = new Map<string, Issue>();
+  const titleById = useMemo(() => {
+    const map = new Map<string, string>();
     issueIds.forEach((issueId, i) => {
-      const issue = issueQueries[i]?.data;
-      if (issue) map.set(issueId, issue);
+      const title = issueTitleQueries[i]?.data?.title;
+      if (title) map.set(issueId, title);
     });
     return map;
-  }, [issueIds, issueQueries]);
-
-  // RUYI-700 row-3: other agents active on each listed issue, from the
-  // workspace snapshot the page already holds — one pass per issue id,
-  // zero extra requests.
-  const otherAgentsByIssue = useMemo(() => {
-    const map = new Map<string, IssueOtherAgentsActivity>();
-    if (!agent) return map;
-    for (const issueId of issueIds) {
-      map.set(issueId, selectIssueOtherAgentsActivity(snapshot, issueId, agent.id));
-    }
-    return map;
-  }, [snapshot, agent, issueIds]);
+  }, [issueIds, issueTitleQueries]);
 
   const { data: members } = useQuery(memberListOptions(wsId));
   const isWorkspaceAdmin = useMemo(() => {
@@ -650,7 +629,7 @@ export default function AgentDetailPage() {
           </TabsTrigger>
           <TabsTrigger value="active">
             <Text>
-              {t("mobile.detail.tab_active", "History")}
+              {t("mobile.detail.tab_active", "Active")}
               {activeTasks.length > 0 ? ` (${activeTasks.length})` : ""}
             </Text>
           </TabsTrigger>
@@ -840,11 +819,7 @@ export default function AgentDetailPage() {
                 : [
                     {
                       key: "active",
-                      // RUYI-700: the TAB renamed to 任务历史 (tab_active);
-                      // this segment header keeps the 进行中 wording on its
-                      // own key so the TAB and the section never share a
-                      // string again.
-                      title: t("mobile.detail.section_active", "Active"),
+                      title: t("mobile.detail.tab_active", "Active"),
                       data: activeTasks,
                     },
                     {
@@ -912,16 +887,10 @@ export default function AgentDetailPage() {
                 return (
                   <AgentRunHistoryRow
                     task={item}
-                    issue={
+                    issueTitle={
                       item.issue_id
-                        ? (issueById.get(item.issue_id) ?? null)
+                        ? (titleById.get(item.issue_id) ?? null)
                         : null
-                    }
-                    otherAgents={
-                      item.issue_id
-                        ? (otherAgentsByIssue.get(item.issue_id) ??
-                          NO_OTHER_AGENTS)
-                        : NO_OTHER_AGENTS
                     }
                     wsSlug={wsSlug}
                   />
@@ -930,16 +899,10 @@ export default function AgentDetailPage() {
               return (
                 <SwipeableAgentTaskRow
                   task={item}
-                  issue={
+                  issueTitle={
                     item.issue_id
-                      ? (issueById.get(item.issue_id) ?? null)
+                      ? (titleById.get(item.issue_id) ?? null)
                       : null
-                  }
-                  otherAgents={
-                    item.issue_id
-                      ? (otherAgentsByIssue.get(item.issue_id) ??
-                        NO_OTHER_AGENTS)
-                      : NO_OTHER_AGENTS
                   }
                   wsSlug={wsSlug}
                   cancellable={

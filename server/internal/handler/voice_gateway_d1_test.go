@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -601,94 +600,6 @@ func TestVoiceGateway_DialsThroughConfiguredProxy(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Direct-connect endpoints are gone (RUYI-626 废弃, D1 scope 2).
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// The auth envelope is gateway-plane traffic: never forwarded upstream.
-// ---------------------------------------------------------------------------
-
-// TestVoiceGateway_HeaderPathSwallowsClientAuthFrame pins the dual-channel
-// tolerance rule (RUYI-694 返工): a client whose upgrade request already
-// carried identity (session cookie or bearer header) may still open the
-// relay with the realtime first-frame auth envelope — mobile's RN cookie
-// jar sends both channels at once, and desktop/web token-mode sessions do
-// the same. The envelope must be swallowed: Google closes the provider
-// connection on unknown message types, which killed every such session in
-// under a second, and forwarding it would leak the session token to the
-// provider besides.
-func TestVoiceGateway_HeaderPathSwallowsClientAuthFrame(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	provider := newStubVoiceProvider(t)
-	agentID, _ := seedUsableVoiceSetup(t, "Auth Swallow", "")
-	srv := voiceGatewayServer(t)
-
-	// dialVoiceSession authenticates via the session cookie — the header path.
-	conn := dialVoiceSession(t, srv, agentID)
-	defer conn.Close()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, first, err := conn.ReadMessage(); err != nil || !strings.Contains(string(first), "setupComplete") {
-		t.Fatalf("expected setupComplete, got %s (%v)", first, err)
-	}
-
-	// The dual-channel client's auth envelope rides first, then a real turn.
-	auth := `{"type":"auth","payload":{"token":"redundant-with-cookie"}}`
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(auth)); err != nil {
-		t.Fatalf("write auth frame: %v", err)
-	}
-	turn := `{"clientContent":{"turns":[{"role":"user","parts":[{"text":"hello"}]}],"turnComplete":true}}`
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(turn)); err != nil {
-		t.Fatalf("write clientContent frame: %v", err)
-	}
-
-	waitFor(t, 5*time.Second, func() bool {
-		provider.mu.Lock()
-		defer provider.mu.Unlock()
-		return len(provider.clientMsgs) >= 1
-	})
-	provider.mu.Lock()
-	upstream := make([]string, len(provider.clientMsgs))
-	for i, m := range provider.clientMsgs {
-		upstream[i] = string(m)
-	}
-	provider.mu.Unlock()
-	if len(upstream) != 1 || !strings.Contains(upstream[0], "clientContent") {
-		t.Fatalf("provider received %v, want exactly the 1 clientContent turn (auth envelope must be swallowed, never forwarded)", upstream)
-	}
-
-	// The relay stays live after the swallow: a provider frame still reaches
-	// the client instead of the session dying the way the bug did.
-	stubConn := provider.gatewayConn(t)
-	provider.sendDownstream(stubConn, map[string]any{"goAway": map[string]any{"timeLeft": "60s"}})
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, downstream, err := conn.ReadMessage(); err != nil || !strings.Contains(string(downstream), "goAway") {
-		t.Fatalf("relay dead after auth swallow: frame=%s (%v)", downstream, err)
-	}
-}
-
-func TestIsClientAuthFrame(t *testing.T) {
-	cases := []struct {
-		name string
-		data string
-		want bool
-	}{
-		{"realtime auth envelope", `{"type":"auth","payload":{"token":"x"}}`, true},
-		{"auth without payload", `{"type":"auth"}`, true},
-		{"auth with extra keys", `{"type":"auth","payload":{},"v":2}`, true},
-		{"setup frame", `{"setup":{"model":"m"}}`, false},
-		{"clientContent turn", `{"clientContent":{"turns":[]},"turnComplete":true}`, false},
-		{"realtimeInput", `{"realtimeInput":{"audioChunks":[]}}`, false},
-		{"auth as nested key only", `{"realtimeInput":{"auth":true}}`, false},
-		{"type not auth", `{"type":"ping"}`, false},
-		{"non-JSON", `hello`, false},
-		{"empty", ``, false},
-	}
-	for _, tc := range cases {
-		if got := isClientAuthFrame([]byte(tc.data)); got != tc.want {
-			t.Errorf("%s: isClientAuthFrame(%s) = %v, want %v", tc.name, tc.data, got, tc.want)
-		}
-	}
-}
 
 func TestComposeVoiceSetupFrame_ToolsReserved(t *testing.T) {
 	advanced := map[string]json.RawMessage{

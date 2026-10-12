@@ -30,9 +30,8 @@ const FILL_R = 3.5;
 // Mirrors STATUS_CONFIG.iconColor in packages/core/issues/config/status.ts —
 // translated to hex (see apps/mobile/tailwind.config.js). Keyed on CATEGORY:
 // a custom status inherits its category's token unless the catalog gave it a
-// colour of its own. Exported for plain-style consumers that don't render a
-// full StatusIcon but need the same null-color fallback (issue-reference-list).
-export const CATEGORY_COLOR: Record<IssueStatusCategory, string> = {
+// colour of its own.
+const CATEGORY_COLOR: Record<IssueStatusCategory, string> = {
   backlog: "#71717a", // muted-foreground
   todo: "#71717a",
   in_progress: "#eab308", // warning

@@ -28,12 +28,12 @@
  * Access scope is intentionally absent — on web it lives in the separate
  * set-access dialog and is owner-only; mobile keeps that split (S5 screen).
  */
-import { SheetHeader } from "@/components/ui/sheet-header";
 import { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { agentSlotChoices, runtimeCredentialStatus } from "@multica/core/runtimes";
@@ -57,6 +57,7 @@ import { useT } from "@/lib/use-t";
 import { buildProfilePatch } from "@/lib/agent-profile-patch";
 
 export default function EditAgentProfile() {
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const agentId = typeof id === "string" ? id : "";
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -151,8 +152,11 @@ export default function EditAgentProfile() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
-      <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12}>
+      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；顶部让出系统状态栏（RUYI-563）。 */}
+      <View
+        className="flex-row items-center px-4 pb-2 border-b border-border"
+        style={{ paddingTop: insets.top + 12 }}
+      >
         <Text className="flex-1 text-lg font-semibold text-foreground">
           {t("mobile.detail.edit_profile", "Edit Profile")}
         </Text>
@@ -169,7 +173,7 @@ export default function EditAgentProfile() {
               : t("tab_body.common.save", "Save")}
           </Text>
         </Pressable>
-      </SheetHeader>
+      </View>
 
       <ScrollView
         nestedScrollEnabled

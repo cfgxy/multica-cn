@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"math"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/computer"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -37,9 +40,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
-	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
-
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -81,8 +82,8 @@ type Config struct {
 	// logs, audit rows, or API responses.
 	SuperAdminEmails []string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
-	// 403 for every caller. There is no role/owner exception because the repo
-	// has no platform-admin concept; operators bootstrap the workspace with
+	// 403 for every caller, including instance administrators. Operators
+	// bootstrap the workspace with
 	// the flag off, then flip it on and restart so subsequent users join via
 	// invitation only. The public /api/config endpoint mirrors this flag so
 	// the UI can hide every "Create workspace" affordance — see #3433.
@@ -186,6 +187,13 @@ type DaemonPendingWorkNotifier interface {
 }
 
 type Handler struct {
+	// modelKeyClient is injectable for directory contract tests; production uses
+	// a bounded HTTPS client created by modelKeyHTTPClient.
+	modelKeyClient         *http.Client
+	modelKeyRefreshGroup   singleflight.Group
+	runtimeCacheOnce       sync.Once
+	runtimeDownloads       *computer.RuntimeDownloadCache
+	runtimeVersions        *computer.RuntimeVersionCache
 	Queries                *db.Queries
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -193,17 +201,11 @@ type Handler struct {
 	DaemonHub              *daemonws.Hub
 	DaemonProfileRefresh   RuntimeProfileRefreshNotifier
 	DaemonWorkspaceRefresh WorkspaceSetRefreshNotifier
-	// Prometheus serves the usage page's system-resource and model-traffic
-	// panels (RUYI-618) by proxying PromQL range queries. Optional: nil or
-	// an unconfigured client (PROMETHEUS_URL unset) makes both endpoints
-	// report configured=false, which the frontend renders as a hidden
-	// section rather than an error.
-	Prometheus       *promquery.Client
-	Bus              *events.Bus
-	TaskService      *service.TaskService
-	PluginService    *service.PluginService
-	IssueService     *service.IssueService
-	AutopilotService *service.AutopilotService
+	Bus                    *events.Bus
+	TaskService            *service.TaskService
+	PluginService          *service.PluginService
+	IssueService           *service.IssueService
+	AutopilotService       *service.AutopilotService
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
@@ -486,21 +488,6 @@ type Handler struct {
 	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
 	// tight transports). Nil means a 5s-timeout default client.
 	VoiceProbeHTTPClient *http.Client
-	// VoiceASRBaseURL is the one-shot dictation transcription provider
-	// origin (RUYI-710): POST {base}/v1beta/models/{model}:generateContent
-	// with the audio inlined. Wired from MULTICA_GEMINI_ASR_BASE_URL with
-	// the public Gemini endpoint as the default; tests inject a stub
-	// server URL so the hop never touches the real service.
-	VoiceASRBaseURL string
-	// VoiceASRMaxAudioBytes bounds the in-memory audio buffer of a
-	// transcription upload (RUYI-710). Zero means the production default
-	// (20 MiB); tests inject tight bounds to exercise the rejection edges
-	// cheaply.
-	VoiceASRMaxAudioBytes int64
-	// VoiceASRMaxAudioDuration bounds the container-declared length of a
-	// transcription upload (RUYI-710). Zero means the production default
-	// (5 minutes).
-	VoiceASRMaxAudioDuration time.Duration
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box

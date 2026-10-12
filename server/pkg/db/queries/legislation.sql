@@ -4,14 +4,11 @@
 -- carrier_scope_id against the owning table on every write.
 
 -- name: CreatePromptProposal :one
--- RUYI-723: problem/expected_effect/expected_gain/value_score carry the
--- retrospective's decision context; the manual path writes NULLs there.
 INSERT INTO prompt_proposal (
     workspace_id, carrier_scope, carrier_scope_id, target_section,
     change_kind, clause_name, clause_text,
     gate_answer_layer, gate_answer_retention, gate_answer_cost,
     gate_answer_conflict, gate_answer_dedup,
-    problem, expected_effect, expected_gain, value_score,
     evidence_anchors, status, merged_from, source,
     created_by_type, created_by_id, audit_log
 ) VALUES (
@@ -19,7 +16,6 @@ INSERT INTO prompt_proposal (
     @change_kind, @clause_name, @clause_text,
     @gate_answer_layer, @gate_answer_retention, @gate_answer_cost,
     @gate_answer_conflict, @gate_answer_dedup,
-    @problem, @expected_effect, @expected_gain, @value_score,
     @evidence_anchors, 'draft', '[]'::jsonb, @source,
     @created_by_type, @created_by_id, @audit_log::jsonb
 ) RETURNING *;
@@ -367,22 +363,13 @@ RETURNING *;
 -- The issue table has no completed_at — updated_at under a terminal-ish
 -- status is the best available completion signal, and the per-issue
 -- watermark makes overlap harmless.
--- project_id (RUYI-723): the draft's project carrier, resolved server-side
--- from the scanned issue — the agent never names carrier ids itself.
-SELECT id, title, description, status, acceptance_criteria, updated_at, project_id
+SELECT id, title, description, status, acceptance_criteria, updated_at
 FROM issue
 WHERE issue.workspace_id = $1
   AND issue.status = $2
   AND issue.updated_at >= $3 AND issue.updated_at < $4
 ORDER BY issue.updated_at ASC
 LIMIT 50;
-
--- name: ListProjectCarrierNames :many
--- RUYI-723: display names for the retrospective's project carriers (the
--- distinct projects of the scanned issues), workspace-scoped read.
-SELECT project.id, project.title AS name
-FROM project
-WHERE project.workspace_id = $1 AND project.id = ANY($2::uuid[]);
 
 -- name: ListIssueCommentsForRetrospective :many
 -- The issue's real execution content: discussion and progress updates only —
