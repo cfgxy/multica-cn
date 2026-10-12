@@ -42,7 +42,7 @@ export function AdminArea() {
         }}
         className="flex min-h-0 flex-1 flex-col"
       >
-        <TabsList variant="line" className="mx-4 mt-3 w-fit p-0">
+        <TabsList className="mx-4 mt-3 w-fit">
           <TabsTrigger value="users">{t(($) => $.tabs.users)}</TabsTrigger>
           <TabsTrigger value="workspaces">{t(($) => $.tabs.workspaces)}</TabsTrigger>
           <TabsTrigger value="mcp">{t(($) => $.tabs.mcp)}</TabsTrigger>
@@ -54,7 +54,7 @@ export function AdminArea() {
         <TabsContent value="workspaces" className="min-h-0 flex-1 overflow-hidden">
           <AdminWorkspacesPage />
         </TabsContent>
-        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <AdminMCPServerPage />
         </TabsContent>
         <TabsContent value="oauth" className="min-h-0 flex-1 overflow-y-auto">
