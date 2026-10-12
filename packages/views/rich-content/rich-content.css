@@ -37,15 +37,18 @@
 }
 
 /*
- * Issue reference tail aggregation (RUYI-635 + 增量).
+ * Issue reference tail aggregation (RUYI-635 + 增量 + RUYI-724).
  *
  * RichContent renders issue/PR mentions as plain body text and lists every
  * reference here instead: a gray rounded container — header 「引用 · N」 plus
- * at most two preview rows plus a fold-count line — that is ONE button. The
- * rows themselves are spans and never navigate; pressing the block opens the
+ * at most two preview rows plus a fold-count line. On mobile the block is ONE
+ * button: rows are spans and never navigate; pressing the block opens the
  * popover (styled inline in issue-reference-footer.tsx — it portals outside
- * this scope). The block is part of the content flow, so the compact
- * density's `> :last-child` margin trim keeps it flush in chat bubbles.
+ * this scope). On desktop the block is not a control: resolved rows are
+ * direct links (`a.issue-reference-row`) and only the folded
+ * 「N more references」 line (`button.issue-reference-collapsed`) opens the
+ * popover. The block is part of the content flow, so the compact density's
+ * `> :last-child` margin trim keeps it flush in chat bubbles.
  */
 .rich-text-editor .issue-reference-footer {
   display: flex;
@@ -61,17 +64,69 @@
   color: inherit;
   font: inherit;
   text-align: left;
-  cursor: pointer;
   outline: none;
   transition: background-color 150ms;
 }
 
-.rich-text-editor .issue-reference-footer:hover {
+/* Mobile trigger: the whole block is the press target. */
+.rich-text-editor button.issue-reference-footer {
+  cursor: pointer;
+}
+
+.rich-text-editor button.issue-reference-footer:hover {
   background: var(--accent);
 }
 
-.rich-text-editor .issue-reference-footer:focus-visible {
+.rich-text-editor button.issue-reference-footer:focus-visible {
   box-shadow: 0 0 0 2px var(--ring);
+}
+
+/* Desktop direct rows (RUYI-724): neutralize the prose <a> treatment — the
+   row reads as body content and picks up a hover pill, so it navigates in
+   one click without turning the block into a wall of blue links. */
+.rich-text-editor a.issue-reference-row {
+  color: var(--foreground);
+  text-decoration: none;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  outline: none;
+}
+
+.rich-text-editor a.issue-reference-row:hover {
+  background: color-mix(in oklab, var(--accent) 55%, transparent);
+}
+
+.rich-text-editor a.issue-reference-row:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+/* Desktop collapsed-line trigger: the only popover entry point when rows
+   fold past the preview budget. */
+.rich-text-editor button.issue-reference-collapsed {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+
+.rich-text-editor button.issue-reference-collapsed:hover {
+  color: var(--foreground);
+}
+
+.rich-text-editor button.issue-reference-collapsed:focus-visible {
+  border-radius: 0.25rem;
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.rich-text-editor button.issue-reference-collapsed[aria-expanded="true"]
+  .issue-reference-chevron {
+  transform: rotate(180deg);
 }
 
 .rich-text-editor .issue-reference-header {
