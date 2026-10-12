@@ -14,11 +14,13 @@ import {
   formatTokens,
   isModelPriced,
   isSelfHealingRuntime,
+  isUsageRowUnpriced,
   sliceWindow,
   summarizeTaskUsage,
   summarizeTaskUsageAcross,
   todayIso,
   weekStartIso,
+  type Priceable,
 } from "./utils";
 
 afterEach(() => {
@@ -511,9 +513,13 @@ describe("estimateCost", () => {
   });
 
   it("reports provider-qualified keys for unmapped generic model ids", () => {
+    // Non-zero token counts on purpose: a row that consumed nothing is
+    // known-free, not unknown, so it no longer surfaces here (see
+    // `isUsageRowUnpriced`). These rows carry tokens because what is under
+    // test is the KEY, not the amount.
     const unmapped = collectUnmappedModels([
-      { ...zeroUsage, provider: "acme", model: "auto" },
-      { ...zeroUsage, provider: "cursor", model: "auto" },
+      { ...zeroUsage, provider: "acme", model: "auto", input_tokens: 1_000 },
+      { ...zeroUsage, provider: "cursor", model: "auto", input_tokens: 1_000 },
     ]);
     // Same bare id, two providers → two distinct, priceable-by-key entries.
     // `cursor/auto` is priced, so only the genuinely-unmapped one surfaces.
@@ -525,8 +531,14 @@ describe("estimateCost", () => {
   // header comment. Pinning them in tests is what catches a future edit
   // that copies a price from a near-named neighbour by accident — the
   // mistake the previous attempt (PR #3170, closed) made.
-  it("prices deepseek-v4-flash at the official $0.14/$0.28 with ~50× cache-hit discount", () => {
-    // 1M input × $0.14 + 1M output × $0.28 + 1M cache read × $0.0028 = $0.4228.
+  // $0.14/$0.28 was the PROMO price (a quarter of standard) and the row
+  // deliberately does not use it: both DeepSeek SKUs were 75% off until
+  // 2026-05-31, and pricing at the promo rate makes every budget jump 4x
+  // on June 1. The rate below is the post-promo standard one; see the
+  // DeepSeek comment in server/internal/metrics/pricing.go, which is now
+  // where a rate is edited.
+  it("prices deepseek-v4-flash at the post-promo standard $0.56/$1.12 with ~50× cache-hit discount", () => {
+    // 1M input × $0.56 + 1M output × $1.12 + 1M cache read × $0.0112 = $1.6912.
     const cost = estimateCost({
       ...zeroUsage,
       model: "deepseek-v4-flash",
@@ -534,7 +546,7 @@ describe("estimateCost", () => {
       output_tokens: 1_000_000,
       cache_read_tokens: 1_000_000,
     });
-    expect(cost).toBeCloseTo(0.14 + 0.28 + 0.0028, 5);
+    expect(cost).toBeCloseTo(0.56 + 1.12 + 0.0112, 5);
   });
 
   it("prices the deepseek-chat / deepseek-reasoner aliases at the same rate as deepseek-v4-flash", () => {
@@ -896,6 +908,223 @@ describe("estimateCost", () => {
   });
 });
 
+// Generic ids like `auto` are only meaningful once you know who sent them.
+// Cursor reports `auto` and prices it; codex reports the SAME literal id with
+// no published rate. Scoping the lookup by provider — `cursor/auto` first,
+// bare `auto` never — is what keeps a codex run from being billed at Cursor's
+// rate (RUYI-664). The provider-scoped cases live in the `estimateCost`
+// describe above; this block pins the rate rows RUYI-664 added or corrected.
+describe("estimateCost: rates added or corrected by RUYI-664", () => {
+  it("prices kimi-k2.6 at the official $0.95 / $4.00 tier (not the K2 tier)", () => {
+    expect(
+      estimateCost({
+        ...zeroUsage,
+        model: "kimi-k2.6",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+      }),
+    ).toBeCloseTo(4.95, 5);
+  });
+
+  it("prices glm-4.5-flash at the official Free tier ($0)", () => {
+    // $0 is the literal price on z.ai's page, not a placeholder — the row
+    // must EXIST (priced) while costing nothing. A missing row would be
+    // "cannot be priced" instead; see isUsageRowUnpriced below.
+    expect(isModelPriced("glm-4.5-flash", "zhipu")).toBe(true);
+    expect(
+      estimateCost({
+        ...zeroUsage,
+        model: "glm-4.5-flash",
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+      }),
+    ).toBe(0);
+  });
+
+  it("pins the corrected cache-write rate on gpt-5.5", () => {
+    // cacheWrite used to mirror cacheRead (0.50) — a 10x under-bill of the
+    // real $5/M. 10k input × 5 + 1k output × 30 + 50k cache read × 0.50
+    // + 20k cache write × 5.
+    const cost = estimateCost({
+      ...zeroUsage,
+      model: "gpt-5.5",
+      input_tokens: 10_000,
+      output_tokens: 1_000,
+      cache_read_tokens: 50_000,
+      cache_write_tokens: 20_000,
+    });
+    expect(cost).toBeCloseTo(0.205, 6);
+  });
+});
+
+// Real usage rows, priced through the UI code and compared with the server.
+// This is the cross-language half of "one price list, one number"
+// (RUYI-664): the rate table is generated from the server so it cannot
+// drift, but the FORMULA is still written twice — once here and once in
+// server/internal/metrics/pricing.go. These rows are what keeps the two
+// implementations honest: if either side changes how it handles provider
+// ticks, uncosted tokens or the token mix, these totals move.
+//
+// Server totals for the same rows: $0.849250 and $0.392574
+// (TestEstimateUsageCostAgreesWithFrontendFormula and
+// TestEstimateUsageCostPricesARealIssuesRows). Mirrored both directions.
+describe("estimateCost: cross-check with the server", () => {
+  it("prices real usage rows the same way the server does", () => {
+    const rows: Priceable[] = [
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 14817, output_tokens: 825, cache_read_tokens: 133632, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 14010, output_tokens: 598, cache_read_tokens: 84096, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 15172, output_tokens: 887, cache_read_tokens: 111104, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "glm-5", provider: "claude", input_tokens: 64389, output_tokens: 1257, cache_read_tokens: 54784, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "glm-5", provider: "claude", input_tokens: 77390, output_tokens: 1675, cache_read_tokens: 299520, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "glm-5", provider: "claude", input_tokens: 91974, output_tokens: 3082, cache_read_tokens: 358400, cache_write_tokens: 0, cost_usd_ticks: 0 },
+    ];
+    const total = rows.reduce((sum, r) => sum + estimateCost(r), 0);
+    expect(total).toBeCloseTo(0.84925, 5);
+    // Per-row agreement, not just the total: a total can stay right while
+    // two rows each move in opposite directions.
+    expect(rows.map((r) => +estimateCost(r).toFixed(6))).toEqual([
+      0.165651, 0.130038, 0.158022, 0.079368, 0.142654, 0.173516,
+    ]);
+  });
+
+  it("prices a whole real issue the way the server does", () => {
+    const rows: Priceable[] = [
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 14487, output_tokens: 696, cache_read_tokens: 108800, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 8753, output_tokens: 501, cache_read_tokens: 122752, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 2645, output_tokens: 303, cache_read_tokens: 102912, cache_write_tokens: 0, cost_usd_ticks: 0 },
+      { model: "gpt-5.6-sol", provider: "codex", input_tokens: 2173, output_tokens: 134, cache_read_tokens: 72064, cache_write_tokens: 0, cost_usd_ticks: 0 },
+    ];
+    const summary = summarizeTaskUsage(rows)!;
+
+    expect(summary.cost).toBeCloseTo(0.392574, 6);
+    expect(rows.map((r) => +estimateCost(r).toFixed(6))).toEqual([
+      0.147715, 0.120171, 0.073771, 0.050917,
+    ]);
+    expect(summary.tokens).toBe(436_220);
+    expect(summary.input).toBe(28_058);
+    expect(summary.output).toBe(1_634);
+    expect(summary.cacheRead).toBe(406_528);
+    // Every row priced, so the Issue page owes the reader a figure and no
+    // "we couldn't price N rows" caveat.
+    expect(summary.priced).toBe(true);
+    expect(summary.unpricedRows).toBe(0);
+  });
+
+  it("reports a model with no rate as unmapped rather than as zero cost", () => {
+    // The server returns CostSourceUnpriced with Priceable() false; here the
+    // model has to land in collectUnmappedModels so the UI can say so.
+    const row: Priceable = {
+      model: "totally-unknown-model",
+      provider: "codex",
+      input_tokens: 10_000,
+      output_tokens: 1_000,
+      cache_read_tokens: 50_000,
+      cache_write_tokens: 0,
+      cost_usd_ticks: 0,
+    };
+    expect(estimateCost(row)).toBe(0);
+    expect(collectUnmappedModels([row])).toEqual(["codex/totally-unknown-model"]);
+  });
+});
+
+// The per-row question the totals and the banner both have to answer the
+// same way. Four states; only `unpriced` is unknown, and the two that look
+// like it from one angle each — "no rate on file" and "no money on this
+// row" — are the ones worth pinning, because getting either wrong silently
+// corrupts a total:
+//
+//   calling the first one unpriced throws away money the provider really
+//   charged;
+//   calling the second one unpriced invents a "we couldn't price this"
+//   warning about a row that never spent anything.
+describe("isUsageRowUnpriced", () => {
+  const unpricedRow = {
+    model: "totally-unknown-model",
+    provider: "acme",
+    input_tokens: 1_000,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+  };
+
+  it("is true only when tokens need a rate and nobody priced them", () => {
+    expect(isUsageRowUnpriced(unpricedRow)).toBe(true);
+  });
+
+  it("is false for a row the provider billed in full, rate or no rate", () => {
+    // `estimateCost` = bill + estimate, and this row is all bill: dropping
+    // it from a total would throw away real money.
+    expect(
+      isUsageRowUnpriced({
+        ...unpricedRow,
+        cost_usd_ticks: 5_000_000_000,
+        uncosted_input_tokens: 0,
+        uncosted_output_tokens: 0,
+        uncosted_cache_read_tokens: 0,
+        uncosted_cache_write_tokens: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("is true when the provider billed part and left the rest unpriced", () => {
+    // The mirror image: money on the row AND tokens with no rate. It must
+    // still count as unpriced — the unpriced half is unknown, and a total
+    // that quietly treats it as complete is the failure mode this closes.
+    expect(
+      isUsageRowUnpriced({
+        ...unpricedRow,
+        cost_usd_ticks: 5_000_000_000,
+        uncosted_input_tokens: 1_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for a row that consumed nothing — known-free, not unknown", () => {
+    // The server calls this `CostSourceZero` (priceable). Reporting it as
+    // "we couldn't price 1 row" would warn the user about nothing.
+    expect(
+      isUsageRowUnpriced({ ...zeroUsage, model: "totally-unknown-model", provider: "acme" }),
+    ).toBe(false);
+  });
+
+  it("is false for a free tier whose rates are all zero", () => {
+    // Known-free too, and the reason a free tier has to be an all-zero row
+    // rather than a missing one: a missing row would be unknown.
+    expect(isUsageRowUnpriced({ ...unpricedRow, model: "glm-4.5-flash", provider: "zhipu" })).toBe(
+      false,
+    );
+  });
+
+  it("is true for a no-model row with consumed tokens — same as the server", () => {
+    // With no model there is no rate to resolve and no bill on the row, so
+    // the server's EstimateUsageCost returns CostSourceUnpriced; reporting
+    // `$0.00` for the same row here is the two-vocabularies drift RUYI-664
+    // closes (an acme row with an unknown name shows `—`, an unnamed row
+    // used to show $0.00).
+    expect(isUsageRowUnpriced({ ...unpricedRow, model: "" })).toBe(true);
+  });
+
+  it("is false for a no-model row the provider billed in full", () => {
+    // No model, but real money: the bill prices the row, nothing is left
+    // for us to estimate.
+    expect(
+      isUsageRowUnpriced({
+        ...unpricedRow,
+        model: "",
+        cost_usd_ticks: 5_000_000_000,
+        uncosted_input_tokens: 0,
+        uncosted_output_tokens: 0,
+        uncosted_cache_read_tokens: 0,
+        uncosted_cache_write_tokens: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("is false for a no-model row that consumed nothing", () => {
+    expect(isUsageRowUnpriced({ ...zeroUsage, model: "", provider: "acme" })).toBe(false);
+  });
+});
+
 describe("isModelPriced", () => {
   it("recognises both Claude and Codex/GPT families", () => {
     expect(isModelPriced("claude-sonnet-5")).toBe(true);
@@ -944,12 +1173,54 @@ describe("isModelPriced", () => {
 
 describe("collectUnmappedModels", () => {
   it("only surfaces names that miss every pricing tier", () => {
+    // Token counts are non-zero for the same reason as the generic-id case
+    // above: the zero-token row is known-free now, and what is under test
+    // here is which NAMES surface.
     const rows = [
-      { ...zeroUsage, model: "claude-sonnet-4-6" },
-      { ...zeroUsage, model: "gpt-5-codex" },
-      { ...zeroUsage, model: "fictional-model-x" },
+      { ...zeroUsage, model: "claude-sonnet-4-6", input_tokens: 1_000 },
+      { ...zeroUsage, model: "gpt-5-codex", input_tokens: 1_000 },
+      { ...zeroUsage, model: "fictional-model-x", input_tokens: 1_000 },
     ];
     expect(collectUnmappedModels(rows)).toEqual(["fictional-model-x"]);
+  });
+
+  it("names a no-model row by its provider bucket, not a dangling slash", () => {
+    // `pricingKey("")` degrades to `acme/` (or to an empty string when no
+    // provider is known) — the caveat footnote would name a bucket nobody
+    // can read. An unnamed row groups under the provider name, or
+    // `unknown`, everywhere else (modelGroupingKey), so the banner and the
+    // footnote use the same word.
+    const withProvider = { ...zeroUsage, model: "", provider: "acme", input_tokens: 1_000 };
+    const withoutProvider = { ...zeroUsage, model: "", input_tokens: 1_000 };
+    expect(collectUnmappedModels([withProvider])).toEqual(["acme"]);
+    expect(collectUnmappedModels([withoutProvider])).toEqual(["unknown"]);
+  });
+
+  it("counts a no-model row as unpriced in the run summary", () => {
+    const summary = summarizeTaskUsage([
+      {
+        model: "gpt-5-codex",
+        provider: "codex",
+        input_tokens: 1_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd_ticks: 0,
+      },
+      {
+        model: "",
+        provider: "acme",
+        input_tokens: 1_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+    ]);
+    expect(summary!.unpricedRows).toBe(1);
+    expect(summary!.priced).toBe(true);
+    // The model column lists named models only; the unnamed row is priced
+    // into the caveat, not into a phantom model label.
+    expect(summary!.models).toEqual(["gpt-5-codex"]);
   });
 });
 
@@ -1627,6 +1898,47 @@ describe("summarizeTaskUsage", () => {
     // 712K cache reads at opus: would have cost 5/M, actually cost 0.50/M.
     const s = summarizeTaskUsage([opus]);
     expect(s?.cacheSavings).toBeCloseTo((712_000 * (5 - 0.5)) / 1_000_000, 5);
+  });
+
+  it("keeps a figure for a row the provider billed only partly", () => {
+    // Reachable only where rows carry the `uncosted_*` split (RuntimeUsage).
+    // `TaskUsage` — what the run timeline is fed — does not, so a billed row
+    // there is billed in full and this state never arises today. The guard is
+    // here for the moment the split reaches run usage: without it, a partly
+    // billed row would be dropped from the total along with its real money.
+    const s = summarizeTaskUsage([
+      {
+        model: "totally-unknown-model",
+        provider: "acme",
+        input_tokens: 1_000_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cost_usd_ticks: 5_000_000_000,
+        uncosted_input_tokens: 1_000_000,
+      },
+    ]);
+
+    expect(s!.unpricedRows).toBe(1);
+    expect(s!.priced).toBe(true);
+    expect(s!.cost).toBeCloseTo(0.5, 6);
+  });
+
+  it("withholds the figure when every row is unpriced and nothing was billed", () => {
+    const s = summarizeTaskUsage([
+      {
+        model: "totally-unknown-model",
+        provider: "acme",
+        input_tokens: 1_000_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+    ]);
+
+    expect(s!.unpricedRows).toBe(1);
+    expect(s!.priced).toBe(false);
+    expect(s!.cost).toBe(0);
   });
 });
 

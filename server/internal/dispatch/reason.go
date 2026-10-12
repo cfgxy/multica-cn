@@ -78,9 +78,19 @@ const (
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
+	// ReasonBudgetExceeded (RUYI-665): the target runtime's cost budget — the
+	// runtime-total cap or the agent owner's per-user cap — is already spent for
+	// the current UTC period, so the run is refused at enqueue time. A reset
+	// (next period start) is the fix; retrying sooner reproduces the refusal.
+	ReasonBudgetExceeded ReasonCode = "budget_exceeded"
 	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
 	// run, but Cloud's effective workspace issue-count limit blocked the issue.
 	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+	// ReasonParamInvalid (RUYI-641): the dispatch was refused because the
+	// trigger-time parameters miss the autopilot's definitions — a required
+	// parameter without value or default, a type mismatch, or an unknown name.
+	// A caller-fixable contract error, recorded as the run's skip reason.
+	ReasonParamInvalid ReasonCode = "param_invalid"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 )

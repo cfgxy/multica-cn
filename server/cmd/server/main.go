@@ -679,6 +679,10 @@ func main() {
 		go runAutopilotQuotaReconciler(autopilotCtx, autopilotSvc)
 	}
 	go runDBStatsLogger(sweepCtx, pool)
+	// Voice credential-probe re-checks (RUYI-692 D1): degraded badges self-heal,
+	// stale ok badges re-verify. Non-positive MULTICA_VOICE_PROBE_REFRESH
+	// disables the sweep.
+	go runVoiceProbeRefresher(sweepCtx, h, voiceProbeRefreshIntervalFromEnv(os.Getenv))
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)
 	}

@@ -120,6 +120,64 @@ func TestBusinessMetricsLLMPricingAndUnpricedTokens(t *testing.T) {
 	}
 }
 
+// A usage row whose model name is a placeholder is a collection gap, not a
+// billable zero: the tokens are real, the identity of what burned them is
+// missing. Counting the landings per provider keeps the gap visible without
+// any threshold attached — the counter only ever reports, never alerts.
+func TestBusinessMetricsRecordsPlaceholderModelNames(t *testing.T) {
+	m := NewBusinessMetrics()
+
+	// Whitespace-only model: the runtime never reported a model at all.
+	m.RecordLLMUsage("issue", "local", "codex", "  ", 10, 5, 0, 0, 0)
+	if got := testutil.ToFloat64(m.llmModelPlaceholder.WithLabelValues("codex", "empty")); got != 1 {
+		t.Fatalf("empty-model placeholder counter = %v, want 1", got)
+	}
+
+	// Literal `unknown`, any casing: the harness reported the placeholder
+	// verbatim. A different provider must land under its own label.
+	m.RecordLLMUsage("issue", "local", "cursor", "Unknown", 10, 5, 0, 0, 0)
+	if got := testutil.ToFloat64(m.llmModelPlaceholder.WithLabelValues("cursor", "unknown")); got != 1 {
+		t.Fatalf("unknown-model placeholder counter = %v, want 1", got)
+	}
+
+	// A real model name is never a placeholder, priced or not.
+	m.RecordLLMUsage("issue", "local", "codex", "gpt-5.4", 10, 5, 0, 0, 0)
+	if got := testutil.ToFloat64(m.llmModelPlaceholder.WithLabelValues("codex", "empty")); got != 1 {
+		t.Fatalf("priced row counted as empty placeholder = %v, want still 1", got)
+	}
+	if got := testutil.ToFloat64(m.llmModelPlaceholder.WithLabelValues("codex", "unknown")); got != 0 {
+		t.Fatalf("priced row counted as unknown placeholder = %v, want 0", got)
+	}
+}
+
+// RecordLLMUsage must resolve the same row the web UI resolves for the same
+// usage: provider-qualified key first, bare fallback second. A generic id
+// like `auto` priced through the bare table would either borrow Cursor's
+// rate (misprice) or land unpriced where the frontend prices it — both are
+// the two-sides-disagree failure the reconcile line exists to prevent.
+func TestBusinessMetricsPricesProviderQualifiedModelKeys(t *testing.T) {
+	m := NewBusinessMetrics()
+
+	// Cursor's generic `auto` resolves through the qualified key.
+	m.RecordLLMUsage("issue", "local", "cursor", "auto", 1_000_000, 0, 0, 0, 0)
+	if got := testutil.ToFloat64(m.llmTokens.WithLabelValues("cursor", "auto", "input", "local", "issue")); got != 1_000_000 {
+		t.Fatalf("qualified-key input tokens = %v, want 1000000", got)
+	}
+	if got := testutil.ToFloat64(m.llmUnpricedTokens.WithLabelValues("cursor", "auto", "input")); got != 0 {
+		t.Fatalf("qualified-key row landed in unpriced tokens = %v, want 0", got)
+	}
+
+	// The same generic id from another provider stays unpriced — no
+	// cross-provider rate borrowing.
+	m.RecordLLMUsage("issue", "local", "codex", "auto", 500_000, 0, 0, 0, 0)
+	if got := testutil.ToFloat64(m.llmUnpricedTokens.WithLabelValues("codex", "auto", "input")); got != 500_000 {
+		t.Fatalf("codex auto unpriced tokens = %v, want 500000", got)
+	}
+	if got := testutil.ToFloat64(m.llmTokens.WithLabelValues("cursor", "auto", "input", "local", "issue")); got != 1_000_000 {
+		t.Fatalf("codex auto borrowed cursor row: cursor tokens = %v, want 1000000", got)
+	}
+}
+
 func TestBusinessMetricsRegistryExposesAllFamilies(t *testing.T) {
 	registry := prometheus.NewRegistry()
 	m := NewBusinessMetrics()
@@ -138,6 +196,7 @@ func TestBusinessMetricsRegistryExposesAllFamilies(t *testing.T) {
 	m.ObserveChatClaimRolloutMissingQuery(0.01)
 	m.RecordLLMUsage("issue", "local", "codex", "gpt-5.4", 1, 1, 1, 1, 0)
 	m.RecordLLMUsage("issue", "local", "custom-provider", "custom-model", 1, 0, 0, 0, 0)
+	m.RecordLLMUsage("issue", "local", "codex", "", 1, 0, 0, 0, 0)
 
 	// PR3 funnel / community / commercial events. Drive every counter
 	// with one synthetic value so the gather loop below sees the family.

@@ -6,6 +6,11 @@ import {
   CartesianGrid,
 } from "recharts";
 import {
+  useBarSelection,
+  dailyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
@@ -31,12 +36,33 @@ export interface DailyTasksData {
   cancelled: number;
 }
 
-export function DailyTasksChart({ data }: { data: DailyTasksData[] }) {
+export function DailyTasksChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: DailyTasksData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
   const { t } = useT("runtimes");
   const locale = useLocale();
+  const barSel = useBarSelection({
+    spans: dailyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  const barCells = barSel.cells(data.length, {
+    keyOf: (i) => data[i]?.date ?? String(i),
+  });
+
   return (
     <ChartContainer config={tasksChartConfig} className="aspect-[3/1] w-full">
-      <BarChart data={data} margin={{ left: 0, right: 0, top: 4, bottom: 0 }}>
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -80,19 +106,25 @@ export function DailyTasksChart({ data }: { data: DailyTasksData[] }) {
           stackId="tasks"
           fill="var(--color-completed)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="cancelled"
           stackId="tasks"
           fill="var(--color-cancelled)"
           radius={[0, 0, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
         <Bar
           dataKey="failed"
           stackId="tasks"
           fill="var(--color-failed)"
           radius={[3, 3, 0, 0]}
-        />
+        >
+          {barCells}
+        </Bar>
       </BarChart>
     </ChartContainer>
   );

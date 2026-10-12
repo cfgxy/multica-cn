@@ -118,6 +118,9 @@ deleted_triggers AS (
     WHERE autopilot_id IN (
         SELECT id FROM autopilot WHERE autopilot.workspace_id = $1
     )
+), deleted_params AS (
+    DELETE FROM autopilot_param
+    WHERE autopilot_param.workspace_id = $1
 )
 DELETE FROM autopilot_rule_version
 WHERE autopilot_rule_version.workspace_id = $1
@@ -610,6 +613,10 @@ func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID p
 
 const deleteWorkspaceRuntimesAndProjects = `-- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+deleted_runtime_cost_budgets AS (
+    DELETE FROM runtime_cost_budget
+    WHERE runtime_cost_budget.workspace_id = $1
+),
 deleted_runtime_credentials AS (
     DELETE FROM runtime_credential
     WHERE runtime_instance_id IN (
@@ -632,6 +639,9 @@ deleted_execution_profiles AS (
 DELETE FROM project WHERE project.workspace_id = $1
 `
 
+// runtime_cost_budget (RUYI-665) has no FK to agent_runtime (house rule), so
+// the sweep owns it; it carries workspace_id directly, so it needs no runtime
+// set join.
 // runtime_credential has no FK to agent_runtime (house rule), so the sweep
 // owns it: matched through the runtime set rather than a workspace column
 // (same construction as execution_profile_entry below). The encrypted
