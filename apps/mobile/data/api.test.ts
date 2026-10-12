@@ -705,6 +705,65 @@ describe("ApiClient.lookupPullRequest", () => {
   });
 });
 
+describe("ApiClient.lookupPullRequestByNumber", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // RUYI-728: 正文 `MR !N` 点击的按编号解析端点，注册在
+  // /api/workspaces/{id}/pull-requests/lookup-by-number
+  // （server/cmd/server/router.go）。契约与 web 的
+  // packages/core/api/client.ts lookupPullRequestByNumber 同口径：唯一命中
+  // 返回 PR；从未同步（404）与跨仓歧义（409）都降级为 null，正文点击与
+  // 引用区行同样静默降级，不报错。
+  it("requests the by-number lookup route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ pull_request: null }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequestByNumber("ws-1", 468),
+    ).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.example.test/api/workspaces/ws-1/pull-requests/lookup-by-number?number=468",
+    );
+  });
+
+  it("degrades a 404 miss to null", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: "pull request not found" }),
+      { status: 404, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequestByNumber("ws-1", 468),
+    ).resolves.toBeNull();
+  });
+
+  it("degrades a 409 cross-repo ambiguity to null", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: "pull request number is ambiguous across repositories" }),
+      { status: 409, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequestByNumber("ws-1", 468),
+    ).resolves.toBeNull();
+  });
+});
+
 describe("ApiClient.transcribeVoiceAudio (RUYI-710 阶段 2 降级听写)", () => {
   afterEach(() => {
     api.setToken(null);

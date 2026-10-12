@@ -53,6 +53,7 @@ import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { openExternalUrl } from "@/lib/pull-request-link";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
@@ -157,12 +158,13 @@ export function Markdown({
     return splitMarkdown(processed);
   }, [content]);
 
-  // RUYI-635 tail aggregation. Scanned from the RAW content, not the
-  // preprocessed text: the demote pass has already stripped the mention links
-  // by the time splitting runs, and the extractor shares its skip rules
-  // (code, links, URLs) with web's pipeline, so both ends collect exactly the
-  // same tokens from the same source. Raw-dedup keeps first occurrences;
-  // cross-form collapse by resolved issue id happens in IssueReferenceList.
+  // RUYI-635 tail aggregation, carried forward under the RUYI-728 body
+  // contract. Scanned from the RAW content, not the preprocessed text: the
+  // autolink pass turns bare `MR !N` / `owner/repo#N` tokens into links, and
+  // the extractor shares its skip rules (code, links, URLs) with that pass,
+  // so the tail collects exactly the tokens the body linkifies, from the
+  // same source. Raw-dedup keeps first occurrences; cross-form collapse by
+  // resolved id happens in IssueReferenceList.
   //
   // Bare identifiers are gated on the current workspace's `issue_prefix`
   // (RUYI-705): acceptance-criteria numbering like `AC-1` is not a reference,
@@ -222,6 +224,23 @@ export function Markdown({
             fallbackUrl: action.fallbackUrl,
           });
           return;
+        case "mergeRequest": {
+          // RUYI-728: body-text `MR !N` links have no in-app page — resolve
+          // the number to a PR at tap time and hand the canonical URL to the
+          // OS (github.com App Links / Universal Links land in the GitHub
+          // app when installed, see lib/pull-request-link.ts). A miss (never
+          // synced / cross-repo ambiguous) and a failed open both stay
+          // silent — the same doctrine as the `external` branch; the
+          // reference sheet's degraded row is where the unresolved state is
+          // visible.
+          void api
+            .lookupPullRequestByNumber(wsId ?? "", action.number)
+            .then((pr) => {
+              if (pr) void openExternalUrl(pr.html_url, Linking);
+            })
+            .catch(() => {});
+          return;
+        }
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
           // keeps a stray tap from crashing the screen. Silent: failing
@@ -232,7 +251,7 @@ export function Markdown({
           return;
       }
     },
-    [wsSlug, commentAnchor],
+    [wsSlug, commentAnchor, wsId],
   );
 
   if (segments.length === 0) return null;

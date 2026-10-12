@@ -1913,6 +1913,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// PR text-reference lookup for the reference tail
 					// (RUYI-635 增量): member-visible, read-only, DB snapshot.
 					r.Get("/pull-requests/lookup", h.LookupPullRequestByRef)
+					// Number-only `MR !N` lookup for body links + tail rows
+					// (RUYI-728): same visibility and snapshot discipline.
+					r.Get("/pull-requests/lookup-by-number", h.LookupPullRequestByNumber)
 					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
