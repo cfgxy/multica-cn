@@ -196,12 +196,12 @@ describe("RichContent current-issue rendering", () => {
     );
     expect(mentions.map((m) => m.textContent)).toEqual(["MUL-7", "MUL-8"]);
 
-    // RUYI-635 增量: inline rows are spans (the block is one button; zero
-    // inline navigation) — the aggregation contract is row count + content.
+    // RUYI-724 (desktop width): resolved rows are direct links — the
+    // aggregation contract is row count + content.
     const rows = Array.from(
       container.querySelectorAll(".issue-reference-row"),
     );
-    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(2);
     expect(rows.map((row) => row.textContent)).toEqual([
       "MUL-7Issue MUL-7",
       "MUL-8Issue MUL-8",
