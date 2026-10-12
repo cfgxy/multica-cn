@@ -325,10 +325,6 @@
     "current_issue": "현재 태스크",
     "referenced_issues": "참조된 태스크",
     "reference_tail_header": "참조 · {{count}}",
-    "reference_tail_more": "참조 {{count}}개 더 보기",
-    "reference_tail_more_with_pr": "참조 {{count}}개 더 보기 (PR {{prCount}}개 포함)",
-    "reference_group_tasks": "태스크",
-    "reference_group_prs": "Pull Request",
     "sub_issues_label": "하위 태스크",
     "sub_issue_of": "상위 태스크",
     "add_sub_issues": "하위 태스크 추가",
@@ -995,7 +991,6 @@
       "comments_no_match": "일치하는 댓글이 없습니다.",
       "comments_open_a11y": "댓글 찾아보기",
       "pull_request_open_failed": "이 Pull request를 열 수 없습니다.",
-      "reference_sheet_close": "닫기",
       "pull_request_card_label": "Pull request"
     },
     "picker": {

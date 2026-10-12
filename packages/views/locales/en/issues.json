@@ -329,10 +329,6 @@
     "current_issue": "This issue",
     "referenced_issues": "Referenced issues",
     "reference_tail_header": "References · {{count}}",
-    "reference_tail_more": "{{count}} more references",
-    "reference_tail_more_with_pr": "{{count}} more references (incl. {{prCount}} PRs)",
-    "reference_group_tasks": "Tasks",
-    "reference_group_prs": "Pull Request",
     "sub_issues_label": "Sub-issues",
     "sub_issue_of": "Sub-issue of",
     "add_sub_issues": "Add sub-issues",
@@ -1033,7 +1029,6 @@
       "comments_no_match": "No matching comments.",
       "comments_open_a11y": "Browse comments",
       "pull_request_open_failed": "Couldn't open this pull request.",
-      "reference_sheet_close": "Close",
       "pull_request_card_label": "Pull request"
     },
     "picker": {

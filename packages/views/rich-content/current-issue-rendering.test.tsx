@@ -196,14 +196,14 @@ describe("RichContent current-issue rendering", () => {
     );
     expect(mentions.map((m) => m.textContent)).toEqual(["MUL-7", "MUL-8"]);
 
-    // RUYI-635 增量: inline rows are spans (the block is one button; zero
-    // inline navigation) — the aggregation contract is row count + content.
+    // RUYI-731: the current issue's own mention builds no footer row, and
+    // the row that remains is the navigation surface (an anchor) — the
+    // aggregation contract is row count + content.
     const rows = Array.from(
       container.querySelectorAll(".issue-reference-row"),
     );
-    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     expect(rows.map((row) => row.textContent)).toEqual([
-      "MUL-7Issue MUL-7",
       "MUL-8Issue MUL-8",
     ]);
   });

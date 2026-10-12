@@ -4,20 +4,15 @@ import type { IssueReference } from "@multica/core/markdown";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
 
 /**
- * Pure row-building + grouping for the reference tail (RUYI-635 增量).
+ * Pure row-building for the reference tail (RUYI-635 + RUYI-731).
  *
- * Mirrors the web footer's row union and popover grouping; the fold cut
- * itself comes from `partitionReferencePreview` in core, so both ends fold
- * at the same row with the same counts. RN components can't render in the
- * node vitest lane, so the tail's policy lives here where it CAN be tested
- * for real — the component (issue-reference-list.tsx) only resolves,
- * partitions, and draws.
+ * Mirrors the web footer's row union; the fold cut and the sheet grouping it
+ * fed were retired with RUYI-731, so only the row union remains here. RN
+ * components can't render in the node vitest lane, so the tail's policy
+ * lives here where it CAN be tested for real — the component
+ * (issue-reference-list.tsx) only resolves, self-filters, and draws.
  */
-import {
-  buildReferenceTailRows,
-  groupReferenceTailRows,
-  shouldCloseSheetOnDragRelease,
-} from "./issue-reference-rows";
+import { buildReferenceTailRows } from "./issue-reference-rows";
 
 const UUID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
 const UUID2 = "8f14e45f-ceea-4670-9b1c-0d3e4f5a6b7c";
@@ -109,49 +104,34 @@ describe("buildReferenceTailRows", () => {
   });
 });
 
-describe("groupReferenceTailRows", () => {
-  it("groups into tasks and pull requests only when both kinds mix", () => {
+describe("buildReferenceTailRows self-filter (RUYI-731)", () => {
+  it("drops a row that resolves to the current issue", () => {
     const rows = buildReferenceTailRows(
-      [bare("MUL-1"), prRef("cfgxy/multica-cn#338"), bare("MUL-404")],
-      [issue(UUID, "MUL-1"), pr(338, "merged"), null],
+      [mention(UUID, "MUL-7")],
+      [issue(UUID, "MUL-7")],
+      UUID,
     );
-    const groups = groupReferenceTailRows(rows);
 
-    expect(groups.grouped).toBe(true);
-    expect(groups.tasks.map((r) => r.kind)).toEqual(["issue"]);
-    expect(groups.prs.map((r) => r.kind)).toEqual(["pr"]);
-    // Degraded rows never join a group — plain-text slots after them.
-    expect(groups.degraded.map((r) => r.kind)).toEqual(["degraded"]);
+    expect(rows).toHaveLength(0);
   });
 
-  it("keeps a single-kind list ungrouped", () => {
+  it("drops only the self row and keeps the rest", () => {
     const rows = buildReferenceTailRows(
-      [bare("MUL-1"), bare("MUL-2")],
-      [issue(UUID, "MUL-1"), issue(UUID2, "MUL-2")],
+      [mention(UUID, "MUL-7"), bare("MUL-9")],
+      [issue(UUID, "MUL-7"), issue(UUID2, "MUL-9")],
+      UUID,
     );
-    const groups = groupReferenceTailRows(rows);
 
-    expect(groups.grouped).toBe(false);
-    expect(groups.tasks).toHaveLength(2);
-    expect(groups.prs).toHaveLength(0);
-  });
-});
-
-describe("shouldCloseSheetOnDragRelease", () => {
-  it("closes when the release point travels past the distance threshold", () => {
-    expect(shouldCloseSheetOnDragRelease(80, 0)).toBe(true);
+    expect(rows.map((r) => r.key)).toEqual(["identifier:MUL-9"]);
   });
 
-  it("closes on a downward fling even from a short drag", () => {
-    expect(shouldCloseSheetOnDragRelease(12, 0.8)).toBe(true);
-  });
+  it("keeps every row when there is no current-issue context", () => {
+    const rows = buildReferenceTailRows(
+      [mention(UUID, "MUL-7")],
+      [issue(UUID, "MUL-7")],
+      null,
+    );
 
-  it("stays open below both thresholds", () => {
-    expect(shouldCloseSheetOnDragRelease(40, 0.1)).toBe(false);
-  });
-
-  it("never closes on an upward drag or upward fling", () => {
-    expect(shouldCloseSheetOnDragRelease(-120, 0)).toBe(false);
-    expect(shouldCloseSheetOnDragRelease(8, -2)).toBe(false);
+    expect(rows).toHaveLength(1);
   });
 });
