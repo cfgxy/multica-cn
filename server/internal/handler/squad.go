@@ -3,12 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -35,6 +37,7 @@ type SquadResponse struct {
 	UpdatedAt     string                       `json:"updated_at"`
 	ArchivedAt    *string                      `json:"archived_at"`
 	ArchivedBy    *string                      `json:"archived_by"`
+	Revision      int64                        `json:"revision"`
 	MemberCount   int                          `json:"member_count"`
 	MemberPreview []SquadMemberPreviewResponse `json:"member_preview"`
 }
@@ -75,6 +78,7 @@ func (h *Handler) squadToResponse(s db.Squad) SquadResponse {
 		UpdatedAt:     timestampToString(s.UpdatedAt),
 		ArchivedAt:    timestampToPtr(s.ArchivedAt),
 		ArchivedBy:    uuidToPtr(s.ArchivedBy),
+		Revision:      s.Revision,
 		MemberPreview: []SquadMemberPreviewResponse{},
 	}
 }
@@ -363,6 +367,12 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		Instructions *string `json:"instructions"`
 		LeaderID     *string `json:"leader_id"`
 		AvatarURL    *string `json:"avatar_url"`
+		// ExpectedRevision is the optimistic lock (RUYI-666): when set, the
+		// write only lands if the squad still carries this revision, and a
+		// stale value answers 409 revision_conflict with the actual
+		// revision. Omitting it keeps the legacy unconditional write
+		// (opt-in).
+		ExpectedRevision *int64 `json:"expected_revision,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -370,6 +380,13 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := db.UpdateSquadParams{ID: squad.ID}
+	if req.ExpectedRevision != nil {
+		if *req.ExpectedRevision < 1 {
+			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
+			return
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: *req.ExpectedRevision, Valid: true}
+	}
 	if req.Name != nil {
 		params.Name = pgtype.Text{String: *req.Name, Valid: true}
 	}
@@ -451,6 +468,20 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := qtx.UpdateSquad(r.Context(), params)
 	if err != nil {
+		// The row is held under FOR UPDATE, so it exists: 0 rows can only
+		// mean a stale expected_revision lost the race (RUYI-666). Re-read
+		// for the structured conflict; the body carries revision metadata
+		// only — never any request payload.
+		if errors.Is(err, pgx.ErrNoRows) {
+			if req.ExpectedRevision != nil {
+				if current, getErr := qtx.GetSquad(r.Context(), squad.ID); getErr == nil {
+					writeRevisionConflict(w, "squad", current.ID, *req.ExpectedRevision, current.Revision)
+					return
+				}
+			}
+			writeError(w, http.StatusNotFound, "squad not found")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to update squad")
 		return
 	}

@@ -2054,6 +2054,7 @@ type Squad struct {
 	Instructions string             `json:"instructions"`
 	// Last marketplace prompt apply on this squad plus the single text it replaced (RUYI-100). Internal: never included in a squad API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	Revision               int64  `json:"revision"`
 }
 
 type SquadMember struct {
@@ -2329,6 +2330,7 @@ type Workspace struct {
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
 	// Execution profile most recently activated in this workspace (RUYI-57). Display state only: it records which profile last wrote the agents' runtime/model/thinking_level, not a live binding. Cleared when that profile is deleted; the agents keep the configuration the activation wrote. No FK, app-layer integrity.
 	ActiveExecutionProfileID pgtype.UUID `json:"active_execution_profile_id"`
+	Revision                 int64       `json:"revision"`
 }
 
 type WorkspaceInvitation struct {

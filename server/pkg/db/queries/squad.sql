@@ -63,14 +63,21 @@ ORDER BY
 SELECT * FROM squad WHERE workspace_id = $1 ORDER BY created_at ASC;
 
 -- name: UpdateSquad :one
+-- Partial update via COALESCE: NULL args leave the column unchanged.
+-- expected_revision (RUYI-666): when set, the write only lands if the squad
+-- still carries that revision; a stale value yields 0 rows and the handler
+-- answers 409 revision_conflict with the actual revision. Same contract as
+-- UpdateWorkspace / UpdateProject / UpdateAgent.
 UPDATE squad SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
     leader_id = COALESCE(sqlc.narg('leader_id'), leader_id),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
-    updated_at = now()
+    updated_at = now(),
+    revision = revision + 1
 WHERE id = $1
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
 RETURNING *;
 
 -- name: ArchiveSquad :one
