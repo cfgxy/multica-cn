@@ -1118,6 +1118,62 @@ func TestResumeWasRejected(t *testing.T) {
 			texts:     []string{"exit status 1"},
 			want:      false,
 		},
+
+		// RUYI-659: the pipe-crash branch. A resumed run whose CLI crashed
+		// before producing any session died before the CLI could even answer
+		// the resume — pipe-crash evidence a fresh session can pick up. The
+		// predicate needs BOTH a crash phrase and the claude pipe wrapper
+		// (see taskfailure.ClaudePipelineCrash).
+		{
+			name:      "CLI pipe crash before any session is a rejection",
+			requested: "sess-old",
+			emitted:   "",
+			failed:    true,
+			texts:     []string{"claude exited with error: exit status 1; claude stderr: FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"},
+			want:      true,
+		},
+		{
+			// A session WAS produced before the crash: the conversation
+			// pointer is real and may be healthy, so the crash must not
+			// discard it.
+			name:      "crash after a session was emitted is not a rejection",
+			requested: "sess-old",
+			emitted:   "sess-old",
+			failed:    true,
+			texts:     []string{"claude exited with error: exit status 1; claude stderr: FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"},
+			want:      false,
+		},
+		{
+			// One signal short: crash prose without the claude-pipe wrapper
+			// must not flip the flag — the same words can appear in a
+			// provider's error narrative.
+			name:      "crash text without claude pipe wrapper is not a rejection",
+			requested: "sess-old",
+			emitted:   "",
+			failed:    true,
+			texts:     []string{"FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"},
+			want:      false,
+		},
+		{
+			// The wrapper without a crash phrase: a non-zero claude exit with
+			// ordinary stderr is every controlled failure the CLI has.
+			name:      "claude wrapper without crash phrase is not a rejection",
+			requested: "sess-old",
+			emitted:   "",
+			failed:    true,
+			texts:     []string{"claude exited with error: exit status 1; claude stderr: some ordinary warning text"},
+			want:      false,
+		},
+		{
+			// A cold run (no resume requested) never sets the flag, crash or
+			// not: there is no session pointer to discard.
+			name:      "cold-run crash is not a resume rejection",
+			requested: "",
+			emitted:   "",
+			failed:    true,
+			texts:     []string{"claude exited with error: exit status 1; claude stderr: triggerUncaughtException()"},
+			want:      false,
+		},
 	}
 
 	for _, tc := range cases {

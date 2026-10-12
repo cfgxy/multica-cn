@@ -153,6 +153,10 @@ var postConsolidationStems = []string{
 	"957_user_model_key_grant_identity",              // RUYI-670 (from trustbe-cn 551)
 	"958_runtime_config_template_identity",           // RUYI-670 (from trustbe-cn 552)
 	"959_computer_runtime_model_config_identity",     // RUYI-670 (from trustbe-cn 553)
+	"963_runtime_cost_budget",                        // RUYI-665 (renumbered 966->963 pre-merge, 963-965 idle across all three sources; original 962 yielded to RUYI-669's reserved 962_task_local_directory_scope — registry-reserved, not on main)
+	"964_runtime_cost_budget_pkey_index",             // RUYI-665
+	"965_runtime_cost_budget_primary_key",            // RUYI-665
+	"966_runtime_cost_budget_scope_index",            // RUYI-665
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

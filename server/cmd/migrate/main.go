@@ -335,6 +335,8 @@ var concurrentIndexCleanups = map[string][]string{
 	"957_user_model_key_grant_identity":                         {"idx_user_model_key_grant_identity"},
 	"958_runtime_config_template_identity":                      {"idx_runtime_config_template_identity"},
 	"959_computer_runtime_model_config_identity":                {"idx_computer_runtime_model_config_identity"},
+	"964_runtime_cost_budget_pkey_index":                        {"runtime_cost_budget_pkey_uidx"},
+	"966_runtime_cost_budget_scope_index":                       {"idx_runtime_cost_budget_scope"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

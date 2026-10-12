@@ -380,6 +380,9 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
+	if writeRuntimeBudgetExceeded(w, err) {
+		return
+	}
 	if err != nil {
 		slog.Warn("issue rerun failed", "issue_id", id, "error", err)
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -416,6 +419,9 @@ func (h *Handler) RetrySourceContextQuickCreate(w http.ResponseWriter, r *http.R
 	}
 	task, err := h.TaskService.RetrySourceContextQuickCreate(r.Context(), workspaceID, requesterID, taskID, canInvoke)
 	if writeIssueLimitReached(w, err) {
+		return
+	}
+	if writeRuntimeBudgetExceeded(w, err) {
 		return
 	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {

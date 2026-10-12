@@ -469,6 +469,18 @@ type Handler struct {
 	// public Gemini endpoint as the default; tests inject a stub provider URL
 	// so the relay is exercised end-to-end without touching the real service.
 	VoiceProviderWSBaseURL string
+	// VoiceProviderProxyURL is the dedicated egress proxy for the Gemini Live
+	// provider hop only (RUYI-692 D1): socks5:// preferred, http(s):// also
+	// accepted. Wired from MULTICA_GEMINI_PROXY_URL; empty means direct dial.
+	// The provider dialer never inherits environment proxy variables, so this
+	// value is the single authority for the voice egress path. It may carry
+	// credentials — environment-only, never logged or persisted.
+	VoiceProviderProxyURL string
+	// VoiceProbeRefreshInterval is how often the background probe refresher
+	// re-runs stale or degraded credential badges (RUYI-692 D1: 定时复探, so
+	// one network blip cannot grey the voice entry forever). Zero means the
+	// production default; tests drive the refresher method directly.
+	VoiceProbeRefreshInterval time.Duration
 	// VoiceDisablePollInterval is how often an in-flight voice relay re-reads
 	// the instance's disabled flag (§4.5: 禁用 → graceful termination).
 	// Zero means the production default; tests inject a shorter interval.
