@@ -118,9 +118,9 @@ const CURRENT_CONTEXT: CurrentIssueRenderContextValue = {
  * current-issue marker split with it:
  *
  *   - Mention forms — `[MUL-7](mention://issue/<uuid>)` and the autolinked
- *     bare identifier — read as plain body text and aggregate into the tail
- *     footer. No chip renders, so "This issue" marking no longer applies to
- *     them, provider or not.
+ *     bare identifier — render as underlined in-app links (RUYI-728) and
+ *     aggregate into the tail footer. No chip renders, so "This issue"
+ *     marking no longer applies to them, provider or not.
  *   - Pasted in-app issue URLs keep their chip (the author wrote a link), and
  *     a URL pointing at the issue being viewed still marks itself "This issue"
  *     through CurrentIssueRenderContext → IssueMentionCard.
@@ -187,14 +187,21 @@ beforeEach(() => {
 });
 
 describe("RichContent current-issue rendering", () => {
-  it("renders mention forms as plain text and aggregates them into the footer, without the current-issue chip", () => {
+  it("renders mention forms as in-app links and aggregates them into the footer, without the current-issue chip", () => {
     const { container } = renderContent(CURRENT_CONTEXT);
 
     expect(screen.queryByTestId("issue-chip")).toBeNull();
-    const mentions = Array.from(
-      container.querySelectorAll("[data-issue-mention-text]"),
-    );
-    expect(mentions.map((m) => m.textContent)).toEqual(["MUL-7", "MUL-8"]);
+    // RUYI-728: both mention forms resolve and render as underlined in-app
+    // anchors — no plain-text span survives a resolved reference.
+    expect(
+      container.querySelector(`a[href='/acme/issues/${CURRENT_ID}']`)
+        ?.textContent,
+    ).toBe("MUL-7");
+    expect(
+      container.querySelector(`a[href='/acme/issues/${OTHER_ID}']`)
+        ?.textContent,
+    ).toBe("MUL-8");
+    expect(container.querySelector("[data-issue-mention-text]")).toBeNull();
 
     // RUYI-635 增量: inline rows are spans (the block is one button; zero
     // inline navigation) — the aggregation contract is row count + content.
