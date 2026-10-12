@@ -82,6 +82,14 @@ type SnapshotRunSpec struct {
 	// a cwd handle — one opened before the overlay covers the path would keep
 	// pointing at the pristine directory underneath the view.
 	Cwd string `json:"cwd,omitempty"`
+	// HostUID/HostGID are the daemon's real uid/gid, mapped to root inside
+	// the worker's user namespace. They ride in the spec because the
+	// supervised launcher keeps only the stored argv: agent.snapshotWrapFromArgv
+	// rebuilds the clone flags from this JSON and fails closed when either
+	// key is missing, refusing to spawn rather than run the agent unwrapped.
+	// BuildSnapshotWrap fills them; constructors leave them zero.
+	HostUID int `json:"host_uid"`
+	HostGID int `json:"host_gid"`
 }
 
 // SnapshotLedgerEntry is one ownership record: which task materialized which
@@ -375,9 +383,15 @@ func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
 // BuildSnapshotWrap encodes a run spec into the launch brief pkg/agent
 // applies to the backend's agent command: the daemon binary as the stage-2
 // wrapper host, the spec JSON in argv, and the daemon's own host IDs for the
-// namespace uid/gid maps.
+// namespace uid/gid maps. The host IDs are stamped into the spec before
+// encoding — not just onto the returned wrap — because a supervised launcher
+// rebuilds the spawn from the stored argv alone, and agent.snapshotWrapFromArgv
+// refuses any spec that does not carry them.
 func BuildSnapshotWrap(selfPath string, spec *SnapshotRunSpec) (*agent.SnapshotWrap, error) {
-	raw, err := json.Marshal(spec)
+	completed := *spec
+	completed.HostUID = os.Getuid()
+	completed.HostGID = os.Getgid()
+	raw, err := json.Marshal(&completed)
 	if err != nil {
 		return nil, fmt.Errorf("execenv: snapshot spec encode: %w", err)
 	}
