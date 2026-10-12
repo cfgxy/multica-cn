@@ -383,6 +383,8 @@
     "title": "プロンプト 立法提案",
     "description": "4 つのプロンプトキャリアに対する条項レベルの草案。送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
     "filterAll": "すべて",
+    "runFilterLabel": "実行バッチ",
+    "runFilterAll": "すべての実行",
     "status": {
       "draft": "下書き",
       "pending_owner": "承認待ち",
@@ -486,6 +488,8 @@
     "windowDays": "参照ウィンドウ（日）",
     "save": "設定を保存",
     "runs": "実行履歴",
+    "runTitle": "毎日のふりかえり{{stamp}}",
+    "viewResults": "成果を見る",
     "trigger": "今すぐ実行",
     "status": {
       "succeeded": "成功",

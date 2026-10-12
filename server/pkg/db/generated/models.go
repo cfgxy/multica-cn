@@ -223,19 +223,6 @@ type AgentToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
-type AgentWebhook struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	Name        string             `json:"name"`
-	Prompt      string             `json:"prompt"`
-	Token       string             `json:"token"`
-	Enabled     bool               `json:"enabled"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-}
-
 type Attachment struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -297,6 +284,21 @@ type AutopilotCollaborator struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	GrantedBy   pgtype.UUID        `json:"granted_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type AutopilotParam struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	AutopilotID  pgtype.UUID        `json:"autopilot_id"`
+	Name         string             `json:"name"`
+	ParamType    string             `json:"param_type"`
+	Description  string             `json:"description"`
+	Required     bool               `json:"required"`
+	DefaultValue pgtype.Text        `json:"default_value"`
+	EnumOptions  []string           `json:"enum_options"`
+	Position     int32              `json:"position"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
 type AutopilotQuotaPeriod struct {
@@ -672,6 +674,107 @@ type CommentReaction struct {
 	ActorID     pgtype.UUID        `json:"actor_id"`
 	Emoji       string             `json:"emoji"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type Computer struct {
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	Host        string             `json:"host"`
+	Port        int32              `json:"port"`
+	SshUser     string             `json:"ssh_user"`
+	Enabled     bool               `json:"enabled"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	CheckedAt   pgtype.Timestamptz `json:"checked_at"`
+	CheckOk     pgtype.Bool        `json:"check_ok"`
+	CheckDetail string             `json:"check_detail"`
+}
+
+type ComputerAudit struct {
+	ID         pgtype.UUID        `json:"id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	BindingID  pgtype.UUID        `json:"binding_id"`
+	Action     string             `json:"action"`
+	Outcome    string             `json:"outcome"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ComputerID pgtype.UUID        `json:"computer_id"`
+}
+
+type ComputerBinding struct {
+	ID              pgtype.UUID        `json:"id"`
+	ComputerID      pgtype.UUID        `json:"computer_id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Username        string             `json:"username"`
+	Verified        bool               `json:"verified"`
+	HealthPort      int32              `json:"health_port"`
+	State           string             `json:"state"`
+	LastError       string             `json:"last_error"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ArchivedAt      pgtype.Timestamptz `json:"archived_at"`
+	AccountState    string             `json:"account_state"`
+	CheckedAt       pgtype.Timestamptz `json:"checked_at"`
+	DaemonState     string             `json:"daemon_state"`
+	DaemonCheckedAt pgtype.Timestamptz `json:"daemon_checked_at"`
+}
+
+type ComputerCredential struct {
+	UserID     pgtype.UUID        `json:"user_id"`
+	Ciphertext []byte             `json:"ciphertext"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ComputerOperation struct {
+	ID               pgtype.UUID        `json:"id"`
+	BindingID        pgtype.UUID        `json:"binding_id"`
+	ComputerID       pgtype.UUID        `json:"computer_id"`
+	Username         string             `json:"username"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	Kind             string             `json:"kind"`
+	RuntimeID        string             `json:"runtime_id"`
+	RequestedVersion string             `json:"requested_version"`
+	ActualVersion    string             `json:"actual_version"`
+	State            string             `json:"state"`
+	Step             string             `json:"step"`
+	ErrorCode        string             `json:"error_code"`
+	ErrorSummary     string             `json:"error_summary"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	FinishedAt       pgtype.Timestamptz `json:"finished_at"`
+	DeadlineAt       pgtype.Timestamptz `json:"deadline_at"`
+}
+
+type ComputerRuntimeAsset struct {
+	BindingID        pgtype.UUID        `json:"binding_id"`
+	RuntimeID        string             `json:"runtime_id"`
+	ExecutablePath   string             `json:"executable_path"`
+	InstallDir       string             `json:"install_dir"`
+	RequestedVersion string             `json:"requested_version"`
+	ActualVersion    string             `json:"actual_version"`
+	InstallerSource  string             `json:"installer_source"`
+	InstalledAt      pgtype.Timestamptz `json:"installed_at"`
+	CheckedAt        pgtype.Timestamptz `json:"checked_at"`
+	ProbeState       string             `json:"probe_state"`
+	ErrorCode        string             `json:"error_code"`
+	ProbeEnvironment string             `json:"probe_environment"`
+}
+
+type ComputerRuntimeModelConfig struct {
+	BindingID           pgtype.UUID        `json:"binding_id"`
+	RuntimeKind         string             `json:"runtime_kind"`
+	SourceID            pgtype.Int2        `json:"source_id"`
+	UpstreamID          pgtype.Text        `json:"upstream_id"`
+	ModelID             string             `json:"model_id"`
+	TemplateRevision    pgtype.Int8        `json:"template_revision"`
+	FileRevision        string             `json:"file_revision"`
+	Status              string             `json:"status"`
+	LastTestStatus      string             `json:"last_test_status"`
+	LastTestErrorCode   string             `json:"last_test_error_code"`
+	LastTestedAt        pgtype.Timestamptz `json:"last_tested_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	FileManifest        []byte             `json:"file_manifest"`
+	LastTestResult      []byte             `json:"last_test_result"`
+	LastSaveOperationID pgtype.UUID        `json:"last_save_operation_id"`
 }
 
 type ContactSalesInquiry struct {
@@ -1310,6 +1413,29 @@ type Member struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type ModelKeyDirectoryEntry struct {
+	SourceID        int16              `json:"source_id"`
+	UpstreamID      string             `json:"upstream_id"`
+	ApiKeyName      string             `json:"api_key_name"`
+	Status          string             `json:"status"`
+	AllowedRuntimes []byte             `json:"allowed_runtimes"`
+	SourceRevision  int64              `json:"source_revision"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ModelKeySource struct {
+	ID                       int16              `json:"id"`
+	BaseUrl                  string             `json:"base_url"`
+	DirectoryTokenCiphertext []byte             `json:"directory_token_ciphertext"`
+	Revision                 int64              `json:"revision"`
+	Status                   string             `json:"status"`
+	LastCheckedAt            pgtype.Timestamptz `json:"last_checked_at"`
+	LastErrorCode            string             `json:"last_error_code"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	UpdatedBy                pgtype.UUID        `json:"updated_by"`
+	RetryAfter               pgtype.Timestamptz `json:"retry_after"`
+}
+
 type NotificationPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -1753,6 +1879,36 @@ type RetrospectiveRun struct {
 	TaskID pgtype.UUID `json:"task_id"`
 }
 
+type RuntimeConfigTemplate struct {
+	RuntimeKind       string             `json:"runtime_kind"`
+	Revision          int64              `json:"revision"`
+	Files             []byte             `json:"files"`
+	SupportedApiTypes []byte             `json:"supported_api_types"`
+	DefaultModel      string             `json:"default_model"`
+	Status            string             `json:"status"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	UpdatedBy         pgtype.UUID        `json:"updated_by"`
+}
+
+// Per-runtime model cost budgets: runtime total (user_id NULL) plus per-user scopes, each with optional daily/weekly/monthly UTC-window USD limits in 1e-10 USD ticks. No row = no limit.
+type RuntimeCostBudget struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RuntimeID   pgtype.UUID `json:"runtime_id"`
+	// NULL = runtime-total scope (blocks every user); non-NULL = caps tasks whose agent this user owns.
+	UserID               pgtype.UUID `json:"user_id"`
+	DailyLimitUsdTicks   pgtype.Int8 `json:"daily_limit_usd_ticks"`
+	WeeklyLimitUsdTicks  pgtype.Int8 `json:"weekly_limit_usd_ticks"`
+	MonthlyLimitUsdTicks pgtype.Int8 `json:"monthly_limit_usd_ticks"`
+	// UTC start of the daily period that already received its limit-reached inbox notice; NULL = not yet notified this period.
+	DailyNotifiedPeriodStart   pgtype.Timestamptz `json:"daily_notified_period_start"`
+	WeeklyNotifiedPeriodStart  pgtype.Timestamptz `json:"weekly_notified_period_start"`
+	MonthlyNotifiedPeriodStart pgtype.Timestamptz `json:"monthly_notified_period_start"`
+	UpdatedBy                  pgtype.UUID        `json:"updated_by"`
+	CreatedAt                  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `json:"updated_at"`
+}
+
 type RuntimeCredential struct {
 	RuntimeInstanceID pgtype.UUID        `json:"runtime_instance_id"`
 	CredentialKey     string             `json:"credential_key"`
@@ -2056,6 +2212,15 @@ type UserComposioConnection struct {
 	LastUsedAt         pgtype.Timestamptz `json:"last_used_at"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type UserModelKeyGrant struct {
+	UserID     pgtype.UUID        `json:"user_id"`
+	SourceID   int16              `json:"source_id"`
+	UpstreamID string             `json:"upstream_id"`
+	Position   int32              `json:"position"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ApiKeyName string             `json:"api_key_name"`
 }
 
 type VcsCommitStatus struct {

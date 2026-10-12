@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type {
   AgentBuilderRuntimeSwitch,
+  RuntimeCostBudget,
   AgentBuilderSession,
   AgentBuilderSessionSummary,
   AgentEnvResponse,
-  AgentWebhook,
   Attachment,
   AutopilotRun,
   BillingBalance,
@@ -1875,6 +1875,36 @@ const RuntimeUsageByHourSchema = z.object({
 
 export const RuntimeUsageByHourListSchema = z.array(RuntimeUsageByHourSchema);
 
+// Runtime cost budget (RUYI-665). Every field is defensive: an older backend
+// has no /budget route at all, and a drifted one must degrade to an empty
+// budget rather than a parse failure.
+const RuntimeBudgetPeriodSchema = z.object({
+  limit_usd: z.number().default(0),
+  used_usd: z.number().default(0),
+  period_start: z.string().default(""),
+  reset_at: z.string().default(""),
+  reached: z.boolean().default(false),
+}).loose();
+
+const RuntimeBudgetScopeSchema = z.object({
+  user_id: z.string().optional(),
+  daily: RuntimeBudgetPeriodSchema.nullable().default(null),
+  weekly: RuntimeBudgetPeriodSchema.nullable().default(null),
+  monthly: RuntimeBudgetPeriodSchema.nullable().default(null),
+}).loose();
+
+export const RuntimeCostBudgetSchema = z.object({
+  runtime: RuntimeBudgetScopeSchema.nullable().default(null),
+  users: z.array(RuntimeBudgetScopeSchema).default([]),
+  can_manage: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_RUNTIME_COST_BUDGET: RuntimeCostBudget = {
+  runtime: null,
+  users: [],
+  can_manage: false,
+};
+
 // ---------------------------------------------------------------------------
 // Agent task responses. The base object stays loose so daemon/runtime fields
 // can drift while task-list consumers still validate the fields they render.
@@ -2320,39 +2350,6 @@ export const AgentEnvResponseSchema = z.object({
   custom_env: z.record(z.string(), z.string()).default({}),
 }).loose();
 export const EMPTY_AGENT_ENV: AgentEnvResponse = { agent_id: "", custom_env: {} };
-
-// Agent webhooks (RUYI-52) — public trigger URLs bound to a fixed prompt.
-// webhook_token/path/url come back only for managers; the server strips them
-// for anyone else, so the three fields are nullable/optional and the UI keys
-// its "can manage" affordances off their presence (not off workspace role).
-export const AgentWebhookSchema = z.object({
-  id: z.string(),
-  agent_id: z.string().default(""),
-  name: z.string().default(""),
-  prompt: z.string().default(""),
-  enabled: z.boolean().default(true),
-  created_at: z.string().default(""),
-  updated_at: z.string().default(""),
-  webhook_path_masked: z.string().default(""),
-  webhook_token: z.string().nullable().optional().transform((v) => v ?? null),
-  webhook_path: z.string().nullable().optional().transform((v) => v ?? null),
-  webhook_url: z.string().nullable().optional().transform((v) => v ?? null),
-}).loose();
-export const AgentWebhookListSchema = z.array(AgentWebhookSchema).default([]);
-export const EMPTY_AGENT_WEBHOOK_LIST: AgentWebhook[] = [];
-export const EMPTY_AGENT_WEBHOOK: AgentWebhook = {
-  id: "",
-  agent_id: "",
-  name: "",
-  prompt: "",
-  enabled: true,
-  created_at: "",
-  updated_at: "",
-  webhook_path_masked: "",
-  webhook_token: null,
-  webhook_path: null,
-  webhook_url: null,
-};
 
 // Squad members — GET/POST /api/squads/:id/members, PATCH .../members/role.
 // Members are addressed by the (member_type, member_id) pair, never by row
@@ -5069,3 +5066,30 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   message: z.string().default(""),
   validated_at: z.string().optional(),
 });
+
+export const AgentRuntimeSchema = z.object({
+  id: z.string().min(1),
+  workspace_id: z.string(),
+  daemon_id: z.string().nullable().catch(null),
+  name: z.string(),
+  custom_name: z.string().nullable().catch(null),
+  runtime_mode: z.enum(["local", "cloud"]).catch("local"),
+  provider: z.string(),
+  launch_header: z.string().catch(""),
+  status: z.enum(["online", "offline"]).catch("offline"),
+  device_info: z.string().catch(""),
+  metadata: z.record(z.string(), z.unknown()).catch({}),
+  owner_id: z.string().nullable().catch(null),
+  visibility: z.enum(["private", "public"]).catch("private"),
+  profile_id: z.string().nullable().catch(null),
+  last_seen_at: z.string().nullable().catch(null),
+  created_at: z.string().catch(""),
+  updated_at: z.string().catch(""),
+  execution_source: z.object({
+    binding_id: z.string().min(1),
+    linux_user: z.string().min(1),
+    host: z.string().min(1),
+    preferred: z.boolean().catch(false),
+  }).nullable().catch(null),
+});
+export const AgentRuntimeListSchema = z.array(AgentRuntimeSchema);

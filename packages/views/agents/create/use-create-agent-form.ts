@@ -17,7 +17,11 @@ import {
 } from "@multica/core/agents";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { isRuntimeUsableForUser, runtimeListOptions } from "@multica/core/runtimes";
+import {
+  isRuntimeUsableForUser,
+  runtimeListOptions,
+  defaultAgentRuntime,
+} from "@multica/core/runtimes";
 import type {
   MemberWithUser,
   RuntimeDevice,
@@ -116,10 +120,11 @@ export function useCreateAgentForm(options?: {
   const seedRuntimeId = seed.runtimeId;
   useEffect(() => {
     if (draft.runtimeId || !seedReady) return;
-    const next = seedRuntimeId || usableRuntimes[0]?.id || "";
+    const next =
+      seedRuntimeId || defaultAgentRuntime(runtimes, currentUserId)?.id || "";
     if (!next) return;
     setDraft((current) => ({ ...current, runtimeId: next }));
-  }, [draft.runtimeId, seedReady, seedRuntimeId, usableRuntimes]);
+  }, [draft.runtimeId, seedReady, seedRuntimeId, runtimes, currentUserId]);
 
   const accessInvalid =
     draft.permissionScope === "members" &&

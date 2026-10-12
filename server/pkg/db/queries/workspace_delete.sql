@@ -608,6 +608,9 @@ deleted_triggers AS (
     WHERE autopilot_id IN (
         SELECT id FROM autopilot WHERE autopilot.workspace_id = $1
     )
+), deleted_params AS (
+    DELETE FROM autopilot_param
+    WHERE autopilot_param.workspace_id = $1
 )
 DELETE FROM autopilot_rule_version
 WHERE autopilot_rule_version.workspace_id = $1;
@@ -727,6 +730,13 @@ DELETE FROM agent WHERE agent.workspace_id = $1;
 
 -- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+-- runtime_cost_budget (RUYI-665) has no FK to agent_runtime (house rule), so
+-- the sweep owns it; it carries workspace_id directly, so it needs no runtime
+-- set join.
+deleted_runtime_cost_budgets AS (
+    DELETE FROM runtime_cost_budget
+    WHERE runtime_cost_budget.workspace_id = $1
+),
 -- runtime_credential has no FK to agent_runtime (house rule), so the sweep
 -- owns it: matched through the runtime set rather than a workspace column
 -- (same construction as execution_profile_entry below). The encrypted
@@ -770,6 +780,11 @@ deleted_pins AS (
 ),
 deleted_daemon_tokens AS (
     DELETE FROM daemon_token WHERE daemon_token.workspace_id = $1
+),
+detach_computer_bindings AS (
+    UPDATE computer_binding SET workspace_id = NULL, state = 'detached',
+        last_error = 'Workspace removed; select a workspace and provision again'
+    WHERE workspace_id = $1
 ),
 detached_feedback AS (
     UPDATE feedback

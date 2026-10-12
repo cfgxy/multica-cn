@@ -138,7 +138,26 @@ var postConsolidationStems = []string{
 	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
 	"937_live_session_mode",                          // RUYI-626
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
+	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
+	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
 	"944_workspace_squad_revision",                   // RUYI-666
+	"947_computer_management",                        // RUYI-670 (ported from trustbe-cn 536+538-540+545+546+554-556)
+	"948_computer_binding_account",                   // RUYI-670 (from trustbe-cn 537)
+	"949_computer_operation_id",                      // RUYI-670 (from trustbe-cn 541)
+	"950_computer_operation_active",                  // RUYI-670 (from trustbe-cn 542)
+	"951_computer_runtime_asset_key",                 // RUYI-670 (from trustbe-cn 543)
+	"952_computer_operation_history",                 // RUYI-670 (from trustbe-cn 544)
+	"953_model_key_directory_name",                   // RUYI-670 (from trustbe-cn 547)
+	"954_user_model_key_grant_position",              // RUYI-670 (from trustbe-cn 548)
+	"955_model_key_source_identity",                  // RUYI-670 (from trustbe-cn 549)
+	"956_model_key_directory_entry_identity",         // RUYI-670 (from trustbe-cn 550)
+	"957_user_model_key_grant_identity",              // RUYI-670 (from trustbe-cn 551)
+	"958_runtime_config_template_identity",           // RUYI-670 (from trustbe-cn 552)
+	"959_computer_runtime_model_config_identity",     // RUYI-670 (from trustbe-cn 553)
+	"963_runtime_cost_budget",                        // RUYI-665 (renumbered 966->963 pre-merge, 963-965 idle across all three sources; original 962 yielded to RUYI-669's reserved 962_task_local_directory_scope — registry-reserved, not on main)
+	"964_runtime_cost_budget_pkey_index",             // RUYI-665
+	"965_runtime_cost_budget_primary_key",            // RUYI-665
+	"966_runtime_cost_budget_scope_index",            // RUYI-665
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

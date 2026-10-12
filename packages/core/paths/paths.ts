@@ -102,6 +102,7 @@ export const paths = {
 
   // Global (pre-workspace) routes
   login: () => "/login",
+  admin: () => "/admin",
   newWorkspace: () => "/workspaces/new",
   invite: (id: string) => `/invite/${encode(id)}`,
   invitations: () => "/invitations",
@@ -119,5 +120,5 @@ export type WorkspacePaths = ReturnType<typeof workspaceScoped>;
 const GLOBAL_PREFIXES = ["/login", "/workspaces/", "/invite/", "/invitations", "/onboarding", "/auth/", "/logout", "/signup"];
 
 export function isGlobalPath(path: string): boolean {
-  return GLOBAL_PREFIXES.some((p) => path === p || path.startsWith(p));
+  return path === "/admin" || path.startsWith("/admin/") || GLOBAL_PREFIXES.some((p) => path === p || path.startsWith(p));
 }

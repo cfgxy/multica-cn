@@ -33,7 +33,6 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent_skill":             workspaceDelete,
 	"agent_task_queue":        workspaceDelete,
 	"agent_to_label":          workspaceDelete,
-	"agent_webhook":           workspaceDelete,
 	"attachment":              workspaceDelete,
 	// Workspace-scoped audit trail (RUYI-355): append-only rows carry no
 	// foreign keys by design and outlive the business rows they describe,
@@ -42,6 +41,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"audit_event":                 workspaceDeleteSettle,
 	"autopilot":                   workspaceDelete,
 	"autopilot_collaborator":      workspaceDelete,
+	"autopilot_param":             workspaceDelete,
 	"autopilot_quota_period":      workspaceDelete,
 	"autopilot_quota_reservation": workspaceDelete,
 	"autopilot_rule_version":      workspaceDelete,
@@ -72,6 +72,20 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"client_usage_daily":              workspaceDeleteDetach,
 	"comment":                         workspaceDelete,
 	"comment_reaction":                workspaceDelete,
+	// Computer records belong to the deployment/human, not the workspace.
+	// Keep bindings so their owner can uninstall an OS service even after
+	// workspace deletion (RUYI-670, ported from trustbe-cn).
+	"computer":                      workspaceDeleteKeep,
+	"computer_audit":                workspaceDeleteKeep,
+	"computer_binding":              workspaceDeleteDetach,
+	"computer_credential":           workspaceDeleteKeep,
+	"computer_operation":            workspaceDeleteKeep,
+	"computer_runtime_asset":        workspaceDeleteKeep,
+	"computer_runtime_model_config": workspaceDeleteKeep,
+	"model_key_directory_entry":     workspaceDeleteKeep,
+	"model_key_source":              workspaceDeleteKeep,
+	"runtime_config_template":       workspaceDeleteKeep,
+	"user_model_key_grant":          workspaceDeleteKeep,
 	"contact_sales_inquiry":           workspaceDeleteKeep,
 	"daemon_connection":               workspaceDelete,
 	"daemon_token":                    workspaceDelete,
@@ -140,8 +154,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// RUYI-425 stage 3: the voice gateway's per-conversation log (design
 	// §3.5). Rows reach the teardown through the live_session.workspace_id
 	// CASCADE FK; agent/instance/user columns are historical UUIDs by design
-	// (migration 926), so no explicit DELETE is needed — same shape as
-	// agent_webhook.
+	// (migration 926), so no explicit DELETE is needed.
 	"live_session": workspaceDelete,
 	// RUYI-425 stage 4: the authoritative facts layer of the voice write-back
 	// (design §3.3 layers.facts / §3.6). Same teardown shape as live_session:
@@ -210,6 +223,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// workspace's runtime set in the same statement that deletes the
 	// runtimes. Destroying the workspace destroys its secrets.
 	"runtime_credential": workspaceDelete,
+	// Per-runtime cost budgets (RUYI-665) carry workspace_id and no FKs
+	// (house rule); DeleteWorkspaceRuntimesAndProjects deletes them by
+	// workspace_id in the same statement that deletes the runtimes.
+	"runtime_cost_budget": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery":        workspaceDelete,
