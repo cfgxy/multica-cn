@@ -41,6 +41,19 @@ a project reference should never be able to start a run. Use it freely to point
 at a project (see the multica-projects-and-resources skill); everything else in
 this document is about the four types (plus `all`) the parser does recognize.
 
+One more `mention://` form sits outside the parser, for pointing at another
+comment: `[Label](mention://comment/<uuid>)`. `comment` is absent from the type
+group, so the backend never parses it and it can enqueue nothing — referencing
+a comment can never start a run. Clients make it navigable instead: web and
+desktop render a chip that jumps to the referenced comment in the issue's
+timeline, and degrade to an inert dashed chip when the target cannot be
+resolved — deleted, not permitted, another issue, or simply not fetched yet all
+look identical by design. Mobile renders the equivalent chip look and routes a
+tap to the comment in place. That is also why a bare comment UUID in backticks
+is never a substitute: it renders as dead text — no chip, no jump, no
+degradation. Reference comments with this link form (first shipped as
+RUYI-108).
+
 ## Step 1 — look up the UUID with `--output json`
 
 A name is not a UUID. Look the UUID up first, from the matching list command:

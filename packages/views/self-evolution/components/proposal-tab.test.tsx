@@ -2,15 +2,21 @@
 
 import { it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { PromptProposal, PromptProposalPreview } from "@multica/core/types";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import type { PromptProposal, PromptProposalPreview, RetrospectiveRun } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
+import {
+  NavigationProvider,
+  type NavigationAdapter,
+} from "../../navigation";
 import { ProposalTab } from "./proposal-tab";
 
 /**
- * The legislation tab's wiring (RUYI-305 E2).
+ * The legislation tab's wiring (RUYI-305 E2, loop-first narrative RUYI-551).
  *
  * The state machine, permissions and gate semantics are enforced by the
  * server and covered by its handler tests. What only a mount can show is
@@ -18,7 +24,9 @@ import { ProposalTab } from "./proposal-tab";
  * statuses they are legal on, a non-owner sees no lifecycle controls at all
  * while creation stays available, and — the injection defense — the approve
  * button stays disabled until the full-text diff preview has rendered and
- * the reviewer ticked the confirmation.
+ * the reviewer ticked the confirmation. RUYI-551 adds the loop-first page
+ * header, the source filter (manual / daily retrospective / merged) and the
+ * empty-pool guidance link to the retrospective config.
  */
 
 const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
@@ -28,6 +36,8 @@ const state = vi.hoisted(() => ({
   proposals: [] as PromptProposal[],
   approved: [] as { id: string; confirmDiffPreviewed: boolean }[],
   batchApproved: [] as { ids: string[]; confirmDiffPreviewed: boolean }[],
+  retroRuns: [] as RetrospectiveRun[],
+  proposalCalls: [] as { status?: string; runId?: string }[],
 }));
 
 vi.mock("@multica/core/permissions", () => ({
@@ -37,7 +47,10 @@ vi.mock("@multica/core/permissions", () => ({
 vi.mock("@multica/core/api", () => ({
   clientErrorMessage: (e: unknown) => (e instanceof Error ? e.message : undefined),
   api: {
-    listPromptProposals: () => Promise.resolve(state.proposals),
+    listPromptProposals: (params?: { status?: string; runId?: string }) => {
+      state.proposalCalls.push(params ?? {});
+      return Promise.resolve(state.proposals);
+    },
     createPromptProposal: vi.fn(),
     updatePromptProposalDraft: vi.fn(),
     submitPromptProposal: vi.fn(),
@@ -64,7 +77,7 @@ vi.mock("@multica/core/api", () => ({
     reworkPromptProposal: vi.fn(),
     enactPromptProposal: vi.fn(),
     getRetrospectiveConfig: vi.fn(),
-    listRetrospectiveRuns: vi.fn(),
+    listRetrospectiveRuns: () => Promise.resolve(state.retroRuns),
   },
 }));
 
@@ -101,15 +114,48 @@ function proposal(overrides: Partial<PromptProposal> = {}): PromptProposal {
 
 afterEach(cleanup);
 
-function mount() {
+function mount(opts: { run?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const searchParams = new URLSearchParams();
+  if (opts.run) searchParams.set("run", opts.run);
+  const navigation: NavigationAdapter = {
+    push: vi.fn(),
+    replace: vi.fn(),
+    back: vi.fn(),
+    pathname: "/acme/self-evolution/proposals",
+    searchParams,
+    hash: "",
+    getShareableUrl: (path) => path,
+  };
   return render(
     <QueryClientProvider client={client}>
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ProposalTab wsId="ws-1" />
-      </I18nProvider>
+      <WorkspaceSlugProvider slug="test-workspace">
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <NavigationProvider value={navigation}>
+            <ProposalTab wsId="ws-1" />
+          </NavigationProvider>
+        </I18nProvider>
+      </WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
+}
+
+function retroRun(overrides: Partial<RetrospectiveRun> = {}): RetrospectiveRun {
+  return {
+    id: "run-1",
+    status: "succeeded",
+    trigger: "schedule",
+    window_start: "2026-10-10T00:00:00Z",
+    window_end: "2026-10-11T00:00:00Z",
+    issues_scanned: 2,
+    issues_analyzed: 2,
+    proposals_created: 1,
+    proposals_merged: 0,
+    duplicates_skipped: 0,
+    error: "",
+    created_at: "2026-10-11T00:00:00Z",
+    ...overrides,
+  };
 }
 
 it("moves the lifecycle controls with the selected row's status", async () => {
@@ -223,5 +269,116 @@ it("gates the batch approval behind per-id diffs and the same confirmation", asy
     expect(state.batchApproved).toEqual([
       { ids: ["prop-a", "prop-b"], confirmDiffPreviewed: true },
     ]),
+  );
+});
+
+it("leads with the loop narrative and filters the list by source", async () => {
+  state.role = "member";
+  state.proposals = [
+    proposal({ id: "p-manual", source: "manual", clause_name: "manual clause" }),
+    proposal({ id: "p-retro", source: "retrospective", clause_name: "retro clause" }),
+    proposal({
+      id: "p-merged",
+      source: "manual",
+      clause_name: "merged clause",
+      merged_from: [{ issue_id: "i-1", run_id: "r-1" }],
+    }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+
+  // Page header (RUYI-551): the automatic loop is the first sentence.
+  expect(screen.getByTestId("legislation-intro").textContent).toContain(
+    "enter the pool automatically",
+  );
+
+  // Unfiltered: every row (the merged row carries the merged marker).
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-merged").textContent).toContain("Merged");
+
+  // Source filter (manual / daily retrospective / merged): the segments
+  // drive exactly the matching subset. Radix Tabs needs the full pointer
+  // sequence, so these go through userEvent.
+  await userEvent.click(screen.getByRole("tab", { name: "Daily retrospective" }));
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-manual")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-merged")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "Manual" }));
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-retro")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-merged")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "Merged" }));
+  expect(screen.getByTestId("legislation-row-p-merged")).toBeTruthy();
+  expect(screen.queryByTestId("legislation-row-p-manual")).toBeNull();
+  expect(screen.queryByTestId("legislation-row-p-retro")).toBeNull();
+
+  await userEvent.click(screen.getByRole("tab", { name: "All sources" }));
+  expect(screen.getByTestId("legislation-row-p-manual")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-retro")).toBeTruthy();
+  expect(screen.getByTestId("legislation-row-p-merged")).toBeTruthy();
+});
+
+it("points an empty unfiltered pool at the retrospective config and hides the link when filtered", async () => {
+  state.role = "member";
+  state.proposals = [];
+  const first = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
+  const link = screen.getByTestId("legislation-empty-retro-link") as HTMLAnchorElement;
+  expect(link.getAttribute("href")).toBe("/test-workspace/self-evolution/retrospective");
+  first.unmount();
+
+  // A filtered empty is an honest empty: filtering a manual-only pool by
+  // "Daily retrospective" yields no rows, but the config guidance stays out
+  // of the way — it only points at the config from the unfiltered view.
+  state.proposals = [proposal({ id: "p-manual", source: "manual", clause_name: "manual clause" })];
+  const second = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  await userEvent.click(screen.getByRole("tab", { name: "Daily retrospective" }));
+  await waitFor(() => expect(screen.getByTestId("legislation-empty")).toBeTruthy());
+  expect(screen.queryByTestId("legislation-empty-retro-link")).toBeNull();
+  second.unmount();
+});
+
+// RUYI-673: the results view scoped to one retrospective run's batch.
+it("scopes the pool to the run in the URL and shows the run filter", async () => {
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-r1" })];
+  state.retroRuns = [retroRun(), retroRun({ id: "run-0", window_end: "2026-10-10T00:00:00Z" })];
+  state.proposalCalls = [];
+  mount({ run: "run-1" });
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  // The URL's run rides through to the API call.
+  expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" });
+  // The filter renders and names the scoped run by its readable title.
+  const filter = screen.getByTestId("legislation-run-filter");
+  expect(filter).toBeTruthy();
+  expect(screen.getAllByText(/Daily retrospective/).length).toBeGreaterThan(0);
+});
+
+it("queries the whole pool when no run is scoped", async () => {
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-all" })];
+  state.retroRuns = [retroRun()];
+  state.proposalCalls = [];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-list")).toBeTruthy());
+  expect(state.proposalCalls.at(-1)).toEqual({});
+});
+
+it("updates the scoped run when the filter changes", async () => {
+  const user = userEvent.setup();
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-x" })];
+  state.retroRuns = [retroRun()];
+  state.proposalCalls = [];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-run-filter")).toBeTruthy());
+  await user.click(screen.getByTestId("legislation-run-filter"));
+  await user.click(await screen.findByRole("option", { name: /Daily retrospective/ }));
+  await waitFor(() =>
+    expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }),
   );
 });

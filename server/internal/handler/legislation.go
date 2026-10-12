@@ -330,11 +330,14 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
-// ListPromptProposals — GET /api/prompt-legislation/proposals?status=
+// ListPromptProposals — GET /api/prompt-legislation/proposals?status=&run_id=
+// run_id (RUYI-673) scopes the pool to one retrospective run's batch; absent
+// or empty lists everything, so existing callers are unaffected.
 func (h *Handler) ListPromptProposals(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.Queries.ListPromptProposals(r.Context(), db.ListPromptProposalsParams{
 		WorkspaceID: parseUUID(h.resolveWorkspaceID(r)),
 		Column2:     r.URL.Query().Get("status"),
+		Column3:     r.URL.Query().Get("run_id"),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list proposals")
@@ -1107,6 +1110,14 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 	}
 	if run.FinishedAt.Valid {
 		resp["finished_at"] = run.FinishedAt.Time.UTC().Format(httpTimeFormat)
+	}
+	// RUYI-663: the platform task enqueued for this run, so the UI can offer
+	// the run's execution transcript. Null when no task exists — runs that
+	// failed before enqueue, and rows written before the column (935).
+	if run.TaskID.Valid {
+		resp["task_id"] = uuidToString(run.TaskID)
+	} else {
+		resp["task_id"] = nil
 	}
 	return resp
 }

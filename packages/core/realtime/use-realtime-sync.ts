@@ -11,6 +11,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { upsertDecisionInCache, decisionInboxKeys } from "../issues/decisions";
+import { decisionRequestKeys } from "../issues/decision-requests";
 import { projectKeys } from "../projects/queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
@@ -95,6 +96,7 @@ import type {
   CommentResolvedPayload,
   CommentUnresolvedPayload,
   ActivityCreatedPayload,
+  AgentSchedulingPausePayload,
   ReactionAddedPayload,
   ReactionRemovedPayload,
   IssueReactionAddedPayload,
@@ -1157,6 +1159,14 @@ export function useRealtimeSync(
       qc.invalidateQueries({ queryKey: decisionInboxKeys.all() });
     });
 
+    // Authorization requests (RUYI-630): the Issue-independent carrier's
+    // lifecycle events. The list is small — a subtree invalidation re-reads
+    // it; the info-stream authorization card separately arrives as a
+    // decision:updated payload published by the same server transition.
+    const unsubDecisionRequestUpdated = ws.on("decision_request:updated", () => {
+      qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
+    });
+
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
       const { comment, issue_revision } = p as CommentUpdatedPayload;
       if (!comment?.issue_id) return;
@@ -1201,6 +1211,33 @@ export function useRealtimeSync(
       const { issue_id } = p as ActivityCreatedPayload;
       if (issue_id) invalidateTimeline(issue_id);
     });
+
+    // Scheduling freeze flips (RUYI-608). The generic "agent"-prefix refresh
+    // above already invalidates the agents list / working-agents / squad
+    // status caches; this handler covers the workspace-side reads (settings
+    // toggle + switcher summary), which the agent prefix does not reach.
+    const unsubSchedulingPaused = ws.on(
+      "agent:scheduling_paused",
+      (p: unknown) => {
+        const { workspace_id } = p as AgentSchedulingPausePayload;
+        const wsId = workspace_id || getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: workspaceKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+        }
+      },
+    );
+    const unsubSchedulingResumed = ws.on(
+      "agent:scheduling_resumed",
+      (p: unknown) => {
+        const { workspace_id } = p as AgentSchedulingPausePayload;
+        const wsId = workspace_id || getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: workspaceKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+        }
+      },
+    );
 
     const unsubReactionAdded = ws.on("reaction:added", (p) => {
       const { issue_id } = p as ReactionAddedPayload;
@@ -1733,10 +1770,13 @@ export function useRealtimeSync(
       unsubCommentCreated();
       unsubCommentUpdated();
       unsubDecisionUpdated();
+      unsubDecisionRequestUpdated();
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();
       unsubActivityCreated();
+      unsubSchedulingPaused();
+      unsubSchedulingResumed();
       unsubReactionAdded();
       unsubReactionRemoved();
       unsubIssueReactionAdded();

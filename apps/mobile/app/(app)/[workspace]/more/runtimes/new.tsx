@@ -22,12 +22,12 @@
  * manual/online/public presentation is visible (desktop closes the dialog
  * back onto the runtime list).
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -37,6 +37,8 @@ import {
   parseAdvancedParams,
 } from "@/lib/voice-runtime";
 import type { RuntimeProfile } from "@multica/core/types";
+import { probeVoiceCredential, type VoiceProbeOutcome } from "@/lib/voice/probe";
+import { api } from "@/data/api";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { runtimeProfileKeys, runtimeProfileListOptions } from "@/data/queries/runtimes";
@@ -49,7 +51,6 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/use-t";
 
 export default function NewVoiceRuntimeScreen() {
-  const insets = useSafeAreaInsets();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("runtimes");
@@ -101,17 +102,26 @@ export default function NewVoiceRuntimeScreen() {
       // §4.3 connectivity probe server-side. A failed PUT leaves the
       // instance in place — the settings page can retry — so navigation
       // still proceeds (desktop closes the dialog in this branch too).
-      let probeInvalid = false;
+      let probe: VoiceProbeOutcome | null = null;
       let keySaveFailed = false;
       let keySaveDetail: string | null = null;
       if (apiKey.trim() !== "") {
         try {
-          const result = await putCredential.mutateAsync({
+          await putCredential.mutateAsync({
             runtimeId: runtime.id,
             credentialKey: VOICE_INSTANCE_CREDENTIAL_KEY,
             value: apiKey.trim(),
           });
-          probeInvalid = result.probe?.status === "invalid";
+          // RUYI-626: the verdict that matters is the device's (the direct
+          // path dials Google from the user's network); it feeds the same
+          // credential_probe badge and decides the feedback alert.
+          probe = await probeVoiceCredential(apiKey.trim());
+          void api
+            .reportCredentialProbe(runtime.id, {
+              status: probe.status,
+              http_status: probe.httpStatus,
+            })
+            .catch(() => {});
         } catch (err) {
           keySaveFailed = true;
           // RUYI-540: surface the server's readable message (e.g. the
@@ -121,11 +131,13 @@ export default function NewVoiceRuntimeScreen() {
         }
       }
       Alert.alert(
-        probeInvalid
-          ? t("voice_instance_create.created_probe_invalid")
-          : keySaveFailed
-            ? t("voice_instance_create.key_save_failed")
-            : t("voice_instance_create.created"),
+        keySaveFailed
+          ? t("voice_instance_create.key_save_failed")
+          : probe?.status === "invalid"
+            ? t("voice_instance_create.created_probe_invalid")
+            : probe?.status === "unreachable"
+              ? t("voice_instance_create.created_unreachable")
+              : t("voice_instance_create.created"),
         keySaveDetail ?? undefined,
       );
       router.replace({
@@ -159,13 +171,11 @@ export default function NewVoiceRuntimeScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* modal 自绘头部（more/agents/new 同款）；顶部让出系统状态栏
-          （RUYI-540）：modal 页没有 Stack 头部的安全区处理，Android
-          edge-to-edge 下 pt-3 会被状态栏图标压住。 */}
-      <View
-        className="flex-row items-center px-4 pb-2 border-b border-border"
-        style={{ paddingTop: insets.top + 12 }}
-      >
+      {/* modal 自绘头部（more/agents/new 同款）；状态栏避让恒定：
+          modal 没有档位，顶边始终贴状态栏（RUYI-540 场景，RUYI-698
+          收敛进 SheetHeader——Android edge-to-edge 下 pt-3 会被状态栏
+          图标压住）。 */}
+      <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12} initialAtLargeDetent>
         <Pressable
           onPress={() => router.back()}
           hitSlop={8}
@@ -192,7 +202,7 @@ export default function NewVoiceRuntimeScreen() {
               : t("voice_instance_create.submit")}
           </Text>
         </Pressable>
-      </View>
+      </SheetHeader>
 
       <ScrollView
         className="flex-1"

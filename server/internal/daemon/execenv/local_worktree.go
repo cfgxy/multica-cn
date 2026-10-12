@@ -12,10 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // Local worktree mode gives every task on a local_directory resource its own
@@ -45,10 +48,12 @@ const (
 	// repo path must stay under MAX_PATH for tools that predate long paths.
 	localWorktreeDirName = "worktree"
 
-	// gitTimeout bounds every git invocation this file makes. These are all
-	// local-only operations (no network), so a slow one means a wedged index
-	// lock rather than a slow remote; failing the task beats hanging a daemon
-	// slot forever.
+	// gitTimeout bounds every git invocation this file makes. Almost all are
+	// local-only operations; the one exception is the `git fetch` a NEW
+	// branch's origin-anchored base runs (anchorNewBranchBase, RUYI-579 W1) —
+	// a slow fetch fails closed there (the local remote-tracking tip is used
+	// instead), while a slow local operation means a wedged index lock, where
+	// failing the task beats hanging a daemon slot forever.
 	gitTimeout = 2 * time.Minute
 
 	// maxUntrackedFiles / maxUntrackedBytes bound the untracked content a task
@@ -763,7 +768,34 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	// makes that recoverable — the worktree is still there to preserve, exactly
 	// as for a commit that could not be made.
 	if !dropped {
-		if verifyErr := w.verifyDeliveryPoint(tip); verifyErr != nil {
+		healAttempted := false
+		// Not an if-scoped short declaration: the self-heal below rewrites
+		// verifyErr, and the refusal after it must see the rewritten value.
+		verifyErr := w.verifyDeliveryPoint(tip)
+		if verifyErr != nil {
+			// Self-heal before refusing (RUYI-579 W2): when the refusal is
+			// only the ancestor break — the tip is the branch's, but a
+			// mid-turn reset/rebase took the base commit out of its ancestry —
+			// the same tree re-committed onto the base is the identical
+			// delivery on a legal ancestry. Any other shape (or any failed
+			// step) leaves verifyErr standing and the refusal below runs
+			// exactly as it did before the heal existed.
+			if reTip, healErr := w.reAnchorDelivery(tip, logger); healErr == nil {
+				healAttempted = true
+				if reErr := w.verifyDeliveryPoint(reTip); reErr != nil {
+					// Unreachable while reAnchor's last step moved the branch
+					// and verified conditions by construction; kept so the
+					// refusal never trusts the heal without re-proving it.
+					verifyErr = reErr
+				} else {
+					tip = reTip
+					verifyErr = nil
+				}
+			} else if !errors.Is(healErr, errNotHealable) {
+				healAttempted = true
+			}
+		}
+		if verifyErr != nil {
 			outcome.Branch = ""
 			outcome.PreservedPath = w.Path
 			// Pin the refused tip for the retry: its prepare reads this
@@ -775,14 +807,20 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 				logger.Warn("execenv: could not record the delivery-guard refusal marker (non-fatal; the retry will fork a fresh branch)",
 					"branch", w.Branch, "tip", tip, "error", mErr)
 			}
+			guardErr := &DeliveryGuardError{Err: verifyErr, HealAttempted: healAttempted}
+			var kindErr *DeliveryGuardError
+			if errors.As(verifyErr, &kindErr) {
+				guardErr.Kind = kindErr.Kind
+			}
 			if logger != nil {
 				logger.Error("execenv: the run's delivery point cannot be recorded as this conversation's; nothing recorded, worktree kept",
-					"path", w.Path, "branch", w.Branch, "git_root", w.GitRoot, "tip", tip, "base", w.BaseCommit, "error", verifyErr)
+					"path", w.Path, "branch", w.Branch, "git_root", w.GitRoot, "tip", tip, "base", w.BaseCommit,
+					"guard_kind", guardErr.Kind, "heal_attempted", healAttempted, "error", verifyErr)
 			}
 			return outcome, fmt.Errorf(
 				"refusing to record branch %s: %w; the task worktree is preserved at %s (listed by `git worktree list` in %s) — "+
 					"recover the work from there, and let the run keep the commit the worktree started from instead of resetting past it",
-				w.Branch, &DeliveryGuardError{Err: verifyErr}, w.Path, w.GitRoot)
+				w.Branch, guardErr, w.Path, w.GitRoot)
 		}
 		if recErr := w.recordState(tip, logger); recErr != nil {
 			outcome.PreservedPath = w.Path
@@ -1272,6 +1310,12 @@ func worktreeIsDirty(worktreePath string) (bool, error) {
 // deletes its directory. The branch is deliberately left alone — it is the
 // task's deliverable.
 func removeLocalWorktreeDir(gitRoot, worktreePath string, logger *slog.Logger) error {
+	// Recycle guard (RUYI-594): record what the worktree held before it goes
+	// away. Removal never blocks here — a linked worktree's commits and
+	// stashes live in the surviving shared .git, so this is the L1 claim's
+	// evidence, not a gate. Best-effort: scan or write failures log and the
+	// removal proceeds.
+	GuardWorktreeEvidence(gitRoot, worktreePath, logger)
 	var removeErr error
 	if out, err := runGit(gitRoot, "worktree", "remove", "--force", worktreePath); err != nil {
 		removeErr = err
@@ -1925,7 +1969,23 @@ func (p taskBranchPlan) altName(taskID string) string {
 // `agent/j/mul-6881-<fingerprint>` — stable for this exact conversation, so its
 // own follow-ups continue it — and, if that is somehow taken too, onto a
 // task-scoped branch that continues nothing.
-func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA string, logger *slog.Logger) taskBranchPlan {
+func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA string, logger *slog.Logger) (plan taskBranchPlan) {
+	// A branch this prepare is about to CREATE starts from origin's tip, not
+	// from local HEAD (RUYI-579 W1): the daemon's local HEAD may carry
+	// un-pushed work — a commit only some agent branch has — and a conversation
+	// forked there diverges from the mainline from birth, so the delivery
+	// guard refuses the turn the member aligns onto the latest code. The
+	// origin tip keeps new work on the shared baseline; local commits that are
+	// not pushed are deliberately NOT carried forward (recorded as a
+	// branch_base_divergence event). Every other shape — continuing a branch,
+	// resetting a merged one, a healed refusal — keeps the base it already
+	// resolved, and a repository with no usable origin anchor keeps local HEAD.
+	defer func() {
+		if !plan.continues && !plan.reset && plan.base == headSHA && !branchExists(gitRoot, plan.name) {
+			plan.base = anchorNewBranchBase(gitRoot, headSHA, logger)
+		}
+	}()
+
 	agentSegment := agentBranchSegment(params)
 
 	owner := params.owner()
@@ -1963,6 +2023,46 @@ func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA strin
 		return taskScoped
 	}
 	return plan
+}
+
+// anchorNewBranchBase resolves the base commit for a branch this prepare is
+// about to create: origin's default-branch tip when the repository has a
+// usable origin anchor, local HEAD otherwise (RUYI-579 W1).
+//
+// Fail-closed by construction: no origin remote, no resolvable
+// refs/remotes/origin/HEAD, or no fetched tip all return headSHA unchanged,
+// which is the pre-W1 behaviour. The fetch is best-effort — an offline host
+// still anchors at the last-fetched tracking tip rather than at local HEAD.
+// When the local HEAD is NOT contained in the chosen tip (un-pushed work, or
+// a fork), the divergence is recorded as a structured branch_base_divergence
+// event and the task proceeds from the origin tip: un-pushed commits are not
+// carried into new work lines, and the diff noise that creates is the
+// agent's to handle at turn start, which beats the delivery guard refusing
+// the whole turn at finalize.
+func anchorNewBranchBase(gitRoot, headSHA string, logger *slog.Logger) string {
+	ref, err := runGitTrimmed(gitRoot, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+	if err != nil || ref == "" {
+		return headSHA
+	}
+	// Only a NEW branch fetches; continued branches skip this entirely.
+	if out, fetchErr := runGit(gitRoot, "fetch", "--quiet", "origin"); fetchErr != nil && logger != nil {
+		logger.Warn("execenv: could not fetch origin before anchoring a new branch (non-fatal; anchoring at the last fetched tip)",
+			"git_root", gitRoot, "output", strings.TrimSpace(out), "error", fetchErr)
+	}
+	tip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", ref)
+	if err != nil || tip == "" {
+		return headSHA
+	}
+	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", headSHA, tip); err != nil && logger != nil {
+		logger.Info("branch_base_divergence",
+			"git_root", gitRoot,
+			"head_sha", headSHA,
+			"origin_tip", tip,
+			"origin_ref", ref,
+			"note", "local HEAD is not contained in the origin default branch; the new branch starts from the origin tip",
+		)
+	}
+	return tip
 }
 
 // agentBranchSegment is the agent's segment of a branch name.
@@ -2399,8 +2499,21 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 	base := carried
 	switch {
 	case !plan.continues:
-		// A fresh fork: carried is the checkout the snapshot was captured
-		// against, so the increment is the snapshot's own delta.
+		// A fresh fork. With delivery-guard branch-base anchoring, a new branch
+		// may be checked out at the origin's tip rather than the checkout the
+		// snapshot was captured against, so carried is no longer guaranteed to
+		// be the snapshot's parent. Diffing against carried would then propose
+		// the whole tree distance between the two checkouts — mainline
+		// movement dressed up as pending reversals, plus local un-pushed work
+		// no task branch should carry (RUYI-380). The snapshot's own parent is
+		// the honest base in both worlds: the increment is exactly the user's
+		// edit set.
+		if _, err := runGit(worktreePath, "diff", "--quiet", snapshot+"^", snapshot); err == nil {
+			// The user has no edits of their own; the carried-vs-snapshot
+			// difference above is all mainline drift. Nothing to replay.
+			return replayResult{}, nil
+		}
+		base = snapshot + "^"
 	case plan.priorState == "":
 		// A healed refusal (healGuardRefusal leaves priorState empty). The
 		// healed tip carries the branch's task work that the user's directory
@@ -2448,10 +2561,11 @@ func replayUserState(worktreePath string, plan taskBranchPlan, snapshot string, 
 			"(the agent would have seen a different tree than you have): %s: %w", strings.TrimSpace(out), pickErr)
 	}
 	if !plan.continues {
-		// Unreachable by construction: a fresh branch is checked out at the
-		// increment's own parent, so there is nothing for git to disagree with.
-		// If it ever happens the tree is not one the user would recognise, and
-		// the old fail-closed rule is the right one.
+		// Reachable since branch-base anchoring: a user edit colliding with
+		// mainline movement between the checkout the snapshot was captured
+		// against and the branch's anchor. A conflicted fresh checkout is not
+		// a tree the user would recognise, so fail closed rather than hand the
+		// agent a merge it never agreed to.
 		abortCherryPick(worktreePath, logger)
 		return replayResult{}, fmt.Errorf("execenv: could not replay your local edits onto a fresh task worktree: %s: %w",
 			strings.TrimSpace(out), pickErr)
@@ -2572,10 +2686,26 @@ func quotedPaths(paths []string) string {
 // retryable delivery_guard reason instead of letting the prose fall into
 // taskfailure.Classify's agent_error.unknown, which is off the retry
 // allowlist and would leave every refused task to a human (RUYI-479).
-type DeliveryGuardError struct{ Err error }
+//
+// Kind and HealAttempted are the structured classification behind the
+// failure event's guard_kind / guard_heal_attempted fields (RUYI-579): Kind
+// names the refusal shape (the values are taskfailure.GuardKind*), so a user
+// sees which recovery applies instead of parsing prose; HealAttempted says
+// the finalize self-heal (reAnchorDelivery) was tried and did not clear the
+// refusal.
+type DeliveryGuardError struct {
+	Err           error
+	Kind          string
+	HealAttempted bool
+}
 
 func (e *DeliveryGuardError) Error() string { return e.Err.Error() }
 func (e *DeliveryGuardError) Unwrap() error { return e.Err }
+
+// errNotHealable marks a refusal reAnchorDelivery declines to touch: the
+// shape is not the ancestor break the self-heal owns. The caller refuses
+// exactly as it did before the heal existed.
+var errNotHealable = errors.New("execenv: delivery is not self-healable")
 
 // guardRefusalRef is where a branch's refusal marker lives: the tip the guard
 // refused to record. Cleared when a later delivery succeeds, dropped with the
@@ -2597,17 +2727,135 @@ func (w *LocalWorktree) verifyDeliveryPoint(tip string) error {
 		return fmt.Errorf("resolve branch %s: %w", w.Branch, err)
 	}
 	if branchTip != tip {
-		return fmt.Errorf("the worktree delivered %s while branch %s points at %s, so the run did not deliver onto its own branch",
-			shortID(tip), w.Branch, shortID(branchTip))
+		return &DeliveryGuardError{
+			Err: fmt.Errorf("the worktree delivered %s while branch %s points at %s, so the run did not deliver onto its own branch",
+				shortID(tip), w.Branch, shortID(branchTip)),
+			Kind: taskfailure.GuardKindBranchMismatch,
+		}
 	}
 	if w.BaseCommit == "" {
 		return fmt.Errorf("branch %s has no commit of this task's own to prove it by", w.Branch)
 	}
 	if _, err := runGit(w.GitRoot, "merge-base", "--is-ancestor", w.BaseCommit, tip); err != nil {
-		return fmt.Errorf("the delivered commit %s no longer contains %s, the commit this turn started from",
-			shortID(tip), shortID(w.BaseCommit))
+		return &DeliveryGuardError{
+			Err: fmt.Errorf("the delivered commit %s no longer contains %s, the commit this turn started from",
+				shortID(tip), shortID(w.BaseCommit)),
+			Kind: taskfailure.GuardKindAncestorBreak,
+		}
 	}
 	return nil
+}
+
+// reAnchorDelivery repairs the one refusal shape the daemon can own outright
+// (RUYI-579 W2): the delivered tree is fine, but the tip it sits on lost the
+// turn's base commit from its ancestry — the shape a reset/rebase onto the
+// mainline mid-turn produces. Replaying the delivery is lossless by
+// definition: the same tree re-committed with its original author and message
+// directly onto the base. Anything else — a branch the tip does not match
+// (off-branch or detached delivery), a missing base, or any git step that
+// fails — returns errNotHealable or the step's error, and the caller refuses
+// exactly as it did before the heal existed.
+//
+// The rebuilt commit collapses the delivery to a single commit on top of the
+// base; intermediate commits are not preserved. The delivered branch state is
+// identical, and the original tip and the re-anchor are named in the message.
+func (w *LocalWorktree) reAnchorDelivery(tip string, logger *slog.Logger) (string, error) {
+	if !w.tracksState || tip == "" || w.BaseCommit == "" || w.userState == "" {
+		return "", fmt.Errorf("%w: the refusal shape is not the ancestor break the self-heal owns", errNotHealable)
+	}
+	branchTip, err := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", "refs/heads/"+w.Branch)
+	if err != nil || branchTip != tip {
+		return "", fmt.Errorf("%w: branch %s does not point at the delivered tip", errNotHealable, w.Branch)
+	}
+	if _, err := runGit(w.GitRoot, "merge-base", "--is-ancestor", w.BaseCommit, tip); err == nil {
+		return "", fmt.Errorf("%w: the delivered tip still contains the turn's base", errNotHealable)
+	}
+	// Content gate (RUYI-579 W2, fail-closed): the snapshot commit's parent is
+	// the HEAD this turn started from, so its diff is the user's uncommitted
+	// edit set. A delivery that touches one of those paths may have reverted
+	// the edits — re-anchoring would launder that into a legal ancestry, and
+	// the next turn's replay, trusting the recorded snapshot, would offer
+	// nothing and silently drop them (MUL-6881). The heal owns only
+	// deliveries that leave the user's edit paths alone; those shapes stay
+	// refused for the retry to replay the edits from the preserved worktree.
+	edits, err := runGitStdout(w.GitRoot, "diff", "--name-only", w.userState+"^", w.userState)
+	if err != nil {
+		return "", fmt.Errorf("execenv: list the user's uncommitted edits of %s: %w", shortID(w.userState), err)
+	}
+	if strings.TrimSpace(edits) != "" {
+		touched, err := runGitStdout(w.GitRoot, "diff", "--name-only", w.userState, tip)
+		if err != nil {
+			return "", fmt.Errorf("execenv: diff the delivery against the user's directory: %w", err)
+		}
+		editPaths := strings.Split(strings.TrimSpace(edits), "\n")
+		for _, path := range strings.Split(strings.TrimSpace(touched), "\n") {
+			if path == "" {
+				continue
+			}
+			if slices.Contains(editPaths, path) {
+				return "", fmt.Errorf("%w: the delivered tip touches %s, a path the user's uncommitted edits live on", errNotHealable, path)
+			}
+		}
+	}
+	tree, err := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", tip+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("execenv: resolve the delivered tree of %s: %w", shortID(tip), err)
+	}
+	// Carry the original authorship over: the re-anchored commit is the same
+	// delivery, only its parent changed. %x1f (unit separator) joins the three
+	// fields; author names may contain any other character.
+	ident, err := runGitTrimmed(w.GitRoot, "show", "-s", "--format=%an%x1f%ae%x1f%aI", tip)
+	if err != nil {
+		return "", fmt.Errorf("execenv: read the author of %s: %w", shortID(tip), err)
+	}
+	parts := strings.SplitN(ident, "\x1f", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
+		return "", fmt.Errorf("execenv: unexpected author identity for %s: %q", shortID(tip), ident)
+	}
+	msg, err := runGitTrimmed(w.GitRoot, "log", "-1", "--format=%B", tip)
+	if err != nil {
+		return "", fmt.Errorf("execenv: read the message of %s: %w", shortID(tip), err)
+	}
+	// The message rides in a file: -m would treat embedded blank lines as
+	// paragraph separators with quoting hazards, and runGit has no stdin.
+	note := fmt.Sprintf("\nmultica: re-anchored onto %s after a delivery-guard refusal; the original delivered tip was %s.\n",
+		shortID(w.BaseCommit), shortID(tip))
+	msgFile, err := os.CreateTemp("", "multica-reanchor-*.msg")
+	if err != nil {
+		return "", fmt.Errorf("execenv: stage the re-anchor message: %w", err)
+	}
+	defer os.Remove(msgFile.Name())
+	if _, err := msgFile.WriteString(msg + note); err != nil {
+		msgFile.Close()
+		return "", fmt.Errorf("execenv: write the re-anchor message: %w", err)
+	}
+	if err := msgFile.Close(); err != nil {
+		return "", fmt.Errorf("execenv: write the re-anchor message: %w", err)
+	}
+	env := []string{
+		"GIT_AUTHOR_NAME=" + parts[0],
+		"GIT_AUTHOR_EMAIL=" + parts[1],
+		"GIT_AUTHOR_DATE=" + parts[2],
+	}
+	newTip, err := runGitTrimmedEnv(w.GitRoot, env, append(commitIdentityArgs(w.GitRoot), "commit-tree", tree, "-p", w.BaseCommit, "-F", msgFile.Name())...)
+	if err != nil {
+		return "", fmt.Errorf("execenv: commit the re-anchored delivery: %w", err)
+	}
+	// Compare-and-swap on the old tip: the branch must not move between the
+	// check above and this move. Losing the race just declines the heal.
+	if out, err := runGit(w.GitRoot, "update-ref", "refs/heads/"+w.Branch, newTip, tip); err != nil {
+		return "", fmt.Errorf("execenv: move branch %s to the re-anchored tip: %s: %w", w.Branch, strings.TrimSpace(out), err)
+	}
+	if logger != nil {
+		logger.Info("delivery_guard_selfheal",
+			"git_root", w.GitRoot,
+			"branch", w.Branch,
+			"original_tip", tip,
+			"new_tip", newTip,
+			"base", w.BaseCommit,
+		)
+	}
+	return newTip, nil
 }
 
 // unmergedPaths lists the files git considers unresolved in a worktree.

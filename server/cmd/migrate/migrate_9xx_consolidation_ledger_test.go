@@ -116,26 +116,34 @@ var passThroughStems = []string{"900_agent_webhooks", "901_project_instructions"
 // never applied on a pre-consolidation database and reach its ledger via the
 // normal migrator.
 var postConsolidationStems = []string{
-	"917_issue_run_cancellation_fence",     // RUYI-384
-	"918_issue_decisions",                  // RUYI-345
-	"919_issue_dependency_relationships",   // RUYI-351 (consolidates 958+959)
-	"920_project_revision",                 // RUYI-354
-	"921_prompt_version_snapshot_scope",    // RUYI-285
-	"922_channel_capability_state",         // RUYI-400
-	"923_prompt_proposal_jev_advisory",     // RUYI-347
-	"924_agent_resource_weight",            // RUYI-397
-	"925_oauth_management",                 // RUYI-420
-	"926_activity_audit",                   // RUYI-355
-	"927_issue_decision_workspace_inbox",   // RUYI-494
-	"928_agent_execution_profile_revision", // RUYI-433
-	"929_quick_replies",                    // RUYI-435 (renumbered from 926: yielded to RUYI-355's 926_activity_audit on main)
-	"930_agent_context_dual_slot",          // RUYI-425
-	"931_live_session",                     // RUYI-425 stage 3
-	"932_voice_fact_event",                 // RUYI-425 stage 4
-	"933_issue_decision_client_request_id", // RUYI-514
-	"934_self_evolution_model_config",      // RUYI-551
-	"935_retrospective_agent",              // RUYI-552 (934 issued to the same issue's direction-2 attempt and deleted unreleased)
-	"938_workspace_backpressure_settings",  // RUYI-618 (936/937 reserved to RUYI-608/RUYI-626 in flight)
+	"917_issue_run_cancellation_fence",               // RUYI-384
+	"918_issue_decisions",                            // RUYI-345
+	"919_issue_dependency_relationships",             // RUYI-351 (consolidates 958+959)
+	"920_project_revision",                           // RUYI-354
+	"921_prompt_version_snapshot_scope",              // RUYI-285
+	"922_channel_capability_state",                   // RUYI-400
+	"923_prompt_proposal_jev_advisory",               // RUYI-347
+	"924_agent_resource_weight",                      // RUYI-397
+	"925_oauth_management",                           // RUYI-420
+	"926_activity_audit",                             // RUYI-355
+	"927_issue_decision_workspace_inbox",             // RUYI-494
+	"928_agent_execution_profile_revision",           // RUYI-433
+	"929_quick_replies",                              // RUYI-435 (renumbered from 926: yielded to RUYI-355's 926_activity_audit on main)
+	"930_agent_context_dual_slot",                    // RUYI-425
+	"931_live_session",                               // RUYI-425 stage 3
+	"932_voice_fact_event",                           // RUYI-425 stage 4
+	"933_issue_decision_client_request_id",           // RUYI-514
+	"934_self_evolution_model_config",                // RUYI-551
+	"935_retrospective_agent",                        // RUYI-552 (934 issued to the same issue's direction-2 attempt and deleted unreleased)
+	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
+	"937_live_session_mode",                          // RUYI-626
+	"938_workspace_backpressure_settings",            // RUYI-618 (936/937 were in flight at issuance; landed as RUYI-579/RUYI-626 stems)
+	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
+	"940_decision_requests",                          // RUYI-630 (938 reserved to RUYI-618 in flight)
+	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
+	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
+	"961_voice_provider_config",                      // RUYI-693
+	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

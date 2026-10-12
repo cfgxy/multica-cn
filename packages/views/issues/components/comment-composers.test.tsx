@@ -8,6 +8,9 @@ import { useCommentComposerStore, useCommentDraftStore } from "@multica/core/iss
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { renderWithI18n } from "../../test/i18n";
+import enVoice from "../../locales/en/voice.json";
+
+// RUYI-626 stage 1: the disabled desktop/web mic announces this reason.
 import { CommentInput } from "./comment-input";
 import { ReplyInput } from "./reply-input";
 
@@ -1250,7 +1253,9 @@ describe("sticky composer preference", () => {
 // Same three-state contract the chat composer shipped in RUYI-449, bound to
 // the issue's assigned agent: empty draft → mic in the send slot, typed
 // content → send arrow, cleared → mic again. Dictated turns land in the
-// editor and NEVER submit — the user still presses Send.
+// editor and NEVER submit — the user still presses Send. RUYI-626 stage 1:
+// the slot keeps its shape but the desktop/web mic renders disabled with
+// the mobile-only reason — it never starts a session.
 describe("CommentInput voice three-state slot", () => {
   function renderVoiceCommentInput(
     onSubmit = vi.fn().mockResolvedValue("comment-1"),
@@ -1290,12 +1295,11 @@ describe("CommentInput voice three-state slot", () => {
     voiceHarness.dismiss.mockReset();
   });
 
-  it("shows the mic in the send slot when the draft is empty and the issue has an assigned agent", () => {
+  it("renders the stage-1 disabled mic in the send slot when the draft is empty and the issue has an assigned agent", () => {
     renderVoiceCommentInput();
 
-    expect(
-      screen.getByRole("button", { name: "Start voice conversation" }),
-    ).toBeInTheDocument();
+    const mic = screen.getByRole("button", { name: enVoice.button.disabled_stage1 });
+    expect(mic).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
   });
 
@@ -1307,7 +1311,7 @@ describe("CommentInput voice three-state slot", () => {
 
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Start voice conversation" }),
+      screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
     ).not.toBeInTheDocument();
   });
 
@@ -1318,12 +1322,12 @@ describe("CommentInput voice three-state slot", () => {
 
     fireEvent.change(editor, { target: { value: "typed first" } });
     expect(
-      screen.queryByRole("button", { name: "Start voice conversation" }),
+      screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
     ).not.toBeInTheDocument();
 
     fireEvent.change(editor, { target: { value: "" } });
     expect(
-      screen.getByRole("button", { name: "Start voice conversation" }),
+      screen.getByRole("button", { name: enVoice.button.disabled_stage1 }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
   });
@@ -1333,7 +1337,7 @@ describe("CommentInput voice three-state slot", () => {
 
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Start voice conversation" }),
+      screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
     ).not.toBeInTheDocument();
   });
 
@@ -1347,7 +1351,7 @@ describe("CommentInput voice three-state slot", () => {
     // in-flight attachment.
     await waitFor(() =>
       expect(
-        screen.queryByRole("button", { name: "Start voice conversation" }),
+        screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
       ).not.toBeInTheDocument(),
     );
     expect(
@@ -1364,28 +1368,21 @@ describe("CommentInput voice three-state slot", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Start voice conversation" }),
+        screen.getByRole("button", { name: enVoice.button.disabled_stage1 }),
       ).toBeInTheDocument(),
     );
   });
 
-  it("starts the session on mic click and surfaces the overlay without touching the draft", async () => {
-    const onSubmit = vi.fn().mockResolvedValue("comment-1");
-    const { rerender } = renderVoiceCommentInput(onSubmit);
+  it("keeps the stage-1 mic inert — clicking never starts a session or opens the overlay", () => {
+    renderVoiceCommentInput();
 
-    fireEvent.click(screen.getByRole("button", { name: "Start voice conversation" }));
-    expect(voiceHarness.start).toHaveBeenCalledTimes(1);
-
-    // Flip the mocked session phase and rerender with the same props — the
-    // overlay surface is the production VoiceOverlay's, so this exercises the
-    // real portal + copy.
-    voiceHarness.phase = "connecting";
-    rerender(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <CommentInput issueId="issue-1" assignedAgentId="agent-1" onSubmit={onSubmit} />
-      </QueryClientProvider>,
-    );
-    expect(screen.getByRole("dialog", { name: "Voice conversation" })).toBeInTheDocument();
+    const mic = screen.getByRole("button", { name: enVoice.button.disabled_stage1 });
+    expect(mic).toBeDisabled();
+    fireEvent.click(mic);
+    expect(voiceHarness.start).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("dialog", { name: "Voice conversation" }),
+    ).not.toBeInTheDocument();
   });
 
   it("backfills a finalized spoken turn into the editor without submitting", async () => {

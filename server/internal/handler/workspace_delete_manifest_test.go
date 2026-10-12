@@ -33,7 +33,6 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent_skill":             workspaceDelete,
 	"agent_task_queue":        workspaceDelete,
 	"agent_to_label":          workspaceDelete,
-	"agent_webhook":           workspaceDelete,
 	"attachment":              workspaceDelete,
 	// Workspace-scoped audit trail (RUYI-355): append-only rows carry no
 	// foreign keys by design and outlive the business rows they describe,
@@ -42,6 +41,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"audit_event":                 workspaceDeleteSettle,
 	"autopilot":                   workspaceDelete,
 	"autopilot_collaborator":      workspaceDelete,
+	"autopilot_param":             workspaceDelete,
 	"autopilot_quota_period":      workspaceDelete,
 	"autopilot_quota_reservation": workspaceDelete,
 	"autopilot_rule_version":      workspaceDelete,
@@ -129,7 +129,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"quick_reply": workspaceDelete,
 	// Decision cards (RUYI-345) own nothing outside the database; the answer
 	// echo is a plain comment row swept with the rest of comment.
-	"issue_decisions":            workspaceDelete,
+	"issue_decisions": workspaceDelete,
+	// Authorization request rows (RUYI-630) are swept with their workspace on
+	// both roles (origin projection and operable target row share the table);
+	// the 926 audit rows they spawned are workspaceDeleteSettle like the rest
+	// of agent_audit_log, and the linked issue_decisions card is swept by the
+	// CTE above. Cascade directly.
+	"decision_requests":          workspaceDelete,
 	"lark_binding_token":         workspaceDelete,
 	"lark_chat_session_binding":  workspaceDelete,
 	"lark_inbound_audit":         workspaceDelete,
@@ -140,8 +146,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// RUYI-425 stage 3: the voice gateway's per-conversation log (design
 	// §3.5). Rows reach the teardown through the live_session.workspace_id
 	// CASCADE FK; agent/instance/user columns are historical UUIDs by design
-	// (migration 926), so no explicit DELETE is needed — same shape as
-	// agent_webhook.
+	// (migration 926), so no explicit DELETE is needed.
 	"live_session": workspaceDelete,
 	// RUYI-425 stage 4: the authoritative facts layer of the voice write-back
 	// (design §3.3 layers.facts / §3.6). Same teardown shape as live_session:
@@ -212,28 +217,38 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"runtime_credential": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
-	"runtime_skill_discovery":         workspaceDelete,
-	"schema_migrations":               workspaceDeleteKeep,
-	"seat_capacity_outbox":            workspaceDeleteSettle,
-	"skill":                           workspaceDelete,
-	"skill_file":                      workspaceDelete,
-	"skill_version":                   workspaceDelete,
-	"skill_to_label":                  workspaceDelete,
-	"squad":                           workspaceDelete,
-	"squad_member":                    workspaceDelete,
-	"sys_cron_executions":             workspaceDeleteKeep,
-	"task_message":                    workspaceDelete,
-	"task_token":                      workspaceDelete,
-	"task_usage":                      workspaceDelete,
-	"task_usage_hourly":               workspaceDelete,
-	"task_usage_hourly_dirty":         workspaceDelete,
-	"task_usage_hourly_rollup_state":  workspaceDeleteKeep,
-	"user":                            workspaceDeleteKeep,
-	"user_composio_connection":        workspaceDeleteKeep,
-	"vcs_commit_status":               workspaceDelete,
-	"vcs_connection":                  workspaceDelete,
-	"vcs_pull_request":                workspaceDelete,
-	"verification_code":               workspaceDeleteKeep,
+	"runtime_skill_discovery": workspaceDelete,
+	"schema_migrations":       workspaceDeleteKeep,
+	"seat_capacity_outbox":    workspaceDeleteSettle,
+	"skill":                   workspaceDelete,
+	"skill_file":              workspaceDelete,
+	"skill_version":           workspaceDelete,
+	"skill_to_label":          workspaceDelete,
+	// Scheduling freezes (RUYI-608) are pure operational state owned by the
+	// workspace; no FK (house rule), swept explicitly by DeleteWorkspace's
+	// cleared_scheduling_pauses CTE. A freeze has no meaning once the
+	// workspace (and its agents) are gone.
+	"scheduling_pause":               workspaceDelete,
+	"squad":                          workspaceDelete,
+	"squad_member":                   workspaceDelete,
+	"sys_cron_executions":            workspaceDeleteKeep,
+	"task_message":                   workspaceDelete,
+	"task_token":                     workspaceDelete,
+	"task_usage":                     workspaceDelete,
+	"task_usage_hourly":              workspaceDelete,
+	"task_usage_hourly_dirty":        workspaceDelete,
+	"task_usage_hourly_rollup_state": workspaceDeleteKeep,
+	"user":                           workspaceDeleteKeep,
+	"user_composio_connection":       workspaceDeleteKeep,
+	"vcs_commit_status":              workspaceDelete,
+	"vcs_connection":                 workspaceDelete,
+	"vcs_pull_request":               workspaceDelete,
+	"verification_code":              workspaceDeleteKeep,
+	// Voice provider pool (RUYI-693): pool rows die with the workspace.
+	// Their credentials live in runtime_credential keyed by the provider id
+	// and are swept by the deleted_runtime_credentials CTE in
+	// DeleteWorkspaceRuntimesAndProjects (which also covers provider rows).
+	"voice_provider":                  workspaceDelete,
 	"webhook_delivery":                workspaceDelete,
 	"workspace":                       workspaceDelete,
 	"workspace_backpressure_settings": workspaceDelete,

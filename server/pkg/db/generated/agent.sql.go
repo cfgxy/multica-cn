@@ -144,7 +144,7 @@ func (q *Queries) AppendDeliveredCommentIds(ctx context.Context, arg AppendDeliv
 const archiveAgent = `-- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), archived_by = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type ArchiveAgentParams struct {
@@ -191,6 +191,9 @@ func (q *Queries) ArchiveAgent(ctx context.Context, arg ArchiveAgentParams) (Age
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -199,7 +202,7 @@ const archiveAgentsByIDs = `-- name: ArchiveAgentsByIDs :many
 UPDATE agent
 SET archived_at = now(), archived_by = $1, updated_at = now()
 WHERE id = ANY($2::uuid[]) AND archived_at IS NULL
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type ArchiveAgentsByIDsParams struct {
@@ -260,6 +263,9 @@ func (q *Queries) ArchiveAgentsByIDs(ctx context.Context, arg ArchiveAgentsByIDs
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -276,7 +282,7 @@ UPDATE agent
 SET archived_at = now(), archived_by = $1, updated_at = now()
 WHERE runtime_id = ANY($2::uuid[]) AND archived_at IS NULL
   AND (system_key IS NULL OR system_key = '')
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type ArchiveAgentsByRuntimeParams struct {
@@ -340,6 +346,9 @@ func (q *Queries) ArchiveAgentsByRuntime(ctx context.Context, arg ArchiveAgentsB
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -349,6 +358,29 @@ func (q *Queries) ArchiveAgentsByRuntime(ctx context.Context, arg ArchiveAgentsB
 		return nil, err
 	}
 	return items, nil
+}
+
+const armFailedTaskRetryReevaluation = `-- name: ArmFailedTaskRetryReevaluation :exec
+UPDATE agent_task_queue
+SET fire_at = $1
+WHERE id = $2 AND status = 'failed'
+`
+
+type ArmFailedTaskRetryReevaluationParams struct {
+	FireAt pgtype.Timestamptz `json:"fire_at"`
+	ID     pgtype.UUID        `json:"id"`
+}
+
+// RUYI-579 W3: a retryable task failed while a successor held the pending
+// slot, so the retry was skipped. Arm a future re-evaluation on the FAILED
+// parent (status stays failed — the user keeps seeing the failure): the
+// runtime sweeper re-runs the retry decision after fire_at, by which time
+// the successor has usually reached a terminal state. Harmless no-op when
+// the row is no longer failed (re-rerun, cancel) — the WHERE clause is the
+// guard.
+func (q *Queries) ArmFailedTaskRetryReevaluation(ctx context.Context, arg ArmFailedTaskRetryReevaluationParams) error {
+	_, err := q.db.Exec(ctx, armFailedTaskRetryReevaluation, arg.FireAt, arg.ID)
+	return err
 }
 
 const cancelAgentTask = `-- name: CancelAgentTask :one
@@ -1930,6 +1962,19 @@ WHERE id = (
                 AND issue_effective_status(ci.workspace_id, ci.status) = 'cancelled'
           )
       )
+      -- RUYI-608: a scheduling freeze on the agent's workspace (workspace-
+      -- level row, agent_id NULL) or on this agent (agent-level row) blocks
+      -- claiming. Evaluated inside the claim statement so freeze and claim
+      -- cannot both win — the same atomicity argument as the RUYI-384 fence
+      -- above. Enqueue and coalesce never read scheduling_pause: tasks keep
+      -- queueing (and coalescing) while frozen and flow on resume in this
+      -- query's existing created_at ASC order. A paused agent still finishes
+      -- dispatched/running work: complete/fail paths never consult this table.
+      AND NOT EXISTS (
+          SELECT 1 FROM scheduling_pause sp
+          WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
+            AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
+      )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -2121,7 +2166,7 @@ func (q *Queries) ClaimChatFinalizeDeferred(ctx context.Context, id pgtype.UUID)
 const clearAgentComposioToolkitAllowlist = `-- name: ClearAgentComposioToolkitAllowlist :one
 UPDATE agent SET composio_toolkit_allowlist = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 // Explicit NULL-clear for composio_toolkit_allowlist. The COALESCE-based
@@ -2169,6 +2214,9 @@ func (q *Queries) ClearAgentComposioToolkitAllowlist(ctx context.Context, id pgt
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -2176,7 +2224,7 @@ func (q *Queries) ClearAgentComposioToolkitAllowlist(ctx context.Context, id pgt
 const clearAgentMcpConfig = `-- name: ClearAgentMcpConfig :one
 UPDATE agent SET mcp_config = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 func (q *Queries) ClearAgentMcpConfig(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -2218,6 +2266,9 @@ func (q *Queries) ClearAgentMcpConfig(ctx context.Context, id pgtype.UUID) (Agen
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -2225,7 +2276,7 @@ func (q *Queries) ClearAgentMcpConfig(ctx context.Context, id pgtype.UUID) (Agen
 const clearAgentServiceTier = `-- name: ClearAgentServiceTier :one
 UPDATE agent SET service_tier = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 // Explicit NULL-clear for service_tier. COALESCE-based UpdateAgent cannot
@@ -2269,6 +2320,9 @@ func (q *Queries) ClearAgentServiceTier(ctx context.Context, id pgtype.UUID) (Ag
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -2276,7 +2330,7 @@ func (q *Queries) ClearAgentServiceTier(ctx context.Context, id pgtype.UUID) (Ag
 const clearAgentThinkingLevel = `-- name: ClearAgentThinkingLevel :one
 UPDATE agent SET thinking_level = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 // Explicit NULL-clear for thinking_level. COALESCE-based UpdateAgent cannot
@@ -2321,6 +2375,66 @@ func (q *Queries) ClearAgentThinkingLevel(ctx context.Context, id pgtype.UUID) (
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
+	)
+	return i, err
+}
+
+const clearAgentVoiceProviderOverride = `-- name: ClearAgentVoiceProviderOverride :one
+UPDATE agent SET
+    voice_provider_id = NULL, voice_model = NULL, voice_advanced = NULL,
+    updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
+`
+
+// Explicit NULL-clear of the agent's D2 voice override triple (RUYI-693).
+// The override is level-wise atomic (provider_id + model + advanced move as
+// one unit), so unbinding drops the whole triple — no half-override survives.
+func (q *Queries) ClearAgentVoiceProviderOverride(ctx context.Context, id pgtype.UUID) (Agent, error) {
+	row := q.db.QueryRow(ctx, clearAgentVoiceProviderOverride, id)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+		&i.ConversationStarters,
+		&i.SessionMaxContextTokens,
+		&i.SessionCompactPct,
+		&i.MarketplacePromptState,
+		&i.ResourceWeight,
+		&i.Revision,
+		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -2328,7 +2442,7 @@ func (q *Queries) ClearAgentThinkingLevel(ctx context.Context, id pgtype.UUID) (
 const clearAgentVoiceRuntime = `-- name: ClearAgentVoiceRuntime :one
 UPDATE agent SET voice_runtime_id = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 // Explicit NULL-clear for the voice slot (RUYI-425). The COALESCE-based
@@ -2374,8 +2488,27 @@ func (q *Queries) ClearAgentVoiceRuntime(ctx context.Context, id pgtype.UUID) (A
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
+}
+
+const clearFailedTaskRetryReevaluation = `-- name: ClearFailedTaskRetryReevaluation :exec
+UPDATE agent_task_queue
+SET fire_at = NULL
+WHERE id = $1 AND status = 'failed' AND fire_at <= now()
+`
+
+// RUYI-579 W3: retire a failed task's retry re-evaluation marker. The
+// `fire_at <= now()` predicate is the concurrency guard: a re-evaluation
+// pass that re-armed the row (successor still pending) wrote a FUTURE
+// fire_at, and this statement must not erase that newer marker — only the
+// expired one this pass was started by.
+func (q *Queries) ClearFailedTaskRetryReevaluation(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, clearFailedTaskRetryReevaluation, id)
+	return err
 }
 
 const completeAgentTask = `-- name: CompleteAgentTask :one
@@ -2866,7 +2999,8 @@ INSERT INTO agent (
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
     session_max_context_tokens, session_compact_pct, resource_weight,
-    voice_runtime_id
+    voice_runtime_id,
+    voice_provider_id, voice_model, voice_advanced
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -2886,9 +3020,15 @@ INSERT INTO agent (
     -- RUYI-425: the optional voice slot. NULL unless the request binds a
     -- voice runtime; the handler validates capability and workspace scope
     -- before the request reaches here.
-    $24
+    $24,
+    -- RUYI-693: the optional voice override triple. NULL voice_provider_id =
+    -- no override (resolution falls through to the workspace default); the
+    -- handler validates pool membership and workspace scope first.
+    $25,
+    $26,
+    $27::jsonb
 )
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type CreateAgentParams struct {
@@ -2916,6 +3056,9 @@ type CreateAgentParams struct {
 	SessionCompactPct        interface{} `json:"session_compact_pct"`
 	ResourceWeight           interface{} `json:"resource_weight"`
 	VoiceRuntimeID           pgtype.UUID `json:"voice_runtime_id"`
+	VoiceProviderID          pgtype.UUID `json:"voice_provider_id"`
+	VoiceModel               pgtype.Text `json:"voice_model"`
+	VoiceAdvanced            []byte      `json:"voice_advanced"`
 }
 
 func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent, error) {
@@ -2944,6 +3087,9 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		arg.SessionCompactPct,
 		arg.ResourceWeight,
 		arg.VoiceRuntimeID,
+		arg.VoiceProviderID,
+		arg.VoiceModel,
+		arg.VoiceAdvanced,
 	)
 	var i Agent
 	err := row.Scan(
@@ -2982,6 +3128,9 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -2996,7 +3145,7 @@ INSERT INTO agent (
     'private', 'private', 1, $5, $6,
     '{}'::jsonb, '[]'::jsonb, $7, 'system', $8
 )
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type CreateAgentBuilderParams struct {
@@ -3062,6 +3211,9 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -4009,7 +4161,7 @@ INSERT INTO agent (
     $6, $7, $8, $9, $10,
     $11, '', '{}'::jsonb, '[]'::jsonb, 'user', $12
 )
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type CreateSystemUserAgentParams struct {
@@ -4091,6 +4243,9 @@ func (q *Queries) CreateSystemUserAgent(ctx context.Context, arg CreateSystemUse
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -4939,7 +5094,7 @@ func (q *Queries) FindRecentRetryDescendant(ctx context.Context, arg FindRecentR
 }
 
 const getAgent = `-- name: GetAgent :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE id = $1
 `
 
@@ -4982,12 +5137,15 @@ func (q *Queries) GetAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
 
 const getAgentBySystemKey = `-- name: GetAgentBySystemKey :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE workspace_id = $1 AND system_key = $2 AND archived_at IS NULL
 ORDER BY created_at ASC, id ASC
 LIMIT 1
@@ -5040,12 +5198,15 @@ func (q *Queries) GetAgentBySystemKey(ctx context.Context, arg GetAgentBySystemK
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
 
 const getAgentForClaimUpdate = `-- name: GetAgentForClaimUpdate :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE id = $1
 FOR UPDATE
 `
@@ -5089,12 +5250,15 @@ func (q *Queries) GetAgentForClaimUpdate(ctx context.Context, id pgtype.UUID) (A
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
 
 const getAgentForUpdate = `-- name: GetAgentForUpdate :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE id = $1
 FOR UPDATE
 `
@@ -5140,12 +5304,15 @@ func (q *Queries) GetAgentForUpdate(ctx context.Context, id pgtype.UUID) (Agent,
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
 
 const getAgentInWorkspace = `-- name: GetAgentInWorkspace :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 `
 
@@ -5193,6 +5360,9 @@ func (q *Queries) GetAgentInWorkspace(ctx context.Context, arg GetAgentInWorkspa
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -6234,7 +6404,7 @@ func (q *Queries) LinkTaskToIssue(ctx context.Context, arg LinkTaskToIssueParams
 }
 
 const listActiveAgentsByRuntime = `-- name: ListActiveAgentsByRuntime :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 `
@@ -6290,6 +6460,9 @@ func (q *Queries) ListActiveAgentsByRuntime(ctx context.Context, runtimeID pgtyp
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -6302,7 +6475,7 @@ func (q *Queries) ListActiveAgentsByRuntime(ctx context.Context, runtimeID pgtyp
 }
 
 const listActiveAgentsByRuntimeForUpdate = `-- name: ListActiveAgentsByRuntimeForUpdate :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 FOR UPDATE
@@ -6360,6 +6533,9 @@ func (q *Queries) ListActiveAgentsByRuntimeForUpdate(ctx context.Context, runtim
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -6372,7 +6548,7 @@ func (q *Queries) ListActiveAgentsByRuntimeForUpdate(ctx context.Context, runtim
 }
 
 const listActiveAgentsByVoiceRuntime = `-- name: ListActiveAgentsByVoiceRuntime :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE voice_runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 `
@@ -6427,6 +6603,9 @@ func (q *Queries) ListActiveAgentsByVoiceRuntime(ctx context.Context, voiceRunti
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -6439,7 +6618,7 @@ func (q *Queries) ListActiveAgentsByVoiceRuntime(ctx context.Context, voiceRunti
 }
 
 const listActiveAgentsByVoiceRuntimeForUpdate = `-- name: ListActiveAgentsByVoiceRuntimeForUpdate :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE voice_runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 FOR UPDATE
@@ -6495,6 +6674,9 @@ func (q *Queries) ListActiveAgentsByVoiceRuntimeForUpdate(ctx context.Context, v
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -6507,7 +6689,7 @@ func (q *Queries) ListActiveAgentsByVoiceRuntimeForUpdate(ctx context.Context, v
 }
 
 const listActiveAgentsByVoiceRuntimeProfile = `-- name: ListActiveAgentsByVoiceRuntimeProfile :many
-SELECT a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.session_max_context_tokens, a.session_compact_pct, a.marketplace_prompt_state, a.resource_weight, a.revision, a.voice_runtime_id FROM agent a
+SELECT a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.session_max_context_tokens, a.session_compact_pct, a.marketplace_prompt_state, a.resource_weight, a.revision, a.voice_runtime_id, a.voice_provider_id, a.voice_model, a.voice_advanced FROM agent a
 JOIN agent_runtime ar ON ar.id = a.voice_runtime_id
 WHERE ar.profile_id = $1 AND ar.workspace_id = $2 AND a.archived_at IS NULL AND a.kind = 'user'
 ORDER BY a.name ASC
@@ -6567,6 +6749,9 @@ func (q *Queries) ListActiveAgentsByVoiceRuntimeProfile(ctx context.Context, arg
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -6939,7 +7124,7 @@ func (q *Queries) ListAgentTasks(ctx context.Context, agentID pgtype.UUID) ([]Ag
 }
 
 const listAgents = `-- name: ListAgents :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE workspace_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY created_at ASC
 `
@@ -6989,6 +7174,9 @@ func (q *Queries) ListAgents(ctx context.Context, workspaceID pgtype.UUID) ([]Ag
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -7001,7 +7189,7 @@ func (q *Queries) ListAgents(ctx context.Context, workspaceID pgtype.UUID) ([]Ag
 }
 
 const listAllAgents = `-- name: ListAllAgents :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE workspace_id = $1 AND kind = 'user'
 ORDER BY created_at ASC
 `
@@ -7051,6 +7239,9 @@ func (q *Queries) ListAllAgents(ctx context.Context, workspaceID pgtype.UUID) ([
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -7063,7 +7254,7 @@ func (q *Queries) ListAllAgents(ctx context.Context, workspaceID pgtype.UUID) ([
 }
 
 const listAllAgentsAnyKind = `-- name: ListAllAgentsAnyKind :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -7123,6 +7314,9 @@ func (q *Queries) ListAllAgentsAnyKind(ctx context.Context, workspaceID pgtype.U
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -7243,6 +7437,107 @@ type ListChatFinalizeDeferredExpiredParams struct {
 // queries so one tick can't monopolise the DB.
 func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListChatFinalizeDeferredExpiredParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listChatFinalizeDeferredExpired, arg.GraceSecs, arg.MaxPerTick)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+			&i.ChannelContextRevision,
+			&i.PromptVersions,
+			&i.CancelRequestedByUserID,
+			&i.CancelRequestedAt,
+			&i.CancelReason,
+			&i.CancelActorType,
+			&i.CancelActorID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFailedTasksForRetryReevaluation = `-- name: ListFailedTasksForRetryReevaluation :many
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id FROM agent_task_queue
+WHERE status = 'failed'
+  AND fire_at IS NOT NULL AND fire_at <= now()
+  AND failure_reason = ANY($1::text[])
+ORDER BY fire_at
+LIMIT $2
+`
+
+type ListFailedTasksForRetryReevaluationParams struct {
+	FailureReasons []string `json:"failure_reasons"`
+	MaxPerTick     int32    `json:"max_per_tick"`
+}
+
+// RUYI-579 W3: failed tasks whose deferred retry decision is due for a
+// re-run. Only rows the auto-retry path recognises at all (the reason
+// allowlist is passed in from the Go side so the two lists cannot drift);
+// budget and eligibility are re-checked per row by MaybeRetryFailedTask.
+// Backed by idx_agent_task_queue_failed_retry_reeval (migration 936), a
+// partial index whose row set is near-empty in steady state.
+func (q *Queries) ListFailedTasksForRetryReevaluation(ctx context.Context, arg ListFailedTasksForRetryReevaluationParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listFailedTasksForRetryReevaluation, arg.FailureReasons, arg.MaxPerTick)
 	if err != nil {
 		return nil, err
 	}
@@ -8316,7 +8611,7 @@ func (q *Queries) ListTasksByIssueWithLimit(ctx context.Context, arg ListTasksBy
 }
 
 const listUserAgentsByRuntimeForUpdate = `-- name: ListUserAgentsByRuntimeForUpdate :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE runtime_id = $1 AND kind = 'user'
 ORDER BY id
 FOR UPDATE
@@ -8372,6 +8667,9 @@ func (q *Queries) ListUserAgentsByRuntimeForUpdate(ctx context.Context, runtimeI
 			&i.ResourceWeight,
 			&i.Revision,
 			&i.VoiceRuntimeID,
+			&i.VoiceProviderID,
+			&i.VoiceModel,
+			&i.VoiceAdvanced,
 		); err != nil {
 			return nil, err
 		}
@@ -8839,7 +9137,7 @@ func (q *Queries) ListWorkspaceWorkingAgents(ctx context.Context, arg ListWorksp
 }
 
 const lockAgentForAutopilotAssignment = `-- name: LockAgentForAutopilotAssignment :one
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 FOR SHARE
 `
@@ -8897,6 +9195,9 @@ func (q *Queries) LockAgentForAutopilotAssignment(ctx context.Context, arg LockA
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -9708,7 +10009,7 @@ SET runtime_id = $1,
     model = $3,
     updated_at = now()
 WHERE id = $4 AND kind = 'system' AND system_key LIKE 'agent_builder:%'
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type RebindAgentBuilderRuntimeParams struct {
@@ -9778,6 +10079,9 @@ func (q *Queries) RebindAgentBuilderRuntime(ctx context.Context, arg RebindAgent
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -10193,7 +10497,7 @@ SET status = desired.status,
     updated_at = now()
 FROM desired
 WHERE a.id = $1 AND a.status IS DISTINCT FROM desired.status
-RETURNING a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.session_max_context_tokens, a.session_compact_pct, a.marketplace_prompt_state, a.resource_weight, a.revision, a.voice_runtime_id
+RETURNING a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.session_max_context_tokens, a.session_compact_pct, a.marketplace_prompt_state, a.resource_weight, a.revision, a.voice_runtime_id, a.voice_provider_id, a.voice_model, a.voice_advanced
 `
 
 // Persisted agent.status has no queued/resource-wait bucket. Keep dispatched
@@ -10240,6 +10544,9 @@ func (q *Queries) RefreshAgentStatusFromTasks(ctx context.Context, id pgtype.UUI
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -10501,7 +10808,7 @@ func (q *Queries) RequeueAgentTaskAfterClaimFailure(ctx context.Context, arg Req
 const restoreAgent = `-- name: RestoreAgent :one
 UPDATE agent SET archived_at = NULL, archived_by = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, error) {
@@ -10543,6 +10850,9 @@ func (q *Queries) RestoreAgent(ctx context.Context, id pgtype.UUID) (Agent, erro
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -10862,27 +11172,36 @@ UPDATE agent SET
     -- request = keep the current binding; an explicit unbind routes through
     -- ClearAgentVoiceRuntime below (COALESCE can't restore NULL).
     voice_runtime_id = COALESCE($8, voice_runtime_id),
-    visibility = COALESCE($9, visibility),
-    permission_mode = COALESCE($10, permission_mode),
-    status = COALESCE($11, status),
-    max_concurrent_tasks = COALESCE($12, max_concurrent_tasks),
-    resource_weight = COALESCE($13, resource_weight),
-    session_max_context_tokens = COALESCE($14, session_max_context_tokens),
-    session_compact_pct = COALESCE($15, session_compact_pct),
-    instructions = COALESCE($16, instructions),
-    custom_env = COALESCE($17, custom_env),
-    custom_args = COALESCE($18, custom_args),
-    mcp_config = COALESCE($19, mcp_config),
-    model = COALESCE($20, model),
-    thinking_level = COALESCE($21, thinking_level),
-    service_tier = COALESCE($22, service_tier),
-    conversation_starters = COALESCE($23, conversation_starters),
-    composio_toolkit_allowlist = COALESCE($24::text[], composio_toolkit_allowlist),
+    -- RUYI-693: the voice override triple preserves field-wise, but an
+    -- override SET (voice_provider_id present) replaces the whole triple and
+    -- an explicit clear routes through ClearAgentVoiceProvider — the triple
+    -- is level-wise atomic, so a provider id never pairs with a stale model
+    -- from another level. The handler enforces that pairing before this
+    -- COALESCE ever sees a partial triple.
+    voice_provider_id = COALESCE($9, voice_provider_id),
+    voice_model = COALESCE($10, voice_model),
+    voice_advanced = COALESCE($11::jsonb, voice_advanced),
+    visibility = COALESCE($12, visibility),
+    permission_mode = COALESCE($13, permission_mode),
+    status = COALESCE($14, status),
+    max_concurrent_tasks = COALESCE($15, max_concurrent_tasks),
+    resource_weight = COALESCE($16, resource_weight),
+    session_max_context_tokens = COALESCE($17, session_max_context_tokens),
+    session_compact_pct = COALESCE($18, session_compact_pct),
+    instructions = COALESCE($19, instructions),
+    custom_env = COALESCE($20, custom_env),
+    custom_args = COALESCE($21, custom_args),
+    mcp_config = COALESCE($22, mcp_config),
+    model = COALESCE($23, model),
+    thinking_level = COALESCE($24, thinking_level),
+    service_tier = COALESCE($25, service_tier),
+    conversation_starters = COALESCE($26, conversation_starters),
+    composio_toolkit_allowlist = COALESCE($27::text[], composio_toolkit_allowlist),
     updated_at = now(),
     revision = revision + 1
 WHERE id = $1
-  AND ($25::bigint IS NULL OR revision = $25::bigint)
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+  AND ($28::bigint IS NULL OR revision = $28::bigint)
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type UpdateAgentParams struct {
@@ -10894,6 +11213,9 @@ type UpdateAgentParams struct {
 	RuntimeMode              pgtype.Text `json:"runtime_mode"`
 	RuntimeID                pgtype.UUID `json:"runtime_id"`
 	VoiceRuntimeID           pgtype.UUID `json:"voice_runtime_id"`
+	VoiceProviderID          pgtype.UUID `json:"voice_provider_id"`
+	VoiceModel               pgtype.Text `json:"voice_model"`
+	VoiceAdvanced            []byte      `json:"voice_advanced"`
 	Visibility               pgtype.Text `json:"visibility"`
 	PermissionMode           pgtype.Text `json:"permission_mode"`
 	Status                   pgtype.Text `json:"status"`
@@ -10934,6 +11256,9 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		arg.RuntimeMode,
 		arg.RuntimeID,
 		arg.VoiceRuntimeID,
+		arg.VoiceProviderID,
+		arg.VoiceModel,
+		arg.VoiceAdvanced,
 		arg.Visibility,
 		arg.PermissionMode,
 		arg.Status,
@@ -10989,6 +11314,9 @@ func (q *Queries) UpdateAgent(ctx context.Context, arg UpdateAgentParams) (Agent
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -10997,7 +11325,7 @@ const updateAgentCustomEnv = `-- name: UpdateAgentCustomEnv :one
 UPDATE agent
 SET custom_env = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type UpdateAgentCustomEnvParams struct {
@@ -11049,6 +11377,9 @@ func (q *Queries) UpdateAgentCustomEnv(ctx context.Context, arg UpdateAgentCusto
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -11057,7 +11388,7 @@ const updateAgentDisabledRuntimeSkills = `-- name: UpdateAgentDisabledRuntimeSki
 UPDATE agent
 SET disabled_runtime_skills = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type UpdateAgentDisabledRuntimeSkillsParams struct {
@@ -11104,6 +11435,9 @@ func (q *Queries) UpdateAgentDisabledRuntimeSkills(ctx context.Context, arg Upda
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -11111,7 +11445,7 @@ func (q *Queries) UpdateAgentDisabledRuntimeSkills(ctx context.Context, arg Upda
 const updateAgentStatus = `-- name: UpdateAgentStatus :one
 UPDATE agent SET status = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state, resource_weight, revision, voice_runtime_id, voice_provider_id, voice_model, voice_advanced
 `
 
 type UpdateAgentStatusParams struct {
@@ -11158,6 +11492,9 @@ func (q *Queries) UpdateAgentStatus(ctx context.Context, arg UpdateAgentStatusPa
 		&i.ResourceWeight,
 		&i.Revision,
 		&i.VoiceRuntimeID,
+		&i.VoiceProviderID,
+		&i.VoiceModel,
+		&i.VoiceAdvanced,
 	)
 	return i, err
 }
@@ -11195,4 +11532,31 @@ type UpdateAgentTaskSessionParams struct {
 func (q *Queries) UpdateAgentTaskSession(ctx context.Context, arg UpdateAgentTaskSessionParams) error {
 	_, err := q.db.Exec(ctx, updateAgentTaskSession, arg.ID, arg.SessionID, arg.WorkDir)
 	return err
+}
+
+const updateQueuedTaskPriorityForIssue = `-- name: UpdateQueuedTaskPriorityForIssue :execrows
+UPDATE agent_task_queue
+SET priority = $1
+WHERE issue_id = $2 AND status = 'queued'
+`
+
+type UpdateQueuedTaskPriorityForIssueParams struct {
+	Priority int32       `json:"priority"`
+	IssueID  pgtype.UUID `json:"issue_id"`
+}
+
+// RUYI-648: an issue's priority is snapshotted onto its queue rows at enqueue
+// time (priorityToInt(issue.Priority) at every CreateAgentTask* path) and the
+// claim ordering reads the row's column, so an issue edited after enqueueing
+// left its queued rows on the stale value and the agent kept serving the old
+// urgency. The priority_changed handler replays the new value onto the rows
+// still competing for a claim; rows a daemon already claimed
+// (dispatched/running/waiting_local_directory/deferred) and terminal rows
+// keep the snapshot their ordering decision was made on.
+func (q *Queries) UpdateQueuedTaskPriorityForIssue(ctx context.Context, arg UpdateQueuedTaskPriorityForIssueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateQueuedTaskPriorityForIssue, arg.Priority, arg.IssueID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

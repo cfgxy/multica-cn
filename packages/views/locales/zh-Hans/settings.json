@@ -927,7 +927,13 @@
     "bp_window_aria": "平滑窗口（样本数）",
     "bp_toast_saved": "背压设置已保存——daemon 将在下次心跳时生效。",
     "bp_toast_failed": "背压设置保存失败。",
-    "bp_invalid": "设置无效："
+    "bp_invalid": "设置无效：",
+    "scheduling_pause_label": "暂停任务调度",
+    "scheduling_pause_hint": "暂停后，工作区内所有智能体不再认领新任务。队列任务继续合并，运行中任务正常结束。仅 Owner/管理员可操作，会记入审计日志。",
+    "scheduling_paused_note_other": "任务调度已暂停 — 全部智能体共有 {{count}} 个任务在队列中。",
+    "scheduling_paused_toast": "已暂停工作区调度",
+    "scheduling_resumed_toast_other": "工作区调度已恢复 — {{count}} 个任务开始流动",
+    "scheduling_toggle_failed_toast": "修改调度状态失败"
   },
   "delete_workspace_dialog": {
     "title": "删除工作区",

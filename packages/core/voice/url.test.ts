@@ -1,4 +1,4 @@
-import { buildVoiceSessionUrl, toWebSocketBase } from "./url";
+import { buildProviderVoiceSessionUrl, buildVoiceSessionUrl, toWebSocketBase } from "./url";
 
 describe("toWebSocketBase", () => {
   it("upgrades http to ws", () => {
@@ -37,5 +37,19 @@ describe("buildVoiceSessionUrl", () => {
   it("never places a token in the URL", () => {
     const url = buildVoiceSessionUrl("https://m.example", "a", { workspaceSlug: "s" });
     expect(url).not.toContain("token");
+  });
+});
+
+describe("buildProviderVoiceSessionUrl", () => {
+  it("targets the demo-aligned BidiGenerateContent route", () => {
+    expect(buildProviderVoiceSessionUrl()).toBe(
+      "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+    );
+  });
+
+  it("accepts a base override and trims the trailing slash", () => {
+    expect(buildProviderVoiceSessionUrl("wss://proxy.example/")).toBe(
+      "wss://proxy.example/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+    );
   });
 });

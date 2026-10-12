@@ -1,0 +1,376 @@
+package daemon
+
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Watchdog observation events (RUYI-593, implementation round 2).
+//
+// The force-stop budgets and their kill semantics are untouched: everything
+// in this file is pure observation layered onto the same silence clock the
+// kill path already reads. Events ride the existing task message channel as
+// type "watchdog" (the server ingest is type-agnostic and redacts every
+// column, so no migration and no CLI change), and every knob is a
+// durationFromEnv key whose zero disables exactly that mechanism — with all
+// knobs at zero the watchdog behaves precisely as before this round.
+//
+// Two invariants hold across all events:
+//   - Self-produced events never touch lastActivityAt. The daemon's own
+//     output is not backend activity; writing it back would let each mark or
+//     alert defer its own kill forever.
+//   - Every event carries checked_at (RFC3339). Ticks land every
+//     min(window/2, 5m), so an event can lag its true threshold by up to one
+//     tick; checked_at lets post-hoc analysis correct for that.
+
+// toolCallTrack is one unpaired tool_use, as observed by the drain loop.
+type toolCallTrack struct {
+	Tool       string
+	CallID     string
+	IssuedAt   time.Time
+	LastMarkAt time.Time
+	Marks      int
+}
+
+// toolCallTracker remembers unpaired tool_use calls so the watchdog can mark
+// stalled calls and describe them in the force-stop pre-mortem. The drain
+// loop registers on tool_use and retires on tool_result — exact call_id match
+// first, then the same same-tool-FIFO fallback the frontend folder uses for
+// results that lost their id.
+//
+// Not safe for concurrent use: every access happens under the drain loop's
+// mutex, shared with transcript batch appends so event seqs stay monotonic
+// against the message stream.
+type toolCallTracker struct {
+	anon  int
+	order []string
+	pend  map[string]*toolCallTrack
+}
+
+func newToolCallTracker() *toolCallTracker {
+	return &toolCallTracker{pend: map[string]*toolCallTrack{}}
+}
+
+// register records a tool_use. A call without an id is tracked under a
+// synthetic key (CallID stays empty) so it still shows up in marks and in the
+// pre-mortem even though no result can ever match it exactly.
+func (t *toolCallTracker) register(callID, tool string, now time.Time) {
+	key := callID
+	if key == "" {
+		t.anon++
+		key = fmt.Sprintf("anon:%d", t.anon)
+	}
+	t.pend[key] = &toolCallTrack{Tool: tool, CallID: callID, IssuedAt: now}
+	t.order = append(t.order, key)
+}
+
+// take removes the call with exactly this id, if pending. A result naming an
+// unknown id retires nothing — the ghost pending call keeps being reported,
+// which is the signal we want.
+func (t *toolCallTracker) take(callID string) *toolCallTrack {
+	if callID == "" {
+		return nil
+	}
+	tr, ok := t.pend[callID]
+	if !ok {
+		return nil
+	}
+	t.remove(callID)
+	return tr
+}
+
+// retireOldest pairs a call-less result with the oldest pending call,
+// preferring the same tool name. A stray result still retires one call so the
+// pending set cannot drift from what the model actually sees.
+func (t *toolCallTracker) retireOldest(preferTool string) *toolCallTrack {
+	if len(t.order) == 0 {
+		return nil
+	}
+	key := t.order[0]
+	if preferTool != "" {
+		for _, k := range t.order {
+			if tr := t.pend[k]; tr != nil && tr.Tool == preferTool {
+				key = k
+				break
+			}
+		}
+	}
+	tr := t.pend[key]
+	t.remove(key)
+	return tr
+}
+
+func (t *toolCallTracker) remove(key string) {
+	delete(t.pend, key)
+	for i, k := range t.order {
+		if k == key {
+			t.order = append(t.order[:i], t.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// pendingLocked snapshots the pending calls, oldest first.
+func (t *toolCallTracker) pendingLocked() []*toolCallTrack {
+	out := make([]*toolCallTrack, 0, len(t.order))
+	for _, k := range t.order {
+		if tr := t.pend[k]; tr != nil {
+			out = append(out, tr)
+		}
+	}
+	return out
+}
+
+// markRepeatInterval spaces repeated tool_in_flight marks with exponential
+// backoff, capped at 8× the base interval. Review finding: with
+// MULTICA_AGENT_TOOL_WATCHDOG=0 (the deliberate long-campaign posture) a
+// fixed repeat interval accumulates a mark every half hour for as long as the
+// campaign runs, and hours-long runs would drown the transcript. Doubling per
+// repeat (30m, 1h, 2h, then a 4h plateau) keeps the stalled call visible
+// forever while bounding the noise logarithmically.
+func markRepeatInterval(markEvery time.Duration, marksSent int) time.Duration {
+	if markEvery <= 0 {
+		return 0
+	}
+	const capMultiple = 8
+	interval := markEvery
+	for i := 1; i < marksSent && interval < capMultiple*markEvery; i++ {
+		interval *= 2
+	}
+	if interval > capMultiple*markEvery {
+		interval = capMultiple * markEvery
+	}
+	return interval
+}
+
+// watchdogEventInput builds the typed payload carried on a "watchdog"
+// TaskMessageData's Input. Everything is diagnostic metadata — event name,
+// state, durations, tool identity, timestamps; no free text — and the server
+// ingest redacts Input regardless of message type, so nothing here can
+// smuggle secrets into the transcript.
+func watchdogEventInput(event string, checkedAt time.Time, extra map[string]any) map[string]any {
+	in := make(map[string]any, len(extra)+2)
+	in["event"] = event
+	in["checked_at"] = checkedAt.UTC().Format(time.RFC3339)
+	for k, v := range extra {
+		in[k] = v
+	}
+	return in
+}
+
+// watchdogEvent is one ready-to-report observation event: the typed payload
+// for Input, the tool name to surface on the message, and — for the alert
+// tier only — the human-reachable comment text the caller posts out-of-band.
+type watchdogEvent struct {
+	input   map[string]any
+	tool    string
+	comment string
+}
+
+// watchdogObserver carries the observation knobs and turns watchdog ticks
+// into ready-to-report events. Zero-value knobs disable their mechanism;
+// with every knob zero the observer emits nothing and the watchdog behaves
+// exactly as before this round.
+//
+// All methods run under the drain loop's mutex — the caller snapshots events
+// under the lock and emits them after releasing it, which keeps event seqs
+// monotonic against the message stream without holding the lock across I/O.
+type watchdogObserver struct {
+	tracker *toolCallTracker
+
+	markAfter time.Duration
+	markEvery time.Duration
+
+	silenceWarnAfter  time.Duration
+	silenceAlertAfter time.Duration
+
+	// warned / silenceAlertFired track the two tiers for the current silent
+	// segment. Both re-arm on the next backend message (observeActivity), so
+	// a run that recovers and goes silent again gets a fresh warn→alert
+	// escalation instead of staying permanently muted after its first alert.
+	warned            bool
+	silenceAlertFired bool
+}
+
+func newWatchdogObserver(cfg Config, tracker *toolCallTracker) *watchdogObserver {
+	return &watchdogObserver{
+		tracker:           tracker,
+		markAfter:         cfg.AgentToolMarkAfter,
+		markEvery:         cfg.AgentToolMarkEvery,
+		silenceWarnAfter:  cfg.AgentSilenceWarnAfter,
+		silenceAlertAfter: cfg.AgentSilenceAlertAfter,
+	}
+}
+
+func (o *watchdogObserver) marksEnabled() bool { return o.markAfter > 0 }
+
+func (o *watchdogObserver) silenceEnabled() bool {
+	return o.silenceWarnAfter > 0 || o.silenceAlertAfter > 0
+}
+
+// observeActivity re-arms the silence escalation after a backend message.
+func (o *watchdogObserver) observeActivity() {
+	o.warned = false
+	o.silenceAlertFired = false
+}
+
+// collectEvents snapshots every event due at this tick: in-flight tool marks
+// plus the no-tool silence escalation. The caller emits the returned events
+// outside the lock.
+func (o *watchdogObserver) collectEvents(now time.Time, idleFor time.Duration, toolInFlight bool) []watchdogEvent {
+	events := o.collectToolMarks(now)
+	return append(events, o.collectSilenceEvents(now, idleFor, toolInFlight)...)
+}
+
+// silenceThresholdLabel renders the sibling tier's threshold in event
+// payloads; an off tier says so explicitly instead of "0s".
+func silenceThresholdLabel(d time.Duration) string {
+	if d <= 0 {
+		return "off"
+	}
+	return d.String()
+}
+
+// silenceAlertComment is the human-reachable text posted to the issue thread
+// when the alert tier trips. The transcript is agent-visible; a dead-channel
+// run has to reach a person who can stop it.
+func silenceAlertComment(idleFor, threshold time.Duration) string {
+	return fmt.Sprintf(
+		"⏰ Agent has produced no output for %s (alert threshold %s). The run is still alive; if this silence is unexpected, check the task transcript or stop the task.",
+		idleFor.Round(time.Second), threshold,
+	)
+}
+
+// collectSilenceEvents runs the two-tier no-tool silence escalation: warn
+// once when the silence crosses warnAfter, alert once when it crosses
+// alertAfter, each exactly once per silent segment (observeActivity re-arms
+// them). A run inside a tool call is not silent — the tool budget governs
+// that regime — so the escalation is suppressed there. Pure observation:
+// nothing here stops the run or moves the silence clock.
+func (o *watchdogObserver) collectSilenceEvents(now time.Time, idleFor time.Duration, toolInFlight bool) []watchdogEvent {
+	if toolInFlight {
+		return nil
+	}
+	var events []watchdogEvent
+	if o.silenceWarnAfter > 0 && !o.warned && idleFor >= o.silenceWarnAfter {
+		o.warned = true
+		events = append(events, watchdogEvent{input: watchdogEventInput("silence_warn", now, map[string]any{
+			"state":     "no_tool_silence",
+			"silent_ms": idleFor.Milliseconds(),
+			"threshold": o.silenceWarnAfter.String(),
+			"alert_at":  silenceThresholdLabel(o.silenceAlertAfter),
+		})})
+	}
+	if o.silenceAlertAfter > 0 && !o.silenceAlertFired && idleFor >= o.silenceAlertAfter {
+		o.silenceAlertFired = true
+		events = append(events, watchdogEvent{
+			input: watchdogEventInput("silence_alert", now, map[string]any{
+				"state":       "no_tool_silence",
+				"silent_ms":   idleFor.Milliseconds(),
+				"threshold":   o.silenceAlertAfter.String(),
+				"watchdog_at": silenceThresholdLabel(o.silenceWarnAfter),
+			}),
+			comment: silenceAlertComment(idleFor, o.silenceAlertAfter),
+		})
+	}
+	return events
+}
+
+// collectToolMarks snapshots tool_in_flight events for every call that has
+// been unpaired for markAfter, then repeats on the backed-off
+// markRepeatInterval schedule until the result lands or the run is
+// force-stopped. Pure observation: nothing here stops the run or moves the
+// silence clock. The caller emits the returned events outside the lock.
+func (o *watchdogObserver) collectToolMarks(now time.Time) []watchdogEvent {
+	if !o.marksEnabled() {
+		return nil
+	}
+	var events []watchdogEvent
+	for _, tr := range o.tracker.pendingLocked() {
+		pending := now.Sub(tr.IssuedAt)
+		if pending < o.markAfter {
+			continue
+		}
+		if tr.Marks > 0 && (o.markEvery <= 0 || now.Sub(tr.LastMarkAt) < markRepeatInterval(o.markEvery, tr.Marks)) {
+			continue
+		}
+		tr.Marks++
+		tr.LastMarkAt = now
+		extra := map[string]any{
+			"state":      "tool_in_flight",
+			"pending_ms": pending.Milliseconds(),
+			"mark_count": tr.Marks,
+		}
+		if tr.CallID != "" {
+			extra["call_id"] = tr.CallID
+		}
+		events = append(events, watchdogEvent{
+			input: watchdogEventInput("tool_in_flight", now, extra),
+			tool:  tr.Tool,
+		})
+	}
+	return events
+}
+
+// collectPremortem snapshots the run at the moment the watchdog decides to
+// force-stop: provider identity, which budget tripped, how long the run had
+// been silent, and the unpaired tool calls that describe which layer the run
+// died in. Runs under the drain mutex via the caller; the snapshot rides the
+// transcript as a watchdog event, and its one-line rendering (see
+// premortemSummaryText) rides the terminal message and the structured kill
+// log — three delivery legs for one fact set, taken atomically.
+func (o *watchdogObserver) collectPremortem(now time.Time, idleFor, threshold time.Duration, toolInFlight bool, provider string, toolCount int32) watchdogEvent {
+	pending := o.tracker.pendingLocked()
+	details := make([]map[string]any, 0, len(pending))
+	for _, tr := range pending {
+		d := map[string]any{
+			"tool":       tr.Tool,
+			"pending_ms": now.Sub(tr.IssuedAt).Milliseconds(),
+			"mark_count": tr.Marks,
+		}
+		if tr.CallID != "" {
+			d["call_id"] = tr.CallID
+		}
+		details = append(details, d)
+	}
+	return watchdogEvent{input: watchdogEventInput("force_stop_premortem", now, map[string]any{
+		"provider":       provider,
+		"threshold":      threshold.String(),
+		"idle_ms":        idleFor.Milliseconds(),
+		"tool_in_flight": toolInFlight,
+		"tool_count":     toolCount,
+		"pending_tools":  details,
+	})}
+}
+
+// premortemSummaryText renders the one-line "which layer died" summary from a
+// premortem payload. It rides the terminal task message — the blocked-issue
+// text has to answer that question without anyone opening the transcript.
+func premortemSummaryText(input map[string]any) string {
+	provider, _ := input["provider"].(string)
+	idleMs, _ := input["idle_ms"].(int64)
+	threshold, _ := input["threshold"].(string)
+	pending, _ := input["pending_tools"].([]map[string]any)
+	var calls string
+	if len(pending) == 0 {
+		calls = "no pending tool calls"
+	} else {
+		parts := make([]string, 0, len(pending))
+		for _, d := range pending {
+			tool, _ := d["tool"].(string)
+			callID, _ := d["call_id"].(string)
+			pms, _ := d["pending_ms"].(int64)
+			marks, _ := d["mark_count"].(int)
+			s := tool + " ("
+			if callID != "" {
+				s += "call " + callID + ", "
+			}
+			s += fmt.Sprintf("in flight %dms, %d marks)", pms, marks)
+			parts = append(parts, s)
+		}
+		calls = fmt.Sprintf("%d pending tool call(s): %s", len(pending), strings.Join(parts, "; "))
+	}
+	return fmt.Sprintf("force-stop snapshot: provider %q, %s; idle %dms of %s budget",
+		provider, calls, idleMs, threshold)
+}

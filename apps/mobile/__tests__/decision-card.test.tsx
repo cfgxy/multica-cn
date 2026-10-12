@@ -174,6 +174,40 @@ describe("DecisionCard", () => {
     expect(screen.getByText("B超 声呐")).toBeTruthy();
   });
 
+  // RUYI-620: legacy data written under the degraded "A 选项文本" form
+  // (letter + space, half- or full-width) must not double-number against
+  // the card's own index letter.
+  it("strips legacy letter+space prefixes so each letter renders once", async () => {
+    await renderCard(
+      card({ options: [{ label: "A 存量方案一" }, { label: "B　存量方案二" }] }),
+    );
+
+    expect(screen.getByText("A")).toBeTruthy();
+    expect(screen.getByText("B")).toBeTruthy();
+    expect(screen.getByText("存量方案一")).toBeTruthy();
+    expect(screen.getByText("存量方案二")).toBeTruthy();
+    expect(screen.queryByText("A 存量方案一")).toBeNull();
+    expect(screen.queryByText("B　存量方案二")).toBeNull();
+  });
+
+  // RUYI-620: the badge renders from recommended_indices, so a trailing
+  // "（推荐）" in the label text must be stripped; leading occurrences are
+  // content and stay.
+  it("strips the trailing recommended marker; the badge still renders once", async () => {
+    await renderCard(
+      card({
+        options: [{ label: "方案一（推荐）" }, { label: "方案二" }, { label: "（推荐）开头不算" }],
+        recommended_indices: [0],
+      }),
+    );
+
+    expect(screen.getByText("方案一")).toBeTruthy();
+    expect(screen.queryByText("方案一（推荐）")).toBeNull();
+    expect(screen.getByText("Recommended")).toBeTruthy();
+    expect(screen.getByText("方案二")).toBeTruthy();
+    expect(screen.getByText("（推荐）开头不算")).toBeTruthy();
+  });
+
   it("renders the question, options and creator for an open single-select card", async () => {
     await renderCard(card({ recommended_indices: [1] }));
 
@@ -268,5 +302,61 @@ describe("DecisionCard", () => {
     await waitFor(() =>
       expect(mockCancel).toHaveBeenCalledWith("issue-1", "d-1"),
     );
+  });
+});
+
+describe("DecisionCard authorization face (RUYI-630)", () => {
+  const authCard = card({
+    decision_kind: "authorization",
+    action_type: "prompt_restore",
+    approve_label: "Restore",
+    deny_label: "Keep",
+  });
+
+  it("renders the two fixed buttons with custom labels and no option rows, submit or cancel", async () => {
+    await renderCard(authCard);
+    expect(screen.getByTestId("decision-auth-approve")).toBeTruthy();
+    expect(screen.getByTestId("decision-auth-deny")).toBeTruthy();
+    expect(screen.getByText("Restore")).toBeTruthy();
+    expect(screen.getByText("Keep")).toBeTruthy();
+    expect(screen.queryByTestId("decision-option-0")).toBeNull();
+    expect(screen.queryByTestId("decision-submit")).toBeNull();
+    expect(screen.queryByTestId("decision-cancel")).toBeNull();
+  });
+
+  it("answers through the issue decision endpoint with the approve index", async () => {
+    await renderCard(authCard);
+    await pressPressable("decision-auth-approve");
+    expect(mockAnswer).toHaveBeenCalledWith("issue-1", "d-1", [0]);
+  });
+
+  it("hides the buttons and shows the answered state once answered", async () => {
+    await renderCard(
+      card({
+        ...authCard,
+        status: "answered",
+        auth_state: "approved",
+        answered_by_type: "member",
+        answered_by_id: "member-1",
+        answered_at: "2026-10-02T04:00:00Z",
+      }),
+    );
+    expect(screen.queryByTestId("decision-auth-approve")).toBeNull();
+    expect(screen.queryByTestId("decision-auth-deny")).toBeNull();
+    // The answered line is one merged text node ("Owner · 2h" — timeAgo is
+    // mocked), and the directory-backed name resolves asynchronously.
+    await waitFor(() => expect(screen.getByText("Owner · 2h")).toBeTruthy());
+  });
+
+  it("shows the execution failure line on execute_failed", async () => {
+    await renderCard(
+      card({
+        ...authCard,
+        status: "answered",
+        auth_state: "approved",
+        execution_error: "modified",
+      }),
+    );
+    expect(screen.getByText("Execution failed: {{reason}}")).toBeTruthy();
   });
 });

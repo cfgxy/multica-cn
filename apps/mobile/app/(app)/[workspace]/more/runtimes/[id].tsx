@@ -57,6 +57,8 @@ import {
   resolveVoiceInstanceDeleteTarget,
   runtimeDeleteErrorMessage,
 } from "@/lib/voice/instance-delete";
+import { probeVoiceCredential, type VoiceProbeOutcome } from "@/lib/voice/probe";
+import { api } from "@/data/api";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { runtimeListOptions } from "@/data/queries/runtimes";
@@ -95,6 +97,7 @@ export default function VoiceRuntimeSettingsScreen() {
   const [advancedText, setAdvancedText] = useState("");
   const [keyValue, setKeyValue] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [probing, setProbing] = useState(false);
 
   // Seeded once the instance resolves; re-seeded when the invalidated
   // queries deliver fresh server values. Deps are the server values —
@@ -118,6 +121,49 @@ export default function VoiceRuntimeSettingsScreen() {
 
   const showError = (err: unknown, fallback: string) =>
     Alert.alert(err instanceof Error && err.message ? err.message : fallback);
+
+  // RUYI-626: the connectivity verdict that matters is the device's (the
+  // direct path dials Google from the user's own network). The outcome is
+  // reported into the same credential_probe badge the server-side probe
+  // writes; "unreachable" is reported as-is — a network verdict is not a
+  // credential verdict and never blocks anything.
+  const runDeviceProbe = async (runtimeId: string, value: string) => {
+    const outcome = await probeVoiceCredential(value.trim());
+    void api
+      .reportCredentialProbe(runtimeId, {
+        status: outcome.status,
+        http_status: outcome.httpStatus,
+      })
+      .catch(() => {});
+    return outcome;
+  };
+
+  const probeAlert = (outcome: VoiceProbeOutcome) => {
+    if (outcome.status === "ok") {
+      Alert.alert(t("voice_instance.probe_ok"));
+    } else if (outcome.status === "invalid") {
+      Alert.alert(
+        t("voice_instance.probe_invalid", {
+          status: outcome.httpStatus ?? "",
+        }),
+      );
+    } else {
+      Alert.alert(t("voice_instance.probe_unreachable"));
+    }
+  };
+
+  // 「测试连接」— probes the typed key WITHOUT saving it (the stored key is
+  // never echoed back, so an already-saved instance is validated at save
+  // time or by re-typing the key).
+  const testKey = async () => {
+    if (!keyValue.trim() || probing) return;
+    setProbing(true);
+    try {
+      probeAlert(await runDeviceProbe(runtime?.id ?? "", keyValue));
+    } finally {
+      setProbing(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -199,18 +245,29 @@ export default function VoiceRuntimeSettingsScreen() {
         value,
       },
       {
-        onSuccess: (res) => {
+        // Saved is saved (§4.5): no probe blocks the write. The alert and
+        // the badge follow the DEVICE probe (RUYI-626) — the server-side
+        // probe in the PUT response describes the server's network, not
+        // the user's.
+        onSuccess: async () => {
           setKeyValue("");
-          if (res.probe?.status === "invalid") {
-            // Saved is saved (§4.5): the probe never blocks the write — it
-            // only downgrades the alert and flips the badge.
+          let outcome: VoiceProbeOutcome;
+          try {
+            outcome = await runDeviceProbe(runtime.id, value);
+          } catch {
+            Alert.alert(t("voice_instance.key_saved"));
+            return;
+          }
+          if (outcome.status === "ok") {
+            Alert.alert(t("voice_instance.key_saved"));
+          } else if (outcome.status === "invalid") {
             Alert.alert(
               t("voice_instance.probe_invalid", {
-                status: res.probe?.http_status ?? "",
+                status: outcome.httpStatus ?? "",
               }),
             );
           } else {
-            Alert.alert(t("voice_instance.key_saved"));
+            Alert.alert(t("voice_instance.key_saved_unreachable"));
           }
         },
         onError: (err) =>
@@ -344,6 +401,15 @@ export default function VoiceRuntimeSettingsScreen() {
               label={t("voice_instance.key_update")}
               disabled={pending || !keyValue.trim()}
               onPress={updateKey}
+            />
+            <SaveButton
+              label={
+                probing
+                  ? t("voice_instance.probe_running")
+                  : t("voice_instance.probe_test")
+              }
+              disabled={pending || probing || !keyValue.trim()}
+              onPress={testKey}
             />
           </View>
           {credential !== "not_configured" ? (
@@ -492,7 +558,7 @@ export default function VoiceRuntimeSettingsScreen() {
 function CredentialBadge({
   status,
 }: {
-  status: "not_configured" | "configured" | "invalid";
+  status: "not_configured" | "configured" | "invalid" | "unreachable";
 }) {
   const { t } = useT("runtimes");
   return (
@@ -502,14 +568,18 @@ function CredentialBadge({
           ? "text-xs text-success"
           : status === "invalid"
             ? "text-xs text-destructive"
-            : "text-xs text-muted-foreground"
+            : status === "unreachable"
+              ? "text-xs text-warning"
+              : "text-xs text-muted-foreground"
       }
     >
       {status === "configured"
         ? t("voice_instance.badge_configured")
         : status === "invalid"
           ? t("voice_instance.badge_invalid")
-          : t("voice_instance.badge_not_configured")}
+          : status === "unreachable"
+            ? t("voice_instance.badge_unreachable")
+            : t("voice_instance.badge_not_configured")}
     </Text>
   );
 }
