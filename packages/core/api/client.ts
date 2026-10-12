@@ -6365,6 +6365,37 @@ export class ApiClient {
     return parsed.pull_request;
   }
 
+  /**
+   * Resolve one `MR !N` text reference to a PR in the workspace snapshot by
+   * number alone (RUYI-728, body autolink + reference tail). A 404 — the
+   * platform has never seen this number — and a 409 — the number is
+   * ambiguous across repos — both return `null` so the token degrades to
+   * plain text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+  ): Promise<GitHubPullRequest | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${number}`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+        return null;
+      }
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+    );
+    return parsed.pull_request;
+  }
+
   // VCS integration (Forgejo / Gitea / GitLab)
   async listVCSConnections(workspaceId: string): Promise<ListVCSConnectionsResponse> {
     return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`);
