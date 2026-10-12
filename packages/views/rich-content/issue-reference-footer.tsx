@@ -1,23 +1,25 @@
 "use client";
 
 /**
- * Tail aggregation of issue references (RUYI-635 + 增量).
+ * Tail aggregation of issue references (RUYI-635 + 增量 + RUYI-724).
  *
  * Issue mentions used to render inline as chips, which buried the prose under
  * chrome whenever a comment referenced an issue more than once. RichContent now
  * strips them to plain text in the body and hands the collected references to
- * this footer. The 增量 rework (Owner points ①③④) makes the block an
- * anti-mistouch two-level surface:
+ * this footer. The block renders per viewport (RUYI-724):
  *
- *   - Level 1 — one `<button>` for the WHOLE block (header 「引用 · N」 + at
- *     most 2 preview rows + a fold-count line). Inline rows are spans: the
- *     only press target is the block itself, and pressing it opens the
- *     popover. Nothing inline navigates any more.
- *   - Level 2 — the popover lists every reference, grouped 「任务 /
- *     Pull Request」 only when both kinds mix (single-kind lists keep
- *     first-appearance order, no headers). Issue rows navigate in-app
- *     (same tab); PR rows open the canonical URL in a new tab. Esc /
- *     outside click close and focus returns to the block (Base UI).
+ *   - Desktop (>=768px): the preview rows ARE the navigation — each resolved
+ *     row is a direct link (one click, no popover round-trip; the desktop has
+ *     room to show rows at full width, per Owner feedback). The popover exists
+ *     only when rows fold past the preview budget, and the collapsed
+ *     「N more references」 line is its only trigger; it still lists every
+ *     reference so the block stays the one place to scan them all.
+ *   - Mobile (<768px): the RUYI-635 增量 anti-mistouch two-level surface is
+ *     kept — one `<button>` for the WHOLE block (header 「引用 · N」 + at most
+ *     2 preview rows + a fold-count line), inline rows are spans, and pressing
+ *     the block opens the popover. Rows group 「任务 / Pull Request」 only when
+ *     both kinds mix; issue rows navigate in-app (same tab); PR rows open the
+ *     canonical URL in a new tab.
  *
  * Rows are a three-kind union: resolved issue, resolved PR (`owner/repo#N`,
  * the 增量's text-reference aggregation), and degraded — an unresolved
@@ -34,6 +36,7 @@
  * not grow a trailing block.
  */
 import { useMemo, useState } from "react";
+import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import {
   ChevronDown,
   GitMerge,
@@ -103,11 +106,34 @@ function prIdentifier(pr: GitHubPullRequest): string {
 // can't reach it — these rows carry their own complete Tailwind class set.
 // The `issue-reference-popover-row` hook name stays on for tests and QA.
 const POPOVER_ROW_CLASS =
-  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[13px] no-underline outline-none hover:bg-accent focus-visible:bg-accent";
+  "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent focus-visible:bg-accent";
 const POPOVER_ROW_TITLE_CLASS =
-  "min-w-0 line-clamp-2 text-[14px] leading-5 text-foreground";
+  "min-w-0 line-clamp-2 text-body leading-5 text-foreground";
 const POPOVER_ROW_IDENTIFIER_CLASS =
-  "shrink-0 text-[13px] font-medium text-muted-foreground";
+  "shrink-0 text-label font-medium text-muted-foreground";
+
+// Icon/identifier/title glyph classes per surface. Inline (block preview +
+// desktop direct rows) renders inside `.rich-text-editor` scope and uses the
+// scoped CSS classes; popover rows are portaled outside that scope and carry
+// their own complete Tailwind set.
+const INLINE_ROW_CONTENT_CLASSES = {
+  icon: "h-3.5 w-3.5 shrink-0",
+  identifier: "issue-reference-identifier",
+  title: "issue-reference-title",
+} as const;
+const POPOVER_ROW_CONTENT_CLASSES = {
+  icon: "h-4 w-4 shrink-0",
+  identifier: POPOVER_ROW_IDENTIFIER_CLASS,
+  title: POPOVER_ROW_TITLE_CLASS,
+} as const;
+
+// Structural (not `typeof`): the two variants share the shape, not the
+// literal class strings.
+type RowContentClasses = {
+  icon: string;
+  identifier: string;
+  title: string;
+};
 
 function IssueReferenceFooter({ references }: { references: IssueReference[] }) {
   const { t } = useT("issues");
@@ -116,6 +142,9 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
   const { colorOf: statusColorOf } = useIssueStatuses(wsId);
   const resolutions = useIssueReferenceResolutions(references);
   const [open, setOpen] = useState(false);
+  // RUYI-724: desktop-width viewports navigate from the visible rows directly;
+  // mobile keeps the anti-mistouch two-level surface.
+  const isMobile = useIsMobile();
 
   const rows = useMemo<TailRow[]>(() => {
     const rows: TailRow[] = [];
@@ -179,41 +208,55 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
 
   const close = () => setOpen(false);
 
+  const renderIssueContents = (issue: Issue, classes: RowContentClasses) => (
+    <>
+      <StatusIcon
+        status={issue.status}
+        category={issueStatusCategory(issue) ?? undefined}
+        color={statusColorOf(issue.status)}
+        className={classes.icon}
+      />
+      <span className={classes.identifier} translate="no">
+        {issue.identifier}
+      </span>
+      <span className={classes.title}>{issue.title}</span>
+    </>
+  );
+
+  const renderPrContents = (pr: GitHubPullRequest, classes: RowContentClasses) => {
+    const visual = derivePullRequestStateVisual(pr.state);
+    const { Icon, className } = PR_STATE_ICON[visual.state];
+    return (
+      <>
+        <Icon
+          aria-hidden
+          className={`${classes.icon} ${className} ${
+            visual.dimmed ? "opacity-80" : ""
+          }`}
+        />
+        <span className={classes.identifier} translate="no">
+          {prIdentifier(pr)}
+        </span>
+        <span className={classes.title}>{pr.title}</span>
+      </>
+    );
+  };
+
+  const renderDegradedContents = (row: Extract<TailRow, { kind: "degraded" }>) =>
+    row.fallback;
+
   const renderInlineRow = (row: TailRow) => {
     if (row.kind === "issue") {
       return (
         <span key={row.key} className="issue-reference-row">
-          <StatusIcon
-            status={row.issue.status}
-            category={issueStatusCategory(row.issue) ?? undefined}
-            color={statusColorOf(row.issue.status)}
-            className="h-3.5 w-3.5 shrink-0"
-          />
-          <span className="issue-reference-identifier" translate="no">
-            {row.issue.identifier}
-          </span>
-          <span className="issue-reference-title">{row.issue.title}</span>
+          {renderIssueContents(row.issue, INLINE_ROW_CONTENT_CLASSES)}
         </span>
       );
     }
     if (row.kind === "pr") {
-      const { Icon, className } = PR_STATE_ICON[
-        derivePullRequestStateVisual(row.pr.state).state
-      ];
       return (
         <span key={row.key} className="issue-reference-row">
-          <Icon
-            aria-hidden
-            className={`h-3.5 w-3.5 shrink-0 ${className} ${
-              derivePullRequestStateVisual(row.pr.state).dimmed
-                ? "opacity-80"
-                : ""
-            }`}
-          />
-          <span className="issue-reference-identifier" translate="no">
-            {prIdentifier(row.pr)}
-          </span>
-          <span className="issue-reference-title">{row.pr.title}</span>
+          {renderPrContents(row.pr, INLINE_ROW_CONTENT_CLASSES)}
         </span>
       );
     }
@@ -222,9 +265,44 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         key={row.key}
         className="issue-reference-row issue-reference-degraded"
       >
-        {row.fallback}
+        {renderDegradedContents(row)}
       </span>
     );
+  };
+
+  // Desktop direct rows (RUYI-724): a visible reference navigates in one
+  // click, with the same per-kind semantics as the popover rows (issue →
+  // in-app route, PR → canonical URL in a new tab). Degraded rows keep the
+  // non-clickable slot.
+  const renderDirectRow = (row: TailRow) => {
+    if (row.kind === "issue") {
+      return (
+        <AppLink
+          key={row.key}
+          href={p.issueDetail(row.issue.id)}
+          newTabTitle={row.issue.identifier}
+          className="issue-reference-row"
+          data-reference-kind="issue"
+        >
+          {renderIssueContents(row.issue, INLINE_ROW_CONTENT_CLASSES)}
+        </AppLink>
+      );
+    }
+    if (row.kind === "pr") {
+      return (
+        <a
+          key={row.key}
+          href={row.pr.html_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="issue-reference-row"
+          data-reference-kind="pr"
+        >
+          {renderPrContents(row.pr, INLINE_ROW_CONTENT_CLASSES)}
+        </a>
+      );
+    }
+    return renderInlineRow(row);
   };
 
   const renderPopoverRow = (row: TailRow) => {
@@ -238,22 +316,11 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
           data-reference-kind="issue"
           onClick={close}
         >
-          <StatusIcon
-            status={row.issue.status}
-            category={issueStatusCategory(row.issue) ?? undefined}
-            color={statusColorOf(row.issue.status)}
-            className="h-4 w-4 shrink-0"
-          />
-          <span className={POPOVER_ROW_IDENTIFIER_CLASS} translate="no">
-            {row.issue.identifier}
-          </span>
-          <span className={POPOVER_ROW_TITLE_CLASS}>{row.issue.title}</span>
+          {renderIssueContents(row.issue, POPOVER_ROW_CONTENT_CLASSES)}
         </AppLink>
       );
     }
     if (row.kind === "pr") {
-      const visual = derivePullRequestStateVisual(row.pr.state);
-      const { Icon, className } = PR_STATE_ICON[visual.state];
       return (
         <a
           key={row.key}
@@ -264,16 +331,7 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
           data-reference-kind="pr"
           onClick={close}
         >
-          <Icon
-            aria-hidden
-            className={`h-4 w-4 shrink-0 ${className} ${
-              visual.dimmed ? "opacity-80" : ""
-            }`}
-          />
-          <span className={POPOVER_ROW_IDENTIFIER_CLASS} translate="no">
-            {prIdentifier(row.pr)}
-          </span>
-          <span className={POPOVER_ROW_TITLE_CLASS}>{row.pr.title}</span>
+          {renderPrContents(row.pr, POPOVER_ROW_CONTENT_CLASSES)}
         </a>
       );
     }
@@ -282,11 +340,56 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         key={row.key}
         className={`${POPOVER_ROW_CLASS} issue-reference-degraded text-muted-foreground`}
       >
-        {row.fallback}
+        {renderDegradedContents(row)}
       </span>
     );
   };
 
+  const popoverRows = grouped ? (
+    <>
+      <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-micro font-medium tracking-[0.06em] text-muted-foreground">
+        {t(($) => $.detail.reference_group_tasks)}
+      </div>
+      {issueRows.map(renderPopoverRow)}
+      <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-micro font-medium tracking-[0.06em] text-muted-foreground">
+        {t(($) => $.detail.reference_group_prs)}
+      </div>
+      {prRows.map(renderPopoverRow)}
+      {degradedRows.map(renderPopoverRow)}
+    </>
+  ) : (
+    rows.map(renderPopoverRow)
+  );
+
+  if (!isMobile) {
+    // Desktop (RUYI-724): the block is not a button — visible rows navigate
+    // in place. The popover mounts only for folded rows, and the collapsed
+    // 「N more references」 line is its sole trigger; it still lists every
+    // reference so the block remains the one place to scan them all.
+    return (
+      <div data-issue-reference-footer="" className="issue-reference-footer">
+        <span className="issue-reference-header">{header}</span>
+        {previews.map(renderDirectRow)}
+        {hidden.length > 0 ? (
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger className="issue-reference-collapsed">
+              {collapsedLine}
+              <ChevronDown aria-hidden className="issue-reference-chevron" />
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="issue-reference-popover w-[420px] max-h-[360px] overflow-y-auto gap-1 p-1.5"
+            >
+              {popoverRows}
+            </PopoverContent>
+          </Popover>
+        ) : null}
+      </div>
+    );
+  }
+
+  // Mobile: the RUYI-635 增量 anti-mistouch surface — one button for the
+  // whole block, inline rows are spans, the popover carries the full list.
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -307,21 +410,7 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         align="start"
         className="issue-reference-popover w-[420px] max-h-[360px] overflow-y-auto gap-1 p-1.5"
       >
-        {grouped ? (
-          <>
-            <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
-              {t(($) => $.detail.reference_group_tasks)}
-            </div>
-            {issueRows.map(renderPopoverRow)}
-            <div className="issue-reference-popover-group px-2 pt-1.5 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
-              {t(($) => $.detail.reference_group_prs)}
-            </div>
-            {prRows.map(renderPopoverRow)}
-            {degradedRows.map(renderPopoverRow)}
-          </>
-        ) : (
-          rows.map(renderPopoverRow)
-        )}
+        {popoverRows}
       </PopoverContent>
     </Popover>
   );
