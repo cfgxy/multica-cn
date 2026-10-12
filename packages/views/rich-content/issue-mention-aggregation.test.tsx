@@ -221,7 +221,7 @@ describe("MR and PR text references linkify in the body", () => {
 });
 
 describe("tail aggregation block", () => {
-  it("lists resolved references as non-navigating rows after the content", () => {
+  it("lists resolved references as direct-link rows after the content (desktop)", () => {
     const mul7 = {
       id: UUID,
       identifier: "MUL-7",
@@ -238,10 +238,10 @@ describe("tail aggregation block", () => {
 
     const footer = container.querySelector("[data-issue-reference-footer]")!;
     expect(footer).not.toBeNull();
-    // Same issue via mention + bare identifier → ONE row, and the anti-
-    // mistouch rework keeps every inline row a span (zero anchors).
+    // Same issue via mention + bare identifier → ONE row; at desktop width
+    // (RUYI-724) the resolved row is a direct link.
     expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
-    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     const row = footer.querySelector(".issue-reference-row")!;
     expect(row.textContent).toContain("MUL-7");
     expect(row.textContent).toContain("Fix the thing");
@@ -253,9 +253,10 @@ describe("tail aggregation block", () => {
 
     const footer = container.querySelector("[data-issue-reference-footer]")!;
     // MR !468 resolves to the same snapshot row the owner/repo#N form shows:
-    // the row carries the PR's own identity, and inline rows stay spans.
+    // the row carries the PR's own identity; at desktop width (RUYI-724)
+    // the resolved row is a direct link, same as the owner/repo#N form.
     expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
-    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     expect(footer.querySelector(".issue-reference-row")!.textContent).toContain(
       "cfgxy/multica-cn#468",
     );

@@ -143,9 +143,9 @@ describe("IssueReferenceTail", () => {
       `重复引用 [QA-2](mention://issue/${UUID}) 与 [QA-2](mention://issue/${UUID})、QA-2。`,
     );
 
-    // Inline rows are spans: the block is one button and nothing inside it
-    // navigates (anti-mistouch 增量) — the row count is the contract here.
-    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    // Desktop width (RUYI-724): the resolved row renders as a direct link;
+    // the row count is the dedup contract here.
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     const rows = container.querySelectorAll(".issue-reference-row");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.textContent).toContain("QA-2");
