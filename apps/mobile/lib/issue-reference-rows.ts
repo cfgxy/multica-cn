@@ -1,13 +1,11 @@
 /**
- * Pure row-building + grouping for the reference tail (RUYI-635 增量,
- * mobile half).
+ * Pure row-building for the reference tail (RUYI-635 增量, mobile half).
  *
  * The web footer builds the same union inline; mobile extracts it here
  * because RN components can't render in the node vitest lane — this module
- * carries the tail's POLICY (resolution zip, cross-form collapse, PR/degraded
- * kinds, mixed-kind grouping) where it can be unit-tested, while the
- * component (issue-reference-list.tsx) only resolves, partitions through the
- * shared `partitionReferencePreview`, and draws.
+ * carries the tail's POLICY (resolution zip, cross-form collapse, RUYI-731
+ * self-filter, PR/degraded kinds) where it can be unit-tested, while the
+ * component (issue-reference-list.tsx) only resolves and draws.
  */
 import type { IssueReference } from "@multica/core/markdown";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
@@ -20,15 +18,6 @@ export type ReferenceTailRow =
   | { kind: "pr"; key: string; pr: GitHubPullRequest }
   | { kind: "degraded"; key: string; fallback: string };
 
-export interface ReferenceTailGroups {
-  /** True when issues AND PRs both resolved — only then do group headers show. */
-  grouped: boolean;
-  tasks: Extract<ReferenceTailRow, { kind: "issue" }>[];
-  prs: Extract<ReferenceTailRow, { kind: "pr" }>[];
-  /** Unresolved rows: never clickable, plain-text slots inside the sheet. */
-  degraded: Extract<ReferenceTailRow, { kind: "degraded" }>[];
-}
-
 function isPullRequest(value: ReferenceTailResolution): value is GitHubPullRequest {
   return value !== null && "html_url" in value;
 }
@@ -40,10 +29,16 @@ function isPullRequest(value: ReferenceTailResolution): value is GitHubPullReque
  * its first mention's position; two tokens resolving to the same PR collapse
  * the same way. A null resolution keeps its slot as a degraded row — the
  * "miss reads as what the author typed" contract.
+ *
+ * RUYI-731 self-filter: when `currentIssueId` is set (issue-detail context),
+ * a reference resolving to the CURRENT issue builds no row — an issue
+ * describing itself is not a reference. Surfaces without the context pass
+ * null and keep every row.
  */
 export function buildReferenceTailRows(
   references: IssueReference[],
   resolutions: ReferenceTailResolution[],
+  currentIssueId: string | null = null,
 ): ReferenceTailRow[] {
   const rows: ReferenceTailRow[] = [];
   const seenIssueIds = new Set<string>();
@@ -57,6 +52,7 @@ export function buildReferenceTailRows(
       rows.push({ kind: "pr", key, pr: resolved });
     } else if (resolved) {
       if (seenIssueIds.has(resolved.id)) return;
+      if (resolved.id === currentIssueId) return;
       seenIssueIds.add(resolved.id);
       rows.push({ kind: "issue", key, issue: resolved });
     } else {
@@ -64,35 +60,4 @@ export function buildReferenceTailRows(
     }
   });
   return rows;
-}
-
-/**
- * Split rows into the sheet's two groups. Group headers only render when
- * BOTH kinds resolved (Board 2: 单一类型不显示组头); a single-kind list keeps
- * first-appearance order via the tasks slice alone. Degraded rows stay out
- * of both groups — the sheet renders them as plain-text slots after.
- */
-export function groupReferenceTailRows(
-  rows: ReferenceTailRow[],
-): ReferenceTailGroups {
-  const tasks = rows.filter(
-    (row): row is Extract<ReferenceTailRow, { kind: "issue" }> =>
-      row.kind === "issue",
-  );
-  const prs = rows.filter(
-    (row): row is Extract<ReferenceTailRow, { kind: "pr" }> => row.kind === "pr",
-  );
-  const degraded = rows.filter(
-    (row): row is Extract<ReferenceTailRow, { kind: "degraded" }> =>
-      row.kind === "degraded",
-  );
-  return { grouped: tasks.length > 0 && prs.length > 0, tasks, prs, degraded };
-}
-
-// Board 2 close path #3 (下滑手势): a drag on the sheet header closes the
-// sheet when the release point travels 72px+ downward OR flings down at
-// ≥0.5 px/ms (~500 px/s). Upward drags never close. Thresholds live here so
-// the policy stays node-testable; the component only wires the PanResponder.
-export function shouldCloseSheetOnDragRelease(dy: number, vy: number): boolean {
-  return dy > 72 || vy > 0.5;
 }

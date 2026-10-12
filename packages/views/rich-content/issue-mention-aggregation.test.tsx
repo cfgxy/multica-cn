@@ -145,7 +145,7 @@ describe("issue mentions read as plain text in the body", () => {
 });
 
 describe("tail aggregation block", () => {
-  it("lists resolved references as non-navigating rows after the content", () => {
+  it("lists resolved references as navigable rows after the content", () => {
     const mul7 = {
       id: UUID,
       identifier: "MUL-7",
@@ -162,10 +162,10 @@ describe("tail aggregation block", () => {
 
     const footer = container.querySelector("[data-issue-reference-footer]")!;
     expect(footer).not.toBeNull();
-    // Same issue via mention + bare identifier → ONE row, and the anti-
-    // mistouch rework keeps every inline row a span (zero anchors).
+    // Same issue via mention + bare identifier → ONE row. RUYI-731: rows are
+    // the navigation surface — a resolved row is an in-app anchor.
     expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
-    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     const row = footer.querySelector(".issue-reference-row")!;
     expect(row.textContent).toContain("MUL-7");
     expect(row.textContent).toContain("Fix the thing");
