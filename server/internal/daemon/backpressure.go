@@ -373,11 +373,51 @@ func (m *backpressureMachine) observe(s memSample) backpressureObservation {
 	return obs
 }
 
+// backpressureRuntime is the hot-reloadable gate container (RUYI-729 stage
+// 1): the effective card (what the report echoes and the event history
+// snapshots), the sampling cadence, and the machine built from them. The
+// watcher re-reads the pointer every cycle, so applyBackpressureConfig can
+// swap in a saved settings card and the new thresholds take effect on the
+// next sample without a restart. A nil machine means the gate is disabled
+// by config: claims flow, the watcher idles, and the last observation is
+// replaced by an inactive card-carrying one so the UI shows "disabled"
+// rather than a stale active episode.
+type backpressureRuntime struct {
+	config  protocol.DaemonBackpressureConfig
+	machine *backpressureMachine
+	interval time.Duration
+}
+
+// newBackpressureRuntime builds the container from a wire card. The card is
+// the single source: thresholds and cadence are read back out of it so the
+// runtime can never drift from what it reports.
+func newBackpressureRuntime(card protocol.DaemonBackpressureConfig, th backpressureThresholds) *backpressureRuntime {
+	rt := &backpressureRuntime{
+		config:   card,
+		interval: time.Duration(card.SampleIntervalSeconds) * time.Second,
+	}
+	if rt.interval <= 0 {
+		rt.interval = DefaultBackpressureSampleInterval
+	}
+	if card.Enabled {
+		windowSize := card.WindowSize
+		if windowSize < 1 {
+			windowSize = DefaultBackpressureWindowSize
+		}
+		rt.machine = newBackpressureMachine(th, windowSize)
+	}
+	return rt
+}
+
 // backpressureBlocked reports whether the claim gate must refuse new claims
-// right now. A nil state (sampler disabled or not started yet) never blocks
-// — the gate fails open so a broken sampler can't silently stop all
-// scheduling.
+// right now. A nil runtime (sampler disabled or not started yet) or a
+// disabled card never blocks — the gate fails open so a broken sampler or a
+// bad settings save can't silently stop all scheduling.
 func (d *Daemon) backpressureBlocked() bool {
+	rt := d.bpRuntime.Load()
+	if rt == nil || rt.machine == nil {
+		return false
+	}
 	st := d.bpState.Load()
 	return st != nil && st.Active
 }
@@ -392,6 +432,110 @@ func (c Config) backpressureThresholds() backpressureThresholds {
 		SwapRecoveryPct: c.BackpressureSwapRecoveryPct,
 		PSIHighPct:      c.BackpressurePSIHighPct,
 		PSIRecoveryPct:  c.BackpressurePSIRecoveryPct,
+	}
+}
+
+// backpressureCard renders the boot config as its wire card: version 0
+// (not DB-managed) and the "env" source, until a saved settings row
+// replaces it over the heartbeat ack (RUYI-729).
+func (c Config) backpressureCard() protocol.DaemonBackpressureConfig {
+	return protocol.DaemonBackpressureConfig{
+		Enabled:               true,
+		MemHighPct:            c.BackpressureMemHighPct,
+		MemRecoveryPct:        c.BackpressureMemRecoveryPct,
+		SwapHighPct:           c.BackpressureSwapHighPct,
+		SwapRecoveryPct:       c.BackpressureSwapRecoveryPct,
+		PSIHighPct:            c.BackpressurePSIHighPct,
+		PSIRecoveryPct:        c.BackpressurePSIRecoveryPct,
+		SampleIntervalSeconds: int(c.BackpressureSampleInterval / time.Second),
+		WindowSize:            c.BackpressureWindowSize,
+	}
+}
+
+// applyBackpressureConfig hot-applies a saved settings card delivered on a
+// heartbeat ack (RUYI-729 stage 1). An unchanged version is a pointer read;
+// a changed card rebuilds the machine with the new thresholds while keeping
+// the smoothing window's samples, so the next evaluation blends history
+// under the new lines instead of starting from an empty window. Disabling
+// the gate clears any active episode immediately and wakes the poller so
+// paused claims resume without waiting out a backoff interval; the reverse
+// transition (enable) just starts evaluating on the next cycle. Errors
+// cannot happen for a card that passed ValidateBackpressureConfig
+// server-side; a malformed one is dropped with a warning and the previous
+// card stays in force — fail-closed on config, fail-open on scheduling.
+func (d *Daemon) applyBackpressureConfig(runtimeID string, card *protocol.DaemonBackpressureConfig) {
+	if card == nil {
+		return
+	}
+	d.bpApplyMu.Lock()
+	defer d.bpApplyMu.Unlock()
+
+	prev := d.bpRuntime.Load()
+	if prev != nil && prev.config.ConfigVersion == card.ConfigVersion && prev.config.Source == card.Source &&
+		prev.config == *card {
+		return
+	}
+
+	th := backpressureThresholds{
+		MemHighPct:      card.MemHighPct,
+		MemRecoveryPct:  card.MemRecoveryPct,
+		SwapHighPct:     card.SwapHighPct,
+		SwapRecoveryPct: card.SwapRecoveryPct,
+		PSIHighPct:      card.PSIHighPct,
+		PSIRecoveryPct:  card.PSIRecoveryPct,
+	}
+	interval := time.Duration(card.SampleIntervalSeconds) * time.Second
+	if err := validateBackpressureThresholds(th, interval, card.WindowSize); err != nil {
+		d.logger.Warn("backpressure: dropping invalid settings card; keeping previous gate config",
+			"runtime_id", runtimeID, "error", err)
+		return
+	}
+
+	rt := newBackpressureRuntime(*card, th)
+	// Carry the smoothing window over so the new thresholds judge the same
+	// history the old ones did — an empty window would need a full window's
+	// samples before the mean stabilized again.
+	if prev != nil && prev.machine != nil && rt.machine != nil {
+		rt.machine.window = append(rt.machine.window, prev.machine.window...)
+		if len(rt.machine.window) > rt.machine.windowSize {
+			rt.machine.window = rt.machine.window[len(rt.machine.window)-rt.machine.windowSize:]
+		}
+	}
+	wasActive := false
+	if st := d.bpState.Load(); st != nil {
+		wasActive = st.Active
+	}
+	d.bpRuntime.Store(rt)
+
+	if rt.machine == nil {
+		// Gate disabled: drop any active episode immediately so claims
+		// resume; the report becomes an inactive card carrier (no fresh
+		// samples — the watcher idles until re-enabled).
+		d.bpState.Store(&backpressureObservation{
+			DaemonBackpressureReport: protocol.DaemonBackpressureReport{
+				Active: false,
+				Config: &rt.config,
+			},
+		})
+		d.bpDeferred.Swap(0)
+		if wasActive {
+			d.logger.Warn("backpressure gate disabled by settings — resuming task claims", "runtime_id", runtimeID)
+			if ch := d.bpWakeup.Load(); ch != nil {
+				signalPollerWakeup(*ch)
+			}
+		}
+		return
+	}
+	if prev != nil && prev.config.ConfigVersion != card.ConfigVersion {
+		d.logger.Info("backpressure settings applied — gate rebuilt with new thresholds",
+			"runtime_id", runtimeID,
+			"config_version", card.ConfigVersion,
+			"prev_config_version", prev.config.ConfigVersion,
+			"enabled", card.Enabled,
+			"mem_high_pct", card.MemHighPct,
+			"mem_recovery_pct", card.MemRecoveryPct,
+			"swap_high_pct", card.SwapHighPct,
+			"psi_high_pct", card.PSIHighPct)
 	}
 }
 
@@ -433,8 +577,11 @@ func validateBackpressureThresholds(th backpressureThresholds, sampleInterval ti
 }
 
 // backpressureReport snapshots the current gate state for upstream reporting.
-// Returns nil when the sampler has never run (or is disabled) — the report
-// key is omitted from claim/heartbeat payloads in that case.
+// The effective config card and per-condition readings ride along (RUYI-729
+// stage 1) so the server's event history and the UI can show exactly which
+// rule was in force. Returns nil when the sampler has never run (or the
+// gate is unconfigured) — the report key is omitted from claim/heartbeat
+// payloads in that case.
 func (d *Daemon) backpressureReport() *protocol.DaemonBackpressureReport {
 	st := d.bpState.Load()
 	if st == nil {
@@ -442,7 +589,47 @@ func (d *Daemon) backpressureReport() *protocol.DaemonBackpressureReport {
 	}
 	rep := st.DaemonBackpressureReport
 	rep.DeferredClaims = d.bpDeferred.Load()
+	if rt := d.bpRuntime.Load(); rt != nil {
+		cfg := rt.config
+		rep.Config = &cfg
+		rep.Conditions = conditionReadings(&cfg, &st.DaemonBackpressureReport)
+	}
 	return &rep
+}
+
+// conditionReadings renders the report's smoothed values against the card's
+// high watermarks — the full current-vs-threshold triple for every
+// condition, including the ones not tripping, so "how close are we to the
+// line" is answerable without knowing the config's semantics.
+func conditionReadings(card *protocol.DaemonBackpressureConfig, rep *protocol.DaemonBackpressureReport) []protocol.DaemonBackpressureCondition {
+	th := backpressureThresholds{
+		MemHighPct:      card.MemHighPct,
+		MemRecoveryPct:  card.MemRecoveryPct,
+		SwapHighPct:     card.SwapHighPct,
+		SwapRecoveryPct: card.SwapRecoveryPct,
+		PSIHighPct:      card.PSIHighPct,
+		PSIRecoveryPct:  card.PSIRecoveryPct,
+	}
+	return []protocol.DaemonBackpressureCondition{
+		{
+			Condition: "mem",
+			Value:     rep.MemAvailablePct,
+			Threshold: card.MemHighPct,
+			Triggered: th.memLow(rep.MemAvailablePct),
+		},
+		{
+			Condition: "swap",
+			Value:     rep.SwapUsedPct,
+			Threshold: card.SwapHighPct,
+			Triggered: th.swapHigh(rep.SwapUsedPct),
+		},
+		{
+			Condition: "psi",
+			Value:     rep.PSIMemorySomeAvg10,
+			Threshold: card.PSIHighPct,
+			Triggered: th.psiHigh(rep.PSIMemorySomeAvg10, rep.PSIReadOK),
+		},
+	}
 }
 
 // runBackpressureWatcher samples host memory on the configured interval and
@@ -450,23 +637,31 @@ func (d *Daemon) backpressureReport() *protocol.DaemonBackpressureReport {
 // entering backpressure explains why tasks stop being claimed, and the exit
 // log pairs with the server-side audit trail. One failed sample holds the
 // previous gate state: an unreadable /proc must neither trip nor clear the
-// gate on a guess.
+// gate on a guess. The cadence re-reads the hot-reloadable card each cycle
+// (RUYI-729), so a settings save changes the sampling interval without a
+// restart; a disabled gate idles without sampling and re-arms on re-enable.
 func (d *Daemon) runBackpressureWatcher(ctx context.Context) {
-	interval := d.cfg.BackpressureSampleInterval
-	if interval <= 0 {
-		interval = DefaultBackpressureSampleInterval
-	}
 	d.backpressureTick()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(d.bpInterval())
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			d.backpressureTick()
+			timer.Reset(d.bpInterval())
 		}
 	}
+}
+
+// bpInterval reads the active card's sampling cadence; the constructor
+// clamps it positive, so the default here is unreachable in practice.
+func (d *Daemon) bpInterval() time.Duration {
+	if rt := d.bpRuntime.Load(); rt != nil && rt.interval > 0 {
+		return rt.interval
+	}
+	return DefaultBackpressureSampleInterval
 }
 
 // backpressureWarnInterval throttles sampler-failure warnings so a broken
@@ -474,6 +669,15 @@ func (d *Daemon) runBackpressureWatcher(ctx context.Context) {
 const backpressureWarnInterval = time.Minute
 
 func (d *Daemon) backpressureTick() {
+	rt := d.bpRuntime.Load()
+	if rt == nil {
+		return
+	}
+	if rt.machine == nil {
+		// Gate disabled by settings: the inactive card-carrier observation
+		// applyBackpressureConfig stored stays current; nothing to sample.
+		return
+	}
 	sample, err := d.bpSource.sample()
 	if err != nil {
 		if last := d.bpLastWarn.Load(); last == 0 || time.Since(time.Unix(0, last)) > backpressureWarnInterval {
@@ -486,13 +690,16 @@ func (d *Daemon) backpressureTick() {
 	}
 
 	prev := d.bpState.Load()
-	obs := d.bpMachine.observe(sample)
+	obs := rt.machine.observe(sample)
 	now := time.Now()
 	if obs.Transitioned {
 		obs.Since = now
 	} else if prev != nil {
 		obs.Since = prev.Since
 	}
+	cfg := rt.config
+	obs.Config = &cfg
+	obs.Conditions = conditionReadings(&cfg, &obs.DaemonBackpressureReport)
 	d.bpState.Store(&obs)
 
 	if !obs.Transitioned {

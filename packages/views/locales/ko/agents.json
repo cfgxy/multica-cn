@@ -690,7 +690,8 @@
       "cancel_failed_toast": "작업을 취소하지 못했습니다",
       "started_prefix": "{{when}} 시작됨",
       "dispatched_prefix": "{{when}} 디스패치됨",
-      "queued_prefix": "{{when}} 대기 시작"
+      "queued_prefix": "{{when}} 대기 시작",
+      "queued_backpressure": "런타임 복구 대기 중"
     }
   },
   "char_counter": {

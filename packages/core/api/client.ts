@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { configStore } from "../config";
 import type {
+  RuntimeBackpressureSettings,
+  RuntimeBackpressureEvent,
+} from "./schemas";
+import type {
   Issue,
   DecisionRequest,
   DecisionRequestDetail,
@@ -412,6 +416,8 @@ import {
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
+  RuntimeBackpressureSettingsSchema,
+  RuntimeBackpressureEventListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -2831,6 +2837,85 @@ export class ApiClient {
         endpoint:
           "POST /api/workspaces/:id/execution-profiles/:profileId/activate",
       },
+    );
+  }
+
+  // ---- Daemon host backpressure settings + event history (RUYI-729) ----
+
+  async getRuntimeBackpressureSettings(
+    runtimeId: string,
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "GET /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async putRuntimeBackpressureSettings(
+    runtimeId: string,
+    config: RuntimeBackpressureSettings["config"],
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "PUT /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async deleteRuntimeBackpressureSettings(
+    runtimeId: string,
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "DELETE /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async listRuntimeBackpressureEvents(
+    runtimeId: string,
+    params?: { limit?: number },
+  ): Promise<RuntimeBackpressureEvent[]> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-events?${search}`,
+    );
+    return parseWithFallback<RuntimeBackpressureEvent[]>(
+      raw,
+      RuntimeBackpressureEventListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/backpressure-events" },
     );
   }
 

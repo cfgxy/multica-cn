@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -71,8 +72,8 @@ func TestRecordBackpressure_NilAndInvalidNoop(t *testing.T) {
 		"device_info": "backpressure noop fixture",
 	})
 
-	testHandler.recordBackpressure(ctx, pgtype.UUID{}, bpReport(true, 9.9, 85, 3))
-	testHandler.recordBackpressure(ctx, mustParseUUID(t, runtimeID), nil)
+	testHandler.recordBackpressure(ctx, db.AgentRuntime{}, bpReport(true, 9.9, 85, 3))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), nil)
 
 	if _, present := readStoredBackpressure(t, ctx, runtimeID); present {
 		t.Fatal("nil/invalid inputs must not write a backpressure report")
@@ -87,10 +88,8 @@ func TestRecordBackpressure_PersistDedupeAndDrift(t *testing.T) {
 	runtimeID := dbfx.Runtime(t, "BP persist rt", testutil.Cols{
 		"device_info": "backpressure persist fixture",
 	})
-	rtUUID := mustParseUUID(t, runtimeID)
-
 	// First report lands in metadata with the watermarks intact.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.4, 82, 5))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.4, 82, 5))
 	stored, present := readStoredBackpressure(t, ctx, runtimeID)
 	if !present {
 		t.Fatal("first report was not persisted")
@@ -104,13 +103,13 @@ func TestRecordBackpressure_PersistDedupeAndDrift(t *testing.T) {
 
 	// An identical report must dedupe to a no-op (recorded_at unchanged).
 	firstAt := storedRecordedAt(t, ctx, runtimeID)
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.4, 82, 5))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.4, 82, 5))
 	if got := storedRecordedAt(t, ctx, runtimeID); got != firstAt {
 		t.Fatalf("unchanged report rewrote the row: recorded_at %q -> %q", firstAt, got)
 	}
 
 	// A watermark drift (state unchanged) must still refresh the stored report.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 7.9, 84, 9))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 7.9, 84, 9))
 	stored, _ = readStoredBackpressure(t, ctx, runtimeID)
 	if stored.MemAvailablePct != 7.9 || stored.SwapUsedPct != 84 || stored.DeferredClaims != 9 {
 		t.Fatalf("drifted report was not refreshed: %+v", stored)
@@ -125,24 +124,22 @@ func TestRecordBackpressure_TransitionAuditLogs(t *testing.T) {
 	runtimeID := dbfx.Runtime(t, "BP audit rt", testutil.Cols{
 		"device_info": "backpressure audit fixture",
 	})
-	rtUUID := mustParseUUID(t, runtimeID)
-
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	// First report, inactive: a write but no transition — no audit line.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(false, 40, 30, 0))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 40, 30, 0))
 
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.1, 83, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.1, 83, 12))
 	entered := logs.String()
 	if !containsField(entered, "daemon backpressure ENTERED", runtimeID) {
 		t.Fatalf("missing ENTERED audit log, got: %s", entered)
 	}
 
 	logs.Reset()
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(false, 30.2, 55, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 30.2, 55, 12))
 	cleared := logs.String()
 	if !containsField(cleared, "daemon backpressure CLEARED", runtimeID) {
 		t.Fatalf("missing CLEARED audit log, got: %s", cleared)
@@ -153,7 +150,7 @@ func TestRecordBackpressure_TransitionAuditLogs(t *testing.T) {
 
 	// Same-state follow-up (watermark drift only) must not log a transition.
 	logs.Reset()
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(false, 29.7, 54, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 29.7, 54, 12))
 	if logs.Len() != 0 {
 		t.Fatalf("watermark drift logged a transition: %s", logs.String())
 	}
@@ -167,8 +164,6 @@ func TestRecordBackpressure_FirstReportNoPriorKey_EntersAudit(t *testing.T) {
 	runtimeID := dbfx.Runtime(t, "BP first-enter rt", testutil.Cols{
 		"device_info": "backpressure first-enter fixture",
 	})
-	rtUUID := mustParseUUID(t, runtimeID)
-
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -178,7 +173,7 @@ func TestRecordBackpressure_FirstReportNoPriorKey_EntersAudit(t *testing.T) {
 	// (fresh registration or a post-restart re-registered row): the write
 	// must land AND the ENTERED transition must be audited. A NULL previous
 	// report means wasActive=false, not a storage failure.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.1, 83, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.1, 83, 12))
 
 	if _, present := readStoredBackpressure(t, ctx, runtimeID); !present {
 		t.Fatal("first report was not persisted")
@@ -265,6 +260,21 @@ func TestClaimTasksByRuntime_BackpressurePersisted(t *testing.T) {
 	if !stored.Active || stored.Reason != "swap" || stored.SwapUsedPct != 91.3 {
 		t.Fatalf("stored claim report mismatch: %+v", stored)
 	}
+}
+
+// bpRuntimeRow loads the fixture runtime row: recordBackpressure (RUYI-729)
+// reads ID, workspace_id and daemon_id off it, so tests feed it the real row
+// instead of a bare uuid.
+func bpRuntimeRow(t *testing.T, ctx context.Context, runtimeID string) db.AgentRuntime {
+	t.Helper()
+	var rt db.AgentRuntime
+	if err := testPool.QueryRow(ctx,
+		`SELECT id, workspace_id, daemon_id FROM agent_runtime WHERE id = $1`,
+		mustParseUUID(t, runtimeID),
+	).Scan(&rt.ID, &rt.WorkspaceID, &rt.DaemonID); err != nil {
+		t.Fatalf("load runtime row %s: %v", runtimeID, err)
+	}
+	return rt
 }
 
 func mustParseUUID(t *testing.T, id string) pgtype.UUID {

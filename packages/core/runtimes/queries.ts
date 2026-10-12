@@ -59,3 +59,28 @@ export function runtimeListOptions(wsId: string, owner?: "me", wsSlug?: string) 
     queryFn: () => api.listRuntimes({ workspace_id: wsId, owner }, wsSlug),
   });
 }
+
+// ---- Daemon host backpressure settings + event history (RUYI-729) ----
+
+export const runtimeBackpressureKeys = {
+  settings: (rid: string) => ["runtimes", "backpressure-settings", rid] as const,
+  events: (rid: string) => ["runtimes", "backpressure-events", rid] as const,
+};
+
+export function runtimeBackpressureSettingsOptions(runtimeId: string) {
+  return queryOptions({
+    queryKey: runtimeBackpressureKeys.settings(runtimeId),
+    queryFn: () => api.getRuntimeBackpressureSettings(runtimeId),
+    // Heartbeat-refreshed live data — stale quickly so a fresh report
+    // (current values vs thresholds) re-fetches on focus.
+    staleTime: 15 * 1000,
+  });
+}
+
+export function runtimeBackpressureEventsOptions(runtimeId: string) {
+  return queryOptions({
+    queryKey: runtimeBackpressureKeys.events(runtimeId),
+    queryFn: () => api.listRuntimeBackpressureEvents(runtimeId, { limit: 50 }),
+    staleTime: 30 * 1000,
+  });
+}
