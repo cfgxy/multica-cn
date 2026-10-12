@@ -8093,7 +8093,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				// layer, visible at the view root once mounted, and gone with
 				// the tree instead of persisting in the user's directory.
 				// env.WorkDir is rewritten to the user's path right after
-				// Prepare, so nothing downstream sees the upperdir.
+				// Prepare, so nothing downstream treats it as a scratch
+				// target; the one deliberate exception is the runtime-brief
+				// injection further down, which routes back into this upper
+				// layer (snapshotPrimaryUpper) instead of the pristine path.
 				primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
 				if merr != nil {
 					return TaskResult{}, asEnvironmentSetupFailure(merr)
@@ -8121,11 +8124,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// didn't explicitly succeed; the success path below finalizes with
 	// keep=false first, and a Finalize on an already-removed entry is a no-op.
 	// materializeTrees re-runs defensively here for an env-reuse path that
-	// skipped the prepare branch above.
+	// skipped the prepare branch above. The primary upper is kept for the
+	// runtime-brief injection below: snapshot tasks compose the brief into
+	// the upper layer, never into the pristine path env.WorkDir points at.
+	snapshotPrimaryUpper := ""
 	if snapPlan != nil {
-		if _, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID); merr != nil {
+		primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
+		if merr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(merr)
 		}
+		snapshotPrimaryUpper = primaryUpper
 		env.WorkDir = snapPlan.Primary.AbsPath
 		units := make([]execenv.SnapshotUnitSpec, 0, len(snapPlan.Units))
 		for _, u := range snapPlan.Units {
@@ -8245,9 +8253,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.LocalDirectory || env.LocalWorktree != nil {
 		defer func() {
 			var cleanupErr error
-			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
-				cleanupErr = cerr
-				d.logger.Warn("execenv: cleanup runtime config failed", "error", cerr)
+			// Snapshot mode wrote the brief into the task's upper layer, which
+			// dies with the snapshot tree: the pristine file was never
+			// touched, so there is nothing to excise — and running the
+			// excision anyway would re-introduce a host-side write (and could
+			// strip a stale block the user's own file carries for unrelated
+			// reasons).
+			if snapPlan == nil {
+				if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
+					cleanupErr = cerr
+					d.logger.Warn("execenv: cleanup runtime config failed", "error", cerr)
+				}
 			}
 			// Excise the sidecar tree (.agent_context/, .multica/,
 			// provider-specific .claude/skills/ etc.) that Prepare wrote
@@ -8330,7 +8346,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	// Snapshot mode composes the brief into the primary unit's upper layer:
+	// env.WorkDir here is the pristine host path the view covers, and writing
+	// it would leak the brief into the user's tree on a crash and let
+	// concurrent root-domain tasks overwrite one host-side file.
+	var runtimeBrief string
+	if snapPlan != nil {
+		runtimeBrief, err = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
+	} else {
+		runtimeBrief, err = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	}
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -8743,7 +8768,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		var freshBrief string
+		var briefErr error
+		if snapPlan != nil {
+			freshBrief, briefErr = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
+		} else {
+			freshBrief, briefErr = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		}
+		if briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
