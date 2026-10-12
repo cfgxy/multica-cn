@@ -272,7 +272,7 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
       >
         <CircleDashed
           aria-hidden
-          className="h-[15px] w-[15px] shrink-0 text-muted-foreground opacity-60"
+          className="h-[15px] w-[15px] shrink-0 text-faint-foreground"
         />
         {renderDegradedContents(row)}
       </span>
