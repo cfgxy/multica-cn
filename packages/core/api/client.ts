@@ -143,6 +143,9 @@ import type {
   RuntimeLocalSkillListRequest,
   CreateRuntimeLocalSkillImportRequest,
   RuntimeLocalSkillImportRequest,
+  CreateRuntimeOpsCommandRequest,
+  RuntimeOpsCommand,
+  RuntimeOpsInventory,
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
@@ -3165,6 +3168,31 @@ export class ApiClient {
     requestId: string,
   ): Promise<RuntimeLocalSkillImportRequest> {
     return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import/${requestId}`);
+  }
+
+  async getRuntimeOpsInventory(runtimeId: string): Promise<RuntimeOpsInventory> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/inventory`);
+  }
+
+  async submitRuntimeOpsCommand(
+    runtimeId: string,
+    data: CreateRuntimeOpsCommandRequest,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRuntimeOpsCommands(runtimeId: string): Promise<RuntimeOpsCommand[]> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands?limit=50`);
+  }
+
+  async getRuntimeOpsCommand(
+    runtimeId: string,
+    commandId: string,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands/${commandId}`);
   }
 
   async listAgentTasks(agentId: string): Promise<AgentTask[]> {
