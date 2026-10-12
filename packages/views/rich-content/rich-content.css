@@ -37,15 +37,15 @@
 }
 
 /*
- * Issue reference tail aggregation (RUYI-635 + 增量).
+ * Issue reference tail aggregation (RUYI-635, flattened by RUYI-731).
  *
  * RichContent renders issue/PR mentions as plain body text and lists every
  * reference here instead: a gray rounded container — header 「引用 · N」 plus
- * at most two preview rows plus a fold-count line — that is ONE button. The
- * rows themselves are spans and never navigate; pressing the block opens the
- * popover (styled inline in issue-reference-footer.tsx — it portals outside
- * this scope). The block is part of the content flow, so the compact
- * density's `> :last-child` margin trim keeps it flush in chat bubbles.
+ * every reference as one row, no fold, no second level. Rows are the
+ * navigation surface (issue rows are in-app links, PR rows external ones);
+ * their look rides .issue-reference-row below. The block is part of the
+ * content flow, so the compact density's `> :last-child` margin trim keeps
+ * it flush in chat bubbles. The envelope's visual rework is RUYI-730's.
  */
 .rich-text-editor .issue-reference-footer {
   display: flex;
@@ -80,23 +80,6 @@
   font-size: var(--text-micro);
   font-weight: 500;
   letter-spacing: 0.06em;
-  color: var(--muted-foreground);
-}
-
-.rich-text-editor .issue-reference-chevron {
-  width: 0.875rem;
-  height: 0.875rem;
-  margin-left: auto;
-  transition: transform 150ms;
-}
-
-.rich-text-editor .issue-reference-footer[aria-expanded="true"]
-  .issue-reference-chevron {
-  transform: rotate(180deg);
-}
-
-.rich-text-editor .issue-reference-collapsed {
-  font-size: var(--text-caption);
   color: var(--muted-foreground);
 }
 
