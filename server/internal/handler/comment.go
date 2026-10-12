@@ -2099,6 +2099,15 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp.InvalidMentions = findUnparsedAgentMentions(comment.Content)
 	resp.TriggerOutcomes = h.triggerTasksForComment(r.Context(), issue, comment, parentComment, authorType, authorID, originatorUserID, suppressAgentIDs)
 
+	// RUYI-660 M2: while the loop waits on a human, a member's plain reply is
+	// intent-routed — a stop directive retires the plan, anything else resumes
+	// it. Notes (/note) opt out, agent-authored comments never route, and
+	// decision-card answers already returned above (their consumption is the
+	// single wake).
+	if authorType == "member" && req.Type == "comment" && !isNoteComment(req.Content) {
+		h.TaskService.OnOuterLoopMemberComment(r.Context(), issue, comment)
+	}
+
 	writeJSON(w, http.StatusCreated, resp)
 }
 
