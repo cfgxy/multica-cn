@@ -108,7 +108,7 @@ function prIdentifier(pr: GitHubPullRequest): string {
 const POPOVER_ROW_CLASS =
   "issue-reference-popover-row flex min-h-[44px] w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-label no-underline outline-none hover:bg-accent focus-visible:bg-accent";
 const POPOVER_ROW_TITLE_CLASS =
-  "min-w-0 line-clamp-2 text-body leading-5 text-foreground";
+  "min-w-0 line-clamp-2 text-body text-foreground";
 const POPOVER_ROW_IDENTIFIER_CLASS =
   "shrink-0 text-label font-medium text-muted-foreground";
 
