@@ -34,6 +34,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -232,7 +233,11 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 			if watermarked == 1 {
 				continue
 			}
-			scanned = append(scanned, TaskContextIssue{ID: issueID, Title: truncateRunes(issue.Title, maxTitleRunes)})
+			scanned = append(scanned, TaskContextIssue{
+				ID:        issueID,
+				Title:     truncateRunes(issue.Title, maxTitleRunes),
+				ProjectID: util.UUIDToString(issue.ProjectID),
+			})
 		}
 		if len(scanned) >= IssuesPerRun {
 			break
@@ -266,6 +271,7 @@ func (r *Runner) enqueueRun(ctx context.Context, cfg db.RetrospectiveConfig, age
 		WindowStart: windowStart.UTC().Format(time.RFC3339),
 		WindowEnd:   windowEnd.UTC().Format(time.RFC3339),
 		Issues:      scanned,
+		Carriers:    r.collectCarriers(ctx, util.MustParseUUID(stats.WorkspaceID), scanned),
 	})
 	taskID, err := r.Enqueue(ctx, EnqueueParams{
 		RunID:            stats.RunID,
@@ -388,4 +394,89 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// collectCarriers assembles the carrier section lists (RUYI-723 C) for the
+// task context: the workspace carrier plus every project carrier the
+// scanned issues belong to. Read failures degrade to warn-and-skip — the
+// missing carrier is simply absent from the contract and those drafts fall
+// back to the workspace default; a carrier read never fails the run.
+func (r *Runner) collectCarriers(ctx context.Context, workspaceID pgtype.UUID, scanned []TaskContextIssue) []TaskContextCarrier {
+	carriers := make([]TaskContextCarrier, 0, 2)
+	if content, err := r.Queries.GetWorkspacePromptContent(ctx, workspaceID); err != nil {
+		slog.Warn("retrospective: workspace carrier read failed",
+			"workspace_id", util.UUIDToString(workspaceID), "error", err)
+	} else if sections := carrierSections(content); len(sections) > 0 {
+		carriers = append(carriers, TaskContextCarrier{
+			Scope:    "workspace",
+			ScopeID:  util.UUIDToString(workspaceID),
+			Sections: sections,
+		})
+	}
+
+	projectIDs := make([]string, 0, 2)
+	seen := map[string]bool{}
+	for _, i := range scanned {
+		if i.ProjectID == "" || seen[i.ProjectID] {
+			continue
+		}
+		seen[i.ProjectID] = true
+		projectIDs = append(projectIDs, i.ProjectID)
+	}
+	if len(projectIDs) == 0 {
+		return carriers
+	}
+	ids := make([]pgtype.UUID, 0, len(projectIDs))
+	for _, id := range projectIDs {
+		ids = append(ids, util.MustParseUUID(id))
+	}
+	names := map[string]string{}
+	rows, err := r.Queries.ListProjectCarrierNames(ctx, db.ListProjectCarrierNamesParams{
+		WorkspaceID: workspaceID,
+		Column2:     ids,
+	})
+	if err != nil {
+		slog.Warn("retrospective: project carrier name lookup failed",
+			"workspace_id", util.UUIDToString(workspaceID), "error", err)
+	} else {
+		for _, row := range rows {
+			names[util.UUIDToString(row.ID)] = row.Name
+		}
+	}
+	for _, id := range projectIDs {
+		content, err := r.Queries.GetProjectPromptContent(ctx, db.GetProjectPromptContentParams{
+			ID:          util.MustParseUUID(id),
+			WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			slog.Warn("retrospective: project carrier read failed",
+				"project_id", id, "error", err)
+			continue
+		}
+		sections := carrierSections(content)
+		if len(sections) == 0 {
+			continue
+		}
+		carriers = append(carriers, TaskContextCarrier{
+			Scope:    "project",
+			ScopeID:  id,
+			Name:     truncateRunes(names[id], maxSectionNameRunes),
+			Sections: sections,
+		})
+	}
+	return carriers
+}
+
+// carrierSections extracts the carrier's ordered `## ` titles, capped in
+// count and per-title length so a pathological carrier cannot blow up the
+// prompt.
+func carrierSections(content string) []string {
+	all := legislation.Sections(content)
+	if len(all) > maxCarrierSections {
+		all = all[:maxCarrierSections]
+	}
+	for i, s := range all {
+		all[i] = truncateRunes(s, maxSectionNameRunes)
+	}
+	return all
 }

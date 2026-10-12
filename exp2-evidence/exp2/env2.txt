@@ -1,0 +1,13 @@
+== exp2b environment ==
+kernel=6.8.0-146-generic
+overlay_params:
+  check_copy_up=N
+  index=N
+  metacopy=N
+  nfs_export=N
+  redirect_always_follow=Y
+  redirect_dir=N
+  redirect_max=256
+  xino_auto=Y
+attr=setfattr 2.5.2
+banks ready: /dev/loop0     xfs     2031616 71988   1959628   4% /home/agent/workspace/exp2/banks/mnt_xfs tmpfs          tmpfs   1048576     0   1048576   0% /home/agent/workspace/exp2/banks/mnt_tmpfs 

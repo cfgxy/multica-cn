@@ -47,6 +47,7 @@ const mockDeleteMutate = jest.fn();
 const mockCreateMutateAsync = jest.fn();
 
 jest.mock("@tanstack/react-query", () => ({
+  queryOptions: (opts: Record<string, unknown>) => opts,
   useQuery: (opts: { queryKey: unknown[] }) => {
     const key = JSON.stringify(opts.queryKey);
     if (key.includes('"sessions"')) {

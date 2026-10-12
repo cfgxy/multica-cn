@@ -1,0 +1,14 @@
+== exp1 summary (median of 3 reps) ==
+workload                      native      fuse      kern fuse/native
+build_full                     9.168    12.147     9.098       1.32x
+build_incr                     0.300     1.927     0.352       6.42x
+create_5000_files              0.284     2.774     0.371       9.77x
+editor_save_300                0.089     0.298     0.097       3.35x
+find_traverse_min3             0.013     0.042     0.016       3.28x
+git_add_commit                 2.137    10.366     5.499       4.85x
+git_checkout_rt_x3             0.234     1.662     0.313       7.10x
+git_status_clean_min5          0.008     0.016     0.011       2.00x
+git_status_m100_min5           0.010     0.032     0.012       3.09x
+grep_read_cold                 1.095     1.942     1.205       1.77x
+mount_to_ready                   nan     0.009     0.011        nanx
+unmount                          nan     0.068     0.546        nanx

@@ -671,3 +671,165 @@ describe("X-Client-OS header", () => {
     await expect(captureJsonRequestHeaderOS()).resolves.toBe("ios");
   });
 });
+
+describe("ApiClient.lookupPullRequest", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // RUYI-635 返工：端点注册在 /api/workspaces/{id} 路由组内
+  // （server/cmd/server/router.go），core 同口径见
+  // packages/core/api/client.ts lookupPullRequest。路径缺 workspaces 段时
+  // 请求命中不存在的顶层路由 → 404 → 被「404→null」降级契约吞掉 →
+  // PR 引用永远静默降级为纯文本。此测试锚定请求 URL 本身，防止两端
+  // 端点口径再漂移（单测 mock 掉 api 模块时结构性拦不住这类接缝缺陷）。
+  it("requests the workspace-scoped lookup route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ pull_request: null }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequest("ws-1", "cfgxy", "multica-cn", 350),
+    ).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.example.test/api/workspaces/ws-1/pull-requests/lookup?owner=cfgxy&repo=multica-cn&number=350",
+    );
+  });
+});
+
+describe("ApiClient.lookupPullRequestByNumber", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // RUYI-728: 正文 `MR !N` 点击的按编号解析端点，注册在
+  // /api/workspaces/{id}/pull-requests/lookup-by-number
+  // （server/cmd/server/router.go）。契约与 web 的
+  // packages/core/api/client.ts lookupPullRequestByNumber 同口径：唯一命中
+  // 返回 PR；从未同步（404）与跨仓歧义（409）都降级为 null，正文点击与
+  // 引用区行同样静默降级，不报错。
+  it("requests the by-number lookup route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ pull_request: null }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequestByNumber("ws-1", 468),
+    ).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.example.test/api/workspaces/ws-1/pull-requests/lookup-by-number?number=468",
+    );
+  });
+
+  it("degrades a 404 miss to null", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: "pull request not found" }),
+      { status: 404, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequestByNumber("ws-1", 468),
+    ).resolves.toBeNull();
+  });
+
+  it("degrades a 409 cross-repo ambiguity to null", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: "pull request number is ambiguous across repositories" }),
+      { status: 409, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      api.lookupPullRequestByNumber("ws-1", 468),
+    ).resolves.toBeNull();
+  });
+});
+
+describe("ApiClient.transcribeVoiceAudio (RUYI-710 阶段 2 降级听写)", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(body: unknown, ok = true, status = 200) {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(body),
+      { status, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    return fetchMock;
+  }
+
+  it("POST workspace 作用域转写端点，multipart body 且不带预设 Content-Type", async () => {
+    const fetchMock = stubFetch({ text: "你好世界" });
+
+    await expect(
+      api.transcribeVoiceAudio("ws-1", new Blob([new Uint8Array([1, 2])], { type: "audio/wav" })),
+    ).resolves.toBe("你好世界");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.example.test/api/workspaces/ws-1/voice-transcriptions");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
+    const headers = init.headers as Record<string, string>;
+    // 无预设 Content-Type：boundary 由 RN/undici 的 FormData 序列化生成，
+    // 客户端预设会与之错位（uploadFile 同一条注释先例）。
+    expect(headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("text 字段缺失或非字符串一律收敛空串（空转写分支语义）", async () => {
+    stubFetch({});
+    await expect(
+      api.transcribeVoiceAudio("ws-1", new Blob([])),
+    ).resolves.toBe("");
+  });
+
+  it("非 2xx 抛 ApiError 携带状态码（hook 层统一 toast）", async () => {
+    stubFetch(
+      { error: "voice_unavailable", message: "voice not configured" },
+      false,
+      409,
+    );
+    const err = await api
+      .transcribeVoiceAudio("ws-1", new Blob([]))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+  });
+
+  it("鉴权头随 token 注入", async () => {
+    api.setToken("tok-1");
+    const fetchMock = stubFetch({ text: "x" });
+
+    await api.transcribeVoiceAudio("ws-1", new Blob([]));
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe(
+      "Bearer tok-1",
+    );
+  });
+});

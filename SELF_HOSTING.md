@@ -426,22 +426,51 @@ If you already have a `pg_cron` job in production, the safe sequence to retire i
 
 External cron / systemd timer / Kubernetes `CronJob` setups that call `SELECT rollup_task_usage_hourly()` directly can be retired the same way — once `sys_cron_executions` shows steady SUCCESS rows from the in-process scheduler, the external job is redundant and can be removed.
 
-## Stopping Services
+## Observability Stack (Prometheus)
 
-If you installed via the install script:
+The Usage page has two live panels — **System resources** (per-daemon host CPU / memory / swap / disk) and **Model traffic** (token / cost / task rates). They are backed by Prometheus: the panels proxy their queries through the backend, so the browser never talks to Prometheus directly. There is deliberately **no Grafana** in the stack — the web UI is the only consumer.
+
+Components and how the data flows:
+
+1. **node-exporter** (per daemon host) — collects host metrics with the industry-standard exporter instead of anything Multica-specific. `make daemon-install` / `daemon-update` install it alongside the daemon (`multica-node-exporter.service`, small fixed resource budget). In the Docker stack, the bundled `node-exporter` service plays the same role for the compose host.
+2. **Prometheus** (optional, in the Docker stack) — scrapes static targets: the server's `/metrics` for the `multica_task_usage_*` model-traffic aggregates, and every daemon host's node-exporter for the native `node_*` resource series. There is no service discovery — one line per daemon host in `deploy/prometheus/prometheus.yml`.
+3. **Server proxy** — the panels read through the backend (`/api/dashboard/usage/resources` and `/api/dashboard/usage/traffic`), which scopes every query to the requesting workspace.
+
+Each node-exporter target in the Prometheus config must carry a `daemon` label equal to that host's daemon id (`multica daemon status` prints it): the panels use it to show a workspace only the hosts it owns. Targets without a matching label are scraped but never displayed.
+
+### Enabling it (Docker Compose)
+
+Add to your `.env`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash -s -- --stop
+PROMETHEUS_URL=http://prometheus:9090
 ```
 
-If you cloned the repo manually:
+Then bring up the observability profile (metrics on the server itself are on by default, listening inside the compose network on `:9091` — override with `METRICS_ADDR`, set it empty to turn the endpoint off):
 
 ```bash
-# Stop the Docker Compose services (backend, frontend, database)
-make selfhost-stop
+docker compose --profile observability up -d
+```
 
-# Stop the local daemon
-multica daemon stop
+That starts the pinned Prometheus (`prom/prometheus`, data retained 15 days) and a node-exporter for the compose host, with the bundled scrape config (`deploy/prometheus/prometheus.yml`). Edit that file to label the compose host's `daemon` label and to add one static target per remote daemon host. Once it has scraped for a minute or two, the two panels appear on the Usage page. Hide them again by clearing `PROMETHEUS_URL` and restarting the backend — an unset `PROMETHEUS_URL` means "no observability stack", which the UI treats as normal, not an error.
+
+### Enabling it (daemon hosts)
+
+`make daemon-install` / `daemon-update` install `multica-node-exporter.service` next to the daemon by default (downloading the upstream binary to `~/.local/bin/node_exporter` if absent). Tune the listen address with `NODE_EXPORTER_LISTEN` (defaults to `:9100`); Prometheus must be able to reach it, so firewall the port to your Prometheus host. Install with `NODE_EXPORTER_LISTEN=` (empty) to skip the exporter on a host. To opt a host into the panels, add it to the `node-exporter` scrape job in `deploy/prometheus/prometheus.yml` with its `daemon` label.
+
+Host-memory backpressure (new-claim pausing under watermarks) is configured per workspace in the web UI (**Settings → Workspace → Host backpressure**); the values reach every daemon of that workspace over the heartbeat channel. There are no `MULTICA_DAEMON_BACKPRESSURE_*` environment variables anymore.
+
+### Verifying
+
+```bash
+# Server metrics reachable from the compose network:
+docker compose exec prometheus wget -qO- backend:9091/metrics | head
+
+# Model-traffic aggregates present:
+curl -s http://127.0.0.1:9091/metrics | grep -c '^multica_task_usage_'
+
+# Prometheus sees the targets as up (server + node-exporter):
+curl -s http://127.0.0.1:9099/api/v1/targets | grep -o '"health":"up"'
 ```
 
 ## Switching to Multica Cloud

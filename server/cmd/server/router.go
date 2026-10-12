@@ -39,6 +39,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -291,6 +292,11 @@ type RouterOptions struct {
 	// any test that happened to have the variable set. nil means unset, which
 	// is what tests and NewRouter get.
 	LLMMaxRetries *llm.RetryOverride
+
+	// Prometheus backs the usage page's system-resource and model-traffic
+	// panels. main.go builds it from PROMETHEUS_URL; nil (or an empty URL)
+	// keeps both proxy endpoints reporting configured=false.
+	Prometheus *promquery.Client
 }
 
 func buildChannelSupervisor(
@@ -1329,6 +1335,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProviderWSBaseURL = v
 	}
 
+	// One-shot dictation transcription provider origin (RUYI-710).
+	// MULTICA_GEMINI_ASR_BASE_URL lets air-gapped deployments and tests aim
+	// the generateContent hop at a stub; empty env keeps the public default.
+	h.VoiceASRBaseURL = handler.DefaultVoiceASRBaseURL
+	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_ASR_BASE_URL")); v != "" {
+		h.VoiceASRBaseURL = v
+	}
+
 	// Voice provider egress proxy (RUYI-692 D1 ①): MULTICA_GEMINI_PROXY_URL
 	// names the per-connection proxy the Gemini Live dial and the credential
 	// probe use — `socks5://` preferred, `http(s)://` accepted. The value may
@@ -1387,6 +1401,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
+	}
+	if opts.Prometheus != nil {
+		h.Prometheus = opts.Prometheus
 	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
@@ -1867,6 +1884,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// this middleware. Read-only; answering stays on the
 					// issue-scoped endpoints.
 					r.Get("/decision-inbox", h.ListWorkspaceDecisionInbox)
+					// RUYI-630: the sensitive-operation authorization carrier.
+					// Reads are member-visible; the answer route additionally
+					// sits behind RequireHumanActor — machine credentials
+					// never reach it even if a route lands here by mistake
+					// (the handler re-checks too).
+					r.Route("/decision-requests", func(r chi.Router) {
+						// Creation is agent-only in the handler (resolveActor
+						// must land on the creating agent; member credentials
+						// get 403) — the channel exists because agent
+						// credentials cannot reach the sensitive endpoint
+						// themselves.
+						r.Post("/", h.CreateDecisionRequest)
+						r.Get("/", h.ListDecisionRequests)
+						r.Route("/{requestId}", func(r chi.Router) {
+							r.Get("/", h.GetDecisionRequest)
+							r.With(handler.RequireHumanActor).Post("/answer", h.AnswerDecisionRequest)
+							r.Post("/cancel", h.CancelDecisionRequest)
+						})
+					})
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -1874,6 +1910,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
+					// PR text-reference lookup for the reference tail
+					// (RUYI-635 增量): member-visible, read-only, DB snapshot.
+					r.Get("/pull-requests/lookup", h.LookupPullRequestByRef)
+					// Number-only `MR !N` lookup for body links + tail rows
+					// (RUYI-728): same visibility and snapshot discipline.
+					r.Get("/pull-requests/lookup-by-number", h.LookupPullRequestByNumber)
 					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
@@ -2000,6 +2042,32 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
+				// Voice provider pool (RUYI-693): the listing is
+				// member-visible — the settings page renders the pool for
+				// everyone — while pool writes are workspace-admin state,
+				// the same split as the workspace settings themselves.
+				r.Route("/voice-providers", func(r chi.Router) {
+					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
+					r.Group(func(r chi.Router) {
+						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+						r.Post("/", h.CreateVoiceProvider)
+						r.Route("/{providerId}", func(r chi.Router) {
+							r.Patch("/", h.UpdateVoiceProvider)
+							r.Delete("/", h.DeleteVoiceProvider)
+							// The key itself never round-trips: it enters
+							// here (and probes on save) and is only ever
+							// read back as the coarse status badge.
+							r.Put("/credentials/{credentialKey}", h.PutVoiceProviderCredential)
+							r.Delete("/credentials/{credentialKey}", h.DeleteVoiceProviderCredential)
+							r.Post("/credential-probe", h.RunVoiceProviderProbe)
+						})
+					})
+				})
+				// One-shot dictation transcription (RUYI-710): any workspace
+				// member may dictate — the same membership the settings
+				// page itself renders under. The ASR provider key rides
+				// only the server→provider hop; nothing is persisted.
+				r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Post("/voice-transcriptions", h.CreateVoiceTranscription)
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
@@ -2369,6 +2437,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+			})
+		})
+
+		// Workspace-level host backpressure settings (RUYI-618): the
+		// watermarks pause task claiming on every daemon host in the
+		// workspace, so reads are member-visible but saves are owner-only.
+		// Delivered to daemons on heartbeat acks (see processHeartbeat).
+		r.Route("/api/workspace/backpressure-settings", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspaceBackpressureSettings)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Put("/", h.PutWorkspaceBackpressureSettings)
 			})
 		})
 
@@ -2795,6 +2877,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
+				// Observability panels (RUYI-618): Prometheus-proxied
+				// system-resource and model-traffic series for the usage
+				// page. Both report configured=false when PROMETHEUS_URL
+				// is unset — the browser never talks to Prometheus.
+				r.Get("/usage/resources", h.GetDashboardUsageResources)
+				r.Get("/usage/traffic", h.GetDashboardUsageTraffic)
 			})
 
 			// (RUYI-626's POST /api/voice-sessions/{id}/complete was retired

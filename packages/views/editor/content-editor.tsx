@@ -47,6 +47,7 @@ import { useWorkspaceSlug } from "@multica/core/paths";
 import { useQueryClient } from "@tanstack/react-query";
 import { issueIdentifierOptions } from "@multica/core/issues/queries";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
+import { identifierMatchesPrefix } from "@multica/core/markdown";
 import { isIssueIdentifier } from "@multica/ui/markdown";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -567,13 +568,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       const workspaces = await queryClient.fetchQuery(workspaceListOptions());
       const ws = workspaces.find((w) => w.slug === slug);
       if (!ws) return null;
-      const prefix = ws.issue_prefix;
-      if (
-        prefix &&
-        !identifier.toUpperCase().startsWith(`${prefix.toUpperCase()}-`)
-      ) {
-        return null;
-      }
+      if (!identifierMatchesPrefix(identifier, ws.issue_prefix)) return null;
       const issue = await queryClient.fetchQuery(
         issueIdentifierOptions(ws.id, identifier),
       );

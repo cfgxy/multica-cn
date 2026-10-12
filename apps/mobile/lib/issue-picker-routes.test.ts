@@ -26,6 +26,9 @@ function source(relative: string): string {
 
 const detail = source("../app/(app)/[workspace]/issue/[id].tsx");
 const attributeRow = source("../components/issue/attribute-row.tsx");
+// RUYI-697 起第一组四项抽为 IssueMenuFieldItems，字段→picker 的接线随
+// 组件迁移，断言对象同步指向组件源码。
+const menuFieldItems = source("../components/issue/issue-menu-field-items.tsx");
 const layout = source("../app/(app)/[workspace]/_layout.tsx");
 
 describe("issuePickerHref", () => {
@@ -72,7 +75,8 @@ describe("更多菜单快捷设置接线", () => {
   ];
 
   it.each(quickFields)("菜单里有 %s 的快捷入口", (field) => {
-    expect(detail).toContain(`openPicker("${field}")`);
+    expect(menuFieldItems).toContain(`onOpenPicker("${field}")`);
+    expect(detail).toContain("IssueMenuFieldItems");
   });
 
   it("菜单与 chip 行共用同一张路由表，不各自维护字符串", () => {
