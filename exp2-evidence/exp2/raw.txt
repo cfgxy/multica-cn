@@ -1,8 +1,0 @@
-mount: /home/agent/workspace/exp2/view_ext42xfs: special device overlay does not exist.
-       dmesg(1) may have more information after failed mount system call.
-mount: /home/agent/workspace/exp2/view_xfs2ext4: special device overlay does not exist.
-       dmesg(1) may have more information after failed mount system call.
-[  728.152231] overlayfs: failed to resolve '/home/agent/workspace/exp2/banks/mnt_xfs/up_ext42xfs': -2
-[  728.176856] overlayfs: failed to resolve '/home/agent/workspace/exp2/banks/mnt_xfslow/low': -2
-mount: /home/agent/workspace/exp2/view_ext42xfs_idx: special device overlay does not exist.
-       dmesg(1) may have more information after failed mount system call.
