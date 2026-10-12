@@ -309,6 +309,9 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     pressAtRef.current = atMs;
     dispatch({ type: "press" });
     armTimerRef.current = setTimeout(() => {
+      // 起录门到点必须自清引用：release() 以 armTimerRef 非空判「轻点」，
+      // 残留真值会把所有正常指松都误判成轻点（heldMs 恒 0，录音永不结算）。
+      armTimerRef.current = null;
       pressAtRef.current = null;
       dispatch({
         type: "beginRecord",
