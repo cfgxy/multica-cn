@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   idleDictation,
   reduceDictation,
+  resolveDictationEntry,
   CANCEL_ARM_DP,
   MIN_RECORD_MS,
   RECORD_ARM_MS,
@@ -190,5 +191,33 @@ describe("乱序事件防御", () => {
     const once = press();
     const twice = reduceDictation(once.state, { type: "press" });
     expect(twice.state.phase).toBe("pressing");
+  });
+});
+
+describe("听写入口模式（RUYI-710 阶段 2 降级放开）", () => {
+  it("探测中一律 probing，无论转写通道是否接好", () => {
+    expect(resolveDictationEntry(null, true)).toBe("probing");
+    expect(resolveDictationEntry(null, false)).toBe("probing");
+  });
+
+  it("端侧可用恒为 ondevice（降级接入不影响可用设备回归）", () => {
+    expect(resolveDictationEntry({ available: true, reason: "ok" }, true)).toBe("ondevice");
+    expect(resolveDictationEntry({ available: true, reason: "ok" }, false)).toBe("ondevice");
+  });
+
+  it("端侧不可用且转写通道未接 → hidden（收窄行为不变）", () => {
+    expect(resolveDictationEntry({ available: false, reason: "api_level" }, false)).toBe("hidden");
+    expect(resolveDictationEntry({ available: false, reason: "module_missing" }, false)).toBe("hidden");
+  });
+
+  it("端侧不可用且转写通道已接 → degraded，但权限被拒仍 hidden（两条路径都要麦克风）", () => {
+    expect(resolveDictationEntry({ available: false, reason: "api_level" }, true)).toBe("degraded");
+    expect(resolveDictationEntry({ available: false, reason: "module_missing" }, true)).toBe("degraded");
+    expect(resolveDictationEntry({ available: false, reason: "permission" }, true)).toBe("hidden");
+  });
+
+  it("非 Android（platform）与未知原因即使通道已接也 hidden", () => {
+    expect(resolveDictationEntry({ available: false, reason: "platform" }, true)).toBe("hidden");
+    expect(resolveDictationEntry({ available: false, reason: "whatever" }, true)).toBe("hidden");
   });
 });

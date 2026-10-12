@@ -8,8 +8,9 @@
  *
  *   - 无 pill 展开/折叠（bar 常驻；disabled 链仍是灰 pill，R1 不变）。
  *   - 发送位优先级沿用：Stop > 🎤🔵（语音）> 发送/灰化发送。
- *   - 🎤 听写与 🔵 全屏语音并排；🎤 仅端侧识别可用时显示（本单收窄：
- *     后端转写端点待后续单，见 `use-dictation.ts` 头注释）。
+ *   - 🎤 听写与 🔵 全屏语音并排；🎤 端侧可用走端侧识别，不可用
+ *     （API<31 / 无识别服务）经服务端转写降级（RUYI-710，需语音门禁
+ *     可用 + workspace 就绪）；权限被拒或非 Android 隐藏。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -49,6 +50,7 @@ import {
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useSkillDraftStore } from "@/data/stores/skill-draft-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { api } from "@/data/api";
 import {
   resolveInputShape,
   voiceGateVerdict,
@@ -106,6 +108,7 @@ export function ChatInputBar({
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const mentionPickerPath: Href = {
     pathname: "/[workspace]/mention-picker",
     params: { workspace: wsSlug ?? "", mode: "chat" },
@@ -325,6 +328,11 @@ export function ChatInputBar({
       Promise.resolve(onSend(text, [])).catch(() => onChangeText(text));
     },
     onToast: showDictationToast,
+    // 降级转写通道（RUYI-710）：内存 WAV 上传服务端转写端点。wsId 未
+    // 就绪时通道为空，降级入口保持隐藏（resolveDictationEntry）。
+    transcribe: wsId
+      ? (audio, signal) => api.transcribeVoiceAudio(wsId, audio, { signal })
+      : undefined,
   });
 
   const openDictation = useCallback(() => {
@@ -436,7 +444,9 @@ export function ChatInputBar({
           submitting={submitting}
           uploading={uploading}
           onSubmit={handleSubmit}
-          dictationReady={dictation.onDeviceReady === true}
+          dictationReady={
+            dictation.entry === "ondevice" || dictation.entry === "degraded"
+          }
           onOpenDictation={openDictation}
           onOpenVoice={onOpenVoice}
           onStop={onStop}
