@@ -17,9 +17,10 @@
  *     reads as what the author typed" contract the inline chips had.
  *
  * The state → icon/color semantics come from `derivePullRequestStateVisual`
- * in core (one derivation, renderers own glyphs/palettes). The row visual
- * classes are unchanged from the inline preview rows (RUYI-730 owns the
- * envelope's visual rework).
+ * in core (one derivation, renderers own glyphs/palettes). The envelope's
+ * visual language is RUYI-730's rebuild (card container in rich-content.css,
+ * SubIssueRow grid): inline icons ride the official 15px row grid and the
+ * degraded slot keeps a placeholder glyph so its text starts on that grid.
  *
  * Self-filter (RUYI-731): under the issue-detail render context a reference
  * that resolves to the CURRENT issue builds no row — an issue describing
@@ -31,6 +32,7 @@
  */
 import { useMemo } from "react";
 import {
+  CircleDashed,
   GitMerge,
   GitPullRequest,
   GitPullRequestArrow,
@@ -146,7 +148,9 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
             status={row.issue.status}
             category={issueStatusCategory(row.issue) ?? undefined}
             color={statusColorOf(row.issue.status)}
-            className="h-3.5 w-3.5 shrink-0"
+            // Inline icons sit on the SubIssueRow grid: 15px like the
+            // official sub-issue rows (RUYI-730 visual rebuild).
+            className="h-[15px] w-[15px] shrink-0"
           />
           <span className="issue-reference-identifier" translate="no">
             {row.issue.identifier}
@@ -169,7 +173,7 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         >
           <Icon
             aria-hidden
-            className={`h-3.5 w-3.5 shrink-0 ${className} ${
+            className={`h-[15px] w-[15px] shrink-0 ${className} ${
               visual.dimmed ? "opacity-80" : ""
             }`}
           />
@@ -180,11 +184,19 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
         </a>
       );
     }
+    // Degraded slot keeps a placeholder glyph on the icon column so its text
+    // starts on the same grid as resolved rows (RUYI-730). Dimmed via the
+    // sanctioned faint token — web's text-contrast law bars resting opacity
+    // on guarded text tones (730's opacity-60 form fails it).
     return (
       <span
         key={row.key}
         className="issue-reference-row issue-reference-degraded"
       >
+        <CircleDashed
+          aria-hidden
+          className="h-[15px] w-[15px] shrink-0 text-faint-foreground"
+        />
         {row.fallback}
       </span>
     );
