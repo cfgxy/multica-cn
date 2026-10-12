@@ -54,6 +54,7 @@ import type {
   PromptProposalCarrierScope,
   PromptProposalDraftRequest,
 } from "@multica/core/types";
+import { IssueChip } from "../../issues/components/issue-chip";
 import { ProposalPreviewDialog } from "./proposal-preview-dialog";
 import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
@@ -110,6 +111,23 @@ function statusTone(status: string): "default" | "secondary" | "destructive" | "
     case "approved": return "secondary";
     default: return "outline";
   }
+}
+
+// Evidence anchors (RUYI-723 A): the retrospective's direct anchors plus the
+// merged_from accumulation, deduplicated in first-seen order. Rows without
+// either (manual proposals, legacy data) yield [] and the anchor block is
+// skipped entirely.
+function proposalAnchorIssueIds(p: PromptProposal): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  const push = (id?: string) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  for (const a of p.evidence_anchors) push(a.issue_id);
+  for (const m of p.merged_from) push(m.issue_id);
+  return ids;
 }
 
 export function ProposalTab({ wsId }: { wsId: string }) {
@@ -434,6 +452,19 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                           ? ` · ${t(($) => $.legislation.source.merged)}`
                           : null}
                       </div>
+                      {proposalAnchorIssueIds(p).length > 0 ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-1">
+                          {proposalAnchorIssueIds(p).map((id) => (
+                            <AppLink
+                              key={id}
+                              href={paths.issueDetail(id)}
+                              className="rounded-md hover:bg-accent"
+                            >
+                              <IssueChip issueId={id} />
+                            </AppLink>
+                          ))}
+                        </div>
+                      ) : null}
                     </button>
                   </div>
                 </li>
@@ -452,6 +483,38 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                 <dd>{t(($) => $.legislation.carrierScope[selected.carrier_scope])}</dd>
                 <dt className="text-muted-foreground">{t(($) => $.legislation.changeKindLabel)}</dt>
                 <dd>{t(($) => $.legislation.changeKind[selected.change_kind])}</dd>
+                {proposalAnchorIssueIds(selected).length > 0 ? (
+                  <>
+                    <dt className="text-muted-foreground">
+                      {t(($) => $.legislation.sourceIssuesLabel)}
+                    </dt>
+                    <dd className="flex flex-wrap items-center gap-1">
+                      {proposalAnchorIssueIds(selected).map((id) => (
+                        <AppLink
+                          key={id}
+                          href={paths.issueDetail(id)}
+                          className="rounded-md hover:bg-accent"
+                        >
+                          <IssueChip issueId={id} />
+                        </AppLink>
+                      ))}
+                    </dd>
+                  </>
+                ) : null}
+                <dt className="text-muted-foreground">{t(($) => $.legislation.problemLabel)}</dt>
+                <dd>{selected.problem || "—"}</dd>
+                <dt className="text-muted-foreground">
+                  {t(($) => $.legislation.expectedEffectLabel)}
+                </dt>
+                <dd>{selected.expected_effect || "—"}</dd>
+                <dt className="text-muted-foreground">
+                  {t(($) => $.legislation.expectedGainLabel)}
+                </dt>
+                <dd>{selected.expected_gain || "—"}</dd>
+                <dt className="text-muted-foreground">
+                  {t(($) => $.legislation.valueScoreLabel)}
+                </dt>
+                <dd>{typeof selected.value_score === "number" ? `${selected.value_score} / 5` : "—"}</dd>
                 {selected.clause_text ? (
                   <>
                     <dt className="text-muted-foreground">{t(($) => $.legislation.clauseTextLabel)}</dt>

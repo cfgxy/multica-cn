@@ -1606,6 +1606,14 @@ type PromptProposal struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	JevAdvisory         []byte             `json:"jev_advisory"`
+	// RUYI-723: what friction this draft removes, short text (≤100 chars from the retrospective contract); NULL for manual proposals and pre-723 rows.
+	Problem pgtype.Text `json:"problem"`
+	// RUYI-723: the expected effect once enacted, short text (≤100 chars); NULL = unset.
+	ExpectedEffect pgtype.Text `json:"expected_effect"`
+	// RUYI-723: how large the expected gain is, short text (≤100 chars); NULL = unset.
+	ExpectedGain pgtype.Text `json:"expected_gain"`
+	// RUYI-723: 1-5 integer reference score (5 = caused a delivery rollback/blocking or repeated cross-issue friction; 4 = one rework or acceptance failure; 3 = notable verification cost; 2 = minor improvement; 1 = nice-to-have); NULL = unrated. Reference only, never a gate.
+	ValueScore pgtype.Int4 `json:"value_score"`
 }
 
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.
