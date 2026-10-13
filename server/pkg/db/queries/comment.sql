@@ -848,3 +848,12 @@ FROM thread_stats ts
 JOIN comment c ON c.id = ts.root_id
 ORDER BY ts.last_activity_at DESC, c.id DESC
 LIMIT @row_limit;
+
+-- name: GetLastCommentByAuthorOnIssue :one
+-- RUYI-660: the newest comment an author left on an issue. The outer loop
+-- reads the plan agent's latest comment as its terminal report for the
+-- end-marker verdict. pgx.ErrNoRows means the author never commented.
+SELECT * FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = $3 AND author_id = $4
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

@@ -522,6 +522,54 @@ func (q *Queries) GetDelegatedFailureRecoveryExhaustionComment(ctx context.Conte
 	return i, err
 }
 
+const getLastCommentByAuthorOnIssue = `-- name: GetLastCommentByAuthorOnIssue :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND author_type = $3 AND author_id = $4
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLastCommentByAuthorOnIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AuthorType  string      `json:"author_type"`
+	AuthorID    pgtype.UUID `json:"author_id"`
+}
+
+// RUYI-660: the newest comment an author left on an issue. The outer loop
+// reads the plan agent's latest comment as its terminal report for the
+// end-marker verdict. pgx.ErrNoRows means the author never commented.
+func (q *Queries) GetLastCommentByAuthorOnIssue(ctx context.Context, arg GetLastCommentByAuthorOnIssueParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, getLastCommentByAuthorOnIssue,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.AuthorType,
+		arg.AuthorID,
+	)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+	)
+	return i, err
+}
+
 const getLatestMemberCommentForIssueSince = `-- name: GetLatestMemberCommentForIssueSince :one
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at FROM comment
 WHERE issue_id = $1

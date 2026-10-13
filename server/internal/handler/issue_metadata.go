@@ -10,9 +10,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/outerloop"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -81,6 +83,121 @@ func validateIssueMetadataValue(raw json.RawMessage) error {
 // describing an issue agree on what an unset bag looks like on the wire.
 func parseIssueMetadata(raw []byte) map[string]any {
 	return util.JSONObjectOrEmpty(raw)
+}
+
+// outerLoopPlanKey reports whether key participates in the outer-loop plan
+// surface (RUYI-660) and is subject to the plan permission matrix below.
+func outerLoopPlanKey(key string) bool {
+	return key == outerloop.MetaGoal || outerloop.IsControlPlaneKey(key) || outerloop.IsServerOnlyKey(key)
+}
+
+// gateOuterLoopMetaWrite enforces the outer-loop plan permission matrix on
+// the public metadata API. It returns the value to store — rewritten for the
+// max-rounds clamp — or false after writing the 4xx response. The gate is
+// inert unless the outer_loop flag is on: with the loop disabled the keys
+// are ordinary metadata, preserving the pre-RUYI-660 status quo.
+//
+// Matrix:
+//   - outerloop_round / outerloop_wait_reason are server-only: written
+//     exclusively by server logic through the internal SQL path, 403 for
+//     every API caller.
+//   - agents may write only outerloop_goal, and only as a string — they
+//     never hold the loop's control plane.
+//   - members own the control plane: state must name a valid plan state,
+//     max_rounds must be a positive integer within the hard cap and only
+//     rises, agent must be a UUID.
+func (h *Handler) gateOuterLoopMetaWrite(w http.ResponseWriter, r *http.Request, actorType, key string, value json.RawMessage, existing map[string]any) (json.RawMessage, bool) {
+	if !featureflags.OuterLoopEnabled(r.Context(), h.FeatureFlags) || !outerLoopPlanKey(key) {
+		return value, true
+	}
+	if outerloop.IsServerOnlyKey(key) {
+		writeError(w, http.StatusForbidden, fmt.Sprintf("%s is server-managed and cannot be written through the API", key))
+		return nil, false
+	}
+	if actorType == "agent" {
+		if key != outerloop.MetaGoal {
+			writeError(w, http.StatusForbidden, fmt.Sprintf("agents may only write %s", outerloop.MetaGoal))
+			return nil, false
+		}
+		return value, requireStringMetaValue(w, value)
+	}
+	switch key {
+	case outerloop.MetaGoal:
+		return value, requireStringMetaValue(w, value)
+	case outerloop.MetaState:
+		var s string
+		if err := json.Unmarshal(value, &s); err != nil || !outerloop.ValidState(s) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s must be one of %s|%s|%s", key, outerloop.StateRunning, outerloop.StateWaitingHuman, outerloop.StateStopped))
+			return nil, false
+		}
+		return value, true
+	case outerloop.MetaAgent:
+		var s string
+		if err := json.Unmarshal(value, &s); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s must be a string", key))
+			return nil, false
+		}
+		if _, err := util.ParseUUID(s); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s must be an agent UUID", key))
+			return nil, false
+		}
+		return value, true
+	case outerloop.MetaMaxRounds:
+		var n float64
+		if err := json.Unmarshal(value, &n); err != nil || n != float64(int(n)) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s must be an integer", key))
+			return nil, false
+		}
+		clamped, ok := outerloop.ClampMaxRounds(int(n))
+		if !ok {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s must be between 1 and %d", key, outerloop.HardMaxRounds))
+			return nil, false
+		}
+		if stored, present := storedMetaInt(existing, key); present && clamped < stored {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%s only rises (stored: %d)", key, stored))
+			return nil, false
+		}
+		out, err := json.Marshal(clamped)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to encode %s", key))
+			return nil, false
+		}
+		return out, true
+	}
+	return value, true
+}
+
+// gateOuterLoopMetaDelete applies the delete-side of the plan matrix:
+// server-only keys are not deletable by anyone, and agents may not remove
+// plan keys at all — retiring a plan is the member owner's move.
+func (h *Handler) gateOuterLoopMetaDelete(w http.ResponseWriter, r *http.Request, actorType, key string) bool {
+	if !featureflags.OuterLoopEnabled(r.Context(), h.FeatureFlags) || !outerLoopPlanKey(key) {
+		return true
+	}
+	if outerloop.IsServerOnlyKey(key) || actorType == "agent" {
+		writeError(w, http.StatusForbidden, fmt.Sprintf("%s is part of the outer-loop plan and cannot be deleted by agents", key))
+		return false
+	}
+	return true
+}
+
+// storedMetaInt reads an integer previously stored in the metadata bag. The
+// public API only admits primitives, so numbers arrive as float64.
+func storedMetaInt(existing map[string]any, key string) (int, bool) {
+	n, ok := existing[key].(float64)
+	if !ok {
+		return 0, false
+	}
+	return int(n), true
+}
+
+func requireStringMetaValue(w http.ResponseWriter, value json.RawMessage) bool {
+	var s string
+	if err := json.Unmarshal(value, &s); err != nil {
+		writeError(w, http.StatusBadRequest, "value must be a string")
+		return false
+	}
+	return true
 }
 
 // parseMetadataFilterParam reads the `metadata` query parameter (a JSON
@@ -158,6 +275,8 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
 	// Enforce the key-count cap in the handler. The DB only guards size,
 	// and a clear 4xx for "too many keys" beats a CHECK violation that
@@ -165,6 +284,11 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	existing := parseIssueMetadata(issue.Metadata)
 	if _, present := existing[key]; !present && len(existing) >= maxIssueMetadataKeys {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("metadata cannot exceed %d keys", maxIssueMetadataKeys))
+		return
+	}
+
+	req.Value, ok = h.gateOuterLoopMetaWrite(w, r, actorType, key, req.Value, existing)
+	if !ok {
 		return
 	}
 
@@ -184,8 +308,6 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspaceID := uuidToString(updated.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id":       uuidToString(updated.ID),
@@ -211,6 +333,11 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if !h.gateOuterLoopMetaDelete(w, r, actorType, key) {
+		return
+	}
 
 	updated, err := h.Queries.DeleteIssueMetadataKey(r.Context(), db.DeleteIssueMetadataKeyParams{
 		ID:          issue.ID,
@@ -227,8 +354,6 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	workspaceID := uuidToString(updated.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id":       uuidToString(updated.ID),
