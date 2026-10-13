@@ -103,6 +103,11 @@ export type {
   RuntimeLocalSkillImportResult,
   IssueUsageSummary,
   MikaBootstrapResponse,
+  UsageMetricPoint,
+  UsageMetricSeries,
+  DashboardUsageResources,
+  DashboardUsageTraffic,
+  DashboardUsageTrafficDim,
   SchedulingPauseScope,
   SchedulingPauseState,
 } from "./agent";
@@ -480,3 +485,7 @@ export type {
   SelfEvolutionModelConfigResolved,
   SelfEvolutionModelConfigSave,
 } from "./self-evolution-model-config";
+export type {
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
+} from "./workspace-backpressure";

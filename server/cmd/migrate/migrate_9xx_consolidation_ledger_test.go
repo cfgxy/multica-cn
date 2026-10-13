@@ -137,12 +137,15 @@ var postConsolidationStems = []string{
 	"935_retrospective_agent",                        // RUYI-552 (934 issued to the same issue's direction-2 attempt and deleted unreleased)
 	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
 	"937_live_session_mode",                          // RUYI-626
+	"938_workspace_backpressure_settings",            // RUYI-618 (936/937 were in flight at issuance; landed as RUYI-579/RUYI-626 stems)
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
 	"940_decision_requests",                          // RUYI-630 (938 reserved to RUYI-618 in flight)
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
 	"961_voice_provider_config",                      // RUYI-693
+	"962_task_local_directory_scope",                 // RUYI-669 (task-level local_directory subdirectory scope declarations)
 	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
+	"968_prompt_proposal_value_context",              // RUYI-723 (nullable decision-context columns + score CHECK on prompt_proposal)
 	"969_daemon_backpressure_settings",               // RUYI-729 (daemon-level gate card + trigger/recovery event history)
 }
 

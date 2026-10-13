@@ -42,16 +42,16 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// backpressureSettingsResponse is the Runtime detail page's read model: the
+// runtimeBackpressureSettingsResponse is the Runtime detail page's read model: the
 // effective card (saved or code default), whether a row exists, the current
 // live report from the runtime's metadata bag, and the event history anchor
 // fields.
-type backpressureSettingsResponse struct {
-	DaemonID   string                            `json:"daemon_id"`
-	Configured bool                              `json:"configured"`
+type runtimeBackpressureSettingsResponse struct {
+	DaemonID   string                             `json:"daemon_id"`
+	Configured bool                               `json:"configured"`
 	Config     *protocol.DaemonBackpressureConfig `json:"config"`
-	UpdatedBy  string                            `json:"updated_by,omitempty"`
-	UpdatedAt  string                            `json:"updated_at,omitempty"`
+	UpdatedBy  string                             `json:"updated_by,omitempty"`
+	UpdatedAt  string                             `json:"updated_at,omitempty"`
 	Report     *protocol.DaemonBackpressureReport `json:"report,omitempty"`
 }
 
@@ -69,8 +69,8 @@ func runtimeBackpressureReport(rt db.AgentRuntime) *protocol.DaemonBackpressureR
 	return bag.Backpressure
 }
 
-func backpressureSettingsResponseFrom(rt db.AgentRuntime, row *db.DaemonBackpressureSetting) backpressureSettingsResponse {
-	resp := backpressureSettingsResponse{
+func runtimeBackpressureSettingsResponseFrom(rt db.AgentRuntime, row *db.DaemonBackpressureSetting) runtimeBackpressureSettingsResponse {
+	resp := runtimeBackpressureSettingsResponse{
 		DaemonID:   rt.DaemonID.String,
 		Configured: row != nil,
 		Report:     runtimeBackpressureReport(rt),
@@ -149,7 +149,7 @@ func (h *Handler) GetRuntimeBackpressureSettings(w http.ResponseWriter, r *http.
 	if err == nil {
 		rowPtr = &row
 	}
-	writeJSON(w, http.StatusOK, backpressureSettingsResponseFrom(rt, rowPtr))
+	writeJSON(w, http.StatusOK, runtimeBackpressureSettingsResponseFrom(rt, rowPtr))
 }
 
 // decodeBackpressureSettingsRequest reads the save body. The whole card is
@@ -246,10 +246,10 @@ func (h *Handler) PutRuntimeBackpressureSettings(w http.ResponseWriter, r *http.
 		}
 	}
 	details, _ := json.Marshal(map[string]any{
-		"daemon_id": rt.DaemonID.String,
+		"daemon_id":  rt.DaemonID.String,
 		"runtime_id": util.UUIDToString(rt.ID),
-		"old":       oldCard,
-		"new":       card,
+		"old":        oldCard,
+		"new":        card,
 	})
 	if err := service.AppendAuditEvents(ctx, qtx, service.Event{
 		ID:          dbid.NewV7(),
@@ -275,7 +275,7 @@ func (h *Handler) PutRuntimeBackpressureSettings(w http.ResponseWriter, r *http.
 		"runtime_id", util.UUIDToString(rt.ID),
 		"config_version", row.ConfigVersion,
 		"actor", util.UUIDToString(member.UserID))
-	writeJSON(w, http.StatusOK, backpressureSettingsResponseFrom(rt, &row))
+	writeJSON(w, http.StatusOK, runtimeBackpressureSettingsResponseFrom(rt, &row))
 }
 
 // DeleteRuntimeBackpressureSettings restores the host to code/env defaults
@@ -295,7 +295,7 @@ func (h *Handler) DeleteRuntimeBackpressureSettings(w http.ResponseWriter, r *ht
 	ctx := r.Context()
 	prev, prevErr := h.Queries.GetDaemonBackpressureSettings(ctx, rt.DaemonID.String)
 	if errors.Is(prevErr, pgx.ErrNoRows) {
-		writeJSON(w, http.StatusOK, backpressureSettingsResponseFrom(rt, nil))
+		writeJSON(w, http.StatusOK, runtimeBackpressureSettingsResponseFrom(rt, nil))
 		return
 	}
 	if prevErr != nil {
@@ -354,23 +354,23 @@ func (h *Handler) DeleteRuntimeBackpressureSettings(w http.ResponseWriter, r *ht
 		writeError(w, http.StatusInternalServerError, "failed to remove backpressure settings")
 		return
 	}
-	writeJSON(w, http.StatusOK, backpressureSettingsResponseFrom(rt, nil))
+	writeJSON(w, http.StatusOK, runtimeBackpressureSettingsResponseFrom(rt, nil))
 }
 
 // backpressureEventResponse is one timeline row of the Runtime detail
 // page's trigger/recovery history.
 type backpressureEventResponse struct {
-	ID                string                              `json:"id"`
-	EventType         string                              `json:"event_type"`
-	Reason            string                              `json:"reason"`
-	MemAvailablePct   float64                             `json:"mem_available_pct"`
-	SwapUsedPct       float64                             `json:"swap_used_pct"`
-	PsiSomeAvg10      float64                             `json:"psi_some_avg10"`
-	PsiReadOK         bool                                `json:"psi_read_ok"`
-	DeferredClaims    int64                               `json:"deferred_claims"`
-	EffectiveConfig   protocol.DaemonBackpressureConfig   `json:"effective_config"`
-	Hits              []protocol.DaemonBackpressureCondition `json:"hits"`
-	OccurredAt        string                              `json:"occurred_at"`
+	ID              string                                 `json:"id"`
+	EventType       string                                 `json:"event_type"`
+	Reason          string                                 `json:"reason"`
+	MemAvailablePct float64                                `json:"mem_available_pct"`
+	SwapUsedPct     float64                                `json:"swap_used_pct"`
+	PsiSomeAvg10    float64                                `json:"psi_some_avg10"`
+	PsiReadOK       bool                                   `json:"psi_read_ok"`
+	DeferredClaims  int64                                  `json:"deferred_claims"`
+	EffectiveConfig protocol.DaemonBackpressureConfig      `json:"effective_config"`
+	Hits            []protocol.DaemonBackpressureCondition `json:"hits"`
+	OccurredAt      string                                 `json:"occurred_at"`
 }
 
 // ListRuntimeBackpressureEvents serves the newest-first trigger/recovery
@@ -456,18 +456,18 @@ func (h *Handler) recordBackpressureEvent(ctx context.Context, rt db.AgentRuntim
 		eventType = "entered"
 	}
 	_, err = h.Queries.InsertDaemonBackpressureEvent(ctx, db.InsertDaemonBackpressureEventParams{
-		RuntimeID:        rt.ID,
-		DaemonID:         rt.DaemonID.String,
-		WorkspaceID:      rt.WorkspaceID,
-		EventType:        eventType,
-		Reason:           report.Reason,
-		MemAvailablePct:  report.MemAvailablePct,
-		SwapUsedPct:      report.SwapUsedPct,
-		PsiSomeAvg10:     report.PSIMemorySomeAvg10,
-		PsiReadOk:        report.PSIReadOK,
-		DeferredClaims:   report.DeferredClaims,
-		EffectiveConfig:  configJSON,
-		Hits:             hitsJSON,
+		RuntimeID:       rt.ID,
+		DaemonID:        rt.DaemonID.String,
+		WorkspaceID:     rt.WorkspaceID,
+		EventType:       eventType,
+		Reason:          report.Reason,
+		MemAvailablePct: report.MemAvailablePct,
+		SwapUsedPct:     report.SwapUsedPct,
+		PsiSomeAvg10:    report.PSIMemorySomeAvg10,
+		PsiReadOk:       report.PSIReadOK,
+		DeferredClaims:  report.DeferredClaims,
+		EffectiveConfig: configJSON,
+		Hits:            hitsJSON,
 	})
 	if err != nil {
 		slog.Warn("record backpressure event failed", "runtime_id", util.UUIDToString(rt.ID), "error", err)

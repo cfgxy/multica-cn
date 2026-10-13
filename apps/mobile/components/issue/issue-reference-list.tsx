@@ -1,11 +1,13 @@
 /**
- * Tail aggregation of issue references (RUYI-635 + 增量, mobile half).
+ * Tail aggregation of issue references (RUYI-635 增量, mobile half).
  *
  * Web renders every issue/PR mention as plain body text and lists the
  * collected references in a footer; mobile's demote pass
  * (`lib/markdown/preprocess.ts`) applies the same body-text contract, and
- * this component is the tail block. The 增量 rework makes it an
- * anti-mistouch two-level surface (Owner points ①③④, Board 1 + Board 2):
+ * this component is the tail block. RUYI-731 (Owner correction 2026-10-12)
+ * scoped "flat, no second-level surface" to the web footer only — mobile
+ * keeps the anti-mistouch two-level surface (Owner points ①③④, Board 1 +
+ * Board 2):
  *
  *   - Level 1 — ONE Pressable for the whole block (separator + header
  *     「引用 · N」 + chevron + at most 2 preview rows + fold-count line).
@@ -22,10 +24,13 @@
  *     browser otherwise) with a failure Alert; unresolved references stay
  *     non-clickable plain-text slots.
  *
- * The fold cut and counts come from `partitionReferencePreview` in core —
- * the same arithmetic the web popover folds with. Row building/grouping
- * policy lives in `lib/issue-reference-rows.ts` (node-testable); this
- * component only resolves, partitions, and draws.
+ * RUYI-731 self-filter: the current-issue context (`lib/current-issue-context`,
+ * default null, mounted by the issue detail screen) makes a reference that
+ * resolves to the CURRENT issue build no row — it appears in neither the
+ * preview nor the sheet; surfaces without the context (chat, inbox) keep
+ * every row. The row-building / fold / grouping policy (zip, cross-form
+ * collapse, self-filter, kinds) lives in `lib/issue-reference-rows.ts`
+ * (node-testable); this component only resolves and draws.
  *
  * Extraction happens once in `Markdown` (raw content, shared core
  * extractor, raw-deduped); this component only resolves and renders.
@@ -46,8 +51,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQueries } from "@tanstack/react-query";
 import {
+  parseMergeRequestReference,
   parsePullRequestReference,
-  partitionReferencePreview,
 } from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
 import { identifierMatchesPrefix } from "@multica/core/markdown";
@@ -55,16 +60,21 @@ import {
   issueDetailOptions,
   issueIdentifierOptions,
 } from "@/data/queries/issues";
-import { pullRequestLookupOptions } from "@/data/queries/github";
+import {
+  pullRequestLookupByNumberOptions,
+  pullRequestLookupOptions,
+} from "@/data/queries/github";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
 import {
   buildReferenceTailRows,
   groupReferenceTailRows,
+  partitionReferencePreview,
   shouldCloseSheetOnDragRelease,
   type ReferenceTailRow,
 } from "@/lib/issue-reference-rows";
+import { useCurrentIssueId } from "@/lib/current-issue-context";
 import { pullRequestStateVisual } from "@/lib/pull-request-display";
 import { openExternalUrl } from "@/lib/pull-request-link";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
@@ -145,6 +155,7 @@ export function IssueReferenceList({
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const workspacePrefix = useWorkspaceIssuePrefix();
+  const currentIssueId = useCurrentIssueId();
   const { colorOf } = useIssueStatuses();
   const { colorScheme } = useColorScheme();
   const insets = useSafeAreaInsets();
@@ -195,6 +206,14 @@ export function IssueReferenceList({
               parts?.number ?? 0,
             );
           }
+          if (ref.form === "merge_request") {
+            // RUYI-728: body-text `MR !N` shares the tail's resolution —
+            // unique-hit by-number lookup; a miss (never synced, or the same
+            // number in several repos) reads as null and the row degrades,
+            // the same web-footer contract.
+            const parts = parseMergeRequestReference(ref.ref);
+            return pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0);
+          }
           return issueDetailOptions(wsId, ref.ref);
         }),
       [references, wsId, workspacePrefix],
@@ -206,16 +225,16 @@ export function IssueReferenceList({
   });
 
   const rows = useMemo(
-    () => buildReferenceTailRows(references, results),
-    [references, results],
+    () => buildReferenceTailRows(references, results, currentIssueId),
+    [references, results, currentIssueId],
   );
   const { previews, hidden, hiddenPrCount } = useMemo(
-    () => partitionReferencePreview(rows, (row) => row.kind),
+    () => partitionReferencePreview(rows),
     [rows],
   );
   const groups = useMemo(() => groupReferenceTailRows(rows), [rows]);
 
-  if (references.length === 0) return null;
+  if (references.length === 0 || rows.length === 0) return null;
 
   const headerLabel = t("detail.reference_tail_header", "References · {{count}}", {
     count: rows.length,
@@ -327,7 +346,9 @@ export function IssueReferenceList({
 
   return (
     <>
-      {/* Board 1: separator + gray-tap whole block; rows are NOT pressables. */}
+      {/* Board 1: separator + gray-tap whole block; rows are NOT pressables.
+          Self-filtered rows (RUYI-731) reach neither the previews nor the
+          sheet — the fold runs on post-filter rows. */}
       <View className="mt-3 border-t border-border pt-2.5">
         <Pressable
           testID="issue-reference-block"

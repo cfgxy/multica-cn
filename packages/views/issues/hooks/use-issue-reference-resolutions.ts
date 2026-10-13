@@ -6,9 +6,13 @@ import {
   issueDetailOptions,
   issueIdentifierOptions,
 } from "@multica/core/issues/queries";
-import { pullRequestLookupOptions } from "@multica/core/github";
+import {
+  pullRequestLookupByNumberOptions,
+  pullRequestLookupOptions,
+} from "@multica/core/github";
 import {
   identifierMatchesPrefix,
+  parseMergeRequestReference,
   parsePullRequestReference,
 } from "@multica/core/markdown";
 import { useCurrentWorkspace } from "@multica/core/paths";
@@ -37,7 +41,9 @@ export function isPullRequestResolution(
  *     `IssueChip`'s fallback fetch runs, so cache entries are shared;
  *   - `owner/repo#N` (RUYI-635 增量) → `pullRequestLookupOptions`, the
  *     workspace's PR snapshot; a PR the platform has never seen returns
- *     `null` and the row degrades to plain text, same as issues.
+ *     `null` and the row degrades to plain text, same as issues;
+ *   - `MR !N` (RUYI-728) → `pullRequestLookupByNumberOptions`, the same
+ *     snapshot by number alone — unique hit or nothing, same degradation.
  *
  * The reference count varies per content string, so per-reference `useQuery`
  * calls would violate the rules of hooks on content change; `useQueries`
@@ -79,6 +85,10 @@ export function useIssueReferenceResolutions(
             parts?.repo ?? "",
             parts?.number ?? 0,
           );
+        }
+        if (ref.form === "merge_request") {
+          const parts = parseMergeRequestReference(ref.ref);
+          return pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0);
         }
         return { ...issueDetailOptions(wsId, ref.ref), enabled: Boolean(wsId) };
       }),
