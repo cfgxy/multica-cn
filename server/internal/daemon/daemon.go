@@ -633,15 +633,26 @@ type Daemon struct {
 	// per workspace and reports attribute per runtime's workspace.
 	// bpApplyMu serializes map swaps; bpReload is the closed-per-swap channel
 	// the watcher selects on for an immediate resample.
-	bpRuntime    atomic.Pointer[backpressureRuntime]
-	bpWorkspaces atomic.Pointer[map[string]*backpressureWorkspaceState]
-	bpReload     atomic.Pointer[chan struct{}]
-	bpApplyMu    sync.Mutex
-	bpSource     memSampleSource
-	bpState      atomic.Pointer[backpressureObservation]
-	bpDeferred   atomic.Int64
-	bpWakeup     atomic.Pointer[chan struct{}]
-	bpLastWarn   atomic.Int64
+	//
+	// Daemon-host override plane (RUYI-729): while bpHostRuntime is non-nil
+	// its card shadows the boot default and every workspace card on this
+	// machine — the host observation is what all of this daemon's workspaces
+	// gate and report on. bpDBManaged remembers having ever applied a saved
+	// (source=db) host card: once set, an ack that stops carrying one means
+	// the settings row was deleted, and the override converges away (D1)
+	// instead of shadowing forever.
+	bpRuntime     atomic.Pointer[backpressureRuntime]
+	bpWorkspaces  atomic.Pointer[map[string]*backpressureWorkspaceState]
+	bpReload      atomic.Pointer[chan struct{}]
+	bpApplyMu     sync.Mutex
+	bpSource      memSampleSource
+	bpState       atomic.Pointer[backpressureObservation]
+	bpDeferred    atomic.Int64
+	bpWakeup      atomic.Pointer[chan struct{}]
+	bpLastWarn    atomic.Int64
+	bpHostRuntime atomic.Pointer[backpressureRuntime]
+	bpHostState   atomic.Pointer[backpressureObservation]
+	bpDBManaged   atomic.Bool
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -763,17 +774,15 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
 	}
-	// Host memory backpressure (RUYI-393): nil runtime config = disabled, the
-	// claim gate fails open and the watcher goroutine is never started. The
-	// workspace's saved settings (RUYI-618) replace these boot defaults on
-	// the first heartbeat ack.
+	// Host memory backpressure (RUYI-393): nil runtime = disabled, the claim
+	// gate fails open and the watcher goroutine is never started. bpRuntime
+	// carries the BOOT-DEFAULT card rendered from the env-overridden config;
+	// each bound workspace's saved settings (RUYI-618) replace it on that
+	// workspace's first heartbeat ack, and a saved daemon-host row
+	// (RUYI-729) shadows it until the row is deleted.
 	if cfg.BackpressureEnabled {
 		d.bpSource = newMemSampleSource()
-		d.bpRuntime.Store(&backpressureRuntime{
-			enabled:  true,
-			interval: cfg.BackpressureSampleInterval,
-			machine:  newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize),
-		})
+		d.bpRuntime.Store(newBackpressureRuntime(cfg.backpressureCard(), cfg.backpressureThresholds()))
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2189,7 +2198,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
 	// and advances the hysteresis gate fed into the claim path below. nil
-	// runtime config = disabled by config, no goroutine.
+	// runtime = disabled by config, no goroutine.
 	if d.bpRuntime.Load() != nil {
 		go d.runBackpressureWatcher(ctx)
 	}
@@ -4394,6 +4403,18 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, resp *HeartbeatResponse) {
 	if resp == nil {
 		return
+	}
+	// Daemon-host backpressure card (RUYI-729) rides every ack. Applied
+	// synchronously — the swap is a few pointer writes under one mutex and
+	// the ack path has no reason to outrun it; a changed card takes effect
+	// on the watcher's next cycle. While in force it shadows the workspace
+	// card below on this machine. A missing card after a saved one means
+	// the owner deleted the settings row: converge the override away
+	// instead of shadowing forever (D1).
+	if resp.DaemonBackpressureConfig != nil {
+		d.applyBackpressureHostConfig(runtimeID, resp.DaemonBackpressureConfig)
+	} else {
+		d.applyBackpressureHostConfigFallback(runtimeID)
 	}
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
