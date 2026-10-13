@@ -749,6 +749,16 @@ func uuidStringsOrEmpty(us []pgtype.UUID) []string {
 	return out
 }
 
+// jsonRawOrEmpty normalizes a nullable JSONB byte slice for RawMessage
+// passthrough: NULL and SQL-empty become nil (field omitted on the wire), so
+// a declared-but-empty scope never masquerades as an empty JSON array.
+func jsonRawOrEmpty(b []byte) json.RawMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
+}
+
 func int8ToPtr(v pgtype.Int8) *int64 { return util.Int8ToPtr(v) }
 func int4ToPtr(v pgtype.Int4) *int32 { return util.Int4ToPtr(v) }
 func ptrToInt4(v *int32) pgtype.Int4 { return util.PtrToInt4(v) }

@@ -20,6 +20,18 @@ const (
 	// unblocked, which let exactly such a daemon through (MUL-5707). A daemon
 	// that implements the mode says so; one that does not, cannot.
 	DaemonCapabilityLocalWorktreeV1 = "local-worktree-v1"
+	// DaemonCapabilityLocalSnapshotV1 advertises snapshot mode for
+	// local_directory resources (execution_mode=snapshot, RUYI-669): the
+	// daemon probed user-namespace + kernel-overlayfs mounts at startup and
+	// can materialize per-task copy-on-write views.
+	//
+	// Same capability-not-version rationale as local-worktree-v1, with a
+	// stricter failure mode: a daemon that json-skips execution_mode would
+	// run a snapshot task IN PLACE — writing into the user's directory that
+	// snapshot mode exists to keep pristine. Probe-gated rather than
+	// build-gated because userns availability is a property of the HOST
+	// (kernel, AppArmor/sysctl policy), not of the binary.
+	DaemonCapabilityLocalSnapshotV1 = "local-snapshot-v1"
 	// DaemonCapabilitySourceContextQuickCreateV1 advertises support for the
 	// two-section quick-create prompt that keeps a new instruction separate
 	// from immutable historical source context.
