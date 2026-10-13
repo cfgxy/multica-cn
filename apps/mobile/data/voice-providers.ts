@@ -5,6 +5,14 @@
  * `agent.voice_provider_id` (additive D2 field the core Agent type doesn't
  * carry yet — read defensively) and `workspace.settings.voice.default`.
  *
+ * The workspace leg reads the mobile-owned workspace list
+ * (`data/queries/workspaces`, key `["workspaces"]`), NOT core's
+ * `workspaceBySlugOptions`: that queryFn calls the core ApiClient
+ * singleton, which is only initialised by the web/desktop CoreProvider —
+ * never on mobile (core api is off the mobile sharing whitelist), so the
+ * query errors there and the workspace default never reached the gate
+ * (RUYI-734).
+ *
  * 改参重新首次: an admin credential save re-probes server-side (保存即探
  * 针) and flips the badge in the pool payload; this query refetches on
  * staleness/window focus, so the gate re-derives without any client-side
@@ -12,7 +20,7 @@
  */
 import { queryOptions, useQuery } from "@tanstack/react-query";
 import type { Agent, Workspace } from "@multica/core/types";
-import { workspaceBySlugOptions } from "@multica/core/workspace";
+import { workspaceListOptions } from "@/data/queries/workspaces";
 import type { VoiceAvailabilityOutcome } from "@/lib/voice/availability";
 import { resolveVoiceAvailability } from "@/lib/voice/availability";
 import { api, type VoiceProvider } from "./api";
@@ -68,8 +76,11 @@ export function useVoiceAvailability(
 ): VoiceAvailability {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: workspace, isLoading: workspaceLoading } = useQuery({
-    ...workspaceBySlugOptions(wsSlug ?? ""),
+    ...workspaceListOptions(),
     enabled: !!wsSlug,
+    // Same shape as core's workspaceBySlugOptions select, resolved against
+    // the mobile-owned list the [workspace] layout already fetches.
+    select: (list: Workspace[]) => list.find((w) => w.slug === wsSlug) ?? null,
   });
   const { data: providers = [], isLoading: providersLoading } = useQuery({
     ...voiceProvidersOptions(wsId ?? ""),
