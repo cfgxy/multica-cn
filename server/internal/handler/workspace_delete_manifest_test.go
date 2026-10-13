@@ -73,7 +73,18 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"comment":                         workspaceDelete,
 	"comment_reaction":                workspaceDelete,
 	"contact_sales_inquiry":           workspaceDeleteKeep,
-	"daemon_connection":               workspaceDelete,
+	// Clause asset family (RUYI-751 / ADR 007): identity, versions, bindings,
+	// injection attribution and the daily quality rollup all die with the
+	// workspace (DeleteWorkspaceClauseAssets). The rollup watermark is a
+	// global singleton keyed to no workspace and is kept, like its
+	// prompt-quality twin (task_usage_hourly_rollup_state).
+	"clause":                       workspaceDelete,
+	"clause_binding":               workspaceDelete,
+	"clause_injection":             workspaceDelete,
+	"clause_quality_daily":         workspaceDelete,
+	"clause_quality_rollup_state":  workspaceDeleteKeep,
+	"clause_version":               workspaceDelete,
+	"daemon_connection":            workspaceDelete,
 	"daemon_token":                    workspaceDelete,
 	"dingtalk_group_presence":         workspaceDelete,
 	"dingtalk_bot_identity":           workspaceDelete,
