@@ -48,10 +48,6 @@ import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
-import {
-  VoiceInstanceSettingsCard,
-  isVoiceProtocolRuntime,
-} from "./voice-instance-settings";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -207,12 +203,6 @@ export function RuntimeDetail({
               cliVersion={cliVersion}
               daemonShort={daemonShort}
             />
-            {canReadRuntime && isVoiceProtocolRuntime(runtime) && (
-              <VoiceInstanceSettingsCard
-                runtime={runtime}
-                canEdit={!!canEditRuntime}
-              />
-            )}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 
