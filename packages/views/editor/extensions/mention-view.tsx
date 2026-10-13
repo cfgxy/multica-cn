@@ -30,12 +30,14 @@ import { IssueMentionCard } from "../../issues/components/issue-mention-card";
 import { ProjectMentionCard } from "../../projects/components/project-mention-card";
 
 /**
- * Plain-text display for a demoted issue mention (RUYI-635). Same contract as
- * RichContent's markdown surfaces and core's `demoteIssueMentionLinks`: an
- * identifier-form mention shows the identifier, a UUID mention shows its
- * authored label, and an empty label falls back to the id segment so the
- * reference never vanishes from the prose. The node stays an atom — deleting
- * it is one keystroke, exactly like the chip it replaces.
+ * Plain-text display for a demoted issue mention (RUYI-635). The issue
+ * description renders through the ContentEditor host, which deliberately
+ * keeps this plain-text contract while RUYI-728 linkified the RichContent
+ * surfaces (comments and chat): an identifier-form mention shows the
+ * identifier, a UUID mention shows its authored label, and an empty label
+ * falls back to the id segment so the reference never vanishes from the
+ * prose. The node stays an atom — deleting it is one keystroke, exactly
+ * like the chip it replaces.
  */
 function DemotedIssueMentionView({ node }: Pick<NodeViewProps, "node">) {
   const ref = String(node.attrs.id ?? "");

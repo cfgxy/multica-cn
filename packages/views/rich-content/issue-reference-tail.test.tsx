@@ -1,18 +1,23 @@
 /**
- * IssueReferenceTail (RUYI-635 + 增量) — the content-to-footer block shared by
- * RichContent and the issue body's ContentEditor host. The fixtures drive it
- * from raw markdown the way both hosts do, pinning: extraction from prose
- * (mention links + bare identifiers + `owner/repo#N` text references), raw
- * dedup + cross-form collapse, the no-references negative case, the code-span
- * skip contract, and the anti-mistouch invariant that the rendered block
- * contains no inline anchors at all. Resolution is stubbed at the hook seam;
- * row rendering policy is exercised for real in
+ * IssueReferenceTail (RUYI-635 + RUYI-731) — the content-to-footer block
+ * shared by RichContent and the issue body's ContentEditor host. The fixtures
+ * drive it from raw markdown the way both hosts do, pinning: extraction from
+ * prose (mention links + bare identifiers + `owner/repo#N` text references),
+ * raw dedup + cross-form collapse, the no-references negative case, the
+ * code-span skip contract, the RUYI-731 self-filter under the issue-detail
+ * render context (the description surface of the two hosts), and the flat
+ * tail where every resolved row is a navigable anchor. Resolution is stubbed
+ * at the hook seam; row rendering policy is exercised for real in
  * issue-reference-footer.test.tsx.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { render } from "@testing-library/react";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
+import {
+  CurrentIssueRenderContextProvider,
+} from "../issues/current-issue-render-context";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
 import type { IssueReferenceResolution } from "../issues/hooks/use-issue-reference-resolutions";
 
@@ -112,7 +117,7 @@ function pr(number: number, state = "open"): GitHubPullRequest {
   } as unknown as GitHubPullRequest;
 }
 
-function renderTail(content: string) {
+function renderTail(content: string, currentIssueId?: string) {
   const adapter: NavigationAdapter = {
     push: vi.fn(),
     replace: vi.fn(),
@@ -122,9 +127,18 @@ function renderTail(content: string) {
     hash: "",
     getShareableUrl: (p) => `https://app.multica.ai${p}`,
   };
+  const tail = <IssueReferenceTail content={content} />;
   return render(
     <NavigationProvider value={adapter}>
-      <IssueReferenceTail content={content} />
+      {currentIssueId ? (
+        <CurrentIssueRenderContextProvider
+          value={{ id: currentIssueId, identifier: "QA-2" }}
+        >
+          {tail}
+        </CurrentIssueRenderContextProvider>
+      ) : (
+        tail
+      )}
     </NavigationProvider>,
   );
 }
@@ -143,12 +157,25 @@ describe("IssueReferenceTail", () => {
       `重复引用 [QA-2](mention://issue/${UUID}) 与 [QA-2](mention://issue/${UUID})、QA-2。`,
     );
 
-    // Inline rows are spans: the block is one button and nothing inside it
-    // navigates (anti-mistouch 增量) — the row count is the contract here.
-    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
+    // RUYI-731: rows are the navigation surface — a resolved issue row is an
+    // in-app anchor; the row count is the contract here.
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     const rows = container.querySelectorAll(".issue-reference-row");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.textContent).toContain("QA-2");
+  });
+
+  it("drops a self-reference under the issue-detail render context (description surface)", () => {
+    resolutions = { [`mention:${UUID}`]: issue(UUID, "QA-2", "引用目标") };
+    const { container } = renderTail(
+      `自引 [QA-2](mention://issue/${UUID})。`,
+      UUID,
+    );
+
+    // The host context knows the rendered issue is QA-2 itself: the block
+    // disappears entirely. Removing the filter makes the row render and this
+    // assertion fail.
+    expect(container.querySelector("[data-issue-reference-footer]")).toBeNull();
   });
 
   it("renders nothing for content without references", () => {
@@ -172,6 +199,24 @@ describe("IssueReferenceTail", () => {
     const row = container.querySelector(".issue-reference-row")!;
     expect(row.textContent).toContain("cfgxy/multica-cn#338");
     expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(1);
+  });
+
+  it("aggregates a resolved MR reference into the same PR row shape (RUYI-728)", () => {
+    resolutions = { "merge_request:MR !468": pr(468) };
+    const { container } = renderTail("合入 MR !468 后看效果。");
+
+    const rows = container.querySelectorAll(".issue-reference-row");
+    expect(rows).toHaveLength(1);
+    // The row shows the resolved PR's own identity, not the authored token.
+    expect(rows[0]!.textContent).toContain("cfgxy/multica-cn#468");
+  });
+
+  it("degrades an unresolved MR reference to a plain-text row (RUYI-728)", () => {
+    resolutions = {};
+    const { container } = renderTail("合入 MR !468 后看效果。");
+
+    const degraded = container.querySelector(".issue-reference-degraded")!;
+    expect(degraded.textContent).toBe("MR !468");
   });
 
   it("degrades an unresolved mention to its authored label", () => {
@@ -214,5 +259,56 @@ describe("IssueReferenceTail", () => {
 
     const row = container.querySelector(".issue-reference-degraded")!;
     expect(row.textContent).toBe("AC-1");
+  });
+});
+
+describe("issue-reference CSS scope (RUYI-730)", () => {
+  // The issue body mounts the tail as a SIBLING of <ContentEditor>
+  // (issue-detail.tsx), outside any .rich-text-editor — scoping these rules
+  // under the editor class left the body surface totally unstyled (QA probe,
+  // RUYI-730). The footer's stylesheet must stay self-contained: no rule may
+  // require an editor ancestor, wherever a host mounts the tail.
+  it("keeps every .issue-reference-* rule free of the editor ancestor selector", () => {
+    const css = readFileSync("rich-content/rich-content.css", "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const selectors = css
+      .split("{")
+      .slice(0, -1)
+      .map((part) => part.split("}").at(-1)!.trim());
+    const referenceRules = selectors.filter((selector) =>
+      selector.includes(".issue-reference-"),
+    );
+    expect(referenceRules.length).toBeGreaterThan(0);
+    expect(
+      referenceRules.filter((selector) =>
+        selector.includes(".rich-text-editor"),
+      ),
+    ).toEqual([]);
+  });
+
+  // The card radius must ride `var(--radius)`: packages/ui/styles/tokens.css
+  // defines --radius-lg, but that file never reaches the web bundle (RUYI-730
+  // QA probe measured 0px on all three surfaces) — an undefined custom
+  // property silently falls back to the initial value. `--radius` IS in the
+  // bundle and equals the official `rounded-lg` (10px).
+  it("binds the card radius to --radius, a token the web bundle actually ships", () => {
+    const css = readFileSync("rich-content/rich-content.css", "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      "",
+    );
+    const footerRule = css
+      .split("}")
+      .find((block) =>
+        block
+          .split("{")[0]!
+          .trim()
+          .split(",")
+          .some((selector) => selector.trim() === ".issue-reference-footer"),
+      );
+    expect(footerRule).toBeDefined();
+    expect(footerRule).toMatch(/border-radius:\s*var\(--radius\)/);
+    expect(footerRule).not.toMatch(/var\(--radius-lg\)/);
   });
 });

@@ -20,6 +20,18 @@ const (
 	// unblocked, which let exactly such a daemon through (MUL-5707). A daemon
 	// that implements the mode says so; one that does not, cannot.
 	DaemonCapabilityLocalWorktreeV1 = "local-worktree-v1"
+	// DaemonCapabilityLocalSnapshotV1 advertises snapshot mode for
+	// local_directory resources (execution_mode=snapshot, RUYI-669): the
+	// daemon probed user-namespace + kernel-overlayfs mounts at startup and
+	// can materialize per-task copy-on-write views.
+	//
+	// Same capability-not-version rationale as local-worktree-v1, with a
+	// stricter failure mode: a daemon that json-skips execution_mode would
+	// run a snapshot task IN PLACE — writing into the user's directory that
+	// snapshot mode exists to keep pristine. Probe-gated rather than
+	// build-gated because userns availability is a property of the HOST
+	// (kernel, AppArmor/sysctl policy), not of the binary.
+	DaemonCapabilityLocalSnapshotV1 = "local-snapshot-v1"
 	// DaemonCapabilitySourceContextQuickCreateV1 advertises support for the
 	// two-section quick-create prompt that keeps a new instruction separate
 	// from immutable historical source context.
@@ -430,16 +442,25 @@ type DaemonHeartbeatAckPayload struct {
 	PendingModelList        *DaemonHeartbeatPendingModelList        `json:"pending_model_list,omitempty"`
 	PendingLocalSkills      *DaemonHeartbeatPendingLocalSkills      `json:"pending_local_skills,omitempty"`
 	PendingLocalSkillImport *DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_import,omitempty"`
-	// BackpressureConfig (RUYI-729 stage 1) carries the daemon host's saved
+	// DaemonBackpressureConfig (RUYI-729) carries the daemon host's saved
 	// gate settings on every ack; the daemon hot-applies a changed card
 	// within one beat. Nil when the host never saved a settings row — the
-	// daemon then keeps its boot (env/code-default) configuration.
-	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
+	// daemon then keeps its boot (env/code-default) configuration. When
+	// present it OVERRIDES the workspace card (BackpressureConfig below) on
+	// this host's gates; when the field disappears from a later ack the
+	// daemon drops the override and the workspace card governs again.
+	DaemonBackpressureConfig *DaemonBackpressureConfig `json:"daemon_backpressure_config,omitempty"`
 	// PendingLocalSkillImports carries multiple import requests in a single
 	// heartbeat so the daemon can process them concurrently. Old daemons
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+	// BackpressureConfig is the workspace's effective host-memory
+	// backpressure settings (RUYI-618), delivered on EVERY ack — saved card
+	// or code defaults — so running daemons converge on the workspace value
+	// within one heartbeat, no restart. Daemons that predate the field
+	// ignore it (standard JSON behavior).
+	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

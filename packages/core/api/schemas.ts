@@ -1874,6 +1874,35 @@ const DashboardUsageDailySchema = z.object({
 
 export const DashboardUsageDailyListSchema = z.array(DashboardUsageDailySchema);
 
+// Usage-panel proxy payloads (RUYI-618). `configured: false` means the
+// backend has no PROMETHEUS_URL — the UI hides the section, so everything
+// else is allowed to be absent. Series keys vary per panel and grow with
+// new charts, hence the open z.record instead of an enum.
+const UsageMetricPointSchema = z.object({
+  t: z.number(),
+  v: z.number(),
+});
+
+const UsageMetricSeriesSchema = z.object({
+  labels: z.record(z.string(), z.string()).default({}),
+  points: z.array(UsageMetricPointSchema).default([]),
+});
+
+export const DashboardUsageResourcesSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export const DashboardUsageTrafficSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  by: z.string().default("provider"),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
   provider: z.string().default(""),
@@ -4903,6 +4932,11 @@ export const PromptProposalSchema = z.object({
   gate_answer_cost: z.string(),
   gate_answer_conflict: z.string(),
   gate_answer_dedup: z.string(),
+  // RUYI-723 decision context: retrospective drafts only, absent elsewhere.
+  problem: z.string().optional(),
+  expected_effect: z.string().optional(),
+  expected_gain: z.string().optional(),
+  value_score: z.number().optional(),
   evidence_anchors: z.array(z.record(z.string(), z.unknown())),
   status: z.string(),
   gate_errors: z.array(LegislationGateFindingSchema),
@@ -5168,7 +5202,28 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   validated_at: z.string().optional(),
 });
 
+// Workspace host-backpressure settings (RUYI-618): the effective card the
+// settings form saves and every daemon receives on heartbeat acks. All
+// numeric fields default to the daemon code defaults so an old server
+// response degrades to "not customized" instead of a broken form.
+export const WorkspaceBackpressureSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  custom: z.boolean().default(false),
+});
+
 // ---- Daemon host backpressure settings + event history (RUYI-729) ----
+// The daemon-host override card (Runtime detail page) and its report/event
+// shapes. Coexists with the workspace card above: the workspace settings are
+// the per-workspace default plane, a saved daemon row is the host-level
+// override delivered on its own ack field.
 
 const DaemonBackpressureConfigSchema = z.object({
   enabled: z.boolean().default(true),
