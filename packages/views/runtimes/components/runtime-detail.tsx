@@ -48,6 +48,7 @@ import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
+import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -203,6 +204,14 @@ export function RuntimeDetail({
               cliVersion={cliVersion}
               daemonShort={daemonShort}
             />
+            {/* Daemon-host backpressure gate (RUYI-729): config entry lives on
+                the Runtime page because the gate is per daemon host. Reads are
+                open to anyone who can read the runtime; writes are gated to
+                owner/admin in the card, matching the server's scheduling
+                control authorization. */}
+            {canReadRuntime && runtime.runtime_mode === "local" && !!runtime.daemon_id && (
+              <BackpressureSettingsCard runtime={runtime} canEdit={isAdmin} />
+            )}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 
