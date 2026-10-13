@@ -1,0 +1,29 @@
+-- Task-level local_directory scope declaration (RUYI-669, snapshot workspaces).
+--
+-- A snapshot-mode local_directory resource may carry a subdirectory set, and a
+-- task may declare WHICH of those subdirectories it will actually touch. The
+-- declaration is the daemon's concurrency contract: per declared subdirectory
+-- the task materializes its own snapshot and takes a task-lifetime lock keyed
+-- by that subdirectory's real path, so two tasks with disjoint declarations run
+-- fully in parallel while intersecting declarations queue the later task
+-- (waiting_local_directory) instead of colliding at delivery time.
+--
+-- Shape (JSON, NULL = no declaration):
+--
+--   [{"resource_id": "<project_resource uuid>",
+--     "subdirectories": ["relative/sub/dir", ...]}]
+--
+-- The server validates the referenced resources exist, belong to the task's
+-- project and are snapshot-mode at enqueue time; the daemon re-validates at
+-- claim time and fails the task fast when the declaration references anything
+-- it cannot resolve (refuse-to-guess, per the ADR).
+--
+-- NULL (the default) means "undeclared": the daemon falls back to the
+-- project's primary local_directory resource, materializing one whole-root
+-- snapshot per task with no task-lifetime lock — copy-on-write isolation makes
+-- undeclared concurrency safe, and conflicts surface at delivery review.
+--
+-- No index: the column is only ever read through the task's primary key (claim
+-- and get-by-id); nothing filters or joins on it.
+
+ALTER TABLE agent_task_queue ADD COLUMN IF NOT EXISTS local_directory_scope JSONB;
