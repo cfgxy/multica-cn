@@ -306,6 +306,11 @@ const FETCH_TIMEOUT_MS = 30_000;
  *  the 30s FETCH_TIMEOUT_MS ceiling. */
 const LOGIN_TIMEOUT_MS = 10_000;
 
+/** RUYI-710 阶段 2 降级听写转写预算：录音上限 60s（hook 的 MAX_RECORD_MS）
+ *  ≈ 1.9MB（16kHz PCM16）上行，叠加服务端供应商转写一轮往返；60s 覆盖
+ *  弱网上行 + 慢供应商，超时即走「转写失败，请重试」toast。 */
+const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
+
 /** Budget for `/api/upload-file` (RUYI-569). Much larger than
  *  FETCH_TIMEOUT_MS because the ceiling is MAX_FILE_SIZE (100MB) over a
  *  weak uplink: at ~1MB/s the wire transfer alone is ~100s, plus TLS
@@ -368,13 +373,18 @@ class ApiClient {
     const method = init.method ?? "GET";
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
       "X-Client-Platform": "mobile",
       "X-Client-OS": this.options.clientOS ?? "ios",
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
       ...((init.headers as Record<string, string>) ?? {}),
     };
+    // FormData body 的 multipart boundary 由 fetch 的序列化层自己生成并
+    // 写入请求头（uploadFile 同一条先例注释）；客户端预设 Content-Type
+    // 会与实际 boundary 错位导致服务端解析失败。
+    if (!(init.body instanceof FormData) && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
     }
@@ -690,6 +700,35 @@ class ApiClient {
       `/api/workspaces/${workspaceId}/voice-providers`,
     );
   }
+
+  // POST /api/workspaces/:id/voice-transcriptions (RUYI-710 阶段 1 端点) —
+  // 降级听写：16kHz PCM16 WAV 一次上传，服务端走 workspace 的 voice.asr
+  // 解析链调供应商转写，返回 {"text"}。凭据只在服务端持有，端侧零凭据。
+  // 空 text（供应商未识别到语音）原样返回空串，由状态机收敛成
+  // 「未识别到语音」toast；非 2xx（含 409 VOICE_UNAVAILABLE、502 供应商
+  // 不可达）抛 ApiError，由 hook 统一收敛「转写失败」toast。
+  async transcribeVoiceAudio(
+    workspaceId: string,
+    audio: Blob,
+    opts?: { signal?: AbortSignal },
+  ): Promise<string> {
+    const formData = new FormData();
+    // Blob part（内存 WAV，不落盘）；文件名只进 Content-Disposition，
+    // 服务端按 magic 嗅探容器不读文件名。
+    formData.append("audio", audio, "dictation.wav");
+    const res = await this.fetchRaw(
+      `/api/workspaces/${workspaceId}/voice-transcriptions`,
+      {
+        method: "POST",
+        body: formData,
+        signal: opts?.signal,
+        timeoutMs: VOICE_TRANSCRIBE_TIMEOUT_MS,
+      },
+    );
+    const data = (await res.json()) as { text?: unknown };
+    return typeof data.text === "string" ? data.text : "";
+  }
+
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -2253,6 +2292,40 @@ class ApiClient {
       ).pull_request;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Workspace-scoped PR point lookup by bare number (RUYI-728) — mirrors
+   * packages/core/api/client.ts lookupPullRequestByNumber: a unique hit
+   * returns the PR; never-seen (404) AND cross-repo ambiguous (409) both
+   * read as `null`, so a body-text `MR !N` tap and the reference tail's row
+   * degrade silently instead of erroring.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${encodeURIComponent(String(number))}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+      ).pull_request;
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 409)
+      ) {
+        return null;
+      }
       throw err;
     }
   }

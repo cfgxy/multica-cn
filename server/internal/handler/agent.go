@@ -555,6 +555,12 @@ type AgentTaskResponse struct {
 	ProjectDescription  string                `json:"project_description,omitempty"`  // durable project-level context injected into the brief
 	ProjectInstructions string                `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
 	ProjectResources    []ProjectResourceData `json:"project_resources,omitempty"`    // resources attached to the project
+	// LocalDirectoryScope is the task's RUYI-669 snapshot declaration, passed
+	// through verbatim from agent_task_queue.local_directory_scope. The daemon
+	// re-validates it with the shared wire parser before trusting it; nil for
+	// undeclared tasks (primary-resource fallback, lock-free whole-root
+	// snapshot). Mirror field: internal/daemon/types.go, same JSON name.
+	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
 	CreatedAt           string                `json:"created_at"`
 	PriorSessionID      string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
 	PriorWorkDir        string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
@@ -1023,6 +1029,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		DeliveredCommentIDs:     uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:          textToPtr(t.TriggerSummary),
 		HandoffNote:             handoffNote,
+		LocalDirectoryScope:     jsonRawOrEmpty(t.LocalDirectoryScope),
 		WorkDir:                 workDir,
 		RelativeWorkDir:         relativeWorkDir(workDir, workspaceID, uuidToString(t.ID)),
 		DurableWorkDir:          durableWorkDir,

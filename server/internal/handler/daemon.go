@@ -1343,11 +1343,16 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		RuntimeID:          runtimeID,
 		Status:             "ok",
 		ServerCapabilities: []string{protocol.DaemonCapabilityRPCV1},
+		// Workspace backpressure settings (RUYI-618): delivered on every
+		// ack — saved card or code defaults — so daemons converge on the
+		// workspace value within one beat, no restart.
+		BackpressureConfig: h.backpressureWireConfig(ctx, rt.WorkspaceID),
 	}
-	// Saved backpressure settings (RUYI-729 stage 1) ride every ack; nil
-	// means no row and the daemon keeps its boot config. Lookup failure
-	// just defers delivery to the next beat.
-	ack.BackpressureConfig = h.effectiveBackpressureConfig(ctx, rt.DaemonID.String)
+	// Daemon-host backpressure settings (RUYI-729) ride every ack; nil
+	// means no saved row and the daemon drops any earlier override so the
+	// workspace card governs again. Lookup failure just defers delivery to
+	// the next beat.
+	ack.DaemonBackpressureConfig = h.effectiveBackpressureConfig(ctx, rt.DaemonID.String)
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
 	hasUpdate, probeUpdateErr := h.UpdateStore.HasPending(probeUpdateCtx, runtimeID)
@@ -3446,12 +3451,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// user asked to isolate. That is the exact outcome worktree mode exists to
 	// prevent, so it fails closed here, against the version of the runtime that
 	// is actually claiming.
-	if reason := worktreeClaimBlockReason(
+	if reason := localIsolationClaimBlockReason(
 		resp.ProjectResources,
 		runtime,
 		requestHasClientCapability(r, protocol.DaemonCapabilityLocalWorktreeV1),
+		requestHasClientCapability(r, protocol.DaemonCapabilityLocalSnapshotV1),
 	); reason != "" {
-		slog.Error("task claim: runtime too old for worktree mode; cancelling rather than running in place",
+		slog.Error("task claim: runtime cannot run the task's local isolation mode; cancelling rather than running in place",
 			"task_id", uuidToString(task.ID),
 			"runtime_id", runtimeID,
 			"daemon_id", runtime.DaemonID.String,
@@ -3549,8 +3555,8 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 	}
 }
 
-// worktreeClaimBlockReason returns a user-facing reason when this runtime must
-// not run the task, or "" when it may proceed.
+// localIsolationClaimBlockReason returns a user-facing reason when this
+// runtime must not run the task, or "" when it may proceed.
 //
 // The decision is made on the CAPABILITY the daemon advertised on this very
 // request, not on its version string. A daemon without the implementation does
@@ -3558,16 +3564,18 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 // in place, editing the working copy the user asked to isolate. Version strings
 // could not answer that reliably: the git-describe dev-build exemption that
 // keeps `make daemon` unblocked let a v0.4.23-era daemon straight through, and
-// two tasks silently ran in the user's own directory (MUL-5707).
+// two tasks silently ran in the user's own directory (MUL-5707). Snapshot mode
+// (RUYI-669) fails closed the same way: a daemon that skips the mode would
+// write straight into the directory the snapshot exists to keep pristine, and
+// the capability — decided by the daemon's startup userns+overlay probe — is
+// the only signal of whether the HOST can do it at all.
 //
 // Only resources bound to the claiming runtime's own daemon are considered: a
-// project may carry one local_directory per machine, and another machine's
-// worktree resource says nothing about this one's ability to run the task.
-func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability bool) string {
+// project may carry one in_place/worktree local_directory per machine (plus
+// any number of snapshot rows), and another machine's resource says nothing
+// about this one's ability to run the task.
+func localIsolationClaimBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability, hasSnapshotCapability bool) string {
 	if !runtime.DaemonID.Valid || runtime.DaemonID.String == "" {
-		return ""
-	}
-	if hasWorktreeCapability {
 		return ""
 	}
 	for _, res := range resources {
@@ -3578,14 +3586,30 @@ func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentR
 		if err := json.Unmarshal(res.ResourceRef, &ref); err != nil {
 			continue
 		}
-		if ref.ExecutionMode != localDirectoryModeWorktree || ref.DaemonID != runtime.DaemonID.String {
+		if ref.DaemonID != runtime.DaemonID.String {
 			continue
 		}
-		return fmt.Sprintf(
-			"This machine's Multica runtime does not support parallel (worktree) mode, which %q is set to use. "+
-				"Update the Multica app on that machine to the latest version, then re-run this task. "+
-				"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
-			ref.LocalPath)
+		switch ref.ExecutionMode {
+		case localDirectoryModeWorktree:
+			if hasWorktreeCapability {
+				continue
+			}
+			return fmt.Sprintf(
+				"This machine's Multica runtime does not support parallel (worktree) mode, which %q is set to use. "+
+					"Update the Multica app on that machine to the latest version, then re-run this task. "+
+					"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
+				ref.LocalPath)
+		case localDirectoryModeSnapshot:
+			if hasSnapshotCapability {
+				continue
+			}
+			return fmt.Sprintf(
+				"This machine's Multica runtime does not support snapshot mode, which %q is set to use "+
+					"(its startup isolation probe failed or it predates the feature). "+
+					"Update the Multica app on that machine and make sure it runs on a host with user-namespace support, then re-run this task. "+
+					"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
+				ref.LocalPath)
+		}
 	}
 	return ""
 }

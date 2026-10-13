@@ -67,6 +67,7 @@ import {
 } from "@/lib/issue-picker-routes";
 import i18n from "i18next";
 import { useT } from "@/lib/use-t";
+import { CurrentIssueIdProvider } from "@/lib/current-issue-context";
 
 export default function IssueDetail() {
   const { t } = useT("issues");
@@ -235,7 +236,11 @@ export default function IssueDetail() {
     timelineRef.current?.expandPublished(commentId);
   }, []);
 
+  // RUYI-731: the detail screen is the only mount that owns the current
+  // issue's identity — the provider scopes the reference tail's self-filter
+  // to this tree (description + timeline); chat/inbox render without it.
   return (
+    <CurrentIssueIdProvider value={id}>
     <View className="flex-1 bg-background">
       <Stack.Screen
         options={{
@@ -399,6 +404,7 @@ export default function IssueDetail() {
         </View>
       )}
     </View>
+    </CurrentIssueIdProvider>
   );
 }
 

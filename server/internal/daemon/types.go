@@ -106,18 +106,24 @@ type Task struct {
 	// order. Rendered into the brief's status-command line; empty (including on
 	// old servers that never send the field) keeps the brief byte-identical to
 	// the built-in-only form. IssueStatusesOmitted is the cap overflow count.
-	IssueStatuses                 []IssueStatusData      `json:"issue_statuses,omitempty"`
-	IssueStatusesOmitted          int                    `json:"issue_statuses_omitted,omitempty"`
-	ActiveSiblingRuns             []ActiveSiblingRunData `json:"active_sibling_runs,omitempty"`
-	ThreadName                    string                 `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
-	Agent                         *AgentData             `json:"agent,omitempty"`
-	ConnectedApps                 []ConnectedAppData     `json:"connected_apps,omitempty"` // per-run app capabilities mounted through runtime MCP overlays
-	Repos                         []RepoData             `json:"repos,omitempty"`
-	ProjectID                     string                 `json:"project_id,omitempty"`                       // active project for this task, when present
-	ProjectTitle                  string                 `json:"project_title,omitempty"`                    // human-readable project title for context injection
-	ProjectDescription            string                 `json:"project_description,omitempty"`              // durable project-level context injected into the brief
-	ProjectInstructions           string                 `json:"project_instructions,omitempty"`             // per-project agent instructions injected after Workspace Context (RUYI-46)
-	ProjectResources              []ProjectResourceData  `json:"project_resources,omitempty"`                // project-scoped resources to expose to the agent
+	IssueStatuses        []IssueStatusData      `json:"issue_statuses,omitempty"`
+	IssueStatusesOmitted int                    `json:"issue_statuses_omitted,omitempty"`
+	ActiveSiblingRuns    []ActiveSiblingRunData `json:"active_sibling_runs,omitempty"`
+	ThreadName           string                 `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
+	Agent                *AgentData             `json:"agent,omitempty"`
+	ConnectedApps        []ConnectedAppData     `json:"connected_apps,omitempty"` // per-run app capabilities mounted through runtime MCP overlays
+	Repos                []RepoData             `json:"repos,omitempty"`
+	ProjectID            string                 `json:"project_id,omitempty"`           // active project for this task, when present
+	ProjectTitle         string                 `json:"project_title,omitempty"`        // human-readable project title for context injection
+	ProjectDescription   string                 `json:"project_description,omitempty"`  // durable project-level context injected into the brief
+	ProjectInstructions  string                 `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46)
+	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`    // project-scoped resources to expose to the agent
+	// LocalDirectoryScope is the task's RUYI-669 snapshot declaration, passed
+	// through verbatim from the claim payload. Parsed with the shared wire
+	// parser (protocol.ParseTaskDirectoryScope) at run start; nil means
+	// undeclared — primary-resource fallback with no task-lifetime lock.
+	// Mirror field: internal/handler/agent.go, same JSON name.
+	LocalDirectoryScope           json.RawMessage        `json:"local_directory_scope,omitempty"`
 	IsLeaderTask                  bool                   `json:"is_leader_task,omitempty"`                   // true when executing in the squad-leader coordinator role
 	LeaderRoleResolved            bool                   `json:"leader_role_resolved,omitempty"`             // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
 	PriorSessionID                string                 `json:"prior_session_id,omitempty"`                 // Claude session ID from a previous task on this issue
@@ -162,11 +168,10 @@ type Task struct {
 	QuizPrompt                string                      `json:"quiz_prompt,omitempty"`                  // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt       string                      `json:"retrospective_prompt,omitempty"`         // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — analyze completed issues, submit drafts, create nothing
 	HandoffNote               string                      `json:"handoff_note,omitempty"`                 // assignment handoff instruction; rendered into the opening prompt + issue_context.md
-
-	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
-	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
-	ParentIssueID         string `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
-	ParentIssueIdentifier string `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
+	SquadID                   string                      `json:"squad_id,omitempty"`                     // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
+	SquadName                 string                      `json:"squad_name,omitempty"`                   // display name for the picker squad, used in prompt text
+	ParentIssueID             string                      `json:"parent_issue_id,omitempty"`              // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier     string                      `json:"parent_issue_identifier,omitempty"`      // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
 	// RequestingUserName + RequestingUserProfileDescription describe the human
 	// the agent is working on behalf of. v1 sources them from the runtime
 	// owner (the user who registered the daemon). Empty when the runtime has
