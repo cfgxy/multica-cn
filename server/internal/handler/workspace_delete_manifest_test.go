@@ -84,6 +84,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"clause_quality_daily":         workspaceDelete,
 	"clause_quality_rollup_state":  workspaceDeleteKeep,
 	"clause_version":               workspaceDelete,
+	// RUYI-729: daemon-host backpressure tables (no FK, house rule). Event
+	// history dies with the workspace; a settings row is swept only once no
+	// runtime anywhere still points at its daemon_id, so a shared daemon
+	// serving another workspace keeps its gate config.
+	"daemon_backpressure_event":       workspaceDelete,
+	"daemon_backpressure_settings":    workspaceDelete,
 	"daemon_connection":            workspaceDelete,
 	"daemon_token":                    workspaceDelete,
 	"dingtalk_group_presence":         workspaceDelete,

@@ -792,6 +792,55 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+// Backpressure trigger/recovery history (RUYI-729): one row per observed active->inactive transition of a runtime's host-backpressure report, with hit detail and the effective config snapshot.
+type DaemonBackpressureEvent struct {
+	ID              pgtype.UUID        `json:"id"`
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	DaemonID        string             `json:"daemon_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	EventType       string             `json:"event_type"`
+	Reason          string             `json:"reason"`
+	MemAvailablePct float64            `json:"mem_available_pct"`
+	SwapUsedPct     float64            `json:"swap_used_pct"`
+	PsiSomeAvg10    float64            `json:"psi_some_avg10"`
+	PsiReadOk       bool               `json:"psi_read_ok"`
+	DeferredClaims  int64              `json:"deferred_claims"`
+	EffectiveConfig []byte             `json:"effective_config"`
+	Hits            []byte             `json:"hits"`
+	OccurredAt      pgtype.Timestamptz `json:"occurred_at"`
+}
+
+// Daemon-level host-backpressure gate settings (RUYI-729): the single authority for the watermarks that pause new task claims on a daemon host; delivered to the daemon over heartbeat acks. No row = daemon code defaults.
+type DaemonBackpressureSetting struct {
+	// The daemon host this config gates; same TEXT identity as agent_runtime.daemon_id.
+	DaemonID    string      `json:"daemon_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// Gate master switch: false pauses nothing regardless of the watermarks.
+	Enabled bool `json:"enabled"`
+	// MemAvailable%% below which new claims pause, percent of total (0,100].
+	MemHighPct float64 `json:"mem_high_pct"`
+	// MemAvailable%% above which claiming resumes; must exceed mem_high_pct (hysteresis).
+	MemRecoveryPct float64 `json:"mem_recovery_pct"`
+	// SwapUsed%% above which new claims pause; <=0 disables the swap condition.
+	SwapHighPct float64 `json:"swap_high_pct"`
+	// SwapUsed%% below which claiming resumes; must sit below swap_high_pct when enabled.
+	SwapRecoveryPct float64 `json:"swap_recovery_pct"`
+	// Memory PSI some-avg10%% above which new claims pause; <=0 disables the PSI condition.
+	PsiHighPct float64 `json:"psi_high_pct"`
+	// PSI some-avg10%% below which claiming resumes; must sit below psi_high_pct when enabled.
+	PsiRecoveryPct float64 `json:"psi_recovery_pct"`
+	// Proc sampling cadence for the watermark gate, in seconds (>=1).
+	SampleIntervalSeconds int32 `json:"sample_interval_seconds"`
+	// Smoothing window in samples before thresholds are evaluated on the mean (>=1).
+	WindowSize int32 `json:"window_size"`
+	// Incremented on every save; daemons use it to detect a changed card.
+	ConfigVersion int64 `json:"config_version"`
+	// Member who last saved this row; plain UUID on purpose (rows survive member deletion).
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DaemonConnection struct {
 	ID              pgtype.UUID        `json:"id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`

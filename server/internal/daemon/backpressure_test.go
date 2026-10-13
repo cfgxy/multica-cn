@@ -404,14 +404,31 @@ func writePressureFixture(t *testing.T, dir string, avg10 float64) {
 	}
 }
 
+// backpressureTestCard renders a threshold pair as its wire card so runtime
+// structs carry a config echo consistent with what they gate (RUYI-729).
+// Cadence and window default to the 1s/1-sample shape the fixture tests run
+// at; setBackpressureRuntime and bpCardWith override both.
+func backpressureTestCard(th backpressureThresholds) protocol.DaemonBackpressureConfig {
+	return protocol.DaemonBackpressureConfig{
+		Enabled:               true,
+		MemHighPct:            th.MemHighPct,
+		MemRecoveryPct:        th.MemRecoveryPct,
+		SwapHighPct:           th.SwapHighPct,
+		SwapRecoveryPct:       th.SwapRecoveryPct,
+		PSIHighPct:            th.PSIHighPct,
+		PSIRecoveryPct:        th.PSIRecoveryPct,
+		SampleIntervalSeconds: 1,
+		WindowSize:            1,
+	}
+}
+
 // setBackpressureRuntime installs a gate config directly — the boot-defaults
 // shape. The heartbeat path goes through applyBackpressureConfig instead.
 func setBackpressureRuntime(d *Daemon, th backpressureThresholds, windowSize int) {
-	d.bpRuntime.Store(&backpressureRuntime{
-		enabled:  true,
-		interval: DefaultBackpressureSampleInterval,
-		machine:  newBackpressureMachine(th, windowSize),
-	})
+	card := backpressureTestCard(th)
+	card.SampleIntervalSeconds = int(DefaultBackpressureSampleInterval / time.Second)
+	card.WindowSize = windowSize
+	d.bpRuntime.Store(newBackpressureRuntime(card, th))
 }
 
 func newBackpressureTestDaemon(t *testing.T) (*Daemon, string) {
