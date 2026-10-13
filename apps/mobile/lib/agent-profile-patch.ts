@@ -6,7 +6,7 @@
  *   - bounded numbers follow web BoundedNumberField revert semantics (an
  *     out-of-range draft omits the field — never clamped to a value the
  *     operator didn't type);
- *   - tri-state fields (thinking_level / service_tier / voice_runtime_id)
+ *   - tri-state fields (thinking_level / service_tier)
  *     rely on omission = "no change" and "" = explicit clear, matching
  *     UpdateAgentRequest semantics;
  *   - the subagents toggle round-trips through runtime_config
@@ -37,7 +37,6 @@ export interface AgentProfileDraft {
   avatarUrl: string;
   model: string;
   runtimeId: string;
-  voiceRuntimeId: string;
   thinking: string;
   tier: string;
   concurrency: string;
@@ -86,10 +85,9 @@ export function buildProfilePatch(
   if (draft.avatarUrl !== (agent.avatar_url ?? ""))
     next.avatar_url = draft.avatarUrl;
   if (draft.runtimeId !== agent.runtime_id) next.runtime_id = draft.runtimeId;
-  // Tri-state voice slot (RUYI-425 §4.2): omitted = untouched, "" = unbind,
-  // id = bind.
-  if (draft.voiceRuntimeId !== (agent.voice_runtime_id ?? ""))
-    next.voice_runtime_id = draft.voiceRuntimeId;
+  // voice_runtime_id is intentionally absent (RUYI-748): the legacy voice
+  // slot UI is offline, and omission keeps existing bindings untouched —
+  // the voice_provider model owns voice configuration going forward.
   if (draft.model !== agent.model) next.model = draft.model;
   if (draft.thinking !== (agent.thinking_level ?? ""))
     next.thinking_level = draft.thinking;
