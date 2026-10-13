@@ -396,9 +396,13 @@ func (h *Handler) voiceDisablePollCheck(target *voiceTarget) func(ctx context.Co
 // completes exactly as on any other disconnect. Poll errors are logged and
 // retried next tick: a transient DB blip must not kill a live conversation.
 // WriteControl is safe concurrently with the pump writes (gorilla contract).
+// idLogKey names the logged id after the entity it actually holds — pool
+// sessions carry a voice_provider id, legacy ones an agent_runtime row id —
+// so a warn never mislabels a provider id as "instance_id" (RUYI-717).
 func watchVoiceInstanceDisabled(
 	ctx context.Context,
 	h *Handler,
+	idLogKey string,
 	instanceID pgtype.UUID,
 	checkDisabled func(ctx context.Context) (bool, error),
 	providerConn, clientConn *websocket.Conn,
@@ -417,7 +421,7 @@ func watchVoiceInstanceDisabled(
 			disabled, err := checkDisabled(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
-					slog.Warn("voice disable poll failed", "instance_id", uuidToString(instanceID), "error", err)
+					slog.Warn("voice disable poll failed", idLogKey, uuidToString(instanceID), "error", err)
 				}
 				continue
 			}
@@ -429,7 +433,7 @@ func watchVoiceInstanceDisabled(
 				if err := conn.WriteControl(websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "voice instance disabled"),
 					deadline); err != nil {
-					slog.Warn("voice disable close frame failed", "instance_id", uuidToString(instanceID), "error", err)
+					slog.Warn("voice disable close frame failed", idLogKey, uuidToString(instanceID), "error", err)
 				}
 				conn.SetReadDeadline(time.Now())
 			}
@@ -828,10 +832,15 @@ func (h *Handler) relayVoiceSessionConn(
 	// through the single endLiveSession defer below — the write-back
 	// completes exactly as on any other disconnect. stopWatch is closed by
 	// defer before the connection closes run (LIFO), never leaking the
-	// goroutine past the handler.
+	// goroutine past the handler. The watcher's log key follows the entity
+	// the session runs under (provider id vs runtime row id).
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
-	go watchVoiceInstanceDisabled(r.Context(), h, session.RuntimeInstanceID,
+	idLogKey := "instance_id"
+	if target.provider != nil {
+		idLogKey = "provider_id"
+	}
+	go watchVoiceInstanceDisabled(r.Context(), h, idLogKey, session.RuntimeInstanceID,
 		h.voiceDisablePollCheck(target), providerConn, clientConn, stopWatch, h.voiceDisablePollInterval())
 
 	var transcript []voiceTranscriptEntry
