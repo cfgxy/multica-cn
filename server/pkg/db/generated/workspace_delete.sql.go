@@ -188,6 +188,40 @@ func (q *Queries) DeleteWorkspaceChatMessages(ctx context.Context, workspaceID p
 	return err
 }
 
+const deleteWorkspaceClauseAssets = `-- name: DeleteWorkspaceClauseAssets :exec
+WITH deleted_clause_injections AS (
+    DELETE FROM clause_injection WHERE clause_injection.workspace_id = $1
+),
+deleted_clause_quality_daily AS (
+    DELETE FROM clause_quality_daily WHERE clause_quality_daily.workspace_id = $1
+),
+deleted_clause_bindings AS (
+    DELETE FROM clause_binding
+    WHERE clause_binding.clause_id IN (
+        SELECT id FROM clause WHERE clause.workspace_id = $1
+    )
+),
+deleted_clause_versions AS (
+    DELETE FROM clause_version
+    WHERE clause_version.clause_id IN (
+        SELECT id FROM clause WHERE clause.workspace_id = $1
+    )
+)
+DELETE FROM clause WHERE clause.workspace_id = $1
+`
+
+// Clause asset family (RUYI-751 / ADR 007) has no foreign keys by project
+// rule: injections and the daily rollup are workspace-keyed; versions,
+// bindings and the clause rows key through the clause set. The rollup
+// watermark (clause_quality_rollup_state) is a global singleton with no
+// workspace_id and is kept, like its prompt-quality twin. Proposal→clause
+// references are plain UUIDs; prompt_proposal is swept by
+// DeleteWorkspaceSelfEvolutionData in the same transaction.
+func (q *Queries) DeleteWorkspaceClauseAssets(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceClauseAssets, workspaceID)
+	return err
+}
+
 const deleteWorkspaceComments = `-- name: DeleteWorkspaceComments :exec
 DELETE FROM comment WHERE comment.workspace_id = $1
 `
