@@ -1336,7 +1336,13 @@ start_daemon() {
   # daemon registers, heartbeats, and then fails every task with
   # "fork/exec .../go-build.../exe/multica: no such file or directory".
   info "Building the multica CLI (a go run daemon would fail every task later)."
-  (cd "$DIR/server" && go build -o bin/multica ./cmd/multica) || die "Failed to build the multica CLI."
+  # Stamp the Makefile's git-describe version (Makefile VERSION). The
+  # quick-create gate (agent.CheckMinCLIVersionFor) exempts git-describe-shaped
+  # builds; a bare `go build` reports "dev" and every quick-create 422s,
+  # forcing a hand-written agent_runtime UPDATE after each daemon restart.
+  local cli_version
+  cli_version="$(git -C "$DIR" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)"
+  (cd "$DIR/server" && go build -ldflags "-X main.version=$cli_version" -o bin/multica ./cmd/multica) || die "Failed to build the multica CLI."
   MULTICA_BIN="$DIR/server/bin/multica"
 
   resource_env_args daemon

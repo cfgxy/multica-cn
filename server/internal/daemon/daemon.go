@@ -2142,6 +2142,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// worker-supervisor capability the supervisor probe just decided.
 	d.setupSupervisor()
 	d.client.SetWorkerSupervision(d.supervisor != nil)
+	// Local-snapshot capability (RUYI-669) is decided the same way and for the
+	// same reason: the first register must already carry the verdict, so the
+	// userns+overlay probe runs here rather than lazily at claim time. The
+	// probe needs a scratch dir on a production filesystem; env roots don't
+	// exist yet this early in Run, so the workspaces root stands in.
+	if selfPath, err := os.Executable(); err != nil {
+		d.logger.Warn("local snapshot probe skipped; capability stays off", "error", err)
+	} else if ok, detail := execenv.ProbeSnapshotSupport(selfPath, d.cfg.WorkspacesRoot); ok {
+		d.client.SetSnapshotSupport(true)
+		d.logger.Info("local snapshot capability enabled", "probe", detail)
+	} else {
+		d.logger.Info("local snapshot capability unavailable on this host", "probe", detail)
+	}
 	if err := d.preflightAuth(ctx); err != nil {
 		return err
 	}
@@ -5777,7 +5790,12 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			// exempt env root, so the directory would accumulate one env
 			// root per task forever — the exact cost the exemption was
 			// meant to trade away for a user's own files.
-			if assignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID); assignment != nil && !assignment.UsesWorktree() {
+			// Snapshot mode stamps the same exemption: the env root hosts
+			// the local-snapshots tree whose failed-run entries are reaped
+			// by ReapExpiredSnapshots on the ledger's own 7-day schedule —
+			// the ordinary orphan sweep must not RemoveAll the root out
+			// from under that retention window.
+			if localDirectoryGCExemption(task, d.cfg.DaemonID) {
 				meta.LocalDirectory = true
 			}
 			if err := execenv.WriteGCMeta(result.EnvRoot, meta, taskLog); err != nil {
@@ -5907,6 +5925,27 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			taskLog.Error("fail task after local_directory resolve error", "error", failErr)
 		}
 		return nil, true
+	}
+	// Snapshot-mode resources (RUYI-669) route through the snapshot plan, and
+	// the whole-path mutex below does not apply to them. An undeclared task's
+	// isolation is its private upperdir, and taking no lock is exactly what
+	// lets two tasks on one directory run concurrently (acceptance 1);
+	// declared scopes take per-subdirectory, task-lifetime locks instead.
+	plan, perr := resolveSnapshotPlan(task, d.cfg.DaemonID)
+	if perr != nil {
+		taskLog.Error("local_directory: resolve snapshot plan failed", "error", perr)
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  perr.Error(),
+			failureReason: "local_directory_error",
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot plan resolve error", "error", failErr)
+		}
+		return nil, true
+	}
+	if plan != nil {
+		return d.acquireSnapshotScopeLocks(ctx, task, plan, taskLog)
 	}
 	if assignment == nil {
 		return nil, false
@@ -6071,6 +6110,147 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 	}
 	taskLog.Info("local_directory: lock acquired")
 	return release, false
+}
+
+// acquireSnapshotScopeLocks takes the task-lifetime locks a snapshot plan
+// owes. Undeclared plans (whole-root CoW via the primary resource) and
+// git-rooted worktree fallbacks take NOTHING — lock-freedom is what lets
+// sibling tasks share one directory through private upperdirs, the
+// acceptance-1 property — and chat tasks never queue behind a writer for the
+// same reason they don't behind an in_place task. Declared scopes acquire
+// one lock per declared subdirectory, in sorted real-path order so two tasks
+// with overlapping scopes cannot interleave into a lock-ordering deadlock,
+// each with the full waiting plumbing (status badge, prepare-lease extender,
+// cancellation poller) the in_place path uses.
+func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan *snapshotPlan, taskLog *slog.Logger) (release func(), abort bool) {
+	fb, ferr := snapshotWorktreeFallback(plan)
+	if ferr != nil {
+		taskLog.Error("local_directory: snapshot worktree fallback failed", "error", ferr)
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  ferr.Error(),
+			failureReason: "local_directory_error",
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot fallback error", "error", failErr)
+		}
+		return nil, true
+	}
+	if fb != nil {
+		taskLog.Info("local_directory: git root, snapshot task routes to the worktree flow; no task-lifetime lock")
+		return nil, false
+	}
+	locks := plan.DeclaredLockPaths()
+	if len(locks) == 0 || localDirectoryLockExempt(task) {
+		taskLog.Info("local_directory: snapshot without declared scope (or chat task), running without the task-lifetime lock",
+			"primary", plan.Primary.AbsPath)
+		return nil, false
+	}
+	units := make(map[string]*snapshotUnit, len(plan.Units))
+	for i := range plan.Units {
+		if u := &plan.Units[i]; u.LockPath != "" {
+			units[u.LockPath] = u
+		}
+	}
+	sort.Strings(locks)
+
+	waitCtx, waitCancel := context.WithCancel(ctx)
+	defer waitCancel()
+	pollInterval := d.cancelPollInterval
+	if pollInterval == 0 {
+		pollInterval = 5 * time.Second
+	}
+	var (
+		watcherOnce      sync.Once
+		prepareLeaseOnce sync.Once
+		cancelledByPoll  <-chan struct{}
+		stopPrepareLease func()
+		waitCounted      bool
+	)
+	defer func() {
+		if waitCounted {
+			d.resourceWaitTasks.Add(-1)
+		}
+	}()
+	defer func() {
+		if stopPrepareLease != nil {
+			stopPrepareLease()
+		}
+	}()
+
+	onWait := func(unit *snapshotUnit) func(string) {
+		return func(holder string) {
+			// The gauge counts TASKS waiting on a directory, not individual
+			// waits: a multi-lock task blocks once as a unit, so count it on
+			// the first blocking lock and leave the single deferred decrement
+			// balanced.
+			if !waitCounted {
+				waitCounted = true
+				d.resourceWaitTasks.Add(1)
+			}
+			reason := unit.displayName()
+			if holder != "" {
+				reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
+			}
+			taskLog.Info("local_directory: waiting on declared scope lock", "subdir", unit.Subdir, "holder", holder)
+			if waitErr := d.client.MarkTaskWaitingLocalDirectory(ctx, task.ID, reason); waitErr != nil {
+				taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
+			}
+			prepareLeaseOnce.Do(func() {
+				stopPrepareLease = d.startTaskPrepareLeaseExtender(waitCtx, task, taskLog)
+			})
+			watcherOnce.Do(func() {
+				cancelledByPoll = d.watchTaskCancellation(waitCtx, task.ID, pollInterval, taskLog)
+				go func() {
+					select {
+					case <-cancelledByPoll:
+						waitCancel()
+					case <-waitCtx.Done():
+					}
+				}()
+			})
+		}
+	}
+
+	var releases []func()
+	for _, lockPath := range locks {
+		unit := units[lockPath]
+		releaseOne, err := d.localPathLocks.Acquire(waitCtx, lockPath, task.ID, onWait(unit))
+		if err != nil {
+			for _, r := range releases {
+				r()
+			}
+			if cancelledByPoll != nil {
+				select {
+				case <-cancelledByPoll:
+					taskLog.Info("local_directory: declared scope wait aborted by server-side terminal state")
+					return nil, true
+				default:
+				}
+			}
+			taskLog.Error("local_directory: declared scope lock acquire failed", "error", err)
+			failureReason := "local_directory_error"
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				failureReason = "cancelled"
+			}
+			if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+				kind:          terminalTaskReportFail,
+				taskID:        task.ID,
+				errorMessage:  fmt.Sprintf("local_directory scope wait cancelled: %s", err.Error()),
+				failureReason: failureReason,
+			}); failErr != nil {
+				taskLog.Error("fail task after snapshot scope lock cancel", "error", failErr)
+			}
+			return nil, true
+		}
+		releases = append(releases, releaseOne)
+	}
+	taskLog.Info("local_directory: declared scope locks acquired", "count", len(releases))
+	return func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}, false
 }
 
 // reportTaskResult writes the final task disposition back to the server.
@@ -7517,6 +7697,35 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	// Snapshot-mode resources (RUYI-669) route through the snapshot plan, not
+	// the assignment above — which skips snapshot rows so its multiplicity
+	// error keeps describing the modes the assignment branches handle. The
+	// same resolution already ran in handleTask's lock phase; re-resolving
+	// here fails the task rather than falling through to a regular workdir if
+	// the claim→run gap straddled a resource edit that broke the plan.
+	snapPlan, snapPlanErr := resolveSnapshotPlan(task, d.cfg.DaemonID)
+	var agentSnapWrap *agent.SnapshotWrap
+	if snapPlanErr != nil {
+		return TaskResult{}, asEnvironmentSetupFailure(snapPlanErr)
+	}
+	if snapPlan != nil {
+		fb, ferr := snapshotWorktreeFallback(snapPlan)
+		if ferr != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(ferr)
+		}
+		if fb != nil {
+			// Git directories keep the worktree flow wholesale (ADR §3): the
+			// fallback rewrites the assignment to worktree mode so the branch
+			// below runs unchanged, and no snapshot tree is materialized.
+			localAssignment = fb
+			snapPlan = nil
+		} else {
+			// A mixed project's in_place row must not drive prep, reuse, or
+			// sidecar decisions once this task routes to snapshot: the two
+			// rows can even point at different directories.
+			localAssignment = nil
+		}
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -7524,7 +7733,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Leader tasks have no localAssignment; shouldReusePriorWorkdir separately
 	// requires Prepare-time managed-env provenance and a daemon-owned marker
 	// before allowing reuse, so a pre-fix leader session recorded against
-	// local_directory still fails closed.
+	// local_directory still fails closed. Snapshot tasks inherit the same
+	// decline: their Prepare runs with a LocalWorkDir set, so no managed-env
+	// provenance is ever written for them.
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
@@ -7875,7 +8086,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("prepare execution environment: %w", err))
 			}
 		} else {
-			if localAssignment != nil {
+			if snapPlan != nil {
+				// Snapshot mode (RUYI-669): Prepare writes context files and
+				// sidecars into LocalWorkDir, so the primary unit's upperdir
+				// takes that slot — everything lands in the overlay's upper
+				// layer, visible at the view root once mounted, and gone with
+				// the tree instead of persisting in the user's directory.
+				// env.WorkDir is rewritten to the user's path right after
+				// Prepare, so nothing downstream treats it as a scratch
+				// target; the one deliberate exception is the runtime-brief
+				// injection further down, which routes back into this upper
+				// layer (snapshotPrimaryUpper) instead of the pristine path.
+				primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
+				if merr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(merr)
+				}
+				prepParams.LocalWorkDir = primaryUpper
+			} else if localAssignment != nil {
 				prepParams.LocalWorkDir = localAssignment.AbsPath
 			}
 			env, err = d.prepareExecutionEnvironment(prepareCtx, prepParams)
@@ -7889,6 +8116,56 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.RootDir != resolvedRoot && env.RootDir != "" {
 		d.markActiveEnvRoot(env.RootDir)
 		defer d.unmarkActiveEnvRoot(env.RootDir)
+	}
+	// Snapshot run brief (RUYI-669): the ledger entry is committed BEFORE the
+	// worker spawns, so any tree on disk is attributable from the moment it
+	// exists — that is what keeps GC ledger-driven instead of name-driven.
+	// The deferred finalizer preserves the upper layer on every path that
+	// didn't explicitly succeed; the success path below finalizes with
+	// keep=false first, and a Finalize on an already-removed entry is a no-op.
+	// materializeTrees re-runs defensively here for an env-reuse path that
+	// skipped the prepare branch above. The primary upper is kept for the
+	// runtime-brief injection below: snapshot tasks compose the brief into
+	// the upper layer, never into the pristine path env.WorkDir points at.
+	snapshotPrimaryUpper := ""
+	if snapPlan != nil {
+		primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
+		if merr != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(merr)
+		}
+		snapshotPrimaryUpper = primaryUpper
+		env.WorkDir = snapPlan.Primary.AbsPath
+		units := make([]execenv.SnapshotUnitSpec, 0, len(snapPlan.Units))
+		for _, u := range snapPlan.Units {
+			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, execenv.SnapshotStem(task.IssueID, u.Subdir, task.ID))
+			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
+		}
+		if err := execenv.RecordSnapshotStart(resolvedRoot, execenv.SnapshotLedgerEntry{
+			TaskID:  task.ID,
+			IssueID: task.IssueID,
+			Root:    resolvedRoot,
+			Primary: snapPlan.Primary.AbsPath,
+			Units:   units,
+		}); err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("record snapshot ledger: %w", err))
+		}
+		defer execenv.FinalizeSnapshot(resolvedRoot, task.ID, true)
+		selfPath, err := os.Executable()
+		if err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("resolve daemon executable for snapshot worker: %w", err))
+		}
+		agentSnapWrap, err = execenv.BuildSnapshotWrap(selfPath, &execenv.SnapshotRunSpec{
+			TaskID: task.ID,
+			Units:  units,
+			Cwd:    snapPlan.Primary.AbsPath,
+		})
+		if err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("build snapshot wrap: %w", err))
+		}
+		taskLog.Info("local_directory: snapshot prepared",
+			"units", len(units),
+			"declared_scope", snapPlan.Declared,
+			"primary", snapPlan.Primary.AbsPath)
 	}
 	// Finalize the worktree on EVERY exit path, success or failure: commit
 	// whatever the agent left uncommitted, then unregister the worktree from
@@ -7976,9 +8253,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.LocalDirectory || env.LocalWorktree != nil {
 		defer func() {
 			var cleanupErr error
-			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
-				cleanupErr = cerr
-				d.logger.Warn("execenv: cleanup runtime config failed", "error", cerr)
+			// Snapshot mode wrote the brief into the task's upper layer, which
+			// dies with the snapshot tree: the pristine file was never
+			// touched, so there is nothing to excise — and running the
+			// excision anyway would re-introduce a host-side write (and could
+			// strip a stale block the user's own file carries for unrelated
+			// reasons).
+			if snapPlan == nil {
+				if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
+					cleanupErr = cerr
+					d.logger.Warn("execenv: cleanup runtime config failed", "error", cerr)
+				}
 			}
 			// Excise the sidecar tree (.agent_context/, .multica/,
 			// provider-specific .claude/skills/ etc.) that Prepare wrote
@@ -8061,7 +8346,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	// Snapshot mode composes the brief into the primary unit's upper layer:
+	// env.WorkDir here is the pristine host path the view covers, and writing
+	// it would leak the brief into the user's tree on a crash and let
+	// concurrent root-domain tasks overwrite one host-side file.
+	var runtimeBrief string
+	if snapPlan != nil {
+		runtimeBrief, err = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
+	} else {
+		runtimeBrief, err = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	}
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -8229,6 +8523,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+		// Snapshot mode (RUYI-669): every task process this backend spawns is
+		// rewritten through the stage-2 namespace worker. Probes and version
+		// checks built via agent.NewCommand never carry a wrap, so runtime
+		// discovery still runs on the host.
+		Snapshot: agentSnapWrap,
 	})
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
@@ -8378,6 +8677,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskLog.Warn("refusing quick-actions refresh task from an older server; complete the daemon upgrade by updating the server",
 			"target_task", task.RegenerateQuickActionsFor,
 		)
+		// A snapshot run was armed for this task even though no agent will
+		// launch: close the ledger entry as success so the tree (context files
+		// only, no agent writes) is removed instead of lingering as "failed".
+		if snapPlan != nil {
+			execenv.FinalizeSnapshot(resolvedRoot, task.ID, false)
+		}
 		return TaskResult{Status: "completed", Comment: "", WorkDir: env.WorkDir, EnvRoot: env.RootDir}, nil
 	}
 
@@ -8463,7 +8768,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		var freshBrief string
+		var briefErr error
+		if snapPlan != nil {
+			freshBrief, briefErr = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
+		} else {
+			freshBrief, briefErr = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		}
+		if briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
@@ -8493,6 +8805,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+	}
+
+	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
+	// it held died with its namespace. A completed run drops the snapshot
+	// tree here — after the retry convergence above, because the retry reuses
+	// the same upperdirs. Any other terminal shape falls through to the
+	// deferred keep=true finalizer, which preserves the upper layer for
+	// inspection the same way a failed worktree task preserves its branch.
+	if snapPlan != nil && result.Status == "completed" {
+		if ferr := execenv.FinalizeSnapshot(resolvedRoot, task.ID, false); ferr != nil {
+			taskLog.Warn("local_directory: finalize snapshot after success failed (non-fatal)", "error", ferr)
+		}
 	}
 
 	elapsed := time.Since(taskStart).Round(time.Second)
