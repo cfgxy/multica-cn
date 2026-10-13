@@ -288,6 +288,61 @@ func synthesizeRemove(current string, _ ProposalInput, name string) (string, err
 	return strings.Join(out, "\n"), nil
 }
 
+// MoveTarget is the destination half of a move_clause proposal: the carrier
+// scope the clause moves to and (optionally) the section inside it.
+type MoveTarget struct {
+	Scope   string
+	Section string
+}
+
+// SynthesizeMove applies a move_clause proposal across two carriers in one
+// deterministic step: the clause block leaves the source document and lands
+// in the destination (target section or document tail). A non-empty
+// ClauseText combines the move with a revision (ADR 007 §2 — the two state
+// lines may ride one proposal), otherwise the source block is transplanted
+// verbatim. It never mutates its inputs; both outputs must pass RunGate
+// against their own baselines.
+func SynthesizeMove(srcCurrent, dstCurrent string, p ProposalInput, target MoveTarget) (string, string, error) {
+	name := normalizeClauseName(p.ClauseName)
+	if name == "" {
+		return "", "", fmt.Errorf("条款名为空")
+	}
+	if !ValidScope(target.Scope) {
+		return "", "", fmt.Errorf("move_clause 目标载体非法：%q", target.Scope)
+	}
+
+	srcLines := splitLines(srcCurrent)
+	s, e := clauseSpan(srcLines, name)
+	if s < 0 {
+		return "", "", fmt.Errorf("条款「%s」在源载体中不存在，无法迁移", name)
+	}
+	block := strings.Join(srcLines[s:e], "\n")
+	if strings.TrimSpace(p.ClauseText) != "" {
+		if t := firstClauseName(p.ClauseText); t != "" && !clauseNamesEqual(t, name) {
+			return "", "", fmt.Errorf("条款文本首行标签「%s」与条款名「%s」不一致", t, name)
+		}
+		block = strings.TrimRight(p.ClauseText, "\n")
+	}
+
+	srcNext := strings.Join(append(srcLines[:s:s], srcLines[e:]...), "\n")
+
+	dstLines := splitLines(dstCurrent)
+	for _, existing := range Clauses(dstCurrent) {
+		if clauseNamesEqual(existing, name) {
+			return "", "", fmt.Errorf("条款「%s」已存在于目标载体，新增请改用修订", name)
+		}
+	}
+	if target.Section != "" {
+		ds, de := sectionSpan(dstLines, target.Section)
+		if ds < 0 {
+			return "", "", fmt.Errorf("目标章节「%s」在目标载体中不存在（新增章节须 Owner 批复并重建基线）", target.Section)
+		}
+		return srcNext, strings.Join(insertBlock(dstLines, de, block), "\n"), nil
+	}
+	out := append(splitLines(strings.TrimRight(dstCurrent, "\n")), "", block)
+	return srcNext, strings.Join(out, "\n"), nil
+}
+
 // insertBlock inserts block lines at index i, keeping one blank separator
 // line before the block when the previous line is non-blank.
 func insertBlock(lines []string, i int, block string) []string {
