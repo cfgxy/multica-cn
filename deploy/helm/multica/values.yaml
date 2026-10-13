@@ -14,7 +14,9 @@ images:
     tag: ""
     pullPolicy: IfNotPresent
   postgres:
-    repository: pgvector/pgvector
+    # pg_bigm build (RUYI-755): fresh data dirs get shared_preload_libraries
+    # from the image's postgresql.conf.sample.
+    repository: ghcr.io/cfgxy/multica-postgres-pgbigm
     tag: pg17
     pullPolicy: IfNotPresent
 
