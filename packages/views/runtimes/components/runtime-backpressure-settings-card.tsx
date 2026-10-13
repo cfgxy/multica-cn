@@ -280,7 +280,10 @@ export function BackpressureSettingsCard({
             : t(($) => $.detail.bp_state_disabled)}
         </Fact>
         <Fact label={t(($) => $.detail.bp_mem_band)}>
-          {effective.mem_high_pct}% → {effective.mem_recovery_pct}%
+          {t(($) => $.detail.bp_mem_band_value, {
+            high: effective.mem_high_pct,
+            recovery: effective.mem_recovery_pct,
+          })}
         </Fact>
         <Fact label={t(($) => $.detail.bp_swap_band)}>
           {effective.swap_high_pct > 0
@@ -293,7 +296,10 @@ export function BackpressureSettingsCard({
             : t(($) => $.detail.bp_condition_disabled)}
         </Fact>
         <Fact label={t(($) => $.detail.bp_sampling)}>
-          {effective.sample_interval_seconds}s × {effective.window_size}
+          {t(($) => $.detail.bp_sampling_value, {
+            interval: effective.sample_interval_seconds,
+            window: effective.window_size,
+          })}
         </Fact>
       </div>
 
@@ -311,7 +317,11 @@ export function BackpressureSettingsCard({
                   }`}
                   aria-hidden="true"
                 />
-                {condLabel(c.condition)}: {c.value}% / {c.threshold}%
+                {t(($) => $.detail.bp_cond_reading, {
+                  condition: condLabel(c.condition),
+                  value: c.value,
+                  threshold: c.threshold,
+                })}
               </span>
             ))}
           </div>
