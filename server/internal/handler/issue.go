@@ -673,26 +673,43 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		}
 	}
 
+	// --- comment phrase-match flag (single materialization) ---
+	//
+	// The comment EXISTS subquery used to appear twice — once in the WHERE
+	// phrase match and once in rank tier 7 — so Postgres materialized the
+	// same candidate set twice (two hashed SubPlans, each doing a full
+	// LOWER+LIKE recheck over every trgm candidate; ~130ms each on the
+	// production comment table for common CJK tokens). The LEFT JOIN below
+	// materializes the matching issue_id set exactly once, and both the
+	// WHERE clause and the rank CASE reuse the `cm.issue_id IS NOT NULL`
+	// flag instead of re-running the EXISTS.
+	//
+	// The join subquery keeps the MUL-4059 workspace contract: it filters
+	// on c.workspace_id = wsParam, so the materialized set can only ever
+	// contain this workspace's comments. Without that filter the set blows
+	// up to every comment in the table matching the LIKE (30+ second
+	// hashed subplans; see MUL-4059 EXPLAIN reports). The outer WHERE still
+	// binds i.workspace_id = wsParam, so join pairs are same-workspace by
+	// construction.
+	//
+	// matched_comment_content deliberately stays a correlated scalar
+	// subquery: it probes the returned issue's own comments through
+	// comment_issue_resolved_at_idx (~0.5ms per row), so folding it into
+	// the join would buy nothing and cost a per-issue content aggregation.
+	commentMatchJoin := fmt.Sprintf(
+		"LEFT JOIN (SELECT DISTINCT c.issue_id FROM comment c WHERE c.workspace_id = %s AND LOWER(c.content) LIKE %s) cm ON cm.issue_id = i.id",
+		wsParam, phraseContainsParam,
+	)
+	commentMatchFlag := "cm.issue_id IS NOT NULL"
+
 	// --- WHERE clause ---
 	var whereParts []string
 
-	// Full phrase match: title, description, or comment.
-	//
-	// The comment EXISTS subquery is deliberately correlated on BOTH
-	// c.issue_id = i.id AND c.workspace_id = wsParam. The workspace_id
-	// filter is not strictly necessary for correctness (comment.workspace_id
-	// is FK-consistent with its issue's workspace), but it is critical for
-	// the planner. Without it, Postgres rewrites the correlated EXISTS
-	// into a hashed subplan that materializes every comment in the entire
-	// `comment` table matching the LIKE — for common tokens like "search"
-	// this can be hundreds of thousands of rows, blowing out work_mem into
-	// a lossy bitmap and taking 30+ seconds. With the workspace_id
-	// constant duplicated into the subquery, the hashed set collapses to
-	// this workspace's comments and the plan uses the supporting
-	// idx_comment_workspace (migration 135). See MUL-4059 EXPLAIN reports.
+	// Full phrase match: title, description, or comment (comment part reads
+	// the flag materialized once by commentMatchJoin above).
 	phraseMatch := fmt.Sprintf(
-		"(LOWER(i.title) LIKE %s OR LOWER(COALESCE(i.description, '')) LIKE %s OR EXISTS (SELECT 1 FROM comment c WHERE c.issue_id = i.id AND c.workspace_id = %s AND LOWER(c.content) LIKE %s))",
-		phraseContainsParam, phraseContainsParam, wsParam, phraseContainsParam,
+		"(LOWER(i.title) LIKE %s OR LOWER(COALESCE(i.description, '')) LIKE %s OR %s)",
+		phraseContainsParam, phraseContainsParam, commentMatchFlag,
 	)
 	whereParts = append(whereParts, phraseMatch)
 
@@ -764,9 +781,9 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		rankCases = append(rankCases, fmt.Sprintf("WHEN (%s) THEN 6", strings.Join(descTerms, " AND ")))
 	}
 
-	// Tier 7: Comment contains phrase. Same workspace_id-in-subquery
-	// contract as the WHERE clause; see the phraseMatch comment above.
-	rankCases = append(rankCases, fmt.Sprintf("WHEN EXISTS (SELECT 1 FROM comment c WHERE c.issue_id = i.id AND c.workspace_id = %s AND LOWER(c.content) LIKE %s) THEN 7", wsParam, phraseContainsParam))
+	// Tier 7: Comment contains phrase. Reads the flag materialized once by
+	// commentMatchJoin; see its comment for the MUL-4059 workspace contract.
+	rankCases = append(rankCases, fmt.Sprintf("WHEN %s THEN 7", commentMatchFlag))
 
 	// Tier 8: Comment matches all words (multi-word only)
 	if len(termContainsParams) > 1 {
@@ -882,11 +899,13 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		%s AS match_source,
 		%s AS matched_comment_content
 	FROM issue i
+	%s
 	WHERE i.workspace_id = %s AND %s
 	ORDER BY %s, %s, %s, i.updated_at DESC
 	LIMIT %s OFFSET %s`,
 		matchSourceExpr,
 		commentSubquery,
+		commentMatchJoin,
 		wsParam,
 		whereClause,
 		cancelledRank,
