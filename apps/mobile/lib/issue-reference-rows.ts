@@ -1,13 +1,13 @@
 /**
- * Pure row-building + grouping for the reference tail (RUYI-635 增量,
- * mobile half).
+ * Pure row-building + folding + grouping for the reference tail (RUYI-635
+ * 增量, mobile half).
  *
  * The web footer builds the same union inline; mobile extracts it here
  * because RN components can't render in the node vitest lane — this module
- * carries the tail's POLICY (resolution zip, cross-form collapse, PR/degraded
- * kinds, mixed-kind grouping) where it can be unit-tested, while the
- * component (issue-reference-list.tsx) only resolves, partitions through the
- * shared `partitionReferencePreview`, and draws.
+ * carries the tail's POLICY (resolution zip, cross-form collapse, RUYI-731
+ * self-filter, preview fold, sheet grouping, drag-to-close threshold, PR/
+ * degraded kinds) where it can be unit-tested, while the component
+ * (issue-reference-list.tsx) only resolves and draws.
  */
 import type { IssueReference } from "@multica/core/markdown";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
@@ -20,13 +20,15 @@ export type ReferenceTailRow =
   | { kind: "pr"; key: string; pr: GitHubPullRequest }
   | { kind: "degraded"; key: string; fallback: string };
 
-export interface ReferenceTailGroups {
-  /** True when issues AND PRs both resolved — only then do group headers show. */
-  grouped: boolean;
-  tasks: Extract<ReferenceTailRow, { kind: "issue" }>[];
-  prs: Extract<ReferenceTailRow, { kind: "pr" }>[];
-  /** Unresolved rows: never clickable, plain-text slots inside the sheet. */
-  degraded: Extract<ReferenceTailRow, { kind: "degraded" }>[];
+export type ReferenceRowKind = ReferenceTailRow["kind"];
+
+export interface ReferencePreviewPartition {
+  /** The inline rows to render (at most `maxPreview`). */
+  previews: ReferenceTailRow[];
+  /** Rows replaced by the collapse line, in original order. */
+  hidden: ReferenceTailRow[];
+  /** PR rows inside `hidden` — the "incl. M PRs" count. */
+  hiddenPrCount: number;
 }
 
 function isPullRequest(value: ReferenceTailResolution): value is GitHubPullRequest {
@@ -40,10 +42,17 @@ function isPullRequest(value: ReferenceTailResolution): value is GitHubPullReque
  * its first mention's position; two tokens resolving to the same PR collapse
  * the same way. A null resolution keeps its slot as a degraded row — the
  * "miss reads as what the author typed" contract.
+ *
+ * RUYI-731 self-filter: when `currentIssueId` is set (issue-detail context),
+ * a reference resolving to the CURRENT issue builds no row — an issue
+ * describing itself is not a reference. Surfaces without the context pass
+ * null and keep every row. The filter runs BEFORE the preview fold, so the
+ * self row consumes no preview slot and never appears in the sheet.
  */
 export function buildReferenceTailRows(
   references: IssueReference[],
   resolutions: ReferenceTailResolution[],
+  currentIssueId: string | null = null,
 ): ReferenceTailRow[] {
   const rows: ReferenceTailRow[] = [];
   const seenIssueIds = new Set<string>();
@@ -57,6 +66,7 @@ export function buildReferenceTailRows(
       rows.push({ kind: "pr", key, pr: resolved });
     } else if (resolved) {
       if (seenIssueIds.has(resolved.id)) return;
+      if (resolved.id === currentIssueId) return;
       seenIssueIds.add(resolved.id);
       rows.push({ kind: "issue", key, issue: resolved });
     } else {
@@ -67,6 +77,31 @@ export function buildReferenceTailRows(
 }
 
 /**
+ * Preview/fold partition for the reference tail. RUYI-731 (Owner correction
+ * 2026-10-12) scoped "flat, no fold" to the web footer only — mobile keeps
+ * the two-level anti-mistouch surface, so the fold arithmetic lives here.
+ * The old shared core helper (partitionReferencePreview in
+ * `@multica/core/markdown`) was retired when web went flat: its only
+ * remaining consumer is mobile, and the "both ends fold at the same cut"
+ * parity rule it served no longer holds — mobile-local keeps the policy next
+ * to the row building it operates on, node-testable as before.
+ *
+ * The inline block never grows past `maxPreview` rows — everything past
+ * that collapses into one "N more references (incl. M PRs)" line and the
+ * full list lives in the bottom sheet. Pure; order is preserved in both
+ * slices.
+ */
+export function partitionReferencePreview(
+  rows: ReferenceTailRow[],
+  maxPreview = 2,
+): ReferencePreviewPartition {
+  const previews = rows.slice(0, maxPreview);
+  const hidden = rows.slice(maxPreview);
+  const hiddenPrCount = hidden.filter((row) => row.kind === "pr").length;
+  return { previews, hidden, hiddenPrCount };
+}
+
+/**
  * Split rows into the sheet's two groups. Group headers only render when
  * BOTH kinds resolved (Board 2: 单一类型不显示组头); a single-kind list keeps
  * first-appearance order via the tasks slice alone. Degraded rows stay out
@@ -74,7 +109,13 @@ export function buildReferenceTailRows(
  */
 export function groupReferenceTailRows(
   rows: ReferenceTailRow[],
-): ReferenceTailGroups {
+): {
+  grouped: boolean;
+  tasks: Extract<ReferenceTailRow, { kind: "issue" }>[];
+  prs: Extract<ReferenceTailRow, { kind: "pr" }>[];
+  /** Unresolved rows: never clickable, plain-text slots inside the sheet. */
+  degraded: Extract<ReferenceTailRow, { kind: "degraded" }>[];
+} {
   const tasks = rows.filter(
     (row): row is Extract<ReferenceTailRow, { kind: "issue" }> =>
       row.kind === "issue",
