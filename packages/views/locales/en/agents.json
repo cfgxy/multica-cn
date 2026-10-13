@@ -801,7 +801,8 @@
       "cancel_failed_toast": "Failed to cancel task",
       "started_prefix": "Started {{when}}",
       "dispatched_prefix": "Dispatched {{when}}",
-      "queued_prefix": "Queued {{when}}"
+      "queued_prefix": "Queued {{when}}",
+      "queued_backpressure": "Waiting for runtime recovery"
     }
   },
   "char_counter": {
