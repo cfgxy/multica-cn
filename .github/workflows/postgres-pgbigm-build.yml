@@ -1,0 +1,71 @@
+name: Postgres pg_bigm Image Build
+
+# RUYI-755: Owner 决策「把构建镜像的 dockerfile 和 github workflow 进代码仓库，
+# 跟其他工件触发机制一样，PR 合并关单后触发 docker 镜像自动构建，并推送到
+# github 公开镜像仓库」。
+# - push main / workflow_dispatch：构建 pgvector pg17 + pg_bigm 派生镜像并推送 GHCR。
+#   workflow_dispatch 用于 pg_bigm / pgvector 上游更新时不改文件的重构建。
+# - 凭据仅用内置 GITHUB_TOKEN（permissions 最小化：contents: read + packages: write）。
+# - 双 tag：pg17（滚动）+ sha-<短 SHA>（构建留痕）；不发布 latest。
+# - GHCR 包首次发布默认 private，「公开」需 Owner 在 GitHub package 设置一次性改为 public。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/postgres-pgbigm/**"
+      - ".github/workflows/postgres-pgbigm-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    # 与 release.yml 同语义的交付仓守卫：fork 不发布镜像。
+    if: github.repository_owner == 'cfgxy'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/multica-postgres-pgbigm
+          flavor: |
+            latest=false
+          labels: |
+            org.opencontainers.image.title=Multica Postgres pg_bigm
+            org.opencontainers.image.description=Postgres 17 with pgvector and pg_bigm for Multica
+          tags: |
+            type=raw,value=pg17
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/postgres-pgbigm
+          file: docker/postgres-pgbigm/Dockerfile
+          pull: true
+          push: true
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=postgres-pgbigm
+          cache-to: type=gha,mode=max,scope=postgres-pgbigm
