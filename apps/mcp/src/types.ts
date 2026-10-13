@@ -182,6 +182,11 @@ export interface CommentInfo {
    * audit trail; there is no per-edit content history beyond this.
    */
   revision?: number;
+  /**
+   * Summary-mode listings only: the server clipped this body to ~200
+   * characters; absent on full reads.
+   */
+  content_truncated?: boolean;
   /** roots_only listings only: orientation stats for the thread under this root. */
   reply_count?: number;
   last_activity_at?: string;
