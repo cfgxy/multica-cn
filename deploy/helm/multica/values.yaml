@@ -59,6 +59,16 @@ postgres:
     enabled: false
   database: multica
   user: multica
+  # Extra command-line arguments for the postgres server process, rendered as
+  # the container's args. The default preloads pg_bigm: fresh data directories
+  # get it from the image's postgresql.conf.sample too, but existing PVCs
+  # upgraded from the stock pgvector image never read that sample, so the
+  # preload must arrive on the command line for the extension to be loadable.
+  # Clear this (extraArgs: []) when images.postgres points at a custom image
+  # built without pg_bigm.
+  extraArgs:
+    - -c
+    - shared_preload_libraries=pg_bigm
   persistence:
     size: 10Gi
     # Leave empty to use the cluster's default StorageClass.
