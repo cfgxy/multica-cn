@@ -2215,6 +2215,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// it really saw — a tier the agent/project/squad left blank, or a claim
 	// path that never reaches a given tier, must not appear as version 0.
 	promptVersionScopeIDs := map[string]string{}
+	// Clause dynamic injection (RUYI-751 / ADR 007 §5): every carrier read
+	// point below routes its text through the task_kind-filtered effective
+	// clause set. Injection rows accumulate here and persist once at the end;
+	// every failure inside applyDynamicClauses degrades to snapshot injection
+	// and never fails the claim.
+	taskKind := claimTaskKind(task)
+	claimWorkspaceID := parseUUID(runtimeWorkspaceID)
+	var clauseInjections []clauseInjectionRecord
+	filterClauses := func(scope promptVersionScope, scopeID pgtype.UUID, text string) string {
+		res := h.applyDynamicClauses(r.Context(), claimWorkspaceID, scope, scopeID, taskKind, text)
+		for i := range res.Injections {
+			res.Injections[i].Scope = string(scope)
+		}
+		clauseInjections = append(clauseInjections, res.Injections...)
+		return res.Text
+	}
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -2375,10 +2391,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
+	// The agent tier's business column goes through the dynamic clause
+	// filter before it reaches the response (ADR 007 §5): stable context is
+	// kept verbatim, the clause region is rebuilt from the task_kind-
+	// filtered effective set.
+	agentInstructions := filterClauses(promptVersionScopeAgent, agent.ID, agent.Instructions)
 	resp.Agent = &TaskAgentData{
 		ID:                      uuidToString(agent.ID),
 		Name:                    agent.Name,
-		Instructions:            agent.Instructions,
+		Instructions:            agentInstructions,
 		CustomEnv:               customEnv,
 		CustomArgs:              customArgs,
 		McpConfig:               mcpConfig,
@@ -2390,11 +2411,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		SessionCompactPct:       agent.SessionCompactPct,
 		DisabledRuntimeSkills:   disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
-	// Attribute the agent tier off the raw workspace-owned column, not the
-	// Mika-composed text below: the system layer ships with the binary and is
-	// never written through prompt-governance, so it has no prompt_version to
-	// attribute to.
-	if strings.TrimSpace(agent.Instructions) != "" {
+	// Attribute the agent tier off the filtered text above, not the raw
+	// column: a tier whose every clause the conditions filtered out — and
+	// whose stable context is empty — injected nothing and earns no
+	// attribution. The Mika-composed text below still attributes to the same
+	// tier: the system layer ships with the binary and is never written
+	// through prompt-governance, so it has no prompt_version to attribute to.
+	if strings.TrimSpace(agentInstructions) != "" {
 		promptVersionScopeIDs["agent"] = uuidToString(agent.ID)
 	}
 	// System agents carry a product-owned instruction layer that ships with
@@ -2547,6 +2570,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					ownsIssueStatus := issue.AssigneeType.Valid &&
 						issue.AssigneeType.String == "squad" &&
 						uuidToString(issue.AssigneeID) == uuidToString(squad.ID)
+					// The squad tier's business column goes through the dynamic
+					// clause filter before entering the briefing (ADR 007 §5);
+					// the briefing itself drops an emptied section.
+					squad.Instructions = filterClauses(promptVersionScopeSquad, squad.ID, squad.Instructions)
 					briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, ownsIssueStatus)
 					if strings.TrimSpace(resp.Agent.Instructions) == "" {
 						resp.Agent.Instructions = briefing
@@ -2594,6 +2621,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				status:  http.StatusInternalServerError,
 				message: "failed to load project context",
 			}
+		}
+		// The project tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). The context
+		// degrades to workspace-only when the issue carries no project, so
+		// the filter only runs for a real project id.
+		if projectCtx.ProjectID != "" {
+			projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
 		}
 		projectCtx.applyTo(&resp)
 		if strings.TrimSpace(projectCtx.Instructions) != "" {
@@ -2942,6 +2976,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				message: "failed to load project context",
 			}
 		}
+		// The project tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). The context
+		// degrades to workspace-only when the issue carries no project, so
+		// the filter only runs for a real project id.
+		if projectCtx.ProjectID != "" {
+			projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+		}
 		projectCtx.applyTo(&resp)
 		if strings.TrimSpace(projectCtx.Instructions) != "" {
 			promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -3159,6 +3200,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				message: "failed to load project context",
 			}
 		}
+		// The project tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). The context
+		// degrades to workspace-only when the issue carries no project, so
+		// the filter only runs for a real project id.
+		if projectCtx.ProjectID != "" {
+			projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+		}
 		projectCtx.applyTo(&resp)
 		if strings.TrimSpace(projectCtx.Instructions) != "" {
 			promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -3245,6 +3293,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					message: "failed to load project context",
 				}
 			}
+			// The project tier's business column goes through the dynamic clause
+			// filter before it reaches the response (ADR 007 §5). The context
+			// degrades to workspace-only when the issue carries no project, so
+			// the filter only runs for a real project id.
+			if projectCtx.ProjectID != "" {
+				projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+			}
 			projectCtx.applyTo(&resp)
 			if strings.TrimSpace(projectCtx.Instructions) != "" {
 				promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -3306,6 +3361,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						// status to own on this turn. Once the leader opens the
 						// issue with the squad as assignee, the issue-bound
 						// claim path above grants ownership.
+						squad.Instructions = filterClauses(promptVersionScopeSquad, squad.ID, squad.Instructions)
 						briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, false)
 						if strings.TrimSpace(resp.Agent.Instructions) == "" {
 							resp.Agent.Instructions = briefing
@@ -3397,8 +3453,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
 		}
 		if ws.Context.Valid {
-			resp.WorkspaceContext = ws.Context.String
-			if strings.TrimSpace(ws.Context.String) != "" {
+			// The workspace tier's business column goes through the dynamic
+			// clause filter before it reaches the response (ADR 007 §5).
+			wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
+			resp.WorkspaceContext = wsContext
+			if strings.TrimSpace(wsContext) != "" {
 				promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
 			}
 		}
@@ -3505,6 +3564,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}
 
 	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
+	// the accumulated records are the run's call-count basis. Scope strings
+	// were stamped by filterClauses at each read point.
+	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }
