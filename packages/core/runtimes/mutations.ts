@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { runtimeKeys } from "./queries";
+import { runtimeKeys, runtimeBackpressureKeys } from "./queries";
+import type { RuntimeBackpressureSettings } from "../api/schemas";
 import { workspaceKeys } from "../workspace/queries";
 import { agentTaskSnapshotKeys } from "../agents/queries";
 
@@ -124,6 +125,34 @@ export function useUpdateRuntime(wsId: string) {
     }) => api.updateRuntime(runtimeId, patch),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
+// ---- Daemon host backpressure settings (RUYI-729 stage 1) ----
+
+// Save / remove share one invalidation shape: the settings card AND the
+// event timeline both re-read (a save can trigger or clear an episode, and
+// the settings response echoes the live report).
+export function useSaveRuntimeBackpressureSettings(runtimeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (config: RuntimeBackpressureSettings["config"]) =>
+      api.putRuntimeBackpressureSettings(runtimeId, config),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeBackpressureKeys.settings(runtimeId) });
+      qc.invalidateQueries({ queryKey: runtimeBackpressureKeys.events(runtimeId) });
+    },
+  });
+}
+
+export function useResetRuntimeBackpressureSettings(runtimeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.deleteRuntimeBackpressureSettings(runtimeId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeBackpressureKeys.settings(runtimeId) });
+      qc.invalidateQueries({ queryKey: runtimeBackpressureKeys.events(runtimeId) });
     },
   });
 }

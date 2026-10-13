@@ -638,6 +638,16 @@ deleted_runtime_credentials AS (
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),
+deleted_backpressure_events AS (
+    DELETE FROM daemon_backpressure_event WHERE workspace_id = $1
+),
+deleted_backpressure_settings AS (
+    DELETE FROM daemon_backpressure_settings s
+    WHERE s.workspace_id = $1
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_runtime ar WHERE ar.daemon_id = s.daemon_id
+      )
+),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
 ),
@@ -661,6 +671,10 @@ DELETE FROM project WHERE project.workspace_id = $1
 // RUYI-693: voice_provider rows share the runtime_credential store (their
 // credential_ref points at '<provider-uuid>:<key>'), so their secret copies
 // are swept through the provider set in the same statement.
+// RUYI-729: daemon_backpressure_* have no FK (house rule). Events die with
+// the workspace; a settings row only dies once NO runtime anywhere still
+// points at its daemon_id — a shared daemon serving another workspace keeps
+// its gate config.
 // voice_provider has no FK to workspace (house rule); teardown owns it.
 // Its agent overrides (agent.voice_provider_id) go away with the agent
 // sweep above, and workspace.settings voice references die with the
