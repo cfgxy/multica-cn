@@ -174,6 +174,13 @@ func squadOperatingProtocolFor(ownsIssueStatus bool) string {
 // including ones where the squad is a guest on someone else's issue, so this
 // flag is what keeps status authority from leaking along with the roster.
 //
+// The squad instructions section is the squad tier's business column: the
+// claim path runs it through the dynamic clause filter (RUYI-751 / ADR 007
+// §5) BEFORE calling this function — by the time a briefing is built,
+// squad.Instructions already holds the filtered text, and a squad whose
+// instructions filtered away entirely drops the section exactly as if it had
+// been empty.
+//
 // Archived agent members are skipped — there's no point asking the leader
 // to delegate to a retired agent. Members whose underlying record can't be
 // loaded (deleted user/agent races, FK weirdness) are also skipped silently.

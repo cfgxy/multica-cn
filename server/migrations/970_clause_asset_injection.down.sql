@@ -22,6 +22,11 @@ DROP TABLE IF EXISTS clause;
 ALTER TABLE prompt_proposal DROP CONSTRAINT IF EXISTS prompt_proposal_source_check;
 ALTER TABLE prompt_proposal ADD CONSTRAINT prompt_proposal_source_check
     CHECK (source IN ('manual', 'retrospective'));
+
+-- Restore the 921 prompt_version source vocabulary (pre-970 state).
+ALTER TABLE prompt_version DROP CONSTRAINT IF EXISTS prompt_version_source_check;
+ALTER TABLE prompt_version ADD CONSTRAINT prompt_version_source_check
+    CHECK (source IN ('import', 'edit', 'revert', 'auto_snapshot', 'snapshot'));
 ALTER TABLE prompt_proposal DROP CONSTRAINT IF EXISTS prompt_proposal_change_kind_check;
 ALTER TABLE prompt_proposal ADD CONSTRAINT prompt_proposal_change_kind_check
     CHECK (change_kind IN ('add_clause', 'revise_clause', 'remove_clause'));

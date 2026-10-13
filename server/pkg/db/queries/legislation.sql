@@ -14,7 +14,7 @@ INSERT INTO prompt_proposal (
     gate_answer_conflict, gate_answer_dedup,
     problem, expected_effect, expected_gain, value_score,
     evidence_anchors, status, merged_from, source,
-    created_by_type, created_by_id, audit_log
+    created_by_type, created_by_id, audit_log, rollback_of_version
 ) VALUES (
     @workspace_id, @carrier_scope, @carrier_scope_id, @target_section,
     @change_kind, @clause_name, @clause_text,
@@ -23,7 +23,7 @@ INSERT INTO prompt_proposal (
     @gate_answer_conflict, @gate_answer_dedup,
     @problem, @expected_effect, @expected_gain, @value_score,
     @evidence_anchors, 'draft', '[]'::jsonb, @source,
-    @created_by_type, @created_by_id, @audit_log::jsonb
+    @created_by_type, @created_by_id, @audit_log::jsonb, sqlc.narg('rollback_of_version')
 ) RETURNING *;
 
 -- name: GetPromptProposal :one

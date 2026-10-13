@@ -458,3 +458,98 @@ func TestDiffLines(t *testing.T) {
 		t.Fatal("oversized input degraded path lost lines")
 	}
 }
+
+// --- SynthesizeMove (RUYI-751 / ADR 007 §2 move_clause) ---
+
+func TestSynthesizeMoveTransplantsClause(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+	move.ClauseText = ""
+
+	srcNext, dstNext, err := SynthesizeMove(carrierText, "# 目标载体\n\n## 规范\n\n- **目标既有条款**：内容。\n", move, MoveTarget{Scope: "workspace"})
+	if err != nil {
+		t.Fatalf("move failed: %v", err)
+	}
+	if strings.Contains(srcNext, "行文基调") {
+		t.Fatal("source still holds the moved clause")
+	}
+	if !strings.Contains(dstNext, "行文基调") {
+		t.Fatal("destination missing the moved clause")
+	}
+	// The transplanted block keeps its full body.
+	if !strings.Contains(dstNext, "简明扼要") {
+		t.Fatal("moved clause lost its body in transit")
+	}
+	// Source keeps its other clauses and structure.
+	if !strings.Contains(srcNext, "先结论后依据") || !strings.Contains(srcNext, "## 成本纪律") {
+		t.Fatal("source lost unrelated content")
+	}
+}
+
+func TestSynthesizeMoveCombinesWithRevision(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+	move.ClauseText = "- **行文基调**：一律专业、正式、准确（迁移后修订）。"
+
+	srcNext, dstNext, err := SynthesizeMove(carrierText, "# 目标载体\n", move, MoveTarget{Scope: "workspace"})
+	if err != nil {
+		t.Fatalf("move+revise failed: %v", err)
+	}
+	if strings.Contains(srcNext, "行文基调") || strings.Contains(dstNext, "简明扼要") {
+		t.Fatal("old body survived a move+revise")
+	}
+	if !strings.Contains(dstNext, "迁移后修订") {
+		t.Fatal("revised body missing at destination")
+	}
+}
+
+func TestSynthesizeMoveErrors(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+
+	// Missing clause at source.
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", move, MoveTarget{Scope: "workspace"}); err == nil {
+		t.Fatal("expected error for absent source clause")
+	}
+	// Clause already present at destination.
+	dup := baseInput()
+	dup.ClauseName = "行文基调"
+	dupDst := "# 目标载体\n\n## 沟通规范\n\n- **行文基调**：已存在。\n"
+	if _, _, err := SynthesizeMove(carrierText, dupDst, dup, MoveTarget{Scope: "workspace"}); err == nil {
+		t.Fatal("expected error for duplicate clause at destination")
+	}
+	// Unknown destination section.
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", move, MoveTarget{Scope: "workspace", Section: "不存在的章节"}); err == nil {
+		t.Fatal("expected error for unknown destination section")
+	}
+	// Invalid destination scope.
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", move, MoveTarget{Scope: "galaxy"}); err == nil {
+		t.Fatal("expected error for invalid destination scope")
+	}
+	// Empty clause name.
+	nameless := move
+	nameless.ClauseName = "  "
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", nameless, MoveTarget{Scope: "workspace"}); err == nil {
+		t.Fatal("expected error for empty clause name")
+	}
+}
+
+func TestGateMoveBothCarriersPass(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+	move.ClauseText = ""
+	dst := "# 目标载体\n\n## 规范\n\n- **目标既有条款**：内容。\n"
+
+	srcNext, dstNext, err := SynthesizeMove(carrierText, dst, move, MoveTarget{Scope: "workspace"})
+	if err != nil {
+		t.Fatalf("synthesize move: %v", err)
+	}
+	srcBaseline := &Baseline{Sections: Sections(carrierText), Clauses: Clauses(carrierText)}
+	dstBaseline := &Baseline{Sections: Sections(dst), Clauses: Clauses(dst)}
+	okResult(t, RunGate(carrierText, srcNext, srcBaseline, move))
+	okResult(t, RunGate(dst, dstNext, dstBaseline, move))
+}

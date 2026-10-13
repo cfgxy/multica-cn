@@ -14,6 +14,11 @@ SELECT * FROM clause WHERE clause.id = $1 AND clause.workspace_id = $2;
 -- name: GetClauseBySlug :one
 SELECT * FROM clause WHERE clause.slug = $1 AND clause.workspace_id = $2;
 
+-- name: GetClauseByIDDirect :one
+-- Unscoped by workspace: the rollup and rollback checker walk candidates by
+-- id (UUIDs are globally unique); handlers keep the scoped variant.
+SELECT * FROM clause WHERE clause.id = $1;
+
 -- name: UpdateClauseStatus :one
 UPDATE clause SET status = @status WHERE clause.id = @id AND clause.workspace_id = @workspace_id
 RETURNING *;
@@ -57,6 +62,18 @@ RETURNING *;
 -- name: GetActiveClauseBinding :one
 SELECT * FROM clause_binding
 WHERE clause_binding.clause_id = $1 AND clause_binding.status = 'active';
+
+-- name: BumpClauseBindingVersion :one
+-- revise_clause: the active binding tracks the newest enacted version and may
+-- pick up new conditions in the same proposal (ADR 007 §2 — the two state
+-- lines may ride one proposal).
+UPDATE clause_binding SET
+    since_clause_version = @since_clause_version,
+    conditions = @conditions,
+    audit_log = clause_binding.audit_log || @audit::jsonb,
+    updated_at = now()
+WHERE clause_binding.id = @id
+RETURNING *;
 
 -- name: SupersedeClauseBinding :one
 UPDATE clause_binding SET status = 'superseded',
@@ -192,14 +209,14 @@ SET watermark_at = GREATEST(watermark_at, sqlc.arg('watermark')::timestamptz),
 -- "list dirty, recompute whole bucket" contract as the prompt rollup.
 SELECT ci.workspace_id, ci.clause_id, ci.clause_version,
        (atq.completed_at AT TIME ZONE 'UTC')::date AS day,
-       MAX(atq.completed_at) AS max_completed_at
+       MAX(atq.completed_at)::timestamptz AS max_completed_at
 FROM clause_injection ci
 JOIN agent_task_queue atq ON atq.id = ci.task_id
 WHERE atq.status IN ('completed', 'failed', 'cancelled')
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at > sqlc.arg('watermark')::timestamptz
 GROUP BY ci.workspace_id, ci.clause_id, ci.clause_version, day
-ORDER BY MAX(atq.completed_at)
+ORDER BY MAX(atq.completed_at)::timestamptz
 LIMIT sqlc.arg('row_limit')::int;
 
 -- name: ListClauseQualityBucketRuns :many
@@ -321,14 +338,14 @@ WHERE clause.workspace_id = sqlc.arg('workspace_id')::uuid
   AND clause.title = sqlc.arg('title')::text
 ORDER BY clause.created_at;
 
--- name: FindLiveRollbackSuggestion :one
--- Suppression check for auto-generated rollback drafts: a live (not
--- rejected/gate-failed) suggestion for the same clause and version already
--- exists.
+-- name: HasRollbackSuggestionForVersion :one
+-- Planned-comparison latch (ADR 007 §7: 每版本一次计划内对比): ANY prior
+-- suggestion for the same (clause, version) — regardless of status — means
+-- the planned comparison already ran and must not repeat. An auto-generated
+-- draft the Owner rejected must never come back on a later tick.
 SELECT COUNT(*)::int AS n FROM prompt_proposal
 WHERE prompt_proposal.clause_id = sqlc.arg('clause_id')::uuid
-  AND prompt_proposal.rollback_of_version = sqlc.arg('rollback_of_version')::int
-  AND prompt_proposal.status IN ('draft', 'pending_owner', 'approved', 'enacted');
+  AND prompt_proposal.rollback_of_version = sqlc.arg('rollback_of_version')::int;
 
 -- name: ListCarrierBusinessColumns :many
 -- Reconciliation input: every agent-tier business column in the workspace.
@@ -354,3 +371,95 @@ SELECT id AS scope_id, instructions AS business_column, 'squad'::text AS scope
 FROM squad
 WHERE squad.workspace_id = sqlc.arg('workspace_id')::uuid
 LIMIT sqlc.arg('row_limit')::int;
+
+-- ── Governance views (ADR 007 §9) ──────────────────────────────────────────
+
+-- name: ListClauseOverview :many
+-- One row per clause with its latest version and live binding — the
+-- governance list's base set. A clause with no versions yet (impossible via
+-- the enactment path, possible via manual rows) shows latest_version 0.
+SELECT c.id, c.workspace_id, c.slug, c.title, c.status,
+       c.created_by_type, c.created_by_id, c.created_at,
+       COALESCE(cv.max_version, 0)::int AS latest_version,
+       b.scope AS bound_scope, b.scope_id AS bound_scope_id
+FROM clause c
+LEFT JOIN (
+    SELECT clause_id, MAX(version) AS max_version
+    FROM clause_version GROUP BY clause_id
+) cv ON cv.clause_id = c.id
+LEFT JOIN clause_binding b ON b.clause_id = c.id AND b.status = 'active'
+WHERE c.workspace_id = sqlc.arg('workspace_id')::uuid
+ORDER BY c.slug;
+
+-- name: CountWorkspaceInjections :one
+-- Dynamic-path health over a trailing window: total injections, covered
+-- runs, and the degraded subset (snapshot-fallback rows carry the flag).
+SELECT COUNT(*)::bigint AS injections,
+       COUNT(DISTINCT task_id)::bigint AS runs,
+       COUNT(*) FILTER (WHERE degraded)::bigint AS degraded_rows,
+       COUNT(DISTINCT task_id) FILTER (WHERE degraded)::bigint AS degraded_runs
+FROM clause_injection
+WHERE clause_injection.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND clause_injection.created_at > sqlc.arg('since')::timestamptz;
+
+-- name: SumWorkspaceClauseTokens :one
+-- D1 across the whole clause asset library over a window: the numerator of
+-- the governance view's token share. NULL daily rows roll up as 0 here by
+-- design — the per-clause reads keep the NULL distinction.
+SELECT COALESCE(SUM(injected_tokens), 0)::bigint AS total_tokens
+FROM clause_quality_daily
+WHERE clause_quality_daily.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND clause_quality_daily.day >= sqlc.arg('since_day')::date;
+
+-- name: CountBoundCarriersByScope :many
+-- Migration coverage: carriers with at least one live clause binding, per
+-- tier. The denominator (all carriers) is the caller's row counts.
+SELECT b.scope, COUNT(DISTINCT b.scope_id)::bigint AS carriers
+FROM clause_binding b
+JOIN clause c ON c.id = b.clause_id
+WHERE c.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND b.status = 'active'
+GROUP BY b.scope;
+
+-- name: ListRollbackSuggestions :many
+-- The governance overview's rollback-suggestion list: every proposal the
+-- statistics path ever drafted, newest first.
+SELECT * FROM prompt_proposal
+WHERE prompt_proposal.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND prompt_proposal.rollback_of_version IS NOT NULL
+ORDER BY prompt_proposal.created_at DESC
+LIMIT 50;
+
+-- name: ListClauseInjectionLayerViolations :many
+-- 层集合 ⊆ invariant (ADR 007 QA plan): every injection's carrier layer must
+-- appear in the run's prompt_versions attribution. A violation means the
+-- injection path and the attribution path disagree — per-layer rollups are
+-- not trustworthy until it is explained.
+SELECT ci.task_id, ci.clause_id, ci.clause_version, ci.carrier_scope,
+       ci.degraded, ci.created_at
+FROM clause_injection ci
+JOIN agent_task_queue atq ON atq.id = ci.task_id
+WHERE ci.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND ci.created_at > sqlc.arg('since')::timestamptz
+  AND (atq.prompt_versions -> ci.carrier_scope) IS NULL
+LIMIT sqlc.arg('row_limit')::int;
+
+-- name: SumClauseInjectionStatsByClause :many
+-- Per-clause window stats for the governance list, one pass instead of one
+-- query per clause.
+SELECT clause_id,
+       COUNT(*)::bigint AS injections,
+       COUNT(DISTINCT task_id)::bigint AS runs
+FROM clause_injection
+WHERE clause_injection.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND clause_injection.created_at > sqlc.arg('since')::timestamptz
+GROUP BY clause_id;
+
+-- name: SumClauseTokensByClause :many
+-- Per-clause D1 window sums for the governance list. An absent row means
+-- "no rollup yet", not zero — the caller renders it as pending.
+SELECT clause_id, COALESCE(SUM(injected_tokens), 0)::bigint AS total_tokens
+FROM clause_quality_daily
+WHERE clause_quality_daily.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND clause_quality_daily.day >= sqlc.arg('since_day')::date
+GROUP BY clause_id;

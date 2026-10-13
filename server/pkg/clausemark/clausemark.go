@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -193,6 +194,30 @@ func NewSlug() (string, error) {
 // ValidSlug reports whether s matches the marker contract's slug shape.
 func ValidSlug(s string) bool {
 	return openLine.MatchString("<!-- clause:id=" + s + " rev=1 -->")
+}
+
+// MarkerRef is one open tag found in free text, in order of appearance.
+type MarkerRef struct {
+	Slug string
+	Rev  int
+}
+
+var scanOpenRe = regexp.MustCompile(`<!--\s*clause:id=(cls_[0-9a-z]{8})\s+rev=(\d+)\s*-->`)
+
+// ScanMarkers finds every clause open tag anywhere in text — not only on its
+// own line, the way Parse requires. The reconciliation drift check compares
+// these against the carrier's expected effective set; it observes, so
+// unclosed or embedded markers are reported rather than rejected.
+func ScanMarkers(text string) []MarkerRef {
+	var out []MarkerRef
+	for _, m := range scanOpenRe.FindAllStringSubmatch(text, -1) {
+		rev, err := strconv.Atoi(m[2])
+		if err != nil {
+			continue // the character class makes this unreachable
+		}
+		out = append(out, MarkerRef{Slug: m[1], Rev: rev})
+	}
+	return out
 }
 
 // removeClauseBlock removes the bold-label clause block whose first line

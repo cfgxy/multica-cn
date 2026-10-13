@@ -197,7 +197,7 @@ INSERT INTO prompt_proposal (
     gate_answer_conflict, gate_answer_dedup,
     problem, expected_effect, expected_gain, value_score,
     evidence_anchors, status, merged_from, source,
-    created_by_type, created_by_id, audit_log
+    created_by_type, created_by_id, audit_log, rollback_of_version
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -206,7 +206,7 @@ INSERT INTO prompt_proposal (
     $15, $16,
     $17, $18, $19, $20,
     $21, 'draft', '[]'::jsonb, $22,
-    $23, $24, $25::jsonb
+    $23, $24, $25::jsonb, $26
 ) RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
@@ -236,6 +236,7 @@ type CreatePromptProposalParams struct {
 	CreatedByType       string      `json:"created_by_type"`
 	CreatedByID         pgtype.UUID `json:"created_by_id"`
 	AuditLog            []byte      `json:"audit_log"`
+	RollbackOfVersion   pgtype.Int4 `json:"rollback_of_version"`
 }
 
 // Prompt legislation (RUYI-305): the proposal pool (E2), the per-carrier
@@ -271,6 +272,7 @@ func (q *Queries) CreatePromptProposal(ctx context.Context, arg CreatePromptProp
 		arg.CreatedByType,
 		arg.CreatedByID,
 		arg.AuditLog,
+		arg.RollbackOfVersion,
 	)
 	var i PromptProposal
 	err := row.Scan(

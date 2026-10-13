@@ -28,6 +28,85 @@ func (q *Queries) AdvanceClauseQualityWatermark(ctx context.Context, arg Advance
 	return err
 }
 
+const bumpClauseBindingVersion = `-- name: BumpClauseBindingVersion :one
+UPDATE clause_binding SET
+    since_clause_version = $1,
+    conditions = $2,
+    audit_log = clause_binding.audit_log || $3::jsonb,
+    updated_at = now()
+WHERE clause_binding.id = $4
+RETURNING id, clause_id, scope, scope_id, status, conditions, since_clause_version, audit_log, created_at, updated_at
+`
+
+type BumpClauseBindingVersionParams struct {
+	SinceClauseVersion int32       `json:"since_clause_version"`
+	Conditions         []byte      `json:"conditions"`
+	Audit              []byte      `json:"audit"`
+	ID                 pgtype.UUID `json:"id"`
+}
+
+// revise_clause: the active binding tracks the newest enacted version and may
+// pick up new conditions in the same proposal (ADR 007 §2 — the two state
+// lines may ride one proposal).
+func (q *Queries) BumpClauseBindingVersion(ctx context.Context, arg BumpClauseBindingVersionParams) (ClauseBinding, error) {
+	row := q.db.QueryRow(ctx, bumpClauseBindingVersion,
+		arg.SinceClauseVersion,
+		arg.Conditions,
+		arg.Audit,
+		arg.ID,
+	)
+	var i ClauseBinding
+	err := row.Scan(
+		&i.ID,
+		&i.ClauseID,
+		&i.Scope,
+		&i.ScopeID,
+		&i.Status,
+		&i.Conditions,
+		&i.SinceClauseVersion,
+		&i.AuditLog,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const countBoundCarriersByScope = `-- name: CountBoundCarriersByScope :many
+SELECT b.scope, COUNT(DISTINCT b.scope_id)::bigint AS carriers
+FROM clause_binding b
+JOIN clause c ON c.id = b.clause_id
+WHERE c.workspace_id = $1::uuid
+  AND b.status = 'active'
+GROUP BY b.scope
+`
+
+type CountBoundCarriersByScopeRow struct {
+	Scope    string `json:"scope"`
+	Carriers int64  `json:"carriers"`
+}
+
+// Migration coverage: carriers with at least one live clause binding, per
+// tier. The denominator (all carriers) is the caller's row counts.
+func (q *Queries) CountBoundCarriersByScope(ctx context.Context, workspaceID pgtype.UUID) ([]CountBoundCarriersByScopeRow, error) {
+	rows, err := q.db.Query(ctx, countBoundCarriersByScope, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountBoundCarriersByScopeRow{}
+	for rows.Next() {
+		var i CountBoundCarriersByScopeRow
+		if err := rows.Scan(&i.Scope, &i.Carriers); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countClauseInjections = `-- name: CountClauseInjections :one
 SELECT COUNT(*)::bigint AS injections,
        COUNT(DISTINCT task_id)::bigint AS runs
@@ -109,6 +188,42 @@ func (q *Queries) CountDegradedInjections(ctx context.Context, arg CountDegraded
 	var degraded_runs int64
 	err := row.Scan(&degraded_runs)
 	return degraded_runs, err
+}
+
+const countWorkspaceInjections = `-- name: CountWorkspaceInjections :one
+SELECT COUNT(*)::bigint AS injections,
+       COUNT(DISTINCT task_id)::bigint AS runs,
+       COUNT(*) FILTER (WHERE degraded)::bigint AS degraded_rows,
+       COUNT(DISTINCT task_id) FILTER (WHERE degraded)::bigint AS degraded_runs
+FROM clause_injection
+WHERE clause_injection.workspace_id = $1::uuid
+  AND clause_injection.created_at > $2::timestamptz
+`
+
+type CountWorkspaceInjectionsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
+
+type CountWorkspaceInjectionsRow struct {
+	Injections   int64 `json:"injections"`
+	Runs         int64 `json:"runs"`
+	DegradedRows int64 `json:"degraded_rows"`
+	DegradedRuns int64 `json:"degraded_runs"`
+}
+
+// Dynamic-path health over a trailing window: total injections, covered
+// runs, and the degraded subset (snapshot-fallback rows carry the flag).
+func (q *Queries) CountWorkspaceInjections(ctx context.Context, arg CountWorkspaceInjectionsParams) (CountWorkspaceInjectionsRow, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceInjections, arg.WorkspaceID, arg.Since)
+	var i CountWorkspaceInjectionsRow
+	err := row.Scan(
+		&i.Injections,
+		&i.Runs,
+		&i.DegradedRows,
+		&i.DegradedRuns,
+	)
+	return i, err
 }
 
 const createClause = `-- name: CreateClause :one
@@ -247,28 +362,6 @@ func (q *Queries) CreateClauseVersion(ctx context.Context, arg CreateClauseVersi
 	return i, err
 }
 
-const findLiveRollbackSuggestion = `-- name: FindLiveRollbackSuggestion :one
-SELECT COUNT(*)::int AS n FROM prompt_proposal
-WHERE prompt_proposal.clause_id = $1::uuid
-  AND prompt_proposal.rollback_of_version = $2::int
-  AND prompt_proposal.status IN ('draft', 'pending_owner', 'approved', 'enacted')
-`
-
-type FindLiveRollbackSuggestionParams struct {
-	ClauseID          pgtype.UUID `json:"clause_id"`
-	RollbackOfVersion int32       `json:"rollback_of_version"`
-}
-
-// Suppression check for auto-generated rollback drafts: a live (not
-// rejected/gate-failed) suggestion for the same clause and version already
-// exists.
-func (q *Queries) FindLiveRollbackSuggestion(ctx context.Context, arg FindLiveRollbackSuggestionParams) (int32, error) {
-	row := q.db.QueryRow(ctx, findLiveRollbackSuggestion, arg.ClauseID, arg.RollbackOfVersion)
-	var n int32
-	err := row.Scan(&n)
-	return n, err
-}
-
 const getActiveClauseBinding = `-- name: GetActiveClauseBinding :one
 SELECT id, clause_id, scope, scope_id, status, conditions, since_clause_version, audit_log, created_at, updated_at FROM clause_binding
 WHERE clause_binding.clause_id = $1 AND clause_binding.status = 'active'
@@ -303,6 +396,28 @@ type GetClauseByIDParams struct {
 
 func (q *Queries) GetClauseByID(ctx context.Context, arg GetClauseByIDParams) (Clause, error) {
 	row := q.db.QueryRow(ctx, getClauseByID, arg.ID, arg.WorkspaceID)
+	var i Clause
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Slug,
+		&i.Title,
+		&i.Status,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getClauseByIDDirect = `-- name: GetClauseByIDDirect :one
+SELECT id, workspace_id, slug, title, status, created_by_type, created_by_id, created_at FROM clause WHERE clause.id = $1
+`
+
+// Unscoped by workspace: the rollup and rollback checker walk candidates by
+// id (UUIDs are globally unique); handlers keep the scoped variant.
+func (q *Queries) GetClauseByIDDirect(ctx context.Context, id pgtype.UUID) (Clause, error) {
+	row := q.db.QueryRow(ctx, getClauseByIDDirect, id)
 	var i Clause
 	err := row.Scan(
 		&i.ID,
@@ -397,6 +512,28 @@ func (q *Queries) GetClauseVersion(ctx context.Context, arg GetClauseVersionPara
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const hasRollbackSuggestionForVersion = `-- name: HasRollbackSuggestionForVersion :one
+SELECT COUNT(*)::int AS n FROM prompt_proposal
+WHERE prompt_proposal.clause_id = $1::uuid
+  AND prompt_proposal.rollback_of_version = $2::int
+`
+
+type HasRollbackSuggestionForVersionParams struct {
+	ClauseID          pgtype.UUID `json:"clause_id"`
+	RollbackOfVersion int32       `json:"rollback_of_version"`
+}
+
+// Planned-comparison latch (ADR 007 §7: 每版本一次计划内对比): ANY prior
+// suggestion for the same (clause, version) — regardless of status — means
+// the planned comparison already ran and must not repeat. An auto-generated
+// draft the Owner rejected must never come back on a later tick.
+func (q *Queries) HasRollbackSuggestionForVersion(ctx context.Context, arg HasRollbackSuggestionForVersionParams) (int32, error) {
+	row := q.db.QueryRow(ctx, hasRollbackSuggestionForVersion, arg.ClauseID, arg.RollbackOfVersion)
+	var n int32
+	err := row.Scan(&n)
+	return n, err
 }
 
 const insertClauseInjection = `-- name: InsertClauseInjection :exec
@@ -584,6 +721,129 @@ func (q *Queries) ListClauseBindings(ctx context.Context, clauseID pgtype.UUID) 
 			&i.AuditLog,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listClauseInjectionLayerViolations = `-- name: ListClauseInjectionLayerViolations :many
+SELECT ci.task_id, ci.clause_id, ci.clause_version, ci.carrier_scope,
+       ci.degraded, ci.created_at
+FROM clause_injection ci
+JOIN agent_task_queue atq ON atq.id = ci.task_id
+WHERE ci.workspace_id = $1::uuid
+  AND ci.created_at > $2::timestamptz
+  AND (atq.prompt_versions -> ci.carrier_scope) IS NULL
+LIMIT $3::int
+`
+
+type ListClauseInjectionLayerViolationsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+type ListClauseInjectionLayerViolationsRow struct {
+	TaskID        pgtype.UUID        `json:"task_id"`
+	ClauseID      pgtype.UUID        `json:"clause_id"`
+	ClauseVersion int32              `json:"clause_version"`
+	CarrierScope  string             `json:"carrier_scope"`
+	Degraded      bool               `json:"degraded"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+// 层集合 ⊆ invariant (ADR 007 QA plan): every injection's carrier layer must
+// appear in the run's prompt_versions attribution. A violation means the
+// injection path and the attribution path disagree — per-layer rollups are
+// not trustworthy until it is explained.
+func (q *Queries) ListClauseInjectionLayerViolations(ctx context.Context, arg ListClauseInjectionLayerViolationsParams) ([]ListClauseInjectionLayerViolationsRow, error) {
+	rows, err := q.db.Query(ctx, listClauseInjectionLayerViolations, arg.WorkspaceID, arg.Since, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListClauseInjectionLayerViolationsRow{}
+	for rows.Next() {
+		var i ListClauseInjectionLayerViolationsRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.ClauseID,
+			&i.ClauseVersion,
+			&i.CarrierScope,
+			&i.Degraded,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listClauseOverview = `-- name: ListClauseOverview :many
+
+SELECT c.id, c.workspace_id, c.slug, c.title, c.status,
+       c.created_by_type, c.created_by_id, c.created_at,
+       COALESCE(cv.max_version, 0)::int AS latest_version,
+       b.scope AS bound_scope, b.scope_id AS bound_scope_id
+FROM clause c
+LEFT JOIN (
+    SELECT clause_id, MAX(version) AS max_version
+    FROM clause_version GROUP BY clause_id
+) cv ON cv.clause_id = c.id
+LEFT JOIN clause_binding b ON b.clause_id = c.id AND b.status = 'active'
+WHERE c.workspace_id = $1::uuid
+ORDER BY c.slug
+`
+
+type ListClauseOverviewRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Slug          string             `json:"slug"`
+	Title         string             `json:"title"`
+	Status        string             `json:"status"`
+	CreatedByType string             `json:"created_by_type"`
+	CreatedByID   pgtype.UUID        `json:"created_by_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	LatestVersion int32              `json:"latest_version"`
+	BoundScope    pgtype.Text        `json:"bound_scope"`
+	BoundScopeID  pgtype.UUID        `json:"bound_scope_id"`
+}
+
+// ── Governance views (ADR 007 §9) ──────────────────────────────────────────
+// One row per clause with its latest version and live binding — the
+// governance list's base set. A clause with no versions yet (impossible via
+// the enactment path, possible via manual rows) shows latest_version 0.
+func (q *Queries) ListClauseOverview(ctx context.Context, workspaceID pgtype.UUID) ([]ListClauseOverviewRow, error) {
+	rows, err := q.db.Query(ctx, listClauseOverview, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListClauseOverviewRow{}
+	for rows.Next() {
+		var i ListClauseOverviewRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Slug,
+			&i.Title,
+			&i.Status,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.LatestVersion,
+			&i.BoundScope,
+			&i.BoundScopeID,
 		); err != nil {
 			return nil, err
 		}
@@ -790,14 +1050,14 @@ func (q *Queries) ListClauseQualityDaily(ctx context.Context, arg ListClauseQual
 const listClauseQualityDirtyBuckets = `-- name: ListClauseQualityDirtyBuckets :many
 SELECT ci.workspace_id, ci.clause_id, ci.clause_version,
        (atq.completed_at AT TIME ZONE 'UTC')::date AS day,
-       MAX(atq.completed_at) AS max_completed_at
+       MAX(atq.completed_at)::timestamptz AS max_completed_at
 FROM clause_injection ci
 JOIN agent_task_queue atq ON atq.id = ci.task_id
 WHERE atq.status IN ('completed', 'failed', 'cancelled')
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at > $1::timestamptz
 GROUP BY ci.workspace_id, ci.clause_id, ci.clause_version, day
-ORDER BY MAX(atq.completed_at)
+ORDER BY MAX(atq.completed_at)::timestamptz
 LIMIT $2::int
 `
 
@@ -807,11 +1067,11 @@ type ListClauseQualityDirtyBucketsParams struct {
 }
 
 type ListClauseQualityDirtyBucketsRow struct {
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-	ClauseID       pgtype.UUID `json:"clause_id"`
-	ClauseVersion  int32       `json:"clause_version"`
-	Day            pgtype.Date `json:"day"`
-	MaxCompletedAt interface{} `json:"max_completed_at"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	ClauseID       pgtype.UUID        `json:"clause_id"`
+	ClauseVersion  int32              `json:"clause_version"`
+	Day            pgtype.Date        `json:"day"`
+	MaxCompletedAt pgtype.Timestamptz `json:"max_completed_at"`
 }
 
 // Buckets any injection event finished a run into since the watermark, with
@@ -1075,6 +1335,73 @@ func (q *Queries) ListProjectBusinessColumns(ctx context.Context, arg ListProjec
 	return items, nil
 }
 
+const listRollbackSuggestions = `-- name: ListRollbackSuggestions :many
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version FROM prompt_proposal
+WHERE prompt_proposal.workspace_id = $1::uuid
+  AND prompt_proposal.rollback_of_version IS NOT NULL
+ORDER BY prompt_proposal.created_at DESC
+LIMIT 50
+`
+
+// The governance overview's rollback-suggestion list: every proposal the
+// statistics path ever drafted, newest first.
+func (q *Queries) ListRollbackSuggestions(ctx context.Context, workspaceID pgtype.UUID) ([]PromptProposal, error) {
+	rows, err := q.db.Query(ctx, listRollbackSuggestions, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PromptProposal{}
+	for rows.Next() {
+		var i PromptProposal
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.CarrierScope,
+			&i.CarrierScopeID,
+			&i.TargetSection,
+			&i.ChangeKind,
+			&i.ClauseName,
+			&i.ClauseText,
+			&i.GateAnswerLayer,
+			&i.GateAnswerRetention,
+			&i.GateAnswerCost,
+			&i.GateAnswerConflict,
+			&i.GateAnswerDedup,
+			&i.EvidenceAnchors,
+			&i.Status,
+			&i.GateErrors,
+			&i.GateWarnings,
+			&i.EnactedVersion,
+			&i.RollbackReason,
+			&i.MergedFrom,
+			&i.Source,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.AuditLog,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.JevAdvisory,
+			&i.Problem,
+			&i.ExpectedEffect,
+			&i.ExpectedGain,
+			&i.ValueScore,
+			&i.ClauseID,
+			&i.MoveToScope,
+			&i.MoveToScopeID,
+			&i.Conditions,
+			&i.RollbackOfVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSquadBusinessColumns = `-- name: ListSquadBusinessColumns :many
 SELECT id AS scope_id, instructions AS business_column, 'squad'::text AS scope
 FROM squad
@@ -1175,6 +1502,49 @@ func (q *Queries) MarkClauseQualityRunStarted(ctx context.Context) error {
 	return err
 }
 
+const sumClauseInjectionStatsByClause = `-- name: SumClauseInjectionStatsByClause :many
+SELECT clause_id,
+       COUNT(*)::bigint AS injections,
+       COUNT(DISTINCT task_id)::bigint AS runs
+FROM clause_injection
+WHERE clause_injection.workspace_id = $1::uuid
+  AND clause_injection.created_at > $2::timestamptz
+GROUP BY clause_id
+`
+
+type SumClauseInjectionStatsByClauseParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
+
+type SumClauseInjectionStatsByClauseRow struct {
+	ClauseID   pgtype.UUID `json:"clause_id"`
+	Injections int64       `json:"injections"`
+	Runs       int64       `json:"runs"`
+}
+
+// Per-clause window stats for the governance list, one pass instead of one
+// query per clause.
+func (q *Queries) SumClauseInjectionStatsByClause(ctx context.Context, arg SumClauseInjectionStatsByClauseParams) ([]SumClauseInjectionStatsByClauseRow, error) {
+	rows, err := q.db.Query(ctx, sumClauseInjectionStatsByClause, arg.WorkspaceID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SumClauseInjectionStatsByClauseRow{}
+	for rows.Next() {
+		var i SumClauseInjectionStatsByClauseRow
+		if err := rows.Scan(&i.ClauseID, &i.Injections, &i.Runs); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const sumClauseInjectionTokens = `-- name: SumClauseInjectionTokens :one
 SELECT COALESCE(SUM(injected_tokens), 0)::bigint AS total_tokens
 FROM clause_quality_daily
@@ -1194,6 +1564,46 @@ func (q *Queries) SumClauseInjectionTokens(ctx context.Context, arg SumClauseInj
 	var total_tokens int64
 	err := row.Scan(&total_tokens)
 	return total_tokens, err
+}
+
+const sumClauseTokensByClause = `-- name: SumClauseTokensByClause :many
+SELECT clause_id, COALESCE(SUM(injected_tokens), 0)::bigint AS total_tokens
+FROM clause_quality_daily
+WHERE clause_quality_daily.workspace_id = $1::uuid
+  AND clause_quality_daily.day >= $2::date
+GROUP BY clause_id
+`
+
+type SumClauseTokensByClauseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SinceDay    pgtype.Date `json:"since_day"`
+}
+
+type SumClauseTokensByClauseRow struct {
+	ClauseID    pgtype.UUID `json:"clause_id"`
+	TotalTokens int64       `json:"total_tokens"`
+}
+
+// Per-clause D1 window sums for the governance list. An absent row means
+// "no rollup yet", not zero — the caller renders it as pending.
+func (q *Queries) SumClauseTokensByClause(ctx context.Context, arg SumClauseTokensByClauseParams) ([]SumClauseTokensByClauseRow, error) {
+	rows, err := q.db.Query(ctx, sumClauseTokensByClause, arg.WorkspaceID, arg.SinceDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SumClauseTokensByClauseRow{}
+	for rows.Next() {
+		var i SumClauseTokensByClauseRow
+		if err := rows.Scan(&i.ClauseID, &i.TotalTokens); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const sumClauseVersionWindow = `-- name: SumClauseVersionWindow :one
@@ -1224,6 +1634,28 @@ func (q *Queries) SumClauseVersionWindow(ctx context.Context, arg SumClauseVersi
 	var i SumClauseVersionWindowRow
 	err := row.Scan(&i.FinishedRuns, &i.AttributableFailedRuns, &i.ExcludedFailedRuns)
 	return i, err
+}
+
+const sumWorkspaceClauseTokens = `-- name: SumWorkspaceClauseTokens :one
+SELECT COALESCE(SUM(injected_tokens), 0)::bigint AS total_tokens
+FROM clause_quality_daily
+WHERE clause_quality_daily.workspace_id = $1::uuid
+  AND clause_quality_daily.day >= $2::date
+`
+
+type SumWorkspaceClauseTokensParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	SinceDay    pgtype.Date `json:"since_day"`
+}
+
+// D1 across the whole clause asset library over a window: the numerator of
+// the governance view's token share. NULL daily rows roll up as 0 here by
+// design — the per-clause reads keep the NULL distinction.
+func (q *Queries) SumWorkspaceClauseTokens(ctx context.Context, arg SumWorkspaceClauseTokensParams) (int64, error) {
+	row := q.db.QueryRow(ctx, sumWorkspaceClauseTokens, arg.WorkspaceID, arg.SinceDay)
+	var total_tokens int64
+	err := row.Scan(&total_tokens)
+	return total_tokens, err
 }
 
 const supersedeClauseBinding = `-- name: SupersedeClauseBinding :one

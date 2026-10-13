@@ -60,6 +60,14 @@ const (
 	// gate remained in every such client and fails closed (default false) if
 	// the key stops being published.
 	resourceLabelsCompat = "settings_resource_labels"
+	// ClauseDynamicInjectionDisabled is the ADR 007 Â§5 global kill switch:
+	// when enabled, every claim injects the carrier's full rendered snapshot
+	// (the pre-dynamic-injection static behavior) instead of computing the
+	// task_kind-filtered effective clause set. It is the stop-loss and
+	// rollout lever for the dynamic path â off (dynamic injection live) by
+	// default; set the flag to true to fall back fleet-wide. Per-run
+	// computation failures degrade on their own without this switch.
+	ClauseDynamicInjectionDisabled = "clause_dynamic_injection_disabled"
 )
 
 var frontendPublicFlags = []string{
@@ -88,6 +96,13 @@ func MarketplaceV1Enabled(ctx context.Context, flags *featureflag.Service) bool 
 
 func MarketplacePublishV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, MarketplacePublishV1, true)
+}
+
+// ClauseDynamicInjectionDisabledEnabled reports the kill switch state. The
+// awkward name keeps the package's *Enabled convention: the flag disables
+// dynamic injection when enabled.
+func ClauseDynamicInjectionDisabledEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, ClauseDynamicInjectionDisabled, false)
 }
 
 // frontendPublicFlagDefaults holds the per-key default passed to IsEnabled
