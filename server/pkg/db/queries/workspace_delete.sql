@@ -785,6 +785,20 @@ deleted_runtime_credentials AS (
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),
+-- RUYI-729: daemon_backpressure_* have no FK (house rule). Events die with
+-- the workspace; a settings row only dies once NO runtime anywhere still
+-- points at its daemon_id — a shared daemon serving another workspace keeps
+-- its gate config.
+deleted_backpressure_events AS (
+    DELETE FROM daemon_backpressure_event WHERE workspace_id = $1
+),
+deleted_backpressure_settings AS (
+    DELETE FROM daemon_backpressure_settings s
+    WHERE s.workspace_id = $1
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_runtime ar WHERE ar.daemon_id = s.daemon_id
+      )
+),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
 ),

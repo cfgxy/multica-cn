@@ -119,6 +119,12 @@ const (
 	// agent dimension to anchor, so the workspace is the object.
 	AuditOpsSchedulingPaused  = "ops.scheduling_paused"
 	AuditOpsSchedulingResumed = "ops.scheduling_resumed"
+	// Daemon host backpressure settings lifecycle (RUYI-729): the gate
+	// that pauses task claims on a host. Scheduling-affecting config gets
+	// the same fail-closed trail as the freeze switch; details carry the
+	// daemon_id and the full old→new cards.
+	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
+	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
 )
 
 // Structured cancel/failure reasons. Cancel-class events (run.cancelled) MUST
