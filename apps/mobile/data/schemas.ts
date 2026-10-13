@@ -783,9 +783,9 @@ export const RuntimeSchema: z.ZodType<RuntimeDevice> = z.object({
   visibility: z.string().catch("private") as unknown as z.ZodType<
     RuntimeDevice["visibility"]
   >,
-  // RUYI-425 §4.3/§4.5 voice-instance fields the voice config pages read.
-  // All optional-with-default: older backends omit them and the voice
-  // helpers treat missing as "not voice" / "not_configured".
+  // Runtime capability/metadata fields (RUYI-425 §4.2). All
+  // optional-with-default: older backends omit them and consumers treat
+  // missing as "not voice" / "not_configured".
   custom_name: z.string().nullable().default(null),
   profile_id: z.string().nullable().default(null),
   registration_source: z.string().optional(),
@@ -809,7 +809,7 @@ export const RuntimeSchema: z.ZodType<RuntimeDevice> = z.object({
 export const RuntimeListSchema = z.array(RuntimeSchema).default([]);
 export const EMPTY_RUNTIME_LIST: RuntimeDevice[] = [];
 
-// Single-runtime fallback for voice-instance writes that return the entity
+// Single-runtime fallback for runtime writes that return the entity
 // (create / PATCH). Same safe defaults as RuntimeSchema.
 export const EMPTY_RUNTIME: RuntimeDevice = {
   id: "",

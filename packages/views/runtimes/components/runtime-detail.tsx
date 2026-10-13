@@ -48,10 +48,6 @@ import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
-import {
-  VoiceInstanceSettingsCard,
-  isVoiceProtocolRuntime,
-} from "./voice-instance-settings";
 import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
 import { useT, useTimeAgo } from "../../i18n";
 
@@ -208,12 +204,6 @@ export function RuntimeDetail({
               cliVersion={cliVersion}
               daemonShort={daemonShort}
             />
-            {canReadRuntime && isVoiceProtocolRuntime(runtime) && (
-              <VoiceInstanceSettingsCard
-                runtime={runtime}
-                canEdit={!!canEditRuntime}
-              />
-            )}
             {/* Daemon-host backpressure gate (RUYI-729): config entry lives on
                 the Runtime page because the gate is per daemon host. Reads are
                 open to anyone who can read the runtime; writes are gated to
