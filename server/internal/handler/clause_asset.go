@@ -26,20 +26,11 @@ import (
 	"github.com/multica-ai/multica/server/pkg/promptscan"
 )
 
-// Clause task kinds — the closed value domain binding conditions may
-// whitelist (ADR 007 §1). A claim's kind is derived from which origin
-// reference its queue row carries (see claimTaskKind).
-var clauseTaskKinds = map[string]bool{
-	"issue":        true,
-	"chat":         true,
-	"autopilot":    true,
-	"quick_create": true,
-}
-
 // validateClauseConditions checks a draft's conditions JSON against the ADR
 // 007 §1 minimal shape: NULL/absent = unconditional, otherwise an object
 // whose optional task_kinds array whitelists known task kinds. Returns a
-// user-facing message or "".
+// user-facing message or "". The value domain lives in clauseTaskKinds
+// (clause_injection.go — the claim side shares it).
 func validateClauseConditions(raw json.RawMessage) string {
 	if len(raw) == 0 || string(raw) == "null" {
 		return ""
@@ -76,6 +67,16 @@ func conditionsJSON(raw json.RawMessage) []byte {
 		return nil
 	}
 	return []byte(raw)
+}
+
+// parseNullableUUID parses an optional UUID string; "" stays an invalid
+// (NULL) UUID rather than erroring — move_to_scope_id is absent on every
+// non-move proposal.
+func parseNullableUUID(s string) pgtype.UUID {
+	if s == "" {
+		return pgtype.UUID{}
+	}
+	return parseUUID(s)
 }
 
 // resolvedClause is the clause identity an enactment acts on.
@@ -314,8 +315,10 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 // rendered result so the next gate run sees exactly what the carrier holds.
 //
 // texts maps each affected carrier to the text the re-render starts from —
-// the gate's synthesized text (the proposal already applied inline).
-func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, carriers []carrierRef, texts map[string]string, actorType, actorID string) error {
+// the gate's synthesized text (the proposal already applied inline). Keyed by
+// the full carrier reference, not the scope name: a move_clause between two
+// entities of the same scope touches two distinct rows of one tier.
+func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, carriers []carrierRef, texts map[carrierRef]string, actorType, actorID string) error {
 	if len(carriers) == 0 {
 		return nil
 	}
@@ -326,11 +329,11 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 	byScope := map[string][]clausemark.RenderedClause{}
 	for _, row := range allClauses {
 		byScope[row.Scope] = append(byScope[row.Scope], clausemark.RenderedClause{
-			Slug: row.Slug, Version: row.Version, Body: row.Content,
+			Slug: row.Slug, Version: int(row.Version), Body: row.Content,
 		})
 	}
 	for _, c := range carriers {
-		current, ok := texts[c.scope]
+		current, ok := texts[c]
 		if !ok {
 			continue
 		}

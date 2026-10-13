@@ -252,6 +252,15 @@ ALTER TABLE prompt_proposal DROP CONSTRAINT prompt_proposal_source_check;
 ALTER TABLE prompt_proposal ADD CONSTRAINT prompt_proposal_source_check
     CHECK (source IN ('manual', 'retrospective', 'system'));
 
+-- The enactment re-render funnels carrier business columns through
+-- prompt_version with source='legislation' (ADR 007 §8): the write is the
+-- legislation transaction's render snapshot, not a user edit, and the
+-- ledger must say so. Keeps the 921 vocabulary intact — 'snapshot' is the
+-- prompt-governance snapshot source and must survive this rewrite.
+ALTER TABLE prompt_version DROP CONSTRAINT prompt_version_source_check;
+ALTER TABLE prompt_version ADD CONSTRAINT prompt_version_source_check
+    CHECK (source IN ('import', 'edit', 'revert', 'auto_snapshot', 'snapshot', 'legislation'));
+
 COMMENT ON COLUMN prompt_proposal.clause_id IS
     'RUYI-751: the referenced clause for revise/remove/move proposals; clause_name is display-only from here on. NULL on legacy name-only rows (resolved at enact via the name fallback).';
 COMMENT ON COLUMN prompt_proposal.move_to_scope IS

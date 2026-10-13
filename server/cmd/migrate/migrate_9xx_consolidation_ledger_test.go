@@ -146,6 +146,7 @@ var postConsolidationStems = []string{
 	"962_task_local_directory_scope",                 // RUYI-669 (task-level local_directory subdirectory scope declarations)
 	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
 	"968_prompt_proposal_value_context",              // RUYI-723 (nullable decision-context columns + score CHECK on prompt_proposal)
+	"970_clause_asset_injection",                     // RUYI-751 (ADR 007 phase 1: clause/clause_version/clause_binding/clause_injection/clause_quality_daily + prompt_version legislation source)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

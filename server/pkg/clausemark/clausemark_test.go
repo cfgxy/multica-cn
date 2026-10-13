@@ -165,3 +165,34 @@ func TestValidSlugRejectsBadShapes(t *testing.T) {
 		}
 	}
 }
+
+// ScanMarkers is the reconciliation observer: it reports every open tag in
+// free text — including shapes Parse would reject — so drift checks see
+// hand-edited carriers as they are, not as the renderer would have them.
+func TestScanMarkersObservesWithoutValidating(t *testing.T) {
+	text := "开头\n" +
+		OpenTag("cls_aaa00001", 3) + "\n正文\n<!-- /clause -->\n" +
+		"行内引用 " + OpenTag("cls_bbb00002", 1) + " 不在行首\n" +
+		"未闭合 " + OpenTag("cls_ccc00003", 12) + "\n" +
+		"坏slug <!-- clause:id=BAD_0001 rev=2 --> 与坏rev " +
+		strings.Replace(OpenTag("cls_ddd00004", 1), "rev=1", "rev=x", 1) + "\n"
+
+	got := ScanMarkers(text)
+	want := []MarkerRef{
+		{Slug: "cls_aaa00001", Rev: 3},
+		{Slug: "cls_bbb00002", Rev: 1},
+		{Slug: "cls_ccc00003", Rev: 12},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ScanMarkers = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("marker[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	if out := ScanMarkers(stableFixture); len(out) != 0 {
+		t.Fatalf("stable text scanned %+v, want none", out)
+	}
+}
