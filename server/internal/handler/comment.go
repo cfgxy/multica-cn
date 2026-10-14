@@ -1760,6 +1760,13 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
+	// RUYI-667: explicit re-application on the preview path so the composer
+	// can never promise an agent the save path suppresses. Both paths key the
+	// filter on the SAME actor (the effective comment author for triggering —
+	// the editor on the edit path, per MUL-4857), so preview and save agree by
+	// construction; this idempotent call keeps that true even if the preview
+	// ever stops routing through the shared entry.
+	triggers, targets = h.suppressSameIssueSelfTriggers(r.Context(), issue, triggers, targets, actorType, actorID)
 	if len(invalid) > 0 {
 		triggers = nil
 	}
@@ -2109,6 +2116,15 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		ExcludeTriggerCommentID: comment.ID,
 		OriginatorUserID:        originatorUserID,
 	})
+	// RUYI-667: second net after resolution, before the RUYI-391 status gate.
+	// The entry defer in computeCommentAgentTriggers already applied the
+	// same-issue self-trigger filter; this idempotent re-application survives
+	// a future refactor that bypasses the shared entry. Ordering matters: the
+	// status gate below runs LAST and keeps the final word — on a
+	// non-admitted issue its issue_status reason re-projects every target,
+	// while on admitted issues (blocked admits comment triggers) the
+	// self_trigger_suppressed verdict stands.
+	triggers, targets = h.suppressSameIssueSelfTriggers(ctx, issue, triggers, targets, actorType, actorID)
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
 	// RUYI-391: the status gate sits AFTER resolution (so explicit mention
 	// targets are known and get an honest per-target outcome) but BEFORE any
@@ -2830,7 +2846,14 @@ func (h *Handler) enqueueSingleCommentTrigger(ctx context.Context, issue db.Issu
 // @squad mention (MUL-4525 §2). Targets come only from the explicit-mention path
 // — the implicit routing fallbacks (assignee, thread parent, conversation) were
 // never named by the user, so a no-route there is not a silent no-op.
-func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) ([]commentAgentTrigger, []commentMentionTarget) {
+func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issue, content string, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) (triggers []commentAgentTrigger, targets []commentMentionTarget) {
+	// RUYI-667: the same-issue self-trigger guard hangs at this entry so every
+	// resolution path — explicit mentions AND the implicit routing fallbacks —
+	// is covered by one filter, and the composer preview (which calls this
+	// same function) cannot promise a run the save path suppresses.
+	defer func() {
+		triggers, targets = h.suppressSameIssueSelfTriggers(ctx, issue, triggers, targets, actorType, actorID)
+	}()
 	if isNoteComment(content) {
 		return nil, nil
 	}
