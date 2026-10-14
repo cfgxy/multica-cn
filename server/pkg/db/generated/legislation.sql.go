@@ -17,7 +17,7 @@ UPDATE prompt_proposal SET
     rollback_reason = CASE WHEN $2::text IS NULL THEN prompt_proposal.rollback_reason ELSE $2::text END,
     updated_at = now()
 WHERE prompt_proposal.id = $3 AND prompt_proposal.workspace_id = $4
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type AppendPromptProposalAuditParams struct {
@@ -69,6 +69,11 @@ func (q *Queries) AppendPromptProposalAudit(ctx context.Context, arg AppendPromp
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -126,7 +131,7 @@ UPDATE prompt_proposal SET status = 'approved',
     audit_log = prompt_proposal.audit_log || $1::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $2 AND prompt_proposal.workspace_id = $3
   AND prompt_proposal.status = 'pending_owner'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type ApprovePromptProposalParams struct {
@@ -173,6 +178,11 @@ func (q *Queries) ApprovePromptProposal(ctx context.Context, arg ApprovePromptPr
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -182,20 +192,22 @@ const createPromptProposal = `-- name: CreatePromptProposal :one
 INSERT INTO prompt_proposal (
     workspace_id, carrier_scope, carrier_scope_id, target_section,
     change_kind, clause_name, clause_text,
+    clause_id, move_to_scope, move_to_scope_id, conditions,
     gate_answer_layer, gate_answer_retention, gate_answer_cost,
     gate_answer_conflict, gate_answer_dedup,
     problem, expected_effect, expected_gain, value_score,
     evidence_anchors, status, merged_from, source,
-    created_by_type, created_by_id, audit_log
+    created_by_type, created_by_id, audit_log, rollback_of_version
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
-    $8, $9, $10,
-    $11, $12,
-    $13, $14, $15, $16,
-    $17, 'draft', '[]'::jsonb, $18,
-    $19, $20, $21::jsonb
-) RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+    $8, $9, $10, $11::jsonb,
+    $12, $13, $14,
+    $15, $16,
+    $17, $18, $19, $20,
+    $21, 'draft', '[]'::jsonb, $22,
+    $23, $24, $25::jsonb, $26
+) RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type CreatePromptProposalParams struct {
@@ -206,6 +218,10 @@ type CreatePromptProposalParams struct {
 	ChangeKind          string      `json:"change_kind"`
 	ClauseName          string      `json:"clause_name"`
 	ClauseText          string      `json:"clause_text"`
+	ClauseID            pgtype.UUID `json:"clause_id"`
+	MoveToScope         pgtype.Text `json:"move_to_scope"`
+	MoveToScopeID       pgtype.UUID `json:"move_to_scope_id"`
+	Conditions          []byte      `json:"conditions"`
 	GateAnswerLayer     string      `json:"gate_answer_layer"`
 	GateAnswerRetention string      `json:"gate_answer_retention"`
 	GateAnswerCost      string      `json:"gate_answer_cost"`
@@ -220,6 +236,7 @@ type CreatePromptProposalParams struct {
 	CreatedByType       string      `json:"created_by_type"`
 	CreatedByID         pgtype.UUID `json:"created_by_id"`
 	AuditLog            []byte      `json:"audit_log"`
+	RollbackOfVersion   pgtype.Int4 `json:"rollback_of_version"`
 }
 
 // Prompt legislation (RUYI-305): the proposal pool (E2), the per-carrier
@@ -237,6 +254,10 @@ func (q *Queries) CreatePromptProposal(ctx context.Context, arg CreatePromptProp
 		arg.ChangeKind,
 		arg.ClauseName,
 		arg.ClauseText,
+		arg.ClauseID,
+		arg.MoveToScope,
+		arg.MoveToScopeID,
+		arg.Conditions,
 		arg.GateAnswerLayer,
 		arg.GateAnswerRetention,
 		arg.GateAnswerCost,
@@ -251,6 +272,7 @@ func (q *Queries) CreatePromptProposal(ctx context.Context, arg CreatePromptProp
 		arg.CreatedByType,
 		arg.CreatedByID,
 		arg.AuditLog,
+		arg.RollbackOfVersion,
 	)
 	var i PromptProposal
 	err := row.Scan(
@@ -285,6 +307,11 @@ func (q *Queries) CreatePromptProposal(ctx context.Context, arg CreatePromptProp
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -415,20 +442,24 @@ func (q *Queries) CreateRetrospectiveTask(ctx context.Context, arg CreateRetrosp
 
 const enactPromptProposal = `-- name: EnactPromptProposal :one
 UPDATE prompt_proposal SET status = 'enacted',
-    gate_errors = '[]'::jsonb, gate_warnings = $1::jsonb,
-    audit_log = prompt_proposal.audit_log || $2::jsonb,
-    jev_advisory = $3::jsonb, updated_at = now()
-WHERE prompt_proposal.id = $4 AND prompt_proposal.workspace_id = $5
+    enacted_version = $1,
+    clause_id = $2,
+    gate_errors = '[]'::jsonb, gate_warnings = $3::jsonb,
+    audit_log = prompt_proposal.audit_log || $4::jsonb,
+    jev_advisory = $5::jsonb, updated_at = now()
+WHERE prompt_proposal.id = $6 AND prompt_proposal.workspace_id = $7
   AND prompt_proposal.status = 'approved'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type EnactPromptProposalParams struct {
-	Warnings    []byte      `json:"warnings"`
-	Audit       []byte      `json:"audit"`
-	JevAdvisory []byte      `json:"jev_advisory"`
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	EnactedVersion pgtype.Int4 `json:"enacted_version"`
+	ClauseID       pgtype.UUID `json:"clause_id"`
+	Warnings       []byte      `json:"warnings"`
+	Audit          []byte      `json:"audit"`
+	JevAdvisory    []byte      `json:"jev_advisory"`
+	ID             pgtype.UUID `json:"id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 }
 
 // approved → enacted. enacted_version stays NULL in E1–E4 (the E5 write
@@ -438,6 +469,8 @@ type EnactPromptProposalParams struct {
 // disambiguates).
 func (q *Queries) EnactPromptProposal(ctx context.Context, arg EnactPromptProposalParams) (PromptProposal, error) {
 	row := q.db.QueryRow(ctx, enactPromptProposal,
+		arg.EnactedVersion,
+		arg.ClauseID,
 		arg.Warnings,
 		arg.Audit,
 		arg.JevAdvisory,
@@ -477,12 +510,17 @@ func (q *Queries) EnactPromptProposal(ctx context.Context, arg EnactPromptPropos
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
 
 const findMergablePromptProposal = `-- name: FindMergablePromptProposal :one
-SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score FROM prompt_proposal
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version FROM prompt_proposal
 WHERE prompt_proposal.workspace_id = $1
   AND prompt_proposal.carrier_scope = $2
   AND prompt_proposal.carrier_scope_id = $3
@@ -544,6 +582,11 @@ func (q *Queries) FindMergablePromptProposal(ctx context.Context, arg FindMergab
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -640,7 +683,7 @@ func (q *Queries) GetProjectPromptContent(ctx context.Context, arg GetProjectPro
 }
 
 const getPromptProposal = `-- name: GetPromptProposal :one
-SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score FROM prompt_proposal
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version FROM prompt_proposal
 WHERE prompt_proposal.id = $1 AND prompt_proposal.workspace_id = $2
 `
 
@@ -684,6 +727,11 @@ func (q *Queries) GetPromptProposal(ctx context.Context, arg GetPromptProposalPa
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1065,7 +1113,7 @@ func (q *Queries) ListProjectCarrierNames(ctx context.Context, arg ListProjectCa
 }
 
 const listPromptProposals = `-- name: ListPromptProposals :many
-SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score FROM prompt_proposal
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version FROM prompt_proposal
 WHERE prompt_proposal.workspace_id = $1
   AND ($2 = '' OR prompt_proposal.status = $2)
   AND (
@@ -1133,6 +1181,11 @@ func (q *Queries) ListPromptProposals(ctx context.Context, arg ListPromptProposa
 			&i.ExpectedEffect,
 			&i.ExpectedGain,
 			&i.ValueScore,
+			&i.ClauseID,
+			&i.MoveToScope,
+			&i.MoveToScopeID,
+			&i.Conditions,
+			&i.RollbackOfVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -1195,7 +1248,7 @@ UPDATE prompt_proposal SET status = 'gate_failed',
     jev_advisory = $4::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $5 AND prompt_proposal.workspace_id = $6
   AND prompt_proposal.status IN ('approved', 'pending_owner')
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type MarkPromptProposalGateFailedParams struct {
@@ -1251,6 +1304,11 @@ func (q *Queries) MarkPromptProposalGateFailed(ctx context.Context, arg MarkProm
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1261,7 +1319,7 @@ UPDATE prompt_proposal SET
     merged_from = prompt_proposal.merged_from || $2::jsonb,
     audit_log = prompt_proposal.audit_log || $3::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $4
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type MergePromptProposalEvidenceParams struct {
@@ -1314,6 +1372,11 @@ func (q *Queries) MergePromptProposalEvidence(ctx context.Context, arg MergeProm
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1370,7 +1433,7 @@ UPDATE prompt_proposal SET status = 'rejected',
     audit_log = prompt_proposal.audit_log || $2::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $3 AND prompt_proposal.workspace_id = $4
   AND prompt_proposal.status = 'pending_owner'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type RejectPromptProposalParams struct {
@@ -1420,6 +1483,11 @@ func (q *Queries) RejectPromptProposal(ctx context.Context, arg RejectPromptProp
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1430,7 +1498,7 @@ UPDATE prompt_proposal SET status = 'draft',
     audit_log = prompt_proposal.audit_log || $1::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $2 AND prompt_proposal.workspace_id = $3
   AND prompt_proposal.status = 'rejected'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type RestorePromptProposalParams struct {
@@ -1475,6 +1543,11 @@ func (q *Queries) RestorePromptProposal(ctx context.Context, arg RestorePromptPr
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1509,7 +1582,7 @@ UPDATE prompt_proposal SET status = 'draft',
     audit_log = prompt_proposal.audit_log || $1::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $2 AND prompt_proposal.workspace_id = $3
   AND prompt_proposal.status = 'gate_failed'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type ReworkPromptProposalParams struct {
@@ -1554,6 +1627,11 @@ func (q *Queries) ReworkPromptProposal(ctx context.Context, arg ReworkPromptProp
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1578,7 +1656,7 @@ UPDATE prompt_proposal SET status = 'pending_owner',
     jev_advisory = $2::jsonb, updated_at = now()
 WHERE prompt_proposal.id = $3 AND prompt_proposal.workspace_id = $4
   AND prompt_proposal.status = 'draft'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type SubmitPromptProposalParams struct {
@@ -1630,6 +1708,11 @@ func (q *Queries) SubmitPromptProposal(ctx context.Context, arg SubmitPromptProp
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
@@ -1638,13 +1721,15 @@ const updatePromptProposalDraft = `-- name: UpdatePromptProposalDraft :one
 UPDATE prompt_proposal SET
     carrier_scope = $1, carrier_scope_id = $2, target_section = $3,
     change_kind = $4, clause_name = $5, clause_text = $6,
-    gate_answer_layer = $7, gate_answer_retention = $8, gate_answer_cost = $9,
-    gate_answer_conflict = $10, gate_answer_dedup = $11,
-    evidence_anchors = $12::jsonb,
+    clause_id = $7, move_to_scope = $8, move_to_scope_id = $9,
+    conditions = $10::jsonb,
+    gate_answer_layer = $11, gate_answer_retention = $12, gate_answer_cost = $13,
+    gate_answer_conflict = $14, gate_answer_dedup = $15,
+    evidence_anchors = $16::jsonb,
     updated_at = now()
-WHERE prompt_proposal.id = $13 AND prompt_proposal.workspace_id = $14
+WHERE prompt_proposal.id = $17 AND prompt_proposal.workspace_id = $18
   AND prompt_proposal.status = 'draft'
-RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score
+RETURNING id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version
 `
 
 type UpdatePromptProposalDraftParams struct {
@@ -1654,6 +1739,10 @@ type UpdatePromptProposalDraftParams struct {
 	ChangeKind          string      `json:"change_kind"`
 	ClauseName          string      `json:"clause_name"`
 	ClauseText          string      `json:"clause_text"`
+	ClauseID            pgtype.UUID `json:"clause_id"`
+	MoveToScope         pgtype.Text `json:"move_to_scope"`
+	MoveToScopeID       pgtype.UUID `json:"move_to_scope_id"`
+	Conditions          []byte      `json:"conditions"`
 	GateAnswerLayer     string      `json:"gate_answer_layer"`
 	GateAnswerRetention string      `json:"gate_answer_retention"`
 	GateAnswerCost      string      `json:"gate_answer_cost"`
@@ -1674,6 +1763,10 @@ func (q *Queries) UpdatePromptProposalDraft(ctx context.Context, arg UpdatePromp
 		arg.ChangeKind,
 		arg.ClauseName,
 		arg.ClauseText,
+		arg.ClauseID,
+		arg.MoveToScope,
+		arg.MoveToScopeID,
+		arg.Conditions,
 		arg.GateAnswerLayer,
 		arg.GateAnswerRetention,
 		arg.GateAnswerCost,
@@ -1716,6 +1809,11 @@ func (q *Queries) UpdatePromptProposalDraft(ctx context.Context, arg UpdatePromp
 		&i.ExpectedEffect,
 		&i.ExpectedGain,
 		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
 	)
 	return i, err
 }
