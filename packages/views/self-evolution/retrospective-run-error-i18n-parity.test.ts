@@ -84,3 +84,50 @@ describe("retrospective run error i18n parity across all 4 locales", () => {
     }
   });
 });
+
+// The run-detail sheet's copy (RUYI-663) rides the same four-locale bundle,
+// so the whole retrospective section is locked to one deep key set: a key
+// added to one locale only drifts the other three into missing-copy errors.
+const DETAIL_KEYS = [
+  "viewDetail", "detailTitle", "triggerLabel", "triggerSource", "windowLabel",
+  "startedAt", "finishedAt", "duration", "durationRunning", "statsLabel",
+  "failureLabel", "scannedIssues", "analyzedIssues", "noIssues", "viewLog",
+] as const;
+
+function deepKeys(node: unknown, path: string[] = []): string[] {
+  if (node === null || typeof node !== "object") return [path.join(".")];
+  return Object.entries(node as Record<string, unknown>).flatMap(([k, v]) =>
+    deepKeys(v, [...path, k]),
+  );
+}
+
+describe("retrospective section key parity across all 4 locales (RUYI-663 detail surface)", () => {
+  it("presents the same deep key set everywhere", () => {
+    const enKeys = deepKeys(en.retrospective).toSorted();
+    for (const [name, locale] of Object.entries(LOCALES)) {
+      expect(deepKeys(locale.retrospective).toSorted(), `${name}: retrospective keys drifted`).toEqual(enKeys);
+    }
+  });
+
+  it("covers the run-detail keys in every locale as non-empty strings", () => {
+    for (const [name, locale] of Object.entries(LOCALES)) {
+      const retro = locale.retrospective as unknown as Record<string, unknown>;
+      for (const key of DETAIL_KEYS) {
+        const value = retro[key];
+        expect(value, `${name}: retrospective.${key} missing`).toBeDefined();
+        expect(typeof value, `${name}: retrospective.${key} is not a string or object`).toMatch(/string|object/);
+        if (typeof value === "string") {
+          expect(value.length, `${name}: retrospective.${key} is empty`).toBeGreaterThan(0);
+        }
+      }
+    }
+    // triggerSource is the one nested object: both enum labels must exist.
+    for (const [name, locale] of Object.entries(LOCALES)) {
+      const source = (locale.retrospective as unknown as Record<string, { schedule?: unknown; manual?: unknown }>).triggerSource;
+      for (const k of ["schedule", "manual"] as const) {
+        expect(typeof source?.[k], `${name}: triggerSource.${k} missing`).toBe("string");
+        expect(String(source?.[k]).length, `${name}: triggerSource.${k} is empty`).toBeGreaterThan(0);
+      }
+    }
+  });
+});

@@ -1,47 +1,149 @@
 /**
- * Tail aggregation of issue references (RUYI-635, mobile half).
+ * Tail aggregation of issue references (RUYI-635 增量, mobile half).
  *
- * Web renders every issue mention as plain body text and lists the collected
- * references in a footer (`IssueReferenceFooter`); mobile's demote pass
+ * Web renders every issue/PR mention as plain body text and lists the
+ * collected references in a footer; mobile's demote pass
  * (`lib/markdown/preprocess.ts`) applies the same body-text contract, and
- * this component is the tail list: one tappable row per resolved issue —
- * `<status dot> <identifier> <title>` — and a plain-text slot for every
- * unresolved one, at first-mention order. The same issue reached via a UUID
- * mention and its bare identifier collapses into one row (cross-form merge
- * needs the resolved issue id, so it happens here, not in the extractor).
+ * this component is the tail block. RUYI-731 (Owner correction 2026-10-12)
+ * scoped "flat, no second-level surface" to the web footer only — mobile
+ * keeps the anti-mistouch two-level surface (Owner points ①③④, Board 1 +
+ * Board 2):
  *
- * Rows navigate through `resolveLinkAction` (lib/markdown/link-route.ts) —
- * the same pure decision a body mention link used to take, so the tail list
- * can never disagree with it about where a reference goes. A row that cannot
- * resolve (404, wrong workspace prefix, still loading) is never tappable:
- * degradation is plain text, not a dead link.
+ *   - Level 1 — ONE Pressable for the whole block (separator + header
+ *     「引用 · N」 + chevron + at most 2 preview rows + fold-count line).
+ *     Rows are plain Views/Texts: nothing inline navigates any more, and
+ *     any press just opens the sheet — a mistouch costs a modal, not a
+ *     page leave. Titles wrap at 2 lines (`numberOfLines={2}`).
+ *   - Level 2 — bottom sheet (transparent Modal, Board 2): title + close,
+ *     grouped 任务 / Pull Request only when both kinds mix (first-appearance
+ *     order kept, single-kind lists ungrouped), rows min-h 48 with inset
+ *     separators, mask / × / Android back all close. Issue rows push the
+ *     in-app route (`resolveLinkAction`, the same decision prose links
+ *     take); PR rows open the canonical URL through RUYI-634's
+ *     `openExternalUrl` channel (GitHub App deep link when installed,
+ *     browser otherwise) with a failure Alert; unresolved references stay
+ *     non-clickable plain-text slots.
  *
- * Extraction happens once in `Markdown` (raw content, shared core extractor);
- * this component only resolves and renders.
+ * RUYI-731 self-filter: the current-issue context (`lib/current-issue-context`,
+ * default null, mounted by the issue detail screen) makes a reference that
+ * resolves to the CURRENT issue build no row — it appears in neither the
+ * preview nor the sheet; surfaces without the context (chat, inbox) keep
+ * every row. The row-building / fold / grouping policy (zip, cross-form
+ * collapse, self-filter, kinds) lives in `lib/issue-reference-rows.ts`
+ * (node-testable); this component only resolves and draws.
+ *
+ * Extraction happens once in `Markdown` (raw content, shared core
+ * extractor, raw-deduped); this component only resolves and renders.
  */
-import { useMemo } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Alert,
+  Linking,
+  Modal,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQueries } from "@tanstack/react-query";
+import {
+  parseMergeRequestReference,
+  parsePullRequestReference,
+} from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
-import type { Issue } from "@multica/core/types";
+import { identifierMatchesPrefix } from "@multica/core/markdown";
 import {
   issueDetailOptions,
   issueIdentifierOptions,
 } from "@/data/queries/issues";
+import {
+  pullRequestLookupByNumberOptions,
+  pullRequestLookupOptions,
+} from "@/data/queries/github";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
+import {
+  buildReferenceTailRows,
+  groupReferenceTailRows,
+  partitionReferencePreview,
+  shouldCloseSheetOnDragRelease,
+  type ReferenceTailRow,
+} from "@/lib/issue-reference-rows";
+import { useCurrentIssueId } from "@/lib/current-issue-context";
+import { pullRequestStateVisual } from "@/lib/pull-request-display";
+import { openExternalUrl } from "@/lib/pull-request-link";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
+import { StatusIcon } from "@/components/ui/status-icon";
 
-interface ResolvedRow {
-  key: string;
-  issue: Issue;
+type ResolvedReferenceTailRow = Exclude<ReferenceTailRow, { kind: "degraded" }>;
+
+function prOrIssueIdentifier(row: ResolvedReferenceTailRow): string {
+  return row.kind === "issue"
+    ? row.issue.identifier
+    : `${row.pr.repo_owner}/${row.pr.repo_name}#${row.pr.number}`;
 }
 
-interface DegradedRow {
+function prOrIssueTitle(row: ResolvedReferenceTailRow): string {
+  return row.kind === "issue" ? row.issue.title : row.pr.title;
+}
+
+/**
+ * Shared actionable-row body (sheet level): icon + identifier + 2-line
+ * title + chevron. Branch-specific bits arrive pre-built so each kind
+ * keeps its own narrowed typing here.
+ */
+function renderActionableRow({
+  key,
+  testID,
+  onPress,
+  icon,
+  identifier,
+  title,
+  chevronColor,
+  showDivider,
+}: {
   key: string;
-  fallback: string;
+  testID: string;
+  onPress: () => void;
+  icon: ReactNode;
+  identifier: string;
+  title: string;
+  chevronColor: string;
+  showDivider: boolean;
+}) {
+  return (
+    <View key={key}>
+      {showDivider ? <View className="ml-12 h-px bg-border" /> : null}
+      <Pressable
+        testID={testID}
+        className="min-h-[48px] flex-row items-center gap-3 px-4 py-2 active:bg-accent"
+        accessibilityRole="link"
+        accessibilityLabel={`${identifier} ${title}`}
+        onPress={onPress}
+      >
+        {icon}
+        <Text className="text-[13px] font-medium text-muted-foreground">
+          {identifier}
+        </Text>
+        <Text className="flex-1 text-sm leading-5 text-foreground" numberOfLines={2}>
+          {title}
+        </Text>
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={chevronColor}
+        />
+      </Pressable>
+    </View>
+  );
 }
 
 export function IssueReferenceList({
@@ -52,17 +154,69 @@ export function IssueReferenceList({
   const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const workspacePrefix = useWorkspaceIssuePrefix();
+  const currentIssueId = useCurrentIssueId();
   const { colorOf } = useIssueStatuses();
+  const { colorScheme } = useColorScheme();
+  const insets = useSafeAreaInsets();
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Board 2 close path #3: swipe down on the sheet header to dismiss. The
+  // responder only claims the gesture once a vertical drag emerges, so taps
+  // on the header (including the × button) still reach their Pressables; the
+  // threshold decision itself is node-tested policy.
+  const sheetDrag = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_e, g) =>
+        Math.abs(g.dy) > 8 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_e, g) => {
+        if (shouldCloseSheetOnDragRelease(g.dy, g.vy)) setSheetOpen(false);
+      },
+    }),
+  ).current;
 
   const results = useQueries({
     queries: useMemo(
       () =>
-        references.map((ref) =>
-          ref.form === "identifier"
-            ? issueIdentifierOptions(wsId, ref.ref)
-            : issueDetailOptions(wsId, ref.ref),
-        ),
-      [references, wsId],
+        references.map((ref) => {
+          if (ref.form === "identifier") {
+            // Same gate as web's useIssueReferenceResolutions: once the
+            // workspace prefix is known, a mismatched bare identifier cannot
+            // resolve here — skip the network instead of spending a
+            // guaranteed-404 request (RUYI-705 defense in depth; extraction
+            // normally filters these already). Unknown prefix falls through
+            // and lets the exact match decide, web parity.
+            const prefixMatches = identifierMatchesPrefix(
+              ref.ref,
+              workspacePrefix,
+            );
+            return {
+              ...issueIdentifierOptions(wsId, ref.ref),
+              enabled: !!wsId && !!ref.ref && prefixMatches,
+            };
+          }
+          if (ref.form === "pull_request") {
+            // The extractor only emits parseable tokens; the re-parse here is
+            // a cheap guard so a malformed ref never spends a query.
+            const parts = parsePullRequestReference(ref.ref);
+            return pullRequestLookupOptions(
+              wsId,
+              parts?.owner ?? "",
+              parts?.repo ?? "",
+              parts?.number ?? 0,
+            );
+          }
+          if (ref.form === "merge_request") {
+            // RUYI-728: body-text `MR !N` shares the tail's resolution —
+            // unique-hit by-number lookup; a miss (never synced, or the same
+            // number in several repos) reads as null and the row degrades,
+            // the same web-footer contract.
+            const parts = parseMergeRequestReference(ref.ref);
+            return pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0);
+          }
+          return issueDetailOptions(wsId, ref.ref);
+        }),
+      [references, wsId, workspacePrefix],
     ),
     // Zip positions with `references` below; a failed / loading query reads
     // as unresolved and degrades, the same "every miss looks alike" contract
@@ -70,72 +224,253 @@ export function IssueReferenceList({
     combine: (results) => results.map((r) => r.data ?? null),
   });
 
-  const rows = useMemo(() => {
-    const out: (ResolvedRow | DegradedRow)[] = [];
-    const seenIssueIds = new Set<string>();
-    references.forEach((token, i) => {
-      const issue = results[i] ?? null;
-      if (issue) {
-        if (seenIssueIds.has(issue.id)) return;
-        seenIssueIds.add(issue.id);
-        out.push({ key: `${token.form}:${token.ref}`, issue });
-      } else {
-        out.push({
-          key: `${token.form}:${token.ref}`,
-          fallback: token.label || token.ref,
-        });
-      }
-    });
-    return out;
-  }, [references, results]);
+  const rows = useMemo(
+    () => buildReferenceTailRows(references, results, currentIssueId),
+    [references, results, currentIssueId],
+  );
+  const { previews, hidden, hiddenPrCount } = useMemo(
+    () => partitionReferencePreview(rows),
+    [rows],
+  );
+  const groups = useMemo(() => groupReferenceTailRows(rows), [rows]);
 
-  if (references.length === 0) return null;
+  if (references.length === 0 || rows.length === 0) return null;
+
+  const headerLabel = t("detail.reference_tail_header", "References · {{count}}", {
+    count: rows.length,
+  });
+  const collapsedLine =
+    hidden.length === 0
+      ? null
+      : hiddenPrCount > 0
+        ? t("detail.reference_tail_more_with_pr", "{{count}} more references (incl. {{prCount}} PRs)", {
+            count: hidden.length,
+            prCount: hiddenPrCount,
+          })
+        : t("detail.reference_tail_more", "{{count}} more references", {
+            count: hidden.length,
+          });
+
+  const navigateToIssue = (row: Extract<ReferenceTailRow, { kind: "issue" }>) => {
+    setSheetOpen(false);
+    const action = resolveLinkAction(
+      `mention://issue/${row.issue.id}`,
+      wsSlug ?? null,
+    );
+    if (action.kind === "route") router.push(action.path);
+  };
+
+  const openPullRequest = async (
+    row: Extract<ReferenceTailRow, { kind: "pr" }>,
+  ) => {
+    const result = await openExternalUrl(row.pr.html_url, Linking);
+    if (!result.ok) {
+      Alert.alert(
+        t(
+          "mobile.detail.pull_request_open_failed",
+          "Couldn't open this pull request.",
+        ),
+        result.message,
+      );
+    }
+  };
+
+  // Per-kind state glyph; branching on `row.kind` (not a boolean alias)
+  // is what lets TS narrow `row.issue` / `row.pr` and the derived visual.
+  const renderStateIcon = (
+    row: ResolvedReferenceTailRow,
+    size: number,
+  ): ReactNode => {
+    if (row.kind === "issue") {
+      return (
+        <StatusIcon
+          status={row.issue.status}
+          color={colorOf(row.issue.status)}
+          size={size}
+        />
+      );
+    }
+    const visual = pullRequestStateVisual(row.pr.state);
+    return (
+      <Ionicons
+        name={visual.icon}
+        size={size}
+        color={THEME[colorScheme][visual.themeKey]}
+        style={visual.dimmed ? { opacity: 0.8 } : null}
+      />
+    );
+  };
+
+  const renderSheetRow = (row: ReferenceTailRow, showDivider: boolean) => {
+    if (row.kind === "degraded") {
+      // Plain-text slot — never tappable (Board 2 walkthrough #4).
+      return (
+        <View key={row.key}>
+          {showDivider ? <View className="ml-12 h-px bg-border" /> : null}
+          <View className="min-h-[48px] flex-row items-center px-4 py-2">
+            <Text className="flex-1 text-sm text-muted-foreground" numberOfLines={2}>
+              {row.fallback}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+    let onPress: () => void;
+    let testID: string;
+    if (row.kind === "issue") {
+      onPress = () => navigateToIssue(row);
+      testID = "reference-sheet-issue-row";
+    } else {
+      onPress = () => void openPullRequest(row);
+      testID = "reference-sheet-pr-row";
+    }
+    return renderActionableRow({
+      key: row.key,
+      testID,
+      onPress,
+      icon: renderStateIcon(row, 16),
+      identifier: prOrIssueIdentifier(row),
+      title: prOrIssueTitle(row),
+      chevronColor: THEME[colorScheme].mutedForeground,
+      showDivider,
+    });
+  };
+
+  const sheetRows: ReferenceTailRow[] = groups.grouped
+    ? [
+        ...groups.tasks,
+        ...groups.prs,
+        ...groups.degraded,
+      ]
+    : rows;
 
   return (
-    <View
-      className="gap-1 border-t border-border/60 pt-2"
-      accessibilityLabel={t("detail.referenced_issues", "Referenced issues")}
-    >
-      {rows.map((row) =>
-        "issue" in row ? (
-          <Pressable
-            key={row.key}
-            testID="issue-reference-row"
-            className="flex-row items-center gap-2 py-0.5"
-            accessibilityRole="link"
-            accessibilityLabel={`${row.issue.identifier} ${row.issue.title}`}
-            onPress={() => {
-              const action = resolveLinkAction(
-                `mention://issue/${row.issue.id}`,
-                wsSlug ?? null,
+    <>
+      {/* Board 1: separator + gray-tap whole block; rows are NOT pressables.
+          Self-filtered rows (RUYI-731) reach neither the previews nor the
+          sheet — the fold runs on post-filter rows. */}
+      <View className="mt-3 border-t border-border pt-2.5">
+        <Pressable
+          testID="issue-reference-block"
+          className="flex-col gap-1 rounded-[10px] p-1 active:bg-accent"
+          accessibilityRole="button"
+          accessibilityLabel={t(
+            "detail.referenced_issues",
+            "Referenced issues",
+          )}
+          onPress={() => setSheetOpen(true)}
+        >
+          <View className="flex-row items-center px-1 py-1">
+            <Text className="text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+              {headerLabel}
+            </Text>
+            <Ionicons
+              name="chevron-forward"
+              size={14}
+              color={THEME[colorScheme].mutedForeground}
+              style={{ marginLeft: "auto" }}
+            />
+          </View>
+          {previews.map((row) => {
+            if (row.kind === "degraded") {
+              return (
+                <Text
+                  key={row.key}
+                  className="px-1 text-xs text-muted-foreground"
+                  numberOfLines={2}
+                >
+                  {row.fallback}
+                </Text>
               );
-              if (action.kind === "route") router.push(action.path);
-            }}
+            }
+            return (
+              <View
+                key={row.key}
+                testID="issue-reference-row"
+                className="flex-row items-center gap-2 px-1"
+              >
+                {renderStateIcon(row, 14)}
+                <Text className="shrink-0 text-xs font-medium text-muted-foreground">
+                  {prOrIssueIdentifier(row)}
+                </Text>
+                <Text
+                  className="flex-1 text-xs leading-[18px] text-foreground"
+                  numberOfLines={2}
+                >
+                  {prOrIssueTitle(row)}
+                </Text>
+              </View>
+            );
+          })}
+          {collapsedLine ? (
+            <Text className="px-1 text-xs text-muted-foreground">
+              {collapsedLine}
+            </Text>
+          ) : null}
+        </Pressable>
+      </View>
+
+      {/* Board 2: bottom sheet — the ONLY surface where rows navigate. */}
+      <Modal
+        visible={sheetOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSheetOpen(false)}
+      >
+        <Pressable
+          className="flex-1 bg-black/40"
+          onPress={() => setSheetOpen(false)}
+        >
+          <View
+            className="mt-auto rounded-t-2xl bg-popover"
+            style={{ maxHeight: "75%", paddingBottom: insets.bottom + 8 }}
           >
             <View
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: colorOf(row.issue.status) }}
-            />
-            <Text
-              className="text-sm font-medium text-muted-foreground"
-              translate="no"
+              className="flex-row items-center border-b border-border px-4 py-3"
+              {...sheetDrag.panHandlers}
             >
-              {row.issue.identifier}
-            </Text>
-            <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
-              {row.issue.title}
-            </Text>
-          </Pressable>
-        ) : (
-          <Text
-            key={row.key}
-            className="py-0.5 text-sm text-muted-foreground"
-            numberOfLines={1}
-          >
-            {row.fallback}
-          </Text>
-        ),
-      )}
-    </View>
+              <Text className="flex-1 text-base font-bold text-foreground">
+                {headerLabel}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t(
+                  "mobile.detail.reference_sheet_close",
+                  "Close",
+                )}
+                hitSlop={12}
+                onPress={() => setSheetOpen(false)}
+                className="-mr-1 p-2"
+              >
+                <Ionicons
+                  name="close"
+                  size={20}
+                  color={THEME[colorScheme].mutedForeground}
+                />
+              </Pressable>
+            </View>
+            <ScrollView nestedScrollEnabled>
+              {groups.grouped ? (
+                <>
+                  <Text className="px-4 pt-3 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+                    {t("detail.reference_group_tasks", "Tasks")}
+                  </Text>
+                  {groups.tasks.map((row, i) =>
+                    renderSheetRow(row, i > 0),
+                  )}
+                  <Text className="px-4 pt-3 pb-1 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">
+                    {t("detail.reference_group_prs", "Pull Request")}
+                  </Text>
+                  {groups.prs.map((row, i) => renderSheetRow(row, i > 0))}
+                  {groups.degraded.map((row) => renderSheetRow(row, false))}
+                </>
+              ) : (
+                sheetRows.map((row, i) => renderSheetRow(row, i > 0))
+              )}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
   );
 }

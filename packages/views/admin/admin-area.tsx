@@ -54,7 +54,7 @@ export function AdminArea() {
         <TabsContent value="workspaces" className="min-h-0 flex-1 overflow-hidden">
           <AdminWorkspacesPage />
         </TabsContent>
-        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <AdminMCPServerPage />
         </TabsContent>
         <TabsContent value="oauth" className="min-h-0 flex-1 overflow-y-auto">
