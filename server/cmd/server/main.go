@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/scheduler"
@@ -561,11 +562,16 @@ func main() {
 	var larkMetrics *obsmetrics.LarkMetrics
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
-			Pool:     pool,
-			Realtime: realtime.M,
-			DaemonWS: daemonws.M,
-			Version:  version,
-			Commit:   commit,
+			Pool:      pool,
+			Realtime:  realtime.M,
+			DaemonWS:  daemonws.M,
+			TaskUsage: obsmetrics.NewUsageCollector(queries),
+			// Failure counters for the backpressure/observability surface
+			// (RUYI-618): window failure counts and rates per agent, model
+			// and failure class, queryable via PromQL.
+			TaskFailures: obsmetrics.NewTaskFailureCollector(queries),
+			Version:      version,
+			Commit:       commit,
 		})
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
@@ -615,6 +621,7 @@ func main() {
 		WecomRelayOutbound:  wecomRelayOutbound,
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
+		Prometheus:          promquery.NewClientFromEnv(),
 		LLMMaxRetries:       llmMaxRetries,
 	})
 
@@ -679,6 +686,10 @@ func main() {
 		go runAutopilotQuotaReconciler(autopilotCtx, autopilotSvc)
 	}
 	go runDBStatsLogger(sweepCtx, pool)
+	// Voice credential-probe re-checks (RUYI-692 D1): degraded badges self-heal,
+	// stale ok badges re-verify. Non-positive MULTICA_VOICE_PROBE_REFRESH
+	// disables the sweep.
+	go runVoiceProbeRefresher(sweepCtx, h, voiceProbeRefreshIntervalFromEnv(os.Getenv))
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)
 	}
@@ -748,6 +759,12 @@ func main() {
 	// deploy-wide behavior while the self-evolution deployment key is absent.
 	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM, handler.PerplexityGeneratorFor(h.SelfEvolution))); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quality rollup job", "error", err)
+	}
+	// RUYI-751 (ADR 007 §7): clause_quality_daily rides the same run stream
+	// as the prompt rollup; the rollback checker rides its tick latched, so
+	// registration failure degrades to the same warn-and-continue contract.
+	if err := schedulerMgr.Register(scheduler.ClauseQualityJob(pool)); err != nil {
+		slog.Warn("scheduler: failed to register clause_quality rollup job", "error", err)
 	}
 	// RUYI-185: the periodic quiz replays a fixed question set against each
 	// agent's current prompt version so two versions are comparable, and

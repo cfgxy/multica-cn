@@ -182,6 +182,11 @@ export interface CommentInfo {
    * audit trail; there is no per-edit content history beyond this.
    */
   revision?: number;
+  /**
+   * Summary-mode listings only: the server clipped this body to ~200
+   * characters; absent on full reads.
+   */
+  content_truncated?: boolean;
   /** roots_only listings only: orientation stats for the thread under this root. */
   reply_count?: number;
   last_activity_at?: string;
@@ -528,9 +533,19 @@ export interface ExecutionProfileInfo {
   last_activated_at?: string | null;
   created_at?: string;
   updated_at?: string;
+  /** Full detail only on the single-profile endpoints; the list endpoint
+   * always answers with an empty array (entry_count carries the size). */
   entries: ExecutionProfileEntryInfo[];
   /** Optimistic-lock token, including entry upserts/deletes. */
   revision: number;
+}
+
+/** Wire shape of the execution-profile list endpoint: unlike the
+ * single-profile reads, the list comes back enveloped with the workspace's
+ * active-profile pointer. */
+export interface ExecutionProfileListResponse {
+  execution_profiles: ExecutionProfileInfo[];
+  active_execution_profile_id: string | null;
 }
 
 export interface CreateExecutionProfileBody {
@@ -786,4 +801,65 @@ export interface QuickReplyInfo {
   created_at?: string;
   updated_at?: string;
   [key: string]: unknown;
+}
+
+/** Decision cards (RUYI-345): structured questions a run raised, answered by
+ * human members. Options are labels in display order — option letter A is
+ * index 0, matching the product's "1A 2B" answer convention. */
+export interface DecisionCardInfo {
+  id: string;
+  issue_id: string;
+  source_comment_id?: string | null;
+  question: string;
+  /** Option labels in display order; the letter for label[i] is A+i. */
+  options: string[];
+  multi_select: boolean;
+  /** 0-based indices into options the card recommends; empty when none. */
+  recommended_indices: number[];
+  /** open | answered | cancelled. */
+  status: string;
+  /** 0-based indices picked when answered; empty otherwise. */
+  selected_indices: number[];
+  answered_by_type?: string | null;
+  answered_by_id?: string | null;
+  answered_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+export interface DecisionBatchAnswerBody {
+  decision_id: string;
+  selected_indices: number[];
+}
+
+export interface DecisionBatchResult {
+  results: Array<{
+    decision_id: string;
+    /** answered | conflict | invalid | not_found. */
+    status: string;
+    error?: string;
+    decision?: DecisionCardInfo;
+  }>;
+  echo_comment_id?: string;
+  trigger_outcomes?: Array<{
+    target_type?: string;
+    target_id?: string;
+    status?: string;
+    reason_code?: string;
+  }>;
+}
+
+/** GET /decision-inbox row: one card plus its issue context — one row PER
+ * card, never grouped by issue (an issue with three cards yields three rows). */
+export interface DecisionInboxItemInfo extends DecisionCardInfo {
+  workspace_id: string;
+  issue_number: number;
+  issue_identifier: string;
+  issue_title: string;
+}
+
+export interface DecisionInboxResult {
+  items: DecisionInboxItemInfo[];
+  counts: { open: number; answered: number; cancelled: number };
 }

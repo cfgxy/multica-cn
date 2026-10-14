@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const (
@@ -55,7 +56,17 @@ const (
 	// real work short, so this is 2h.
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
-	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentIdleWatchdog = 2 * time.Hour
+
+	// RUYI-593 round 2: observation-tier defaults. In-flight tool marks give a
+	// stalled call a transcript presence from minute 15; the silence
+	// warn/alert tiers separate a healthy-but-quiet run from the dead-channel
+	// form hours before the 2h kill. Pure visibility: none of them stops a
+	// run, and every one honors 0 = off.
+	DefaultAgentToolMarkAfter             = 15 * time.Minute
+	DefaultAgentToolMarkEvery             = 30 * time.Minute
+	DefaultAgentSilenceWarnAfter          = 15 * time.Minute
+	DefaultAgentSilenceAlertAfter         = time.Hour
 	DefaultRuntimeName                    = "Local Agent"
 	DefaultWorkspaceBootstrapSyncInterval = 30 * time.Second
 	DefaultWorkspaceLegacySyncInterval    = 5 * time.Minute
@@ -90,31 +101,31 @@ const (
 	// Host memory backpressure (RUYI-393). These are INITIAL SAFETY
 	// PARAMETERS chosen from the RUYI-392 incident profile (32G host, ~1.3G
 	// available / swap 100% at the time of the连环 OOM), NOT calibrated
-	// final values — tune via env as GTI field data comes in.
+	// final values — tune per workspace from the settings UI (RUYI-618);
+	// the values themselves live in protocol so the boot path, the
+	// heartbeat delivery, and the settings API read one source.
 	//
 	// Trigger (OR): MemAvailable% < MemHigh OR SwapUsed% > SwapHigh.
 	// Recovery (AND): MemAvailable% >= MemRecovery AND SwapUsed% <=
 	// SwapRecovery. SwapHighPct <= 0 disables the swap condition entirely.
-	DefaultBackpressureEnabled         = true
-	DefaultBackpressureMemHighPct      = 15.0
-	DefaultBackpressureMemRecoveryPct  = 25.0
-	DefaultBackpressureSwapHighPct     = 80.0
-	DefaultBackpressureSwapRecoveryPct = 60.0
+	DefaultBackpressureEnabled         = protocol.DefaultBackpressureEnabled
+	DefaultBackpressureMemHighPct      = protocol.DefaultBackpressureMemHighPct
+	DefaultBackpressureMemRecoveryPct  = protocol.DefaultBackpressureMemRecoveryPct
+	DefaultBackpressureSwapHighPct     = protocol.DefaultBackpressureSwapHighPct
+	DefaultBackpressureSwapRecoveryPct = protocol.DefaultBackpressureSwapRecoveryPct
 	// PSI memory pressure joins the gate as a third condition (RUYI-397):
 	// trigger OR, recovery AND, same hysteresis discipline as the
 	// watermarks. /proc/pressure/memory "some" avg10 is the share of
 	// wall-clock time at least one task stalled on memory — a host stalling
 	// half the time is starved even while MemAvailable still looks
 	// acceptable, because reclaimable caches evaporate exactly under the
-	// allocation bursts that matter (the RUYI-392 incident profile). 50/20
-	// are INITIAL SAFETY PARAMETERS pending GTI field calibration, same
-	// standing as the watermarks above; PSIHighPct <= 0 disables the
-	// condition entirely, and an unreadable PSI source is skipped (degrades
-	// without blocking mem/swap).
-	DefaultBackpressurePSIHighPct     = 50.0
-	DefaultBackpressurePSIRecoveryPct = 20.0
-	DefaultBackpressureSampleInterval = 5 * time.Second
-	DefaultBackpressureWindowSize     = 6 // samples; 6 × 5s = 30s smoothing window
+	// allocation bursts that matter (the RUYI-392 incident profile).
+	// PSIHighPct <= 0 disables the condition entirely, and an unreadable PSI
+	// source is skipped (degrades without blocking mem/swap).
+	DefaultBackpressurePSIHighPct     = protocol.DefaultBackpressurePSIHighPct
+	DefaultBackpressurePSIRecoveryPct = protocol.DefaultBackpressurePSIRecoveryPct
+	DefaultBackpressureSampleInterval = protocol.DefaultBackpressureSampleInterval
+	DefaultBackpressureWindowSize     = protocol.DefaultBackpressureWindowSize
 )
 
 // DefaultGCArtifactPatterns lists basename matches that the GC loop treats as
@@ -182,11 +193,19 @@ type Config struct {
 	OpenCodeIdleWatchdog            time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog               time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog               time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
-	ClaudeArgs                      []string
-	CodexArgs                       []string
-	CodebuddyArgs                   []string
-	QwenArgs                        []string
-	QwenpawArgs                     []string
+	// RUYI-593 round 2 observation knobs — pure visibility, never kill paths.
+	AgentToolMarkAfter time.Duration // emit a tool_in_flight transcript event when a tool_use has been unpaired this long (0 = off)
+	AgentToolMarkEvery time.Duration // repeat the in-flight tool mark on this base interval, exponentially backed off to a 8× cap (0 = first mark only)
+	// Silence tiers apply only while no tool is in flight — a run inside a
+	// tool call is not silent. warn is a transcript event; alert is the same
+	// event at alert severity plus a human-reachable task comment.
+	AgentSilenceWarnAfter  time.Duration // transcript silence_warn once the no-tool silence crosses this (0 = off)
+	AgentSilenceAlertAfter time.Duration // transcript silence_alert + task comment once crossed (0 = off)
+	ClaudeArgs             []string
+	CodexArgs              []string
+	CodebuddyArgs          []string
+	QwenArgs               []string
+	QwenpawArgs            []string
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
@@ -393,6 +412,27 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		return Config{}, err
 	}
 
+	// RUYI-593 round 2 observation-tier knobs. Each zero disables exactly its
+	// own mechanism; with all of them zero the watchdog produces nothing and
+	// behaves exactly as before this round. Events and comments produced here
+	// never feed back into the silence clock.
+	agentToolMarkAfter, err := durationFromEnv("MULTICA_AGENT_TOOL_MARK_AFTER", DefaultAgentToolMarkAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	agentToolMarkEvery, err := durationFromEnv("MULTICA_AGENT_TOOL_MARK_EVERY", DefaultAgentToolMarkEvery)
+	if err != nil {
+		return Config{}, err
+	}
+	agentSilenceWarnAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_WARN_AFTER", DefaultAgentSilenceWarnAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	agentSilenceAlertAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_ALERT_AFTER", DefaultAgentSilenceAlertAfter)
+	if err != nil {
+		return Config{}, err
+	}
+
 	// Codex runs a semantic-inactivity timer of its own inside the app-server
 	// protocol, and unlike the daemon's watchdog it is NOT tool-aware: a
 	// commandExecution that emits nothing for the whole window trips it even
@@ -489,52 +529,20 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		maxConcurrentTasks = overrides.MaxConcurrentTasks
 	}
 
-	// Host memory backpressure (RUYI-393) — thresholds are initial safety
-	// parameters, to be calibrated with GTI field data via these env knobs.
-	backpressureEnabled := boolFromEnv("MULTICA_DAEMON_BACKPRESSURE", DefaultBackpressureEnabled)
-	bpMemHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_MEM_HIGH_PCT", DefaultBackpressureMemHighPct)
-	if err != nil {
+	// Host memory backpressure (RUYI-393): the gate boots on the code
+	// defaults, and the workspace-level backpressure settings delivered on
+	// every heartbeat ack (RUYI-618) are the single authoritative runtime
+	// source. There is deliberately no env override path — the systemd
+	// injection was retired so parameters cannot drift between two sources.
+	if err := validateBackpressureThresholds(backpressureThresholds{
+		MemHighPct:      DefaultBackpressureMemHighPct,
+		MemRecoveryPct:  DefaultBackpressureMemRecoveryPct,
+		SwapHighPct:     DefaultBackpressureSwapHighPct,
+		SwapRecoveryPct: DefaultBackpressureSwapRecoveryPct,
+		PSIHighPct:      DefaultBackpressurePSIHighPct,
+		PSIRecoveryPct:  DefaultBackpressurePSIRecoveryPct,
+	}, DefaultBackpressureSampleInterval, DefaultBackpressureWindowSize); err != nil {
 		return Config{}, err
-	}
-	bpMemRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_MEM_RECOVERY_PCT", DefaultBackpressureMemRecoveryPct)
-	if err != nil {
-		return Config{}, err
-	}
-	bpSwapHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_SWAP_HIGH_PCT", DefaultBackpressureSwapHighPct)
-	if err != nil {
-		return Config{}, err
-	}
-	bpSwapRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_SWAP_RECOVERY_PCT", DefaultBackpressureSwapRecoveryPct)
-	if err != nil {
-		return Config{}, err
-	}
-	bpPSIHigh, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_PSI_HIGH_PCT", DefaultBackpressurePSIHighPct)
-	if err != nil {
-		return Config{}, err
-	}
-	bpPSIRecovery, err := floatFromEnv("MULTICA_DAEMON_BACKPRESSURE_PSI_RECOVERY_PCT", DefaultBackpressurePSIRecoveryPct)
-	if err != nil {
-		return Config{}, err
-	}
-	bpSampleInterval, err := durationFromEnv("MULTICA_DAEMON_BACKPRESSURE_SAMPLE_INTERVAL", DefaultBackpressureSampleInterval)
-	if err != nil {
-		return Config{}, err
-	}
-	bpWindowSize, err := intFromEnv("MULTICA_DAEMON_BACKPRESSURE_WINDOW", DefaultBackpressureWindowSize)
-	if err != nil {
-		return Config{}, err
-	}
-	if backpressureEnabled {
-		if err := validateBackpressureThresholds(backpressureThresholds{
-			MemHighPct:      bpMemHigh,
-			MemRecoveryPct:  bpMemRecovery,
-			SwapHighPct:     bpSwapHigh,
-			SwapRecoveryPct: bpSwapRecovery,
-			PSIHighPct:      bpPSIHigh,
-			PSIRecoveryPct:  bpPSIRecovery,
-		}, bpSampleInterval, bpWindowSize); err != nil {
-			return Config{}, err
-		}
 	}
 
 	// Profile
@@ -715,15 +723,15 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		AutoReloadEnabled:               autoReloadEnabled,
 		HealthPort:                      healthPort,
 		MaxConcurrentTasks:              maxConcurrentTasks,
-		BackpressureEnabled:             backpressureEnabled,
-		BackpressureMemHighPct:          bpMemHigh,
-		BackpressureMemRecoveryPct:      bpMemRecovery,
-		BackpressureSwapHighPct:         bpSwapHigh,
-		BackpressureSwapRecoveryPct:     bpSwapRecovery,
-		BackpressurePSIHighPct:          bpPSIHigh,
-		BackpressurePSIRecoveryPct:      bpPSIRecovery,
-		BackpressureSampleInterval:      bpSampleInterval,
-		BackpressureWindowSize:          bpWindowSize,
+		BackpressureEnabled:             DefaultBackpressureEnabled,
+		BackpressureMemHighPct:          DefaultBackpressureMemHighPct,
+		BackpressureMemRecoveryPct:      DefaultBackpressureMemRecoveryPct,
+		BackpressureSwapHighPct:         DefaultBackpressureSwapHighPct,
+		BackpressureSwapRecoveryPct:     DefaultBackpressureSwapRecoveryPct,
+		BackpressurePSIHighPct:          DefaultBackpressurePSIHighPct,
+		BackpressurePSIRecoveryPct:      DefaultBackpressurePSIRecoveryPct,
+		BackpressureSampleInterval:      DefaultBackpressureSampleInterval,
+		BackpressureWindowSize:          DefaultBackpressureWindowSize,
 		PollInterval:                    pollInterval,
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,
@@ -734,6 +742,10 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
 		AgentToolWatchdog:               agentToolWatchdog,
+		AgentToolMarkAfter:              agentToolMarkAfter,
+		AgentToolMarkEvery:              agentToolMarkEvery,
+		AgentSilenceWarnAfter:           agentSilenceWarnAfter,
+		AgentSilenceAlertAfter:          agentSilenceAlertAfter,
 		ClaudeArgs:                      claudeArgs,
 		CodexArgs:                       codexArgs,
 		CodebuddyArgs:                   codebuddyArgs,

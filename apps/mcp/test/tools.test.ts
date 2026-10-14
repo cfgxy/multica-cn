@@ -116,6 +116,7 @@ describe("tool surface", () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name).sort()).toEqual(
       [
         "add_comment",
+        "answer_decisions",
         "apply_execution_profile",
         "archive_agent",
         "archive_squad",
@@ -140,6 +141,7 @@ describe("tool surface", () => {
         "get_agent_runtime_config",
         "get_comment",
         "get_daemon_instance",
+        "get_decision",
         "get_execution_profile",
         "get_execution_topology",
         "get_issue",
@@ -152,6 +154,7 @@ describe("tool surface", () => {
         "list_agents",
         "list_comments",
         "list_daemon_instances",
+        "list_decisions",
         "list_execution_profiles",
         "list_issue_runs",
         "list_issues",
@@ -691,6 +694,99 @@ describe("get_issue handler", () => {
     )) as Record<string, unknown>;
     expect(result.comments).toBeUndefined();
   });
+
+  it("defaults to a bounded comment read (summary-clipped, newest-slice, marked) instead of the full thread", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const client = fakeClient({
+      listComments: async (_ws: string, _issue: string, params: Record<string, unknown>) => {
+        seen.push(params);
+        return [
+          { id: "c1", content: "x".repeat(300), content_truncated: true, created_at: "2026-10-01T00:00:00Z" },
+          { id: "c2", content: "y".repeat(150), created_at: "2026-10-02T00:00:00Z" },
+        ];
+      },
+    });
+    const tool = findTool("get_issue");
+    const result = (await tool?.handler({ workspace: WS, issue: "VOI-1" }, client)) as Record<
+      string,
+      unknown
+    >;
+    // The bounded default asks the server to clip bodies instead of pulling
+    // full content (the RUYI-750 finding: the unbounded default was 85% of the
+    // payload on comment-heavy issues).
+    expect(seen[0]).toEqual({ summary: true });
+    expect(result.comments_bounded).toBe(true);
+    expect(result.comments_total).toBe(2);
+    const comments = result.comments as Array<Record<string, unknown>>;
+    expect(comments).toHaveLength(2);
+    // The server's clip marker must survive commentBrief, so the reader can
+    // tell a clipped body from a genuinely short one.
+    expect(comments[0]?.content_truncated).toBe(true);
+    expect(comments[1]?.content_truncated).toBeUndefined();
+  });
+
+  it("keeps only the newest comments within the byte budget and reports the drop", async () => {
+    // 30 uniform ~500-byte briefs cannot all fit the 6.5KB budget; the kept
+    // slice must be the newest suffix in original (chronological) order.
+    const all = Array.from({ length: 30 }, (_, i) => ({
+      id: `c${String(i + 1).padStart(2, "0")}`,
+      content: "x".repeat(300),
+      content_truncated: true,
+      created_at: `2026-10-01T00:${String(i).padStart(2, "0")}:00Z`,
+    }));
+    const client = fakeClient({ listComments: async () => all });
+    const tool = findTool("get_issue");
+    const result = (await tool?.handler({ workspace: WS, issue: "VOI-1" }, client)) as Record<
+      string,
+      unknown
+    >;
+    const kept = result.comments as Array<{ id: string }>;
+    expect(kept.length).toBeGreaterThanOrEqual(1);
+    expect(kept.length).toBeLessThan(30);
+    expect(kept.map((c) => c.id)).toEqual(all.slice(-kept.length).map((c) => c.id));
+    expect(kept[kept.length - 1]?.id).toBe("c30");
+    expect(result.comments_bounded).toBe(true);
+    expect(result.comments_total).toBe(30);
+    expect(JSON.stringify(kept).length).toBeLessThanOrEqual(7000);
+  });
+
+  it("always keeps at least the newest comment even when it alone exceeds the budget", async () => {
+    const client = fakeClient({
+      listComments: async () => [
+        { id: "c-small-1", content: "s", created_at: "2026-10-01T00:00:00Z" },
+        { id: "c-small-2", content: "s", created_at: "2026-10-02T00:00:00Z" },
+        { id: "c-huge-newest", content: "x".repeat(12_000), created_at: "2026-10-03T00:00:00Z" },
+      ],
+    });
+    const tool = findTool("get_issue");
+    const result = (await tool?.handler({ workspace: WS, issue: "VOI-1" }, client)) as Record<
+      string,
+      unknown
+    >;
+    const kept = result.comments as Array<{ id: string }>;
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.id).toBe("c-huge-newest");
+    expect(result.comments_total).toBe(3);
+  });
+
+  it("include_comments=true keeps the full unclipped thread (no summary, no bounded markers)", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const client = fakeClient({
+      listComments: async (_ws: string, _issue: string, params: Record<string, unknown>) => {
+        seen.push(params);
+        return [{ id: "c1", content: "full body" }, { id: "c2", content: "another" }];
+      },
+    });
+    const tool = findTool("get_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", include_comments: true },
+      client,
+    )) as Record<string, unknown>;
+    expect(seen[0]).toEqual({});
+    expect(result.comments).toHaveLength(2);
+    expect(result.comments_bounded).toBeUndefined();
+    expect(result.comments_total).toBeUndefined();
+  });
 });
 
 describe("progress_digest handler", () => {
@@ -978,6 +1074,45 @@ describe("run lifecycle tools", () => {
       client,
     )) as { total: number };
     expect(result.total).toBe(2);
+  });
+
+  it("list_issue_runs applies the documented 200 default when the caller omits limit", async () => {
+    // RUYI-750: the tool description promised "default 200" while an omitted
+    // limit actually asked the server for the issue's FULL run history plus
+    // its hydration rounds. The tool, not the server, owns the default — the
+    // server's absent-limit contract (full history) is what the UI and CLI
+    // depend on and must not change.
+    const client = fakeClient({
+      listIssueRuns: async (_ws: string, _issue: string, params: Record<string, unknown>) => {
+        callsOf(client).push({ method: "listIssueRuns", args: [params] });
+        return [];
+      },
+    });
+    const tool = findTool("list_issue_runs");
+    await tool?.handler({ workspace: WS, issue: "VOI-1" }, client);
+    expect(callsOf(client)[0]).toEqual({
+      method: "listIssueRuns",
+      args: [{ limit: 200 }],
+    });
+  });
+
+  it("list_issue_runs sends the 200 default on the wire when limit is omitted", async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const client = new MulticaClient({
+      serverUrl: "https://api.example.com",
+      token: "mul_test",
+      fetchImpl,
+    });
+    const tool = findTool("list_issue_runs");
+    await tool?.handler({ workspace: WS, issue: "VOI-1" }, client);
+    expect(new URL(urls[0] ?? "").searchParams.get("limit")).toBe("200");
   });
 
   it("search_audit_events passes filters through and surfaces the keyset cursor", async () => {

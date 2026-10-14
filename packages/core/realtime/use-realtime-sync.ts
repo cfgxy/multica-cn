@@ -11,6 +11,7 @@ import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
 import { upsertDecisionInCache, decisionInboxKeys } from "../issues/decisions";
+import { decisionRequestKeys } from "../issues/decision-requests";
 import { projectKeys } from "../projects/queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
@@ -1191,6 +1192,14 @@ export function useRealtimeSync(
       }
     });
 
+    // Authorization requests (RUYI-630): the Issue-independent carrier's
+    // lifecycle events. The list is small — a subtree invalidation re-reads
+    // it; the info-stream authorization card separately arrives as a
+    // decision:updated payload published by the same server transition.
+    const unsubDecisionRequestUpdated = ws.on("decision_request:updated", () => {
+      qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
+    });
+
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
       const { comment, issue_revision } = p as CommentUpdatedPayload;
       if (!comment?.issue_id) return;
@@ -1795,6 +1804,7 @@ export function useRealtimeSync(
       unsubCommentUpdated();
       unsubDecisionUpdated();
       unsubSuspensionUpdated();
+      unsubDecisionRequestUpdated();
       unsubCommentDeleted();
       unsubCommentResolved();
       unsubCommentUnresolved();

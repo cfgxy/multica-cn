@@ -486,14 +486,7 @@
       "remove_aria": "Remove avatar",
       "select_image_toast": "Please select an image file.",
       "upload_failed_toast": "Avatar upload failed"
-    },
-    "voice_label": "Voice",
-    "voice_none": "No voice",
-    "voice_empty": "No voice-capable instance",
-    "credential_configured": "Configured ✓",
-    "credential_invalid": "Key invalid",
-    "credential_unreachable": "Can't verify",
-    "credential_not_configured": "Not configured"
+    }
   },
   "conversation_starters": {
     "label": "Conversation starters",
@@ -808,7 +801,8 @@
       "cancel_failed_toast": "Failed to cancel task",
       "started_prefix": "Started {{when}}",
       "dispatched_prefix": "Dispatched {{when}}",
-      "queued_prefix": "Queued {{when}}"
+      "queued_prefix": "Queued {{when}}",
+      "queued_backpressure": "Waiting for runtime recovery"
     }
   },
   "char_counter": {
@@ -945,6 +939,7 @@
     "kind_tool": "Tool",
     "kind_thinking": "Thinking",
     "kind_error": "Error",
+    "kind_watchdog": "Watchdog",
     "group_calls_one": "{{count}} call",
     "group_calls_other": "{{count}} calls",
     "step_running": "Still running",
@@ -1043,7 +1038,8 @@
     "detail": {
       "section_history": "Run history",
       "edit_profile": "Edit Profile",
-      "tab_active": "Active",
+      "tab_active": "History",
+      "section_active": "Active",
       "fact_status": "Status",
       "fact_runtime_unbound": "No runtime",
       "bind_runtime": "Bind runtime",
@@ -1062,7 +1058,9 @@
     },
     "run_history": {
       "load_more": "Load more",
-      "empty": "No runs yet."
+      "empty": "No runs yet.",
+      "queued_backpressure": "Waiting for runtime recovery",
+      "other_agents": "{{count}} agents active"
     },
     "edit": {
       "model_placeholder": "Leave empty for the runtime default",

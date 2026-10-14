@@ -115,6 +115,11 @@ type Client struct {
 	// at daemon startup once the supervisor's systemd probe has answered.
 	workerSupervision atomic.Bool
 
+	// snapshotSupport advertises the local-snapshot capability (RUYI-669)
+	// the same way: set once at startup from the userns-overlay probe's
+	// verdict, before the first register can carry it.
+	snapshotSupport atomic.Bool
+
 	workspaceMu                    sync.Mutex
 	workspaceETag                  string
 	workspaceCache                 []WorkspaceInfo
@@ -184,7 +189,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 	if c.os != "" {
 		req.Header.Set("X-Client-OS", c.os)
 	}
-	req.Header.Set("X-Client-Capabilities", daemonClientCapabilities(c.workerSupervision.Load()))
+	req.Header.Set("X-Client-Capabilities", daemonClientCapabilities(c.workerSupervision.Load(), c.snapshotSupport.Load()))
 }
 
 // daemonClientCapabilities is the X-Client-Capabilities value the daemon
@@ -192,7 +197,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 // claim built over WS gets the same capability gating (skill refs,
 // coalesced-comments) as the HTTP path. rpc-v1 advertises WS request/response
 // support (MUL-4257).
-func daemonClientCapabilities(workerSupervision bool) string {
+func daemonClientCapabilities(workerSupervision, snapshotSupport bool) string {
 	caps := []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
@@ -202,6 +207,9 @@ func daemonClientCapabilities(workerSupervision bool) string {
 		protocol.DaemonCapabilityLocalWorktreeV1,
 		protocol.DaemonCapabilitySourceContextQuickCreateV1,
 		protocol.DaemonCapabilityRPCV1,
+	}
+	if snapshotSupport {
+		caps = append(caps, protocol.DaemonCapabilityLocalSnapshotV1)
 	}
 	if workerSupervision {
 		caps = append(caps, protocol.DaemonCapabilityWorkerSupervisorV1)
@@ -213,6 +221,11 @@ func daemonClientCapabilities(workerSupervision bool) string {
 // (RUYI-349). The daemon calls it right after setupSupervisor, before the
 // first re-register can carry it.
 func (c *Client) SetWorkerSupervision(on bool) { c.workerSupervision.Store(on) }
+
+// SetSnapshotSupport flips the local-snapshot capability advertisement
+// (RUYI-669), decided by the startup userns-overlay probe. Same timing rule
+// as SetWorkerSupervision: before the first register.
+func (c *Client) SetSnapshotSupport(on bool) { c.snapshotSupport.Store(on) }
 
 // SetToken sets the auth token for authenticated requests.
 func (c *Client) SetToken(token string) {
@@ -524,6 +537,16 @@ type TaskMessageData struct {
 func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages []TaskMessageData) error {
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/messages", taskID), map[string]any{
 		"messages": messages,
+	}, nil)
+}
+
+// AddTaskComment posts a system comment on the task's issue as the task's
+// agent — the ALERT tier's human-reachable leg (RUYI-593): a dead-channel run
+// has to reach a person, not just the transcript. Callers treat failures as
+// best-effort; the comment is an observation, never a delivery prerequisite.
+func (c *Client) AddTaskComment(ctx context.Context, taskID, content string) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/comment", taskID), map[string]any{
+		"content": content,
 	}, nil)
 }
 
