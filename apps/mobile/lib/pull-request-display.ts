@@ -14,7 +14,7 @@
  *   - Colors diverge from web's literal emerald/violet hex on purpose:
  *     mobile theming is token-based (NativeWind semantic tokens), so each
  *     state maps to the token carrying the same semantics — open=success,
- *     draft=muted, merged=info, closed=destructive.
+ *     draft=muted, merged=violet, closed=destructive.
  */
 
 /** Shape the row actually renders; a lenient subset of `GitHubPullRequest`
@@ -47,7 +47,7 @@ export interface PullRequestStateVisual {
   icon: "git-pull-request-outline" | "git-merge-outline";
   /** Key into mobile's `THEME[colorScheme]` (lib/theme.ts) for the icon
    *  color — vector icons take a raw `color` prop, not NativeWind classes. */
-  themeKey: "success" | "mutedForeground" | "info" | "destructive" | "foreground";
+  themeKey: "success" | "mutedForeground" | "violet" | "destructive" | "foreground";
   /** Draft rows render at reduced opacity, mirroring web's
    *  `isDraft ? "opacity-80"` on PullRequestRow. */
   dimmed: boolean;
@@ -65,7 +65,7 @@ export function pullRequestStateVisual(state: string): PullRequestStateVisual {
         dimmed: true,
       };
     case "merged":
-      return { icon: "git-merge-outline", themeKey: "info", dimmed: false };
+      return { icon: "git-merge-outline", themeKey: "violet", dimmed: false };
     case "closed":
       return {
         icon: "git-pull-request-outline",
