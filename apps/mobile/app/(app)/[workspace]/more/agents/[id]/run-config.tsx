@@ -139,7 +139,9 @@ export default function AgentRunConfig() {
       String(agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT),
     );
     setSubagents(allowsSubagents(agent.runtime_config));
-    setVoiceProviderId(voice.voice_provider_id ?? "none");
+    // The wire represents "unbound" as an empty string, which must map to
+    // the "none" (inherit) sentinel — a raw "" would select no option at all.
+    setVoiceProviderId(voice.voice_provider_id || "none");
     setVoiceModel(voice.voice_model ?? "");
     setVoiceAdvanced(
       voice.voice_advanced ? JSON.stringify(voice.voice_advanced, null, 2) : "",
@@ -242,18 +244,19 @@ export default function AgentRunConfig() {
   ]);
   const dirty = !!patch && Object.keys(patch).length > 0;
 
-  const runtimeReady =
-    !runtimesLoading && (runtimeChoices.length > 0 || runtimeId !== "");
-
-  // An unparsable advanced draft blocks the whole save — buildProfilePatch
-  // would silently drop it, and silent drops behind a visible error are
-  // exactly the confusion the error text exists to prevent.
+  // Runtime readiness must not gate the save: a runtime-less agent can
+  // still save a voice override (the server accepts it), and unchanged
+  // runtime fields never enter the patch, so nothing invalid is sent.
+  // An unparsable advanced draft still blocks the whole save —
+  // buildProfilePatch would silently drop it, and silent drops behind a
+  // visible error are exactly the confusion the error text exists to
+  // prevent.
   const voiceAdvancedInvalid =
     voiceProviderId !== "none" &&
     parseVoiceAdvancedDraft(voiceAdvanced) === "invalid";
 
   const canSave =
-    !!patch && dirty && runtimeReady && !voiceAdvancedInvalid && !update.isPending;
+    !!patch && dirty && !voiceAdvancedInvalid && !update.isPending;
 
   const onSave = () => {
     if (!canSave || !patch) return;
@@ -523,8 +526,7 @@ export default function AgentRunConfig() {
                 value={voiceModel}
                 onChangeText={setVoiceModel}
                 placeholder={t("inspector.voice_model_placeholder_default", {
-                  defaultValue: "Default: gemini-3.8-live",
-                  model: "gemini-3.8-live",
+                  defaultValue: "Inherits the workspace default model",
                 })}
                 placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
                 autoCapitalize="none"

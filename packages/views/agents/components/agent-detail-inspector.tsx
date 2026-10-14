@@ -404,9 +404,6 @@ function SubagentSettingRow({
   );
 }
 
-/** Server default when a chain level stores no explicit model. */
-const DEFAULT_VOICE_MODEL = "gemini-3.8-live";
-
 /**
  * Agent-level voice override (RUYI-749 D1). The server PATCH is level-wise
  * atomic: `voice_provider_id` binds the override as one unit (omitted
@@ -433,7 +430,11 @@ function VoiceOverrideSection({
     [providers],
   );
 
-  const savedProviderId = agent.voice_provider_id ?? null;
+  // The wire represents "unbound" as an empty string (the server field is a
+  // plain string, no omitempty), so normalize before the null-check — a raw
+  // "" would otherwise read as a bound-but-unknown provider and blank the
+  // selector.
+  const savedProviderId = agent.voice_provider_id || null;
   const [providerDraft, setProviderDraft] = useState(savedProviderId ?? "none");
   const [modelDraft, setModelDraft] = useState(agent.voice_model ?? "");
   const [advancedDraft, setAdvancedDraft] = useState(
@@ -587,9 +588,7 @@ function VoiceOverrideSection({
             onChange={(e) => setModelDraft(e.target.value)}
             onBlur={commitModel}
             disabled={!canEdit || busy || unbound}
-            placeholder={t(($) => $.inspector.voice_model_placeholder_default, {
-              model: DEFAULT_VOICE_MODEL,
-            })}
+            placeholder={t(($) => $.inspector.voice_model_placeholder_default)}
           />
         </SettingsRow>
         <SettingsRow

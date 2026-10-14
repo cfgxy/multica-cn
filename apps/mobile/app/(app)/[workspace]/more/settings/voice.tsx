@@ -30,7 +30,7 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { TextField } from "@/components/ui/text-field";
 import { Field, RadioDot } from "@/components/agents/agent-editor-fields";
-import { useActionSheet } from "@/components/ui/action-sheet";
+import { useActionSheet, ActionSheetModal } from "@/components/ui/action-sheet";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { voiceProvidersOptions } from "@/data/voice-providers";
 import { memberListOptions } from "@/data/queries/members";
@@ -572,6 +572,10 @@ export default function VoiceSettingsScreen() {
           </View>
         </DialogShell>
       </Modal>
+
+      {/* Row action sheet — the hook only holds state; without this the
+          Android bottom sheet never renders (iOS uses ActionSheetIOS). */}
+      <ActionSheetModal {...actionSheet.modalProps} />
     </KeyboardAvoidingView>
   );
 }
