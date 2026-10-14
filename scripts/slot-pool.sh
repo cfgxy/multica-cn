@@ -530,7 +530,16 @@ cmd_orphans() {
     die "orphans: inventory exec failed (guest scripts present in image? multica-slot-base pending bake)"
   exit_code="$(jq -r '.exit_code // empty' <<<"$out" 2>/dev/null)"
   logs="$(jq -r '.log_tail // .logs // ""' <<<"$out" 2>/dev/null)"
-  clean="$(jq -r '.clean // empty' <<<"$logs" 2>/dev/null)"
+  # The exec channel may fold ssh transport noise (known_hosts notices) into
+  # log_tail ahead of the inventory JSON; whole-buffer jq would choke on the
+  # prefix. Scan line-wise and keep the last parseable inventory object.
+  local inv=""
+  while IFS= read -r line; do
+    case "$line" in
+      '{'*) jq -e '.clean != null' >/dev/null 2>&1 <<<"$line" && inv="$line" ;;
+    esac
+  done <<<"$logs"
+  clean="$(jq -r '.clean // empty' <<<"$inv" 2>/dev/null)"
   if [ "$as_json" = 1 ]; then
     printf '%s\n' "$logs"
   else
@@ -673,6 +682,7 @@ main() {
     lock-status) cmd_lock_status ;;
     lock-release) cmd_lock_release "$@" ;;
     orphans) cmd_orphans "$@" ;;
+    list) cmd_list "$@" ;;
     -h|--help|help) usage ;;
     *) usage >&2; printf '\nslot-pool: unknown action "%s"\n' "$action" >&2; exit 2 ;;
   esac
