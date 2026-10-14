@@ -76,7 +76,7 @@ const mockAgent = {
   invocation_targets: [{ target_type: "workspace", target_id: "ws-1" }],
 };
 
-const mockRuntimes = [
+let mockRuntimes = [
   { id: "runtime-1", name: "Runtime One", custom_name: "", status: "online", provider: "openai" },
   { id: "runtime-2", name: "Runtime Two", custom_name: "", status: "online", provider: "openai" },
 ];
@@ -194,6 +194,10 @@ jest.mock("@/data/auth-store", () => ({
 beforeEach(() => {
   jest.clearAllMocks();
   mockAgentOverrides = {};
+  mockRuntimes = [
+    { id: "runtime-1", name: "Runtime One", custom_name: "", status: "online", provider: "openai" },
+    { id: "runtime-2", name: "Runtime Two", custom_name: "", status: "online", provider: "openai" },
+  ];
 });
 
 describe("AgentRunConfig (RUYI-624)", () => {
@@ -287,6 +291,31 @@ describe("AgentRunConfig (RUYI-624)", () => {
     // empty model/advanced drafts are OMITTED, not sent as clears — an
     // explicit empty model would wipe a server-side value on a fresh bind.
     await fireEvent.press(screen.getByText("Gemini WS"));
+    await fireEvent.press(screen.getByLabelText("Save"));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { voice_provider_id: "vp-1" },
+      expect.anything(),
+    );
+  });
+
+  it("a runtime-less agent can still save a voice override (save is not runtime-gated, RUYI-749 P2-c)", async () => {
+    // QA m19 scenario: no runtime exists at all and the agent has none
+    // bound. The voice override is agent-level config, so Save must be
+    // enabled and the PUT must carry the voice field alone — unchanged
+    // runtime fields are pinned out of the patch by buildProfilePatch.
+    mockAgentOverrides = { runtime_id: "" };
+    mockRuntimes = [];
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByText("Gemini WS")).toBeTruthy());
+
+    expect(screen.getByLabelText("Save").props.accessibilityState.disabled).toBe(
+      true,
+    );
+    await fireEvent.press(screen.getByText("Gemini WS"));
+    expect(screen.getByLabelText("Save").props.accessibilityState.disabled).toBe(
+      false,
+    );
     await fireEvent.press(screen.getByLabelText("Save"));
 
     expect(mockMutate).toHaveBeenCalledWith(

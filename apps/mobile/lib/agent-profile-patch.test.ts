@@ -223,5 +223,17 @@ describe("buildProfilePatch", () => {
       }));
       expect(patch).toEqual({});
     });
+
+    it("a runtime-less agent's voice-only save carries no runtime fields (P2-c)", () => {
+      // Save is not runtime-gated (P2-c): for an agent with no runtime the
+      // unchanged runtime/model drafts must stay pinned out of the patch so
+      // the server only sees the voice override.
+      const patch = buildProfilePatch(agent({ runtime_id: "", model: "" }), draft({
+        runtimeId: "",
+        model: "",
+        voiceProviderId: "p1",
+      }));
+      expect(patch).toEqual({ voice_provider_id: "p1" });
+    });
   });
 });

@@ -525,16 +525,16 @@ export function VoiceTab() {
                           }
                         />
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onSelect={() => openCredential(p)}>
+                          <DropdownMenuItem onClick={() => openCredential(p)}>
                             <KeyRound className="h-4 w-4" />
                             {t(($) => $.voice.action_set_credential)}
                           </DropdownMenuItem>
-                          <DropdownMenuItem onSelect={() => reprobe(p)}>
+                          <DropdownMenuItem onClick={() => reprobe(p)}>
                             <Volume2 className="h-4 w-4" />
                             {t(($) => $.voice.action_reprobe)}
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onSelect={() => {
+                            onClick={() => {
                               setRenameValue(p.display_name);
                               setRenameFor(p);
                             }}
@@ -544,7 +544,7 @@ export function VoiceTab() {
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             variant="destructive"
-                            onSelect={() => setDeleteFor(p)}
+                            onClick={() => setDeleteFor(p)}
                           >
                             <Trash2 className="h-4 w-4" />
                             {t(($) => $.voice.action_delete)}

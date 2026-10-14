@@ -204,7 +204,7 @@
     "voice_inherit_option": "继承空间默认",
     "voice_no_providers_hint": "暂无可用 Provider——请先在工作区语音设置中添加 API Key 有效的 Gemini Provider。",
     "prop_voice_model": "语音模型",
-    "voice_model_placeholder_default": "默认：{{model}}",
+    "voice_model_placeholder_default": "继承空间默认模型",
     "prop_voice_advanced": "高级参数（JSON）",
     "voice_advanced_placeholder": "例如：{\"temperature\": 0.5}",
     "voice_advanced_invalid": "高级参数必须是有效的 JSON 对象",

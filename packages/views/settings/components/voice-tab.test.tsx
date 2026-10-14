@@ -156,6 +156,28 @@ describe("VoiceTab", () => {
     for (const item of switches) expect(item).toBeEnabled();
   });
 
+  it("opens the credential dialog from the row actions menu", async () => {
+    const user = userEvent.setup();
+    mocks.providers = [providerFixture({ id: "p-ok", display_name: "Gemini OK" })];
+    renderWithI18n(<VoiceTab />);
+
+    await user.click(screen.getByRole("button", { name: "Gemini OK" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Set API key/ }));
+
+    expect(await screen.findByText("API key — Gemini OK")).toBeInTheDocument();
+  });
+
+  it("opens the delete confirmation from the row actions menu", async () => {
+    const user = userEvent.setup();
+    mocks.providers = [providerFixture({ id: "p-ok", display_name: "Gemini OK" })];
+    renderWithI18n(<VoiceTab />);
+
+    await user.click(screen.getByRole("button", { name: "Gemini OK" }));
+    await user.click(await screen.findByRole("menuitem", { name: /Delete/ }));
+
+    expect(await screen.findByText("Delete voice provider")).toBeInTheDocument();
+  });
+
   it("saves the workspace default by merging the whole settings bag, preserving ASR and sibling keys", async () => {
     const user = userEvent.setup();
     mocks.workspaceSettings = {
