@@ -203,12 +203,12 @@ func writeGateReport(w http.ResponseWriter, res legislation.Result) {
 // ── Validation ──────────────────────────────────────────────────────────────
 
 func validChangeKind(k string) bool {
-	return k == "add_clause" || k == "revise_clause" || k == "remove_clause" || k == "move_clause"
+	return k == "add_clause" || k == "revise_clause" || k == "remove_clause" || k == "move_clause" || k == "migrate_clause"
 }
 
 // validateLegislationProposal checks the write-path invariants the DB CHECKs
-// cannot express: remove needs no text, add/revise need text, move needs a
-// destination, and the clause name is bounded.
+// cannot express: remove needs no text, add/revise/migrate need text, move
+// needs a destination, and the clause name is bounded.
 func validateLegislationProposal(changeKind, clauseName, clauseText string) string {
 	if !validChangeKind(changeKind) {
 		return "unknown change_kind"
