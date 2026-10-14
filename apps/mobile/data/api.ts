@@ -2059,9 +2059,13 @@ class ApiClient {
     const raw = await this.fetch<unknown>(
       `/api/issues/${issueId}/suspensions${query}`,
     );
-    return parseWithFallback(raw, IssueSuspensionsListSchema, [], {
-      endpoint: "GET /api/issues/:id/suspensions",
-    });
+    const parsed = parseWithFallback(
+      raw,
+      IssueSuspensionsListSchema,
+      { suspensions: [] },
+      { endpoint: "GET /api/issues/:id/suspensions" },
+    );
+    return parsed.suspensions;
   }
 
   async resumeIssueSuspension(

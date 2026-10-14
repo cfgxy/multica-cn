@@ -2858,3 +2858,50 @@ describe("ApiClient prompt governance versions (RUYI-285)", () => {
     );
   });
 });
+
+describe("ApiClient listIssueSuspensions", () => {
+  const row = {
+    id: "susp-1",
+    workspace_id: "ws-1",
+    issue_id: "issue-1",
+    status: "active",
+    reason: "waiting for CI",
+    waiting_on_type: "external",
+    waiting_on_summary: "ci run 42",
+    resume_condition: "ci green",
+    suspended_by_type: "agent",
+    suspended_by_id: "agent-1",
+    suspended_at: "2026-10-14T00:00:00Z",
+    resume_note: "",
+    cancel_note: "",
+  };
+
+  it("unwraps the wrapped {suspensions} payload and returns the rows", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ suspensions: [row] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([row]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/issues/issue-1/suspensions",
+    );
+  });
+
+  it("degrades the legacy bare-array payload to an empty list", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([row]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([]);
+  });
+});

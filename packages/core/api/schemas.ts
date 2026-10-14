@@ -1119,7 +1119,11 @@ export const IssueSuspensionSchema = z.object({
   resumed_by_predicate: z.string().nullable().optional(),
 }).loose();
 
-export const IssueSuspensionsListSchema = z.array(IssueSuspensionSchema);
+// Mirrors handler.ListIssueSuspensions: wrapped list response, matching the
+// repo-wide wrapped-object list convention (see WorkspaceSuspensionsSchema).
+export const IssueSuspensionsListSchema = z.object({
+  suspensions: z.array(IssueSuspensionSchema),
+});
 
 // Aggregate row: suspension + issue context, mirrors
 // handler.WorkspaceIssueSuspensionResponse.
