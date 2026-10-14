@@ -5817,6 +5817,30 @@ func (q *Queries) GetLastTaskStartedAtForIssueAndAgent(ctx context.Context, arg 
 	return started_at, err
 }
 
+const getLastTerminalTaskCompletedAtForIssueAndAgent = `-- name: GetLastTerminalTaskCompletedAtForIssueAndAgent :one
+SELECT completed_at FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status IN ('completed', 'failed', 'cancelled')
+  AND completed_at IS NOT NULL
+ORDER BY completed_at DESC
+LIMIT 1
+`
+
+type GetLastTerminalTaskCompletedAtForIssueAndAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// RUYI-660: when the (issue, agent) pair's most recent terminal task
+// settled. The stall sweep uses it as the grace window — a task that just
+// terminalized is still within the completion hook's evaluation window and
+// the sweep must not race it. pgx.ErrNoRows means no terminal task exists.
+func (q *Queries) GetLastTerminalTaskCompletedAtForIssueAndAgent(ctx context.Context, arg GetLastTerminalTaskCompletedAtForIssueAndAgentParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getLastTerminalTaskCompletedAtForIssueAndAgent, arg.IssueID, arg.AgentID)
+	var completed_at pgtype.Timestamptz
+	err := row.Scan(&completed_at)
+	return completed_at, err
+}
+
 const getLatestChatTaskRolloutMissing = `-- name: GetLatestChatTaskRolloutMissing :one
 SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
 WHERE chat_session_id = $1

@@ -4218,6 +4218,10 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// 2026-10-09 queue storm).
 	if freshlyFinalized {
 		h.reconcileCommentsOnCompletion(r.Context(), task)
+		// RUYI-660 M2: on a plan-carrying issue this is the loop's verdict
+		// point — continue with the next round, soft-stop at the cap, or
+		// retire on the end marker. Plan-less issues return immediately.
+		h.TaskService.OnOuterLoopTaskTerminal(r.Context(), *task, "completed", "")
 	}
 	// The terminal transaction and completion reconciliation are committed.
 	// Wake the owning runtime now so queued work that was blocked by this
@@ -5013,6 +5017,12 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 		return
 	}
 	h.TaskService.NotifyTaskFinished(*task)
+
+	// RUYI-660 M2: a failed round on a plan-carrying issue either parks the
+	// loop waiting on a human (agent-blocked / agent-error class) or is left
+	// for the stall sweep to pull back (pipeline class). Plan-less issues
+	// return immediately.
+	h.TaskService.OnOuterLoopTaskTerminal(r.Context(), *task, "failed", req.FailureReason)
 
 	// Best-effort revoke of the mat_ task token minted at claim. Same
 	// rationale as CompleteTask — eager deletion shrinks the post-

@@ -900,6 +900,64 @@ func (q *Queries) GetIssueInWorkspace(ctx context.Context, arg GetIssueInWorkspa
 	return i, err
 }
 
+const incrementOuterLoopRound = `-- name: IncrementOuterLoopRound :one
+UPDATE issue SET
+    metadata = jsonb_set(metadata, ARRAY['outerloop_round'],
+        to_jsonb(COALESCE((metadata ->> 'outerloop_round')::int, 0) + 1)),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at
+`
+
+type IncrementOuterLoopRoundParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-660: server-internal plan round advance. The read-increment-write
+// happens inside this single UPDATE (COALESCE covers a plan opened without
+// a round key yet), so a concurrent handler metadata write cannot lose the
+// increment — no application-layer read-modify-write.
+func (q *Queries) IncrementOuterLoopRound(ctx context.Context, arg IncrementOuterLoopRoundParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, incrementOuterLoopRound, arg.ID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.RunSuppressed,
+		&i.RunSuppressedAt,
+	)
+	return i, err
+}
+
 const listChildIssues = `-- name: ListChildIssues :many
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at FROM issue
 WHERE parent_issue_id = $1
@@ -1479,6 +1537,71 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 	return items, nil
 }
 
+const listOuterLoopRunningIssues = `-- name: ListOuterLoopRunningIssues :many
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at FROM issue
+WHERE metadata @> jsonb_build_object('outerloop_state', 'running')
+ORDER BY id
+`
+
+// RUYI-660: the stall sweep's candidate set — every issue whose metadata
+// carries an active outer-loop plan. The containment filter mirrors the
+// metadata filter convention (parseMetadataFilterParam) so the plan key can
+// later claim an index without a query rewrite. Intentionally
+// workspace-unscoped: the sweep is a global scheduler job. Zero-migration
+// constraint (RUYI-660) means this scans the issue table per tick; plan
+// carrying issues are the exception, not the rule, and the cadence is
+// minutes — acceptable until the loop earns an index.
+func (q *Queries) ListOuterLoopRunningIssues(ctx context.Context) ([]Issue, error) {
+	rows, err := q.db.Query(ctx, listOuterLoopRunningIssues)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Issue{}
+	for rows.Next() {
+		var i Issue
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Title,
+			&i.Description,
+			&i.Status,
+			&i.Priority,
+			&i.AssigneeType,
+			&i.AssigneeID,
+			&i.CreatorType,
+			&i.CreatorID,
+			&i.ParentIssueID,
+			&i.AcceptanceCriteria,
+			&i.ContextRefs,
+			&i.Position,
+			&i.DueDate,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Number,
+			&i.ProjectID,
+			&i.OriginType,
+			&i.OriginID,
+			&i.FirstExecutedAt,
+			&i.StartDate,
+			&i.Metadata,
+			&i.Stage,
+			&i.Properties,
+			&i.Revision,
+			&i.LastActivityAt,
+			&i.RunSuppressed,
+			&i.RunSuppressedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockIssueDuplicateKey = `-- name: LockIssueDuplicateKey :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -1818,6 +1941,64 @@ func (q *Queries) SetIssueRunSuppressed(ctx context.Context, arg SetIssueRunSupp
 	return i, err
 }
 
+const setOuterLoopResumedState = `-- name: SetOuterLoopResumedState :one
+UPDATE issue SET
+    metadata = (metadata - 'outerloop_wait_reason')
+        || jsonb_build_object('outerloop_state', 'running'),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at
+`
+
+type SetOuterLoopResumedStateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-660: atomic resume of a waiting plan — state flips to running and
+// the wait reason is dropped in the same statement, so no interleaved
+// handler write can leave a resumed plan still advertising its old wait
+// reason. Round is deliberately preserved.
+func (q *Queries) SetOuterLoopResumedState(ctx context.Context, arg SetOuterLoopResumedStateParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, setOuterLoopResumedState, arg.ID, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.RunSuppressed,
+		&i.RunSuppressedAt,
+	)
+	return i, err
+}
+
 const updateIssue = `-- name: UpdateIssue :one
 WITH candidate AS (
     SELECT
@@ -2016,6 +2197,72 @@ type UpdateIssueStatusParams struct {
 // next_position CASE in UpdateIssue for the policy.
 func (q *Queries) UpdateIssueStatus(ctx context.Context, arg UpdateIssueStatusParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, updateIssueStatus, arg.ID, arg.Status, arg.WorkspaceID)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.RunSuppressed,
+		&i.RunSuppressedAt,
+	)
+	return i, err
+}
+
+const updateIssueStatusOnly = `-- name: UpdateIssueStatusOnly :one
+UPDATE issue SET
+    status = $1,
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = $2
+  AND workspace_id = $3
+  AND status = $4
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at
+`
+
+type UpdateIssueStatusOnlyParams struct {
+	Status                string      `json:"status"`
+	ID                    pgtype.UUID `json:"id"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	ExpectedCurrentStatus string      `json:"expected_current_status"`
+}
+
+// RUYI-660: the early ticket-close pullback's compensating revert. Narrow
+// on purpose: it moves ONLY the status, guarded on the row still being in
+// the closed state the pullback observed (optimistic — a member editing the
+// ticket between the closure and the revert wins and the revert no-ops).
+func (q *Queries) UpdateIssueStatusOnly(ctx context.Context, arg UpdateIssueStatusOnlyParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, updateIssueStatusOnly,
+		arg.Status,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.ExpectedCurrentStatus,
+	)
 	var i Issue
 	err := row.Scan(
 		&i.ID,

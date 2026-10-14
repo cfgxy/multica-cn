@@ -78,6 +78,9 @@ vi.mock("@multica/core/auth", () => ({
 // runtime access from, so the real implementation is kept rather than stubbed —
 // a stub here would just re-derive the rule this test is meant to pin down.
 vi.mock("@multica/core/runtimes", async () => ({
+  runtimeSourceLabel: (
+    await vi.importActual<typeof import("@multica/core/runtimes")>("@multica/core/runtimes")
+  ).runtimeSourceLabel,
   isRuntimeUsableForUser: (
     await vi.importActual<typeof import("@multica/core/runtimes")>(
       "@multica/core/runtimes",

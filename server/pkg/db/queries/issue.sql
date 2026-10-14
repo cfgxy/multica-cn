@@ -630,3 +630,59 @@ FROM (
     WHERE workspace_id = $1
     LIMIT sqlc.arg('limit')::bigint
 ) bounded_issues;
+
+-- name: ListOuterLoopRunningIssues :many
+-- RUYI-660: the stall sweep's candidate set — every issue whose metadata
+-- carries an active outer-loop plan. The containment filter mirrors the
+-- metadata filter convention (parseMetadataFilterParam) so the plan key can
+-- later claim an index without a query rewrite. Intentionally
+-- workspace-unscoped: the sweep is a global scheduler job. Zero-migration
+-- constraint (RUYI-660) means this scans the issue table per tick; plan
+-- carrying issues are the exception, not the rule, and the cadence is
+-- minutes — acceptable until the loop earns an index.
+SELECT * FROM issue
+WHERE metadata @> jsonb_build_object('outerloop_state', 'running')
+ORDER BY id;
+
+-- name: IncrementOuterLoopRound :one
+-- RUYI-660: server-internal plan round advance. The read-increment-write
+-- happens inside this single UPDATE (COALESCE covers a plan opened without
+-- a round key yet), so a concurrent handler metadata write cannot lose the
+-- increment — no application-layer read-modify-write.
+UPDATE issue SET
+    metadata = jsonb_set(metadata, ARRAY['outerloop_round'],
+        to_jsonb(COALESCE((metadata ->> 'outerloop_round')::int, 0) + 1)),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
+-- name: SetOuterLoopResumedState :one
+-- RUYI-660: atomic resume of a waiting plan — state flips to running and
+-- the wait reason is dropped in the same statement, so no interleaved
+-- handler write can leave a resumed plan still advertising its old wait
+-- reason. Round is deliberately preserved.
+UPDATE issue SET
+    metadata = (metadata - 'outerloop_wait_reason')
+        || jsonb_build_object('outerloop_state', 'running'),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
+-- name: UpdateIssueStatusOnly :one
+-- RUYI-660: the early ticket-close pullback's compensating revert. Narrow
+-- on purpose: it moves ONLY the status, guarded on the row still being in
+-- the closed state the pullback observed (optimistic — a member editing the
+-- ticket between the closure and the revert wins and the revert no-ops).
+UPDATE issue SET
+    status = sqlc.arg('status'),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND workspace_id = sqlc.arg('workspace_id')
+  AND status = sqlc.arg('expected_current_status')
+RETURNING *;

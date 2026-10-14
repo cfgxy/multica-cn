@@ -676,6 +676,107 @@ type CommentReaction struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type Computer struct {
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	Host        string             `json:"host"`
+	Port        int32              `json:"port"`
+	SshUser     string             `json:"ssh_user"`
+	Enabled     bool               `json:"enabled"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	CheckedAt   pgtype.Timestamptz `json:"checked_at"`
+	CheckOk     pgtype.Bool        `json:"check_ok"`
+	CheckDetail string             `json:"check_detail"`
+}
+
+type ComputerAudit struct {
+	ID         pgtype.UUID        `json:"id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	BindingID  pgtype.UUID        `json:"binding_id"`
+	Action     string             `json:"action"`
+	Outcome    string             `json:"outcome"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ComputerID pgtype.UUID        `json:"computer_id"`
+}
+
+type ComputerBinding struct {
+	ID              pgtype.UUID        `json:"id"`
+	ComputerID      pgtype.UUID        `json:"computer_id"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Username        string             `json:"username"`
+	Verified        bool               `json:"verified"`
+	HealthPort      int32              `json:"health_port"`
+	State           string             `json:"state"`
+	LastError       string             `json:"last_error"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ArchivedAt      pgtype.Timestamptz `json:"archived_at"`
+	AccountState    string             `json:"account_state"`
+	CheckedAt       pgtype.Timestamptz `json:"checked_at"`
+	DaemonState     string             `json:"daemon_state"`
+	DaemonCheckedAt pgtype.Timestamptz `json:"daemon_checked_at"`
+}
+
+type ComputerCredential struct {
+	UserID     pgtype.UUID        `json:"user_id"`
+	Ciphertext []byte             `json:"ciphertext"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ComputerOperation struct {
+	ID               pgtype.UUID        `json:"id"`
+	BindingID        pgtype.UUID        `json:"binding_id"`
+	ComputerID       pgtype.UUID        `json:"computer_id"`
+	Username         string             `json:"username"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	Kind             string             `json:"kind"`
+	RuntimeID        string             `json:"runtime_id"`
+	RequestedVersion string             `json:"requested_version"`
+	ActualVersion    string             `json:"actual_version"`
+	State            string             `json:"state"`
+	Step             string             `json:"step"`
+	ErrorCode        string             `json:"error_code"`
+	ErrorSummary     string             `json:"error_summary"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	FinishedAt       pgtype.Timestamptz `json:"finished_at"`
+	DeadlineAt       pgtype.Timestamptz `json:"deadline_at"`
+}
+
+type ComputerRuntimeAsset struct {
+	BindingID        pgtype.UUID        `json:"binding_id"`
+	RuntimeID        string             `json:"runtime_id"`
+	ExecutablePath   string             `json:"executable_path"`
+	InstallDir       string             `json:"install_dir"`
+	RequestedVersion string             `json:"requested_version"`
+	ActualVersion    string             `json:"actual_version"`
+	InstallerSource  string             `json:"installer_source"`
+	InstalledAt      pgtype.Timestamptz `json:"installed_at"`
+	CheckedAt        pgtype.Timestamptz `json:"checked_at"`
+	ProbeState       string             `json:"probe_state"`
+	ErrorCode        string             `json:"error_code"`
+	ProbeEnvironment string             `json:"probe_environment"`
+}
+
+type ComputerRuntimeModelConfig struct {
+	BindingID           pgtype.UUID        `json:"binding_id"`
+	RuntimeKind         string             `json:"runtime_kind"`
+	SourceID            pgtype.Int2        `json:"source_id"`
+	UpstreamID          pgtype.Text        `json:"upstream_id"`
+	ModelID             string             `json:"model_id"`
+	TemplateRevision    pgtype.Int8        `json:"template_revision"`
+	FileRevision        string             `json:"file_revision"`
+	Status              string             `json:"status"`
+	LastTestStatus      string             `json:"last_test_status"`
+	LastTestErrorCode   string             `json:"last_test_error_code"`
+	LastTestedAt        pgtype.Timestamptz `json:"last_tested_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
+	FileManifest        []byte             `json:"file_manifest"`
+	LastTestResult      []byte             `json:"last_test_result"`
+	LastSaveOperationID pgtype.UUID        `json:"last_save_operation_id"`
+}
+
 type ContactSalesInquiry struct {
 	ID              pgtype.UUID        `json:"id"`
 	FirstName       string             `json:"first_name"`
@@ -1312,6 +1413,29 @@ type Member struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type ModelKeyDirectoryEntry struct {
+	SourceID        int16              `json:"source_id"`
+	UpstreamID      string             `json:"upstream_id"`
+	ApiKeyName      string             `json:"api_key_name"`
+	Status          string             `json:"status"`
+	AllowedRuntimes []byte             `json:"allowed_runtimes"`
+	SourceRevision  int64              `json:"source_revision"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ModelKeySource struct {
+	ID                       int16              `json:"id"`
+	BaseUrl                  string             `json:"base_url"`
+	DirectoryTokenCiphertext []byte             `json:"directory_token_ciphertext"`
+	Revision                 int64              `json:"revision"`
+	Status                   string             `json:"status"`
+	LastCheckedAt            pgtype.Timestamptz `json:"last_checked_at"`
+	LastErrorCode            string             `json:"last_error_code"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	UpdatedBy                pgtype.UUID        `json:"updated_by"`
+	RetryAfter               pgtype.Timestamptz `json:"retry_after"`
+}
+
 type NotificationPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -1755,6 +1879,17 @@ type RetrospectiveRun struct {
 	TaskID pgtype.UUID `json:"task_id"`
 }
 
+type RuntimeConfigTemplate struct {
+	RuntimeKind       string             `json:"runtime_kind"`
+	Revision          int64              `json:"revision"`
+	Files             []byte             `json:"files"`
+	SupportedApiTypes []byte             `json:"supported_api_types"`
+	DefaultModel      string             `json:"default_model"`
+	Status            string             `json:"status"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	UpdatedBy         pgtype.UUID        `json:"updated_by"`
+}
+
 // Per-runtime model cost budgets: runtime total (user_id NULL) plus per-user scopes, each with optional daily/weekly/monthly UTC-window USD limits in 1e-10 USD ticks. No row = no limit.
 type RuntimeCostBudget struct {
 	ID          pgtype.UUID `json:"id"`
@@ -1919,6 +2054,7 @@ type Squad struct {
 	Instructions string             `json:"instructions"`
 	// Last marketplace prompt apply on this squad plus the single text it replaced (RUYI-100). Internal: never included in a squad API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
+	Revision               int64  `json:"revision"`
 }
 
 type SquadMember struct {
@@ -2078,6 +2214,15 @@ type UserComposioConnection struct {
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
+type UserModelKeyGrant struct {
+	UserID     pgtype.UUID        `json:"user_id"`
+	SourceID   int16              `json:"source_id"`
+	UpstreamID string             `json:"upstream_id"`
+	Position   int32              `json:"position"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	ApiKeyName string             `json:"api_key_name"`
+}
+
 type VcsCommitStatus struct {
 	ConnectionID pgtype.UUID        `json:"connection_id"`
 	Sha          string             `json:"sha"`
@@ -2185,6 +2330,7 @@ type Workspace struct {
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
 	// Execution profile most recently activated in this workspace (RUYI-57). Display state only: it records which profile last wrote the agents' runtime/model/thinking_level, not a live binding. Cleared when that profile is deleted; the agents keep the configuration the activation wrote. No FK, app-layer integrity.
 	ActiveExecutionProfileID pgtype.UUID `json:"active_execution_profile_id"`
+	Revision                 int64       `json:"revision"`
 }
 
 type WorkspaceInvitation struct {

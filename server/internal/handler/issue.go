@@ -3768,6 +3768,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// fails best-effort.
 	if statusChanged {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+		// RUYI-660 M1: an agent closing a plan-carrying ticket without the
+		// STAGE_COMPLETE end marker gets pulled back after the commit; a
+		// member closure just retires the plan. Best-effort, judged on the
+		// committed before/after rows.
+		h.onOuterLoopIssueStatusChanged(r.Context(), prevIssue, issue, actorType, actorID)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -4469,6 +4474,17 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			h.recordSuppressedIssueRun(r.Context(), issue, trigger, actorType, actorID)
 		} else if willEnqueue {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
+		}
+
+		// RUYI-660 M1: the same per-issue outer-loop judgement UpdateIssue
+		// runs on closure — an agent closing a plan-carrying ticket without
+		// the STAGE_COMPLETE end marker is pulled back after the commit; a
+		// member closure just retires the plan. Inline per issue like the
+		// cancellation cascade above: the hook judges only this issue's
+		// before/after rows and has no sibling dependency, so unlike the
+		// parent notify below it needs no batch-final aggregation. Best-effort.
+		if statusChanged {
+			h.onOuterLoopIssueStatusChanged(r.Context(), prevIssue, issue, actorType, actorID)
 		}
 
 		// Platform-driven parent notification, mirrored from UpdateIssue

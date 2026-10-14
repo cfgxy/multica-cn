@@ -379,7 +379,9 @@
     "credential_configured": "구성됨 ✓",
     "credential_invalid": "키 무효",
     "credential_unreachable": "검증 불가",
-    "credential_not_configured": "미구성"
+    "credential_not_configured": "미구성",
+    "runtime_credentials_help": "모델 인증은 선택한 런타임의 OS 사용자 설정을 사용합니다. CLI를 설치해도 API 키는 자동으로 설정되지 않습니다.",
+    "runtime_select": "런타임 선택"
   },
   "conversation_starters": {
     "label": "대화 시작 예시",

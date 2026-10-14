@@ -98,6 +98,7 @@ describe("global path / reserved slug consistency", () => {
   // GLOBAL_PREFIXES from paths.ts is private — we re-derive the list from
   // probing isGlobalPath. Order matters: keep this list in sync with paths.ts.
   const globalPrefixes = [
+    "/admin",
     "/login",
     "/logout",
     "/signup",
@@ -112,6 +113,8 @@ describe("global path / reserved slug consistency", () => {
     }
     expect(isGlobalPath("/acme/issues")).toBe(false);
     expect(isGlobalPath("/")).toBe(false);
+    expect(isGlobalPath("/admin/computers")).toBe(true);
+    expect(isGlobalPath("/administration/issues")).toBe(false);
   });
 
   it("every global prefix's first path segment is a reserved slug", () => {

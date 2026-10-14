@@ -7,6 +7,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import {
   isRuntimeUsableForUser,
   runtimeDisplayName,
+  defaultAgentRuntime,
   runtimeOfferableForBinding,
 } from "@multica/core/runtimes";
 import type { MemberWithUser, RuntimeDevice } from "@multica/core/types";
@@ -94,9 +95,7 @@ export function RuntimePicker({
   // runtime) is never silently overwritten.
   useEffect(() => {
     if (selectedRuntimeId !== "") return;
-    const firstUsable = filteredRuntimes.find((r) =>
-      isRuntimeUsableForUser(r, currentUserId),
-    );
+    const firstUsable = defaultAgentRuntime(filteredRuntimes, currentUserId);
     if (firstUsable) onSelect(firstUsable.id);
   }, [filteredRuntimes, selectedRuntimeId, currentUserId, onSelect]);
 
@@ -112,9 +111,7 @@ export function RuntimePicker({
       currentUserId,
       selectedRuntimeId,
     );
-    const firstUsable = nextList.find((r) =>
-      isRuntimeUsableForUser(r, currentUserId),
-    );
+    const firstUsable = defaultAgentRuntime(nextList, currentUserId);
     onSelect(firstUsable?.id ?? "");
   };
 
@@ -185,7 +182,9 @@ export function RuntimePicker({
                   ? t(($) => $.create_dialog.runtime_loading)
                   : selectedRuntime
                     ? runtimeDisplayName(selectedRuntime)
-                    : t(($) => $.create_dialog.runtime_none)}
+                    : runtimes.length > 0
+                      ? t(($) => $.create_dialog.runtime_select)
+                      : t(($) => $.create_dialog.runtime_none)}
               </span>
               {selectedRuntime?.runtime_mode === "cloud" && (
                 <span className="shrink-0 rounded bg-info/10 px-1.5 py-0.5 text-caption font-medium text-info">
@@ -218,7 +217,9 @@ export function RuntimePicker({
                 autoFocus
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder={t(($) => $.create_dialog.runtime_search_placeholder)}
+                placeholder={t(
+                  ($) => $.create_dialog.runtime_search_placeholder,
+                )}
                 className="w-full rounded-md border border-border bg-background py-1.5 pl-8 pr-2 text-body outline-none focus:ring-1 focus:ring-ring"
               />
             </div>
@@ -289,7 +290,9 @@ export function RuntimePicker({
                             {disabled && (
                               <span className="shrink-0 inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-micro font-medium text-muted-foreground">
                                 <Lock className="h-3 w-3" />
-                                {t(($) => $.create_dialog.runtime_private_badge)}
+                                {t(
+                                  ($) => $.create_dialog.runtime_private_badge,
+                                )}
                               </span>
                             )}
                           </div>
@@ -328,6 +331,9 @@ export function RuntimePicker({
           </div>
         </PopoverContent>
       </Popover>
+      <p className="mt-2 text-caption text-muted-foreground">
+        {t(($) => $.create_dialog.runtime_credentials_help)}
+      </p>
     </div>
   );
 }
