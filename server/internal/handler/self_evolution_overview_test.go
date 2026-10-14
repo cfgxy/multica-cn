@@ -141,6 +141,28 @@ func overviewQuizResult(t *testing.T, wsID, agentID, itemID string, version, tok
 // An empty workspace answers with honest empties in every section: no tier
 // rows, an unmeasured window, an unmeasured quiz, an empty pool, no mirror,
 // no skills. None of these may arrive as a zero pretending to be a reading.
+// overviewProposal seeds one prompt_proposal row. The gate answers are the
+// five required NOT NULL columns; source/status/created_at are what the
+// overview's proposal section reads.
+func overviewProposal(t *testing.T, wsID, source, status string, createdAt time.Time) string {
+	t.Helper()
+	return dbfx.Insert(t, "prompt_proposal", testutil.Cols{
+		"workspace_id":          wsID,
+		"carrier_scope":         "workspace",
+		"carrier_scope_id":      wsID,
+		"change_kind":           "add_clause",
+		"clause_name":           "overview proposal clause",
+		"gate_answer_layer":     "workspace",
+		"gate_answer_retention": "keep",
+		"gate_answer_cost":      "none",
+		"gate_answer_conflict":  "none",
+		"gate_answer_dedup":     "none",
+		"source":                source,
+		"status":                status,
+		"created_at":            createdAt,
+	})
+}
+
 func TestSelfEvolutionOverviewEmptyWorkspace(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -176,6 +198,9 @@ func TestSelfEvolutionOverviewEmptyWorkspace(t *testing.T) {
 	}
 	if resp.Skills.Count != 0 || resp.Skills.Invocations != 0 {
 		t.Errorf("skills = %+v, want none", resp.Skills)
+	}
+	if resp.Proposals.Total != 0 || resp.Proposals.PendingOwner != 0 || resp.Proposals.LastAutoProposal != nil {
+		t.Errorf("proposals = %+v, want an empty pool", resp.Proposals)
 	}
 }
 
@@ -287,6 +312,13 @@ func TestSelfEvolutionOverviewAggregatesWorkspaceActivity(t *testing.T) {
 		"task_id": otherTask, "seq": 1, "type": "tool_use", "tool": "Bash",
 		"input": testutil.Raw(fmt.Sprintf(`'{"skill":"%s"}'::jsonb`, alphaName)),
 	})
+
+	// ── proposals: mixed sources and statuses; only the newest
+	// retrospective-sourced row reads as the last automatic proposal ──
+	overviewProposal(t, wsID, "manual", "pending_owner", now.Add(-3*time.Hour))
+	overviewProposal(t, wsID, "retrospective", "pending_owner", now.Add(-2*time.Hour))
+	overviewProposal(t, wsID, "retrospective", "draft", now.Add(-1*time.Hour))
+	overviewProposal(t, wsID, "manual", "rejected", now.Add(-30*time.Minute))
 
 	code, resp := getOverview(t, slug, "")
 	if code != http.StatusOK {
@@ -411,6 +443,20 @@ func TestSelfEvolutionOverviewAggregatesWorkspaceActivity(t *testing.T) {
 	}
 	if resp.Skills.Invocations != 1 {
 		t.Errorf("invocations = %d, want 1 (ghost name and non-Skill tool excluded)", resp.Skills.Invocations)
+	}
+
+	// proposals: exact pool counts (the same rows the list endpoint serves)
+	// and the newest retrospective row — the newer manual pending row must
+	// not read as an automatic one.
+	if resp.Proposals.Total != 4 || resp.Proposals.PendingOwner != 2 {
+		t.Errorf("proposals total/pending = %d/%d, want 4/2",
+			resp.Proposals.Total, resp.Proposals.PendingOwner)
+	}
+	if resp.Proposals.LastAutoProposal == nil || resp.Proposals.LastAutoProposal.Source != "retrospective" {
+		t.Fatalf("last auto proposal = %+v, want the retrospective-sourced row", resp.Proposals.LastAutoProposal)
+	}
+	if got := resp.Proposals.LastAutoProposal.CreatedAt; got != now.Add(-1*time.Hour).UTC().Format(httpTimeFormat) {
+		t.Errorf("last auto proposal created_at = %q, want %q", got, now.Add(-1*time.Hour).UTC().Format(httpTimeFormat))
 	}
 }
 

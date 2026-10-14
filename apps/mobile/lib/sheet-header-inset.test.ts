@@ -77,7 +77,6 @@ const SHEET_HEADER_USERS: {
   { file: "app/(app)/[workspace]/more/agents/[id]/runtime-config.tsx", gap: 12, expectInitialProp: false },
   { file: "app/(app)/[workspace]/more/agents/[id]/skills.tsx", gap: 12, expectInitialProp: false },
   { file: "app/(app)/[workspace]/more/agents/new.tsx", gap: 12, expectInitialProp: true },
-  { file: "app/(app)/[workspace]/more/runtimes/new.tsx", gap: 12, expectInitialProp: true },
   { file: "app/(app)/[workspace]/more/squads/[id]/execution-profiles.tsx", gap: 12, expectInitialProp: false },
   { file: "app/(app)/[workspace]/more/squads/new.tsx", gap: 12, expectInitialProp: true },
   { file: "app/(app)/[workspace]/new-issue-picker/due-date.tsx", gap: 16, expectInitialProp: true },
@@ -120,9 +119,10 @@ describe("自绘标题头治理（RUYI-698）：旧模式零残留、SheetHeader
 
   it("清单即全量：仓库内不存在清单外的旧模式调用点", () => {
     // 全仓旧模式扫描按源码遍历代价高，这里以入库验收同一把尺子收口：
-    // grep 命中数（迁移基线 27）与清单长度一致，由 CI 外的
+    // grep 命中数（迁移基线 27；RUYI-748 下线语音实例注册页后为 26）
+    // 与清单长度一致，由 CI 外的
     // `git grep "paddingTop: insets.top"` 零命中兜底（交付自测项）。
-    expect(SHEET_HEADER_USERS.length).toBe(27);
+    expect(SHEET_HEADER_USERS.length).toBe(26);
   });
 });
 

@@ -55,5 +55,32 @@
     "title": "필터와 일치하는 결정 카드가 없습니다",
     "hint": "필터를 조정하거나 지워서 이 보기의 카드를 확인하세요.",
     "clear_button": "필터 지우기"
+  },
+  "requests": {
+    "section_title": "승인 요청",
+    "action_workspace_info_read": "워크스페이스 정보 읽기",
+    "action_prompt_restore": "프롬프트 복원",
+    "risk_read": "읽기 전용",
+    "risk_write_low": "저위험 쓰기",
+    "status_pending": "승인 대기",
+    "status_approved": "승인됨",
+    "status_denied": "거부됨",
+    "status_expired": "만료됨",
+    "status_revoked": "철회됨",
+    "status_executed": "실행됨",
+    "status_execute_failed": "실행 실패",
+    "origin_label": "{{agent}} 요청",
+    "source_issue": "이슈: {{title}}",
+    "approve": "승인",
+    "deny": "거부",
+    "cancel": "요청 철회",
+    "projection_hint": "이 행은 상태 표시입니다. 대상 워크스페이스에서 조작하세요",
+    "executed_failed": "실행 실패: {{reason}}",
+    "steps_title": "워크스페이스별 단계",
+    "step_origin": "발신",
+    "step_target": "대상",
+    "detail_error": "단계 세부 정보를 불러오지 못했습니다",
+    "answer_failed": "승인 작업에 실패했습니다",
+    "cancel_failed": "철회에 실패했습니다"
   }
 }

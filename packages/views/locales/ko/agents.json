@@ -372,14 +372,7 @@
       "remove_aria": "아바타 제거",
       "select_image_toast": "이미지 파일을 선택하세요.",
       "upload_failed_toast": "아바타 업로드 실패"
-    },
-    "voice_label": "음성",
-    "voice_none": "음성 없음",
-    "voice_empty": "음성 지원 인스턴스가 없습니다",
-    "credential_configured": "구성됨 ✓",
-    "credential_invalid": "키 무효",
-    "credential_unreachable": "검증 불가",
-    "credential_not_configured": "미구성"
+    }
   },
   "conversation_starters": {
     "label": "대화 시작 예시",
@@ -690,7 +683,8 @@
       "cancel_failed_toast": "작업을 취소하지 못했습니다",
       "started_prefix": "{{when}} 시작됨",
       "dispatched_prefix": "{{when}} 디스패치됨",
-      "queued_prefix": "{{when}} 대기 시작"
+      "queued_prefix": "{{when}} 대기 시작",
+      "queued_backpressure": "런타임 복구 대기 중"
     }
   },
   "char_counter": {
@@ -1018,7 +1012,8 @@
     "detail": {
       "section_history": "실행 기록",
       "edit_profile": "프로필 편집",
-      "tab_active": "진행 중",
+      "tab_active": "작업 기록",
+      "section_active": "진행 중",
       "fact_status": "상태",
       "fact_runtime_unbound": "런타임 미설정",
       "bind_runtime": "런타임 연결",
@@ -1037,7 +1032,9 @@
     },
     "run_history": {
       "load_more": "더 보기",
-      "empty": "아직 실행 기록이 없습니다."
+      "empty": "아직 실행 기록이 없습니다.",
+      "queued_backpressure": "런타임 복구 대기 중",
+      "other_agents": "에이전트 {{count}}대 실행 중"
     },
     "edit": {
       "model_placeholder": "비워 두면 런타임 기본값이 사용됩니다",

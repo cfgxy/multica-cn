@@ -31,7 +31,10 @@ export function SelfEvolutionShell({ children }: { children: ReactNode }) {
         ) : (
           <div className="w-52 shrink-0" aria-hidden />
         )}
-        <div className="min-w-0 flex-1">{children}</div>
+        {/* The body's scroll container: stretched to the row's definite
+            height, so tall page content scrolls here instead of growing past
+            the canvas and getting clipped with no scrollbar (RUYI-745). */}
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</div>
       </div>
     </div>
   );

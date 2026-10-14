@@ -337,6 +337,17 @@
     },
     "timeline": {
       "truncated": "…（省略されました）"
+    },
+    "plus": {
+      "open": "追加",
+      "title": "メッセージに追加",
+      "camera": "カメラ",
+      "image": "写真",
+      "files": "ファイル",
+      "mention": "メンション",
+      "skill": "スキル",
+      "quick_replies": "クイック返信",
+      "close": "閉じる"
     }
   }
 }

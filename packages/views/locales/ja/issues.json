@@ -324,6 +324,11 @@
     "desc_placeholder": "説明を追加...",
     "current_issue": "現在のタスク",
     "referenced_issues": "参照タスク",
+    "reference_tail_header": "参照 · {{count}}",
+    "reference_tail_more": "他 {{count}} 件の参照",
+    "reference_tail_more_with_pr": "他 {{count}} 件の参照（PR {{prCount}} 件を含む）",
+    "reference_group_tasks": "タスク",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "サブタスク",
     "sub_issue_of": "親タスク",
     "add_sub_issues": "サブタスクを追加",
@@ -334,6 +339,12 @@
     "section_properties": "プロパティ",
     "section_parent_issue": "親タスク",
     "section_pull_requests": "Pull requests",
+    "section_relations": "関連タスク",
+    "relations_blocks": "ブロック中",
+    "relations_blocked_by": "ブロックされている",
+    "relations_relates_to": "関連",
+    "relations_supersedes": "置き換え中",
+    "relations_superseded_by": "置き換え済み",
     "section_metadata": "メタデータ",
     "section_details": "詳細",
     "section_quick_actions": "クイックアクション",
@@ -969,6 +980,7 @@
       "actions_a11y": "タスクの操作",
       "edit_details": "詳細を編集",
       "open_on_web": "ウェブで開く",
+      "relations_empty": "構造化された関連はまだありません。ブロック・関連・置き換えのリンクがここに表示されます。",
       "load_failed": "タスクを読み込めませんでした：{{reason}}",
       "not_found": "見つかりません",
       "retry": "再試行",
@@ -983,6 +995,7 @@
       "comments_no_match": "一致するコメントはありません。",
       "comments_open_a11y": "コメントを参照",
       "pull_request_open_failed": "この Pull request を開けませんでした。",
+      "reference_sheet_close": "閉じる",
       "pull_request_card_label": "Pull request"
     },
     "picker": {
@@ -1182,6 +1195,15 @@
     "answer_failed": "回答の送信に失敗しました",
     "cancel_failed": "カードのキャンセルに失敗しました",
     "batch_title": "一括回答",
-    "batch_submit": "すべて送信"
+    "batch_submit": "すべて送信",
+    "auth_title": "承認リクエスト",
+    "auth_state_approved": "承認済み",
+    "auth_state_denied": "却下済み",
+    "auth_state_executed": "実行済み",
+    "auth_state_execute_failed": "実行失敗",
+    "auth_approve_default": "承認",
+    "auth_deny_default": "却下",
+    "auth_execute_failed": "実行失敗：{{reason}}",
+    "auth_answer_failed": "承認操作に失敗しました"
   }
 }

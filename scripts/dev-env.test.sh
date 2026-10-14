@@ -504,6 +504,49 @@ require_contains "$out" "free (no lease, not registered)"
 require_absent "$out" "$issue_b"
 
 # ---------------------------------------------------------------------------
+# RUYI-712: down on a released slot must refuse, not resurrect the lease.
+# require_lease's acquire-on-miss used to re-create .slot-lock when down ran
+# on a released slot — fresh ACQUIRED_AT, the caller as OWNER_ISSUE, no
+# history line — a ghost lease that blocked the slot pool until a handoff
+# plus a second release cleared it. Down acts on a held slot: no live lease
+# means nothing to stop.
+# ---------------------------------------------------------------------------
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "RUYI-712 setup: releasing dev1 must succeed"
+[ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "RUYI-712 setup: the lease file must be gone"
+history="$MULTICA_SLOTS_HOME/dev1/lease-history.log"
+hist_before=0
+[ -f "$history" ] && hist_before="$(wc -l < "$history")"
+
+status=0
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 down > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "down on a released slot must be refused (RUYI-712)"
+require_contains "$out" "no active lease"
+[ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "down on a released slot must not resurrect .slot-lock (RUYI-712)"
+hist_after=0
+[ -f "$history" ] && hist_after="$(wc -l < "$history")"
+[ "$hist_after" = "$hist_before" ] || fail "a refused down must not append lease history (RUYI-712)"
+dev_env dev1 lock-status > "$out" 2>&1 || fail "lock-status must work after the refused down"
+require_contains "$out" "free"
+
+# The normal order keeps working: down while the lease is held, release after.
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "RUYI-712: re-acquiring dev1 must succeed"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 down > "$out" 2>&1 || fail "down while holding the lease must succeed (the normal order)"
+[ -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "down while holding the lease must keep the lease file"
+grep -q "OWNER_ISSUE=$issue_a" "$MULTICA_SLOTS_HOME/dev1/.slot-lock" || fail "down must not change the lease holder"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "releasing after down must succeed (the normal order)"
+[ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "releasing after down must clear the lease file"
+
+# The recovery path for ghost leases created before the fix still works:
+# handoff to qa re-arms the holder identity, the second release clears it.
+printf 'OWNER_ISSUE=%s\nOWNER_ROLE=agent\nPHASE=dev\nACQUIRED_AT=2026-10-01T00:00:00Z\n' "$issue_a" > "$MULTICA_SLOTS_HOME/dev1/.slot-lock"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 handoff --to qa > "$out" 2>&1 || fail "RUYI-712: handoff on a ghost lease must succeed"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 lock-release --force > "$out" 2>&1 || fail "RUYI-712: the second release must clear the ghost lease"
+[ ! -f "$MULTICA_SLOTS_HOME/dev1/.slot-lock" ] || fail "RUYI-712: the ghost lease must be gone"
+
+# Restore the state the following sections expect: dev1 held by issue_a.
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "RUYI-712 cleanup: re-acquiring dev1 must succeed"
+
+# ---------------------------------------------------------------------------
 # Role handover: the lease phase moves dev -> qa -> dev atomically inside one
 # issue. The qa leg arms the only TTL in the system; the dev leg clears it.
 # The handoff is owner-gated (delete the owner check and the foreign-issue

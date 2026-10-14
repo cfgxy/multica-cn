@@ -64,6 +64,12 @@ export const issueKeys = {
     [...issueKeys.all(wsId), "identifier", identifier] as const,
   timeline: (wsId: string | null, id: string) =>
     [...issueKeys.all(wsId), "timeline", id] as const,
+  // Structured relations (RUYI-689): parent + five edge views, one payload.
+  relations: (wsId: string | null, id: string) =>
+    [...issueKeys.all(wsId), "relations", id] as const,
+  // Sub-issues of a parent (children group of the Relations page).
+  children: (wsId: string | null, id: string) =>
+    [...issueKeys.all(wsId), "children", id] as const,
   // Currently-running tasks for an issue (queued/dispatched/running). Drives
   // the "Working" state of the AgentActivityRow inside IssueHeaderCard.
   activeTasks: (wsId: string | null, id: string) =>

@@ -364,14 +364,7 @@
       "remove_aria": "アバターを削除",
       "select_image_toast": "画像ファイルを選択してください。",
       "upload_failed_toast": "アバターのアップロードに失敗しました"
-    },
-    "voice_label": "音声",
-    "voice_none": "音声なし",
-    "voice_empty": "音声対応インスタンスがありません",
-    "credential_configured": "設定済み ✓",
-    "credential_invalid": "キー無効",
-    "credential_unreachable": "検証不可",
-    "credential_not_configured": "未設定"
+    }
   },
   "conversation_starters": {
     "label": "会話の開始例",
@@ -682,7 +675,8 @@
       "cancel_failed_toast": "作業をキャンセルできませんでした",
       "started_prefix": "{{when}} に開始",
       "dispatched_prefix": "{{when}} にディスパッチ",
-      "queued_prefix": "{{when}} に待機開始"
+      "queued_prefix": "{{when}} に待機開始",
+      "queued_backpressure": "ランタイムの復帰待ち"
     }
   },
   "char_counter": {
@@ -1018,7 +1012,8 @@
     "detail": {
       "section_history": "実行履歴",
       "edit_profile": "プロフィールを編集",
-      "tab_active": "進行中",
+      "tab_active": "タスク履歴",
+      "section_active": "進行中",
       "fact_status": "ステータス",
       "fact_runtime_unbound": "ランタイム未設定",
       "bind_runtime": "ランタイムをバインド",
@@ -1037,7 +1032,9 @@
     },
     "run_history": {
       "load_more": "さらに読み込む",
-      "empty": "実行履歴はまだありません。"
+      "empty": "実行履歴はまだありません。",
+      "queued_backpressure": "ランタイムの復帰待ち",
+      "other_agents": "{{count}} 体のエージェントが稼働中"
     },
     "edit": {
       "model_placeholder": "空欄の場合はランタイムのデフォルトを使用します",
