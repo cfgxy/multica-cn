@@ -41,6 +41,26 @@ export const issueDetailOptions = (wsId: string | null, id: string) =>
     enabled: !!wsId && !!id,
   });
 
+// Structured relations (RUYI-689): parent + five edge views in one payload.
+// Relation writes emit no WS event, so every mount re-pulls.
+export const issueRelationsOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.relations(wsId, id),
+    queryFn: ({ signal }) => api.getIssueRelations(id, { signal }),
+    enabled: !!wsId && !!id,
+    refetchOnMount: "always",
+  });
+
+// Children are not included in the relations response and have no guaranteed
+// WS invalidation, so every mount refreshes this query too.
+export const childIssuesOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.children(wsId, id),
+    queryFn: ({ signal }) => api.listChildIssues(id, { signal }),
+    enabled: !!wsId && !!id,
+    refetchOnMount: "always",
+  });
+
 /**
  * Resolve a bare issue identifier ("MUL-123") to its issue, or `null`.
  *

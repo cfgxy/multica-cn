@@ -53,6 +53,7 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   Issue,
+  IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
   IssueLabelsResponse,
@@ -99,6 +100,8 @@ import type {
   User,
   Workspace,
   WorkspaceSubscriptionSummary,
+  DecisionRequest,
+  DecisionRequestsList,
 } from "@multica/core/types";
 import {
   parseTimelineTruncatedKinds,
@@ -113,6 +116,8 @@ import {
   EMPTY_ATTACHMENT,
   EMPTY_LIST_QUICK_REPLIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+  EMPTY_ISSUE_RELATIONS,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_SQUAD,
@@ -121,10 +126,13 @@ import {
   EMPTY_SQUAD_MEMBER_STATUS_LIST,
   EMPTY_TIMELINE_ENTRIES,
   IssuePullRequestsResponseSchema,
+  IssueRelationsResponseSchema,
+  ChildIssuesResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   ListQuickRepliesResponseSchema,
+  PullRequestLookupResponseSchema,
   SquadMemberListSchema,
   SquadMemberSchema,
   SquadMemberStatusListResponseSchema,
@@ -143,9 +151,12 @@ import {
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
 } from "@multica/core/api/schemas";
+import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
   BatchDecisionAnswersSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
   WorkspaceDecisionInboxSchema,
@@ -259,6 +270,24 @@ export interface FileAsset {
   type: string;
 }
 
+/** Pool row from GET /api/workspaces/:id/voice-providers. */
+export interface VoiceProvider {
+  id: string;
+  workspace_id: string;
+  display_name: string;
+  provider_type: string;
+  enabled: boolean;
+  credential_status: string;
+  credential_probe?: {
+    status: string;
+    http_status?: number;
+    checked_at: string;
+  } | null;
+  source_runtime_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
  *  its own copy per the `mirror, don't import` rule in apps/mobile/CLAUDE.md. */
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
@@ -278,6 +307,8 @@ const FETCH_TIMEOUT_MS = 30_000;
  *  Applies only to sendCode / verifyCode / getMe; every other request keeps
  *  the 30s FETCH_TIMEOUT_MS ceiling. */
 const LOGIN_TIMEOUT_MS = 10_000;
+
+const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /** Budget for `/api/upload-file` (RUYI-569). Much larger than
  *  FETCH_TIMEOUT_MS because the ceiling is MAX_FILE_SIZE (100MB) over a
@@ -652,6 +683,33 @@ class ApiClient {
     return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
       endpoint: "listWorkspaces",
     });
+  }
+
+  // GET /api/workspaces/:id/voice-providers — member-visible provider pool.
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
+
+  async transcribeVoiceAudio(
+    workspaceId: string,
+    audio: Blob,
+    opts?: { signal?: AbortSignal },
+  ): Promise<string> {
+    const formData = new FormData();
+    formData.append("audio", audio, "dictation.wav");
+    const res = await this.fetchRaw(
+      `/api/workspaces/${workspaceId}/voice-transcriptions`,
+      {
+        method: "POST",
+        body: formData,
+        signal: opts?.signal,
+        timeoutMs: VOICE_TRANSCRIBE_TIMEOUT_MS,
+      },
+    );
+    const data = (await res.json()) as { text?: unknown };
+    return typeof data.text === "string" ? data.text : "";
   }
 
   // --- Inbox ---
@@ -1660,6 +1718,30 @@ class ApiClient {
     );
   }
 
+  async getIssueRelations(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<IssueRelationsResponse> {
+    return this.fetchValidated(
+      `/api/issues/${id}/relations`,
+      IssueRelationsResponseSchema,
+      EMPTY_ISSUE_RELATIONS,
+      { ...opts, endpoint: "getIssueRelations" },
+    );
+  }
+
+  async listChildIssues(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ issues: Issue[] }> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/children`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
+      endpoint: "GET /api/issues/:id/children",
+    });
+  }
+
   // Write endpoint — mirrors POST /api/issues
   // (server/cmd/server/router.go:320, server/internal/handler/issue.go
   // CreateIssue). Mobile sends only the fields the form fills in; backend
@@ -2020,6 +2102,57 @@ class ApiClient {
     return inbox;
   }
 
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests${query}`,
+    );
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async answerDecisionRequest(
+    workspaceId: string,
+    requestId: string,
+    decision: "approve" | "deny",
+  ): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    );
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(
+    workspaceId: string,
+    requestId: string,
+  ): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    return parseWithFallback(
+      raw,
+      z.object({ status: z.string() }).loose(),
+      { status: "" },
+      {
+        endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+      },
+    );
+  }
+
   // --- Labels ---
   async listLabels(opts?: {
     signal?: AbortSignal;
@@ -2131,6 +2264,62 @@ class ApiClient {
       EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
       { ...opts, endpoint: "GET /api/issues/:id/pull-requests" },
     );
+  }
+
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({
+      owner,
+      repo,
+      number: String(number),
+    });
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+      ).pull_request;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${encodeURIComponent(String(number))}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+      ).pull_request;
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 409)
+      ) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   // --- Projects ---
