@@ -24,6 +24,25 @@ const manyAgentsRef = vi.hoisted(() => ({ current: false }));
 // — what a plain member actually receives once the backend folds the agents
 // they may not view (MUL-5409).
 const restrictedBucketRef = vi.hoisted(() => ({ current: false }));
+// The empty-usage suite: every calendar rollup answers successfully with zero
+// rows — a workspace with agents but no completed tasks, the exact shape of
+// the QA repro where the page used to swap itself for the empty state and the
+// live Prometheus panels never mounted.
+const emptyUsageRef = vi.hoisted(() => ({ current: false }));
+// Arms the live metric panels for that suite: `false` keeps a panel pending,
+// "empty" serves configured=true with no series, "data" adds one sample.
+const metricPanelsRef = vi.hoisted(() => ({
+  current: {
+    resources: false as false | "empty" | "data",
+    traffic: false as false | "empty" | "data",
+  },
+}));
+// When set, per-agent rollup queries whose window equals this JSON are
+// answered with alternate fixtures — a stand-in for a server that answers
+// per-window. The leaderboard-follows-selection tests use it to prove the
+// rendered rows come from the SELECTED window's query, not the full-window
+// one.
+const lbWindowRef = vi.hoisted(() => ({ current: null as string | null }));
 
 // Kept out of the fixture ternary so the sentinel's shape reads at a glance.
 // Unlike the deleted-agents bucket this one carries real seconds / tasks: the
@@ -70,22 +89,102 @@ vi.mock("@tanstack/react-query", async () => {
     useQueryClient: () => ({ invalidateQueries: vi.fn() }),
     useQuery: (opts: { queryKey: unknown[] }) => {
       queryKeys.push(opts.queryKey);
+      const kind = opts.queryKey[2];
+      // Live Prometheus panels: relative-window queries the page must fire
+      // even when every calendar rollup comes back empty. Unarmed panels
+      // stay pending, exactly as an unmocked query would on mount.
+      if (kind === "usage-resources" || kind === "usage-traffic") {
+        const armed =
+          kind === "usage-resources"
+            ? metricPanelsRef.current.resources
+            : metricPanelsRef.current.traffic;
+        if (!armed) return { data: undefined, isLoading: true };
+        return {
+          data: {
+            configured: true,
+            series:
+              armed === "data"
+                ? {
+                    cpu_cores: [
+                      { labels: { daemon: "daemon-1" }, points: [{ t: 1, v: 2.5 }] },
+                    ],
+                    tokens_per_second: [
+                      { labels: { provider: "anthropic" }, points: [{ t: 1, v: 12 }] },
+                    ],
+                  }
+                : {},
+          },
+          isLoading: false,
+          isSuccess: true,
+        };
+      }
+      // Empty-usage suite: every calendar rollup succeeds with zero rows, the
+      // way a workspace that has agents but no completed tasks answers.
+      if (emptyUsageRef.current) {
+        if (opts.queryKey[0] === "workspaces" && kind === "agents") {
+          return {
+            data: [{ id: "agent-1", name: "Agent One" }],
+            isLoading: false,
+            isSuccess: true,
+          };
+        }
+        return { data: [], isLoading: false, isSuccess: true };
+      }
       if (dashboardDataRef.current) {
         // ["workspaces", wsId, "agents"] — needed so the Errors breakdown can
         // resolve agent-1 to a name and render its drill-down link.
         if (opts.queryKey[0] === "workspaces" && opts.queryKey[2] === "agents") {
           return {
             data: manyAgentsRef.current
-              ? Array.from({ length: 12 }, (_, i) => ({
-                  id: `bulk-${i}`,
-                  name: `Bulk Agent ${i}`,
-                }))
-              : [{ id: "agent-1", name: "Agent One" }],
+              ? [
+                  ...Array.from({ length: 12 }, (_, i) => ({
+                    id: `bulk-${i}`,
+                    name: `Bulk Agent ${i}`,
+                  })),
+                  { id: "sel-agent", name: "Selected Agent" },
+                ]
+              : [
+                  { id: "agent-1", name: "Agent One" },
+                  { id: "sel-agent", name: "Selected Agent" },
+                ],
             isLoading: false,
             isSuccess: true,
           };
         }
-        const kind = opts.queryKey[2];
+        // The selected-window answer: a distinct agent, so a test can tell
+        // WHICH window's per-agent rows the leaderboard rendered.
+        if (
+          lbWindowRef.current !== null &&
+          JSON.stringify(opts.queryKey[3]) === lbWindowRef.current &&
+          (opts.queryKey[2] === "by-agent" || opts.queryKey[2] === "agent-runtime")
+        ) {
+          return {
+            data:
+              opts.queryKey[2] === "by-agent"
+                ? [
+                    {
+                      agent_id: "sel-agent",
+                      provider: "anthropic",
+                      model: "claude-sonnet-4-6",
+                      input_tokens: 7_000,
+                      output_tokens: 0,
+                      cache_read_tokens: 0,
+                      cache_write_tokens: 0,
+                      task_count: 3,
+                    },
+                  ]
+                : [
+                    {
+                      agent_id: "sel-agent",
+                      total_seconds: 60,
+                      task_count: 3,
+                      failed_count: 0,
+                    },
+                  ],
+            isLoading: false,
+            isSuccess: true,
+          };
+        }
         // Bulk fixture: 12 agents, every per-agent metric strictly descending
         // so both caps (leaderboard top 10, offenders top 8) are testable by
         // rank without the ties an equal-valued fixture would create. The
@@ -213,6 +312,65 @@ vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
 
+// The dashboard reaches the charts through the shared barrel, and recharts
+// paints nothing in jsdom. The barrel is stubbed with charts that expose the
+// selection seam as a button: clicking emits a span derived from the data the
+// chart was given. Without a handler the stubs render nothing — the same
+// inertness the runtime usage section (which passes no selection props)
+// relies on. `overhang` makes the emitted span cross the window edges by two
+// days, what a Mon–Sun calendar week straddling the stat window looks like.
+vi.mock("../../runtimes/components/charts", () => {
+  const addDays = (iso: string, n: number) => {
+    const d = new Date(iso + "T00:00:00");
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const stub =
+    (testId: string, overhang: boolean) =>
+    function StubChart({
+      data,
+      onSelectionChange,
+    }: {
+      data: { date?: string; weekStart?: string; weekEnd?: string }[];
+      onSelectionChange?: (next: { start: string; end: string }) => void;
+    }) {
+      if (!onSelectionChange) return null;
+      const first = data[0];
+      const last = data[data.length - 1];
+      const startDay = first?.date ?? first?.weekStart ?? "";
+      const endDay = last?.date ?? last?.weekEnd ?? "";
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            onSelectionChange({
+              start: overhang ? addDays(startDay, -2) : startDay,
+              end: overhang ? addDays(endDay, 2) : endDay,
+            })
+          }
+        >
+          {testId}
+        </button>
+      );
+    };
+  return {
+    DailyCostChart: stub("stub:daily-cost", false),
+    DailyTokensChart: stub("stub:daily-tokens", false),
+    DailyTimeChart: stub("stub:daily-time", false),
+    DailyTasksChart: stub("stub:daily-tasks", false),
+    WeeklyCostChart: stub("stub:weekly-cost", false),
+    WeeklyTokensChart: stub("stub:weekly-tokens", true),
+    WeeklyTimeChart: stub("stub:weekly-time", false),
+    WeeklyTasksChart: stub("stub:weekly-tasks", false),
+    DailyErrorsChart: stub("stub:daily-errors", false),
+    WeeklyErrorsChart: stub("stub:weekly-errors", false),
+    // errors-tab also pulls these two non-chart values from the barrel.
+    FAILURE_CLASS_COLOR: {},
+    formatRate: (failed: number, total: number) =>
+      total === 0 ? "0%" : `${Math.round((failed / total) * 100)}%`,
+  };
+});
+
 // The leaderboard renders ActorAvatar, which resolves avatar URLs through
 // the api singleton. Only the base-URL read is exercised here.
 vi.mock("@multica/core/api", () => ({
@@ -235,6 +393,26 @@ vi.mock("@multica/core/auth", () => {
     { getState: state },
   );
   return { useAuthStore };
+});
+
+// The page anchors every quick window on `todayIso(viewTZ)`. Pin it to a ref
+// so the rollover test can advance the calendar day deterministically
+// instead of racing the wall clock across a timezone boundary. While the ref
+// is empty the real implementation runs — every other test sees exactly the
+// windows it always did.
+const todayRef = vi.hoisted(() => ({ current: "" }));
+
+vi.mock("../../runtimes/utils", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../runtimes/utils")>();
+  return {
+    ...actual,
+    todayIso: (tz: string) => todayRef.current || actual.todayIso(tz),
+  };
+});
+
+afterEach(() => {
+  todayRef.current = "";
 });
 
 vi.mock("@multica/core/runtimes/custom-pricing-store", () => {
@@ -787,6 +965,77 @@ describe("DashboardPage — leaderboard density", () => {
   });
 });
 
+// The live Prometheus panels answer "how is the fleet doing right now", a
+// question the calendar-day task rollups don't. When those rollups come back
+// empty the page used to replace its whole body with the empty state — panels
+// unmounted, hooks unfired, so a healthy deployment looked dead (QA P1,
+// RUYI-618). Empty usage must decide the usage sections' presentation only.
+describe("DashboardPage — live metric panels survive an empty usage workspace", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = false;
+    emptyUsageRef.current = true;
+    metricPanelsRef.current = { resources: "data", traffic: "data" };
+    tzRef.current = "UTC";
+    cleanup();
+  });
+
+  afterEach(() => {
+    emptyUsageRef.current = false;
+    metricPanelsRef.current = { resources: false, traffic: false };
+  });
+
+  it("mounts both panels and fires their queries when usage is empty", () => {
+    renderDashboard();
+
+    // The usage sections still speak the truth — no spend yet — but the page
+    // must not stop there: the panels have their own data source.
+    expect(screen.getByText("No usage yet")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-resources-card")).toBeInTheDocument();
+    expect(screen.getByTestId("usage-traffic-card")).toBeInTheDocument();
+    // Mounting is the contract the QA repro tests: with the panels inside the
+    // empty branch, these two queries were never issued at all.
+    expect(
+      queryKeys.some((k) => k[0] === "dashboard" && k[2] === "usage-resources"),
+    ).toBe(true);
+    expect(
+      queryKeys.some((k) => k[0] === "dashboard" && k[2] === "usage-traffic"),
+    ).toBe(true);
+  });
+
+  it("keeps the traffic panel on its own empty state, not the page's", () => {
+    metricPanelsRef.current = { resources: "data", traffic: "empty" };
+    renderDashboard();
+
+    const traffic = screen.getByTestId("usage-traffic-card");
+    expect(
+      within(traffic).getByText("No samples in this window."),
+    ).toBeInTheDocument();
+    // The page-level empty state renders above the panels, not instead of them.
+    expect(screen.getByText("No usage yet")).toBeInTheDocument();
+  });
+
+  it("keeps the panels below the usage sections when usage has data", () => {
+    dashboardDataRef.current = true;
+    emptyUsageRef.current = false;
+    renderDashboard();
+
+    // Baseline order for a workspace with spend: leaderboard, then the two
+    // live panels. The empty-state fix must not reshuffle this page.
+    const leaderboard = screen.getByRole("list", { name: "Leaderboard" });
+    const resources = screen.getByTestId("usage-resources-card");
+    const traffic = screen.getByTestId("usage-traffic-card");
+    expect(
+      leaderboard.compareDocumentPosition(resources) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      resources.compareDocumentPosition(traffic) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
+
 // The period navigation is page-owned state: the filter only reports intent,
 // the page derives the next window. That seam had zero coverage while the
 // shift handler's sign flipped — ‹ clamped itself back onto the current
@@ -800,12 +1049,17 @@ describe("DashboardPage — quick-range period navigation", () => {
     cleanup();
   });
 
-  // The StatWindow rides inside every dashboard query key (dashboardKeys.*),
+  // The StatWindow rides inside every rollup query key (dashboardKeys.*),
   // so reading windows off the captured keys asserts what the six endpoints
-  // are actually asked for rather than what the trigger label claims.
+  // are actually asked for rather than what the trigger label claims. The
+  // live metric panels (usage-resources / usage-traffic) are excluded: they
+  // deliberately run on their own relative windows, independent of the
+  // page's calendar window, so the one-window invariant below is about the
+  // rollups only.
   function askedWindows(): string[] {
     return queryKeys
       .filter((k) => k[0] === "dashboard")
+      .filter((k) => !String(k[2]).startsWith("usage-"))
       .map((k) => JSON.stringify(k[3]));
   }
 
@@ -815,8 +1069,11 @@ describe("DashboardPage — quick-range period navigation", () => {
 
     const current = askedWindows();
     expect(current.length).toBeGreaterThan(0);
-    // Six endpoints, one shared window — the boundary this page exists to
-    // keep, still true the moment the window starts moving.
+    // Eight useQuery sites, one shared window — the boundary this page exists
+    // to keep, still true the moment the window starts moving. The
+    // leaderboard's per-agent pair repeats the statWindow when nothing is
+    // selected, so the duplicate keys are a React Query dedupe, not extra
+    // fetches.
     expect(new Set(current).size).toBe(1);
     const currentWindow = JSON.parse(current[0]!);
 
@@ -839,5 +1096,213 @@ describe("DashboardPage — quick-range period navigation", () => {
     // where › dies again — the forward direction has no future to show.
     expect(new Set(askedWindows())).toEqual(new Set(current));
     expect(screen.getByRole("button", { name: "Next period" })).toBeDisabled();
+  });
+});
+
+// The leaderboard follows the bar selection: clicking or dragging bars
+// narrows the per-agent rollups to the selected span — the rollups carry no
+// dates, so narrowing means re-querying, not filtering rows client-side.
+// Every other card (KPIs, trend charts, failures) keeps the full statWindow.
+// With no selection the leaderboard window IS the statWindow: same query
+// key, zero extra requests.
+describe("DashboardPage — the leaderboard follows the bar selection", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = true;
+    manyAgentsRef.current = false;
+    lbWindowRef.current = null;
+    tzRef.current = "UTC";
+    replaceSpy.mockClear();
+    cleanup();
+  });
+
+  afterEach(() => {
+    lbWindowRef.current = null;
+  });
+
+  function askedWindows(): string[] {
+    return queryKeys
+      .filter((k) => k[0] === "dashboard")
+      // Live metric panels (usage-resources / usage-traffic) deliberately run
+      // on their own relative windows, independent of the calendar window —
+      // same exclusion as the earlier suite's helper; the one-window
+      // invariant here is about the calendar rollups only.
+      .filter((k) => !String(k[2]).startsWith("usage-"))
+      .map((k) => JSON.stringify(k[3]));
+  }
+
+  function windowsFor(kind: string): string[] {
+    return queryKeys
+      .filter((k) => k[0] === "dashboard" && k[2] === kind)
+      .map((k) => JSON.stringify(k[3]));
+  }
+
+  it("keeps one shared window everywhere and inert charts when nothing is selected", () => {
+    renderDashboard();
+
+    const current = askedWindows();
+    expect(current.length).toBeGreaterThan(0);
+    expect(new Set(current).size).toBe(1);
+    // Nothing selected, nothing scoping the leaderboard: no range chip.
+    expect(
+      screen.queryByRole("button", { name: "Clear selection" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("re-queries only the per-agent rollups on the selected span", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+    // The usage fixture carries one row at `today` (the window's last day),
+    // so the stub emits that single day as the selection.
+    const day = JSON.stringify({ start: full.end, end: full.end });
+    lbWindowRef.current = day;
+    queryKeys.length = 0;
+
+    await user.click(screen.getByRole("button", { name: "stub:daily-tokens" }));
+
+    // The per-agent rollups were asked for both the full window and the
+    // selected single day — the leaderboard's two queries moved, nothing
+    // else did.
+    expect(
+      new Set([...windowsFor("by-agent"), ...windowsFor("agent-runtime")]),
+    ).toEqual(new Set([JSON.stringify(full), day]));
+    // Date-bucketed series stay on the full window only.
+    expect(new Set(windowsFor("daily")).size).toBe(1);
+    expect(new Set(windowsFor("runtime-daily")).size).toBe(1);
+    expect(new Set(windowsFor("failures-daily")).size).toBe(1);
+    expect(new Set(windowsFor("failures-by-agent")).size).toBe(1);
+    expect(windowsFor("daily")).not.toContain(day);
+
+    // And the rows rendered come from the SELECTED window's answer, not the
+    // full-window one.
+    const board = within(screen.getByRole("list", { name: "Leaderboard" }));
+    expect(board.getByText("Selected Agent")).toBeInTheDocument();
+    expect(board.queryByText("Agent One")).not.toBeInTheDocument();
+  });
+
+  it("restores the full-window leaderboard when the selection is cleared", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+    lbWindowRef.current = JSON.stringify({ start: full.end, end: full.end });
+    await user.click(screen.getByRole("button", { name: "stub:daily-tokens" }));
+    expect(screen.getByText("Selected Agent")).toBeInTheDocument();
+
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+
+    expect(new Set(askedWindows()).size).toBe(1);
+    const board = within(screen.getByRole("list", { name: "Leaderboard" }));
+    expect(board.getByText("Agent One")).toBeInTheDocument();
+    expect(board.queryByText("Selected Agent")).not.toBeInTheDocument();
+  });
+
+  it("clamps an out-of-window span to the stat window", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+
+    // The weekly stub only renders on the Weekly cut.
+    const dims = within(screen.getByRole("group", { name: "Dimension" }));
+    await user.click(dims.getByRole("button", { name: "Weekly" }));
+
+    queryKeys.length = 0;
+    // It emits two days beyond each window edge — a Mon–Sun calendar week
+    // straddling the window start or end.
+    await user.click(screen.getByRole("button", { name: "stub:weekly-tokens" }));
+
+    // No query escapes the window the KPIs quote: the clamped selection
+    // collapsed onto the full window instead of trading past it.
+    for (const w of askedWindows().map((w) => JSON.parse(w))) {
+      expect(w.start >= full.start).toBe(true);
+      expect(w.end <= full.end).toBe(true);
+    }
+    expect(new Set(askedWindows()).size).toBe(1);
+  });
+
+  it("clears the selection when the stat window changes", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+    lbWindowRef.current = JSON.stringify({ start: full.end, end: full.end });
+    await user.click(screen.getByRole("button", { name: "stub:daily-tokens" }));
+    expect(screen.getByText("Selected Agent")).toBeInTheDocument();
+
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("button", { name: "Previous period" }));
+
+    // The shifted period's queries are all full-window again — a stale
+    // selection must not ride along to windows its bars no longer exist in.
+    expect(new Set(askedWindows()).size).toBe(1);
+  });
+
+  it("drops a stored selection once the day rolls over past its window", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    const full = JSON.parse(askedWindows()[0]!);
+
+    // The weekly stub only renders on the Weekly cut, and its overhanging
+    // Mon–Sun span clamps to exactly the stat window: the stored selection
+    // covers the whole window.
+    const dims = within(screen.getByRole("group", { name: "Dimension" }));
+    await user.click(dims.getByRole("button", { name: "Weekly" }));
+    await user.click(screen.getByRole("button", { name: "stub:weekly-tokens" }));
+    expect(
+      screen.getByRole("button", { name: "Clear selection" }),
+    ).toBeInTheDocument();
+
+    // Midnight: the quick window re-anchors on the new day with no handler
+    // firing — the explicit-change clear sites never run. The stored
+    // whole-window span starts before the shifted window's first day, so it
+    // no longer overlaps and must read as no selection: no chip, every query
+    // back on the one visible window, no off-axis leaderboard.
+    todayRef.current = addDaysIso(todayIso(), 1);
+    lbWindowRef.current = JSON.stringify(full);
+    queryKeys.length = 0;
+    await user.click(screen.getByRole("tab", { name: /Errors/ }));
+    await user.click(screen.getByRole("tab", { name: "Usage" }));
+
+    expect(
+      screen.queryByRole("button", { name: "Clear selection" }),
+    ).not.toBeInTheDocument();
+    expect(new Set(askedWindows()).size).toBe(1);
+    expect(askedWindows()).not.toContain(JSON.stringify(full));
+    expect(
+      within(screen.getByRole("list", { name: "Leaderboard" })).getByText(
+        "Agent One",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shares one selection across the Usage and Errors tabs", async () => {
+    const user = userEvent.setup();
+    renderDashboard();
+
+    await openErrorsTab(user);
+    const full = JSON.parse(askedWindows()[0]!);
+    const day = JSON.stringify({ start: full.end, end: full.end });
+    lbWindowRef.current = day;
+    queryKeys.length = 0;
+
+    await user.click(screen.getByRole("button", { name: "stub:daily-errors" }));
+
+    // The selection is page state, not chart state: the Errors-tab chart
+    // drives the same per-agent re-query the Usage-tab charts do.
+    expect(windowsFor("by-agent")).toContain(day);
+    expect(windowsFor("daily")).not.toContain(day);
+
+    // Back on Usage the leaderboard is already on the selected span.
+    await user.click(screen.getByRole("tab", { name: "Usage" }));
+    expect(
+      within(screen.getByRole("list", { name: "Leaderboard" })).getByText(
+        "Selected Agent",
+      ),
+    ).toBeInTheDocument();
   });
 });

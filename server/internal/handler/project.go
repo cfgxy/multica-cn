@@ -113,16 +113,16 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 }
 
 type CreateProjectRequest struct {
-	Title        string    `json:"title"`
-	Description  *string   `json:"description"`
-	Instructions *string   `json:"instructions"`
-	Icon         *string   `json:"icon"`
-	Status       string    `json:"status"`
-	Priority     string    `json:"priority"`
-	LeadType     *string   `json:"lead_type"`
-	LeadID       *string   `json:"lead_id"`
-	StartDate    *string   `json:"start_date"`
-	DueDate      *string   `json:"due_date"`
+	Title        string                                `json:"title"`
+	Description  *string                               `json:"description"`
+	Instructions *string                               `json:"instructions"`
+	Icon         *string                               `json:"icon"`
+	Status       string                                `json:"status"`
+	Priority     string                                `json:"priority"`
+	LeadType     *string                               `json:"lead_type"`
+	LeadID       *string                               `json:"lead_id"`
+	StartDate    *string                               `json:"start_date"`
+	DueDate      *string                               `json:"due_date"`
 	Resources    []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
 }
 
@@ -388,6 +388,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	// surface, where there is no existing row to compare against yet.
 	normalizedRefs := make([]json.RawMessage, len(req.Resources))
 	localDirSeen := map[string]int{}
+	snapshotPrimarySeen := -1
 	for i, res := range req.Resources {
 		res.ResourceType = strings.TrimSpace(res.ResourceType)
 		if res.ResourceType == "" {
@@ -406,8 +407,22 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "resources["+strconv.Itoa(i)+"]: "+err.Error())
 				return
 			}
-			if prev, ok := localDirSeen[ld.DaemonID]; ok {
-				writeError(w, http.StatusBadRequest, "resources["+strconv.Itoa(i)+"]: duplicate local_directory for daemon (already at index "+strconv.Itoa(prev)+"); each daemon may attach at most one local_directory per project")
+			// At most one primary snapshot directory per project, batch
+			// included: the primary decides where an undeclared task lands,
+			// and two would make that depend on row order.
+			if ld.ExecutionMode == localDirectoryModeSnapshot && ld.Primary {
+				if snapshotPrimarySeen >= 0 {
+					writeError(w, http.StatusBadRequest, "resources["+strconv.Itoa(i)+"]: duplicate primary snapshot directory (already at index "+strconv.Itoa(snapshotPrimarySeen)+"); a project has at most one primary")
+					return
+				}
+				snapshotPrimarySeen = i
+			}
+			// Snapshot rows are exempt (RUYI-669): one project may carry
+			// several snapshot directories of the same machine for
+			// multi-resource tasks. The one-per-daemon rule keeps guarding
+			// in_place/worktree rows, whose resolver still picks by daemon_id.
+			if prev, ok := localDirSeen[ld.DaemonID]; ok && ld.ExecutionMode != localDirectoryModeSnapshot {
+				writeError(w, http.StatusBadRequest, "resources["+strconv.Itoa(i)+"]: duplicate local_directory for daemon (already at index "+strconv.Itoa(prev)+"); each daemon may attach at most one in_place/worktree local_directory per project")
 				return
 			}
 			localDirSeen[ld.DaemonID] = i
@@ -417,7 +432,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			// run — caught only later, by the claim gate cancelling the task.
 			// It writes its own 422; it runs before the transaction, so a
 			// rejection leaves nothing behind.
-			if !h.requireWorktreeCapableDaemon(w, r, wsUUID, res.ResourceType, ref) {
+			if !h.requireLocalIsolationCapableDaemon(w, r, wsUUID, res.ResourceType, ref) {
 				return
 			}
 		}

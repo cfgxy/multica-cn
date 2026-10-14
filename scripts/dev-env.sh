@@ -8,7 +8,7 @@
 #   scripts/dev-env.sh dev1 status             # what is running, and whose
 #   scripts/dev-env.sh list                    # every slot on this machine
 #   scripts/dev-env.sh audit                   # bypass sweep: stray multica_% dbs + servers
-#   scripts/dev-env.sh dev1 down               # stop the processes, keep the data
+#   scripts/dev-env.sh dev1 down               # stop the processes, keep the data (before lock-release)
 #   scripts/dev-env.sh dev1 orphans            # leftover procs/ports/worktrees
 #   scripts/dev-env.sh dev1 destroy            # stop, then drop slot db + account
 #
@@ -375,10 +375,19 @@ caller_owner() { printf '%s' "${MULTICA_CALLER_OWNER:-}"; }
 # Write verbs are lease-gated fail-closed: without an issue identity nothing
 # may allocate, start, stop or destroy a slot, and a slot held by another
 # issue is off limits until lock-recover proves that issue left in_progress.
+# require_lease [mode]: mode "active" (used by down) demands an existing
+# lease file and must never mint one — the acquire-on-miss below would
+# resurrect a released lease with a fresh ACQUIRED_AT and no history line,
+# stranding the slot behind a ghost holder (RUYI-712).
 require_lease() {
+  local lease_mode="${1:-acquire}"
   local owner
   owner="$(caller_owner)"
   [ -n "$owner" ] || die "MULTICA_CALLER_OWNER is not set. Write commands must name the owning issue, e.g. MULTICA_CALLER_OWNER=RUYI-333 scripts/dev-env.sh $SLOT up."
+
+  if [ "$lease_mode" = active ] && [ ! -f "$SLOT_LOCK_FILE" ]; then
+    die "Slot $SLOT has no active lease (already released or never acquired) — nothing to stop. Run down while the lease is held, then free the slot with '$0 $SLOT lock-release'."
+  fi
 
   local current="" phase=""
   if [ -f "$SLOT_LOCK_FILE" ]; then
@@ -1327,7 +1336,13 @@ start_daemon() {
   # daemon registers, heartbeats, and then fails every task with
   # "fork/exec .../go-build.../exe/multica: no such file or directory".
   info "Building the multica CLI (a go run daemon would fail every task later)."
-  (cd "$DIR/server" && go build -o bin/multica ./cmd/multica) || die "Failed to build the multica CLI."
+  # Stamp the Makefile's git-describe version (Makefile VERSION). The
+  # quick-create gate (agent.CheckMinCLIVersionFor) exempts git-describe-shaped
+  # builds; a bare `go build` reports "dev" and every quick-create 422s,
+  # forcing a hand-written agent_runtime UPDATE after each daemon restart.
+  local cli_version
+  cli_version="$(git -C "$DIR" describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)"
+  (cd "$DIR/server" && go build -ldflags "-X main.version=$cli_version" -o bin/multica ./cmd/multica) || die "Failed to build the multica CLI."
   MULTICA_BIN="$DIR/server/bin/multica"
 
   resource_env_args daemon
@@ -1955,7 +1970,7 @@ cmd_down() {
       *) die "Unexpected argument for down: $1 (the slot is the first argument: dev-env.sh $SLOT down)" ;;
     esac
   done
-  require_lease
+  require_lease active
   resolve_slot_for_read
   export DATABASE_URL="$(env_file_field DATABASE_URL)" POSTGRES_DB="$SLOT_DB"
 
@@ -2664,7 +2679,7 @@ usage() {
 Fixed-slot local development environments (fact source: scripts/slots.json).
 
   dev-env.sh <slot> up      [--components api,web,daemon,desktop] [--all]
-  dev-env.sh <slot> down    [--components ...]
+  dev-env.sh <slot> down    [--components ...]  # stop a held slot — run BEFORE lock-release
   dev-env.sh <slot> status  [--json]
   dev-env.sh <slot> use     [sha]        # bind this checkout, or load a revision
   dev-env.sh <slot> handoff --to dev|qa [--note ...]  # role handover, same issue
@@ -2691,7 +2706,10 @@ window is the one shape where ONE issue holds BOTH slots: arm each slot's
 lease with `use --phase qa`, run the two servers, then close the window by
 releasing both leases with `lock-release` right away — a qa-phase holder may
 release while its issue is still in_progress (the dev phase releases only at
-issue closure). `audit` reports Multica-shaped activity outside this model:
+issue closure). Verbs that stop things act on a held lease — the order is
+`down` first, `lock-release` second; `down` on a slot with no active lease
+is refused, so it can never resurrect a released lease (RUYI-712).
+`audit` reports Multica-shaped activity outside this model:
 unregistered multica_% databases on the shared instance, and listeners off
 the registered ports whose DATABASE_URL names an unregistered multica_%
 database, whose cwd sits under the QA/slot home, or that are a cmd/api

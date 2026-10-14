@@ -1,8 +1,15 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildSearchQuery_SingleTerm(t *testing.T) {
@@ -428,4 +435,187 @@ func buildSearchQueryForTest(t *testing.T, phrase string, terms []string, num in
 	t.Helper()
 	query, _ := buildSearchQuery(phrase, append([]string(nil), terms...), num, hasNum, includeClosed, []string{"done", "cancelled"})
 	return query
+}
+
+// --- RUYI-753 代码优化阶段：评论短语匹配单次物化 ---
+
+// 同一评论短语 EXISTS 谓词此前在 WHERE 过滤与 rank Tier 7 各物化一次
+// （生产 EXPLAIN 为两个 hashed SubPlan，各对候选集做一轮 LOWER+LIKE recheck，
+// 各约 130ms）。本单将其改为单个 LEFT JOIN 旗标子查询物化一次，WHERE 与
+// 排序两处复用 cm 旗标；matched_comment_content 标量子查询走 issue 侧
+// btree（每行约 0.5ms），保持原形态。
+func TestBuildSearchQuery_CommentMatchSingleMaterialization(t *testing.T) {
+	phraseExists := "EXISTS (SELECT 1 FROM comment c WHERE c.issue_id = i.id AND c.workspace_id = $4 AND LOWER(c.content) LIKE $2)"
+
+	singleQuery, _ := buildSearchQuery("html", []string{"html"}, 0, false, false, []string{"done", "cancelled"})
+
+	joinCount := strings.Count(singleQuery, "LEFT JOIN (SELECT DISTINCT c.issue_id FROM comment c")
+	if joinCount != 1 {
+		t.Fatalf("single-term query should materialize the comment phrase match exactly once via one flag join, got %d:\n%s", joinCount, singleQuery)
+	}
+	if strings.Contains(singleQuery, phraseExists) {
+		t.Errorf("single-term query still materializes the phrase EXISTS separately (double hashed SubPlan):\n%s", singleQuery)
+	}
+	// 单词查询只应有两处 comment 引用：旗标 join + matched_comment_content 标量子查询。
+	if from := strings.Count(singleQuery, "FROM comment c"); from != 2 {
+		t.Errorf("single-term query should touch comment exactly twice (flag join + content subquery), got %d", from)
+	}
+	orderBy := orderByClause(t, singleQuery)
+	if !strings.Contains(orderBy, "WHEN cm.issue_id IS NOT NULL THEN 7") {
+		t.Errorf("rank tier 7 should reuse the joined flag instead of a second EXISTS:\n%s", orderBy)
+	}
+	if !strings.Contains(singleQuery, "LOWER(COALESCE(i.description, '')) LIKE $2 OR cm.issue_id IS NOT NULL") {
+		t.Errorf("WHERE phrase match should reuse the joined flag:\n%s", singleQuery)
+	}
+
+	multiQuery, _ := buildSearchQuery("foo bar", []string{"foo", "bar"}, 0, false, false, []string{"done", "cancelled"})
+	if strings.Contains(multiQuery, phraseExists) {
+		t.Errorf("multi-term query still materializes the phrase EXISTS separately:\n%s", multiQuery)
+	}
+	// 多词的 per-term 与 Tier 8 EXISTS 语义保持不变（各自单次物化，非本单目标）。
+	if !strings.Contains(multiQuery, "EXISTS (SELECT 1 FROM comment c WHERE c.issue_id = i.id AND c.workspace_id = $4 AND LOWER(c.content) LIKE $5)") {
+		t.Errorf("multi-term per-term comment EXISTS should be preserved:\n%s", multiQuery)
+	}
+	if !strings.Contains(orderByClause(t, multiQuery), "THEN 8") {
+		t.Error("multi-term query should keep tier 8 (all terms in one comment)")
+	}
+}
+
+// 多工作区隔离（MUL-4059 契约的 join 形态表述）：旗标子查询必须内嵌与外层
+// 相同的 workspace 绑定（$4，由调用方写入 args[3]），保证 A 工作区评论命中
+// 不可能落入 B 工作区搜索结果，且物化集合不会膨胀为跨工作区全表。
+func TestBuildSearchQuery_CommentFlagJoinWorkspaceIsolation(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"single-term", buildSearchQueryForTest(t, "html", []string{"html"}, 0, false, false)},
+		{"multi-term", buildSearchQueryForTest(t, "foo bar", []string{"foo", "bar"}, 0, false, false)},
+	}
+	for _, tc := range cases {
+		if !strings.Contains(tc.query, "WHERE i.workspace_id = $4 AND") {
+			t.Errorf("%s: outer issue scan must bind the caller workspace param $4", tc.name)
+		}
+		joinStart := strings.Index(tc.query, "LEFT JOIN (SELECT DISTINCT c.issue_id FROM comment c")
+		if joinStart == -1 {
+			t.Fatalf("%s: comment flag join missing", tc.name)
+		}
+		joinEnd := strings.Index(tc.query[joinStart:], ") cm ON cm.issue_id = i.id")
+		if joinEnd == -1 {
+			t.Fatalf("%s: cannot locate flag join subquery boundary", tc.name)
+		}
+		joinSub := tc.query[joinStart : joinStart+joinEnd]
+		if !strings.Contains(joinSub, "c.workspace_id = $4") {
+			t.Errorf("%s: comment flag join is not workspace-scoped (MUL-4059 regression):\n%s", tc.name, joinSub)
+		}
+	}
+}
+
+// TestSearchIssues_CommentMatchIsWorkspaceScoped 是多工作区隔离的真实 DB 断言
+// （MUL-4059 契约在旗标 join 形态下的行为锁定）：A 工作区里仅评论命中的 issue
+// 必须出现在 A 的搜索结果且 match_source=comment；同一关键词在 B 工作区不得
+// 命中 A 的 issue——评论匹配严格限本工作区。
+func TestSearchIssues_CommentMatchIsWorkspaceScoped(t *testing.T) {
+	ctx := context.Background()
+	token := fmt.Sprintf("ruyi753isolation%x", time.Now().UnixNano())
+
+	// 工作区 B：与套件工作区 A 相互独立。
+	var wsB string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('RUYI-753 Isolation B', $1, '', 'ISO')
+		RETURNING id
+	`, "iso-753-"+handlerFixtureSuffix).Scan(&wsB); err != nil {
+		t.Fatalf("create workspace B: %v", err)
+	}
+	t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, wsB) })
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'owner')
+	`, wsB, testUserID); err != nil {
+		t.Fatalf("add member to workspace B: %v", err)
+	}
+
+	// seedIssueWithComment 在指定工作区建 issue（原子递增该工作区的计数器），
+	// comment 非空时附带一条评论，返回 issue id。
+	var seedIssueWithComment func(wsID, title, comment string) string
+	seedIssueWithComment = func(wsID, title, comment string) string {
+		t.Helper()
+		var number int
+		if err := testPool.QueryRow(ctx, `
+			UPDATE workspace
+			SET issue_counter = GREATEST(issue_counter, (SELECT COALESCE(MAX(number), 0) FROM issue WHERE workspace_id = $1)) + 1
+			WHERE id = $1 RETURNING issue_counter
+		`, wsID).Scan(&number); err != nil {
+			t.Fatalf("next issue number in %s: %v", wsID, err)
+		}
+		var issueID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, position, number, created_at, updated_at)
+			VALUES ($1, $2, 'todo', 'none', 'member', $3, 0, $4, now(), now())
+			RETURNING id
+		`, wsID, title, testUserID, number).Scan(&issueID); err != nil {
+			t.Fatalf("create issue %q: %v", title, err)
+		}
+		t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+		if comment != "" {
+			var commentID string
+			if err := testPool.QueryRow(ctx, `
+				INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+				VALUES ($1, $2, 'member', $3, $4)
+				RETURNING id
+			`, wsID, issueID, testUserID, comment).Scan(&commentID); err != nil {
+				t.Fatalf("create comment on %q: %v", title, err)
+			}
+			t.Cleanup(func() { _, _ = testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID) })
+		}
+		return issueID
+	}
+
+	// A 工作区：标题不含 token，命中只能来自评论。
+	issueA := seedIssueWithComment(testWorkspaceID, "isolation anchor alpha", "quoted text "+token+" in comment body")
+	// B 工作区：同构 issue，评论不含 token。
+	_ = seedIssueWithComment(wsB, "isolation anchor beta", "unrelated remark")
+
+	searchIn := func(wsID, q string) []SearchIssueResponse {
+		t.Helper()
+		path := fmt.Sprintf(
+			"/api/issues/search?workspace_id=%s&q=%s&limit=50&include_closed=true",
+			wsID, url.QueryEscape(q),
+		)
+		req := newRequest("GET", path, nil)
+		// newRequest 默认注入套件工作区头，其优先级高于 query 参数；这里显式
+		// 覆盖为被测工作区，保证搜索真正落在 wsID 上。
+		req.Header.Set("X-Workspace-ID", wsID)
+		w := httptest.NewRecorder()
+		testHandler.SearchIssues(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("SearchIssues(ws=%s, %q): expected 200, got %d: %s", wsID, q, w.Code, w.Body.String())
+		}
+		var response struct {
+			Issues []SearchIssueResponse `json:"issues"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode search response: %v", err)
+		}
+		return response.Issues
+	}
+
+	// A 工作区命中：来源必须是评论，且带回评论内容。
+	inA := searchIn(testWorkspaceID, token)
+	if len(inA) != 1 || inA[0].ID != issueA {
+		t.Fatalf("workspace A search(%q) = %d rows, want exactly the comment-matched issue %s", token, len(inA), issueA)
+	}
+	if inA[0].MatchSource != "comment" {
+		t.Fatalf("workspace A match_source = %q, want %q", inA[0].MatchSource, "comment")
+	}
+	if inA[0].MatchedCommentSnippet == nil || !strings.Contains(*inA[0].MatchedCommentSnippet, token) {
+		t.Fatalf("workspace A matched_comment_snippet = %v, want it to contain the token", inA[0].MatchedCommentSnippet)
+	}
+
+	// B 工作区：A 的评论命中不得跨工作区出现。
+	inB := searchIn(wsB, token)
+	if len(inB) != 0 {
+		t.Fatalf("workspace B search(%q) returned %d rows, want 0 — comment match leaked across workspaces: %v", token, len(inB), inB)
+	}
 }

@@ -126,6 +126,14 @@ const (
 	// Only valid when the directory is a git working tree — the daemon
 	// verifies that at task time, since the server can't see the filesystem.
 	localDirectoryModeWorktree = "worktree"
+	// localDirectoryModeSnapshot gives each task a copy-on-write view of the
+	// directory (RUYI-669): a per-task overlay mounted at the same path
+	// inside a user namespace, so non-git directories get worktree-like
+	// isolation. Concurrent tasks are safe without any git involvement;
+	// git subdirectories still route to the worktree flow at task time.
+	// Only valid where the daemon's userns+overlay probe passed — probed at
+	// daemon startup, advertised as a capability, gated at save AND claim.
+	localDirectoryModeSnapshot = "snapshot"
 )
 
 // localDirectoryRef is the JSONB shape stored for resource_type=local_directory.
@@ -137,22 +145,39 @@ const (
 //
 // execution_mode selects how tasks share that directory: in_place (default)
 // keeps the historical one-task-at-a-time behavior, worktree gives each task an
-// isolated git worktree so tasks run concurrently.
+// isolated git worktree so tasks run concurrently, snapshot gives each task a
+// copy-on-write view (git and non-git directories alike).
+//
+// Snapshot-mode resources carry two extra fields. A project may attach several
+// snapshot directories (multi-resource tasks: a frontend repo and a backend
+// repo on the same machine); primary marks THE one an undeclared task's
+// workdir lands in — at most one per project, enforced at save time, because
+// "which directory does this task even run in" must never be guessed.
+// subdirectories bounds the resource's effective set: the task-visible scope
+// the snapshot materializes and declares lock against. Absent means the whole
+// directory; entries are slash-normalized relative paths.
 type localDirectoryRef struct {
-	LocalPath     string `json:"local_path"`
-	DaemonID      string `json:"daemon_id"`
-	Label         string `json:"label,omitempty"`
-	ExecutionMode string `json:"execution_mode,omitempty"`
+	LocalPath      string   `json:"local_path"`
+	DaemonID       string   `json:"daemon_id"`
+	Label          string   `json:"label,omitempty"`
+	ExecutionMode  string   `json:"execution_mode,omitempty"`
+	Primary        bool     `json:"primary,omitempty"`
+	Subdirectories []string `json:"subdirectories,omitempty"`
 }
 
-// requireWorktreeCapableDaemon rejects saving a local_directory ref that asks
-// for execution_mode=worktree while the daemon owning the path is too old to
-// implement the mode. An old daemon does not know the field exists: it would
-// json-skip it and run tasks IN PLACE, editing the working copy the user
+// requireLocalIsolationCapableDaemon rejects saving a local_directory ref that
+// asks for a non-default execution mode while the daemon owning the path is
+// too old to implement it. An old daemon does not know the field exists: it
+// would json-skip it and run tasks IN PLACE, editing the working copy the user
 // explicitly asked to isolate — and it predates the daemon-side unknown-mode
 // refusal, so only the server can stop it. Gating at save time surfaces the
 // failure at the moment the user can act on it (upgrade the daemon), instead
 // of as a silently-wrong task later.
+//
+// worktree mode gates on the worktree capability; snapshot mode (RUYI-669)
+// gates on the local-snapshot capability, which the daemon advertises only
+// after its startup userns+overlay probe passed — absence here means the HOST
+// cannot do it, so there is no version to suggest upgrading to.
 //
 // Residual gap, accepted for now: a daemon downgraded AFTER the resource was
 // saved is not caught here; closing that needs a claim-time gate.
@@ -160,12 +185,21 @@ type localDirectoryRef struct {
 // Returns true to proceed; on false the 422 response has already been written,
 // using the same daemon_version_unsupported code as the quick-create gate so
 // clients can branch on it.
-func (h *Handler) requireWorktreeCapableDaemon(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, resourceType string, normalizedRef json.RawMessage) bool {
+func (h *Handler) requireLocalIsolationCapableDaemon(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, resourceType string, normalizedRef json.RawMessage) bool {
 	if resourceType != "local_directory" {
 		return true
 	}
 	var ref localDirectoryRef
-	if err := json.Unmarshal(normalizedRef, &ref); err != nil || ref.ExecutionMode != localDirectoryModeWorktree {
+	if err := json.Unmarshal(normalizedRef, &ref); err != nil {
+		return true
+	}
+	var capability, modeLabel string
+	switch ref.ExecutionMode {
+	case localDirectoryModeWorktree:
+		capability, modeLabel = protocol.DaemonCapabilityLocalWorktreeV1, "parallel (worktree)"
+	case localDirectoryModeSnapshot:
+		capability, modeLabel = protocol.DaemonCapabilityLocalSnapshotV1, "snapshot"
+	default:
 		return true
 	}
 
@@ -181,26 +215,38 @@ func (h *Handler) requireWorktreeCapableDaemon(w http.ResponseWriter, r *http.Re
 	// its runtime row at registration. Version numbers cannot answer this — a
 	// dev-built daemon reports a git-describe string that the version floor
 	// deliberately exempts (MUL-5707).
-	if daemonAdvertisesWorktree(runtimes, ref.DaemonID) {
+	if daemonAdvertisesCapability(runtimes, ref.DaemonID, capability) {
 		return true
 	}
 	// Fail closed when no runtime for this daemon advertises it — including a
-	// daemon_id with no registered runtime at all: a worktree resource that can
-	// never dispatch correctly is worse than a save-time error.
-	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+	// daemon_id with no registered runtime at all: a resource that can never
+	// dispatch correctly is worse than a save-time error.
+	resp := map[string]any{
 		"error": fmt.Sprintf(
-			"local_directory: %q is set to parallel (worktree) mode, but the Multica runtime on that machine does not support it. Update the Multica app on that machine to the latest version, or keep the resource on in_place.",
-			ref.LocalPath),
+			"local_directory: %q is set to %s mode, but the Multica runtime on that machine does not support it. Update the Multica app on that machine to the latest version, or keep the resource on in_place.",
+			ref.LocalPath, modeLabel),
 		"code":            "daemon_version_unsupported",
 		"current_version": latestDaemonCLIVersion(runtimes, ref.DaemonID),
-		"min_version":     agentpkg.MinLocalWorktreeCLIVersion,
 		"daemon_id":       ref.DaemonID,
-	})
+	}
+	if ref.ExecutionMode == localDirectoryModeWorktree {
+		// Snapshot capability is host-probed, not version-floored: there is no
+		// min_version that upgrading to would satisfy.
+		resp["min_version"] = agentpkg.MinLocalWorktreeCLIVersion
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, resp)
 	return false
 }
 
 // daemonAdvertisesWorktree reports whether the daemon's MOST RECENTLY SEEN
-// runtime row advertised worktree support.
+// runtime row advertised worktree support. Thin wrapper over the
+// capability-general form.
+func daemonAdvertisesWorktree(runtimes []db.AgentRuntime, daemonID string) bool {
+	return daemonAdvertisesCapability(runtimes, daemonID, protocol.DaemonCapabilityLocalWorktreeV1)
+}
+
+// daemonAdvertisesCapability reports whether the daemon's MOST RECENTLY SEEN
+// runtime row advertised the given capability.
 //
 // Deliberately not "any row advertised it". Deregistering a runtime only flips
 // the row to offline — its metadata survives — and ListAgentRuntimes returns
@@ -211,7 +257,7 @@ func (h *Handler) requireWorktreeCapableDaemon(w http.ResponseWriter, r *http.Re
 //
 // A row missing the capability is never skipped: being the newest is what makes
 // it authoritative, not whether its answer is convenient.
-func daemonAdvertisesWorktree(runtimes []db.AgentRuntime, daemonID string) bool {
+func daemonAdvertisesCapability(runtimes []db.AgentRuntime, daemonID, capability string) bool {
 	if strings.TrimSpace(daemonID) == "" {
 		return false
 	}
@@ -228,7 +274,7 @@ func daemonAdvertisesWorktree(runtimes []db.AgentRuntime, daemonID string) bool 
 	if newest == nil {
 		return false
 	}
-	return runtimeHasCapability(newest.Metadata, protocol.DaemonCapabilityLocalWorktreeV1)
+	return runtimeHasCapability(newest.Metadata, capability)
 }
 
 // runtimeSeenAfter orders two rows of the same daemon by last_seen_at. A row
@@ -287,14 +333,61 @@ func validateLocalDirectoryRef(ref json.RawMessage) (json.RawMessage, error) {
 	payload.Label = strings.TrimSpace(payload.Label)
 	payload.ExecutionMode = strings.TrimSpace(payload.ExecutionMode)
 	switch payload.ExecutionMode {
-	case "", localDirectoryModeInPlace, localDirectoryModeWorktree:
+	case "", localDirectoryModeInPlace, localDirectoryModeWorktree, localDirectoryModeSnapshot:
 	default:
-		return nil, fmt.Errorf("local_directory: execution_mode must be %q or %q, got %q",
-			localDirectoryModeInPlace, localDirectoryModeWorktree, payload.ExecutionMode)
+		return nil, fmt.Errorf("local_directory: execution_mode must be %q, %q or %q, got %q",
+			localDirectoryModeInPlace, localDirectoryModeWorktree, localDirectoryModeSnapshot, payload.ExecutionMode)
 	}
+	// primary/subdirectories are snapshot-mode fields. On other modes they
+	// have no consumer — the daemon's resolver reads them only for snapshot
+	// tasks — so accepting them silently would store config that looks
+	// meaningful and does nothing.
+	if payload.ExecutionMode != localDirectoryModeSnapshot {
+		if payload.Primary || len(payload.Subdirectories) > 0 {
+			return nil, fmt.Errorf("local_directory: primary/subdirectories require execution_mode %q",
+				localDirectoryModeSnapshot)
+		}
+	}
+	normalized, err := normalizeSnapshotSubdirectories(payload.Subdirectories)
+	if err != nil {
+		return nil, err
+	}
+	payload.Subdirectories = normalized
 	out, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// normalizeSnapshotSubdirectories cleans a snapshot resource's effective
+// subdirectory set: slash-normalized relative paths, no traversal, no
+// duplicates. An all-empty set normalizes to nil (= whole directory), so the
+// stored JSON never carries meaningless empty strings for the daemon to
+// re-litigate. The daemon re-validates the task-scope copy at claim time —
+// this is the producer-side gate, not the only one.
+func normalizeSnapshotSubdirectories(subdirs []string) ([]string, error) {
+	if len(subdirs) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(subdirs))
+	out := make([]string, 0, len(subdirs))
+	for _, raw := range subdirs {
+		s := strings.TrimSpace(raw)
+		s = strings.Trim(s, "/")
+		if s == "" {
+			return nil, errors.New("local_directory: subdirectories entries must be non-empty relative paths")
+		}
+		for _, seg := range strings.Split(s, "/") {
+			if seg == "" || seg == "." || seg == ".." || strings.ContainsRune(seg, 0) {
+				return nil, fmt.Errorf("local_directory: subdirectories entry %q is not a safe relative path", raw)
+			}
+		}
+		if seen[s] {
+			return nil, fmt.Errorf("local_directory: subdirectories entry %q is duplicated", s)
+		}
+		seen[s] = true
+		out = append(out, s)
 	}
 	return out, nil
 }
@@ -520,7 +613,15 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if !h.requireWorktreeCapableDaemon(w, r, project.WorkspaceID, req.ResourceType, normalizedRef) {
+	if conflict, err := h.findSnapshotPrimaryConflict(r.Context(), project.ID, normalizedRef, pgtype.UUID{}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check existing resources")
+		return
+	} else if conflict {
+		writeError(w, http.StatusConflict, "this project already has a primary snapshot directory; unset it before marking another")
+		return
+	}
+
+	if !h.requireLocalIsolationCapableDaemon(w, r, project.WorkspaceID, req.ResourceType, normalizedRef) {
 		return
 	}
 
@@ -627,6 +728,14 @@ func (h *Handler) UpdateProjectResource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if conflict, err := h.findSnapshotPrimaryConflict(r.Context(), project.ID, nextRef, existing.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to check existing resources")
+		return
+	} else if conflict {
+		writeError(w, http.StatusConflict, "another snapshot directory is already the primary of this project")
+		return
+	}
+
 	// A ≤ v0.4.28 client renames by resending the ref, so "the ref was sent"
 	// does not mean "the execution mode was touched". Anything else about the
 	// ref changing does mean it might have been.
@@ -640,7 +749,7 @@ func (h *Handler) UpdateProjectResource(w http.ResponseWriter, r *http.Request) 
 	// after the mode was legitimately saved. The row already says worktree; the
 	// claim gate is what stops it from running somewhere that cannot.
 	if refProvided && !refRenameOnly {
-		if !h.requireWorktreeCapableDaemon(w, r, project.WorkspaceID, existing.ResourceType, nextRef) {
+		if !h.requireLocalIsolationCapableDaemon(w, r, project.WorkspaceID, existing.ResourceType, nextRef) {
 			return
 		}
 	}
@@ -778,6 +887,132 @@ func (h *Handler) findLocalDirectoryConflict(ctx context.Context, projectID pgty
 	if err != nil {
 		return false, err
 	}
+	// Snapshot rows (RUYI-669) are exempt from the one-per-daemon rule in
+	// both directions: a multi-resource snapshot task needs SEVERAL
+	// directories of the same machine attached to one project, and snapshot
+	// routing is by explicit resource_id — not by "first row matching this
+	// daemon" — so the silent-pickup ambiguity the rule guards against
+	// cannot arise for them. A non-snapshot row and a snapshot row may
+	// therefore coexist per daemon; two non-snapshot rows still cannot.
+	if incoming.ExecutionMode != localDirectoryModeSnapshot {
+		for _, row := range rows {
+			if row.ResourceType != "local_directory" {
+				continue
+			}
+			if excludeID.Valid && uuidToString(row.ID) == uuidToString(excludeID) {
+				continue
+			}
+			var existing localDirectoryRef
+			if err := json.Unmarshal(row.ResourceRef, &existing); err != nil {
+				continue
+			}
+			if existing.ExecutionMode == localDirectoryModeSnapshot {
+				continue
+			}
+			// Daemon-scoped uniqueness: one local_directory per daemon per
+			// project. Different daemons can each carry one row (one per
+			// user device); the daemon-side resolver routes each daemon to
+			// its own assignment by daemon_id.
+			if existing.DaemonID == incoming.DaemonID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// validateQuickCreateDirectoryScope validates a quick-create request's
+// local_directory_scope against the picked project's resources: every entry
+// must name a local_directory resource OF that project that is in snapshot
+// mode, and every declared subdirectory must sit inside that resource's
+// effective set. Returns the normalized JSON to store (nil when the request
+// declared nothing), or an HTTP status + message to write. A scope without a
+// project is rejected — resources only exist through a project.
+func (h *Handler) validateQuickCreateDirectoryScope(ctx context.Context, projectID pgtype.UUID, raw json.RawMessage) (json.RawMessage, int, string) {
+	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+		return nil, 0, ""
+	}
+	if !projectID.Valid {
+		return nil, http.StatusBadRequest, "local_directory_scope requires project_id"
+	}
+	scopes, err := protocol.ParseTaskDirectoryScope(raw)
+	if err != nil {
+		return nil, http.StatusBadRequest, err.Error()
+	}
+	resources, err := h.Queries.ListProjectResources(ctx, projectID)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "failed to list project resources"
+	}
+	byID := make(map[string]db.ProjectResource, len(resources))
+	for _, row := range resources {
+		if row.ResourceType == "local_directory" {
+			byID[uuidToString(row.ID)] = row
+		}
+	}
+	seen := make(map[string]bool, len(scopes))
+	for i := range scopes {
+		s := &scopes[i]
+		if seen[s.ResourceID] {
+			return nil, http.StatusBadRequest, fmt.Sprintf("local_directory scope: resource %s is declared more than once", s.ResourceID)
+		}
+		seen[s.ResourceID] = true
+		row, ok := byID[s.ResourceID]
+		if !ok {
+			return nil, http.StatusBadRequest, fmt.Sprintf("local_directory scope: resource %s is not a local_directory of this project", s.ResourceID)
+		}
+		var ref localDirectoryRef
+		if err := json.Unmarshal(row.ResourceRef, &ref); err != nil {
+			return nil, http.StatusInternalServerError, "failed to read project resource"
+		}
+		if ref.ExecutionMode != localDirectoryModeSnapshot {
+			return nil, http.StatusBadRequest, fmt.Sprintf("local_directory scope: resource %q is not in snapshot mode", ref.LocalPath)
+		}
+		for _, sub := range s.Subdirectories {
+			if !subdirectoryInSet(sub, ref.Subdirectories) {
+				return nil, http.StatusBadRequest, fmt.Sprintf("local_directory scope: %q is outside the declared scope of resource %q", sub, ref.LocalPath)
+			}
+		}
+	}
+	out, err := json.Marshal(scopes)
+	if err != nil {
+		return nil, http.StatusInternalServerError, "failed to encode local_directory scope"
+	}
+	return out, 0, ""
+}
+
+// subdirectoryInSet reports whether sub sits inside a resource's effective
+// set — equal to a member or nested under one. An absent set means the whole
+// directory is in scope, so anything passes.
+func subdirectoryInSet(sub string, set []string) bool {
+	if len(set) == 0 {
+		return true
+	}
+	for _, member := range set {
+		if sub == member || strings.HasPrefix(sub, member+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// findSnapshotPrimaryConflict enforces "at most one primary snapshot
+// resource per project". The primary is the directory an undeclared task's
+// workdir lands in; two primaries would make that landing spot depend on row
+// order, which is exactly the guessing the ADR forbids ("拒绝猜测"). The
+// daemon-side resolution fail-fasts when no primary and no task declaration
+// exist — this check is what keeps the "one primary" half true at the source.
+func (h *Handler) findSnapshotPrimaryConflict(ctx context.Context, projectID pgtype.UUID, normalizedRef json.RawMessage, excludeID pgtype.UUID) (bool, error) {
+	var incoming localDirectoryRef
+	if err := json.Unmarshal(normalizedRef, &incoming); err != nil {
+		return false, err
+	}
+	if incoming.ExecutionMode != localDirectoryModeSnapshot || !incoming.Primary {
+		return false, nil
+	}
+	rows, err := h.Queries.ListProjectResources(ctx, projectID)
+	if err != nil {
+		return false, err
+	}
 	for _, row := range rows {
 		if row.ResourceType != "local_directory" {
 			continue
@@ -789,11 +1024,7 @@ func (h *Handler) findLocalDirectoryConflict(ctx context.Context, projectID pgty
 		if err := json.Unmarshal(row.ResourceRef, &existing); err != nil {
 			continue
 		}
-		// Daemon-scoped uniqueness: one local_directory per daemon per
-		// project. Different daemons can each carry one row (one per
-		// user device); the daemon-side resolver routes each daemon to
-		// its own assignment by daemon_id.
-		if existing.DaemonID == incoming.DaemonID {
+		if existing.ExecutionMode == localDirectoryModeSnapshot && existing.Primary {
 			return true, nil
 		}
 	}

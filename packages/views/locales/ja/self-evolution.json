@@ -31,7 +31,11 @@
     },
     "proposals": {
       "title": "提案プール",
-      "pendingModel": "提案メトリクスは新しい提案モデル（RUYI-305）の提供後に接続されます。"
+      "intro": "提案は日次ふりかえりの自動分析でプールに入り、手動での起草も可能です。",
+      "counts": "提案 {{total}} 件 · オーナー承認待ち {{pending}} 件",
+      "lastAuto": "最新の自動提案（日次ふりかえり）：{{date}}",
+      "noneAuto": "自動提案はまだありません。",
+      "empty": "プールは空です。日次ふりかえりを設定すると、毎日の分析で提案が自動的にプールに入ります。"
     },
     "knowledge": {
       "title": "ナレッジミラー",
@@ -381,8 +385,10 @@
   },
   "legislation": {
     "title": "プロンプト 立法提案",
-    "description": "4 つのプロンプトキャリアに対する条項レベルの草案。送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
+    "description": "提案は日次ふりかえりの自動分析でプールに入り、手動での起草も可能です。4 つのプロンプトキャリアに対する条項レベルの草案：送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
     "filterAll": "すべて",
+    "sourceFilterLabel": "ソースで絞り込む",
+    "sourceFilterAll": "すべてのソース",
     "runFilterLabel": "実行バッチ",
     "runFilterAll": "すべての実行",
     "status": {
@@ -427,6 +433,11 @@
     "evidenceAdd": "エビデンスアンカーを追加",
     "evidenceIssue": "Issue ID",
     "evidenceQuote": "引用",
+    "sourceIssuesLabel": "ソース Issue",
+    "problemLabel": "解決する問題",
+    "expectedEffectLabel": "期待する効果",
+    "expectedGainLabel": "期待する向上",
+    "valueScoreLabel": "価値スコア",
     "cancel": "キャンセル",
     "saveDraft": "下書き保存",
     "submit": "承認に送信",
@@ -468,6 +479,7 @@
     },
     "empty": "提案はまだありません。",
     "emptyHint": "実際の実行エビデンスから起草するか、日次ふりかえりに任せてください。",
+    "emptyConfig": "日次ふりかえりを設定",
     "error": "書き込みに失敗しました。入力を確認して再試行してください。",
     "batchPartial": "一括処理で発効しなかった提案があります——各結果を確認してください。",
     "jevAdvisoryLabel": "ローカルモデル警告",
@@ -515,6 +527,24 @@
     "agentArchivedHint": "このエージェントはアーカイブ済みです。ランが失敗するため、他のエージェントを選択してください。",
     "agentTriggerBlocked": "実行可能なエージェントが未設定です：上の設定でエージェントを選択してから実行してください。",
     "emptyDescription": "定時または手動の実行後に、ここにランの記録が表示されます。",
+    "viewDetail": "詳細",
+    "detailTitle": "ランの詳細",
+    "triggerLabel": "トリガー",
+    "triggerSource": {
+      "schedule": "定時",
+      "manual": "手動"
+    },
+    "windowLabel": "参照ウィンドウ",
+    "startedAt": "開始時刻",
+    "finishedAt": "終了時刻",
+    "duration": "所要時間",
+    "durationRunning": "実行中…",
+    "statsLabel": "統計",
+    "failureLabel": "失敗理由",
+    "scannedIssues": "スキャンした Issue",
+    "analyzedIssues": "分析した Issue",
+    "noIssues": "なし",
+    "viewLog": "実行ログを見る",
     "run_errors": {
       "agent_not_configured": "実行エージェントが設定されていません：上の設定でエージェントを選択し、保存してから再実行してください。",
       "agent_missing": "設定された実行エージェントが見つかりません：上の設定で別のエージェントを選び直し、保存してください。",
@@ -690,6 +720,16 @@
     "modelError": {
       "title": "モデルサービスの検証に失敗",
       "action": "設定を確認"
+    },
+    "retrospectiveOff": {
+      "title": "日次ふりかえりが有効ではありません",
+      "description": "提案ループは自動では回らず、プールは手動の起草だけで伸びます",
+      "action": "設定する"
+    },
+    "retrospectiveNoAgent": {
+      "title": "日次ふりかえりに実行エージェントが未選択",
+      "description": "有効でも実行者がいなければ実行は始まりません",
+      "action": "設定する"
     },
     "discoveries": {
       "title": "インポート待ちのスキル発見が {{count}} 件",

@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 // localDirectoryResourceType is the project_resource discriminator the daemon
@@ -26,6 +28,9 @@ const localDirectoryResourceType = "local_directory"
 const (
 	localDirectoryModeInPlace  = "in_place"
 	localDirectoryModeWorktree = "worktree"
+	// localDirectoryModeSnapshot runs each task on a per-task copy-on-write
+	// view of the directory (RUYI-669). Mirrors the server-side constant.
+	localDirectoryModeSnapshot = "snapshot"
 )
 
 // localDirectoryRef mirrors the server-side ref shape for local_directory
@@ -36,6 +41,14 @@ type localDirectoryRef struct {
 	DaemonID      string `json:"daemon_id"`
 	Label         string `json:"label,omitempty"`
 	ExecutionMode string `json:"execution_mode,omitempty"`
+	// Primary marks the default snapshot directory of a multi-resource
+	// project: where an undeclared task's workdir lands. Server-enforced to
+	// at most one per project; the daemon only reads it as a tiebreaker.
+	Primary bool `json:"primary,omitempty"`
+	// Subdirectories is the resource's effective set; empty = whole
+	// directory. Task declarations must sit inside it (server-validated;
+	// re-checked here because the daemon is the last line of defense).
+	Subdirectories []string `json:"subdirectories,omitempty"`
 }
 
 // localDirectoryAssignment is the resolved view of a task's local_directory
@@ -94,6 +107,11 @@ func (a *localDirectoryAssignment) ValidateExecutionMode() error {
 	}
 	switch strings.TrimSpace(a.Ref.ExecutionMode) {
 	case "", localDirectoryModeInPlace, localDirectoryModeWorktree:
+		return nil
+	case localDirectoryModeSnapshot:
+		// Snapshot assignments are resolved by the snapshot plan path, not
+		// this one; if one ever reaches here (phase-2 per-subdir routing),
+		// the claim gate has already capability-checked the daemon. Accept.
 		return nil
 	default:
 		return fmt.Errorf(
@@ -174,6 +192,14 @@ func findLocalDirectoryAssignment(resources []ProjectResourceData, daemonID stri
 		var ref localDirectoryRef
 		if err := json.Unmarshal(r.ResourceRef, &ref); err != nil {
 			return nil, fmt.Errorf("local_directory: parse resource_ref: %w", err)
+		}
+		if strings.TrimSpace(ref.ExecutionMode) == localDirectoryModeSnapshot {
+			// Snapshot rows are routed by the snapshot plan (resource_id /
+			// primary), never by the daemon-pick heuristic — a project may
+			// legitimately carry several snapshot rows for this daemon. Skip
+			// them here so the one-per-daemon multiplicity error below keeps
+			// describing only the rows this resolver actually routes.
+			continue
 		}
 		ref.DaemonID = strings.TrimSpace(ref.DaemonID)
 		if ref.DaemonID == "" {
@@ -591,4 +617,311 @@ func (l *LocalPathLocker) releaser(realPath string, entry *pathLockEntry) func()
 			_ = realPath
 		})
 	}
+}
+
+// snapshotUnit is one materializable overlay unit of a snapshot task: a
+// pristine directory that gets a per-task copy-on-write view in the worker's
+// mount namespace. A whole-root unit covers the resource root (Subdir ""); a
+// declared task materializes one unit per declared subdirectory — materializa-
+// tion and mutex both at set granularity, per the ADR.
+type snapshotUnit struct {
+	ResourceID string
+	Ref        localDirectoryRef
+	AbsPath    string // unit target: resource root, or root joined with Subdir
+	Subdir     string // "" for a whole-root unit
+	Primary    bool
+	// LockPath is the symlink-resolved unit target — the per-subdir lock key
+	// when the task declared its scope. Empty on undeclared (lock-free) units.
+	LockPath string
+}
+
+// snapshotPlan is the resolved execution brief for a snapshot-mode task.
+type snapshotPlan struct {
+	Units    []snapshotUnit
+	Primary  *snapshotUnit // where the task's cwd lands
+	Declared bool          // task carried a local_directory_scope declaration
+}
+
+// DeclaredLockPaths returns the real paths every declared subdirectory locks
+// for the task's lifetime — the exclusive-lease keys acceptance 4 defines.
+// Undeclared plans return nil: their isolation is the private upperdir, and
+// taking no lock is what lets two undeclared tasks on the same directory run
+// concurrently (acceptance 1).
+func (p *snapshotPlan) DeclaredLockPaths() []string {
+	if p == nil || !p.Declared {
+		return nil
+	}
+	var paths []string
+	for _, u := range p.Units {
+		paths = append(paths, u.LockPath)
+	}
+	return paths
+}
+
+// resolveSnapshotPlan resolves a snapshot-mode task into its units. Returns
+// nil (without error) when none of the task's project resources is a
+// snapshot-mode local_directory of this daemon — the task takes the regular
+// in_place/worktree paths.
+//
+// Resolution rules (ADR §3, "拒绝猜测"):
+//   - Declared scope: every entry must name a snapshot resource of this
+//     daemon; drift against the server's save-time validation fails the task
+//     rather than widening the write set. One unit per declared subdirectory.
+//   - Undeclared: exactly one whole-root unit on the primary resource; with
+//     no primary, the sole snapshot resource stands in; with several and no
+//     primary the task fails — "which directory does this run in" is never
+//     guessed.
+func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
+	if task.IsLeaderTask {
+		return nil, nil
+	}
+	type snapRow struct {
+		id  string
+		ref localDirectoryRef
+		abs string
+	}
+	var rows []snapRow
+	for _, r := range task.ProjectResources {
+		if r.ResourceType != localDirectoryResourceType {
+			continue
+		}
+		var ref localDirectoryRef
+		if err := json.Unmarshal(r.ResourceRef, &ref); err != nil {
+			return nil, fmt.Errorf("local_directory: parse resource_ref: %w", err)
+		}
+		if strings.TrimSpace(ref.ExecutionMode) != localDirectoryModeSnapshot {
+			continue
+		}
+		if strings.TrimSpace(ref.DaemonID) != daemonID {
+			continue
+		}
+		abs, err := normalizeLocalPath(ref.LocalPath)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, snapRow{id: r.ID, ref: ref, abs: abs})
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	scopes, err := execenv.ParseSnapshotScope(task.LocalDirectoryScope)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*snapRow, len(rows))
+	for i := range rows {
+		byID[rows[i].id] = &rows[i]
+	}
+
+	plan := &snapshotPlan{Declared: len(scopes) > 0}
+	if plan.Declared {
+		for i, sc := range scopes {
+			row, ok := byID[sc.ResourceID]
+			if !ok {
+				return nil, fmt.Errorf(
+					"local_directory scope: entry %d names resource %s, which is not a snapshot directory of this machine; refusing to widen the declaration",
+					i+1, sc.ResourceID)
+			}
+			for _, sub := range sc.Subdirectories {
+				if !subdirectoryInEffectiveSet(sub, row.ref.Subdirectories) {
+					return nil, fmt.Errorf(
+						"local_directory scope: %q is outside the effective set declared on resource %q; refusing to widen it",
+						sub, row.ref.LocalPath)
+				}
+				abs := filepath.Join(row.abs, filepath.FromSlash(sub))
+				if err := validateLocalPath(abs); err != nil {
+					return nil, err
+				}
+				real, err := resolveRealPath(abs)
+				if err != nil {
+					return nil, err
+				}
+				plan.Units = append(plan.Units, snapshotUnit{
+					ResourceID: row.id,
+					Ref:        row.ref,
+					AbsPath:    abs,
+					Subdir:     sub,
+					Primary:    row.ref.Primary,
+					LockPath:   real,
+				})
+			}
+		}
+		if len(plan.Units) == 0 {
+			return nil, errors.New("local_directory scope: declaration is present but names no subdirectory")
+		}
+		plan.Primary = plan.primaryUnit()
+		return plan, nil
+	}
+
+	// Undeclared: primary picks the directory. Server-side
+	// findSnapshotPrimaryConflict keeps at most one primary per project, so
+	// more than one here is bypassed or corrupted data — refuse to guess.
+	var primary *snapRow
+	for i := range rows {
+		if rows[i].ref.Primary {
+			if primary != nil {
+				return nil, fmt.Errorf(
+					"local_directory: project has multiple primary snapshot directories for this daemon (%q and %q); fix the project settings",
+					primary.ref.LocalPath, rows[i].ref.LocalPath)
+			}
+			primary = &rows[i]
+		}
+	}
+	if primary == nil {
+		if len(rows) == 1 {
+			primary = &rows[0]
+		} else {
+			return nil, fmt.Errorf(
+				"local_directory: task declares no directory scope and the project has %d snapshot directories with no primary; declare the scope or mark one primary",
+				len(rows))
+		}
+	}
+	// Claim-time fail-closed on the target, same bar the in_place mutex path
+	// applies: a missing or blacklisted directory must fail the task with a
+	// readable reason now, not with a mount error after the worker spawns.
+	// The read-write check is stricter than the mechanism strictly needs (a
+	// read-only checkout could be snapshot-mounted); keeping it preserves
+	// in_place parity in phase 1.
+	if err := validateLocalPath(primary.abs); err != nil {
+		return nil, err
+	}
+	plan.Units = []snapshotUnit{{
+		ResourceID: primary.id,
+		Ref:        primary.ref,
+		AbsPath:    primary.abs,
+		Primary:    true,
+	}}
+	plan.Primary = &plan.Units[0]
+	return plan, nil
+}
+
+// primaryUnit picks where the task's cwd lands: the first unit of a primary
+// resource when one is marked, else the first unit. Declared order is the
+// request's own order, so the choice is deterministic for a given task.
+func (p *snapshotPlan) primaryUnit() *snapshotUnit {
+	for i := range p.Units {
+		if p.Units[i].Primary {
+			return &p.Units[i]
+		}
+	}
+	return &p.Units[0]
+}
+
+// subdirectoryInEffectiveSet reports whether sub sits inside a resource's
+// effective set — equal to a member or nested under one. An absent set means
+// the whole directory is in scope. Mirrors the server-side check of the same
+// name; the daemon re-runs it because it is the last line of defense before
+// a mount is built.
+func subdirectoryInEffectiveSet(sub string, set []string) bool {
+	if len(set) == 0 {
+		return true
+	}
+	for _, member := range set {
+		if sub == member || strings.HasPrefix(sub, member+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// gitToplevel reports the git working-tree root containing dir, or ok=false
+// when dir is not inside one. Used to route snapshot tasks on git
+// directories to the existing worktree flow, which the ADR keeps as the fast
+// path for anything with a .git: branch delivery, resume, and half-finished
+// preservation stay exactly as they are.
+func gitToplevel(dir string) (string, bool) {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", false
+	}
+	top := strings.TrimSpace(string(out))
+	if top == "" {
+		return "", false
+	}
+	return top, true
+}
+
+// snapshotWorktreeFallback decides whether a snapshot task must run through
+// the existing worktree flow instead of mounting: the primary unit's
+// resource root is inside a git working tree. Per-subdirectory git routing
+// inside a non-git root is phase 2; a git ROOT always wins for the whole
+// task. Returns a worktree-mode assignment for the resource root — the
+// worktree flow branches on that mode — or nil to proceed with mounts.
+func snapshotWorktreeFallback(plan *snapshotPlan) (*localDirectoryAssignment, error) {
+	if plan == nil || plan.Primary == nil {
+		return nil, nil
+	}
+	root := plan.Primary.Ref.LocalPath
+	abs, err := normalizeLocalPath(root)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := gitToplevel(abs); !ok {
+		return nil, nil
+	}
+	real, err := resolveRealPath(abs)
+	if err != nil {
+		return nil, err
+	}
+	ref := plan.Primary.Ref
+	ref.ExecutionMode = localDirectoryModeWorktree
+	return &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}, nil
+}
+
+// localDirectoryGCExemption reports whether a finished task's env root must
+// outlive the ordinary GC sweep: an in_place assignment runs inside the
+// user's own tree, and a snapshot run hosts the local-snapshots retention
+// surface. A snapshot task whose root turns out to be a git repo routes to
+// the worktree flow instead — its env root is disposable exactly like any
+// worktree task's, so it must NOT be stamped, or every such task leaves one
+// exempt env root behind forever. Resolution errors stamp nothing: the
+// disposable default is the safe side of the guess.
+func localDirectoryGCExemption(task Task, daemonID string) bool {
+	if plan, err := resolveSnapshotPlan(task, daemonID); err == nil && plan != nil {
+		fb, fbErr := snapshotWorktreeFallback(plan)
+		return fbErr == nil && fb == nil
+	}
+	if assignment, err := localDirectoryAssignmentForTask(task, daemonID); err == nil && assignment != nil {
+		return !assignment.UsesWorktree()
+	}
+	return false
+}
+
+// materializeSnapshotTrees creates every unit's alias/upper/work directories
+// under the env root and returns the primary unit's upperdir. Idempotent, and
+// deliberately called from both runTask sites that touch the tree: Prepare
+// needs the primary upper to exist before it writes context files into it,
+// and the run-brief block re-runs this defensively for an env-reuse path that
+// skipped the prepare branch.
+func (p *snapshotPlan) materializeTrees(envRoot, issueID, taskID string) (string, error) {
+	if p == nil {
+		return "", nil
+	}
+	for _, u := range p.Units {
+		alias, upper, work := execenv.PlanSnapshotTree(envRoot, execenv.SnapshotStem(issueID, u.Subdir, taskID))
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return "", fmt.Errorf("snapshot: create tree dir %s: %w", dir, err)
+			}
+		}
+	}
+	_, primaryUpper, _ := execenv.PlanSnapshotTree(envRoot, execenv.SnapshotStem(issueID, p.Primary.Subdir, taskID))
+	return primaryUpper, nil
+}
+
+// displayName is the human-facing wait-reason name for one snapshot unit,
+// built by the same contract as localDirectoryAssignment.DisplayName: the
+// resource label wins when set, otherwise the root's basename — never an
+// absolute path, because the reason is stored server-side and rendered in
+// chat transcripts.
+func (u *snapshotUnit) displayName() string {
+	name := strings.TrimSpace(u.Ref.Label)
+	if name == "" {
+		name = filepath.Base(u.AbsPath)
+	}
+	if u.Subdir != "" {
+		name = name + "/" + filepath.ToSlash(u.Subdir)
+	}
+	return name
 }

@@ -623,12 +623,36 @@ type Daemon struct {
 	// bpState is nil until the watcher's first sample lands (gate fails
 	// open); bpWakeup points at the batch poller's wakeup channel so a
 	// recovery can nudge it instead of waiting out a backoff interval.
-	bpMachine  *backpressureMachine
-	bpSource   memSampleSource
-	bpState    atomic.Pointer[backpressureObservation]
-	bpDeferred atomic.Int64
-	bpWakeup   atomic.Pointer[chan struct{}]
-	bpLastWarn atomic.Int64
+	// bpRuntime carries the BOOT-DEFAULT card: it seeds the gate until each
+	// bound workspace's heartbeat ack delivers the workspace's own settings,
+	// and it remains the fallback for workspaces that have not delivered a
+	// card yet. Per-workspace applied cards live in bpWorkspaces (RUYI-618,
+	// F1): a copy-on-write map keyed by workspace ID, so two workspaces on
+	// one daemon apply different cards without overwriting each other. The
+	// watcher feeds one host sample into every enabled gate; claims filter
+	// per workspace and reports attribute per runtime's workspace.
+	// bpApplyMu serializes map swaps; bpReload is the closed-per-swap channel
+	// the watcher selects on for an immediate resample.
+	//
+	// Daemon-host override plane (RUYI-729): while bpHostRuntime is non-nil
+	// its card shadows the boot default and every workspace card on this
+	// machine — the host observation is what all of this daemon's workspaces
+	// gate and report on. bpDBManaged remembers having ever applied a saved
+	// (source=db) host card: once set, an ack that stops carrying one means
+	// the settings row was deleted, and the override converges away (D1)
+	// instead of shadowing forever.
+	bpRuntime     atomic.Pointer[backpressureRuntime]
+	bpWorkspaces  atomic.Pointer[map[string]*backpressureWorkspaceState]
+	bpReload      atomic.Pointer[chan struct{}]
+	bpApplyMu     sync.Mutex
+	bpSource      memSampleSource
+	bpState       atomic.Pointer[backpressureObservation]
+	bpDeferred    atomic.Int64
+	bpWakeup      atomic.Pointer[chan struct{}]
+	bpLastWarn    atomic.Int64
+	bpHostRuntime atomic.Pointer[backpressureRuntime]
+	bpHostState   atomic.Pointer[backpressureObservation]
+	bpDBManaged   atomic.Bool
 
 	activeEnvRootsMu   sync.Mutex
 	activeEnvRootsCond *sync.Cond      // signalled when an in-flight env-root GC mutation finishes
@@ -750,11 +774,15 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		workspaceChanges:          newWorkspaceChangeSignal(),
 		wsRPC:                     newWSRPCClient(wsRPCResponseGrace),
 	}
-	// Host memory backpressure (RUYI-393): nil machine = disabled, the claim
-	// gate fails open and the watcher goroutine is never started.
+	// Host memory backpressure (RUYI-393): nil runtime = disabled, the claim
+	// gate fails open and the watcher goroutine is never started. bpRuntime
+	// carries the BOOT-DEFAULT card rendered from the env-overridden config;
+	// each bound workspace's saved settings (RUYI-618) replace it on that
+	// workspace's first heartbeat ack, and a saved daemon-host row
+	// (RUYI-729) shadows it until the row is deleted.
 	if cfg.BackpressureEnabled {
-		d.bpMachine = newBackpressureMachine(cfg.backpressureThresholds(), cfg.BackpressureWindowSize)
 		d.bpSource = newMemSampleSource()
+		d.bpRuntime.Store(newBackpressureRuntime(cfg.backpressureCard(), cfg.backpressureThresholds()))
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
@@ -2123,6 +2151,19 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// worker-supervisor capability the supervisor probe just decided.
 	d.setupSupervisor()
 	d.client.SetWorkerSupervision(d.supervisor != nil)
+	// Local-snapshot capability (RUYI-669) is decided the same way and for the
+	// same reason: the first register must already carry the verdict, so the
+	// userns+overlay probe runs here rather than lazily at claim time. The
+	// probe needs a scratch dir on a production filesystem; env roots don't
+	// exist yet this early in Run, so the workspaces root stands in.
+	if selfPath, err := os.Executable(); err != nil {
+		d.logger.Warn("local snapshot probe skipped; capability stays off", "error", err)
+	} else if ok, detail := execenv.ProbeSnapshotSupport(selfPath, d.cfg.WorkspacesRoot); ok {
+		d.client.SetSnapshotSupport(true)
+		d.logger.Info("local snapshot capability enabled", "probe", detail)
+	} else {
+		d.logger.Info("local snapshot capability unavailable on this host", "probe", detail)
+	}
 	if err := d.preflightAuth(ctx); err != nil {
 		return err
 	}
@@ -2157,8 +2198,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Host memory backpressure watcher (RUYI-393): samples /proc watermarks
 	// and advances the hysteresis gate fed into the claim path below. nil
-	// machine = disabled by config, no goroutine.
-	if d.bpMachine != nil {
+	// runtime = disabled by config, no goroutine.
+	if d.bpRuntime.Load() != nil {
 		go d.runBackpressureWatcher(ctx)
 	}
 
@@ -4192,6 +4233,11 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 			}
 			delete(d.workspaces, id)
 			d.mu.Unlock()
+			// The workspace's applied backpressure card must not outlive the
+			// workspace (RUYI-618/F1): a stale latch would suppress a future
+			// re-bind's pre-ack claims. Called outside d.mu — the drop takes
+			// the apply lock, never the daemon lock.
+			d.dropBackpressureWorkspace(id)
 			d.logger.Info("stopped watching workspace", "workspace_id", id)
 			removed++
 		}
@@ -4323,7 +4369,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReport())
+	resp, err := d.client.SendHeartbeat(ctx, rid, d.backpressureReportForRuntime(rid))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4358,6 +4404,18 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	if resp == nil {
 		return
 	}
+	// Daemon-host backpressure card (RUYI-729) rides every ack. Applied
+	// synchronously — the swap is a few pointer writes under one mutex and
+	// the ack path has no reason to outrun it; a changed card takes effect
+	// on the watcher's next cycle. While in force it shadows the workspace
+	// card below on this machine. A missing card after a saved one means
+	// the owner deleted the settings row: converge the override away
+	// instead of shadowing forever (D1).
+	if resp.DaemonBackpressureConfig != nil {
+		d.applyBackpressureHostConfig(runtimeID, resp.DaemonBackpressureConfig)
+	} else {
+		d.applyBackpressureHostConfigFallback(runtimeID)
+	}
 	if resp.PendingUpdate != nil || resp.PendingModelList != nil || resp.PendingLocalSkills != nil || resp.PendingLocalSkillImport != nil {
 		d.logger.Debug("heartbeat: pending actions",
 			"runtime_id", runtimeID,
@@ -4366,6 +4424,14 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			"local_skills", resp.PendingLocalSkills != nil,
 			"local_skill_import", resp.PendingLocalSkillImport != nil,
 		)
+	}
+	// Workspace backpressure settings (RUYI-618) ride every ack. Applied
+	// synchronously under the runtime's own workspace key — the swap is a
+	// few pointer writes and the ack path has no reason to outrun it.
+	// A runtime whose workspace cannot be resolved (mid-deregistration)
+	// skips the apply; sibling runtimes re-deliver the card.
+	if resp.BackpressureConfig != nil {
+		d.applyBackpressureConfig(d.runtimeWorkspaceID(runtimeID), runtimeID, resp.BackpressureConfig)
 	}
 	if resp.PendingUpdate != nil {
 		go d.handleUpdate(ctx, runtimeID, resp.PendingUpdate)
@@ -4468,7 +4534,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReport())
+	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, d.backpressureReportForRuntime(runtimeID))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -4992,25 +5058,26 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 		"runtime_id", runtimeID, "update_id", updateID, "error", lastErr)
 }
 
-// tryEnterClaim records the intent to call ClaimTask. Returns true if the
-// caller may proceed, false if the auto-update barrier is in effect or host
-// memory backpressure (RUYI-393) is active. Every successful call MUST be
-// paired with an exitClaim() on every exit path — either right after a
-// failed/empty claim, or via the handleTask goroutine's defer once the task
-// is handed off.
+// tryEnterClaimFor records the intent to call ClaimTask for a batch of
+// runtimes. Returns true if the caller may proceed, false if the auto-update
+// barrier is in effect or any of the batch's workspaces is under host memory
+// backpressure (RUYI-393; per-workspace since RUYI-618/F1). Every successful
+// call MUST be paired with an exitClaim() on every exit path — either right
+// after a failed/empty claim, or via the handleTask goroutine's defer once
+// the task is handed off.
 //
 // The two refusals are orthogonal: releaseClaimBarrier only ever clears
 // pauseClaims, and backpressure lives in its own state, so neither path can
 // accidentally release the other. Auto-update does not consult backpressure
 // — blocked claims drain claimsInFlight on their own, which is the only
 // state the update barrier waits on.
-func (d *Daemon) tryEnterClaim() bool {
+func (d *Daemon) tryEnterClaimFor(runtimeIDs []string) bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
 	if d.pauseClaims {
 		return false
 	}
-	if d.backpressureBlocked() {
+	if d.anyBackpressureBlocked(runtimeIDs) {
 		return false
 	}
 	d.claimsInFlight++
@@ -5220,22 +5287,24 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			return
 		}
 
-		// Host memory backpressure (RUYI-393): while the gate is active,
-		// skip the whole claim cycle — don't even wait for slots — and
-		// back off like the capacity path. Queued tasks stay queued
-		// server-side; already-running tasks are untouched. tryEnterClaim
-		// re-checks the same gate as the authoritative pre-claim barrier.
-		if d.backpressureBlocked() {
-			d.bpDeferred.Add(1)
-			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
+		// Host memory backpressure (RUYI-393; per-workspace since
+		// RUYI-618/F1): runtimes whose workspace gate is active drop out of
+		// the batch — other workspaces on this host keep claiming. Only when
+		// EVERY bound workspace is held does the cycle defer entirely.
+		// Queued tasks stay queued server-side; already-running tasks are
+		// untouched. tryEnterClaimFor re-checks the same gate as the
+		// authoritative pre-claim barrier.
+		runtimeIDs := d.allRuntimeIDs()
+		if len(runtimeIDs) == 0 {
+			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
 				return
 			}
 			continue
 		}
-
-		runtimeIDs := d.allRuntimeIDs()
+		runtimeIDs = d.filterBackpressureClaimable(runtimeIDs)
 		if len(runtimeIDs) == 0 {
-			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
+			d.bpDeferred.Add(1)
+			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
 				return
 			}
 			continue
@@ -5260,7 +5329,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 
 		// Auto-update barrier: refuse to claim while an update prepares to roll
 		// the process (paired with the re-check in tryAutoUpdate).
-		if !d.tryEnterClaim() {
+		if !d.tryEnterClaimFor(runtimeIDs) {
 			releaseSlots(slots)
 			if err := sleepWithContextOrWakeup(pollerCtx, d.cfg.PollInterval, wakeup); err != nil {
 				return
@@ -5742,7 +5811,12 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			// exempt env root, so the directory would accumulate one env
 			// root per task forever — the exact cost the exemption was
 			// meant to trade away for a user's own files.
-			if assignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID); assignment != nil && !assignment.UsesWorktree() {
+			// Snapshot mode stamps the same exemption: the env root hosts
+			// the local-snapshots tree whose failed-run entries are reaped
+			// by ReapExpiredSnapshots on the ledger's own 7-day schedule —
+			// the ordinary orphan sweep must not RemoveAll the root out
+			// from under that retention window.
+			if localDirectoryGCExemption(task, d.cfg.DaemonID) {
 				meta.LocalDirectory = true
 			}
 			if err := execenv.WriteGCMeta(result.EnvRoot, meta, taskLog); err != nil {
@@ -5872,6 +5946,27 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			taskLog.Error("fail task after local_directory resolve error", "error", failErr)
 		}
 		return nil, true
+	}
+	// Snapshot-mode resources (RUYI-669) route through the snapshot plan, and
+	// the whole-path mutex below does not apply to them. An undeclared task's
+	// isolation is its private upperdir, and taking no lock is exactly what
+	// lets two tasks on one directory run concurrently (acceptance 1);
+	// declared scopes take per-subdirectory, task-lifetime locks instead.
+	plan, perr := resolveSnapshotPlan(task, d.cfg.DaemonID)
+	if perr != nil {
+		taskLog.Error("local_directory: resolve snapshot plan failed", "error", perr)
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  perr.Error(),
+			failureReason: "local_directory_error",
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot plan resolve error", "error", failErr)
+		}
+		return nil, true
+	}
+	if plan != nil {
+		return d.acquireSnapshotScopeLocks(ctx, task, plan, taskLog)
 	}
 	if assignment == nil {
 		return nil, false
@@ -6036,6 +6131,147 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 	}
 	taskLog.Info("local_directory: lock acquired")
 	return release, false
+}
+
+// acquireSnapshotScopeLocks takes the task-lifetime locks a snapshot plan
+// owes. Undeclared plans (whole-root CoW via the primary resource) and
+// git-rooted worktree fallbacks take NOTHING — lock-freedom is what lets
+// sibling tasks share one directory through private upperdirs, the
+// acceptance-1 property — and chat tasks never queue behind a writer for the
+// same reason they don't behind an in_place task. Declared scopes acquire
+// one lock per declared subdirectory, in sorted real-path order so two tasks
+// with overlapping scopes cannot interleave into a lock-ordering deadlock,
+// each with the full waiting plumbing (status badge, prepare-lease extender,
+// cancellation poller) the in_place path uses.
+func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan *snapshotPlan, taskLog *slog.Logger) (release func(), abort bool) {
+	fb, ferr := snapshotWorktreeFallback(plan)
+	if ferr != nil {
+		taskLog.Error("local_directory: snapshot worktree fallback failed", "error", ferr)
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  ferr.Error(),
+			failureReason: "local_directory_error",
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot fallback error", "error", failErr)
+		}
+		return nil, true
+	}
+	if fb != nil {
+		taskLog.Info("local_directory: git root, snapshot task routes to the worktree flow; no task-lifetime lock")
+		return nil, false
+	}
+	locks := plan.DeclaredLockPaths()
+	if len(locks) == 0 || localDirectoryLockExempt(task) {
+		taskLog.Info("local_directory: snapshot without declared scope (or chat task), running without the task-lifetime lock",
+			"primary", plan.Primary.AbsPath)
+		return nil, false
+	}
+	units := make(map[string]*snapshotUnit, len(plan.Units))
+	for i := range plan.Units {
+		if u := &plan.Units[i]; u.LockPath != "" {
+			units[u.LockPath] = u
+		}
+	}
+	sort.Strings(locks)
+
+	waitCtx, waitCancel := context.WithCancel(ctx)
+	defer waitCancel()
+	pollInterval := d.cancelPollInterval
+	if pollInterval == 0 {
+		pollInterval = 5 * time.Second
+	}
+	var (
+		watcherOnce      sync.Once
+		prepareLeaseOnce sync.Once
+		cancelledByPoll  <-chan struct{}
+		stopPrepareLease func()
+		waitCounted      bool
+	)
+	defer func() {
+		if waitCounted {
+			d.resourceWaitTasks.Add(-1)
+		}
+	}()
+	defer func() {
+		if stopPrepareLease != nil {
+			stopPrepareLease()
+		}
+	}()
+
+	onWait := func(unit *snapshotUnit) func(string) {
+		return func(holder string) {
+			// The gauge counts TASKS waiting on a directory, not individual
+			// waits: a multi-lock task blocks once as a unit, so count it on
+			// the first blocking lock and leave the single deferred decrement
+			// balanced.
+			if !waitCounted {
+				waitCounted = true
+				d.resourceWaitTasks.Add(1)
+			}
+			reason := unit.displayName()
+			if holder != "" {
+				reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
+			}
+			taskLog.Info("local_directory: waiting on declared scope lock", "subdir", unit.Subdir, "holder", holder)
+			if waitErr := d.client.MarkTaskWaitingLocalDirectory(ctx, task.ID, reason); waitErr != nil {
+				taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
+			}
+			prepareLeaseOnce.Do(func() {
+				stopPrepareLease = d.startTaskPrepareLeaseExtender(waitCtx, task, taskLog)
+			})
+			watcherOnce.Do(func() {
+				cancelledByPoll = d.watchTaskCancellation(waitCtx, task.ID, pollInterval, taskLog)
+				go func() {
+					select {
+					case <-cancelledByPoll:
+						waitCancel()
+					case <-waitCtx.Done():
+					}
+				}()
+			})
+		}
+	}
+
+	var releases []func()
+	for _, lockPath := range locks {
+		unit := units[lockPath]
+		releaseOne, err := d.localPathLocks.Acquire(waitCtx, lockPath, task.ID, onWait(unit))
+		if err != nil {
+			for _, r := range releases {
+				r()
+			}
+			if cancelledByPoll != nil {
+				select {
+				case <-cancelledByPoll:
+					taskLog.Info("local_directory: declared scope wait aborted by server-side terminal state")
+					return nil, true
+				default:
+				}
+			}
+			taskLog.Error("local_directory: declared scope lock acquire failed", "error", err)
+			failureReason := "local_directory_error"
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				failureReason = "cancelled"
+			}
+			if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+				kind:          terminalTaskReportFail,
+				taskID:        task.ID,
+				errorMessage:  fmt.Sprintf("local_directory scope wait cancelled: %s", err.Error()),
+				failureReason: failureReason,
+			}); failErr != nil {
+				taskLog.Error("fail task after snapshot scope lock cancel", "error", failErr)
+			}
+			return nil, true
+		}
+		releases = append(releases, releaseOne)
+	}
+	taskLog.Info("local_directory: declared scope locks acquired", "count", len(releases))
+	return func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}, false
 }
 
 // reportTaskResult writes the final task disposition back to the server.
@@ -7482,6 +7718,35 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// LocalWorkDir into execenv. handleTask already validated + locked the
 	// path for worker tasks; leader tasks intentionally skip the assignment.
 	localAssignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID)
+	// Snapshot-mode resources (RUYI-669) route through the snapshot plan, not
+	// the assignment above — which skips snapshot rows so its multiplicity
+	// error keeps describing the modes the assignment branches handle. The
+	// same resolution already ran in handleTask's lock phase; re-resolving
+	// here fails the task rather than falling through to a regular workdir if
+	// the claim→run gap straddled a resource edit that broke the plan.
+	snapPlan, snapPlanErr := resolveSnapshotPlan(task, d.cfg.DaemonID)
+	var agentSnapWrap *agent.SnapshotWrap
+	if snapPlanErr != nil {
+		return TaskResult{}, asEnvironmentSetupFailure(snapPlanErr)
+	}
+	if snapPlan != nil {
+		fb, ferr := snapshotWorktreeFallback(snapPlan)
+		if ferr != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(ferr)
+		}
+		if fb != nil {
+			// Git directories keep the worktree flow wholesale (ADR §3): the
+			// fallback rewrites the assignment to worktree mode so the branch
+			// below runs unchanged, and no snapshot tree is materialized.
+			localAssignment = fb
+			snapPlan = nil
+		} else {
+			// A mixed project's in_place row must not drive prep, reuse, or
+			// sidecar decisions once this task routes to snapshot: the two
+			// rows can even point at different directories.
+			localAssignment = nil
+		}
+	}
 	// Reuse intentionally skipped for local_directory tasks: the prior
 	// WorkDir is the user's own path (always present) but the reuse path
 	// loses the envRoot association the GC loop needs, and re-running
@@ -7489,7 +7754,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Leader tasks have no localAssignment; shouldReusePriorWorkdir separately
 	// requires Prepare-time managed-env provenance and a daemon-owned marker
 	// before allowing reuse, so a pre-fix leader session recorded against
-	// local_directory still fails closed.
+	// local_directory still fails closed. Snapshot tasks inherit the same
+	// decline: their Prepare runs with a LocalWorkDir set, so no managed-env
+	// provenance is ever written for them.
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
@@ -7840,7 +8107,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("prepare execution environment: %w", err))
 			}
 		} else {
-			if localAssignment != nil {
+			if snapPlan != nil {
+				// Snapshot mode (RUYI-669): Prepare writes context files and
+				// sidecars into LocalWorkDir, so the primary unit's upperdir
+				// takes that slot — everything lands in the overlay's upper
+				// layer, visible at the view root once mounted, and gone with
+				// the tree instead of persisting in the user's directory.
+				// env.WorkDir is rewritten to the user's path right after
+				// Prepare, so nothing downstream treats it as a scratch
+				// target; the one deliberate exception is the runtime-brief
+				// injection further down, which routes back into this upper
+				// layer (snapshotPrimaryUpper) instead of the pristine path.
+				primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
+				if merr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(merr)
+				}
+				prepParams.LocalWorkDir = primaryUpper
+			} else if localAssignment != nil {
 				prepParams.LocalWorkDir = localAssignment.AbsPath
 			}
 			env, err = d.prepareExecutionEnvironment(prepareCtx, prepParams)
@@ -7854,6 +8137,56 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.RootDir != resolvedRoot && env.RootDir != "" {
 		d.markActiveEnvRoot(env.RootDir)
 		defer d.unmarkActiveEnvRoot(env.RootDir)
+	}
+	// Snapshot run brief (RUYI-669): the ledger entry is committed BEFORE the
+	// worker spawns, so any tree on disk is attributable from the moment it
+	// exists — that is what keeps GC ledger-driven instead of name-driven.
+	// The deferred finalizer preserves the upper layer on every path that
+	// didn't explicitly succeed; the success path below finalizes with
+	// keep=false first, and a Finalize on an already-removed entry is a no-op.
+	// materializeTrees re-runs defensively here for an env-reuse path that
+	// skipped the prepare branch above. The primary upper is kept for the
+	// runtime-brief injection below: snapshot tasks compose the brief into
+	// the upper layer, never into the pristine path env.WorkDir points at.
+	snapshotPrimaryUpper := ""
+	if snapPlan != nil {
+		primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
+		if merr != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(merr)
+		}
+		snapshotPrimaryUpper = primaryUpper
+		env.WorkDir = snapPlan.Primary.AbsPath
+		units := make([]execenv.SnapshotUnitSpec, 0, len(snapPlan.Units))
+		for _, u := range snapPlan.Units {
+			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, execenv.SnapshotStem(task.IssueID, u.Subdir, task.ID))
+			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
+		}
+		if err := execenv.RecordSnapshotStart(resolvedRoot, execenv.SnapshotLedgerEntry{
+			TaskID:  task.ID,
+			IssueID: task.IssueID,
+			Root:    resolvedRoot,
+			Primary: snapPlan.Primary.AbsPath,
+			Units:   units,
+		}); err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("record snapshot ledger: %w", err))
+		}
+		defer execenv.FinalizeSnapshot(resolvedRoot, task.ID, true)
+		selfPath, err := os.Executable()
+		if err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("resolve daemon executable for snapshot worker: %w", err))
+		}
+		agentSnapWrap, err = execenv.BuildSnapshotWrap(selfPath, &execenv.SnapshotRunSpec{
+			TaskID: task.ID,
+			Units:  units,
+			Cwd:    snapPlan.Primary.AbsPath,
+		})
+		if err != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("build snapshot wrap: %w", err))
+		}
+		taskLog.Info("local_directory: snapshot prepared",
+			"units", len(units),
+			"declared_scope", snapPlan.Declared,
+			"primary", snapPlan.Primary.AbsPath)
 	}
 	// Finalize the worktree on EVERY exit path, success or failure: commit
 	// whatever the agent left uncommitted, then unregister the worktree from
@@ -7941,9 +8274,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if env.LocalDirectory || env.LocalWorktree != nil {
 		defer func() {
 			var cleanupErr error
-			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
-				cleanupErr = cerr
-				d.logger.Warn("execenv: cleanup runtime config failed", "error", cerr)
+			// Snapshot mode wrote the brief into the task's upper layer, which
+			// dies with the snapshot tree: the pristine file was never
+			// touched, so there is nothing to excise — and running the
+			// excision anyway would re-introduce a host-side write (and could
+			// strip a stale block the user's own file carries for unrelated
+			// reasons).
+			if snapPlan == nil {
+				if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
+					cleanupErr = cerr
+					d.logger.Warn("execenv: cleanup runtime config failed", "error", cerr)
+				}
 			}
 			// Excise the sidecar tree (.agent_context/, .multica/,
 			// provider-specific .claude/skills/ etc.) that Prepare wrote
@@ -8026,7 +8367,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	// Snapshot mode composes the brief into the primary unit's upper layer:
+	// env.WorkDir here is the pristine host path the view covers, and writing
+	// it would leak the brief into the user's tree on a crash and let
+	// concurrent root-domain tasks overwrite one host-side file.
+	var runtimeBrief string
+	if snapPlan != nil {
+		runtimeBrief, err = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
+	} else {
+		runtimeBrief, err = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	}
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -8194,6 +8544,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+		// Snapshot mode (RUYI-669): every task process this backend spawns is
+		// rewritten through the stage-2 namespace worker. Probes and version
+		// checks built via agent.NewCommand never carry a wrap, so runtime
+		// discovery still runs on the host.
+		Snapshot: agentSnapWrap,
 	})
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
@@ -8343,6 +8698,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskLog.Warn("refusing quick-actions refresh task from an older server; complete the daemon upgrade by updating the server",
 			"target_task", task.RegenerateQuickActionsFor,
 		)
+		// A snapshot run was armed for this task even though no agent will
+		// launch: close the ledger entry as success so the tree (context files
+		// only, no agent writes) is removed instead of lingering as "failed".
+		if snapPlan != nil {
+			execenv.FinalizeSnapshot(resolvedRoot, task.ID, false)
+		}
 		return TaskResult{Status: "completed", Comment: "", WorkDir: env.WorkDir, EnvRoot: env.RootDir}, nil
 	}
 
@@ -8382,7 +8743,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -8428,7 +8789,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		var freshBrief string
+		var briefErr error
+		if snapPlan != nil {
+			freshBrief, briefErr = execenv.InjectRuntimeConfigSnapshot(env.WorkDir, snapshotPrimaryUpper, provider, taskCtx)
+		} else {
+			freshBrief, briefErr = execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		}
+		if briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
@@ -8442,7 +8810,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// this retry launches a fresh unit instead of reentering the old one.
 		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
+		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
@@ -8458,6 +8826,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+	}
+
+	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
+	// it held died with its namespace. A completed run drops the snapshot
+	// tree here — after the retry convergence above, because the retry reuses
+	// the same upperdirs. Any other terminal shape falls through to the
+	// deferred keep=true finalizer, which preserves the upper layer for
+	// inspection the same way a failed worktree task preserves its branch.
+	if snapPlan != nil && result.Status == "completed" {
+		if ferr := execenv.FinalizeSnapshot(resolvedRoot, task.ID, false); ferr != nil {
+			taskLog.Warn("local_directory: finalize snapshot after success failed (non-fatal)", "error", ferr)
+		}
 	}
 
 	elapsed := time.Since(taskStart).Round(time.Second)
@@ -8941,7 +9321,7 @@ func freshSessionMayHelp(errText string) bool {
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
-func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome, provider string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
 	// drain loop with a single cancel. Without this layer the backend would
@@ -9011,8 +9391,83 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	}
 	var idleWatchdogThreshold atomic.Int64
 	idleWatchdogThreshold.Store(int64(idleWindow))
+
+	// Watchdog observation state (RUYI-593 round 2). The pending-call tracker
+	// and the transcript batch share the drain mutex, so watchdog events get
+	// their seq from the same msgSeq counter and interleave monotonically
+	// with the message stream. The observer is pure visibility — it never
+	// touches lastActivityAt (self-produced events are not backend activity;
+	// feeding them back would let each event defer its own kill) — and is
+	// fully inert when every knob is zero, which leaves the watchdog
+	// byte-for-byte on its pre-round behavior.
+	var mu sync.Mutex
+	var batch []TaskMessageData
+	watchTracker := newToolCallTracker()
+	emitWatchdogEvent := func(input map[string]any, tool string) {
+		s := msgSeq.Add(1)
+		mu.Lock()
+		batch = append(batch, TaskMessageData{
+			Seq:   int(s),
+			Type:  "watchdog",
+			Tool:  tool,
+			Input: input,
+		})
+		mu.Unlock()
+	}
+	observer := newWatchdogObserver(d.cfg, watchTracker)
+	// postSilenceAlertComment is the ALERT tier's human-reachable leg: the
+	// transcript event alone is agent-visible, so the alert also lands as an
+	// issue comment through the daemon task-comment endpoint. Best-effort and
+	// bounded: a comment failure is logged and swallowed — it must never
+	// disturb the run or the watchdog.
+	postSilenceAlertComment := func(content string) {
+		commentCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := d.client.AddTaskComment(commentCtx, taskID, content); err != nil {
+			taskLog.Warn("failed to post silence alert comment", "error", err)
+		}
+	}
+	// recordForceStopSnapshot is the pre-mortem leg (RUYI-593): at the moment
+	// the watchdog decides to kill, take one atomic snapshot and deliver it
+	// three ways — a transcript event (via the shared batch, so its seq
+	// interleaves monotonically with the message stream), the structured kill
+	// log, and the terminal message wording (premortemSummary, read by the
+	// terminal branches after the drain tail has flushed). The kill itself is
+	// untouched: the caller fires it exactly where it always did.
+	var premortemSummary atomic.Value // string
+	recordForceStopSnapshot := func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool) {
+		mu.Lock()
+		pendingCount := len(watchTracker.pendingLocked())
+		ev := observer.collectPremortem(now, idleFor, threshold, toolInFlight, provider, toolCount.Load())
+		mu.Unlock()
+		emitWatchdogEvent(ev.input, ev.tool)
+		summary := premortemSummaryText(ev.input)
+		premortemSummary.Store(summary)
+		taskLog.Warn("watchdog force-stop pre-mortem",
+			"provider", provider,
+			"threshold", threshold.String(),
+			"idle_for", idleFor.Round(time.Millisecond).String(),
+			"tool_in_flight", toolInFlight,
+			"pending_tools", pendingCount,
+			"detail", summary,
+		)
+	}
+	var observe func(now time.Time, idleFor time.Duration, toolInFlight bool)
+	if observer.marksEnabled() || observer.silenceEnabled() {
+		observe = func(now time.Time, idleFor time.Duration, toolInFlight bool) {
+			mu.Lock()
+			events := observer.collectEvents(now, idleFor, toolInFlight)
+			mu.Unlock()
+			for _, ev := range events {
+				emitWatchdogEvent(ev.input, ev.tool)
+				if ev.comment != "" {
+					postSilenceAlertComment(ev.comment)
+				}
+			}
+		}
+	}
 	if idleWindow > 0 {
-		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog)
+		go d.runIdleWatchdog(agentCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, &inFlightTools, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, taskLog, observe, recordForceStopSnapshot)
 	}
 
 	// drainFinished closes after the drain goroutine has flushed the last
@@ -9021,11 +9476,11 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	drainFinished := make(chan struct{})
 	go func() {
 		defer close(drainFinished)
-		var mu sync.Mutex
+		// mu and batch live at executeAndDrain scope, shared with the
+		// watchdog's observation events so every reported row — transcript
+		// and watchdog alike — drains through one mutex-guarded batch.
 		var pendingText strings.Builder
 		var pendingThinking strings.Builder
-		var batch []TaskMessageData
-		callIDToTool := map[string]string{}
 
 		flush := func() {
 			mu.Lock()
@@ -9092,6 +9547,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				// slow downstream call (mu.Lock contention, batch resize)
 				// can't be misattributed to backend silence.
 				lastActivityAt.Store(time.Now().UnixNano())
+				// A backend message means the run recovered from any silent
+				// segment: re-arm the warn/alert escalation so the next
+				// silence escalates on its own again.
+				mu.Lock()
+				observer.observeActivity()
+				mu.Unlock()
 				switch msg.Type {
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
@@ -9130,11 +9591,15 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					n := toolCount.Add(1)
 					inFlightTools.Add(1)
 					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
-					if msg.CallID != "" {
-						mu.Lock()
-						callIDToTool[msg.CallID] = msg.Tool
-						mu.Unlock()
-					}
+					mu.Lock()
+					// Track the call for the watchdog's observation tier:
+					// in-flight marks and the force-stop pre-mortem both
+					// describe runs through this pending set. Calls without
+					// an id are tracked under a synthetic key (CallID stays
+					// empty) so they still show up even though no result can
+					// ever match them exactly.
+					watchTracker.register(msg.CallID, msg.Tool, time.Now())
+					mu.Unlock()
 					s := msgSeq.Add(1)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
@@ -9174,11 +9639,20 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						output = output[:8192]
 					}
 					toolName := msg.Tool
-					if toolName == "" && msg.CallID != "" {
-						mu.Lock()
-						toolName = callIDToTool[msg.CallID]
-						mu.Unlock()
+					mu.Lock()
+					// Retire the pending call this result pairs with: exact
+					// call_id match first, then the frontend folder's
+					// same-tool-FIFO fallback for results that lost their id.
+					// The retired record supplies the display name when the
+					// result itself is nameless.
+					if msg.CallID != "" {
+						if tr := watchTracker.take(msg.CallID); tr != nil && toolName == "" {
+							toolName = tr.Tool
+						}
+					} else {
+						watchTracker.retireOldest(msg.Tool)
 					}
+					mu.Unlock()
 					taskLog.Info("tool_result observed", "seq", s, "tool", toolName, "call_id", msg.CallID)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
@@ -9253,6 +9727,17 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 	}
 
+	// watchdogTerminalError composes the terminal wording: the fixed watchdog
+	// sentence plus the pre-mortem snapshot summary (read after waitForDrain,
+	// so the snapshot event has already been written before the run reports).
+	watchdogTerminalError := func() string {
+		msg := idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+		if s, ok := premortemSummary.Load().(string); ok && s != "" {
+			msg += "; " + s
+		}
+		return msg
+	}
+
 	select {
 	case result := <-session.Result:
 		waitForDrain()
@@ -9264,7 +9749,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			// generic "agent_error" bucket the aborted path falls into.
 			result.Status = "idle_watchdog"
 			if result.Error == "" {
-				result.Error = idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load()))
+				result.Error = watchdogTerminalError()
 			}
 		}
 		return result, toolCount.Load(), nil
@@ -9281,7 +9766,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		if idleWatchdogFired.Load() {
 			return agent.Result{
 				Status: "idle_watchdog",
-				Error:  idleWatchdogReason(time.Duration(idleWatchdogThreshold.Load())),
+				Error:  watchdogTerminalError(),
 			}, toolCount.Load(), nil
 		}
 		// Distinguish external cancellation (e.g. server-initiated cancel
@@ -9354,7 +9839,7 @@ func idleWatchdogTickInterval(window time.Duration) time.Duration {
 //
 // Polling rate comes from idleWatchdogTickInterval, so a run is force-stopped
 // somewhere between its budget and budget + tick, never earlier.
-func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger) {
+func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow time.Duration, lastActivityAt *atomic.Int64, inFlightTools *atomic.Int32, fired *atomic.Bool, firedThreshold *atomic.Int64, cancel context.CancelFunc, messages <-chan agent.Message, taskLog *slog.Logger, observe func(now time.Time, idleFor time.Duration, toolInFlight bool), snapshot func(now time.Time, idleFor, threshold time.Duration, toolInFlight bool)) {
 	ticker := time.NewTicker(idleWatchdogTickInterval(window))
 	defer ticker.Stop()
 	for {
@@ -9366,16 +9851,26 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 			// silent (a long build/install/test emits nothing between
 			// tool_use and tool_result), so it gets the larger toolWindow;
 			// toolWindow <= 0 disables the in-flight bound entirely.
-			threshold := window
+			now := time.Now()
 			toolInFlight := inFlightTools.Load() > 0
+			last := time.Unix(0, lastActivityAt.Load())
+			idleFor := now.Sub(last)
+			// Observation hook (RUYI-593 round 2): pure visibility on every
+			// tick, including ones the kill checks below skip — a tool in
+			// flight with toolWindow <= 0 never force-stops, and that is
+			// exactly the regime where in-flight marks matter most. The hook
+			// reads the same clocks the kill path does but never mutates
+			// them, so force-stop semantics are unchanged.
+			if observe != nil {
+				observe(now, idleFor, toolInFlight)
+			}
+			threshold := window
 			if toolInFlight {
 				if toolWindow <= 0 {
 					continue
 				}
 				threshold = toolWindow
 			}
-			last := time.Unix(0, lastActivityAt.Load())
-			idleFor := time.Since(last)
 			if idleFor < threshold {
 				continue
 			}
@@ -9392,6 +9887,12 @@ func (d *Daemon) runIdleWatchdog(agentCtx context.Context, window, toolWindow ti
 				"tool_in_flight", toolInFlight,
 			)
 			firedThreshold.Store(int64(threshold))
+			// Take the pre-mortem snapshot before firing so the transcript
+			// event, log record, and terminal summary all describe the exact
+			// kill decision (same now, same idleFor, same threshold).
+			if snapshot != nil {
+				snapshot(now, idleFor, threshold, toolInFlight)
+			}
 			fired.Store(true)
 			cancel()
 			return

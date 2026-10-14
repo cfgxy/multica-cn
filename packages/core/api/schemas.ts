@@ -50,6 +50,7 @@ import type {
   GroupedIssuesResponse,
   GitHubConnectResponse,
   GitHubPullRequest,
+  IssueRelationsResponse,
   InboxItem,
   InboxWorkspaceUnread,
   Label,
@@ -510,6 +511,17 @@ export const IssuePullRequestsResponseSchema = z.object({
 
 export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: { pull_requests: GitHubPullRequest[] } = {
   pull_requests: [],
+};
+
+// Single-PR lookup for the reference tail (RUYI-635 增量): the server answers
+// `null` only as absent-field fallback — a miss is a 404 the client turns
+// into `null` before parsing.
+export const PullRequestLookupResponseSchema = z.object({
+  pull_request: GitHubPullRequestSchema.nullish().default(null),
+}).loose();
+
+export const EMPTY_PULL_REQUEST_LOOKUP_RESPONSE: { pull_request: GitHubPullRequest | null } = {
+  pull_request: null,
 };
 
 // Label responses are consumed by settings tables and resource pickers. Keep
@@ -1050,9 +1062,81 @@ export const IssueDecisionSchema = z.object({
   created_by_id: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
+  // RUYI-630 authorization-card face — present only on authorization cards.
+  decision_kind: z.enum(["question", "authorization"]).optional(),
+  visible_tier: z.string().optional(),
+  operator_tier: z.string().optional(),
+  named_approver_ids: z.array(z.string()).optional(),
+  approve_label: z.string().nullable().optional(),
+  deny_label: z.string().nullable().optional(),
+  expires_at: z.string().nullable().optional(),
+  answer_source: z.enum(["card_click", "text_token", "batch"]).nullable().optional(),
+  auth_state: z.string().nullable().optional(),
+  request_group_id: z.string().nullable().optional(),
+  action_type: z.string().nullable().optional(),
+  executed_at: z.string().nullable().optional(),
+  execution_result: z.unknown().optional(),
+  execution_error: z.string().nullable().optional(),
 }).loose();
 
 export const IssueDecisionsListSchema = z.array(IssueDecisionSchema);
+
+// Agent authorization requests (RUYI-630). Mirrors
+// handler.DecisionRequestResponse / DecisionRequestDetailResponse: one row
+// per involved space, the target-space row operable, the origin row a
+// read-only projection when an issue reference exists.
+export const DecisionRequestSchema = z.object({
+  id: z.string(),
+  request_group_id: z.string(),
+  workspace_id: z.string(),
+  role: z.enum(["origin", "target"]),
+  operable: z.boolean(),
+  status: z.enum(["pending", "approved", "denied", "expired", "revoked", "executed", "execute_failed"]),
+  action_type: z.string(),
+  action_params: z.unknown().optional(),
+  risk_tier: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  origin_workspace_id: z.string(),
+  origin_agent_id: z.string(),
+  // Server-resolved display name: the origin agent is not in this
+  // workspace's roster, so local resolution can never name it.
+  origin_agent_name: z.string().nullable().optional(),
+  origin_task_id: z.string().nullable().optional(),
+  origin_issue_id: z.string().nullable().optional(),
+  origin_issue_title: z.string().nullable().optional(),
+  operator_tier: z.string(),
+  named_approver_ids: z.array(z.string()),
+  approve_label: z.string().nullable().optional(),
+  deny_label: z.string().nullable().optional(),
+  expires_at: z.string(),
+  answered_by_type: z.string().nullable().optional(),
+  answered_by_id: z.string().nullable().optional(),
+  answered_at: z.string().nullable().optional(),
+  // decision_center: the row answer endpoint (decision-center row buttons /
+  // bare API); card_click stays the only card-surface click value.
+  answer_source: z.enum(["card_click", "text_token", "batch", "decision_center"]).nullable().optional(),
+  executed_at: z.string().nullable().optional(),
+  execution_result: z.unknown().optional(),
+  execution_error: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const DecisionRequestDetailSchema = z.object({
+  request: DecisionRequestSchema,
+  steps: z.array(DecisionRequestSchema),
+  card: IssueDecisionSchema.nullable().optional(),
+}).loose();
+
+export const DecisionRequestsListSchema = z.object({
+  items: z.array(DecisionRequestSchema),
+  counts: z.object({
+    pending: z.number().int(),
+    closed: z.number().int(),
+    executed: z.number().int(),
+  }),
+});
 
 // Workspace decision inbox (RUYI-494). Mirrors
 // handler.WorkspaceDecisionInboxResponse: one row per card with issue context
@@ -1745,6 +1829,40 @@ export const ChildIssueProgressResponseSchema = z.object({
     .default([]),
 }).loose();
 
+// Structured issue relations (RUYI-689). Server guarantees the five edge
+// arrays are always present, but default([]) keeps older/odd payloads
+// rendering as "no relations" instead of tripping the fallback.
+export const IssueRelationRefSchema = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  title: z.string(),
+  status: z.string(),
+}).loose();
+
+export const IssueRelationsResponseSchema = z.object({
+  issue_id: z.string(),
+  identifier: z.string(),
+  revision: z.number(),
+  parent: IssueRelationRefSchema.nullable().default(null),
+  blocks: z.array(IssueRelationRefSchema).default([]),
+  blocked_by: z.array(IssueRelationRefSchema).default([]),
+  relates_to: z.array(IssueRelationRefSchema).default([]),
+  supersedes: z.array(IssueRelationRefSchema).default([]),
+  superseded_by: z.array(IssueRelationRefSchema).default([]),
+}).loose();
+
+export const EMPTY_ISSUE_RELATIONS: IssueRelationsResponse = {
+  issue_id: "",
+  identifier: "",
+  revision: 0,
+  parent: null,
+  blocks: [],
+  blocked_by: [],
+  relates_to: [],
+  supersedes: [],
+  superseded_by: [],
+};
+
 export const CloudRuntimeNodeSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
@@ -1825,6 +1943,35 @@ const DashboardUsageDailySchema = z.object({
 }).loose();
 
 export const DashboardUsageDailyListSchema = z.array(DashboardUsageDailySchema);
+
+// Usage-panel proxy payloads (RUYI-618). `configured: false` means the
+// backend has no PROMETHEUS_URL — the UI hides the section, so everything
+// else is allowed to be absent. Series keys vary per panel and grow with
+// new charts, hence the open z.record instead of an enum.
+const UsageMetricPointSchema = z.object({
+  t: z.number(),
+  v: z.number(),
+});
+
+const UsageMetricSeriesSchema = z.object({
+  labels: z.record(z.string(), z.string()).default({}),
+  points: z.array(UsageMetricPointSchema).default([]),
+});
+
+export const DashboardUsageResourcesSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export const DashboardUsageTrafficSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  by: z.string().default("provider"),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
 
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
@@ -4855,6 +5002,11 @@ export const PromptProposalSchema = z.object({
   gate_answer_cost: z.string(),
   gate_answer_conflict: z.string(),
   gate_answer_dedup: z.string(),
+  // RUYI-723 decision context: retrospective drafts only, absent elsewhere.
+  problem: z.string().optional(),
+  expected_effect: z.string().optional(),
+  expected_gain: z.string().optional(),
+  value_score: z.number().optional(),
   evidence_anchors: z.array(z.record(z.string(), z.unknown())),
   status: z.string(),
   gate_errors: z.array(LegislationGateFindingSchema),
@@ -4919,6 +5071,10 @@ export const RetrospectiveRunSchema = z.object({
   // untyped). Null-safe: rows predating the column serialize null.
   detail: z.unknown().nullable().optional(),
   created_at: z.string(),
+  // RUYI-663: transcript anchor — null for runs that failed before enqueue
+  // and rows predating the column (935); absent on old servers.
+  task_id: z.string().nullable().optional(),
+  finished_at: z.string().nullable().optional(),
 }).loose();
 
 export const RetrospectiveRunListSchema = z.array(RetrospectiveRunSchema);
@@ -5018,6 +5174,14 @@ const SelfEvolutionOverviewSkillsSchema = z.object({
   invocations: z.number().default(0),
 });
 
+const SelfEvolutionOverviewProposalsSchema = z.object({
+  total: z.number().default(0),
+  pending_owner: z.number().default(0),
+  last_auto_proposal: z
+    .object({ source: z.string(), created_at: z.string() })
+    .optional(),
+});
+
 export const SelfEvolutionOverviewSchema = z.object({
   versions: z.array(SelfEvolutionOverviewTierSchema).default([]),
   quality: z
@@ -5048,6 +5212,7 @@ export const SelfEvolutionOverviewSchema = z.object({
   }),
   knowledge: SelfEvolutionOverviewKnowledgeSchema.default({ dirs: 0, entries: 0 }),
   skills: SelfEvolutionOverviewSkillsSchema.default({ count: 0, invocations: 0 }),
+  proposals: SelfEvolutionOverviewProposalsSchema.default({ total: 0, pending_owner: 0 }),
 });
 
 // The fallback for a response that did not parse: no tier rows, an unmeasured
@@ -5066,6 +5231,7 @@ export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
   quiz: { verdict: "insufficient", measured: false, required_sample: 0, required_baseline: 0 },
   knowledge: { dirs: 0, entries: 0 },
   skills: { count: 0, invocations: 0 },
+  proposals: { total: 0, pending_owner: 0 },
 };
 
 // ---- Self-evolution model-service config (RUYI-551) ----
@@ -5105,3 +5271,90 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   message: z.string().default(""),
   validated_at: z.string().optional(),
 });
+
+// Workspace host-backpressure settings (RUYI-618): the effective card the
+// settings form saves and every daemon receives on heartbeat acks. All
+// numeric fields default to the daemon code defaults so an old server
+// response degrades to "not customized" instead of a broken form.
+export const WorkspaceBackpressureSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  custom: z.boolean().default(false),
+});
+
+// ---- Daemon host backpressure settings + event history (RUYI-729) ----
+// The daemon-host override card (Runtime detail page) and its report/event
+// shapes. Coexists with the workspace card above: the workspace settings are
+// the per-workspace default plane, a saved daemon row is the host-level
+// override delivered on its own ack field.
+
+const DaemonBackpressureConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  config_version: z.number().optional(),
+  source: z.string().optional(),
+}).loose();
+
+export type DaemonBackpressureConfig = z.infer<typeof DaemonBackpressureConfigSchema>;
+
+const DaemonBackpressureConditionSchema = z.object({
+  condition: z.string().default(""),
+  value: z.number().default(0),
+  threshold: z.number().default(0),
+  triggered: z.boolean().default(false),
+});
+
+const DaemonBackpressureReportSchema = z.object({
+  active: z.boolean().default(false),
+  reason: z.string().default(""),
+  mem_available_pct: z.number().default(0),
+  swap_used_pct: z.number().default(0),
+  psi_memory_some_avg10: z.number().default(0),
+  psi_read_ok: z.boolean().default(false),
+  deferred_claims: z.number().default(0),
+  config: DaemonBackpressureConfigSchema.nullish().catch(null),
+  conditions: z.array(DaemonBackpressureConditionSchema).optional(),
+}).loose();
+
+export const RuntimeBackpressureSettingsSchema = z.object({
+  daemon_id: z.string().default(""),
+  configured: z.boolean().default(false),
+  config: DaemonBackpressureConfigSchema.nullish().catch(null),
+  updated_by: z.string().optional(),
+  updated_at: z.string().optional(),
+  report: DaemonBackpressureReportSchema.nullish().catch(null),
+}).loose();
+
+export type RuntimeBackpressureSettings = z.infer<typeof RuntimeBackpressureSettingsSchema>;
+
+const DaemonBackpressureEventSchema = z.object({
+  id: z.string().default(""),
+  event_type: z.string().default(""),
+  reason: z.string().default(""),
+  mem_available_pct: z.number().default(0),
+  swap_used_pct: z.number().default(0),
+  psi_some_avg10: z.number().default(0),
+  psi_read_ok: z.boolean().default(false),
+  deferred_claims: z.number().default(0),
+  effective_config: DaemonBackpressureConfigSchema.default({} as DaemonBackpressureConfig),
+  hits: z.array(DaemonBackpressureConditionSchema).default([]),
+  occurred_at: z.string().default(""),
+}).loose();
+
+export const RuntimeBackpressureEventListSchema = z.array(DaemonBackpressureEventSchema);
+
+export type RuntimeBackpressureEvent = z.infer<typeof DaemonBackpressureEventSchema>;

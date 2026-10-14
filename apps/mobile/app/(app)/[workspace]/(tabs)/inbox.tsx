@@ -211,7 +211,7 @@ export default function Inbox() {
               <ArchivedEntry count={archivedCount} onPress={openArchived} />
             ) : null
           }
-          contentContainerClassName="pb-6"
+          contentContainerClassName="pb-2"
           renderItem={({ item }) => (
             <SwipeableInboxRow
               item={item}
