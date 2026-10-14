@@ -99,8 +99,8 @@ describe("AgentDetailInspector voice override", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows the inherit label for a null unbound value too", () => {
-    renderInspector(makeAgent({ voice_provider_id: null }));
+  it("shows the inherit label when the provider override is absent", () => {
+    renderInspector(makeAgent());
 
     const trigger = screen.getByLabelText("Voice provider");
     expect(trigger).toHaveTextContent("Inherit workspace default");
