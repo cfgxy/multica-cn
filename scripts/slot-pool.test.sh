@@ -265,6 +265,22 @@ tool_result exec '{"execution_id":"ex-i2","state":"succeeded","exit_code":1,"log
 rc=0; out="$(bash "$pool" pdev1 orphans 2>&1)" || rc=$?
 if [ "$rc" = 1 ]; then ok; else fail "orphans residue: rc=$rc out=$out"; fi
 
+reset_log
+# ssh transport noise (known_hosts notice) ahead of the inventory JSON must
+# not flip a clean inventory into rc=1 (P2-1: whole-buffer jq parse).
+tool_result exec '{"execution_id":"ex-i3","state":"succeeded","exit_code":0,"log_tail":"Warning: Permanently added '\''192.168.2.130'\'' (ED25519) to the list of known hosts.\n{\"clean\": true, \"port_residues\": [], \"process_residues\": [], \"git_carriers\": 0}"}'
+rc=0; out="$(bash "$pool" pdev1 orphans 2>&1)" || rc=$?
+if [ "$rc" = 0 ]; then ok; else fail "orphans known_hosts noise: rc=$rc out=$out"; fi
+
+# --- 14b. list: both global and slot-prefixed shapes -----------------------------
+reset_log
+tool_result list_leases '{"leases":[{"lease_id":"ls-7","owner":"RUYI-TEST","issue_id":"RUYI-TEST","template_id":"tpl-t","state":"active"}]}'
+out="$(bash "$pool" list)"; rc=$?
+if [ "$rc" = 0 ] && grep -q 'ls-7' <<<"$out"; then ok; else fail "list global: rc=$rc out=$out"; fi
+
+rc=0; out="$(bash "$pool" pdev1 list 2>&1)" || rc=$?
+if [ "$rc" = 0 ] && grep -q 'ls-7' <<<"$out"; then ok; else fail "list slot-prefixed: rc=$rc out=$out"; fi
+
 # --- 15. load: upload_package params pinned -------------------------------------
 reset_log
 tool_result upload_package '{"package_id":"pkg-1","upload":{"method":"PUT","url":"http://files.example/put-here"}}'
