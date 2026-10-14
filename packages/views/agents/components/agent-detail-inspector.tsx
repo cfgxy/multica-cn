@@ -27,8 +27,21 @@ import {
 } from "@multica/core/runtimes";
 import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
+import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@multica/ui/components/ui/select";
+import {
+  parseVoiceAdvancedDraft,
+  voiceProviderChainEligible,
+  voiceProviderListOptions,
+} from "@multica/core/voice/providers";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import {
   SettingsCard,
@@ -327,6 +340,8 @@ export function AgentDetailInspector({
         </SettingsCard>
       </SettingsSection>
 
+      <VoiceOverrideSection agent={agent} canEdit={canEdit} update={update} />
+
       <SessionContextSection
         agent={agent}
         canEdit={canEdit}
@@ -386,6 +401,222 @@ function SubagentSettingRow({
         />
       )}
     </SettingsRow>
+  );
+}
+
+/** Server default when a chain level stores no explicit model. */
+const DEFAULT_VOICE_MODEL = "gemini-3.8-live";
+
+/**
+ * Agent-level voice override (RUYI-749 D1). The server PATCH is level-wise
+ * atomic: `voice_provider_id` binds the override as one unit (omitted
+ * model/advanced in the same request reset that level), while
+ * `voice_model`/`voice_advanced` alone refine an existing override and
+ * `voice_provider_id: ""` unbinds it whole. The draft mirrors those
+ * semantics instead of inventing a client-side merge.
+ */
+function VoiceOverrideSection({
+  agent,
+  canEdit,
+  update,
+}: {
+  agent: Agent;
+  canEdit: boolean;
+  update: (data: Record<string, unknown>) => Promise<void>;
+}) {
+  const { t } = useT("agents");
+  const { data: providers = [] } = useQuery(
+    voiceProviderListOptions(agent.workspace_id),
+  );
+  const eligible = useMemo(
+    () => providers.filter(voiceProviderChainEligible),
+    [providers],
+  );
+
+  const savedProviderId = agent.voice_provider_id ?? null;
+  const [providerDraft, setProviderDraft] = useState(savedProviderId ?? "none");
+  const [modelDraft, setModelDraft] = useState(agent.voice_model ?? "");
+  const [advancedDraft, setAdvancedDraft] = useState(
+    agent.voice_advanced ? JSON.stringify(agent.voice_advanced, null, 2) : "",
+  );
+  const [advancedInvalid, setAdvancedInvalid] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Re-seed when the saved triple changes underneath (post-save refetch, or
+  // a pool edit that unbound the override server-side).
+  const savedKey = `${savedProviderId ?? ""}\u0000${agent.voice_model ?? ""}\u0000${JSON.stringify(agent.voice_advanced ?? null)}`;
+  const [seenSavedKey, setSeenSavedKey] = useState(savedKey);
+  if (savedKey !== seenSavedKey) {
+    setSeenSavedKey(savedKey);
+    setProviderDraft(savedProviderId ?? "none");
+    setModelDraft(agent.voice_model ?? "");
+    setAdvancedDraft(
+      agent.voice_advanced ? JSON.stringify(agent.voice_advanced, null, 2) : "",
+    );
+    setAdvancedInvalid(false);
+  }
+
+  const run = useCallback(
+    async (data: Record<string, unknown>) => {
+      setBusy(true);
+      try {
+        await update(data);
+      } catch (error) {
+        toast.error(
+          error instanceof Error && error.message
+            ? error.message
+            : t(($) => $.inspector.voice_save_failed_toast),
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [t, update],
+  );
+
+  const commitProvider = (id: string) => {
+    setProviderDraft(id);
+    if (id === "none") {
+      void run({ voice_provider_id: "" });
+      return;
+    }
+    const advanced = parseVoiceAdvancedDraft(advancedDraft);
+    if (advanced === "invalid") {
+      setAdvancedInvalid(true);
+      return;
+    }
+    setAdvancedInvalid(false);
+    void run({
+      voice_provider_id: id,
+      ...(modelDraft.trim() ? { voice_model: modelDraft.trim() } : {}),
+      ...(advanced ? { voice_advanced: advanced } : {}),
+    });
+  };
+
+  const commitModel = () => {
+    if (savedProviderId == null) return;
+    const next = modelDraft.trim();
+    if (next === (agent.voice_model ?? "")) return;
+    void run({ voice_model: next });
+  };
+
+  const commitAdvanced = () => {
+    if (savedProviderId == null) return;
+    const parsed = parseVoiceAdvancedDraft(advancedDraft);
+    if (parsed === "invalid") {
+      setAdvancedInvalid(true);
+      return;
+    }
+    setAdvancedInvalid(false);
+    if (parsed === null) {
+      // Cleared draft over a stored value sends explicit {} — the PATCH
+      // treats an absent/null field as "preserve what is stored".
+      if (agent.voice_advanced) void run({ voice_advanced: {} });
+      return;
+    }
+    if (JSON.stringify(parsed) === JSON.stringify(agent.voice_advanced ?? null)) return;
+    void run({ voice_advanced: parsed });
+  };
+
+  const overrideActive = savedProviderId != null;
+  const unbound = providerDraft === "none";
+
+  return (
+    <SettingsSection
+      title={t(($) => $.inspector.section_voice)}
+      description={t(($) => $.inspector.section_voice_hint)}
+      action={
+        overrideActive && canEdit ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={busy}
+            onClick={() => void run({ voice_provider_id: "" })}
+          >
+            {t(($) => $.inspector.voice_reset_action)}
+          </Button>
+        ) : null
+      }
+    >
+      <SettingsCard>
+        <SettingsRow
+          label={t(($) => $.inspector.prop_voice_provider)}
+          description={
+            eligible.length === 0
+              ? t(($) => $.inspector.voice_no_providers_hint)
+              : undefined
+          }
+          size="select-wide"
+        >
+          <Select
+            items={[
+              { value: "none", label: t(($) => $.inspector.voice_inherit_option) },
+              ...eligible.map((p) => ({ value: p.id, label: p.display_name })),
+            ]}
+            value={providerDraft}
+            // Base UI's change payload is `string | null`; a null carries no
+            // item choice of ours (every SelectItem has a string value), so
+            // it must not commit a draft — ignore it.
+            onValueChange={(value) => {
+              if (value != null) commitProvider(value);
+            }}
+            disabled={!canEdit || busy}
+          >
+            <SelectTrigger aria-label={t(($) => $.inspector.prop_voice_provider)}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">
+                {t(($) => $.inspector.voice_inherit_option)}
+              </SelectItem>
+              {eligible.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.display_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow
+          label={t(($) => $.inspector.prop_voice_model)}
+          size="text"
+        >
+          <Input
+            type="text"
+            value={modelDraft}
+            onChange={(e) => setModelDraft(e.target.value)}
+            onBlur={commitModel}
+            disabled={!canEdit || busy || unbound}
+            placeholder={t(($) => $.inspector.voice_model_placeholder_default, {
+              model: DEFAULT_VOICE_MODEL,
+            })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t(($) => $.inspector.prop_voice_advanced)}
+          size="text"
+          align="start"
+        >
+          <div>
+            <Textarea
+              value={advancedDraft}
+              onChange={(e) => setAdvancedDraft(e.target.value)}
+              onBlur={commitAdvanced}
+              disabled={!canEdit || busy || unbound}
+              rows={3}
+              placeholder={t(($) => $.inspector.voice_advanced_placeholder)}
+              aria-invalid={advancedInvalid || undefined}
+              className="resize-y font-mono text-caption"
+            />
+            {advancedInvalid ? (
+              <p className="mt-1 text-caption text-destructive">
+                {t(($) => $.inspector.voice_advanced_invalid)}
+              </p>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsCard>
+    </SettingsSection>
   );
 }
 

@@ -41,10 +41,13 @@ export function voiceProvidersOptions(wsId: string) {
   });
 }
 
-/** D2 agent-level override triple, read off the additive server fields. */
+/** D2 agent-level override triple, read off the additive server fields
+ *  (RUYI-749: voice_advanced joined the triple; the core Agent type still
+ *  doesn't carry any of the three — read defensively). */
 export type AgentWithVoiceOverride = Agent & {
   voice_provider_id?: string | null;
   voice_model?: string | null;
+  voice_advanced?: Record<string, unknown> | null;
 };
 
 /** The slice of workspace.settings the voice chain reads. */
