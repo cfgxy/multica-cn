@@ -11,11 +11,16 @@
  *     `getStateLabel` ends in the same raw-value fallback).
  *   - Subtitle composition matches the web row exactly:
  *     `owner/repo#N · <state>` + ` · @author` only when an author exists.
- *   - Colors diverge from web's literal emerald/violet hex on purpose:
- *     mobile theming is token-based (NativeWind semantic tokens), so each
- *     state maps to the token carrying the same semantics — open=success,
- *     draft=muted, merged=violet, closed=destructive.
+ *   - Colors diverge from web's literal hex on purpose: mobile theming is
+ *     token-based (NativeWind semantic tokens), so each state maps to the
+ *     token carrying the same semantics — open=success, draft=muted,
+ *     merged=violet (RUYI-635 增量: both ends unified on violet, GitHub's
+ *     merged identity; was info blue), closed=destructive. WHICH state and
+ *     dimmed-or-not come from `derivePullRequestStateVisual` in core —
+ *     one derivation shared with the web sidebar and the reference tail.
  */
+import { derivePullRequestStateVisual } from "@multica/core/github";
+import type { PullRequestStateColorToken } from "@multica/core/github";
 
 /** Shape the row actually renders; a lenient subset of `GitHubPullRequest`
  *  (imported as `import type` in the screen) keeps this module node-testable. */
@@ -53,32 +58,24 @@ export interface PullRequestStateVisual {
   dimmed: boolean;
 }
 
+// Core color token → mobile THEME key (lib/theme.ts). Only the palette
+// mapping is mobile-owned; the state→token semantics live in core.
+const STATE_THEME_KEY: Record<PullRequestStateColorToken, PullRequestStateVisual["themeKey"]> = {
+  success: "success",
+  muted: "mutedForeground",
+  violet: "violet",
+  destructive: "destructive",
+  neutral: "foreground",
+};
+
 /** Icon + semantic theme token per state; neutral fallback for unknown. */
 export function pullRequestStateVisual(state: string): PullRequestStateVisual {
-  switch (state) {
-    case "open":
-      return { icon: "git-pull-request-outline", themeKey: "success", dimmed: false };
-    case "draft":
-      return {
-        icon: "git-pull-request-outline",
-        themeKey: "mutedForeground",
-        dimmed: true,
-      };
-    case "merged":
-      return { icon: "git-merge-outline", themeKey: "violet", dimmed: false };
-    case "closed":
-      return {
-        icon: "git-pull-request-outline",
-        themeKey: "destructive",
-        dimmed: false,
-      };
-    default:
-      return {
-        icon: "git-pull-request-outline",
-        themeKey: "foreground",
-        dimmed: false,
-      };
-  }
+  const visual = derivePullRequestStateVisual(state);
+  return {
+    icon: visual.state === "merged" ? "git-merge-outline" : "git-pull-request-outline",
+    themeKey: STATE_THEME_KEY[visual.colorToken],
+    dimmed: visual.dimmed,
+  };
 }
 
 /**

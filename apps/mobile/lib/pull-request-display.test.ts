@@ -14,11 +14,10 @@ import { describe, expect, it } from "vitest";
  *     uses (data identity: same state vocabulary). Unknown states → null
  *     so the caller renders the raw server value instead of guessing
  *     ("API Response Compatibility": never silently drop a category).
- *   - `pullRequestStateVisual` — mobile's icon + theme token per state.
- *     Hue mapping is token-based (success / muted / info / destructive),
- *     not web's literal emerald/violet hex — mobile theming diverges by
- *     design, semantics must not (open=growing, merged=integrated,
- *     closed=terminated). `dimmed` mirrors web's `opacity-80` draft row.
+ *   - `pullRequestStateVisual` — mobile maps the shared core derivation to
+ *     icon + theme token. Hue mapping is token-based (success / muted /
+ *     violet / destructive), not web's literal hex. `dimmed` mirrors web's
+ *     `opacity-80` draft row.
  *   - `formatPullRequestSubtitle` — exact subtitle composition parity
  *     with the web row, including the conditional `@author` segment.
  */
@@ -60,10 +59,10 @@ describe("pullRequestStateVisual", () => {
     });
   });
 
-  it("renders merged as the merge icon", () => {
+  it("renders merged as the merge icon in the violet token", () => {
     expect(pullRequestStateVisual("merged")).toEqual({
       icon: "git-merge-outline",
-      themeKey: "info",
+      themeKey: "violet",
       dimmed: false,
     });
   });
