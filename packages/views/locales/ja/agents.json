@@ -365,13 +365,6 @@
       "select_image_toast": "画像ファイルを選択してください。",
       "upload_failed_toast": "アバターのアップロードに失敗しました"
     },
-    "voice_label": "音声",
-    "voice_none": "音声なし",
-    "voice_empty": "音声対応インスタンスがありません",
-    "credential_configured": "設定済み ✓",
-    "credential_invalid": "キー無効",
-    "credential_unreachable": "検証不可",
-    "credential_not_configured": "未設定",
     "runtime_credentials_help": "モデル認証には、選択したランタイムの OS ユーザー設定を使用します。CLI のインストールだけでは API キーは設定されません。",
     "runtime_select": "ランタイムを選択"
   },
@@ -684,7 +677,8 @@
       "cancel_failed_toast": "作業をキャンセルできませんでした",
       "started_prefix": "{{when}} に開始",
       "dispatched_prefix": "{{when}} にディスパッチ",
-      "queued_prefix": "{{when}} に待機開始"
+      "queued_prefix": "{{when}} に待機開始",
+      "queued_backpressure": "ランタイムの復帰待ち"
     }
   },
   "char_counter": {

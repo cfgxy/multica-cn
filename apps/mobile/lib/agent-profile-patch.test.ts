@@ -42,7 +42,6 @@ function draft(overrides: Partial<Parameters<typeof buildProfilePatch>[1]> = {})
     avatarUrl: "mc://file/a.png",
     model: "glm-5.3",
     runtimeId: "runtime-1",
-    voiceRuntimeId: "",
     thinking: "",
     tier: "",
     concurrency: "4",

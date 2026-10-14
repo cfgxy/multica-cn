@@ -34,7 +34,11 @@ name: multica
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: ghcr.io/cfgxy/multica-postgres-pgbigm:pg17
+    # pg_bigm needs shared_preload_libraries set before server start. The image
+    # bakes it into postgresql.conf.sample (fresh init only); upgraded data
+    # directories never re-read the sample, so pin it on the command line.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_bigm"]
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       PGTZ: ${TZ:-Asia/Shanghai}

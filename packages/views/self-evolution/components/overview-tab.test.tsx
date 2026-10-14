@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -15,13 +15,16 @@ import zhSelfEvolution from "../../locales/zh-Hans/self-evolution.json";
 import { OverviewTab } from "./overview-tab";
 
 /**
- * The overview tab's wiring (RUYI-284).
+ * The overview tab's wiring (RUYI-284, proposal card wired on RUYI-551).
  *
  * The server holds the aggregate honest (its handler tests do the counting);
  * what only a mount can show is asserted here: the three kinds of emptiness
  * stay distinguishable on screen — a plane with nothing says so, a sample
  * below the floor shows the marker instead of a number, and a failed fetch is
  * an error state with a retry — and the tab offers no write control at all.
+ * The proposal card (RUYI-551) leads with the automatic loop's narrative,
+ * shows the exact pool counts and the newest retrospective-proposed row, and
+ * names the missing automatic leg instead of silently looking manual.
  */
 
 const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
@@ -94,6 +97,11 @@ function overviewFixture(overrides: Partial<SelfEvolutionOverview> = {}): SelfEv
       last_scan: { result: "changed", trigger_source: "manual", started_at: "2026-09-30T04:00:00Z" },
     },
     skills: { count: 2, invocations: 7 },
+    proposals: {
+      total: 4,
+      pending_owner: 2,
+      last_auto_proposal: { source: "retrospective", created_at: "2026-09-30T03:00:00Z" },
+    },
     ...overrides,
   };
 }
@@ -128,6 +136,8 @@ function mount() {
   );
 }
 
+afterEach(cleanup);
+
 beforeEach(() => {
   state.overview = null;
   state.failure = null;
@@ -159,11 +169,15 @@ it("renders the six sections from the aggregate", async () => {
     screen.getByText("Insufficient sample (baseline needs 30, current needs 12 usable readings)"),
   ).toBeTruthy();
 
-  // The proposals slot stays but is deliberately unwired (RUYI-305): an
-  // explicit pending note, never a count of the old model's rows.
-  expect(screen.getByTestId("overview-proposals").textContent).toContain(
-    "Proposal metrics arrive with the new proposal model",
-  );
+  // The proposals card is wired to the real pool (RUYI-551): the automatic
+  // loop is the first narrative, then the exact counts, then the newest
+  // retrospective-proposed row with its source and time — never the old
+  // pending note.
+  const proposals = screen.getByTestId("overview-proposals").textContent ?? "";
+  expect(proposals).toContain("enter the pool automatically");
+  expect(proposals).toContain("4 proposals · 2 awaiting owner approval");
+  expect(proposals).toContain("Latest automatic proposal (daily retrospective):");
+  expect(proposals).not.toContain("arrive with the new proposal model");
   expect(screen.getByTestId("overview-knowledge").textContent).toContain("1 directories");
   expect(screen.getByTestId("overview-skills").textContent).toContain("7 explicit invocations in total");
 });
@@ -190,6 +204,7 @@ it("keeps the three kinds of emptiness distinguishable and offers no write contr
     quiz: { verdict: "insufficient", measured: false, required_sample: 12, required_baseline: 30 },
     knowledge: { dirs: 0, entries: 0 },
     skills: { count: 0, invocations: 0 },
+    proposals: { total: 0, pending_owner: 0 },
   });
   mount();
 
@@ -199,6 +214,7 @@ it("keeps the three kinds of emptiness distinguishable and offers no write contr
   expect(screen.getByText("No recorded measurements yet.")).toBeTruthy();
   expect(screen.getByText("No registered directories yet.")).toBeTruthy();
   expect(screen.getByText("No registered skills yet.")).toBeTruthy();
+  expect(screen.getByTestId("overview-proposals").textContent).toContain("The pool is empty.");
 
   // A lens, not a surface: the only button this tab can ever render is the
   // error state's retry, and the happy path renders none.
@@ -217,6 +233,22 @@ it("shows a failed fetch as an explicit error with a working retry", async () =>
   screen.getByRole("button", { name: "Retry" }).click();
   await waitFor(() => expect(screen.getByTestId("overview-versions")).toBeTruthy());
   expect(state.calls).toBeGreaterThanOrEqual(2);
+});
+
+it("names the missing automatic leg when the pool only holds manual rows", async () => {
+  // A pool with rows but no retrospective-proposed one is the visible
+  // signature of a loop that is not running (or has produced nothing yet):
+  // the card says so instead of silently looking fully manual.
+  state.overview = overviewFixture({
+    proposals: { total: 1, pending_owner: 0 },
+  });
+  mount();
+
+  await waitFor(() => expect(screen.getByTestId("overview-proposals")).toBeTruthy());
+  const text = screen.getByTestId("overview-proposals").textContent ?? "";
+  expect(text).toContain("1 proposals · 0 awaiting owner approval");
+  expect(text).toContain("No automatic proposals yet.");
+  expect(text).not.toContain("Latest automatic proposal");
 });
 
 it("keeps the four locale files key-for-key identical", () => {

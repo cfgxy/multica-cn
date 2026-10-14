@@ -28,7 +28,10 @@ vi.mock("../issues/hooks", () => ({
 // the tail footer, so its hook must resolve without a QueryClient here.
 vi.mock(
   "../issues/hooks/use-issue-reference-resolutions",
-  () => ({
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../issues/hooks/use-issue-reference-resolutions")
+    >()),
     useIssueReferenceResolutions: (references: IssueReference[]) =>
       new Map(
         references.map((ref) => [
@@ -86,6 +89,9 @@ vi.mock("@multica/core/api", () => ({
 
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  // RUYI-705: RichContent now reads the workspace prefix; null = unknown =
+  // fall-through, which is what these fixtures were written against.
+  useCurrentWorkspace: () => null,
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/acme/issues/${id}`,
     projectDetail: (id: string) => `/acme/projects/${id}`,
@@ -112,9 +118,9 @@ const CURRENT_CONTEXT: CurrentIssueRenderContextValue = {
  * current-issue marker split with it:
  *
  *   - Mention forms — `[MUL-7](mention://issue/<uuid>)` and the autolinked
- *     bare identifier — read as plain body text and aggregate into the tail
- *     footer. No chip renders, so "This issue" marking no longer applies to
- *     them, provider or not.
+ *     bare identifier — render as underlined in-app links (RUYI-728) and
+ *     aggregate into the tail footer. No chip renders, so "This issue"
+ *     marking no longer applies to them, provider or not.
  *   - Pasted in-app issue URLs keep their chip (the author wrote a link), and
  *     a URL pointing at the issue being viewed still marks itself "This issue"
  *     through CurrentIssueRenderContext → IssueMentionCard.
@@ -181,22 +187,32 @@ beforeEach(() => {
 });
 
 describe("RichContent current-issue rendering", () => {
-  it("renders mention forms as plain text and aggregates them into the footer, without the current-issue chip", () => {
+  it("renders mention forms as in-app links and aggregates them into the footer, without the current-issue chip", () => {
     const { container } = renderContent(CURRENT_CONTEXT);
 
     expect(screen.queryByTestId("issue-chip")).toBeNull();
-    const mentions = Array.from(
-      container.querySelectorAll("[data-issue-mention-text]"),
-    );
-    expect(mentions.map((m) => m.textContent)).toEqual(["MUL-7", "MUL-8"]);
+    // RUYI-728: both mention forms resolve and render as underlined in-app
+    // anchors — no plain-text span survives a resolved reference.
+    expect(
+      container.querySelector(`a[href='/acme/issues/${CURRENT_ID}']`)
+        ?.textContent,
+    ).toBe("MUL-7");
+    expect(
+      container.querySelector(`a[href='/acme/issues/${OTHER_ID}']`)
+        ?.textContent,
+    ).toBe("MUL-8");
+    expect(container.querySelector("[data-issue-mention-text]")).toBeNull();
 
-    const rows = Array.from(container.querySelectorAll("a.issue-reference-row"));
-    expect(rows.map((row) => row.getAttribute("href"))).toEqual([
-      `/acme/issues/${CURRENT_ID}`,
-      `/acme/issues/${OTHER_ID}`,
+    // RUYI-731: the current issue's own mention builds no footer row, and
+    // the row that remains is the navigation surface (an anchor) — the
+    // aggregation contract is row count + content.
+    const rows = Array.from(
+      container.querySelectorAll(".issue-reference-row"),
+    );
+    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "MUL-8Issue MUL-8",
     ]);
-    expect(rows[0]!.textContent).toContain("MUL-7");
-    expect(rows[0]!.textContent).toContain("Issue MUL-7");
   });
 
   it.each(URL_FORMS)(

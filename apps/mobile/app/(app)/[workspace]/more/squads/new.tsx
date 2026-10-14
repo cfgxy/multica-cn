@@ -12,12 +12,12 @@
  *  - Q6: candidates are grouped My agents / Workspace agents (owner match)
  *    with a name search, same split as web's LeaderPicker.
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { isRuntimeUsableForUser } from "@multica/core/runtimes";
@@ -38,7 +38,6 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { useT } from "@/lib/use-t";
 
 export default function NewSquadScreen() {
-  const insets = useSafeAreaInsets();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { workspace: wsSlug } = useLocalSearchParams<{ workspace: string }>();
   const { t } = useT("squads");
@@ -168,11 +167,8 @@ export default function NewSquadScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* modal 自绘头部；顶部让出系统状态栏（RUYI-540），见 more/runtimes/new。 */}
-      <View
-        className="flex-row items-center px-4 pb-2 border-b border-border"
-        style={{ paddingTop: insets.top + 12 }}
-      >
+      {/* modal 自绘头部；状态栏避让恒定（modal 无档位，RUYI-540 场景 RUYI-698 收敛）。 */}
+      <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12} initialAtLargeDetent>
         <Pressable
           onPress={() => router.back()}
           hitSlop={8}
@@ -199,7 +195,7 @@ export default function NewSquadScreen() {
               : tModals("create_squad.submit", "Create Squad")}
           </Text>
         </Pressable>
-      </View>
+      </SheetHeader>
 
       <ScrollView
         className="flex-1"

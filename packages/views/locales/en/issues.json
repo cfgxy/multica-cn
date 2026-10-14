@@ -328,6 +328,11 @@
     "desc_placeholder": "Add description...",
     "current_issue": "This issue",
     "referenced_issues": "Referenced issues",
+    "reference_tail_header": "References · {{count}}",
+    "reference_tail_more": "{{count}} more references",
+    "reference_tail_more_with_pr": "{{count}} more references (incl. {{prCount}} PRs)",
+    "reference_group_tasks": "Tasks",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "Sub-issues",
     "sub_issue_of": "Sub-issue of",
     "add_sub_issues": "Add sub-issues",
@@ -338,6 +343,12 @@
     "section_properties": "Properties",
     "section_parent_issue": "Parent issue",
     "section_pull_requests": "Pull requests",
+    "section_relations": "Relations",
+    "relations_blocks": "Blocks",
+    "relations_blocked_by": "Blocked by",
+    "relations_relates_to": "Related",
+    "relations_supersedes": "Supersedes",
+    "relations_superseded_by": "Superseded by",
     "section_metadata": "Metadata",
     "section_details": "Details",
     "section_quick_actions": "Quick Actions",
@@ -523,8 +534,6 @@
     "trigger_blocked_short_runtime_offline": "Runtime offline",
     "trigger_blocked_short_runtime_unusable": "CLI can't run",
     "trigger_blocked_short_agent_runtime_required": "Needs a runtime",
-    "trigger_blocked_budget_exceeded": "This target's runtime has reached its cost budget — try again after the period resets",
-    "trigger_blocked_short_budget_exceeded": "Budget reached",
     "trigger_blocked_short_generic": "Won't start",
     "send_reply_failed": "Failed to send reply",
     "delete_failed": "Failed to delete comment",
@@ -579,7 +588,9 @@
       "menu_label": "Quick Replies",
       "menu_empty": "No quick replies configured by the workspace admins yet",
       "insert_aria": "Insert quick reply \"{{name}}\""
-    }
+    },
+    "trigger_blocked_budget_exceeded": "This target's runtime has reached its cost budget — try again after the period resets",
+    "trigger_blocked_short_budget_exceeded": "Budget reached"
   },
   "reply": {
     "placeholder": "Leave a reply..."
@@ -627,10 +638,6 @@
     "section": "Execution log",
     "show_past": "Show past runs ({{count}})",
     "hide_past": "Hide past runs ({{count}})",
-    "day_today": "Today",
-    "day_yesterday": "Yesterday",
-    "day_runs_one": "{{count}} run",
-    "day_runs_other": "{{count}} runs",
     "cancel_task_tooltip": "Cancel task",
     "cancel_task_aria": "Cancel task",
     "retry_task_tooltip": "Retry task",
@@ -671,8 +678,6 @@
       "source_unattributed": "No responsible member resolved"
     },
     "usage_total_tooltip": "Token usage for this issue — click for the per-run breakdown",
-    "unpriced_rows_one": "{{count}} row unpriced",
-    "unpriced_rows_other": "{{count}} rows unpriced",
     "status_cancel_requested": "Stopping",
     "stop_again_tooltip": "Resend stop request",
     "stop_again_aria": "Resend stop request",
@@ -701,7 +706,13 @@
     "rerun_confirm_title": "Run this task again?",
     "rerun_confirm_body": "A new run will start on the same agent with its current configuration, in a fresh session. This run stays in the history unchanged.",
     "rerun_confirm_keep": "Keep as is",
-    "rerun_confirm_confirm": "Run again"
+    "rerun_confirm_confirm": "Run again",
+    "day_today": "Today",
+    "day_yesterday": "Yesterday",
+    "day_runs_one": "{{count}} run",
+    "day_runs_other": "{{count}} runs",
+    "unpriced_rows_one": "{{count}} row unpriced",
+    "unpriced_rows_other": "{{count}} rows unpriced"
   },
   "usage_detail": {
     "title": "Usage breakdown",
@@ -711,8 +722,6 @@
     "kpi_cost": "Cost",
     "kpi_cost_hint_one": "{{count}} failed run accounts for {{pct}}%",
     "kpi_cost_hint_other": "{{count}} failed runs account for {{pct}}%",
-    "kpi_unpriced_one": "{{count}} row could not be priced",
-    "kpi_unpriced_other": "{{count}} rows could not be priced",
     "kpi_cache": "Cache savings",
     "kpi_cache_hint": "{{pct}}% hit rate · {{reads}} read",
     "kpi_tokens": "Tokens",
@@ -736,7 +745,9 @@
     "note_unpriced_one": "{{count}} run has no recorded usage and is not counted in the total.",
     "note_unpriced_other": "{{count}} runs have no recorded usage and are not counted in the total.",
     "note_unmapped": "No price on file for {{models}}; their tokens are counted but their cost is not.",
-    "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure."
+    "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure.",
+    "kpi_unpriced_one": "{{count}} row could not be priced",
+    "kpi_unpriced_other": "{{count}} rows could not be priced"
   },
   "terminate_dialog": {
     "title": "Stop this task?",
@@ -1017,6 +1028,7 @@
       "actions_a11y": "Issue actions",
       "edit_details": "Edit details",
       "open_on_web": "Open on web",
+      "relations_empty": "No structured relations yet. Blocks, related, and supersede links appear here.",
       "load_failed": "Failed to load issue: {{reason}}",
       "not_found": "not found",
       "retry": "Retry",
@@ -1031,6 +1043,7 @@
       "comments_no_match": "No matching comments.",
       "comments_open_a11y": "Browse comments",
       "pull_request_open_failed": "Couldn't open this pull request.",
+      "reference_sheet_close": "Close",
       "pull_request_card_label": "Pull request"
     },
     "picker": {
@@ -1214,14 +1227,14 @@
     "created": "Created",
     "finished": "Finished",
     "usage": "Usage",
-    "unpriced_rows_one": "{{count}} row unpriced",
-    "unpriced_rows_other": "{{count}} rows unpriced",
     "reason": "Reason",
     "cancelled_by": "Stop requested by {{name}}{{time}}",
     "raw_error": "Raw error",
     "lineage": "Run chain",
     "lineage_rerun": "Manual rerun",
-    "lineage_system_retry": "System retry"
+    "lineage_system_retry": "System retry",
+    "unpriced_rows_one": "{{count}} row unpriced",
+    "unpriced_rows_other": "{{count}} rows unpriced"
   },
   "decisions": {
     "title": "Decision card",
@@ -1235,6 +1248,15 @@
     "answer_failed": "Failed to submit answer",
     "cancel_failed": "Failed to cancel card",
     "batch_title": "Batch answer",
-    "batch_submit": "Submit all"
+    "batch_submit": "Submit all",
+    "auth_title": "Authorization request",
+    "auth_state_approved": "Approved",
+    "auth_state_denied": "Denied",
+    "auth_state_executed": "Executed",
+    "auth_state_execute_failed": "Execution failed",
+    "auth_approve_default": "Approve",
+    "auth_deny_default": "Deny",
+    "auth_execute_failed": "Execution failed: {{reason}}",
+    "auth_answer_failed": "Failed to record your answer"
   }
 }
