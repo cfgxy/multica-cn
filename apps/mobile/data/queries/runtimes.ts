@@ -16,4 +16,3 @@ export const runtimeListOptions = (wsId: string | null) =>
     queryFn: ({ signal }) => api.listRuntimes({ signal }),
     enabled: !!wsId,
   });
-
