@@ -141,6 +141,8 @@ var postConsolidationStems = []string{
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
 	"944_workspace_squad_revision",                   // RUYI-666
+	"945_plugin_public_listing",                      // RUYI-668 (renumbered from 457: yielded to upstream 457_task_message_output_truncated, upstream-sync fork-yield rule)
+	"946_plugin_package_public_index",                // RUYI-668 (renumbered from 458: yielded to upstream 458_agent_task_cancellation_actor, upstream-sync fork-yield rule)
 	"947_computer_management",                        // RUYI-670 (ported from trustbe-cn 536+538-540+545+546+554-556)
 	"948_computer_binding_account",                   // RUYI-670 (from trustbe-cn 537)
 	"949_computer_operation_id",                      // RUYI-670 (from trustbe-cn 541)

@@ -53,6 +53,7 @@ import {
   MAIN_RENDERER_CHANNEL_STATE_CHANNEL,
   MainRendererMessageQueue,
   parseMainRendererChannelState,
+  TAB_SELECTION_SHORTCUT_CHANNEL,
   type MainRendererMessageChannel,
 } from "../shared/main-renderer-messages";
 import { AuthSessionCoordinator } from "./auth-session-coordinator";
@@ -270,6 +271,11 @@ function installWindowShortcutHandler(window: BrowserWindow): void {
       // dedicated issue window — and from one that outlived the main window,
       // which is recreated and only then handed the request.
       dispatchToMainRenderer("settings:open", null);
+    } else if (typeof result === "object" && result.action === "select-tab") {
+      event.preventDefault();
+      // Product tabs only exist in the main window. Route there even when the
+      // chord came from a dedicated issue window, matching Settings behavior.
+      dispatchToMainRenderer(TAB_SELECTION_SHORTCUT_CHANNEL, result.key);
     } else if (result) {
       event.preventDefault();
     }
@@ -305,7 +311,8 @@ function createWindow(): BrowserWindow {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 17 },
+    // Center the native controls in the main window's 40px tab toolbar.
+    trafficLightPosition: { x: 16, y: 13 },
     show: false,
     autoHideMenuBar: true,
     // Windows/Linux pick up the window/taskbar icon from this option.

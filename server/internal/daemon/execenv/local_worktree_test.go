@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -21,12 +22,28 @@ func worktreeTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// testRepoTemplate is the repository newTestRepo hands out copies of. It is
+// built once per test binary: copying it spawns no git process, where
+// building each repo afresh spawned five, a sizeable share of a single-turn
+// test. TestMain removes it.
+var testRepoTemplate struct {
+	once sync.Once
+	dir  string
+	err  error
+}
+
 // newTestRepo creates a git repo with one commit and returns its path. The
 // repo carries its own identity config so tests don't depend on the machine's
 // global git setup.
 func newTestRepo(t *testing.T) string {
 	t.Helper()
 	requireGit(t)
+	testRepoTemplate.once.Do(func() {
+		testRepoTemplate.dir, testRepoTemplate.err = buildTestRepoTemplate()
+	})
+	if testRepoTemplate.err != nil {
+		t.Fatalf("build the template repo: %v", testRepoTemplate.err)
+	}
 	dir := t.TempDir()
 	// macOS hands out /var/folders temp dirs that are symlinks to /private/var.
 	// resolveGitRoot canonicalises, so the test must compare against the
@@ -34,14 +51,45 @@ func newTestRepo(t *testing.T) string {
 	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = resolved
 	}
-	gitRun(t, dir, "init", "-b", "main")
-	gitRun(t, dir, "config", "user.name", "Test User")
-	gitRun(t, dir, "config", "user.email", "test@test.com")
-	writeFile(t, filepath.Join(dir, "tracked.txt"), "original\n")
-	writeFile(t, filepath.Join(dir, "keep.txt"), "keep\n")
-	gitRun(t, dir, "add", ".")
-	gitRun(t, dir, "commit", "-m", "initial")
+	if err := os.CopyFS(dir, os.DirFS(testRepoTemplate.dir)); err != nil {
+		t.Fatalf("copy the template repo: %v", err)
+	}
 	return dir
+}
+
+func buildTestRepoTemplate() (string, error) {
+	dir, err := os.MkdirTemp("", "multica-test-repo")
+	if err != nil {
+		return "", err
+	}
+	for name, content := range map[string]string{"tracked.txt": "original\n", "keep.txt": "keep\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			return dir, err
+		}
+	}
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.name", "Test User"},
+		{"config", "user.email", "test@test.com"},
+		// git commit forks a DETACHED `git maintenance run --auto` and
+		// returns without waiting for it. That background process creates
+		// and removes lock files under .git/ after this function is done,
+		// so newTestRepo's os.CopyFS can list .git/objects/maintenance.lock
+		// and then fail to open it — failing whichever test happened to copy
+		// the template at that moment, in a package that has nothing to do
+		// with git maintenance. Every copy inherits this config, which also
+		// keeps the git commands tests run on their own copy from spawning a
+		// background process that races the assertions against it.
+		{"config", "gc.auto", "0"},
+		{"config", "maintenance.auto", "false"},
+		{"add", "."},
+		{"commit", "-m", "initial"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			return dir, fmt.Errorf("git %v: %s: %w", args, out, err)
+		}
+	}
+	return dir, nil
 }
 
 // requireGit skips the whole test when git is missing from the environment.
@@ -102,6 +150,22 @@ func prepareForTest(t *testing.T, localPath string) *LocalWorktree {
 		t.Fatalf("PrepareLocalWorktree: %v", err)
 	}
 	return wt
+}
+
+// Nothing may write inside a repo this package hands to a test while the test
+// is reading it, and git's auto maintenance is the one writer tests do not
+// spawn themselves: it runs detached, outliving the command that started it.
+// In the template that made os.CopyFS race a lock file git was removing; in a
+// copy it would race the test's own assertions. Asserting on a copy covers
+// both, since the copy inherits the template's config.
+func TestTestRepoDisablesGitAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	repo := newTestRepo(t)
+	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
+		if got := gitRun(t, repo, "config", "--get", key); got != want {
+			t.Errorf("template repo config %s = %q, want %q", key, got, want)
+		}
+	}
 }
 
 // The agent must see the user's uncommitted work, not a clean HEAD checkout.

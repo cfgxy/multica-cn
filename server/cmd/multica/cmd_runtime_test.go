@@ -34,15 +34,28 @@ func captureRuntimeStdout(t *testing.T, fn func() error) (string, error) {
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
 
+	// Read while fn runs. A pipe nobody is draining stops accepting writes long
+	// before a command's output ends -- after 512 bytes on macOS -- so reading
+	// only once fn has returned deadlocks on anything that prints more.
+	type captured struct {
+		out []byte
+		err error
+	}
+	drained := make(chan captured, 1)
+	go func() {
+		out, err := io.ReadAll(r)
+		drained <- captured{out, err}
+	}()
+
 	runErr := fn()
 	if err := w.Close(); err != nil {
 		t.Fatalf("close stdout writer: %v", err)
 	}
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("read stdout: %v", err)
+	got := <-drained
+	if got.err != nil {
+		t.Fatalf("read stdout: %v", got.err)
 	}
-	return string(out), runErr
+	return string(got.out), runErr
 }
 
 func TestRunRuntimeDeleteStrictSuccessPrintsJSON(t *testing.T) {
@@ -145,7 +158,7 @@ func TestRunRuntimeDeleteCascadeConfirmsActiveAgentSnapshot(t *testing.T) {
 			gotExpectedIDs = body.ExpectedActiveAgentIDs
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status":          "ok",
-				"agents_unbound": 2,
+				"agents_unbound":  2,
 				"tasks_cancelled": 1,
 			})
 		default:

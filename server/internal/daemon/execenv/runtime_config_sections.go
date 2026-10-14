@@ -294,6 +294,7 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	// ownership-only --no-start path if the command is hidden behind --help.
 	b.WriteString("- `multica issue assign <id> (--to X | --to-id <uuid> | --unassign) [--no-start]` — change ownership. On assign/update/status, for an agent actor, `--no-start` suppresses another run only when the target agent already has an active run for this issue; a fresh agent handoff still starts one. For a member actor, `--no-start` can defer a run for an agent or squad assignee.\n")
 	writeIssueStatusCommand(b, ctx)
+	b.WriteString(duplicateOfCommandLine)
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
 	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file`; see `## Comment Formatting` for why. `multica issue comment add --help` for full flags.\n")
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
@@ -312,6 +313,11 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 		b.WriteString("- `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role> [--output json]` — change role in place (use this instead of remove+add).\n\n")
 	}
 }
+
+// duplicateOfCommandLine teaches the duplicate mark (MUL-7821). Without it
+// agents cancel duplicates with a plain status change plus a comment, which
+// leaves the original's duplicates list empty.
+const duplicateOfCommandLine = "- `multica issue status <id> cancelled --duplicate-of <original>` — cancel an issue that duplicates another and record the mark, so the original lists it; a plain cancel plus a comment leaves no link.\n"
 
 // briefStatusCategoryOrder is the category order the catalog block renders in:
 // the board's category rank (matching ListIssueStatusEntries' ORDER BY), NOT

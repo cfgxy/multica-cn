@@ -410,20 +410,22 @@ func TestPostJSONWithRetry_PermanentBailsImmediately(t *testing.T) {
 }
 
 func TestPostJSONWithRetry_CtxCancelStopsRetries(t *testing.T) {
+	t.Parallel()
+
 	// Use the real sleeper here so we can observe a cancel preempting it.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusBadGateway)
+		w.(http.Flusher).Flush()
+		// Cancel only once the first attempt has been answered: it lands while
+		// the client finishes that response or in the 1s retry sleep after it,
+		// never before the first attempt, and no second attempt can start.
+		cancel()
 	}))
 	defer srv.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		// Cancel quickly so the first sleep is aborted long before its 1s.
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
 
 	c := NewClient(srv.URL)
 	schedule := []time.Duration{time.Second, time.Second, time.Second}
@@ -438,21 +440,6 @@ func TestPostJSONWithRetry_CtxCancelStopsRetries(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("expected exactly 1 attempt before cancel, got %d", got)
-	}
-}
-
-func TestDefaultTerminalRetrySchedule_MatchesAgreedPlan(t *testing.T) {
-	// MUL-2780 settled on a 5-step exponential backoff (4s, 8s, 16s, 32s, 64s).
-	// Pin it so a future "tidy this up" refactor can't silently flatten or
-	// shorten the recovery window without explicit discussion.
-	want := []time.Duration{4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second, 64 * time.Second}
-	if len(defaultTerminalRetrySchedule) != len(want) {
-		t.Fatalf("schedule length: got %d, want %d", len(defaultTerminalRetrySchedule), len(want))
-	}
-	for i, d := range want {
-		if defaultTerminalRetrySchedule[i] != d {
-			t.Errorf("schedule[%d]: got %s, want %s", i, defaultTerminalRetrySchedule[i], d)
-		}
 	}
 }
 

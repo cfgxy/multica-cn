@@ -105,3 +105,6 @@ pat.txt
 
 # RUYI-632: E2E release-entry artifacts (manifest + per-file hashes), runtime-local
 e2e-artifacts/
+
+# Upstream perf scenarios (RUYI-668 C-test): local perf run artifacts
+perf-report/
