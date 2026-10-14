@@ -518,7 +518,7 @@ export default function Tasks() {
               <SectionHeader category={section.category} count={section.data.length} />
             )
           }
-          contentContainerClassName="pb-6"
+          contentContainerClassName="pb-2"
           renderItem={({ item }) => (
             <IssueRowInbox
               issue={item}

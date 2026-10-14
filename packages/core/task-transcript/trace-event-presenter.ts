@@ -31,6 +31,7 @@ export type TraceEventKind =
   | "tool_use"
   | "tool_result"
   | "error"
+  | "watchdog"
   | "generic";
 
 export function traceEventKind(event: TraceEvent): TraceEventKind {
@@ -45,6 +46,8 @@ export function traceEventKind(event: TraceEvent): TraceEventKind {
       return "tool_result";
     case "error":
       return "error";
+    case "watchdog":
+      return "watchdog";
     default:
       return "generic";
   }
@@ -67,6 +70,8 @@ export function traceEventLabel(event: TraceEvent): string {
       return event.tool && event.tool.length > 0 ? event.tool : "Result";
     case "error":
       return "Error";
+    case "watchdog":
+      return "Watchdog";
     default:
       return event.type && event.type.length > 0 ? event.type : "Event";
   }
@@ -167,6 +172,8 @@ export function traceEventSummary(event: TraceEvent, labels?: TraceSummaryLabels
       // Unwrap first: the collapsed row is the one people read without
       // clicking, so it must not show transport escaping.
       return clip(collapseWhitespace(unwrapToolOutput(event.output ?? "")), 200);
+    case "watchdog":
+      return clip(watchdogEventSummary(event), 200);
     default:
       return firstLine(event.content ?? event.output);
   }
@@ -189,6 +196,10 @@ export function traceEventCopyText(event: TraceEvent): string {
       // Match what the row displays, so copied evidence reads like the
       // terminal output rather than its transport encoding.
       body = unwrapToolOutput(event.output ?? "");
+      break;
+    case "watchdog":
+      // The diagnostics live in `input`; content is empty on these events.
+      body = event.input ? JSON.stringify(event.input, null, 2) : "";
       break;
     default:
       body = event.content ?? "";
@@ -542,6 +553,8 @@ export function traceEventDetail(event: TraceEvent): TraceEventDetail {
     }
     case "tool_result":
       return { kind: "text", text: unwrapToolOutput(event.output ?? "") };
+    case "watchdog":
+      return { kind: "text", text: event.input ? JSON.stringify(event.input, null, 2) : (event.content ?? "") };
     default:
       return { kind: "text", text: event.content ?? "" };
   }
@@ -613,3 +626,68 @@ export function traceEventSummaryIsMono(kind: TraceEventKind): boolean {
   return kind === "tool_use" || kind === "tool_result";
 }
 
+
+/** Humanize a millisecond age the way the payloads express them (47m, 2h2m). */
+function formatWatchdogAge(ms: number): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "?";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const restSeconds = totalSeconds % 60;
+  if (minutes < 60) return restSeconds > 0 ? `${minutes}m${restSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes > 0 ? `${hours}h${restMinutes}m` : `${hours}h`;
+}
+
+/**
+ * One-line summary for a watchdog observation event (RUYI-593). The payload
+ * is typed diagnostic metadata produced by the daemon — event name, silence
+ * age, tool identity, mark counts — so everything here is evidence, never
+ * free text. Unknown future event names fall back to the raw name so a newer
+ * daemon talking to an older UI is still legible, never blank.
+ */
+export function watchdogEventSummary(event: TraceEvent): string {
+  const input = event.input;
+  if (!input) return "";
+  const name = typeof input.event === "string" ? input.event : "";
+  const num = (key: string): number =>
+    typeof input[key] === "number" ? (input[key] as number) : Number.NaN;
+  const str = (key: string): string => (typeof input[key] === "string" ? (input[key] as string) : "");
+  switch (name) {
+    case "tool_in_flight": {
+      const callID = str("call_id");
+      const marks = num("mark_count");
+      const parts = [
+        [event.tool ?? "tool", callID].filter(Boolean).join(" "),
+        `in flight ${formatWatchdogAge(num("pending_ms"))}`,
+        Number.isFinite(marks) ? `(mark ${marks})` : "",
+      ];
+      return parts.filter(Boolean).join(" ");
+    }
+    case "silence_warn":
+      return `no output for ${formatWatchdogAge(num("silent_ms"))} (alert at ${str("alert_at")})`;
+    case "silence_alert":
+      return `no output for ${formatWatchdogAge(num("silent_ms"))} (alert threshold ${str("threshold")})`;
+    case "force_stop_premortem": {
+      const provider = str("provider") || "agent";
+      const pending = Array.isArray(input.pending_tools) ? (input.pending_tools as unknown[]) : [];
+      const calls = pending.length
+        ? `${pending.length} pending tool call${pending.length === 1 ? "" : "s"}: ${pending
+            .map((p) => {
+              const d = (p ?? {}) as Record<string, unknown>;
+              const tool = typeof d.tool === "string" ? d.tool : "tool";
+              const callID = typeof d.call_id === "string" ? d.call_id : "";
+              const marks = typeof d.mark_count === "number" ? d.mark_count : 0;
+              return `${tool}${callID ? ` (call ${callID}` : " ("}, in flight ${formatWatchdogAge(
+                typeof d.pending_ms === "number" ? d.pending_ms : Number.NaN,
+              )}, ${marks} marks)`;
+            })
+            .join(", ")}`
+        : "no pending tool calls";
+      return `${provider} force-stopped after ${formatWatchdogAge(num("idle_ms"))} idle: ${calls}`;
+    }
+    default:
+      return name;
+  }
+}

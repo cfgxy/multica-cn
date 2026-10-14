@@ -693,6 +693,19 @@ function TaskRow({
           <span className={cfg.color}>
             {taskStatusLabel(task.status, t)}
           </span>
+          {/* Runtime backpressure hold (RUYI-729): the server stamps
+              queued_reason while the agent's host gate defers claims. Naming
+              the hold on the row turns a silent queue into an explainable
+              one; rows without the stamp render exactly as before. */}
+          {task.status === "queued" &&
+            task.queued_reason === "runtime_backpressure" && (
+            <>
+              <Sep />
+              <span className="text-warning">
+                {t(($) => $.tab_body.activity.queued_backpressure)}
+              </span>
+            </>
+          )}
           {isRetro && (
             <>
               <Sep />

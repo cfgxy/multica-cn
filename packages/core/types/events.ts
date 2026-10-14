@@ -4,6 +4,7 @@ import type { Agent } from "./agent";
 import type { InboxItem } from "./inbox";
 import type { Comment, Reaction } from "./comment";
 import type { TimelineEntry } from "./activity";
+import type { DecisionRequest } from "./decision";
 import type { IssueDecision } from "./decision";
 import type { Workspace, MemberWithUser, Invitation } from "./workspace";
 import type { Project } from "./project";
@@ -62,6 +63,7 @@ export type WSEventType =
   | "issue_reaction:removed"
   | "decision:updated"
   | "issue_suspension:updated"
+  | "decision_request:updated"
   | "chat:message"
   | "chat:done"
   | "chat:quick_actions"
@@ -258,6 +260,16 @@ export interface IssueSuspensionUpdatedPayload {
   trigger_comment_id?: string;
 }
 
+// Authorization request lifecycle event (RUYI-630) — created/answered/
+// executed/failed/expired/revoked all publish the row's fresh state; the
+// request_group_id ties the per-space rows together. The info-stream
+// authorization card separately arrives as a decision:updated payload from
+// the same server transition.
+export interface DecisionRequestUpdatedPayload {
+  request: DecisionRequest;
+  request_group_id: string;
+}
+
 export interface CommentCreatedPayload {
   comment: Comment;
   issue_revision?: number;
@@ -329,7 +341,7 @@ export interface TaskMessagePayload {
   issue_id: string;
   chat_session_id?: string;
   seq: number;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "error" | "watchdog";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;
@@ -617,6 +629,7 @@ export interface WSEventPayloadMap {
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "decision:updated": DecisionUpdatedPayload;
   "issue_suspension:updated": IssueSuspensionUpdatedPayload;
+  "decision_request:updated": DecisionRequestUpdatedPayload;
   "comment:created": CommentCreatedPayload;
   "comment:updated": CommentUpdatedPayload;
   "comment:deleted": CommentDeletedPayload;

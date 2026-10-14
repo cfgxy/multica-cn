@@ -1027,6 +1027,85 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	})
 }
 
+// ── Lookup a PR by owner/repo/number ────────────────────────────────────────
+
+// LookupPullRequestByRef backs the reference tail's PR rows (RUYI-635 增量,
+// Owner point ②): prose that TEXT-references `owner/repo#N` needs that PR's
+// title, state and canonical URL so the tail row can render a state icon and
+// a link. Read-only and DB-only — GetGitHubPullRequest reads the
+// webhook/refresh-maintained github_pull_request snapshot; a PR the platform
+// has never seen 404s and the client degrades the reference to plain text
+// (the same miss-reads-as-typed contract the issue tail follows).
+func (h *Handler) LookupPullRequestByRef(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	owner := strings.TrimSpace(q.Get("owner"))
+	repo := strings.TrimSpace(q.Get("repo"))
+	number, err := strconv.ParseInt(strings.TrimSpace(q.Get("number")), 10, 32)
+	if owner == "" || repo == "" || err != nil || number <= 0 {
+		writeError(w, http.StatusBadRequest, "owner, repo and a positive number are required")
+		return
+	}
+	pr, err := h.Queries.GetGitHubPullRequest(r.Context(), db.GetGitHubPullRequestParams{
+		WorkspaceID: wsUUID,
+		RepoOwner:   owner,
+		RepoName:    repo,
+		PrNumber:    int32(number),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "pull request not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to look up pull request")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pull_request": githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
+	})
+}
+
+// LookupPullRequestByNumber backs `MR !N` body links and tail rows (RUYI-728):
+// prose that TEXT-references a merge request without naming a repo resolves
+// against the workspace's PR snapshot by number alone. The number-only form is
+// only meaningful when exactly one snapshot row carries it, so the contract
+// is: exactly one row → 200, none → 404, several → 409 — the client treats
+// every miss as plain text, so an ambiguous number must never guess. Read-only
+// and DB-only, the same snapshot discipline as LookupPullRequestByRef.
+func (h *Handler) LookupPullRequestByNumber(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	number, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("number")), 10, 32)
+	if err != nil || number <= 0 {
+		writeError(w, http.StatusBadRequest, "a positive number is required")
+		return
+	}
+	prs, err := h.Queries.GetGitHubPullRequestsByNumber(r.Context(), db.GetGitHubPullRequestsByNumberParams{
+		WorkspaceID: wsUUID,
+		PrNumber:    int32(number),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up pull request")
+		return
+	}
+	if len(prs) == 0 {
+		writeError(w, http.StatusNotFound, "pull request not found")
+		return
+	}
+	if len(prs) > 1 {
+		writeError(w, http.StatusConflict, "pull request number is ambiguous across repositories")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pull_request": githubPullRequestToResponse(prs[0], h.PRRefresh.Enabled()),
+	})
+}
+
 // ── Webhook ─────────────────────────────────────────────────────────────────
 
 // identifierRe extracts identifiers like "MUL-1510" from text. Case-insensitive

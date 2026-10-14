@@ -377,6 +377,18 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
+        {/* Structured relations (RUYI-689) — full-page modal, same
+            container rationale as issue/[id]/pull-requests above: a browse
+            surface with a back-stack entry, not a picker row. Title reuses
+            the web sidebar section key `issues:detail.section_relations`,
+            localized in every bundle. */}
+        <Stack.Screen
+          name="issue/[id]/relations"
+          options={{
+            title: i18n.t("issues:detail.section_relations", "Relations"),
+            presentation: "modal",
+          }}
+        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"
@@ -549,24 +561,6 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/agents/[id]/env"
           options={SHEET_OPTIONS}
-        />
-        {/* RUYI-425 §4.3: voice runtime instances — list from the More
-            dropdown, modal create form, settings page (its in-page
-            Stack.Screen overrides the title with the instance name). */}
-        <Stack.Screen
-          name="more/runtimes"
-          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
-        />
-        <Stack.Screen
-          name="more/runtimes/new"
-          options={{
-            presentation: "modal",
-            headerShown: false,
-          }}
-        />
-        <Stack.Screen
-          name="more/runtimes/[id]"
-          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
         />
         {/* RUYI-418 B2/B3：agent 设置/能力子屏（formSheet，body 自绘 header）。 */}
         <Stack.Screen

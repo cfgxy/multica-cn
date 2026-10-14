@@ -1,16 +1,14 @@
 /**
  * Create agent (`more/agents/new`, RUYI-346 A1) — modal create form, mobile
  * subset of web's create-agent dialog: name / description / instructions /
- * runtime / voice / visibility. Access granularity beyond private vs
+ * runtime / visibility. Access granularity beyond private vs
  * whole-workspace (specific people) and conversation starters stay web-only
  * for P0.
  *
- * RUYI-425 §4.2: the runtime field is the text slot; the optional voice slot
- * picks a realtime-voice-capable instance (first fixed entry 不配置语音 =
- * unbound). Slots exclude each other's selection and filter by advertised
- * capabilities (`agentSlotChoices`); the voice rows carry the credential
- * tri-state badge. Agents never hold credential inputs — keys live on the
- * instance (§4.3/§4.5), not the agent.
+ * RUYI-425 §4.2: the runtime field is the text slot. The legacy voice slot
+ * (realtime-voice instance binding) was removed with the old-model voice UI
+ * (RUYI-748); voice configuration now flows through the voice_provider
+ * model's own surfaces, and agents keep inheriting the workspace default.
  *
  * Visibility submits the authoritative MUL-3963 shape: `permission_mode:
  * "public_to"` + `invocation_targets: [{ target_type: "workspace" }]` for
@@ -22,19 +20,16 @@
  * runtime is picked — `runtimeReady` gates on the list having loaded so the
  * button can't flash enabled before choices exist.
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
-import {
-  agentSlotChoices,
-  runtimeCredentialStatus,
-} from "@multica/core/runtimes";
+import { agentSlotChoices } from "@multica/core/runtimes";
 import type { CreateAgentRequest } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
@@ -47,7 +42,6 @@ import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
 
 export default function NewAgentScreen() {
-  const insets = useSafeAreaInsets();
   const me = useAuthStore((s) => s.user);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { t } = useT("agents");
@@ -57,31 +51,19 @@ export default function NewAgentScreen() {
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
   const [runtimeId, setRuntimeId] = useState("");
-  const [voiceRuntimeId, setVoiceRuntimeId] = useState("");
   const [workspaceVisible, setWorkspaceVisible] = useState(true);
 
   const { data: runtimes, isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
   );
 
-  // Text slot: online + usable + text-capable, minus the voice slot's pick.
+  // Text slot: online + usable + text-capable.
   const runtimeChoices = useMemo(
     () =>
       agentSlotChoices(runtimes, "text", {
         currentUserId: me?.id ?? null,
-        excludeRuntimeId: voiceRuntimeId,
       }),
-    [runtimes, me, voiceRuntimeId],
-  );
-
-  // Voice slot: realtime-voice-capable, minus the text slot's pick.
-  const voiceChoices = useMemo(
-    () =>
-      agentSlotChoices(runtimes, "realtime_voice", {
-        currentUserId: me?.id ?? null,
-        excludeRuntimeId: runtimeId,
-      }),
-    [runtimes, me, runtimeId],
+    [runtimes, me],
   );
 
   const runtimeReady = !runtimesLoading && runtimeChoices.length > 0;
@@ -95,7 +77,6 @@ export default function NewAgentScreen() {
       description,
       instructions,
       runtime_id: runtimeId,
-      voice_runtime_id: voiceRuntimeId || undefined,
       permission_mode: workspaceVisible ? "public_to" : "private",
       invocation_targets: workspaceVisible
         ? [{ target_type: "workspace" }]
@@ -114,11 +95,8 @@ export default function NewAgentScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* modal 自绘头部；顶部让出系统状态栏（RUYI-540），见 more/runtimes/new。 */}
-      <View
-        className="flex-row items-center px-4 pb-2 border-b border-border"
-        style={{ paddingTop: insets.top + 12 }}
-      >
+      {/* modal 自绘头部；状态栏避让恒定（modal 无档位，RUYI-540 场景 RUYI-698 收敛）。 */}
+      <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12} initialAtLargeDetent>
         <Pressable
           onPress={() => router.back()}
           hitSlop={8}
@@ -145,7 +123,7 @@ export default function NewAgentScreen() {
               : t("create_dialog.create", "Create")}
           </Text>
         </Pressable>
-      </View>
+      </SheetHeader>
 
       <ScrollView
         className="flex-1"
@@ -240,74 +218,6 @@ export default function NewAgentScreen() {
           )}
         </Field>
 
-        <Field label={t("create_dialog.voice_label", "Voice")}>
-          {runtimesLoading ? (
-            <Text className="text-sm text-muted-foreground py-1">
-              {t("create_dialog.runtime_loading", "Loading runtimes...")}
-            </Text>
-          ) : (
-            <View className="rounded-md border border-border overflow-hidden">
-              {/* 首项固定：不配置语音（清空语音槽位） */}
-              <Pressable
-                onPress={() => setVoiceRuntimeId("")}
-                className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
-                  voiceChoices.length > 0 ? "border-b border-border" : ""
-                }`}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: voiceRuntimeId === "" }}
-              >
-                <View
-                  className={`size-4 rounded-full border items-center justify-center ${
-                    voiceRuntimeId === "" ? "border-brand" : "border-muted-foreground"
-                  }`}
-                >
-                  {voiceRuntimeId === "" ? (
-                    <View className="size-2 rounded-full bg-brand" />
-                  ) : null}
-                </View>
-                <Text className="flex-1 text-sm text-foreground">
-                  {t("create_dialog.voice_none", "No voice")}
-                </Text>
-              </Pressable>
-              {voiceChoices.length === 0 ? (
-                <Text className="text-sm text-muted-foreground px-3 py-2.5">
-                  {t("create_dialog.voice_empty", "No voice-capable instance")}
-                </Text>
-              ) : (
-                voiceChoices.map((r, i) => {
-                  const selected = r.id === voiceRuntimeId;
-                  const badge = runtimeCredentialStatus(r);
-                  return (
-                    <Pressable
-                      key={r.id}
-                      onPress={() => setVoiceRuntimeId(r.id)}
-                      className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
-                        i > 0 ? "border-t border-border" : ""
-                      }`}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
-                    >
-                      <View
-                        className={`size-4 rounded-full border items-center justify-center ${
-                          selected ? "border-brand" : "border-muted-foreground"
-                        }`}
-                      >
-                        {selected ? (
-                          <View className="size-2 rounded-full bg-brand" />
-                        ) : null}
-                      </View>
-                      <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
-                        {r.custom_name || r.name}
-                      </Text>
-                      <CredentialBadge status={badge} />
-                    </Pressable>
-                  );
-                })
-              )}
-            </View>
-          )}
-        </Field>
-
         <Field label={t("create_dialog.visibility_label", "Visibility")}>
           <View className="gap-2">
             <VisibilityOption
@@ -329,42 +239,6 @@ export default function NewAgentScreen() {
         </Field>
       </ScrollView>
     </KeyboardAvoidingView>
-  );
-}
-
-// RUYI-425 §4.2 voice credential badge states. Text-only by design: the
-// agent form never edits credentials, it only reflects the instance's state.
-function CredentialBadge({
-  status,
-}: {
-  status: "not_configured" | "configured" | "invalid" | "unreachable";
-}) {
-  const { t } = useT("agents");
-  if (status === "configured") {
-    return (
-      <Text className="text-xs text-success">
-        {t("create_dialog.credential_configured", "Configured ✓")}
-      </Text>
-    );
-  }
-  if (status === "invalid") {
-    return (
-      <Text className="text-xs text-destructive">
-        {t("create_dialog.credential_invalid", "Key invalid")}
-      </Text>
-    );
-  }
-  if (status === "unreachable") {
-    return (
-      <Text className="text-xs text-warning">
-        {t("create_dialog.credential_unreachable", "Can't verify")}
-      </Text>
-    );
-  }
-  return (
-    <Text className="text-xs text-muted-foreground">
-      {t("create_dialog.credential_not_configured", "Not configured")}
-    </Text>
   );
 }
 

@@ -12,12 +12,12 @@
  * the detail page behind the sheet; readers tap through to the same window
  * in its read-only mode (hide-not-disable permission rule, RUYI-346).
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { useMemo, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 // RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
 // keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
@@ -33,7 +33,6 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/use-t";
 
 export default function AgentInstructionsEditor() {
-  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const agentId = typeof id === "string" ? id : "";
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -116,11 +115,8 @@ export default function AgentInstructionsEditor() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；顶部让出系统状态栏（RUYI-563）。 */}
-      <View
-        className="flex-row items-center px-4 pb-2 border-b border-border"
-        style={{ paddingTop: insets.top + 12 }}
-      >
+      {/* formSheet 自绘头部（SHEET_OPTIONS headerShown: false）；状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
+      <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12} initialAtLargeDetent>
         <Text className="flex-1 text-lg font-semibold text-foreground">
           {t("tabs.instructions", "Instructions")}
         </Text>
@@ -139,7 +135,7 @@ export default function AgentInstructionsEditor() {
             </Text>
           </Pressable>
         ) : null}
-      </View>
+      </SheetHeader>
       <ScrollView
         nestedScrollEnabled
         className="flex-1"

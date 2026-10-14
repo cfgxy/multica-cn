@@ -103,6 +103,11 @@ export type {
   RuntimeLocalSkillImportResult,
   IssueUsageSummary,
   MikaBootstrapResponse,
+  UsageMetricPoint,
+  UsageMetricSeries,
+  DashboardUsageResources,
+  DashboardUsageTraffic,
+  DashboardUsageTrafficDim,
   SchedulingPauseScope,
   SchedulingPauseState,
 } from "./agent";
@@ -203,6 +208,7 @@ export type {
 export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread } from "./inbox";
 export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferences, NotificationPreferenceResponse } from "./notification-preference";
 export type { Comment, CommentType, CommentAuthorType, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, CommentAnchor, Reaction } from "./comment";
+export type { IssueRelationRef, IssueRelationsResponse } from "./issue-relations";
 export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse, ResourceLabelsResponse } from "./label";
 export type { IssueProperty, IssuePropertyType, ScalarIssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse, IssuePropertyActorKind, IssuePropertyActorRef, PropertyFilterOp, PropertyOperatorFilter, PropertyFilterValue } from "./property";
 export { ISSUE_PROPERTY_TYPES, isKnownPropertyType, ISSUE_PROPERTY_ACTOR_KINDS, MAX_ISSUE_PROPERTY_ACTOR_VALUES, isActorPropertyType, isFilterablePropertyType, isScalarPropertyType, formatActorRef, parseActorRef, actorRefsFromValue, actorRefValuesFromValue, hasUnknownActorRef, isPropertyOperatorFilter, isKnownPropertyFilterOp, propertyFilterValueKey, PROPERTY_FILTER_OP_SYMBOLS, PROPERTY_FILTER_OPS_BY_TYPE } from "./property";
@@ -229,8 +235,15 @@ export type {
   BatchDecisionAnswerResult,
   BatchDecisionAnswerStatus,
   BatchIssueDecisionAnswer,
+  DecisionAnswerSource,
   DecisionInboxCounts,
   DecisionOption,
+  DecisionRequest,
+  DecisionRequestCounts,
+  DecisionRequestDetail,
+  DecisionRequestRole,
+  DecisionRequestsList,
+  DecisionRequestStatus,
   IssueDecision,
   IssueDecisionStatus,
   WorkspaceDecisionInbox,
@@ -470,6 +483,8 @@ export type {
       SelfEvolutionOverviewScan,
   SelfEvolutionOverviewKnowledge,
   SelfEvolutionOverviewSkills,
+  SelfEvolutionOverviewLastAutoProposal,
+  SelfEvolutionOverviewProposals,
 } from "./self-evolution-overview";
 export type {
   SelfEvolutionConfigSource,
@@ -480,3 +495,7 @@ export type {
   SelfEvolutionModelConfigResolved,
   SelfEvolutionModelConfigSave,
 } from "./self-evolution-model-config";
+export type {
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
+} from "./workspace-backpressure";
