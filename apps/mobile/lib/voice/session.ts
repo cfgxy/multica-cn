@@ -99,9 +99,14 @@ export interface MobileVoiceSessionCallbacks {
   onUserTranscriptDelta?: (delta: string) => void;
   onAssistantTranscriptDelta?: (delta: string) => void;
   onUserTurn?: (text: string) => void;
+  /** User barged in; playback stopped and the UI shows the interrupted state. */
+  onInterrupted?: () => void;
   onDegrade?: (rejection: VoiceRejection | null) => void;
   onEnded?: () => void;
 }
+
+/** 100ms of 16 kHz mono PCM16 silence, encoded as base64. */
+const MUTED_KEEPALIVE_CHUNK = `${"A".repeat(4264)}AAA=`;
 
 /**
  * Drives one mobile voice session. Create, then call `start()`; `end()` hangs
@@ -112,6 +117,7 @@ export class MobileVoiceSession {
   private unsubscribeChunk: (() => void) | null = null;
   private sessionId: string | null = null;
   private completeSent = false;
+  private muted = false;
 
   constructor(
     private readonly agentId: string,
@@ -158,7 +164,9 @@ export class MobileVoiceSession {
           if (state === "live") {
             this.unsubscribeChunk?.();
             const sub = audio.addListener("onAudioChunk", (event) => {
-              controller.sendAudio(event.data);
+              controller.sendAudio(
+                this.muted ? MUTED_KEEPALIVE_CHUNK : event.data,
+              );
             });
             this.unsubscribeChunk = () => sub.remove();
             void audio.start().catch(() => {
@@ -179,6 +187,7 @@ export class MobileVoiceSession {
         },
         onInterrupted: () => {
           void audio.interruptPlayback().catch(() => {});
+          this.callbacks.onInterrupted?.();
         },
         onDegrade: (rejection) => this.callbacks.onDegrade?.(rejection ?? null),
         onEnded: () => {
@@ -197,6 +206,11 @@ export class MobileVoiceSession {
     this.controller?.end();
     this.controller = null;
     this.releaseAudio();
+  }
+
+  /** Preserve the upstream session with silence while muting microphone input. */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
   }
 
   /**
