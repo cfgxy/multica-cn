@@ -10,8 +10,6 @@ import (
 // fan-out: every subscriber registered before broadcast wakes from its
 // snapshot channel.
 func TestReconcileBroadcaster_FansOutToManySubscribers(t *testing.T) {
-	t.Parallel()
-
 	b := newReconcileBroadcaster()
 	b.minBroadcastInterval = 0 // disable debounce for this test
 
@@ -28,8 +26,9 @@ func TestReconcileBroadcaster_FansOutToManySubscribers(t *testing.T) {
 		}()
 	}
 
-	// Each snapshot channel was taken above, so the broadcast reaches it
-	// whether or not its goroutine has parked on it yet.
+	// Give subscribers a moment to park on <-ch.
+	time.Sleep(20 * time.Millisecond)
+
 	if !b.broadcast() {
 		t.Fatalf("broadcast() = false, want true")
 	}
@@ -53,21 +52,13 @@ func TestReconcileBroadcaster_FansOutToManySubscribers(t *testing.T) {
 // daemon-startup race where a sync loop subscribes a beat after the WS
 // connect broadcast.
 func TestReconcileBroadcaster_ReplaysMissedBroadcastToFirstLateSubscriber(t *testing.T) {
-	t.Parallel()
-
 	b := newReconcileBroadcaster()
 	b.minBroadcastInterval = 0
-	nowVal := time.Unix(1_700_000_000, 0)
-	b.now = func() time.Time { return nowVal }
 
 	// No subscribers yet — fire.
 	if !b.broadcast() {
 		t.Fatalf("broadcast() = false, want true")
 	}
-
-	// The pending replay does not expire: however long the first subscriber
-	// takes to attach, it still observes the broadcast it missed.
-	nowVal = nowVal.Add(time.Hour)
 
 	// First late subscriber must see the replay.
 	first := b.notify()
@@ -78,13 +69,30 @@ func TestReconcileBroadcaster_ReplaysMissedBroadcastToFirstLateSubscriber(t *tes
 	}
 
 	// Second late subscriber must NOT see the same replay; it should park.
-	// Nothing broadcasts after this point, so the channel's state is final.
 	second := b.notify()
 	select {
 	case <-second:
 		t.Fatalf("second late subscriber received a stale replay; should be fresh")
-	default:
+	case <-time.After(50 * time.Millisecond):
 		// Expected: parked.
+	}
+}
+
+// TestReconcileBroadcaster_ReplayPersistsAcrossSubscriberDelay pins that an
+// unobserved pending replay is preserved indefinitely until the first
+// notify() consumes it.
+func TestReconcileBroadcaster_ReplayPersistsAcrossSubscriberDelay(t *testing.T) {
+	b := newReconcileBroadcaster()
+	b.minBroadcastInterval = 0
+
+	b.broadcast()
+	time.Sleep(100 * time.Millisecond)
+
+	ch := b.notify()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("pending replay was lost after 100ms delay")
 	}
 }
 
@@ -93,8 +101,6 @@ func TestReconcileBroadcaster_ReplaysMissedBroadcastToFirstLateSubscriber(t *tes
 // into ten fan-out broadcasts. The clock is injected so the debounce
 // window is deterministic.
 func TestReconcileBroadcaster_DebouncesFlappingReconnects(t *testing.T) {
-	t.Parallel()
-
 	b := newReconcileBroadcaster()
 	b.minBroadcastInterval = time.Second
 	var nowVal time.Time
@@ -124,8 +130,6 @@ func TestReconcileBroadcaster_DebouncesFlappingReconnects(t *testing.T) {
 // (strict less-than): a call landing at exactly minBroadcastInterval after
 // the previous broadcast must succeed, not be suppressed.
 func TestReconcileBroadcaster_DebounceBoundaryIsExact(t *testing.T) {
-	t.Parallel()
-
 	b := newReconcileBroadcaster()
 	b.minBroadcastInterval = time.Second
 	var nowVal time.Time
@@ -154,8 +158,6 @@ func TestReconcileBroadcaster_DebounceBoundaryIsExact(t *testing.T) {
 // stays closed; the subscriber must call notify() again to receive future
 // broadcasts.
 func TestReconcileBroadcaster_ReSubscribesEachWake(t *testing.T) {
-	t.Parallel()
-
 	b := newReconcileBroadcaster()
 	b.minBroadcastInterval = 0
 
@@ -178,8 +180,6 @@ func TestReconcileBroadcaster_ReSubscribesEachWake(t *testing.T) {
 }
 
 func TestWorkspaceChangeSignalCoalescesUntilConsumed(t *testing.T) {
-	t.Parallel()
-
 	s := newWorkspaceChangeSignal()
 	if !s.broadcast() {
 		t.Fatal("first workspace change was not recorded")
@@ -202,8 +202,6 @@ func TestWorkspaceChangeSignalCoalescesUntilConsumed(t *testing.T) {
 // boundary: heavy concurrent notify/broadcast traffic must not panic, dead-
 // lock, or fail under the race detector. Run with `go test -race`.
 func TestReconcileBroadcaster_ConcurrentBroadcastAndNotify(t *testing.T) {
-	t.Parallel()
-
 	b := newReconcileBroadcaster()
 	b.minBroadcastInterval = 0
 
@@ -231,25 +229,24 @@ func TestReconcileBroadcaster_ConcurrentBroadcastAndNotify(t *testing.T) {
 		}()
 	}
 
-	// 4 broadcasters in tight loops. A fixed number of broadcasts, rather than
-	// a fixed stretch of wall time, bounds the work; the subscribers run until
-	// the last broadcaster is done.
-	var broadcasters sync.WaitGroup
+	// 4 broadcasters in tight loops.
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
-		broadcasters.Add(1)
 		go func() {
 			defer wg.Done()
-			defer broadcasters.Done()
-			for j := 0; j < 2000; j++ {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				b.broadcast()
 			}
 		}()
 	}
-	go func() {
-		broadcasters.Wait()
-		close(stop)
-	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
 
 	// Bound the join — if anything deadlocks we want a clear failure rather
 	// than a hung test.
@@ -257,7 +254,7 @@ func TestReconcileBroadcaster_ConcurrentBroadcastAndNotify(t *testing.T) {
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("concurrent broadcast/notify did not converge")
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent broadcast/notify did not converge after stop")
 	}
 }

@@ -83,6 +83,17 @@ const (
 	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
 	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
 
+	// Agent domain, RUYI-630: the sensitive-operation authorization channel.
+	// One story per request_group_id: requested → authorized/denied (per
+	// step) → executed/execute_failed, with revoked and the sweep's expired
+	// alongside.
+	AuditAgentDecisionRequested     = "agent.decision_requested"
+	AuditAgentDecisionAuthorized    = "agent.decision_authorized"
+	AuditAgentDecisionDenied        = "agent.decision_denied"
+	AuditAgentDecisionRevoked       = "agent.decision_revoked"
+	AuditAgentDecisionExecuted      = "agent.decision_executed"
+	AuditAgentDecisionExecuteFailed = "agent.decision_execute_failed"
+
 	// Issue domain: mirror of the activity_log writes (dual-write until
 	// Phase 2 switches the timeline data source), plus the audit-only direct
 	// writes that previously had no queryable surface.
@@ -108,6 +119,12 @@ const (
 	// agent dimension to anchor, so the workspace is the object.
 	AuditOpsSchedulingPaused  = "ops.scheduling_paused"
 	AuditOpsSchedulingResumed = "ops.scheduling_resumed"
+	// Daemon host backpressure settings lifecycle (RUYI-729): the gate
+	// that pauses task claims on a host. Scheduling-affecting config gets
+	// the same fail-closed trail as the freeze switch; details carry the
+	// daemon_id and the full old→new cards.
+	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
+	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
 )
 
 // Structured cancel/failure reasons. Cancel-class events (run.cancelled) MUST

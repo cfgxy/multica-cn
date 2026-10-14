@@ -119,9 +119,11 @@ export default function AgentRunConfig() {
     setSeeded(true);
   }, [agent, seeded]);
 
-  // Text slot choices: online + usable by me + text-capable, minus the voice
-  // slot's pick — plus the agent's current runtime even when offline (so the
-  // current binding is always visible/pickable, never a lie).
+  // Text slot choices: online + usable by me + text-capable — plus the
+  // agent's current runtime even when offline (so the current binding is
+  // always visible/pickable, never a lie). A legacy voice binding
+  // (voice_runtime_id, RUYI-748 retired the slot UI) stays excluded so a
+  // rebind can never silently double-book the same instance.
   const runtimeChoices = useMemo(() => {
     if (!agent) return [];
     const usable = agentSlotChoices(runtimes, "text", {
@@ -183,7 +185,6 @@ export default function AgentRunConfig() {
       avatarUrl: agent.avatar_url ?? "",
       model,
       runtimeId,
-      voiceRuntimeId: agent.voice_runtime_id ?? "",
       thinking,
       tier,
       concurrency,

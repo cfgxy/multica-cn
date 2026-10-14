@@ -156,10 +156,16 @@ var postConsolidationStems = []string{
 	"957_user_model_key_grant_identity",              // RUYI-670 (from trustbe-cn 551)
 	"958_runtime_config_template_identity",           // RUYI-670 (from trustbe-cn 552)
 	"959_computer_runtime_model_config_identity",     // RUYI-670 (from trustbe-cn 553)
+	"961_voice_provider_config",                      // RUYI-693
+	"962_task_local_directory_scope",                 // RUYI-669 (task-level local_directory subdirectory scope declarations)
 	"963_runtime_cost_budget",                        // RUYI-665 (renumbered 966->963 pre-merge, 963-965 idle across all three sources; original 962 yielded to RUYI-669's reserved 962_task_local_directory_scope — registry-reserved, not on main)
 	"964_runtime_cost_budget_pkey_index",             // RUYI-665
 	"965_runtime_cost_budget_primary_key",            // RUYI-665
 	"966_runtime_cost_budget_scope_index",            // RUYI-665
+	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
+	"968_prompt_proposal_value_context",              // RUYI-723 (nullable decision-context columns + score CHECK on prompt_proposal)
+	"969_daemon_backpressure_settings",               // RUYI-729 (daemon-level gate card + trigger/recovery event history)
+	"970_clause_asset_injection",                     // RUYI-751 (ADR 007 phase 1: clause/clause_version/clause_binding/clause_injection/clause_quality_daily + prompt_version legislation source)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

@@ -472,13 +472,6 @@
       "select_image_toast": "请选择图片文件。",
       "upload_failed_toast": "头像上传失败"
     },
-    "voice_label": "语音",
-    "voice_none": "不配置语音",
-    "voice_empty": "暂无支持语音的实例",
-    "credential_configured": "已配置 ✓",
-    "credential_invalid": "凭据失效",
-    "credential_unreachable": "无法验证",
-    "credential_not_configured": "未配置",
     "runtime_credentials_help": "模型认证使用所选运行时对应系统用户的配置。安装 CLI 不会自动配置 API key。",
     "runtime_select": "选择运行时"
   },
@@ -791,7 +784,8 @@
       "cancel_failed_toast": "取消 task 失败",
       "started_prefix": "{{when}}启动",
       "dispatched_prefix": "{{when}}派发",
-      "queued_prefix": "{{when}}排队"
+      "queued_prefix": "{{when}}排队",
+      "queued_backpressure": "等待运行时恢复"
     }
   },
   "char_counter": {

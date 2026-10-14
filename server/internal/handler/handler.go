@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
@@ -211,6 +212,12 @@ type Handler struct {
 	DaemonHub              *daemonws.Hub
 	DaemonProfileRefresh   RuntimeProfileRefreshNotifier
 	DaemonWorkspaceRefresh WorkspaceSetRefreshNotifier
+	// Prometheus serves the usage page's system-resource and model-traffic
+	// panels (RUYI-618) by proxying PromQL range queries. Optional: nil or
+	// an unconfigured client (PROMETHEUS_URL unset) makes both endpoints
+	// report configured=false, which the frontend renders as a hidden
+	// section rather than an error.
+	Prometheus             *promquery.Client
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	PluginService          *service.PluginService
@@ -498,6 +505,21 @@ type Handler struct {
 	// VoiceProbeHTTPClient overrides the probe's HTTP client (tests inject
 	// tight transports). Nil means a 5s-timeout default client.
 	VoiceProbeHTTPClient *http.Client
+	// VoiceASRBaseURL is the one-shot dictation transcription provider
+	// origin (RUYI-710): POST {base}/v1beta/models/{model}:generateContent
+	// with the audio inlined. Wired from MULTICA_GEMINI_ASR_BASE_URL with
+	// the public Gemini endpoint as the default; tests inject a stub
+	// server URL so the hop never touches the real service.
+	VoiceASRBaseURL string
+	// VoiceASRMaxAudioBytes bounds the in-memory audio buffer of a
+	// transcription upload (RUYI-710). Zero means the production default
+	// (20 MiB); tests inject tight bounds to exercise the rejection edges
+	// cheaply.
+	VoiceASRMaxAudioBytes int64
+	// VoiceASRMaxAudioDuration bounds the container-declared length of a
+	// transcription upload (RUYI-710). Zero means the production default
+	// (5 minutes).
+	VoiceASRMaxAudioDuration time.Duration
 	// PluginSurfaceTokens seal short-lived launch claims. Nil disables surface
 	// launches; wired from a domain-separated MULTICA_PLUGIN_SECRET_KEY at boot.
 	PluginSurfaceTokens *secretbox.Box
@@ -744,6 +766,16 @@ func uuidStringsOrEmpty(us []pgtype.UUID) []string {
 		return []string{}
 	}
 	return out
+}
+
+// jsonRawOrEmpty normalizes a nullable JSONB byte slice for RawMessage
+// passthrough: NULL and SQL-empty become nil (field omitted on the wire), so
+// a declared-but-empty scope never masquerades as an empty JSON array.
+func jsonRawOrEmpty(b []byte) json.RawMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
 }
 
 func int8ToPtr(v pgtype.Int8) *int64 { return util.Int8ToPtr(v) }

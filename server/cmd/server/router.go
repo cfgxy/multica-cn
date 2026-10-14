@@ -2342,6 +2342,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// accepts a member route. Approval requires the full-carrier diff to
 		// have been previewed first (confirm_diff_previewed), the injection
 		// defence for a channel that writes into every agent's context.
+		// Clause governance views (RUYI-751, ADR 007 §9): reads over the
+		// clause asset library — overview, per-clause detail, and the
+		// standing reconciliation checks (层集合 ⊆ invariant, degraded
+		// share, marker-vs-asset drift). Member-visible like the quality
+		// dashboard; writes stay in the proposal pool routes above.
+		r.Route("/api/prompt-legislation/governance", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/clauses", h.ListClauseGovernance)
+			r.Get("/clauses/{clauseId}", h.GetClauseGovernanceDetail)
+			r.Get("/reconciliation", h.GetClauseReconciliation)
+		})
+
 		r.Route("/api/prompt-legislation/proposals", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Group(func(r chi.Router) {
@@ -2857,6 +2870,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					// Daemon host backpressure settings + trigger history
+					// (RUYI-729 stage 1): reads member-visible, saves
+					// owner/admin-only, delivery over the heartbeat ack.
+					r.Get("/backpressure-settings", h.GetRuntimeBackpressureSettings)
+					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
+					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
+					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)

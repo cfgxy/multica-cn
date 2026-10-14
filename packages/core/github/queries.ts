@@ -7,6 +7,10 @@ export const githubKeys = {
   repositories: (wsId: string, installationId: string) =>
     [...githubKeys.all(wsId), "installations", installationId, "repositories"] as const,
   pullRequests: (issueId: string) => ["github", "pull-requests", issueId] as const,
+  pullRequestLookup: (wsId: string, owner: string, repo: string, number: number) =>
+    [...githubKeys.all(wsId), "pull-requests", "lookup", owner, repo, number] as const,
+  pullRequestLookupByNumber: (wsId: string, number: number) =>
+    [...githubKeys.all(wsId), "pull-requests", "lookup-by-number", number] as const,
 };
 
 export const githubInstallationsOptions = (wsId: string) =>
@@ -37,4 +41,36 @@ export const issuePullRequestsOptions = (issueId: string) =>
     queryKey: githubKeys.pullRequests(issueId),
     queryFn: () => api.listIssuePullRequests(issueId),
     enabled: !!issueId,
+  });
+
+/**
+ * One `owner/repo#N` text-reference lookup for the reference tail (RUYI-635
+ * 增量). `null` data = the platform has never seen this PR — the tail
+ * degrades the token to plain text. Disabled (never fetched) when the
+ * workspace or the parsed number is missing.
+ */
+export const pullRequestLookupOptions = (
+  wsId: string,
+  owner: string,
+  repo: string,
+  number: number,
+) =>
+  queryOptions({
+    queryKey: githubKeys.pullRequestLookup(wsId, owner, repo, number),
+    queryFn: () => api.lookupPullRequest(wsId, owner, repo, number),
+    enabled: !!wsId && Number.isInteger(number) && number > 0,
+  });
+
+/**
+ * One `MR !N` text-reference lookup (RUYI-728) — the number-only variant of
+ * `pullRequestLookupOptions` for tokens authored without a repo. `null` data
+ * = no unique PR for this number in the workspace snapshot (never seen, or
+ * ambiguous across repos); both degrade the token to plain text. Disabled
+ * when the workspace or the number is missing.
+ */
+export const pullRequestLookupByNumberOptions = (wsId: string, number: number) =>
+  queryOptions({
+    queryKey: githubKeys.pullRequestLookupByNumber(wsId, number),
+    queryFn: () => api.lookupPullRequestByNumber(wsId, number),
+    enabled: !!wsId && Number.isInteger(number) && number > 0,
   });

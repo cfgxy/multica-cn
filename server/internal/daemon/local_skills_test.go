@@ -26,16 +26,6 @@ func writeTestLocalSkill(t *testing.T, root, rel string, files map[string]string
 	return skillDir
 }
 
-// setTestUserHome redirects every environment variable used by Go and the
-// runtime home resolvers on supported platforms. HOME alone is not enough on
-// Windows: os.UserHomeDir reads USERPROFILE and Hermes uses LOCALAPPDATA.
-func setTestUserHome(t *testing.T, home string) {
-	t.Helper()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
-}
-
 func writeTestClaudePlugin(t *testing.T, home, id, name string, enabled bool) string {
 	t.Helper()
 	installPath := filepath.Join(home, ".claude", "plugins", "cache", name, "1.0.0")
@@ -404,9 +394,7 @@ func TestLocalSkills_DiscoversACPProviderRoots(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.provider, func(t *testing.T) {
 			home := t.TempDir()
-			setTestUserHome(t, home)
-			root := filepath.Join(home, tc.root)
-			wantPath := tc.wantPath
+			t.Setenv("HOME", home)
 			if tc.provider == "grok" {
 				t.Setenv("GROK_HOME", "")
 			}
@@ -419,7 +407,8 @@ func TestLocalSkills_DiscoversACPProviderRoots(t *testing.T) {
 			if tc.provider == "dsh" {
 				t.Setenv("DSH_HOME", "")
 			}
-			writeTestLocalSkill(t, root, "review-helper", map[string]string{
+
+			writeTestLocalSkill(t, filepath.Join(home, tc.root), "review-helper", map[string]string{
 				"SKILL.md": "---\nname: " + tc.wantName + "\ndescription: Review code\n---\n# Review\n",
 				"notes.md": "notes",
 			})
@@ -443,8 +432,8 @@ func TestLocalSkills_DiscoversACPProviderRoots(t *testing.T) {
 			if skills[0].Root != localSkillRootProvider {
 				t.Fatalf("root = %q, want %q", skills[0].Root, localSkillRootProvider)
 			}
-			if skills[0].SourcePath != wantPath {
-				t.Fatalf("source_path = %q, want %q", skills[0].SourcePath, wantPath)
+			if skills[0].SourcePath != tc.wantPath {
+				t.Fatalf("source_path = %q, want %q", skills[0].SourcePath, tc.wantPath)
 			}
 
 			bundle, supported, err := loadRuntimeLocalSkillBundle(tc.provider, "review-helper")
@@ -457,8 +446,8 @@ func TestLocalSkills_DiscoversACPProviderRoots(t *testing.T) {
 			if bundle.Name != tc.wantName {
 				t.Fatalf("bundle name = %q, want %q", bundle.Name, tc.wantName)
 			}
-			if bundle.SourcePath != wantPath {
-				t.Fatalf("bundle source_path = %q, want %q", bundle.SourcePath, wantPath)
+			if bundle.SourcePath != tc.wantPath {
+				t.Fatalf("bundle source_path = %q, want %q", bundle.SourcePath, tc.wantPath)
 			}
 			if len(bundle.Files) != 1 {
 				t.Fatalf("expected 1 supporting file, got %d", len(bundle.Files))
