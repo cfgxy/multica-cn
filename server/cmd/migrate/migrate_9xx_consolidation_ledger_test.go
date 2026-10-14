@@ -148,6 +148,7 @@ var postConsolidationStems = []string{
 	"968_prompt_proposal_value_context",              // RUYI-723 (nullable decision-context columns + score CHECK on prompt_proposal)
 	"969_daemon_backpressure_settings",               // RUYI-729 (daemon-level gate card + trigger/recovery event history)
 	"970_clause_asset_injection",                     // RUYI-751 (ADR 007 phase 1: clause/clause_version/clause_binding/clause_injection/clause_quality_daily + prompt_version legislation source)
+	"971_prompt_proposal_migrate_clause",             // RUYI-764 (ADR 007 拆单 5: migrate_clause change kind for legacy-migration inventory adoption)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
