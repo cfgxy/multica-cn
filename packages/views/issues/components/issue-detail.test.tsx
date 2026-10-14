@@ -126,7 +126,10 @@ vi.mock("@multica/core/paths", async () => {
 
 // Mock navigation
 vi.mock("../../navigation", () => ({
-  AppLink: ({ children, href, ...props }: any) => (
+  // RUYI-731: reference rows now render inline instead of inside a closed
+  // popover, so the DOM-facing mock must consume AppLink's desktop-only
+  // newTabTitle instead of leaking it onto the <a>.
+  AppLink: ({ children, href, newTabTitle: _newTabTitle, ...props }: any) => (
     <a href={href} {...props}>
       {children}
     </a>
@@ -921,19 +924,33 @@ describe("IssueDetail (shared)", () => {
   });
 
   it("aggregates the body's issue references into a tail block", async () => {
-    mockApiObj.getIssue.mockResolvedValue({
+    // RUYI-731: the resolution mock must return a DIFFERENT issue for the
+    // TES-2 mention — the blanket mockIssue response would make the mention
+    // resolve to the rendered issue itself and the self-filter would drop
+    // the block.
+    const TES2 = "22222222-2222-4222-8222-222222222222";
+    const referencing = {
       ...mockIssue,
-      description: `Body references [TES-2](mention://issue/22222222-2222-4222-8222-222222222222) twice: TES-2.`,
-    });
+      description: `Body references [TES-2](mention://issue/${TES2}) twice: TES-2.`,
+    };
+    mockApiObj.getIssue.mockImplementation((id: string) =>
+      Promise.resolve(
+        id === TES2
+          ? { ...mockIssue, id: TES2, identifier: "TES-2", title: "Referenced issue" }
+          : referencing,
+      ),
+    );
     const { container } = renderIssueDetail();
 
     // RUYI-635: the body renders through ContentEditor, so the tail list is
     // the host's job — the detail page must mount the shared tail block next
     // to the editor (extraction + dedup policy live in IssueReferenceTail).
     await screen.findByDisplayValue(
-      "Body references [TES-2](mention://issue/22222222-2222-4222-8222-222222222222) twice: TES-2.",
+      `Body references [TES-2](mention://issue/${TES2}) twice: TES-2.`,
     );
-    expect(container.querySelector("[data-issue-reference-footer]")).not.toBeNull();
+    expect(
+      container.querySelector("[data-issue-reference-footer]")!.textContent,
+    ).toContain("TES-2");
     // ...and the editor must actually be opted into the plain-text mention
     // display — the demotion itself is pinned against the real Tiptap
     // pipeline in editor/content-editor-demote-issue-mentions.test.tsx.

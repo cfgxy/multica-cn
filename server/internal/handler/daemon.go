@@ -1213,10 +1213,11 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 // unchanged report a no-op (sql.ErrNoRows), so per-beat calls only touch the
 // row when the report actually changed. Best-effort by design: heartbeat and
 // claim must not fail because observability storage did.
-func (h *Handler) recordBackpressure(ctx context.Context, runtimeID pgtype.UUID, report *protocol.DaemonBackpressureReport) {
-	if report == nil || !runtimeID.Valid {
+func (h *Handler) recordBackpressure(ctx context.Context, rt db.AgentRuntime, report *protocol.DaemonBackpressureReport) {
+	if report == nil || !rt.ID.Valid {
 		return
 	}
+	runtimeID := rt.ID
 	raw, err := json.Marshal(report)
 	if err != nil {
 		slog.Warn("marshal backpressure report", "runtime_id", uuidToString(runtimeID), "error", err)
@@ -1243,6 +1244,10 @@ func (h *Handler) recordBackpressure(ctx context.Context, runtimeID pgtype.UUID,
 		// Watermarks drifted but no state flip — not an audit event.
 		return
 	}
+	// Trigger/recovery history (RUYI-729 ④): one row per observed
+	// transition, with hit detail and the effective config snapshot, so
+	// "why did everything stall at noon" has a queryable answer.
+	h.recordBackpressureEvent(ctx, rt, report)
 	if report.Active {
 		slog.Warn("daemon backpressure ENTERED — new task claims paused",
 			"runtime_id", uuidToString(runtimeID),
@@ -1323,7 +1328,7 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 	// before anything else — it is the only per-beat channel while claims
 	// are paused, so a lost beat would leave the UI showing stale state.
 	// Best-effort: a storage failure must never fail the heartbeat.
-	h.recordBackpressure(ctx, rt.ID, backpressure)
+	h.recordBackpressure(ctx, rt, backpressure)
 
 	updateStart := time.Now()
 	if err := h.recordHeartbeat(ctx, rt); err != nil {
@@ -1338,7 +1343,16 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 		RuntimeID:          runtimeID,
 		Status:             "ok",
 		ServerCapabilities: []string{protocol.DaemonCapabilityRPCV1},
+		// Workspace backpressure settings (RUYI-618): delivered on every
+		// ack — saved card or code defaults — so daemons converge on the
+		// workspace value within one beat, no restart.
+		BackpressureConfig: h.backpressureWireConfig(ctx, rt.WorkspaceID),
 	}
+	// Daemon-host backpressure settings (RUYI-729) ride every ack; nil
+	// means no saved row and the daemon drops any earlier override so the
+	// workspace card governs again. Lookup failure just defers delivery to
+	// the next beat.
+	ack.DaemonBackpressureConfig = h.effectiveBackpressureConfig(ctx, rt.DaemonID.String)
 
 	probeUpdateCtx, cancelProbeUpdate := context.WithTimeout(ctx, heartbeatHasPendingTimeout)
 	hasUpdate, probeUpdateErr := h.UpdateStore.HasPending(probeUpdateCtx, runtimeID)
@@ -1755,7 +1769,9 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	// BEFORE the max_tasks=0 early return — a backpressured daemon polls with
 	// zero free slots, so that poll is exactly when the report matters most.
 	for _, rtID := range authorized {
-		h.recordBackpressure(r.Context(), rtID, req.Backpressure)
+		if rt, ok := runtimeByID[uuidToString(rtID)]; ok {
+			h.recordBackpressure(r.Context(), rt, req.Backpressure)
+		}
 	}
 
 	// max_tasks semantics (MUL-4257 review): zero is a valid "no free slots"
@@ -2199,6 +2215,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// it really saw — a tier the agent/project/squad left blank, or a claim
 	// path that never reaches a given tier, must not appear as version 0.
 	promptVersionScopeIDs := map[string]string{}
+	// Clause dynamic injection (RUYI-751 / ADR 007 §5): every carrier read
+	// point below routes its text through the task_kind-filtered effective
+	// clause set. Injection rows accumulate here and persist once at the end;
+	// every failure inside applyDynamicClauses degrades to snapshot injection
+	// and never fails the claim.
+	taskKind := claimTaskKind(task)
+	claimWorkspaceID := parseUUID(runtimeWorkspaceID)
+	var clauseInjections []clauseInjectionRecord
+	filterClauses := func(scope promptVersionScope, scopeID pgtype.UUID, text string) string {
+		res := h.applyDynamicClauses(r.Context(), claimWorkspaceID, scope, scopeID, taskKind, text)
+		for i := range res.Injections {
+			res.Injections[i].Scope = string(scope)
+		}
+		clauseInjections = append(clauseInjections, res.Injections...)
+		return res.Text
+	}
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -2359,10 +2391,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
+	// The agent tier's business column goes through the dynamic clause
+	// filter before it reaches the response (ADR 007 §5): stable context is
+	// kept verbatim, the clause region is rebuilt from the task_kind-
+	// filtered effective set.
+	agentInstructions := filterClauses(promptVersionScopeAgent, agent.ID, agent.Instructions)
 	resp.Agent = &TaskAgentData{
 		ID:                      uuidToString(agent.ID),
 		Name:                    agent.Name,
-		Instructions:            agent.Instructions,
+		Instructions:            agentInstructions,
 		CustomEnv:               customEnv,
 		CustomArgs:              customArgs,
 		McpConfig:               mcpConfig,
@@ -2374,11 +2411,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		SessionCompactPct:       agent.SessionCompactPct,
 		DisabledRuntimeSkills:   disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
-	// Attribute the agent tier off the raw workspace-owned column, not the
-	// Mika-composed text below: the system layer ships with the binary and is
-	// never written through prompt-governance, so it has no prompt_version to
-	// attribute to.
-	if strings.TrimSpace(agent.Instructions) != "" {
+	// Attribute the agent tier off the filtered text above, not the raw
+	// column: a tier whose every clause the conditions filtered out — and
+	// whose stable context is empty — injected nothing and earns no
+	// attribution. The Mika-composed text below still attributes to the same
+	// tier: the system layer ships with the binary and is never written
+	// through prompt-governance, so it has no prompt_version to attribute to.
+	if strings.TrimSpace(agentInstructions) != "" {
 		promptVersionScopeIDs["agent"] = uuidToString(agent.ID)
 	}
 	// System agents carry a product-owned instruction layer that ships with
@@ -2531,6 +2570,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					ownsIssueStatus := issue.AssigneeType.Valid &&
 						issue.AssigneeType.String == "squad" &&
 						uuidToString(issue.AssigneeID) == uuidToString(squad.ID)
+					// The squad tier's business column goes through the dynamic
+					// clause filter before entering the briefing (ADR 007 §5);
+					// the briefing itself drops an emptied section.
+					squad.Instructions = filterClauses(promptVersionScopeSquad, squad.ID, squad.Instructions)
 					briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, ownsIssueStatus)
 					if strings.TrimSpace(resp.Agent.Instructions) == "" {
 						resp.Agent.Instructions = briefing
@@ -2579,6 +2622,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				message: "failed to load project context",
 			}
 		}
+		// The project tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). The context
+		// degrades to workspace-only when the issue carries no project, so
+		// the filter only runs for a real project id.
+		if projectCtx.ProjectID != "" {
+			projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+		}
 		projectCtx.applyTo(&resp)
 		if strings.TrimSpace(projectCtx.Instructions) != "" {
 			promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -2618,6 +2668,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// coverage for this claim. The trigger snapshot CAS below also rejects a
 		// concurrent edit/delete that changes the FK after this read.
 		deliveredCommentIDs = commentDataIDs(deliveredComments)
+		// RUYI-719: typed answer context for decision-card echoes among the
+		// delivered comments. Keyed on the ids actually embedded above, so
+		// injection follows delivery (a comment dropped by the payload budget
+		// gets no decision context either) and a retried claim — which
+		// inherits the trigger/coalesced plan — recomputes the identical
+		// payload from the immutable answered rows.
+		resp.DecisionAnswers = h.decisionAnswerContextForComments(r.Context(), issue.WorkspaceID, task.IssueID, deliveredCommentIDs)
 		// taskToResponse exposes the enqueue plan to UI task-list callers. A
 		// daemon claim must instead advertise only the structured ids actually
 		// present in this payload, especially when the delivery budget truncates.
@@ -2919,6 +2976,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				message: "failed to load project context",
 			}
 		}
+		// The project tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). The context
+		// degrades to workspace-only when the issue carries no project, so
+		// the filter only runs for a real project id.
+		if projectCtx.ProjectID != "" {
+			projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+		}
 		projectCtx.applyTo(&resp)
 		if strings.TrimSpace(projectCtx.Instructions) != "" {
 			promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -3136,6 +3200,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				message: "failed to load project context",
 			}
 		}
+		// The project tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). The context
+		// degrades to workspace-only when the issue carries no project, so
+		// the filter only runs for a real project id.
+		if projectCtx.ProjectID != "" {
+			projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+		}
 		projectCtx.applyTo(&resp)
 		if strings.TrimSpace(projectCtx.Instructions) != "" {
 			promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -3222,6 +3293,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					message: "failed to load project context",
 				}
 			}
+			// The project tier's business column goes through the dynamic clause
+			// filter before it reaches the response (ADR 007 §5). The context
+			// degrades to workspace-only when the issue carries no project, so
+			// the filter only runs for a real project id.
+			if projectCtx.ProjectID != "" {
+				projectCtx.Instructions = filterClauses(promptVersionScopeProject, parseUUID(projectCtx.ProjectID), projectCtx.Instructions)
+			}
 			projectCtx.applyTo(&resp)
 			if strings.TrimSpace(projectCtx.Instructions) != "" {
 				promptVersionScopeIDs["project"] = projectCtx.ProjectID
@@ -3283,6 +3361,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						// status to own on this turn. Once the leader opens the
 						// issue with the squad as assignee, the issue-bound
 						// claim path above grants ownership.
+						squad.Instructions = filterClauses(promptVersionScopeSquad, squad.ID, squad.Instructions)
 						briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, false)
 						if strings.TrimSpace(resp.Agent.Instructions) == "" {
 							resp.Agent.Instructions = briefing
@@ -3374,8 +3453,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
 		}
 		if ws.Context.Valid {
-			resp.WorkspaceContext = ws.Context.String
-			if strings.TrimSpace(ws.Context.String) != "" {
+			// The workspace tier's business column goes through the dynamic
+			// clause filter before it reaches the response (ADR 007 §5).
+			wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
+			resp.WorkspaceContext = wsContext
+			if strings.TrimSpace(wsContext) != "" {
 				promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
 			}
 		}
@@ -3428,12 +3510,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// user asked to isolate. That is the exact outcome worktree mode exists to
 	// prevent, so it fails closed here, against the version of the runtime that
 	// is actually claiming.
-	if reason := worktreeClaimBlockReason(
+	if reason := localIsolationClaimBlockReason(
 		resp.ProjectResources,
 		runtime,
 		requestHasClientCapability(r, protocol.DaemonCapabilityLocalWorktreeV1),
+		requestHasClientCapability(r, protocol.DaemonCapabilityLocalSnapshotV1),
 	); reason != "" {
-		slog.Error("task claim: runtime too old for worktree mode; cancelling rather than running in place",
+		slog.Error("task claim: runtime cannot run the task's local isolation mode; cancelling rather than running in place",
 			"task_id", uuidToString(task.ID),
 			"runtime_id", runtimeID,
 			"daemon_id", runtime.DaemonID.String,
@@ -3481,6 +3564,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}
 
 	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
+	// the accumulated records are the run's call-count basis. Scope strings
+	// were stamped by filterClauses at each read point.
+	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }
@@ -3531,8 +3618,8 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 	}
 }
 
-// worktreeClaimBlockReason returns a user-facing reason when this runtime must
-// not run the task, or "" when it may proceed.
+// localIsolationClaimBlockReason returns a user-facing reason when this
+// runtime must not run the task, or "" when it may proceed.
 //
 // The decision is made on the CAPABILITY the daemon advertised on this very
 // request, not on its version string. A daemon without the implementation does
@@ -3540,16 +3627,18 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 // in place, editing the working copy the user asked to isolate. Version strings
 // could not answer that reliably: the git-describe dev-build exemption that
 // keeps `make daemon` unblocked let a v0.4.23-era daemon straight through, and
-// two tasks silently ran in the user's own directory (MUL-5707).
+// two tasks silently ran in the user's own directory (MUL-5707). Snapshot mode
+// (RUYI-669) fails closed the same way: a daemon that skips the mode would
+// write straight into the directory the snapshot exists to keep pristine, and
+// the capability — decided by the daemon's startup userns+overlay probe — is
+// the only signal of whether the HOST can do it at all.
 //
 // Only resources bound to the claiming runtime's own daemon are considered: a
-// project may carry one local_directory per machine, and another machine's
-// worktree resource says nothing about this one's ability to run the task.
-func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability bool) string {
+// project may carry one in_place/worktree local_directory per machine (plus
+// any number of snapshot rows), and another machine's resource says nothing
+// about this one's ability to run the task.
+func localIsolationClaimBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability, hasSnapshotCapability bool) string {
 	if !runtime.DaemonID.Valid || runtime.DaemonID.String == "" {
-		return ""
-	}
-	if hasWorktreeCapability {
 		return ""
 	}
 	for _, res := range resources {
@@ -3560,14 +3649,30 @@ func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentR
 		if err := json.Unmarshal(res.ResourceRef, &ref); err != nil {
 			continue
 		}
-		if ref.ExecutionMode != localDirectoryModeWorktree || ref.DaemonID != runtime.DaemonID.String {
+		if ref.DaemonID != runtime.DaemonID.String {
 			continue
 		}
-		return fmt.Sprintf(
-			"This machine's Multica runtime does not support parallel (worktree) mode, which %q is set to use. "+
-				"Update the Multica app on that machine to the latest version, then re-run this task. "+
-				"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
-			ref.LocalPath)
+		switch ref.ExecutionMode {
+		case localDirectoryModeWorktree:
+			if hasWorktreeCapability {
+				continue
+			}
+			return fmt.Sprintf(
+				"This machine's Multica runtime does not support parallel (worktree) mode, which %q is set to use. "+
+					"Update the Multica app on that machine to the latest version, then re-run this task. "+
+					"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
+				ref.LocalPath)
+		case localDirectoryModeSnapshot:
+			if hasSnapshotCapability {
+				continue
+			}
+			return fmt.Sprintf(
+				"This machine's Multica runtime does not support snapshot mode, which %q is set to use "+
+					"(its startup isolation probe failed or it predates the feature). "+
+					"Update the Multica app on that machine and make sure it runs on a host with user-namespace support, then re-run this task. "+
+					"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
+				ref.LocalPath)
+		}
 	}
 	return ""
 }
