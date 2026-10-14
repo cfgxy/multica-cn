@@ -279,4 +279,3 @@ function Waveform({ rms }: { rms: number[] }) {
     </View>
   );
 }
-
