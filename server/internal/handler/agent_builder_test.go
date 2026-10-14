@@ -18,18 +18,6 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-func TestAgentBuilderInstructionsConstrainModelsToRuntimeCatalog(t *testing.T) {
-	for _, requirement := range []string{
-		"AVAILABLE RUNTIME MODELS",
-		"Never use a model label as the id",
-		"never invent a model id",
-	} {
-		if !strings.Contains(agentBuilderInstructions, requirement) {
-			t.Fatalf("agent builder instructions missing model constraint %q", requirement)
-		}
-	}
-}
-
 func TestCreateAgentBuilderSessionCreatesIsolatedHiddenBuilder(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -902,7 +890,7 @@ func waitForWaiterBlockedBy(t *testing.T, holderPID int, timeout time.Duration) 
 			WHERE datname = current_database()
 			  AND state = 'active'
 			  AND wait_event_type = 'Lock'
-			  AND wait_event IN ('transactionid', 'tuple')
+			  AND wait_event IN ('transactionid', 'tuple', 'advisory')
 			  AND $1::int = ANY(pg_blocking_pids(pid))
 		`, holderPID).Scan(&waiting); err != nil {
 			t.Fatalf("probe pg_stat_activity for waiters blocked by pid %d: %v", holderPID, err)

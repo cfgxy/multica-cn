@@ -308,7 +308,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"443_issue_project_status_index":                            {"idx_issue_project_status"},
 	"445_comment_delegated_failure_unsettled_index":             {"idx_comment_delegated_failure_unsettled"},
 	"446_issue_properties_bigm_index":                           {"idx_issue_properties_bigm"},
-	"458_plugin_package_public_index":                           {"idx_plugin_package_public"},
+	"946_plugin_package_public_index":                           {"idx_plugin_package_public"},
 	"902_user_admin_state":                                      {"idx_admin_audit_log_actor_created"},
 	"903_execution_profile":                                     {"idx_execution_profile_workspace_name", "idx_execution_profile_entry_profile_agent"},
 	"907_marketplace":                                           {"idx_marketplace_listing_kind_name_key", "idx_marketplace_listing_discovery", "idx_marketplace_listing_source_workspace"},
