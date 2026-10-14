@@ -13,3 +13,4 @@ export * from "./cli-version";
 export * from "./custom-pricing-store";
 export * from "./cloud-runtime";
 export * from "./backpressure";
+export * from "./default-selection";

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_model_key_directory_entry_name;

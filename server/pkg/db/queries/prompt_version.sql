@@ -28,7 +28,11 @@ SELECT id, COALESCE(instructions, '')::text AS effective_content FROM squad WHER
 SELECT id, COALESCE(instructions, '')::text AS effective_content FROM agent WHERE id = $1 AND workspace_id = $2 FOR UPDATE;
 
 -- name: UpdateWorkspaceContextForPromptVersion :one
-UPDATE workspace SET context = $2, updated_at = now()
+-- Bumps revision (RUYI-666): this is a real instruction write, so a client
+-- holding an expected_revision from before the activation/rollback must lose
+-- the race instead of overwriting the restored context. Same pattern as
+-- UpdateProjectInstructionsForPromptVersion (RUYI-354).
+UPDATE workspace SET context = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
 RETURNING *;
 
@@ -41,7 +45,9 @@ WHERE id = $1
 RETURNING *;
 
 -- name: UpdateSquadInstructionsForPromptVersion :one
-UPDATE squad SET instructions = $2, updated_at = now()
+-- Bumps revision (RUYI-666): same rationale as
+-- UpdateWorkspaceContextForPromptVersion above.
+UPDATE squad SET instructions = $2, updated_at = now(), revision = revision + 1
 WHERE id = $1
 RETURNING *;
 

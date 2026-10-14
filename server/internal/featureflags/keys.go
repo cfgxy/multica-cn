@@ -69,6 +69,19 @@ const (
 	// switch (FF_RUNTIME_COST_BUDGET_WARN_ONLY) and deliberately not published
 	// to the frontend.
 	RuntimeCostBudgetWarnOnly = "runtime_cost_budget_warn_only"
+	// OuterLoop enables the explicit continuation outer loop (RUYI-660):
+	// end-marker evaluation, early ticket-close pullback, auto re-enqueue
+	// rounds, wait-for-human escalation, member-reply intent routing, the
+	// metadata permission gate for outerloop_* keys, and the stall sweep —
+	// but only for issues that opt in via an outerloop_state plan in
+	// metadata. Plan-less issues behave exactly as before regardless of this
+	// switch. It is a server-side switch (FF_OUTER_LOOP) and deliberately
+	// not published to the frontend. Defaults to true: the per-issue opt-in
+	// is the blast-radius boundary, so the global default gates dead code
+	// paths rather than user-visible behavior, and the escape hatch turns
+	// the whole subsystem off in one move (disabled = the status quo, with
+	// existing plan data left in place for re-enabling).
+	OuterLoop = "outer_loop"
 )
 
 var frontendPublicFlags = []string{
@@ -103,6 +116,13 @@ func MarketplacePublishV1Enabled(ctx context.Context, flags *featureflag.Service
 // the safe state, and warn-only has to be switched on deliberately.
 func RuntimeCostBudgetWarnOnlyEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, RuntimeCostBudgetWarnOnly, false)
+}
+
+// OuterLoopEnabled defaults to true: plan-less issues are unaffected either
+// way, so the per-issue opt-in carries the behavioral boundary and the flag
+// only serves as the subsystem-wide kill switch (RUYI-660 验收 6).
+func OuterLoopEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, OuterLoop, true)
 }
 
 // frontendPublicFlagDefaults holds the per-key default passed to IsEnabled

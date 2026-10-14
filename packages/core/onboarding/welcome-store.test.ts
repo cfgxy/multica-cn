@@ -30,9 +30,11 @@ describe("welcome-store", () => {
 
   it("reset() clears signal AND dismissed (used on logout)", () => {
     useWelcomeStore.getState().set(sample);
+    useWelcomeStore.getState().setConnectionWorkspace("ws-1");
     useWelcomeStore.getState().dismiss();
     useWelcomeStore.getState().reset();
     expect(useWelcomeStore.getState().signal).toBeNull();
+    expect(useWelcomeStore.getState().connectionWorkspaceId).toBeNull();
     expect(useWelcomeStore.getState().dismissed).toBe(false);
   });
 });

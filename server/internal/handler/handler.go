@@ -6,12 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"golang.org/x/sync/singleflight"
 	"log/slog"
 	"math"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/computer"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -79,8 +82,8 @@ type Config struct {
 	// logs, audit rows, or API responses.
 	SuperAdminEmails []string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
-	// 403 for every caller. There is no role/owner exception because the repo
-	// has no platform-admin concept; operators bootstrap the workspace with
+	// 403 for every caller, including instance administrators. Operators
+	// bootstrap the workspace with
 	// the flag off, then flip it on and restart so subsequent users join via
 	// invitation only. The public /api/config endpoint mirrors this flag so
 	// the UI can hide every "Create workspace" affordance — see #3433.
@@ -184,6 +187,13 @@ type DaemonPendingWorkNotifier interface {
 }
 
 type Handler struct {
+	// modelKeyClient is injectable for directory contract tests; production uses
+	// a bounded HTTPS client created by modelKeyHTTPClient.
+	modelKeyClient         *http.Client
+	modelKeyRefreshGroup   singleflight.Group
+	runtimeCacheOnce       sync.Once
+	runtimeDownloads       *computer.RuntimeDownloadCache
+	runtimeVersions        *computer.RuntimeVersionCache
 	Queries                *db.Queries
 	DB                     dbExecutor
 	TxStarter              txStarter
