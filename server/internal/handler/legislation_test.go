@@ -2,8 +2,9 @@ package handler
 
 // Tests for the prompt legislation API (RUYI-305 E2): the state machine's
 // every path (draft → pending_owner → approved → enacted | gate_failed →
-// draft; pending_owner → rejected → draft), the permission gates, the E5
-// boundary (enacted_version stays NULL) and the carrier-rollback audit hook.
+// draft; pending_owner → rejected → draft), the permission gates, the ADR
+// 007 §8 enact contract (clause asset write + carrier re-render in one
+// transaction) and the carrier-rollback audit hook.
 //
 // Owner-only routes are driven through the real
 // middleware.RequireWorkspaceRole chain from router.go — matching
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 )
 
 // legislationCarrierText is the dedicated workspace carrier: a document the
@@ -77,6 +79,9 @@ func legislationFixture(t *testing.T) (wsID, ownerID, memberID string) {
 		for _, stmt := range []string{
 			`DELETE FROM prompt_proposal WHERE workspace_id = $1`,
 			`DELETE FROM prompt_structure_baseline WHERE workspace_id = $1`,
+			`DELETE FROM clause_binding WHERE clause_id IN (SELECT id FROM clause WHERE workspace_id = $1)`,
+			`DELETE FROM clause_version WHERE clause_id IN (SELECT id FROM clause WHERE workspace_id = $1)`,
+			`DELETE FROM clause WHERE workspace_id = $1`,
 			`DELETE FROM retrospective_issue_watermark WHERE workspace_id = $1`,
 			`DELETE FROM retrospective_run WHERE workspace_id = $1`,
 			`DELETE FROM retrospective_config WHERE workspace_id = $1`,
@@ -183,9 +188,10 @@ func proposalStatus(t *testing.T, wsID, id string) string {
 }
 
 // TestLegislationStateMachineHappyPath walks draft → pending_owner →
-// preview → approve → enacted and pins the E5 boundary: the business column
-// is untouched and enacted_version stays NULL — the carrier write belongs
-// to RUYI-285.
+// preview → approve → enacted and pins the ADR 007 §8 enact contract: one
+// transaction writes the clause asset, re-renders the carrier business
+// column (marker-wrapped clause region) through the version funnel, rebuilds
+// the baseline and lands the row with clause_id + enacted_version.
 func TestLegislationStateMachineHappyPath(t *testing.T) {
 	wsID, ownerID, memberID := legislationFixture(t)
 
@@ -234,22 +240,52 @@ func TestLegislationStateMachineHappyPath(t *testing.T) {
 		t.Fatalf("after approve: status = %q, want enacted: %s", got, body)
 	}
 
-	var enactedVersion *int
+	// The proposal row lands with the clause reference and the enacted
+	// clause version (ADR 007 §8 — the old NULL boundary is replaced).
+	var clauseID string
+	var enactedVersion int
 	var gateErrors string
-	dbfx.QueryRow(t, `SELECT enacted_version, gate_errors::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, id).Scan(&enactedVersion, &gateErrors)
-	if enactedVersion != nil {
-		t.Fatalf("E5 boundary broken: enacted_version = %v, want NULL", *enactedVersion)
+	dbfx.QueryRow(t, `SELECT clause_id::text, enacted_version, gate_errors::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, id).Scan(&clauseID, &enactedVersion, &gateErrors)
+	if clauseID == "" || enactedVersion != 1 {
+		t.Fatalf("enacted row = clause_id %q / version %d, want a clause reference at version 1", clauseID, enactedVersion)
 	}
 	if gateErrors != "[]" {
 		t.Fatalf("enacted row kept gate errors: %s", gateErrors)
 	}
-	var contextAfter string
-	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&contextAfter)
-	if contextAfter != contextBefore {
-		t.Fatalf("E5 boundary broken: workspace carrier content changed on enact")
+
+	// The clause asset trio: version 1 holds the drafted text, actively
+	// bound to the workspace carrier.
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 1`, clauseID).Scan(&content)
+	if content != cleanClauseText {
+		t.Fatalf("clause v1 content = %q, want the drafted text %q", content, cleanClauseText)
+	}
+	var bindingScope, bindingStatus string
+	dbfx.QueryRow(t, `SELECT scope, status FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&bindingScope, &bindingStatus)
+	if bindingScope != "workspace" || bindingStatus != "active" {
+		t.Fatalf("clause binding = %s/%s, want active workspace binding", bindingScope, bindingStatus)
 	}
 
-	// The gate rebuilt the structure baseline from the synthesized text —
+	// The carrier business column now carries the marker-wrapped clause
+	// region (stable context kept, clause region rebuilt from the library).
+	var contextAfter string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&contextAfter)
+	if contextAfter == contextBefore {
+		t.Fatalf("enact contract broken: workspace carrier content unchanged")
+	}
+	if !strings.Contains(contextAfter, "每日同步") || !strings.Contains(contextAfter, "<!-- clause:id=") || !strings.Contains(contextAfter, clausemark.CloseTag()) {
+		t.Fatalf("carrier re-render missing the clause region: %.200s", contextAfter)
+	}
+
+	// The write went through the prompt_version funnel, not a bare column
+	// update: the ledger holds the rendered carrier.
+	var versions int
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM prompt_version WHERE workspace_id = $1 AND scope = 'workspace' AND scope_id = $2`, wsID, wsID).Scan(&versions)
+	if versions == 0 {
+		t.Fatalf("carrier write bypassed the prompt_version funnel")
+	}
+
+	// The gate rebuilt the structure baseline from the rendered text —
 	// the new clause is part of it.
 	var clauses string
 	dbfx.QueryRow(t, `SELECT clauses::text FROM prompt_structure_baseline WHERE carrier_scope = 'workspace' AND carrier_scope_id = $1`, wsID).Scan(&clauses)

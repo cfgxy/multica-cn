@@ -760,6 +760,12 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM, handler.PerplexityGeneratorFor(h.SelfEvolution))); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quality rollup job", "error", err)
 	}
+	// RUYI-751 (ADR 007 §7): clause_quality_daily rides the same run stream
+	// as the prompt rollup; the rollback checker rides its tick latched, so
+	// registration failure degrades to the same warn-and-continue contract.
+	if err := schedulerMgr.Register(scheduler.ClauseQualityJob(pool)); err != nil {
+		slog.Warn("scheduler: failed to register clause_quality rollup job", "error", err)
+	}
 	// RUYI-185: the periodic quiz replays a fixed question set against each
 	// agent's current prompt version so two versions are comparable, and
 	// re-runs it to surface regressions. It only ever writes measurements —

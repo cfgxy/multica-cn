@@ -5218,3 +5218,73 @@ export const WorkspaceBackpressureSettingsSchema = z.object({
   window_size: z.number().default(6),
   custom: z.boolean().default(false),
 });
+
+// ---- Daemon host backpressure settings + event history (RUYI-729) ----
+// The daemon-host override card (Runtime detail page) and its report/event
+// shapes. Coexists with the workspace card above: the workspace settings are
+// the per-workspace default plane, a saved daemon row is the host-level
+// override delivered on its own ack field.
+
+const DaemonBackpressureConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  config_version: z.number().optional(),
+  source: z.string().optional(),
+}).loose();
+
+export type DaemonBackpressureConfig = z.infer<typeof DaemonBackpressureConfigSchema>;
+
+const DaemonBackpressureConditionSchema = z.object({
+  condition: z.string().default(""),
+  value: z.number().default(0),
+  threshold: z.number().default(0),
+  triggered: z.boolean().default(false),
+});
+
+const DaemonBackpressureReportSchema = z.object({
+  active: z.boolean().default(false),
+  reason: z.string().default(""),
+  mem_available_pct: z.number().default(0),
+  swap_used_pct: z.number().default(0),
+  psi_memory_some_avg10: z.number().default(0),
+  psi_read_ok: z.boolean().default(false),
+  deferred_claims: z.number().default(0),
+  config: DaemonBackpressureConfigSchema.nullish().catch(null),
+  conditions: z.array(DaemonBackpressureConditionSchema).optional(),
+}).loose();
+
+export const RuntimeBackpressureSettingsSchema = z.object({
+  daemon_id: z.string().default(""),
+  configured: z.boolean().default(false),
+  config: DaemonBackpressureConfigSchema.nullish().catch(null),
+  updated_by: z.string().optional(),
+  updated_at: z.string().optional(),
+  report: DaemonBackpressureReportSchema.nullish().catch(null),
+}).loose();
+
+export type RuntimeBackpressureSettings = z.infer<typeof RuntimeBackpressureSettingsSchema>;
+
+const DaemonBackpressureEventSchema = z.object({
+  id: z.string().default(""),
+  event_type: z.string().default(""),
+  reason: z.string().default(""),
+  mem_available_pct: z.number().default(0),
+  swap_used_pct: z.number().default(0),
+  psi_some_avg10: z.number().default(0),
+  psi_read_ok: z.boolean().default(false),
+  deferred_claims: z.number().default(0),
+  effective_config: DaemonBackpressureConfigSchema.default({} as DaemonBackpressureConfig),
+  hits: z.array(DaemonBackpressureConditionSchema).default([]),
+  occurred_at: z.string().default(""),
+}).loose();
+
+export const RuntimeBackpressureEventListSchema = z.array(DaemonBackpressureEventSchema);
+
+export type RuntimeBackpressureEvent = z.infer<typeof DaemonBackpressureEventSchema>;

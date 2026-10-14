@@ -9,19 +9,21 @@
 INSERT INTO prompt_proposal (
     workspace_id, carrier_scope, carrier_scope_id, target_section,
     change_kind, clause_name, clause_text,
+    clause_id, move_to_scope, move_to_scope_id, conditions,
     gate_answer_layer, gate_answer_retention, gate_answer_cost,
     gate_answer_conflict, gate_answer_dedup,
     problem, expected_effect, expected_gain, value_score,
     evidence_anchors, status, merged_from, source,
-    created_by_type, created_by_id, audit_log
+    created_by_type, created_by_id, audit_log, rollback_of_version
 ) VALUES (
     @workspace_id, @carrier_scope, @carrier_scope_id, @target_section,
     @change_kind, @clause_name, @clause_text,
+    @clause_id, @move_to_scope, @move_to_scope_id, @conditions::jsonb,
     @gate_answer_layer, @gate_answer_retention, @gate_answer_cost,
     @gate_answer_conflict, @gate_answer_dedup,
     @problem, @expected_effect, @expected_gain, @value_score,
     @evidence_anchors, 'draft', '[]'::jsonb, @source,
-    @created_by_type, @created_by_id, @audit_log::jsonb
+    @created_by_type, @created_by_id, @audit_log::jsonb, sqlc.narg('rollback_of_version')
 ) RETURNING *;
 
 -- name: GetPromptProposal :one
@@ -55,6 +57,8 @@ LIMIT 200;
 UPDATE prompt_proposal SET
     carrier_scope = @carrier_scope, carrier_scope_id = @carrier_scope_id, target_section = @target_section,
     change_kind = @change_kind, clause_name = @clause_name, clause_text = @clause_text,
+    clause_id = @clause_id, move_to_scope = @move_to_scope, move_to_scope_id = @move_to_scope_id,
+    conditions = @conditions::jsonb,
     gate_answer_layer = @gate_answer_layer, gate_answer_retention = @gate_answer_retention, gate_answer_cost = @gate_answer_cost,
     gate_answer_conflict = @gate_answer_conflict, gate_answer_dedup = @gate_answer_dedup,
     evidence_anchors = @evidence_anchors::jsonb,
@@ -90,6 +94,8 @@ RETURNING *;
 -- the submit-stage precheck (latest verdict is authoritative; stage field
 -- disambiguates).
 UPDATE prompt_proposal SET status = 'enacted',
+    enacted_version = sqlc.narg('enacted_version'),
+    clause_id = sqlc.narg('clause_id'),
     gate_errors = '[]'::jsonb, gate_warnings = @warnings::jsonb,
     audit_log = prompt_proposal.audit_log || @audit::jsonb,
     jev_advisory = @jev_advisory::jsonb, updated_at = now()
