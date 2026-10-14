@@ -675,7 +675,8 @@
       "cancel_failed_toast": "作業をキャンセルできませんでした",
       "started_prefix": "{{when}} に開始",
       "dispatched_prefix": "{{when}} にディスパッチ",
-      "queued_prefix": "{{when}} に待機開始"
+      "queued_prefix": "{{when}} に待機開始",
+      "queued_backpressure": "ランタイムの復帰待ち"
     }
   },
   "char_counter": {

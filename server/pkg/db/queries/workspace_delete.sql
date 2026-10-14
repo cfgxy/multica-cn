@@ -761,6 +761,34 @@ deleted_knowledge_entries AS (
 )
 DELETE FROM knowledge_dir WHERE knowledge_dir.workspace_id = $1;
 
+-- name: DeleteWorkspaceClauseAssets :exec
+-- Clause asset family (RUYI-751 / ADR 007) has no foreign keys by project
+-- rule: injections and the daily rollup are workspace-keyed; versions,
+-- bindings and the clause rows key through the clause set. The rollup
+-- watermark (clause_quality_rollup_state) is a global singleton with no
+-- workspace_id and is kept, like its prompt-quality twin. Proposal→clause
+-- references are plain UUIDs; prompt_proposal is swept by
+-- DeleteWorkspaceSelfEvolutionData in the same transaction.
+WITH deleted_clause_injections AS (
+    DELETE FROM clause_injection WHERE clause_injection.workspace_id = $1
+),
+deleted_clause_quality_daily AS (
+    DELETE FROM clause_quality_daily WHERE clause_quality_daily.workspace_id = $1
+),
+deleted_clause_bindings AS (
+    DELETE FROM clause_binding
+    WHERE clause_binding.clause_id IN (
+        SELECT id FROM clause WHERE clause.workspace_id = $1
+    )
+),
+deleted_clause_versions AS (
+    DELETE FROM clause_version
+    WHERE clause_version.clause_id IN (
+        SELECT id FROM clause WHERE clause.workspace_id = $1
+    )
+)
+DELETE FROM clause WHERE clause.workspace_id = $1;
+
 -- name: DeleteWorkspaceAgents :exec
 DELETE FROM agent WHERE agent.workspace_id = $1;
 
@@ -784,6 +812,20 @@ deleted_runtime_credentials AS (
 ),
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
+),
+-- RUYI-729: daemon_backpressure_* have no FK (house rule). Events die with
+-- the workspace; a settings row only dies once NO runtime anywhere still
+-- points at its daemon_id — a shared daemon serving another workspace keeps
+-- its gate config.
+deleted_backpressure_events AS (
+    DELETE FROM daemon_backpressure_event WHERE workspace_id = $1
+),
+deleted_backpressure_settings AS (
+    DELETE FROM daemon_backpressure_settings s
+    WHERE s.workspace_id = $1
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_runtime ar WHERE ar.daemon_id = s.daemon_id
+      )
 ),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
