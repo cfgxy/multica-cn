@@ -94,6 +94,9 @@ import type {
   SquadMember,
   TimelineEntry,
   User,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
 } from "../types";
 import type {
   AdminUser,
@@ -4942,6 +4945,7 @@ export const PromptProposalSchema = z.object({
   gate_errors: z.array(LegislationGateFindingSchema),
   gate_warnings: z.array(LegislationGateFindingSchema),
   enacted_version: z.number().optional(),
+  rollback_of_version: z.number().optional(),
   rollback_reason: z.string(),
   merged_from: z.array(PromptProposalMergeRefSchema),
   source: z.string(),
@@ -5288,3 +5292,154 @@ const DaemonBackpressureEventSchema = z.object({
 export const RuntimeBackpressureEventListSchema = z.array(DaemonBackpressureEventSchema);
 
 export type RuntimeBackpressureEvent = z.infer<typeof DaemonBackpressureEventSchema>;
+
+const ClauseGovernanceTotalsSchema = z.object({
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  degraded_rows: z.number().default(0),
+  degraded_runs: z.number().default(0),
+  clause_tokens: z.number().default(0),
+}).loose();
+
+const ClauseGovernanceClauseSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  status: z.string().default(""),
+  latest_version: z.number().default(0),
+  bound_scope: z.string().optional(),
+  bound_scope_id: z.string().optional(),
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  injected_tokens: z.number().default(0),
+  tokens_pending: z.boolean().default(false),
+}).loose();
+
+const ClauseGovernanceMigrationSchema = z.object({
+  total_carriers: z.number().default(0),
+  bound_carriers: z.number().default(0),
+  by_scope: z.record(z.string(), z.number()).default({}),
+  by_scope_total: z.record(z.string(), z.number()).default({}),
+}).loose();
+
+export const ClauseGovernanceOverviewSchema = z.object({
+  workspace_id: z.string().default(""),
+  since: z.string().default(""),
+  dynamic_injection_disabled: z.boolean().default(false),
+  clauses: z.array(ClauseGovernanceClauseSchema).default([]),
+  status_counts: z.record(z.string(), z.number()).default({}),
+  totals: ClauseGovernanceTotalsSchema.default({}),
+  migration: ClauseGovernanceMigrationSchema.default({}),
+  rollback_suggestions: z.array(PromptProposalSchema).default([]),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_OVERVIEW: ClauseGovernanceOverview = {
+  workspace_id: "",
+  since: "",
+  dynamic_injection_disabled: false,
+  clauses: [],
+  status_counts: {},
+  totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
+  migration: { total_carriers: 0, bound_carriers: 0, by_scope: {}, by_scope_total: {} },
+  rollback_suggestions: [],
+};
+
+const ClauseGovernanceVersionSchema = z.object({
+  version: z.number().default(0),
+  content: z.string().default(""),
+  content_sha256: z.string().default(""),
+  source: z.string().default(""),
+  carrier_scope: z.string().default(""),
+  created_by_type: z.string().default(""),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseGovernanceBindingSchema = z.object({
+  id: z.string().default(""),
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  status: z.string().default(""),
+  conditions: z.object({ task_kinds: z.array(z.string()).optional() }).loose().nullable().optional(),
+  since_clause_version: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseGovernanceQualityDaySchema = z.object({
+  day: z.string().default(""),
+  clause_version: z.number().default(0),
+  finished_runs: z.number().default(0),
+  injected_tokens: z.number().nullable().optional(),
+  run_tokens_median: z.number().nullable().optional(),
+  attributable_failed_runs: z.number().default(0),
+  excluded_failed_runs: z.number().default(0),
+}).loose();
+
+export const ClauseGovernanceDetailSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  status: z.string().default(""),
+  latest_version: z.number().default(0),
+  versions: z.array(ClauseGovernanceVersionSchema).default([]),
+  bindings: z.array(ClauseGovernanceBindingSchema).default([]),
+  proposals: z.array(PromptProposalSchema).default([]),
+  quality_daily: z.array(ClauseGovernanceQualityDaySchema).default([]),
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  injected_tokens: z.number().default(0),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_DETAIL: ClauseGovernanceDetail = {
+  id: "",
+  slug: "",
+  title: "",
+  status: "",
+  latest_version: 0,
+  versions: [],
+  bindings: [],
+  proposals: [],
+  quality_daily: [],
+  injections: 0,
+  runs: 0,
+  injected_tokens: 0,
+};
+
+const ClauseLayerSetViolationSchema = z.object({
+  task_id: z.string().default(""),
+  clause_id: z.string().default(""),
+  clause_version: z.number().default(0),
+  carrier_scope: z.string().default(""),
+  degraded: z.boolean().default(false),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseDriftEntrySchema = z.object({
+  kind: z.string().default(""),
+  slug: z.string().default(""),
+  marker_rev: z.number().optional(),
+  expected_rev: z.number().optional(),
+}).loose();
+
+const ClauseDriftCarrierSchema = z.object({
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  entries: z.array(ClauseDriftEntrySchema).default([]),
+}).loose();
+
+export const ClauseGovernanceReconciliationSchema = z.object({
+  since: z.string().default(""),
+  healthy: z.boolean().default(false),
+  layer_set_violations: z.array(ClauseLayerSetViolationSchema).default([]),
+  totals: ClauseGovernanceTotalsSchema.default({}),
+  drift: z.array(ClauseDriftCarrierSchema).default([]),
+  carriers_scanned: z.number().default(0),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION: ClauseGovernanceReconciliation = {
+  since: "",
+  healthy: false,
+  layer_set_violations: [],
+  totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
+  drift: [],
+  carriers_scanned: 0,
+};
