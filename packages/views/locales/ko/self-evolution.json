@@ -682,7 +682,7 @@
     "list": { "title": "조항 목록", "filter_all": "전체", "filter_active": "활성", "filter_deprecated": "중지됨", "filter_revoked": "폐기됨", "colStatus": "상태", "colClause": "조항", "colVersion": "현재 버전", "colScope": "바인딩 범위", "colInjections": "주입", "colRuns": "실행", "colTokens": "토큰", "colAction": "작업", "unbound": "바인딩 안 됨", "tokensPending": "측정 대기", "tokensPendingHint": "선택한 기간에 이 조항의 측정 데이터가 없습니다", "emptyTitle": "아직 조항 자산이 없습니다", "emptyBody": "입법 제안에서 첫 조항을 만드세요", "emptyCta": "제안으로 이동", "openDetail": "세부 정보 보기", "noFilterResults": "필터에 맞는 조항이 없습니다" },
     "detail": { "back": "조항 거버넌스로 돌아가기", "versions": "버전", "bindings": "바인딩", "proposals": "제안 추적", "quality": "품질 및 주입", "latest": "최신", "notFound": "조항을 찾을 수 없거나 삭제되었습니다" },
     "version": { "sha": "콘텐츠 지문", "showContent": "본문 펼치기", "hideContent": "본문 접기", "compare": "버전 비교" },
-    "compare": { "title": "V{{a}} ↔ V{{b}} 비교", "sampleInsufficient": "표본이 부족해 백분율 결론을 표시하지 않습니다", "windowRuns": "기간 내 귀속 가능한 실행 {{count}}회" },
+    "compare": { "title": "V{{a}} ↔ V{{b}} 비교", "sampleInsufficient": "표본이 부족해 백분율 결론을 표시하지 않습니다", "attributableRuns": "귀속 가능한 실행", "windowRuns": "기간 내 귀속 가능한 실행 {{count}}회" },
     "binding": { "scope": "범위", "status": "상태", "conditions": "적용 조건", "conditionsAll": "모든 작업 종류", "sinceVersion": "V{{version}}부터", "createdAt": "적용 시각", "empty": "바인딩 기록이 없습니다" },
     "bindingStatus": { "active": "활성", "superseded": "대체됨", "withdrawn": "철회됨" },
     "proposals": { "empty": "연결된 제안이 없습니다", "gates": { "layer": "레이어", "retention": "보존", "cost": "비용", "conflict": "충돌", "dedup": "중복 제거" } },

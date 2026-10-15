@@ -763,6 +763,7 @@
     "compare": {
       "title": "版本对比 V{{a}} ↔ V{{b}}",
       "sampleInsufficient": "样本不足，不出百分比结论",
+      "attributableRuns": "可归因运行",
       "windowRuns": "窗口内可归因运行 {{count}} 次"
     },
     "binding": {

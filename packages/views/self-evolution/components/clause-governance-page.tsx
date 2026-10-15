@@ -20,12 +20,18 @@ import {
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Badge } from "@multica/ui/components/ui/badge";
-import { Button } from "@multica/ui/components/ui/button";
+import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@multica/ui/components/ui/card";
 import { Progress } from "@multica/ui/components/ui/progress";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@multica/ui/components/ui/chart";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@multica/ui/components/ui/dialog";
 import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { SelfEvolutionShell } from "./self-evolution-shell";
@@ -189,7 +195,7 @@ export function ClauseGovernancePage() {
                   </p>
                 </div>
                 <section aria-label={t(($) => $.clauseGovernance.metrics.injections)} className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">
-                  <MetricCard title={t(($) => $.clauseGovernance.metrics.injections)} value={numberLabel(data.totals.injections)} note={t(($) => $.clauseGovernance.metrics.runsUnit, { count: numberLabel(data.totals.runs) })} />
+                  <MetricCard title={t(($) => $.clauseGovernance.metrics.injections)} value={numberLabel(data.totals.injections)} note={t(($) => $.clauseGovernance.metrics.runsUnit, { count: data.totals.runs })} />
                   <MetricCard title={t(($) => $.clauseGovernance.metrics.clauseTokens)} value={numberLabel(data.totals.clause_tokens)} note={t(($) => $.clauseGovernance.metrics.clauseTokensNote)} />
                   <MetricCard title={t(($) => $.clauseGovernance.metrics.degraded)} value={numberLabel(data.totals.degraded_rows)} note={`${data.totals.degraded_rows}/${data.totals.injections} · ${numberLabel(data.totals.degraded_runs)} ${t(($) => $.clauseGovernance.metrics.runs)}`} />
                   <Card>
@@ -231,7 +237,7 @@ export function ClauseGovernancePage() {
                     <Card><CardContent className="flex flex-col items-center gap-2 py-8 text-center">
                       <h3 className="font-medium">{t(($) => $.clauseGovernance.list.emptyTitle)}</h3>
                       <p className="text-body text-muted-foreground">{t(($) => $.clauseGovernance.list.emptyBody)}</p>
-                      <Button asChild variant="outline"><AppLink href={paths.selfEvolutionProposals()}>{t(($) => $.clauseGovernance.list.emptyCta)}</AppLink></Button>
+                      <AppLink href={paths.selfEvolutionProposals()} className={buttonVariants({ variant: "outline" })}>{t(($) => $.clauseGovernance.list.emptyCta)}</AppLink>
                     </CardContent></Card>
                   ) : (
                     <div className="overflow-x-auto rounded-md border">
@@ -270,7 +276,7 @@ function MetricCard({ title, value, note }: { title: string; value: string; note
 }
 
 function OverviewSkeleton() {
-  return <div className="space-y-4" aria-label="Loading">
+  return <div className="space-y-4" aria-hidden="true">
     <Skeleton className="h-16 w-full" />
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">{[0, 1, 2, 3].map((item) => <Skeleton key={item} className="h-28" />)}</div>
     <Skeleton className="h-64 w-full" /><Skeleton className="h-72 w-full" />
@@ -383,7 +389,7 @@ export function ClauseGovernanceDetailPage({ clauseId }: { clauseId: string }) {
       {query.isLoading ? <Skeleton className="h-16 w-full" /> : query.isError || !query.data?.id ? <Card><CardContent className="flex flex-col items-center gap-3 py-10 text-center">
         <h1 className="text-heading font-semibold">{query.isError ? t(($) => $.clauseGovernance.error.title) : t(($) => $.clauseGovernance.detail.notFound)}</h1>
         {query.isError ? <Button variant="outline" onClick={() => void query.refetch()}>{t(($) => $.clauseGovernance.error.retry)}</Button> : null}
-        <Button asChild variant="outline"><AppLink href={backPath}>{t(($) => $.clauseGovernance.detail.back)}</AppLink></Button>
+        <AppLink href={backPath} className={buttonVariants({ variant: "outline" })}>{t(($) => $.clauseGovernance.detail.back)}</AppLink>
       </CardContent></Card> : <DetailContents data={query.data} days={days} paths={paths} />}
     </main>
   </SelfEvolutionShell>;
@@ -422,21 +428,29 @@ function VersionsPanel({ versions, quality }: { versions: ClauseGovernanceVersio
   const { t } = useT("self-evolution");
   const [compareA, setCompareA] = useState("");
   const [compareB, setCompareB] = useState("");
+  const [comparisonOpen, setComparisonOpen] = useState(false);
   const first = versions.find((version) => String(version.version) === compareA);
   const second = versions.find((version) => String(version.version) === compareB);
-  const diff = first && second ? diffPromptText(first.content, second.content) : null;
-  const versionRuns = (version: number) => quality
-    .filter((row) => row.clause_version === version)
+  const diff = first && second && first.version !== second.version
+    ? diffPromptText(first.content, second.content)
+    : null;
+  const versionRows = (version: number) => quality.filter((row) => row.clause_version === version);
+  const versionRuns = (version: number) => versionRows(version)
     .reduce((sum, row) => sum + row.finished_runs + row.attributable_failed_runs, 0);
+  const versionFailures = (version: number) => versionRows(version)
+    .reduce((sum, row) => sum + row.attributable_failed_runs, 0);
+  const versionTokens = (version: number) => {
+    const rows = versionRows(version);
+    if (rows.length === 0 || rows.some((row) => row.injected_tokens == null)) return null;
+    return rows.reduce((sum, row) => sum + (row.injected_tokens ?? 0), 0);
+  };
+  const comparisonTitle = first && second
+    ? t(($) => $.clauseGovernance.compare.title, { a: first.version, b: second.version })
+    : "";
   return <div className="space-y-4 pt-4">
     <Card><CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0"><CardTitle>{t(($) => $.clauseGovernance.detail.versions)}</CardTitle>
-      {versions.length > 1 ? <div className="flex flex-wrap items-center gap-2"><label className="text-caption">{t(($) => $.clauseGovernance.version.compare)} <select className="h-8 rounded-md border bg-background px-2" value={compareA} onChange={(event) => setCompareA(event.target.value)}><option value="">—</option>{versions.map((v) => <option key={v.version} value={v.version}>V{v.version}</option>)}</select></label><span>↔</span><label className="sr-only" htmlFor="clause-version-compare-b">{t(($) => $.clauseGovernance.version.compare)}</label><select id="clause-version-compare-b" className="h-8 rounded-md border bg-background px-2" value={compareB} onChange={(event) => setCompareB(event.target.value)}><option value="">—</option>{versions.map((v) => <option key={v.version} value={v.version}>V{v.version}</option>)}</select></div> : null}
+      {versions.length > 1 ? <div className="flex flex-wrap items-center gap-2"><label className="text-caption">{t(($) => $.clauseGovernance.version.compare)} <select className="h-8 rounded-md border bg-background px-2" value={compareA} onChange={(event) => { setCompareA(event.target.value); setComparisonOpen(false); }}><option value="">—</option>{versions.map((v) => <option key={v.version} value={v.version}>V{v.version}</option>)}</select></label><span aria-hidden>↔</span><label className="sr-only" htmlFor="clause-version-compare-b">{t(($) => $.clauseGovernance.version.compare)}</label><select id="clause-version-compare-b" className="h-8 rounded-md border bg-background px-2" value={compareB} onChange={(event) => { setCompareB(event.target.value); setComparisonOpen(false); }}><option value="">—</option>{versions.map((v) => <option key={v.version} value={v.version}>V{v.version}</option>)}</select><Button size="sm" variant="outline" disabled={diff === null} onClick={() => setComparisonOpen(true)}>{t(($) => $.clauseGovernance.version.compare)}</Button></div> : null}
     </CardHeader><CardContent className="space-y-4">
-      {diff && first && second ? <section className="space-y-2 rounded-md border p-3" aria-label={t(($) => $.clauseGovernance.compare.title, { a: first.version, b: second.version })}>
-        <h3 className="font-medium">{t(($) => $.clauseGovernance.compare.title, { a: first.version, b: second.version })}</h3>
-        {[first, second].map((version) => { const runs = versionRuns(version.version); return <p key={version.version} className="text-caption text-muted-foreground">V{version.version} · {t(($) => $.clauseGovernance.compare.windowRuns, { count: runs })}{runs < 30 ? <Badge className="ml-2 border-transparent bg-warning/10 text-warning dark:bg-warning/20">{t(($) => $.clauseGovernance.compare.sampleInsufficient)}</Badge> : null}</p>; })}
-        <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 font-mono text-caption">{diff.lines.map((line, index) => <span key={`${index}-${line.kind}`} className={line.kind === "added" ? "block bg-success/10 dark:bg-success/15" : line.kind === "removed" ? "block bg-destructive/10 dark:bg-destructive/15" : "block"}>{line.kind === "added" ? "+ " : line.kind === "removed" ? "− " : "  "}{line.text}{"\n"}</span>)}</pre>
-      </section> : null}
       <ol className="space-y-4">{[...versions].sort((a, b) => b.version - a.version).map((version, index) => <li key={version.version} className="relative border-l pl-5">
         {index < versions.length - 1 ? <span aria-hidden className="absolute -left-px top-3 h-full border-l" /> : null}
         <span aria-hidden className="absolute -left-[5px] top-1 size-2.5 rounded-full bg-primary" />
@@ -445,6 +459,30 @@ function VersionsPanel({ versions, quality }: { versions: ClauseGovernanceVersio
         <details className="mt-2 rounded-md border p-3"><summary className="cursor-pointer text-body">{t(($) => $.clauseGovernance.version.showContent)}</summary><pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-caption">{version.content}</pre></details>
       </li>)}</ol>
     </CardContent></Card>
+    {diff && first && second ? <Dialog open={comparisonOpen} onOpenChange={setComparisonOpen}>
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-5xl">
+        <DialogHeader><DialogTitle>{comparisonTitle}</DialogTitle></DialogHeader>
+        <table className="w-full text-body" aria-label={comparisonTitle}>
+          <thead><tr className="border-b text-left text-caption text-muted-foreground"><th scope="col" className="px-3 py-2">{t(($) => $.clauseGovernance.detail.versions)}</th><th scope="col" className="px-3 py-2">{t(($) => $.clauseGovernance.compare.attributableRuns)}</th><th scope="col" className="px-3 py-2">{t(($) => $.clauseGovernance.quality.colFailed)}</th><th scope="col" className="px-3 py-2">{t(($) => $.clauseGovernance.quality.colTokens)}</th></tr></thead>
+          <tbody>{[first, second].map((version) => {
+            const runs = versionRuns(version.version);
+            const tokens = versionTokens(version.version);
+            return <tr key={version.version} className="border-b">
+              <th scope="row" className="px-3 py-2 font-medium">V{version.version}</th>
+              <td className="px-3 py-2">{numberLabel(runs)}{runs < 30 ? <Badge className="ml-2 border-transparent bg-warning/10 text-warning dark:bg-warning/20">{t(($) => $.clauseGovernance.compare.sampleInsufficient)}</Badge> : null}</td>
+              <td className="px-3 py-2">{numberLabel(versionFailures(version.version))}</td>
+              <td className="px-3 py-2">{tokens == null ? t(($) => $.clauseGovernance.quality.unmeasured) : numberLabel(tokens)}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+        <div className="grid min-w-0 gap-3 lg:grid-cols-2">
+          {[{ version: first, lines: diff.lines.filter((line) => line.kind !== "added") }, { version: second, lines: diff.lines.filter((line) => line.kind !== "removed") }].map(({ version, lines }) => <section key={version.version} className="min-w-0 space-y-2" aria-label={t(($) => $.quality.timeline.version, { version: version.version })}>
+            <h3 className="font-medium">{t(($) => $.quality.timeline.version, { version: version.version })}</h3>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 font-mono text-caption">{lines.map((line, index) => <span key={`${index}-${line.kind}`} className={line.kind === "added" ? "block bg-success/10 dark:bg-success/15" : line.kind === "removed" ? "block bg-destructive/10 dark:bg-destructive/15" : "block"}>{line.kind === "added" ? "+ " : line.kind === "removed" ? "− " : "  "}{line.text}{"\n"}</span>)}</pre>
+          </section>)}
+        </div>
+      </DialogContent>
+    </Dialog> : null}
   </div>;
 }
 
@@ -461,7 +499,7 @@ function ProposalsPanel({ proposals, paths }: { proposals: ClauseGovernanceDetai
   const { t } = useT("self-evolution");
   return <Card className="mt-4"><CardContent className="space-y-3 pt-4">
     {proposals.length === 0 ? <p className="text-body text-muted-foreground">{t(($) => $.clauseGovernance.proposals.empty)}</p> : proposals.map((proposal) => <details key={proposal.id} className="rounded-md border p-3">
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2"><Badge variant="outline">{enumLabel(proposal.change_kind, ["add_clause", "remove_clause"], (key) => t(($) => $.legislation.changeKind[key]))}</Badge><span className="font-medium">{proposal.clause_name}</span><Badge variant="secondary">{enumLabel(proposal.status, ["draft", "pending_owner", "approved", "enacted", "gate_failed", "rejected"], (key) => t(($) => $.legislation.status[key]))}</Badge>{proposal.enacted_version !== undefined ? <span>→ V{proposal.enacted_version}</span> : null}{proposal.rollback_of_version !== undefined ? <Badge className="border-transparent bg-warning/10 text-warning dark:bg-warning/20">{t(($) => $.clauseGovernance.rollback.rollbackTo, { version: proposal.rollback_of_version })}</Badge> : null}<span className="ml-auto text-caption text-muted-foreground">{new Date(proposal.created_at).toLocaleString()}</span></summary>
+      <summary className="flex cursor-pointer flex-wrap items-center gap-2"><Badge variant="outline">{enumLabel(proposal.change_kind, ["add_clause", "remove_clause"], (key) => t(($) => $.legislation.changeKind[key]))}</Badge><span className="font-medium">{proposal.clause_name}</span><Badge variant="secondary">{enumLabel(proposal.status, ["draft", "pending_owner", "approved", "enacted", "gate_failed", "rejected"], (key) => t(($) => $.legislation.status[key]))}</Badge>{proposal.enacted_version !== undefined ? <span>{t(($) => $.quality.timeline.version, { version: proposal.enacted_version })}</span> : null}{proposal.rollback_of_version !== undefined ? <Badge className="border-transparent bg-warning/10 text-warning dark:bg-warning/20">{t(($) => $.clauseGovernance.rollback.rollbackTo, { version: proposal.rollback_of_version })}</Badge> : null}<span className="ml-auto text-caption text-muted-foreground">{new Date(proposal.created_at).toLocaleString()}</span></summary>
       <dl className="mt-3 grid gap-2 text-body sm:grid-cols-2">{(["layer", "retention", "cost", "conflict", "dedup"] as const).map((gate) => <div key={gate}><dt className="text-caption text-muted-foreground">{t(($) => $.clauseGovernance.proposals.gates[gate])}</dt><dd className="line-clamp-2">{proposal[`gate_answer_${gate}`]}</dd></div>)}</dl>
     </details>)}
     <AppLink href={paths.selfEvolutionProposals()} className="inline-block text-primary hover:underline">{t(($) => $.clauseGovernance.rollback.viewProposal)}</AppLink>
@@ -486,7 +524,7 @@ function QualityPanel({ quality, days }: { quality: ClauseGovernanceQualityDay[]
             <YAxis yAxisId="runs" tickLine={false} axisLine={false} width={32} />
             <YAxis yAxisId="tokens" orientation="right" tickLine={false} axisLine={false} width={32} />
             <ChartTooltip content={<ChartTooltipContent labelFormatter={(label) => String(label)} />} />
-            {rows.map((row, index) => index > 0 && rows[index - 1].clause_version !== row.clause_version
+            {rows.map((row, index) => index > 0 && rows[index - 1]?.clause_version !== row.clause_version
               ? <ReferenceLine key={`${row.day}-${row.clause_version}`} x={row.day} stroke="var(--border)" label={`V${row.clause_version}`} />
               : null)}
             <Line yAxisId="runs" dataKey="finished_runs" stroke="var(--color-finished_runs)" strokeWidth={2} dot={false} isAnimationActive={false} />
