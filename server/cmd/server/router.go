@@ -2043,8 +2043,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
 				// Voice provider pool (RUYI-693): the listing is
-				// member-visible — the settings page renders the pool for
-				// everyone — while pool writes are workspace-admin state,
+				// member-visible — the pool feeds the availability gate
+				// and the agent override picker, which render for every
+				// member — while pool writes are workspace-admin state,
 				// the same split as the workspace settings themselves.
 				r.Route("/voice-providers", func(r chi.Router) {
 					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
