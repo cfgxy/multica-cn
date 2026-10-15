@@ -5328,8 +5328,19 @@ export const ClauseGovernanceOverviewSchema = z.object({
   dynamic_injection_disabled: z.boolean().default(false),
   clauses: z.array(ClauseGovernanceClauseSchema).default([]),
   status_counts: z.record(z.string(), z.number()).default({}),
-  totals: ClauseGovernanceTotalsSchema.default({}),
-  migration: ClauseGovernanceMigrationSchema.default({}),
+  totals: ClauseGovernanceTotalsSchema.default({
+    injections: 0,
+    runs: 0,
+    degraded_rows: 0,
+    degraded_runs: 0,
+    clause_tokens: 0,
+  }),
+  migration: ClauseGovernanceMigrationSchema.default({
+    total_carriers: 0,
+    bound_carriers: 0,
+    by_scope: {},
+    by_scope_total: {},
+  }),
   rollback_suggestions: z.array(PromptProposalSchema).default([]),
 }).loose();
 
@@ -5430,7 +5441,13 @@ export const ClauseGovernanceReconciliationSchema = z.object({
   since: z.string().default(""),
   healthy: z.boolean().default(false),
   layer_set_violations: z.array(ClauseLayerSetViolationSchema).default([]),
-  totals: ClauseGovernanceTotalsSchema.default({}),
+  totals: ClauseGovernanceTotalsSchema.default({
+    injections: 0,
+    runs: 0,
+    degraded_rows: 0,
+    degraded_runs: 0,
+    clause_tokens: 0,
+  }),
   drift: z.array(ClauseDriftCarrierSchema).default([]),
   carriers_scanned: z.number().default(0),
 }).loose();
