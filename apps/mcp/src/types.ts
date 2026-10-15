@@ -538,6 +538,11 @@ export interface ExecutionProfileInfo {
   revision: number;
 }
 
+export interface ExecutionProfileListResponse {
+  execution_profiles: ExecutionProfileInfo[];
+  active_execution_profile_id: string | null;
+}
+
 export interface CreateExecutionProfileBody {
   name: string;
   description?: string;

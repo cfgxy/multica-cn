@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import React from "react";
-import { render, waitFor, within } from "@testing-library/react-native";
+import { fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
@@ -26,10 +26,20 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
  */
 
 jest.mock("react-native-enriched-markdown", () => ({
-  EnrichedMarkdownText: ({ markdown }: { markdown: string }) => {
+  EnrichedMarkdownText: ({
+    markdown,
+    onLinkPress,
+  }: {
+    markdown: string;
+    onLinkPress?: (event: { url: string }) => void;
+  }) => {
     const { createElement } = jest.requireActual("react");
     const { Text: RNText } = jest.requireActual("react-native");
-    return createElement(RNText, null, markdown);
+    return createElement(
+      RNText,
+      { onPress: () => onLinkPress?.({ url: "mention://merge-request/123" }) },
+      markdown,
+    );
   },
 }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
@@ -114,6 +124,16 @@ async function renderWithClient(ui: React.ReactElement) {
 
 describe("mobile markdown issue-reference gate (RUYI-705 rework)", () => {
   beforeEach(resetStore);
+
+  it("does not look up merge requests without a workspace id", async () => {
+    jest.spyOn(api, "listWorkspaces").mockResolvedValue([]);
+    const lookup = jest.spyOn(api, "lookupPullRequestByNumber");
+    const utils = await renderWithClient(<Markdown content="MR-TEST" />);
+
+    fireEvent.press(utils.getByText("MR-TEST"));
+
+    expect(lookup).not.toHaveBeenCalled();
+  });
 
   it("gates bare identifiers while the id mirror lags but the route slug is known", async () => {
     // QA failure mode: restoreSlug() has restored the slug but the layout

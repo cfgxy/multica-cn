@@ -377,6 +377,13 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
+        <Stack.Screen
+          name="issue/[id]/relations"
+          options={{
+            title: i18n.t("issues:detail.section_relations", "Relations"),
+            presentation: "modal",
+          }}
+        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"

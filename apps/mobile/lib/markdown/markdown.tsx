@@ -41,7 +41,7 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
@@ -53,7 +53,9 @@ import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { openExternalUrl } from "@/lib/pull-request-link";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { preprocessMobileMarkdown } from "./preprocess";
@@ -128,6 +130,14 @@ export function Markdown({
   compact = false,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const workspacePrefix = useWorkspaceIssuePrefix();
+  useEffect(() => {
+    console.info(
+      "[markdown] issue-reference gate",
+      JSON.stringify({ slug: wsSlug, workspacePrefix }),
+    );
+  }, [wsSlug, workspacePrefix]);
   // 评论锚点的落地方（RUYI-108）。issue 时间线挂 provider；其余渲染场景
   // 拿到的是 no-op 实现，点击安静无事发生。
   const commentAnchor = useCommentAnchor();
@@ -159,8 +169,11 @@ export function Markdown({
   // same tokens from the same source. Raw-dedup keeps first occurrences;
   // cross-form collapse by resolved issue id happens in IssueReferenceList.
   const issueReferences = useMemo(
-    () => dedupeIssueReferences(extractIssueReferences(content)),
-    [content],
+    () =>
+      dedupeIssueReferences(
+        extractIssueReferences(content, { workspacePrefix }),
+      ),
+    [content, workspacePrefix],
   );
 
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
@@ -189,6 +202,15 @@ export function Markdown({
             fallbackUrl: action.fallbackUrl,
           });
           return;
+        case "mergeRequest":
+          if (!wsId) return;
+          void api
+            .lookupPullRequestByNumber(wsId, action.number)
+            .then((pr) => {
+              if (pr) void openExternalUrl(pr.html_url, Linking);
+            })
+            .catch(() => {});
+          return;
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
           // keeps a stray tap from crashing the screen. Silent: failing
@@ -199,7 +221,7 @@ export function Markdown({
           return;
       }
     },
-    [wsSlug, commentAnchor],
+    [wsSlug, commentAnchor, wsId],
   );
 
   if (segments.length === 0) return null;
