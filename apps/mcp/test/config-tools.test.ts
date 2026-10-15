@@ -134,7 +134,7 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
     initiateModelList: async () => catalogFixture(),
     getModelListRequest: async (_ws: string, _rt: string, requestId: string) =>
       catalogFixture({ id: requestId }),
-    listExecutionProfiles: async () => [profileFixture({ is_active: true, name: "active-one" })],
+    listExecutionProfiles: async () => [profileFixture({ is_active: true, name: "active-one", entries: [] })],
     getExecutionProfile: async (_wsId: string, profileId: string) => profileFixture({ id: profileId }),
     createExecutionProfile: async (_wsId: string, body: Record<string, unknown>) =>
       profileFixture({ id: "p-new", name: String(body.name), revision: 1, entries: [], entry_count: 0 }),
@@ -637,7 +637,7 @@ describe("apply_execution_profile squad mapping", () => {
 
 describe("get_execution_topology", () => {
   it("composes runtimes, bindings, daemon groups, active profile and drift", async () => {
-    const { result } = await call("get_execution_topology", {});
+    const { result, calls } = await call("get_execution_topology", {});
     const runtimes = result.runtimes as Array<Record<string, unknown>>;
     expect(runtimes).toHaveLength(3);
     const rt1 = runtimes.find((rt) => rt.id === "rt-1");
@@ -647,10 +647,13 @@ describe("get_execution_topology", () => {
     const agents = (rt1?.agents as Array<Record<string, unknown>>);
     const a1 = agents.find((agent) => agent.id === A1);
     const a2 = agents.find((agent) => agent.id === A2);
-    // a1 matches its entry (rt-1 + claude-opus-5) → false = no drift;
+    // a1 matches its detail entry (rt-1 + claude-opus-5) → no drift;
     // a2 has no entry in the active profile → null = unjudged.
-    expect(a1?.active_profile_entry_matches).toBe(false);
+    expect(a1?.active_profile_entry_matches).toBe(true);
+    expect(a1?.is_drifted).toBe(false);
     expect(a2?.active_profile_entry_matches).toBeNull();
+    expect(a2?.is_drifted).toBeNull();
+    expect(calls.some((call) => call.method === "getExecutionProfile")).toBe(true);
     expect(result.drift_summary).toMatchObject({ drifted_agent_count: 0 });
     expect((result.unbound_agents as unknown[]).length).toBe(2);
   });
@@ -660,6 +663,19 @@ describe("get_execution_topology", () => {
       listAgentConfigs: async () => [agentFixture({ model: "claude-sonnet-5" })],
     });
     expect(result.drift_summary).toMatchObject({ active_profile_id: "p1", drifted_agent_count: 1 });
+  });
+
+  it("degrades to unknown drift when the active profile disappears before detail loads", async () => {
+    const { result } = await call("get_execution_topology", {}, {
+      getExecutionProfile: async () => {
+        throw apiError(404, { error: "not found" });
+      },
+    });
+    const runtimes = result.runtimes as Array<Record<string, unknown>>;
+    const rt1 = runtimes.find((rt) => rt.id === "rt-1");
+    const a1 = (rt1?.agents as Array<Record<string, unknown>>).find((agent) => agent.id === A1);
+    expect(a1?.is_drifted).toBeNull();
+    expect(result.drift_summary).toMatchObject({ drifted_agent_count: 0 });
   });
 
   it("reports no-drift cleanly when no profile is active", async () => {

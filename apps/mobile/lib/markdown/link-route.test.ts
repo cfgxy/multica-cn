@@ -41,6 +41,32 @@ describe("resolveLinkAction", () => {
     });
   });
 
+  it("merge request mention resolves its number without a workspace slug", () => {
+    expect(resolveLinkAction("mention://merge-request/468", null)).toEqual({
+      kind: "mergeRequest",
+      number: 468,
+    });
+    expect(resolveLinkAction("mention://merge-request/468", "ws")).toEqual({
+      kind: "mergeRequest",
+      number: 468,
+    });
+  });
+
+  it("ignores malformed merge request numbers", () => {
+    for (const url of [
+      "mention://merge-request/abc",
+      "mention://merge-request/0",
+      "mention://merge-request/-3",
+      "mention://merge-request/4.5",
+      "mention://merge-request/1e2",
+      "mention://merge-request/0x10",
+      "mention://merge-request/+3",
+      "mention://merge-request/9007199254740992",
+    ]) {
+      expect(resolveLinkAction(url, "ws")).toEqual({ kind: "noop" });
+    }
+  });
+
   it("没有详情页的 mention 类型静默忽略，绝不交给系统", () => {
     for (const url of [
       "mention://member/m1",

@@ -448,3 +448,32 @@ describe("project resource client methods", () => {
     expect(calls[0]?.url.pathname).toBe("/api/projects/p%2F1/resources");
   });
 });
+
+describe("execution profile list response", () => {
+  it("unwraps the API envelope and preserves profile entries", async () => {
+    const calls: CapturedCall[] = [];
+    const profile = {
+      id: "p1",
+      name: "Default",
+      is_active: true,
+      entry_count: 1,
+      entries: [
+        { agent_id: "a1", runtime_id: "r1", model: "claude-sonnet-5" },
+      ],
+      revision: 2,
+    };
+    const client = makeClient(
+      makeFetch(
+        200,
+        {
+          execution_profiles: [profile],
+          active_execution_profile_id: "p1",
+        },
+        calls,
+      ),
+    );
+
+    await expect(client.listExecutionProfiles("ws-1")).resolves.toEqual([profile]);
+    expect(calls[0]?.url.pathname).toBe("/api/workspaces/ws-1/execution-profiles");
+  });
+});

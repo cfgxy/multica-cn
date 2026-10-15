@@ -86,6 +86,7 @@ import type {
   CommentInfo,
   CreateProjectResourceBody,
   DecisionCardInfo,
+  ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
   IssueInfo,
   ModelEntryInfo,
@@ -3575,7 +3576,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         client.listExecutionProfiles(workspaceId),
       ]);
       const active = profiles.find((profile) => profile.is_active) ?? null;
-      const activeEntries = new Map(active?.entries.map((entry) => [entry.agent_id, entry]) ?? []);
+      let activeEntries = new Map<string, ExecutionProfileEntryInfo>();
+      if (active !== null) {
+        try {
+          const detail = await client.getExecutionProfile(workspaceId, active.id);
+          activeEntries = new Map(detail.entries.map((entry) => [entry.agent_id, entry]));
+        } catch (error) {
+          if (!(error instanceof MulticaApiError && error.status === 404)) throw error;
+        }
+      }
 
       const liveAgents = agents.filter((agent) => agent.archived_at === undefined || agent.archived_at === null);
       const topologyRuntimes = runtimes.map((runtime) => {
@@ -3590,7 +3599,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
               : null;
             return {
               ...agentConfigBrief(agent),
-              active_profile_entry_matches: drift,
+              active_profile_entry_matches: drift === null ? null : !drift,
+              is_drifted: drift,
             };
           }),
         };

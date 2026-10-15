@@ -42,6 +42,7 @@ import {
   type TimelineListHandle,
 } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
+import { IssueMenuFieldItems } from "@/components/issue/issue-menu-field-items";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
 import {
   issueDetailOptions,
@@ -146,8 +147,8 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web /
-  // Related PRs / Delete.
+  // Three-dot menu: quick fields / Pin/Unpin / Edit details / copy /
+  // Related PRs / Relations / Delete.
   // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
   const issueLink = issue && wsSlug
     ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
@@ -182,6 +183,11 @@ export default function IssueDetail() {
   const onOpenPullRequests = useCallback(() => {
     if (wsSlug && issue) {
       router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
+    }
+  }, [wsSlug, issue]);
+  const onOpenRelations = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/relations`);
     }
   }, [wsSlug, issue]);
   // Quick property setters (RUYI-129). The header menu reuses the very
@@ -284,61 +290,49 @@ export default function IssueDetail() {
                         />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
-                        {/* Quick property setters first — they're the
-                         *  frequent actions, and the group ordering
-                         *  mirrors web's menu (status / priority /
-                         *  assignee ahead of the pin / copy / delete
-                         *  block). */}
-                        <DropdownMenuItem
-                          onPress={() => openPicker("assignee")}
-                        >
-                          <Text>{t("actions.assignee", "Assignee")}</Text>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onPress={() => openPicker("status")}>
-                          <Text>{t("actions.status", "Status")}</Text>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onPress={() => openPicker("project")}>
-                          <Text>{t("detail.prop_project", "Project")}</Text>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onPress={() => openPicker("priority")}
-                        >
-                          <Text>{t("actions.priority", "Priority")}</Text>
-                        </DropdownMenuItem>
+                        <IssueMenuFieldItems
+                          issue={issue}
+                          onOpenPicker={openPicker}
+                        />
                         <DropdownMenuSeparator />
                         <DropdownMenuItem onPress={onTogglePin}>
-                          <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
+                          <Text className="flex-1">{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onEditDetails}>
-                          <Text>
+                          <Text className="flex-1">
                             {t("mobile.detail.edit_details", "Edit details")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyTitle}>
-                          <Text>{t("mobile.detail.copy_title", "Copy title")}</Text>
+                          <Text className="flex-1">{t("mobile.detail.copy_title", "Copy title")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyDescription}>
-                          <Text>{t("mobile.detail.copy_description", "Copy description")}</Text>
+                          <Text className="flex-1">{t("mobile.detail.copy_description", "Copy description")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyLink}>
-                          <Text>{t("actions.copy_link", "Copy link")}</Text>
+                          <Text className="flex-1">{t("actions.copy_link", "Copy link")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenOnWeb}>
-                          <Text>
+                          <Text className="flex-1">
                             {t("mobile.detail.open_on_web", "Open on web")}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenPullRequests}>
-                          <Text>
+                          <Text className="flex-1">
                             {t(
                               "detail.section_pull_requests",
                               "Pull requests",
                             )}
                           </Text>
                         </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenRelations}>
+                          <Text className="flex-1">
+                            {t("detail.section_relations", "Relations")}
+                          </Text>
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem variant="destructive" onPress={onDelete}>
-                          <Text>{t("actions.delete_issue", "Delete issue")}</Text>
+                          <Text className="flex-1">{t("actions.delete_issue", "Delete issue")}</Text>
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
