@@ -622,6 +622,10 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("settings:page.tabs.notifications", "Notifications"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
         />
         <Stack.Screen
+          name="more/settings/voice"
+          options={{ title: i18n.t("settings:page.tabs.voice", "Voice"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
+        />
+        <Stack.Screen
           name="new-issue"
           options={{
             title: i18n.t("modals:create_issue.sr_manual", "New Issue"),

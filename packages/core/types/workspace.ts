@@ -155,3 +155,59 @@ export interface ShareLinkInfo {
   creator_name?: string;
   role: MemberRole;
 }
+
+// ---------------------------------------------------------------------------
+// Voice provider pool (RUYI-693 D2). The workspace-level pool of voice
+// suppliers the binding-free resolution chain reads. No secret material ever
+// round-trips: the key enters through the credential PUT (which probes on
+// save) and is only ever read back as the coarse status badge.
+// ---------------------------------------------------------------------------
+
+/** One chain level's provider pointer: which pool entry speaks and the
+ *  per-level model / advanced refinements around it. Same shape at the
+ *  workspace settings level (default / asr) and the agent override level. */
+export interface VoiceProviderRef {
+  provider_id: string;
+  model?: string;
+  advanced?: Record<string, unknown>;
+}
+
+/** The workspace.settings "voice" bag: the workspace-wide default triple and
+ *  the ASR configuration (workspace-level only — there is deliberately no
+ *  agent-level ASR override). Absent keys mean "not configured". */
+export interface WorkspaceVoiceSettings {
+  default?: VoiceProviderRef | null;
+  asr?: VoiceProviderRef | null;
+}
+
+/** Coarse credential state: nothing stored / pointer without a secret row /
+ *  usable key. The plaintext never surfaces. */
+export type VoiceProviderCredentialStatus =
+  | "not_configured"
+  | "missing"
+  | "configured";
+
+/** Server-side connectivity probe verdict (保存即探针). "unreachable" never
+ *  gates a session start — only missing/invalid does. */
+export interface VoiceProviderProbe {
+  status: "ok" | "invalid" | "unreachable" | "skipped";
+  http_status?: number;
+  checked_at: string;
+}
+
+/** Pool row of `GET /api/workspaces/{id}/voice-providers`. Mirrors the
+ *  server VoiceProviderResponse — mobile keeps its own mirrored copy per
+ *  the mirror-don't-import rule. */
+export interface VoiceProvider {
+  id: string;
+  workspace_id: string;
+  display_name: string;
+  provider_type: string;
+  enabled: boolean;
+  credential_status: VoiceProviderCredentialStatus;
+  credential_probe?: VoiceProviderProbe | null;
+  /** Set when the row was migrated from a legacy voice runtime instance. */
+  source_runtime_id?: string;
+  created_at: string;
+  updated_at: string;
+}

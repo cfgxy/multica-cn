@@ -79,10 +79,10 @@ func ValidScope(s string) bool {
 // prompt_proposal rows and keeps the engine free of any DB or handler
 // dependency (unit-testable in isolation).
 type ProposalInput struct {
-	ChangeKind     string // add_clause | revise_clause | remove_clause
-	ClauseName     string
-	ClauseText     string
-	TargetSection  string
+	ChangeKind    string // add_clause | revise_clause | remove_clause
+	ClauseName    string
+	ClauseText    string
+	TargetSection string
 	GateAnswerLayer,
 	GateAnswerRetention,
 	GateAnswerCost,
@@ -230,9 +230,90 @@ func Synthesize(current string, p ProposalInput) (string, error) {
 		return synthesizeRevise(current, p, name)
 	case "add_clause":
 		return synthesizeAdd(current, p, name)
+	case "migrate_clause":
+		return synthesizeMigrate(current, p, name)
 	default:
 		return "", fmt.Errorf("未知变更类型 %q", p.ChangeKind)
 	}
+}
+
+// synthesizeMigrate implements migrate_clause: adopting an existing rule
+// block as a clause asset (ADR 007 §8 存量迁移). The block is located by
+// its bold label and removed from the stable context in place; the removed
+// text must match the proposal's clause_text byte-for-byte, so the
+// inventory drift check runs again inside the enact gate (fail-closed —
+// a stale migration inventory cannot silently enact different text).
+func synthesizeMigrate(current string, p ProposalInput, name string) (string, error) {
+	if t := firstClauseName(p.ClauseText); t != "" && !clauseNamesEqual(t, name) {
+		return "", fmt.Errorf("条款文本首行标签「%s」与条款名「%s」不一致", t, name)
+	}
+	if strings.TrimSpace(p.ClauseText) == "" {
+		return "", fmt.Errorf("迁移条款的条款文本为空")
+	}
+	lines := splitLines(current)
+	s, e := clauseSpan(lines, name)
+	if s < 0 {
+		return "", fmt.Errorf("条款「%s」在当前内容中不存在，无法迁移", name)
+	}
+	// clauseSpan keeps trailing blank lines inside the span (the block ends
+	// at the next clause line, heading, or EOF); normalize them away so the
+	// comparison is about the rule text itself.
+	existing := strings.TrimRight(strings.Join(lines[s:e], "\n"), "\n")
+	if existing != strings.TrimRight(p.ClauseText, "\n") {
+		return "", fmt.Errorf("清单漂移：条款「%s」的现行正文与清单正文不一致，请先跑漂移核对并更新清单再提交", name)
+	}
+	out := append(lines[:s:s], lines[e:]...)
+	return strings.Join(out, "\n"), nil
+}
+
+// RestoreBlockToSection reinserts a clause block into a carrier document —
+// the rollback primitive for legacy migration batches (ADR 007 §8 彻底回退:
+// after a withdrawn batch the rule text must be back in the stable context
+// and injection behavior back to pre-migration). The block lands at the end
+// of the named section, or the document tail when section is empty — the
+// same placement synthesizeAdd uses, so the result is deterministic.
+func RestoreBlockToSection(text, section, block string) (string, error) {
+	block = strings.TrimRight(block, "\n")
+	if strings.TrimSpace(block) == "" {
+		return "", fmt.Errorf("恢复的条款块为空")
+	}
+	if section != "" {
+		lines := splitLines(text)
+		s, e := sectionSpan(lines, section)
+		if s < 0 {
+			return "", fmt.Errorf("目标章节「%s」在当前内容中不存在", section)
+		}
+		return strings.Join(insertBlock(lines, e, block), "\n"), nil
+	}
+	out := append(splitLines(strings.TrimRight(text, "\n")), "", block)
+	return strings.Join(out, "\n"), nil
+}
+
+// CountClauseBlocks counts bold-label clause blocks carrying the given
+// name. The migration tooling's drift check uses it to refuse duplicates —
+// a repeated label makes first-match migration semantics unsafe.
+func CountClauseBlocks(text, name string) int {
+	n := 0
+	target := normalizeClauseName(name)
+	for _, line := range splitLines(text) {
+		if m := clauseStartName(line); m != "" && clauseNamesEqual(m, target) {
+			n++
+		}
+	}
+	return n
+}
+
+// FindClauseBlock returns the text of the named clause block (first
+// bold-label match, same span rules as every synthesize step), or "" when
+// the label is absent. Read-only companion to synthesizeMigrate: the
+// migration tooling's drift check compares it against the inventory body.
+func FindClauseBlock(text, name string) string {
+	lines := splitLines(text)
+	s, e := clauseSpan(lines, normalizeClauseName(name))
+	if s < 0 {
+		return ""
+	}
+	return strings.TrimRight(strings.Join(lines[s:e], "\n"), "\n")
 }
 
 func synthesizeAdd(current string, p ProposalInput, name string) (string, error) {

@@ -171,7 +171,12 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 	out := clauseEnactOutcome{Affected: map[string]bool{}}
 
 	switch p.ChangeKind {
-	case "add_clause":
+	case "add_clause", "migrate_clause":
+		// migrate_clause (ADR 007 §8 存量迁移) shares the add_clause asset
+		// write: by the time the proposal reaches this switch its clause_text
+		// has been byte-verified against the carrier block by the gate
+		// (synthesizeMigrate), so adopting it as clause v1 content is exactly
+		// "the existing text becomes the asset".
 		slug, err := clausemark.NewSlug()
 		if err != nil {
 			return out, err

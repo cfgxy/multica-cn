@@ -338,6 +338,17 @@
     },
     "timeline": {
       "truncated": "…（已截断）"
+    },
+    "plus": {
+      "open": "添加",
+      "title": "添加内容",
+      "camera": "拍照",
+      "image": "图片",
+      "files": "文件",
+      "mention": "@提及",
+      "skill": "技能指令",
+      "quick_replies": "快捷回复",
+      "close": "关闭"
     }
   }
 }

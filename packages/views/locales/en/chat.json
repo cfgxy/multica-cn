@@ -342,6 +342,17 @@
     },
     "timeline": {
       "truncated": "…(truncated)"
+    },
+    "plus": {
+      "open": "Add",
+      "title": "Add to message",
+      "camera": "Camera",
+      "image": "Photos",
+      "files": "Files",
+      "mention": "Mention",
+      "skill": "Skill",
+      "quick_replies": "Quick replies",
+      "close": "Close"
     }
   }
 }

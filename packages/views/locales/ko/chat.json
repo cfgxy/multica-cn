@@ -338,6 +338,17 @@
     },
     "timeline": {
       "truncated": "…(잘림)"
+    },
+    "plus": {
+      "open": "추가",
+      "title": "메시지에 추가",
+      "camera": "카메라",
+      "image": "사진",
+      "files": "파일",
+      "mention": "멘션",
+      "skill": "스킬",
+      "quick_replies": "빠른 답변",
+      "close": "닫기"
     }
   }
 }
