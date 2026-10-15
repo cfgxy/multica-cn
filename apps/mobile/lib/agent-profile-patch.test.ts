@@ -48,6 +48,9 @@ function draft(overrides: Partial<Parameters<typeof buildProfilePatch>[1]> = {})
     maxContext: "200000",
     compactPct: "80",
     subagents: false,
+    voiceProviderId: "",
+    voiceModel: "",
+    voiceAdvanced: "",
     ...overrides,
   };
 }
@@ -121,5 +124,116 @@ describe("buildProfilePatch", () => {
   it("round-trips the subagents toggle through runtime_config", () => {
     const patch = buildProfilePatch(agent(), draft({ subagents: true }));
     expect(patch?.runtime_config).toBeDefined();
+  });
+
+  describe("voice provider override triple (RUYI-749 D1)", () => {
+    const bound = {
+      voice_provider_id: "p1",
+      voice_model: "m-1",
+      voice_advanced: { a: 1 },
+    } as Partial<Agent>;
+
+    it("emits an empty patch when the triple is untouched", () => {
+      expect(buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "p1",
+        voiceModel: "m-1",
+        voiceAdvanced: "{\n  \"a\": 1\n}",
+      }))).toEqual({});
+    });
+
+    it("binds a fresh override as one unit, carrying non-empty model/advanced drafts", () => {
+      const patch = buildProfilePatch(agent(), draft({
+        voiceProviderId: "p1",
+        voiceModel: "m-1",
+        voiceAdvanced: '{"a": 1}',
+      }));
+      expect(patch).toEqual({
+        voice_provider_id: "p1",
+        voice_model: "m-1",
+        voice_advanced: { a: 1 },
+      });
+    });
+
+    it("binds with only the provider when model/advanced drafts are empty", () => {
+      const patch = buildProfilePatch(agent(), draft({ voiceProviderId: "p1" }));
+      expect(patch).toEqual({ voice_provider_id: "p1" });
+    });
+
+    it("unbinds with voice_provider_id alone — model/advanced must not ride along", () => {
+      const patch = buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "",
+        voiceModel: "changed",
+        voiceAdvanced: '{"b": 2}',
+      }));
+      expect(patch).toEqual({ voice_provider_id: "" });
+    });
+
+    it("refines only the model when the provider is unchanged", () => {
+      const patch = buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "p1",
+        voiceModel: "m-2",
+        voiceAdvanced: '{\n  "a": 1\n}',
+      }));
+      expect(patch).toEqual({ voice_model: "m-2" });
+    });
+
+    it("clears the model with '' while the provider stays bound", () => {
+      const patch = buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "p1",
+        voiceModel: "",
+        voiceAdvanced: '{\n  "a": 1\n}',
+      }));
+      expect(patch).toEqual({ voice_model: "" });
+    });
+
+    it("refines only advanced when model is unchanged", () => {
+      const patch = buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "p1",
+        voiceModel: "m-1",
+        voiceAdvanced: '{"b": 2}',
+      }));
+      expect(patch).toEqual({ voice_advanced: { b: 2 } });
+    });
+
+    it("clears stored advanced with an explicit {} when the draft is emptied", () => {
+      const patch = buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "p1",
+        voiceModel: "m-1",
+        voiceAdvanced: "",
+      }));
+      expect(patch).toEqual({ voice_advanced: {} });
+    });
+
+    it("omits an invalid advanced draft instead of sending it (revert, not clamp)", () => {
+      const patch = buildProfilePatch(agent(bound), draft({
+        voiceProviderId: "p1",
+        voiceModel: "m-1",
+        voiceAdvanced: "{nope",
+      }));
+      expect(patch).toEqual({});
+    });
+
+    it("omits model/advanced edits when no provider is bound anywhere", () => {
+      // The UI disables these fields until a provider is picked; the builder
+      // holds the same invariant — a stray draft edit never leaks into a
+      // 400 ("set voice_provider_id first").
+      const patch = buildProfilePatch(agent(), draft({
+        voiceModel: "m-1",
+        voiceAdvanced: '{"a": 1}',
+      }));
+      expect(patch).toEqual({});
+    });
+
+    it("a runtime-less agent's voice-only save carries no runtime fields (P2-c)", () => {
+      // Save is not runtime-gated (P2-c): for an agent with no runtime the
+      // unchanged runtime/model drafts must stay pinned out of the patch so
+      // the server only sees the voice override.
+      const patch = buildProfilePatch(agent({ runtime_id: "", model: "" }), draft({
+        runtimeId: "",
+        model: "",
+        voiceProviderId: "p1",
+      }));
+      expect(patch).toEqual({ voice_provider_id: "p1" });
+    });
   });
 });

@@ -28,6 +28,10 @@ jest.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ dispatch: jest.fn() }),
 }));
 
+jest.mock("@/components/ui/sheet-header", () => ({
+  SheetHeader: ({ children }) => children,
+}));
+
 jest.mock("expo-router", () => ({
   router: { back: (...args) => mockBack(...args), push: jest.fn() },
   useLocalSearchParams: () => ({ id: "agent-1", workspace: "ws" }),

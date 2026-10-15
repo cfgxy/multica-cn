@@ -688,6 +688,19 @@ desktop_user_data_dir() {
 # The slot env file is generated wholesale from slots.json — no field is ever
 # inherited from a checkout's .env/.env.worktree, which is how the shared main
 # database used to leak into per-issue environments (RUYI-300).
+# Deterministic per-slot credential master key (RUYI-749 deploy material):
+# base64 of SHA-256 over the slot's own DB password — exactly the 32 bytes
+# secretbox.LoadKey demands for MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY.
+# Deriving it from the password keeps it stable for the slot's lifetime
+# (credentials encrypted at rest stay decryptable across env re-materials)
+# and distinct across slots. Dev-only material living beside the password
+# it derives from, in the same 600 file.
+slot_credential_key() {
+  local password="$1"
+  [ -n "$password" ] || return 1
+  SLOT_KEY_SEED="$password" node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.env.SLOT_KEY_SEED, "utf8").digest("base64"))'
+}
+
 generate_slot_env() {
   local password="$1"
   {
@@ -715,6 +728,11 @@ generate_slot_env() {
     # creator-only MCP Apps tab, which the composio_mcp_apps flag gates off by
     # default. Slots exist to run the E2E/dev surface, so the flag ships on.
     printf 'FF_COMPOSIO_MCP_APPS=true\n'
+    # Voice provider credential encryption (RUYI-749): without this the
+    # server fail-closes credential writes with 503 and pool rows stay
+    # "not configured" — the Web/Android voice management screens are dead
+    # on arrival without it.
+    printf 'MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=%s\n' "$(slot_credential_key "$password")"
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
 }
@@ -742,6 +760,18 @@ ensure_slot_env() {
   if ! grep -q '^FF_COMPOSIO_MCP_APPS=' "$SLOT_ENV_FILE"; then
     printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }FF_COMPOSIO_MCP_APPS"
+  fi
+  if ! grep -q '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$SLOT_ENV_FILE"; then
+    # Derived from the STORED password (RUYI-749) — the same value a fresh
+    # generation would produce for this slot, so pre-existing rows encrypted
+    # under it stay decryptable. A slot env without a password is already
+    # broken; skip the append rather than write a key over an empty seed.
+    if stored_password="$(env_file_field POSTGRES_PASSWORD)" && [ -n "$stored_password" ]; then
+      printf 'MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=%s\n' "$(slot_credential_key "$stored_password")" >> "$SLOT_ENV_FILE"
+      appended="${appended:+$appended }MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY"
+    else
+      warn "slot env $SLOT_ENV_FILE has no POSTGRES_PASSWORD to derive MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY from; credential writes will fail-closed until the env is repaired"
+    fi
   fi
   [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
