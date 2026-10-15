@@ -115,6 +115,13 @@ export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, CANCEL_UNCONFIRMED_AFTER_MS } from "
 export type { PromptProposal, PromptProposalDraftRequest, PromptProposalCarrierScope, PromptProposalChangeKind, LegislationGateFinding, PromptProposalMergeRef, LegislationDiffLine, PromptProposalPreview, PromptProposalBatchOutcome, RetrospectiveConfig, RetrospectiveRun, RetrospectiveConfigPatch, RetrospectiveRunDetail } from "./legislation";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type {
+  VoiceProvider,
+  VoiceProviderRef,
+  VoiceProviderCredentialStatus,
+  VoiceProviderProbe,
+  WorkspaceVoiceSettings,
+} from "./workspace";
+export type {
   MarketplaceItem,
   MarketplaceItemKind,
   MarketplacePlaceholder,

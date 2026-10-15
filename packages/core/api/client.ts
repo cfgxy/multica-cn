@@ -302,6 +302,7 @@ import type {
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
+  VoiceProvider,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
@@ -3580,6 +3581,88 @@ export class ApiClient {
       method: "PATCH",
       body: JSON.stringify(data),
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Voice provider pool (RUYI-693 D2). Reads are member-visible; writes are
+  // workspace-admin state, enforced server-side. No plaintext key ever
+  // round-trips: it enters through putVoiceProviderCredential (which probes
+  // on save) and is only ever read back as the coarse credential_status
+  // badge plus the last probe verdict.
+  // -------------------------------------------------------------------------
+
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
+
+  async createVoiceProvider(
+    workspaceId: string,
+    data: { display_name: string; provider_type: string },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+  }
+
+  async updateVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+    data: { display_name?: string; enabled?: boolean },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "PATCH", body: JSON.stringify(data) },
+    );
+  }
+
+  /** Delete unbinds rather than blocks: the server clears referencing agent
+   *  overrides and the workspace settings' voice refs in one transaction. */
+  async deleteVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ id: string; cleared_agents: number }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/voice-providers/${providerId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Stores/rotates the key and runs the server-side connectivity probe
+   *  (保存即探针); the response is the refreshed pool row. */
+  async putVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "PUT", body: JSON.stringify({ value }) },
+    );
+  }
+
+  async deleteVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Re-runs the server-side probe and records the outcome on the badge. */
+  async probeVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ voice_provider_id: string; probe: { status: string; http_status?: number; checked_at: string } }> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credential-probe`,
+      { method: "POST" },
+    );
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {

@@ -42,6 +42,7 @@ import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { agentDetailOptions } from "@/data/queries/agents";
+import { type AgentWithVoiceOverride } from "@/data/voice-providers";
 import { useUpdateAgent } from "@/data/mutations/agents";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
@@ -97,6 +98,14 @@ export default function EditAgentProfile() {
           agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT,
         ),
         subagents: allowsSubagents(agent.runtime_config),
+        // The voice triple isn't edited here (it lives in run-config);
+        // pin it to the saved Agent so the split editors never clobber
+        // each other's fields.
+        voiceProviderId: (agent as AgentWithVoiceOverride).voice_provider_id ?? "",
+        voiceModel: (agent as AgentWithVoiceOverride).voice_model ?? "",
+        voiceAdvanced: (agent as AgentWithVoiceOverride).voice_advanced
+          ? JSON.stringify((agent as AgentWithVoiceOverride).voice_advanced, null, 2)
+          : "",
       })
     : null;
   const dirty = !!patch && Object.keys(patch).length > 0;
