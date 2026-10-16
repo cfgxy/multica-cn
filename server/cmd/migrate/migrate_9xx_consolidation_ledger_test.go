@@ -154,6 +154,7 @@ var postConsolidationStems = []string{
 	"973_mcp_invocation_audit_invocation_id_index",
 	"973_mcp_invocation_audit_outbox_expiry_index",
 	"973_mcp_invocation_audit_outbox_id_index",
+	"974_chat_session_model_override", // RUYI-796
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
