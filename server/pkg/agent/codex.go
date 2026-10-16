@@ -1660,6 +1660,11 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				lastSemanticActivity = time.Now()
 				lastSemanticActivityDescription = activity
 				resetTimer(semanticTimer, semanticInactivityTimeout)
+				if isCodexFirstTurnProgressActivity(activity) && reconnectTimer != nil {
+					stopTimer(reconnectTimer)
+					reconnectTimer = nil
+					reconnectTimerC = nil
+				}
 				if activity == "error:retry" && reconnectTimer == nil {
 					reconnectTimer = time.NewTimer(codexReconnectWindow())
 					reconnectTimerC = reconnectTimer.C
