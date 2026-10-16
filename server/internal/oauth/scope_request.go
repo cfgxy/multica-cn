@@ -176,6 +176,14 @@ func ScopeForRequest(method, path string) ScopeRequirement {
 		return ScopeUnknown
 	}
 	rest := segments[1:]
+	// The MCP service records a read-only tool call as an audit side effect.
+	// The private service credential gates these writes; the caller's OAuth
+	// scope still reflects the tool's business-data authority, so read-scoped
+	// tokens can record read-tool invocations.
+	if method == "POST" && (matchSegments([]string{"mcp", "audit-start"}, rest) ||
+		matchSegments([]string{"mcp", "audit-finish"}, rest)) {
+		return ScopeNeedRead
+	}
 
 	if method == "POST" {
 		for _, shape := range runShapes {

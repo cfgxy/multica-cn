@@ -12,21 +12,143 @@ import (
 )
 
 type CreateAuditEventsParams struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Domain      string             `json:"domain"`
-	EventType   string             `json:"event_type"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	ActorType   string             `json:"actor_type"`
-	ActorID     pgtype.UUID        `json:"actor_id"`
-	TriggerKind pgtype.Text        `json:"trigger_kind"`
-	TriggerRef  pgtype.Text        `json:"trigger_ref"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	Reason      pgtype.Text        `json:"reason"`
-	Details     []byte             `json:"details"`
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Domain       string             `json:"domain"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	TriggerKind  pgtype.Text        `json:"trigger_kind"`
+	TriggerRef   pgtype.Text        `json:"trigger_ref"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
+const createMCPInvocationAuditEvent = `-- name: CreateMCPInvocationAuditEvent :execrows
+INSERT INTO audit_event (
+    id, workspace_id, domain, event_type, occurred_at,
+    actor_type, actor_id, trigger_kind, trigger_ref,
+    issue_id, task_id, agent_id, runtime_id,
+    reason, details, invocation_id, sensitive, expires_at
+) VALUES (
+    $1, $2, 'mcp', $3, $4,
+    $5, $6, 'mcp_invocation', $7::uuid::text,
+    $8, $9, $10, $11,
+    $12, $13, $7::uuid, $14, $15
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type CreateMCPInvocationAuditEventParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) CreateMCPInvocationAuditEvent(ctx context.Context, arg CreateMCPInvocationAuditEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createMCPInvocationAuditEvent,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EventType,
+		arg.OccurredAt,
+		arg.ActorType,
+		arg.ActorID,
+		arg.InvocationID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Reason,
+		arg.Details,
+		arg.Sensitive,
+		arg.ExpiresAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredMCPInvocationAuditEvents = `-- name: DeleteExpiredMCPInvocationAuditEvents :execrows
+DELETE FROM audit_event
+WHERE domain = 'mcp' AND expires_at IS NOT NULL AND expires_at <= $1
+`
+
+func (q *Queries) DeleteExpiredMCPInvocationAuditEvents(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMCPInvocationAuditEvents, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredMCPInvocationAuditOutbox = `-- name: DeleteExpiredMCPInvocationAuditOutbox :execrows
+DELETE FROM mcp_invocation_audit_outbox WHERE expires_at <= $1
+`
+
+func (q *Queries) DeleteExpiredMCPInvocationAuditOutbox(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMCPInvocationAuditOutbox, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteMCPInvocationAuditOutbox = `-- name: DeleteMCPInvocationAuditOutbox :exec
+DELETE FROM mcp_invocation_audit_outbox WHERE id = $1
+`
+
+func (q *Queries) DeleteMCPInvocationAuditOutbox(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteMCPInvocationAuditOutbox, id)
+	return err
+}
+
+const getMCPInvocationAuditStart = `-- name: GetMCPInvocationAuditStart :one
+SELECT invocation_id, workspace_id, actor_id, sensitive
+FROM audit_event
+WHERE domain = 'mcp'
+  AND event_type = 'mcp.invocation_started'
+  AND invocation_id = $1
+LIMIT 1
+`
+
+type GetMCPInvocationAuditStartRow struct {
+	InvocationID pgtype.UUID `json:"invocation_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ActorID      pgtype.UUID `json:"actor_id"`
+	Sensitive    bool        `json:"sensitive"`
+}
+
+func (q *Queries) GetMCPInvocationAuditStart(ctx context.Context, invocationID pgtype.UUID) (GetMCPInvocationAuditStartRow, error) {
+	row := q.db.QueryRow(ctx, getMCPInvocationAuditStart, invocationID)
+	var i GetMCPInvocationAuditStartRow
+	err := row.Scan(
+		&i.InvocationID,
+		&i.WorkspaceID,
+		&i.ActorID,
+		&i.Sensitive,
+	)
+	return i, err
 }
 
 const listAllWorkspaceIDs = `-- name: ListAllWorkspaceIDs :many
@@ -58,7 +180,7 @@ func (q *Queries) ListAllWorkspaceIDs(ctx context.Context) ([]pgtype.UUID, error
 }
 
 const listAuditEvents = `-- name: ListAuditEvents :many
-SELECT id, workspace_id, domain, event_type, occurred_at, actor_type, actor_id, trigger_kind, trigger_ref, issue_id, task_id, agent_id, runtime_id, reason, details FROM audit_event
+SELECT id, workspace_id, domain, event_type, occurred_at, actor_type, actor_id, trigger_kind, trigger_ref, issue_id, task_id, agent_id, runtime_id, reason, details, invocation_id, sensitive, expires_at FROM audit_event
 WHERE workspace_id = $1
   AND ($3::timestamptz IS NULL OR occurred_at >= $3)
   AND ($4::timestamptz IS NULL OR occurred_at <= $4)
@@ -71,28 +193,33 @@ WHERE workspace_id = $1
   AND ($11::uuid IS NULL OR agent_id = $11)
   AND ($12::uuid IS NULL OR runtime_id = $12)
   AND ($13::text IS NULL OR reason = $13)
-  AND ($14::timestamptz IS NULL
-       OR (occurred_at, id) < ($14, $15::uuid))
+  AND ($14::boolean OR sensitive = false)
+  AND ($15::uuid IS NULL OR (domain = 'mcp' AND invocation_id = $15))
+  AND (domain <> 'mcp' OR expires_at IS NULL OR expires_at > now())
+  AND ($16::timestamptz IS NULL
+       OR (occurred_at, id) < ($16, $17::uuid))
 ORDER BY occurred_at DESC, id DESC
 LIMIT $2
 `
 
 type ListAuditEventsParams struct {
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	Limit           int32              `json:"limit"`
-	Since           pgtype.Timestamptz `json:"since"`
-	Until           pgtype.Timestamptz `json:"until"`
-	FilterDomain    pgtype.Text        `json:"filter_domain"`
-	FilterEventType pgtype.Text        `json:"filter_event_type"`
-	FilterActorType pgtype.Text        `json:"filter_actor_type"`
-	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
-	FilterIssueID   pgtype.UUID        `json:"filter_issue_id"`
-	FilterTaskID    pgtype.UUID        `json:"filter_task_id"`
-	FilterAgentID   pgtype.UUID        `json:"filter_agent_id"`
-	FilterRuntimeID pgtype.UUID        `json:"filter_runtime_id"`
-	FilterReason    pgtype.Text        `json:"filter_reason"`
-	CursorAt        pgtype.Timestamptz `json:"cursor_at"`
-	CursorID        pgtype.UUID        `json:"cursor_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Limit              int32              `json:"limit"`
+	Since              pgtype.Timestamptz `json:"since"`
+	Until              pgtype.Timestamptz `json:"until"`
+	FilterDomain       pgtype.Text        `json:"filter_domain"`
+	FilterEventType    pgtype.Text        `json:"filter_event_type"`
+	FilterActorType    pgtype.Text        `json:"filter_actor_type"`
+	FilterActorID      pgtype.UUID        `json:"filter_actor_id"`
+	FilterIssueID      pgtype.UUID        `json:"filter_issue_id"`
+	FilterTaskID       pgtype.UUID        `json:"filter_task_id"`
+	FilterAgentID      pgtype.UUID        `json:"filter_agent_id"`
+	FilterRuntimeID    pgtype.UUID        `json:"filter_runtime_id"`
+	FilterReason       pgtype.Text        `json:"filter_reason"`
+	IncludeSensitive   bool               `json:"include_sensitive"`
+	FilterInvocationID pgtype.UUID        `json:"filter_invocation_id"`
+	CursorAt           pgtype.Timestamptz `json:"cursor_at"`
+	CursorID           pgtype.UUID        `json:"cursor_id"`
 }
 
 // Workspace-level audit search: time window + domain/event_type + actor +
@@ -115,6 +242,8 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		arg.FilterAgentID,
 		arg.FilterRuntimeID,
 		arg.FilterReason,
+		arg.IncludeSensitive,
+		arg.FilterInvocationID,
 		arg.CursorAt,
 		arg.CursorID,
 	)
@@ -141,6 +270,9 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 			&i.RuntimeID,
 			&i.Reason,
 			&i.Details,
+			&i.InvocationID,
+			&i.Sensitive,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -150,4 +282,142 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const listMCPInvocationAuditOutbox = `-- name: ListMCPInvocationAuditOutbox :many
+SELECT id, workspace_id, event_type, occurred_at, actor_type, actor_id,
+       invocation_id, issue_id, task_id, agent_id, runtime_id, reason,
+       details, sensitive, expires_at, attempts
+FROM mcp_invocation_audit_outbox
+WHERE expires_at > now()
+  AND attempts < 10
+ORDER BY created_at ASC
+LIMIT $1
+`
+
+type ListMCPInvocationAuditOutboxRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	Attempts     int32              `json:"attempts"`
+}
+
+func (q *Queries) ListMCPInvocationAuditOutbox(ctx context.Context, limit int32) ([]ListMCPInvocationAuditOutboxRow, error) {
+	rows, err := q.db.Query(ctx, listMCPInvocationAuditOutbox, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMCPInvocationAuditOutboxRow{}
+	for rows.Next() {
+		var i ListMCPInvocationAuditOutboxRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.EventType,
+			&i.OccurredAt,
+			&i.ActorType,
+			&i.ActorID,
+			&i.InvocationID,
+			&i.IssueID,
+			&i.TaskID,
+			&i.AgentID,
+			&i.RuntimeID,
+			&i.Reason,
+			&i.Details,
+			&i.Sensitive,
+			&i.ExpiresAt,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markMCPInvocationAuditOutboxAttempt = `-- name: MarkMCPInvocationAuditOutboxAttempt :exec
+UPDATE mcp_invocation_audit_outbox
+SET attempts = attempts + 1,
+    last_attempt_at = now(),
+    last_error_code = $1
+WHERE id = $2
+`
+
+type MarkMCPInvocationAuditOutboxAttemptParams struct {
+	LastErrorCode pgtype.Text `json:"last_error_code"`
+	ID            pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkMCPInvocationAuditOutboxAttempt(ctx context.Context, arg MarkMCPInvocationAuditOutboxAttemptParams) error {
+	_, err := q.db.Exec(ctx, markMCPInvocationAuditOutboxAttempt, arg.LastErrorCode, arg.ID)
+	return err
+}
+
+const queueMCPInvocationAuditEvent = `-- name: QueueMCPInvocationAuditEvent :exec
+INSERT INTO mcp_invocation_audit_outbox (
+    id, workspace_id, event_type, occurred_at, actor_type, actor_id,
+    invocation_id, issue_id, task_id, agent_id, runtime_id, reason,
+    details, sensitive, expires_at
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14, $15
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type QueueMCPInvocationAuditEventParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) QueueMCPInvocationAuditEvent(ctx context.Context, arg QueueMCPInvocationAuditEventParams) error {
+	_, err := q.db.Exec(ctx, queueMCPInvocationAuditEvent,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EventType,
+		arg.OccurredAt,
+		arg.ActorType,
+		arg.ActorID,
+		arg.InvocationID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Reason,
+		arg.Details,
+		arg.Sensitive,
+		arg.ExpiresAt,
+	)
+	return err
 }

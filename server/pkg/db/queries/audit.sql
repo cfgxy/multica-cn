@@ -8,13 +8,75 @@ INSERT INTO audit_event (
     id, workspace_id, domain, event_type, occurred_at,
     actor_type, actor_id, trigger_kind, trigger_ref,
     issue_id, task_id, agent_id, runtime_id,
-    reason, details
+    reason, details, invocation_id, sensitive, expires_at
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9,
     $10, $11, $12, $13,
-    $14, $15
+    $14, $15, $16, $17, $18
 );
+
+-- name: CreateMCPInvocationAuditEvent :execrows
+INSERT INTO audit_event (
+    id, workspace_id, domain, event_type, occurred_at,
+    actor_type, actor_id, trigger_kind, trigger_ref,
+    issue_id, task_id, agent_id, runtime_id,
+    reason, details, invocation_id, sensitive, expires_at
+) VALUES (
+    sqlc.arg('id'), sqlc.arg('workspace_id'), 'mcp', sqlc.arg('event_type'), sqlc.arg('occurred_at'),
+    sqlc.arg('actor_type'), sqlc.narg('actor_id'), 'mcp_invocation', sqlc.arg('invocation_id')::uuid::text,
+    sqlc.narg('issue_id'), sqlc.narg('task_id'), sqlc.narg('agent_id'), sqlc.narg('runtime_id'),
+    sqlc.narg('reason'), sqlc.arg('details'), sqlc.arg('invocation_id')::uuid, sqlc.arg('sensitive'), sqlc.arg('expires_at')
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: QueueMCPInvocationAuditEvent :exec
+INSERT INTO mcp_invocation_audit_outbox (
+    id, workspace_id, event_type, occurred_at, actor_type, actor_id,
+    invocation_id, issue_id, task_id, agent_id, runtime_id, reason,
+    details, sensitive, expires_at
+) VALUES (
+    sqlc.arg('id'), sqlc.arg('workspace_id'), sqlc.arg('event_type'), sqlc.arg('occurred_at'),
+    sqlc.arg('actor_type'), sqlc.narg('actor_id'), sqlc.arg('invocation_id'),
+    sqlc.narg('issue_id'), sqlc.narg('task_id'), sqlc.narg('agent_id'), sqlc.narg('runtime_id'),
+    sqlc.narg('reason'), sqlc.arg('details'), sqlc.arg('sensitive'), sqlc.arg('expires_at')
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: ListMCPInvocationAuditOutbox :many
+SELECT id, workspace_id, event_type, occurred_at, actor_type, actor_id,
+       invocation_id, issue_id, task_id, agent_id, runtime_id, reason,
+       details, sensitive, expires_at, attempts
+FROM mcp_invocation_audit_outbox
+WHERE expires_at > now()
+  AND attempts < 10
+ORDER BY created_at ASC
+LIMIT sqlc.arg('limit');
+
+-- name: MarkMCPInvocationAuditOutboxAttempt :exec
+UPDATE mcp_invocation_audit_outbox
+SET attempts = attempts + 1,
+    last_attempt_at = now(),
+    last_error_code = sqlc.arg('last_error_code')
+WHERE id = sqlc.arg('id');
+
+-- name: DeleteMCPInvocationAuditOutbox :exec
+DELETE FROM mcp_invocation_audit_outbox WHERE id = sqlc.arg('id');
+
+-- name: DeleteExpiredMCPInvocationAuditOutbox :execrows
+DELETE FROM mcp_invocation_audit_outbox WHERE expires_at <= sqlc.arg('cutoff');
+
+-- name: DeleteExpiredMCPInvocationAuditEvents :execrows
+DELETE FROM audit_event
+WHERE domain = 'mcp' AND expires_at IS NOT NULL AND expires_at <= sqlc.arg('cutoff');
+
+-- name: GetMCPInvocationAuditStart :one
+SELECT invocation_id, workspace_id, actor_id, sensitive
+FROM audit_event
+WHERE domain = 'mcp'
+  AND event_type = 'mcp.invocation_started'
+  AND invocation_id = sqlc.arg('invocation_id')
+LIMIT 1;
 
 -- name: ListAuditEvents :many
 -- Workspace-level audit search: time window + domain/event_type + actor +
@@ -35,6 +97,9 @@ WHERE workspace_id = $1
   AND (sqlc.narg('filter_agent_id')::uuid IS NULL OR agent_id = sqlc.narg('filter_agent_id'))
   AND (sqlc.narg('filter_runtime_id')::uuid IS NULL OR runtime_id = sqlc.narg('filter_runtime_id'))
   AND (sqlc.narg('filter_reason')::text IS NULL OR reason = sqlc.narg('filter_reason'))
+  AND (sqlc.arg('include_sensitive')::boolean OR sensitive = false)
+  AND (sqlc.narg('filter_invocation_id')::uuid IS NULL OR (domain = 'mcp' AND invocation_id = sqlc.narg('filter_invocation_id')))
+  AND (domain <> 'mcp' OR expires_at IS NULL OR expires_at > now())
   AND (sqlc.narg('cursor_at')::timestamptz IS NULL
        OR (occurred_at, id) < (sqlc.narg('cursor_at'), sqlc.narg('cursor_id')::uuid))
 ORDER BY occurred_at DESC, id DESC

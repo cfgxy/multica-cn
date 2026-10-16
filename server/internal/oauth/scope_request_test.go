@@ -27,6 +27,8 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/task-runs", ScopeNeedRead},
 		{"GET", "/api/quick-replies", ScopeNeedRead},
 		{"GET", "/api/workspaces/ws-1/audit-events", ScopeNeedRead},
+		{"POST", "/api/mcp/audit-start", ScopeNeedRead},
+		{"POST", "/api/mcp/audit-finish", ScopeNeedRead},
 		{"GET", "/api/workspaces/ws-1/execution-profiles", ScopeNeedRead},
 		{"GET", "/api/workspaces/ws-1/execution-profiles/p-1", ScopeNeedRead},
 		{"GET", "/api/workspaces/ws-1/execution-profiles/p-1/entries", ScopeNeedRead},
