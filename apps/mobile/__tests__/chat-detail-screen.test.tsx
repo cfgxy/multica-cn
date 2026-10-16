@@ -49,6 +49,8 @@ const mockModelSelectHandler = { current: null as null | ((model: string | null)
 const mockModelDisabledState = { current: false };
 const mockSetSessionQueryData = jest.fn();
 const mockSetChatSessionModel = jest.fn();
+const mockArchivedAgentIds = new Set<string>();
+const mockQueueCanManage = { current: false };
 
 jest.mock("@tanstack/react-query", () => ({
   queryOptions: (opts: Record<string, unknown>) => opts,
@@ -71,7 +73,7 @@ jest.mock("@tanstack/react-query", () => ({
           {
             id: "agent-1",
             name: "Alpha",
-            archived_at: null,
+            archived_at: mockArchivedAgentIds.has("agent-1") ? "2026-10-17T00:00:00Z" : null,
             runtime_bound: true,
             owner_id: "user-1",
             permission_mode: "public_to",
@@ -83,7 +85,7 @@ jest.mock("@tanstack/react-query", () => ({
           {
             id: "agent-2",
             name: "Beta",
-            archived_at: null,
+            archived_at: mockArchivedAgentIds.has("agent-2") ? "2026-10-17T00:00:00Z" : null,
             runtime_bound: true,
             owner_id: "user-1",
             permission_mode: "public_to",
@@ -291,6 +293,13 @@ jest.mock("@/components/chat/chat-session-model-picker", () => {
   };
 });
 
+jest.mock("@/components/chat/chat-queue-panel", () => ({
+  ChatQueuePanel: ({ canManage }) => {
+    mockQueueCanManage.current = canManage;
+    return null;
+  },
+}));
+
 jest.mock("@/components/chat/agent-picker-sheet", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual<typeof import("react-native")>("react-native");
@@ -398,6 +407,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockModelSelectHandler.current = null;
   mockModelDisabledState.current = false;
+  mockQueueCanManage.current = false;
+  mockArchivedAgentIds.clear();
   mockRoute.sessionId = "sa";
   mockRoute.agentId = undefined;
   mockSeenMessageOptionIds.length = 0;
@@ -438,6 +449,14 @@ describe("ChatDetailScreen (RUYI-496)", () => {
     );
     expect(mockModelDisabledState.current).toBe(false);
     alertSpy.mockRestore();
+  });
+
+  it("disables queue management when the active session's agent is archived", async () => {
+    mockArchivedAgentIds.add("agent-1");
+
+    await render(<ChatDetailScreen />);
+
+    expect(mockQueueCanManage.current).toBe(false);
   });
 
   it("AC4: queries and renders messages of the routed session only", async () => {

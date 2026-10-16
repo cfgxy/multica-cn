@@ -211,7 +211,11 @@ export default function ChatDetailScreen() {
   const runtimeBound =
     currentAgent !== null && isAgentRuntimeBound(currentAgent);
   const canManageQueue = Boolean(
-    activeSession && activeSession.status === "active" && !accessRevoked && runtimeBound,
+    activeSession &&
+      activeSession.status === "active" &&
+      !accessRevoked &&
+      !currentAgent?.archived_at &&
+      runtimeBound,
   );
   // RUYI-694 D2 免绑定解析链：agent 覆盖 → workspace default → 供应商
   // 池。resolving（数据未决）与判负都收敛为隐藏 🔵🎤；available 含
