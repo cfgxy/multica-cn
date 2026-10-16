@@ -234,6 +234,23 @@ describe("createMcpServer (via in-memory client)", () => {
     expect(calls[1]?.headers["X-Multica-MCP-Service-Credential"]).toBeUndefined();
   });
 
+  it("does not perform an inbox operation when audit start fails", async () => {
+    const paths: string[] = [];
+    const fixture = await connectServer(async (pathname) => {
+      paths.push(pathname);
+      return { error: "audit unavailable" };
+    }, 503);
+    fixtures.push(fixture.cleanup);
+
+    const result = await fixture.client.callTool({
+      name: "list_inbox",
+      arguments: { workspace: "0b7f4c1e-1111-4222-8333-abcdefabcdef" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(paths).toEqual(["/api/mcp/audit-start"]);
+  });
+
   it("tools/call maps backend errors to isError results without leaking the token", async () => {
     const { client, cleanup } = await connectServer(async () => ({ error: "boom" }), 500);
     fixtures.push(cleanup);

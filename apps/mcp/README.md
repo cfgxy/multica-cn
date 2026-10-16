@@ -130,9 +130,10 @@ mention 准入拒绝）以结构化 `code` 返回，不复用异常字符串。�
 `--server-url` 或 `MULTICA_SERVER_URL` 覆盖。
 
 Inbox 工具通过后端现有的 MCP invocation audit 端点记录调用。部署时须在 MCP
-进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`；未配置时，
-Inbox 操作会在执行前失败关闭。审计只记录操作者、工具、工作区、耗时和结果，
-不记录通知正文、认证头或凭据。
+进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。MCP 进程通过
+`--audit-credential-file` 从用户私有凭据文件读取该值；未配置时，Inbox 操作会在
+执行前失败关闭。审计只记录操作者、工具、工作区、耗时和结果，不记录通知正文、
+认证头或凭据。
 
 ## 用法
 
@@ -143,19 +144,19 @@ stdio（claude code 示例，`.mcp.json`）：
   "mcpServers": {
     "multica": {
       "command": "node",
-      "args": ["/path/to/apps/mcp/dist/index.js"],
+      "args": ["/path/to/apps/mcp/dist/index.js", "--audit-credential-file", "/home/user/.config/multica/mcp-audit-credential"],
       "env": { "MULTICA_TOKEN": "mul_..." }
     }
   }
 }
 ```
 
-生产建议不写 env，直接复用 CLI 登录态（`multica login` 后零配置）。
+生产建议不写 PAT env，直接复用 CLI 登录态（`multica login`）；审计凭据文件需单独准备并限制为当前用户可读。
 
 streamable HTTP：
 
 ```bash
-node apps/mcp/dist/index.js --transport http --port 8080 --host 127.0.0.1
+node apps/mcp/dist/index.js --transport http --port 8080 --host 127.0.0.1 --audit-credential-file ~/.config/multica/mcp-audit-credential
 # 探活：curl http://127.0.0.1:8080/healthz
 # MCP 端点：POST /mcp，Authorization: Bearer mul_...
 ```
@@ -181,6 +182,8 @@ make mcp-uninstall   # 从每个检测到的客户端配置中移除 multica 条
 - 配置文件解析失败（如手工改坏的 JSON/TOML）时，`mcp-update` / `mcp-uninstall` 都会跳过并保留原文件不动，不会覆盖或删除。
 - `mcp-status` 的“失效”指该客户端记录的 dist 路径在磁盘上已不存在（通常是 checkout 被移动或删除），此时应 `make mcp-update`（已注册）或 `make mcp-install`（重新登记）。
 - 以上流程全程不读取、不打印、不持久化任何 Multica PAT。
+- MCP 统一审计凭据单独存放在 `~/.config/multica/mcp-audit-credential`，文件内容只放凭据本身，并设置 `chmod 600 ~/.config/multica/mcp-audit-credential`。安装配置只记录该文件路径，不复制凭据；自定义位置可用 `MCP_AUDIT_CREDENTIAL_FILE=/绝对路径 make mcp-install`，之后重启 MCP 客户端进程。
+- 首次配置可先运行 `mkdir -p ~/.config/multica && install -m 600 /dev/null ~/.config/multica/mcp-audit-credential`，再用本机安全方式把与 API 相同的服务凭据写入该文件；不要将凭据作为命令参数或粘贴到客户端配置。
 - 全部命令均为用户级配置写入，不需要 `sudo`。
 
 ## HTTP 常驻服务（`make mcp-http-*`）
@@ -204,9 +207,11 @@ make mcp-http-uninstall  # 只移除本服务单元，绝不触碰 multica-daemo
   时 `mcp-http-install` 会打印 WARN，需要有权限者执行一次
   `loginctl enable-linger <user>`（这是本机唯一残留的、超出当前用户自身权限的
   前置步骤，且只需执行一次）。
-- **无状态、零前置凭据**：与 `daemon-install` 不同，本服务启动不需要任何已认证的
-  `~/.multica/` profile——每个 `POST /mcp` 自带 `Authorization: Bearer <PAT>`，
-  服务端逐请求转发、不持久化任何凭据。单元文件、日志均不写入 token。
+- **按请求鉴权，审计凭据受限注入**：每个 `POST /mcp` 自带
+  `Authorization: Bearer <PAT>`，服务端逐请求转发；统一 MCP 审计还需要一份
+  服务凭据。将其单独写入用户私有文件并设为 `chmod 600`，再运行
+  `make mcp-http-install MCP_AUDIT_CREDENTIAL_FILE=/绝对路径`。systemd 通过
+  `LoadCredential` 投递到运行时凭据目录，unit 与日志只包含源文件路径，不包含凭据。
 - 默认绑定 `127.0.0.1`；`MCP_HTTP_HOST` 传入非 loopback 值时 `mcp-http-install`
   会打印警告——对外暴露前必须置于 TLS 反代之后，不建议直接暴露明文 HTTP。
 - 单实例（非 `@` 模板）：一台机器通常只需一个 HTTP 端点；需要多端口并存时用不同
