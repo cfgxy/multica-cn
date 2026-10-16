@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Logger } from "../src/log.js";
@@ -111,6 +113,25 @@ describe("HTTP systemd credential wiring", () => {
     expect(template).toContain('--audit-credential-file "$CREDENTIALS_DIRECTORY/multica-mcp-audit"');
     expect(template).not.toContain("SetCredential=");
     expect(template).not.toContain("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=");
+  });
+
+  it("renders custom credential paths with sed replacement characters literally", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mcp-audit-"));
+    const credentialPath = join(directory, "audit&key|file");
+    const credential = "secret-audit-credential";
+    writeFileSync(credentialPath, credential);
+
+    try {
+      const unit = execFileSync(
+        "make",
+        ["--silent", "mcp-http-render", `MCP_AUDIT_CREDENTIAL_FILE=${credentialPath}`],
+        { cwd: join(process.cwd(), "..", ".."), encoding: "utf8" },
+      );
+      expect(unit).toContain(`LoadCredential=multica-mcp-audit:${credentialPath}`);
+      expect(unit).not.toContain(credential);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 
