@@ -3911,6 +3911,73 @@ func TestCodexExecuteReconnectWindowBoundsRetryingErrors(t *testing.T) {
 	}
 }
 
+func TestCodexExecuteReconnectWindowClearsAfterProgress(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	previous := codexReconnectTimeoutNanos.Swap(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexReconnectTimeoutNanos.Store(previous) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-recovered"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-recovered","turn":{"id":"turn-recovered"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"error","params":{"threadId":"thr-recovered","error":{"message":"temporary reconnect"},"willRetry":true}}'`+"\n"+
+		`sleep 0.05`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-recovered","item":{"type":"agentMessage","id":"msg-recovered","text":"recovered"}}}'`+"\n"+
+		`sleep 0.15`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thr-recovered","turn":{"id":"turn-recovered","status":"completed"}}}'`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 2 * time.Second,
+	})
+	if result.Status != "completed" {
+		t.Fatalf("expected progress to clear reconnect window, got status=%q error=%q", result.Status, result.Error)
+	}
+}
+
+func TestCodexExecuteReconnectWindowRestartsAfterProgress(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	previous := codexReconnectTimeoutNanos.Swap(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexReconnectTimeoutNanos.Store(previous) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-retry-again"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-retry-again","turn":{"id":"turn-retry-again"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"error","params":{"threadId":"thr-retry-again","error":{"message":"first reconnect"},"willRetry":true}}'`+"\n"+
+		`sleep 0.06`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thr-retry-again","item":{"type":"agentMessage","id":"msg-retry-again","text":"recovered"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"error","params":{"threadId":"thr-retry-again","error":{"message":"second reconnect"},"willRetry":true}}'`+"\n"+
+		`sleep 2`+"\n")
+
+	startedAt := time.Now()
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 3 * time.Second,
+	})
+	elapsed := time.Since(startedAt)
+	if result.Status != "failed" || !strings.Contains(result.Error, "could not reconnect within 100ms") {
+		t.Fatalf("result = status %q, error %q; want second bounded reconnect failure", result.Status, result.Error)
+	}
+	if elapsed < 140*time.Millisecond {
+		t.Fatalf("second reconnect window was not restarted after progress: elapsed=%s", elapsed)
+	}
+}
+
 func TestCodexExecuteSemanticInactivityAllowsContinuousMessages(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
