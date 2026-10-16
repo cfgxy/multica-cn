@@ -212,11 +212,24 @@ describe("http transport gate", () => {
     const contentType = response.headers.get("Content-Type") ?? "";
     expect(contentType).toContain("application/json");
     const payload = (await response.json()) as {
-      result?: { tools?: Array<{ name: string }> };
+      result?: { tools?: Array<{ name: string; annotations?: Record<string, unknown> }> };
     };
-    const names = (payload.result?.tools ?? []).map((tool) => tool.name);
+    const tools = payload.result?.tools ?? [];
+    const names = tools.map((tool) => tool.name);
     expect(names).toContain("list_workspaces");
     expect(names).toContain("dispatch_agent");
+    expect(tools.find((tool) => tool.name === "list_workspaces")?.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    expect(tools.find((tool) => tool.name === "get_runtime_models")?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
   });
 
   it("keeps requests isolated per bearer token (stateless)", async () => {

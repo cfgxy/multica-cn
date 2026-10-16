@@ -16,6 +16,7 @@ import {
 
 import { redactUnknown } from "./redact.js";
 import type { MulticaClient } from "./rest.js";
+import { getToolRisk } from "./tool-risk.js";
 import { findTool, TOOL_DEFINITIONS } from "./tools.js";
 
 export const SERVER_NAME = "multica-mcp";
@@ -27,42 +28,6 @@ const SERVER_INSTRUCTIONS =
   "tool takes an explicit workspace slug. progress_digest summarizes project " +
   "progress; create_issue captures ideas anywhere; dispatch_agent runs a real " +
   "agent and consumes quota — only on explicit request.";
-
-const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  "list_workspaces",
-  "list_agents",
-  "list_projects",
-  "get_project",
-  "list_issues",
-  "get_issue",
-  "search_issues",
-  "progress_digest",
-  "list_comments",
-  "get_comment",
-  "get_issue_relations",
-  "list_issue_runs",
-  "get_run",
-  // Execution-config reads.
-  "list_daemon_instances",
-  "get_daemon_instance",
-  "get_runtime",
-  "get_runtime_models",
-  "get_agent_runtime_config",
-  "list_execution_profiles",
-  "get_execution_profile",
-  "get_execution_topology",
-  "search_audit_events",
-  "list_runs",
-  "get_agent",
-  "list_runtimes",
-  "list_squads",
-  "get_squad",
-  // Decision-card reads (the write is answer_decisions).
-  "list_decisions",
-  "get_decision",
-  // Project resource binding read.
-  "list_project_resources",
-]);
 
 export function createMcpServer(client: MulticaClient): Server {
   const server = new Server(
@@ -78,10 +43,7 @@ export function createMcpServer(client: MulticaClient): Server {
       name: definition.name,
       description: definition.description,
       inputSchema: definition.inputSchema,
-      annotations: {
-        readOnlyHint: READ_ONLY_TOOLS.has(definition.name),
-        openWorldHint: true,
-      },
+      annotations: getToolRisk(definition.name).annotations,
     })),
   }));
 
