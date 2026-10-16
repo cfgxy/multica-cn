@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { useRef, useState } from "react";
+import { Alert, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ChatPendingTask } from "@multica/core/types";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Text } from "@/components/ui/text";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -11,16 +12,16 @@ type QueuedTask = NonNullable<ChatPendingTask["queued_tasks"]>[number];
 
 interface Props {
   pendingTask: ChatPendingTask | undefined;
-  canPrioritize: boolean;
+  canManage: boolean;
   onEdit: (task: QueuedTask) => Promise<void>;
   onRemove: (task: QueuedTask) => Promise<void>;
   onPrioritize: (task: QueuedTask) => Promise<void>;
-  onClear: () => void;
+  onClear: () => Promise<void>;
 }
 
 export function ChatQueuePanel({
   pendingTask,
-  canPrioritize,
+  canManage,
   onEdit,
   onRemove,
   onPrioritize,
@@ -31,17 +32,20 @@ export function ChatQueuePanel({
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const [busyId, setBusyId] = useState<string | null>(null);
+  const busyRef = useRef(false);
   if (tasks.length === 0) return null;
 
   const headCanRun = ["dispatched", "running", "waiting_local_directory"].includes(
     pendingTask?.status ?? "",
   );
   const run = async (taskId: string, action: () => Promise<void>) => {
-    if (busyId) return;
+    if (busyRef.current || !canManage) return;
+    busyRef.current = true;
     setBusyId(taskId);
     try {
       await action();
     } finally {
+      busyRef.current = false;
       setBusyId(null);
     }
   };
@@ -53,8 +57,18 @@ export function ChatQueuePanel({
           {t("queue.title", "Queue")} ({tasks.length})
         </Text>
         <Pressable
-          onPress={onClear}
-          disabled={busyId !== null}
+          onPress={() => {
+            if (busyRef.current || !canManage) return;
+            Alert.alert(
+              t("queue.clear_confirm_title", "Clear queued messages?"),
+              t("queue.clear_confirm_body", "This removes queued messages only. The current task will keep running."),
+              [
+                { text: t("common.cancel", "Cancel"), style: "cancel" },
+                { text: t("queue.clear", "Clear queue"), style: "destructive", onPress: () => void run("clear", onClear) },
+              ],
+            );
+          }}
+          disabled={busyId !== null || !canManage}
           accessibilityRole="button"
           accessibilityLabel={t("queue.clear", "Clear queue")}
           hitSlop={8}
@@ -66,41 +80,40 @@ export function ChatQueuePanel({
       </View>
       <ScrollView className="max-h-40" keyboardShouldPersistTaps="handled">
         {tasks.map((task, index) => {
-          const disabled = busyId !== null;
-          const buttonStyle = "h-10 min-w-10 items-center justify-center rounded-md px-2";
+          const disabled = busyId !== null || !canManage;
           return (
             <View key={task.task_id} className="min-h-11 flex-row items-center gap-1 border-t border-border/60 py-1">
               <Text className="w-5 text-xs text-muted-foreground">{index + 1}.</Text>
               <Text numberOfLines={2} className="mr-1 flex-1 text-sm text-foreground">
                 {task.content?.trim() || t("queue.fallback", "Queued message")}
               </Text>
-              <Pressable
-                onPress={() => void run(task.task_id, () => onPrioritize(task))}
-                disabled={disabled || !headCanRun || !canPrioritize}
-                accessibilityRole="button"
-                accessibilityLabel={t("queue.steer", "Send now")}
-                className={buttonStyle}
-              >
-                <Ionicons name="arrow-up-outline" size={18} color={disabled || !headCanRun || !canPrioritize ? theme.mutedForeground : theme.brand} />
-              </Pressable>
-              <Pressable
-                onPress={() => void run(task.task_id, () => onEdit(task))}
-                disabled={disabled}
-                accessibilityRole="button"
-                accessibilityLabel={t("queue.edit", "Edit queued message")}
-                className={buttonStyle}
-              >
-                <Ionicons name="create-outline" size={18} color={theme.mutedForeground} />
-              </Pressable>
-              <Pressable
-                onPress={() => void run(task.task_id, () => onRemove(task))}
-                disabled={disabled}
-                accessibilityRole="button"
-                accessibilityLabel={t("queue.remove", "Remove queued message")}
-                className={buttonStyle}
-              >
-                <Ionicons name="close-outline" size={18} color={theme.mutedForeground} />
-              </Pressable>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Pressable
+                    disabled={disabled}
+                    accessibilityRole="button"
+                    accessibilityLabel={t("queue.more_actions", "More actions for queued message {{position}}", { position: index + 1 })}
+                    accessibilityState={{ disabled, busy: busyId === task.task_id }}
+                    className="h-10 w-10 items-center justify-center rounded-md"
+                  >
+                    <Ionicons name="ellipsis-horizontal" size={18} color={theme.mutedForeground} />
+                  </Pressable>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem disabled={disabled || !headCanRun} onPress={() => void run(task.task_id, () => onPrioritize(task))}>
+                    <Ionicons name="arrow-up-outline" size={16} color={disabled || !headCanRun ? theme.mutedForeground : theme.brand} />
+                    <Text>{t("queue.steer", "Send now")}</Text>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={disabled} onPress={() => void run(task.task_id, () => onEdit(task))}>
+                    <Ionicons name="create-outline" size={16} color={theme.mutedForeground} />
+                    <Text>{t("queue.edit", "Edit queued message")}</Text>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={disabled} onPress={() => void run(task.task_id, () => onRemove(task))}>
+                    <Ionicons name="close-outline" size={16} color={theme.mutedForeground} />
+                    <Text>{t("queue.remove", "Remove queued message")}</Text>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </View>
           );
         })}
