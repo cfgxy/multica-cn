@@ -3588,14 +3588,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				(resp.PriorSessionID == coordinator.SessionID.String || (resp.PriorSessionID == "" && resp.PriorContextBrief == "" && !resp.PriorSessionResumeUnavailable)) {
 				resp.PriorSessionID = coordinator.SessionID.String
 			}
-			if coordinator.RuntimeID != task.RuntimeID || !coordinator.SessionID.Valid || coordinator.ContinuityState == "cold_start" {
+			if issuecoordinator.RequiresColdStart(coordinator.RuntimeID == task.RuntimeID, coordinator.SessionID.Valid,
+				coordinator.ContinuityState, resp.PriorContextBrief != "", resp.PriorSessionResumeUnavailable) {
 				resp.PriorSessionID = ""
 				h.applyIssueCoordinatorColdStartBrief(r.Context(), &resp, *task, runtimeWorkspaceID, coordinator)
 			}
 		case errors.Is(coordErr, pgx.ErrNoRows):
 			resp.IssueCoordinator = &IssueCoordinatorClaim{Generation: 1, ContinuityState: "cold_start"}
 			resp.PriorSessionID = ""
-			h.applyIssueCoordinatorColdStartBrief(r.Context(), &resp, *task, runtimeWorkspaceID, db.IssueCoordinatorSession{Generation: 1})
+			h.applyIssueCoordinatorColdStartBrief(r.Context(), &resp, *task, runtimeWorkspaceID, db.GetIssueCoordinatorSessionRow{Generation: 1})
 		default:
 			slog.Warn("issue coordinator: load state failed; using existing task continuity",
 				"task_id", uuidToString(task.ID), "error", coordErr)
@@ -3610,8 +3611,9 @@ func (h *Handler) issueCoordinatorEnabled(ctx context.Context, task db.AgentTask
 		uuidToString(task.IssueID), uuidToString(task.AgentID), task.IsLeaderTask)
 }
 
-func (h *Handler) applyIssueCoordinatorColdStartBrief(ctx context.Context, resp *AgentTaskResponse, task db.AgentTaskQueue, workspaceID string, coordinator db.IssueCoordinatorSession) {
-	if resp.PriorContextBrief == "" {
+func (h *Handler) applyIssueCoordinatorColdStartBrief(ctx context.Context, resp *AgentTaskResponse, task db.AgentTaskQueue, workspaceID string, coordinator db.GetIssueCoordinatorSessionRow) {
+	brief := resp.PriorContextBrief
+	if brief == "" {
 		var inputs sessionBriefInputs
 		if latest, err := h.Queries.GetLatestTerminalTaskForBrief(ctx, db.GetLatestTerminalTaskForBriefParams{
 			AgentID: task.AgentID,
@@ -3620,12 +3622,67 @@ func (h *Handler) applyIssueCoordinatorColdStartBrief(ctx context.Context, resp 
 			inputs.priorResult = latest.Result
 			inputs.continuityGap = latest.SessionRolloutMissing
 		}
-		brief := h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(workspaceID), task.AgentID, inputs)
-		resp.PriorContextBrief = fmt.Sprintf(
-			"Issue coordinator cold start (generation %d, snapshot version %d, event sequence %d). The prior session was not resumed; use current Issue activity as the source of truth.\n\n%s",
-			coordinator.Generation, coordinator.SnapshotVersion, coordinator.LastEventSequence, brief)
+		brief = h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(workspaceID), task.AgentID, inputs)
 	}
+	if snapshotBrief := issueCoordinatorSnapshotBrief(coordinator.Snapshot); snapshotBrief != "" {
+		if brief != "" {
+			brief = snapshotBrief + "\n\n" + brief
+		} else {
+			brief = snapshotBrief
+		}
+	}
+	resp.PriorContextBrief = fmt.Sprintf(
+		"Issue coordinator cold start (generation %d, snapshot version %d, event sequence %d). The prior session was not resumed; follow structured references when present and verify current Issue records before acting.\n\n%s",
+		coordinator.Generation, coordinator.SnapshotVersion, coordinator.LastEventSequence, brief)
 	resp.PriorSessionResumeUnavailable = false
+}
+
+func issueCoordinatorSnapshotBrief(raw []byte) string {
+	var snapshot issuecoordinator.Snapshot
+	if len(raw) == 0 || len(raw) > issuecoordinator.MaxSnapshotBytes || json.Unmarshal(raw, &snapshot) != nil ||
+		snapshot.Version != 1 || snapshot.IssueID == "" || snapshot.IssueStatus == "" ||
+		len(snapshot.ResourceRefs) > issuecoordinator.MaxSnapshotRefs || len(snapshot.DecisionRefs) > issuecoordinator.MaxSnapshotRefs || len(snapshot.PlanRefs) > issuecoordinator.MaxSnapshotRefs ||
+		len(snapshot.CompletedTaskRefs) > issuecoordinator.MaxSnapshotRefs || len(snapshot.TodoTaskRefs) > issuecoordinator.MaxSnapshotRefs ||
+		len(snapshot.EvidenceRefs) > issuecoordinator.MaxSnapshotRefs || len(snapshot.RiskCommentRefs) > issuecoordinator.MaxSnapshotRefs {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Confirmed Issue snapshot\n\nIssue `%s`, revision %d, status `%s`. The references identify persisted records; read them before treating any state as current.",
+		snapshot.IssueID, snapshot.IssueRevision, snapshot.IssueStatus)
+	if len(snapshot.DecisionRefs) > 0 {
+		b.WriteString("\n\nDecision references:")
+		for _, ref := range snapshot.DecisionRefs {
+			fmt.Fprintf(&b, "\n- `%s` (%s)", ref.ID, ref.Status)
+			if ref.AnswerCommentID != "" {
+				fmt.Fprintf(&b, ", answer comment `%s`", ref.AnswerCommentID)
+			}
+		}
+	}
+	if len(snapshot.CompletedTaskRefs) > 0 {
+		b.WriteString("\n\nCompleted task references:")
+		for _, ref := range snapshot.CompletedTaskRefs {
+			fmt.Fprintf(&b, "\n- `%s`", ref)
+		}
+	}
+	for _, section := range []struct {
+		label string
+		refs  []string
+	}{
+		{label: "Plan references", refs: snapshot.PlanRefs},
+		{label: "Resource references", refs: snapshot.ResourceRefs},
+		{label: "Pending task references", refs: snapshot.TodoTaskRefs},
+		{label: "Evidence references", refs: snapshot.EvidenceRefs},
+		{label: "Unresolved risk references", refs: snapshot.RiskCommentRefs},
+	} {
+		if len(section.refs) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\n\n%s:", section.label)
+		for _, ref := range section.refs {
+			fmt.Fprintf(&b, "\n- `%s`", ref)
+		}
+	}
+	return b.String()
 }
 
 // recordClaimedPromptVersions resolves the current prompt_version.version

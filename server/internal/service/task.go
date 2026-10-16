@@ -4716,6 +4716,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
 	guardConverged := false
+	coordinatorCASConflict := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -4765,7 +4766,67 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 				return fmt.Errorf("load issue coordinator session: %w", coordErr)
 			}
 			if coordErr == nil && coordinator.ActiveTaskID == t.ID {
-				snapshot, marshalErr := issuecoordinator.Snapshot(util.UUIDToString(t.ID), result)
+				issue, issueErr := qtx.GetIssue(ctx, t.IssueID)
+				if issueErr != nil {
+					return fmt.Errorf("load issue state for coordinator snapshot: %w", issueErr)
+				}
+				decisions, decisionsErr := qtx.ListIssueCoordinatorDecisionRefs(ctx, db.ListIssueCoordinatorDecisionRefsParams{
+					IssueID: t.IssueID, WorkspaceID: issue.WorkspaceID, RowLimit: issuecoordinator.MaxSnapshotRefs,
+				})
+				if decisionsErr != nil {
+					return fmt.Errorf("load issue decisions for coordinator snapshot: %w", decisionsErr)
+				}
+				decisionRefs := make([]issuecoordinator.DecisionRef, 0, len(decisions))
+				evidenceRefs := make([]string, 0, len(decisions))
+				for _, decision := range decisions {
+					ref := issuecoordinator.DecisionRef{ID: util.UUIDToString(decision.ID), Status: decision.Status}
+					if decision.AnswerCommentID.Valid {
+						ref.AnswerCommentID = util.UUIDToString(decision.AnswerCommentID)
+						evidenceRefs = append(evidenceRefs, ref.AnswerCommentID)
+					}
+					decisionRefs = append(decisionRefs, ref)
+				}
+				rootIssueID := issue.ID
+				if issue.ParentIssueID.Valid {
+					rootIssueID = issue.ParentIssueID
+				}
+				activeTasks, activeTaskErr := qtx.ListActiveTasksByIssueFamily(ctx, db.ListActiveTasksByIssueFamilyParams{
+					WorkspaceID: issue.WorkspaceID, RootIssueID: rootIssueID, RowLimit: issuecoordinator.MaxSnapshotRefs,
+				})
+				if activeTaskErr != nil {
+					return fmt.Errorf("load active issue tasks for coordinator snapshot: %w", activeTaskErr)
+				}
+				todoRefs := make([]string, 0, len(activeTasks))
+				for _, activeTask := range activeTasks {
+					todoRefs = append(todoRefs, util.UUIDToString(activeTask.TaskID))
+				}
+				unresolved, unresolvedErr := qtx.ListUnresolvedThreadsForBrief(ctx, db.ListUnresolvedThreadsForBriefParams{
+					IssueID: t.IssueID, WorkspaceID: issue.WorkspaceID, RowLimit: issuecoordinator.MaxSnapshotRefs,
+				})
+				if unresolvedErr != nil {
+					return fmt.Errorf("load unresolved issue threads for coordinator snapshot: %w", unresolvedErr)
+				}
+				riskRefs := make([]string, 0, len(unresolved))
+				for _, thread := range unresolved {
+					riskRefs = append(riskRefs, util.UUIDToString(thread.ID))
+				}
+				issueRef := fmt.Sprintf("issue:%s@revision:%d", util.UUIDToString(issue.ID), issue.Revision)
+				resourceRefs := []string{}
+				if issue.ProjectID.Valid {
+					resourceRefs = append(resourceRefs, "project:"+util.UUIDToString(issue.ProjectID))
+				}
+				snapshot, marshalErr := issuecoordinator.MarshalSnapshot(issuecoordinator.Snapshot{
+					IssueID:           util.UUIDToString(issue.ID),
+					IssueRevision:     issue.Revision,
+					IssueStatus:       issue.Status,
+					ResourceRefs:      resourceRefs,
+					DecisionRefs:      decisionRefs,
+					PlanRefs:          []string{issueRef},
+					TodoTaskRefs:      todoRefs,
+					EvidenceRefs:      evidenceRefs,
+					RiskCommentRefs:   riskRefs,
+					CompletedTaskRefs: []string{util.UUIDToString(t.ID)},
+				})
 				if marshalErr != nil {
 					return fmt.Errorf("marshal issue coordinator snapshot: %w", marshalErr)
 				}
@@ -4777,8 +4838,14 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 					IssueID:       t.IssueID,
 					LeaderAgentID: t.AgentID,
 				}); err != nil {
-					return fmt.Errorf("complete issue coordinator session: %w", err)
+					if errors.Is(err, pgx.ErrNoRows) {
+						coordinatorCASConflict = true
+					} else {
+						return fmt.Errorf("complete issue coordinator session: %w", err)
+					}
 				}
+			} else if coordErr == nil {
+				coordinatorCASConflict = true
 			}
 		}
 
@@ -4876,6 +4943,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 		// Not a completion: the cancel path owns this row and its side effects.
 		return &task, false, nil
+	}
+	if coordinatorCASConflict {
+		slog.Warn("issue coordinator completion rejected by snapshot CAS; task completion committed",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID),
+			"agent_id", util.UUIDToString(task.AgentID), "error", issuecoordinator.ErrSnapshotCASConflict)
 	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)

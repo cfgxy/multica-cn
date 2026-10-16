@@ -14,11 +14,13 @@ import (
 const claimIssueCoordinatorSession = `-- name: ClaimIssueCoordinatorSession :one
 INSERT INTO issue_coordinator_session (
     issue_id, leader_agent_id, runtime_id, active_task_id, continuity_state,
-    generation, session_id, snapshot_version, snapshot, last_event_sequence
+    generation, session_id, snapshot_version, snapshot, last_event_sequence,
+    claim_generation, claim_snapshot_version, active_issue_reads,
+    active_comment_reads
 )
 VALUES (
     $1, $2, $3,
-    $4, 'fresh', 1, NULL, 0, '{}'::jsonb, 0
+    $4, 'fresh', 1, NULL, 0, '{}'::jsonb, 0, 1, 0, 0, 0
 )
 ON CONFLICT (issue_id, leader_agent_id) DO UPDATE SET
     generation = CASE
@@ -35,6 +37,23 @@ ON CONFLICT (issue_id, leader_agent_id) DO UPDATE SET
     END,
     runtime_id = EXCLUDED.runtime_id,
     active_task_id = EXCLUDED.active_task_id,
+    claim_generation = CASE
+        WHEN issue_coordinator_session.runtime_id <> EXCLUDED.runtime_id
+          OR ($5::boolean AND issue_coordinator_session.session_id IS NOT NULL)
+        THEN issue_coordinator_session.generation + 1
+        ELSE issue_coordinator_session.generation
+    END,
+    claim_snapshot_version = issue_coordinator_session.snapshot_version,
+    active_issue_reads = CASE
+        WHEN issue_coordinator_session.active_task_id = EXCLUDED.active_task_id
+        THEN issue_coordinator_session.active_issue_reads
+        ELSE 0
+    END,
+    active_comment_reads = CASE
+        WHEN issue_coordinator_session.active_task_id = EXCLUDED.active_task_id
+        THEN issue_coordinator_session.active_comment_reads
+        ELSE 0
+    END,
     continuity_state = CASE
         WHEN issue_coordinator_session.runtime_id <> EXCLUDED.runtime_id
           OR $5::boolean
@@ -65,7 +84,22 @@ type ClaimIssueCoordinatorSessionParams struct {
 	ForceColdStart bool        `json:"force_cold_start"`
 }
 
-func (q *Queries) ClaimIssueCoordinatorSession(ctx context.Context, arg ClaimIssueCoordinatorSessionParams) (IssueCoordinatorSession, error) {
+type ClaimIssueCoordinatorSessionRow struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	LeaderAgentID     pgtype.UUID        `json:"leader_agent_id"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	SessionID         pgtype.Text        `json:"session_id"`
+	Generation        int64              `json:"generation"`
+	SnapshotVersion   int64              `json:"snapshot_version"`
+	Snapshot          []byte             `json:"snapshot"`
+	LastEventSequence int64              `json:"last_event_sequence"`
+	ActiveTaskID      pgtype.UUID        `json:"active_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	ContinuityState   string             `json:"continuity_state"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) ClaimIssueCoordinatorSession(ctx context.Context, arg ClaimIssueCoordinatorSessionParams) (ClaimIssueCoordinatorSessionRow, error) {
 	row := q.db.QueryRow(ctx, claimIssueCoordinatorSession,
 		arg.IssueID,
 		arg.LeaderAgentID,
@@ -73,7 +107,7 @@ func (q *Queries) ClaimIssueCoordinatorSession(ctx context.Context, arg ClaimIss
 		arg.TaskID,
 		arg.ForceColdStart,
 	)
-	var i IssueCoordinatorSession
+	var i ClaimIssueCoordinatorSessionRow
 	err := row.Scan(
 		&i.IssueID,
 		&i.LeaderAgentID,
@@ -99,6 +133,26 @@ SET runtime_id = $1,
     snapshot = $3::jsonb,
     last_event_sequence = last_event_sequence + 1,
     active_task_id = NULL,
+    read_observations = (
+        SELECT COALESCE(jsonb_agg(observation ORDER BY ordinal DESC), '[]'::jsonb)
+        FROM (
+            SELECT observation, ordinal
+            FROM (
+                SELECT observation, ordinal
+                FROM jsonb_array_elements(read_observations) WITH ORDINALITY AS previous(observation, ordinal)
+                UNION ALL
+                SELECT jsonb_build_object(
+                    'task_id', $4::text,
+                    'issue_reads', active_issue_reads,
+                    'comment_reads', active_comment_reads,
+                    'duplicate_issue_reads', GREATEST(active_issue_reads - 1, 0),
+                    'duplicate_comment_reads', GREATEST(active_comment_reads - 1, 0)
+                ), COALESCE(jsonb_array_length(read_observations), 0) + 1
+            ) all_observations
+            ORDER BY ordinal DESC
+            LIMIT 30
+        ) observations
+    ),
     last_task_id = $4,
     continuity_state = CASE
         WHEN NULLIF($2::text, '') IS NULL THEN 'cold_start'
@@ -108,6 +162,8 @@ SET runtime_id = $1,
 WHERE issue_id = $5
   AND leader_agent_id = $6
   AND active_task_id = $4
+  AND generation = claim_generation
+  AND snapshot_version = claim_snapshot_version
 RETURNING issue_id, leader_agent_id, runtime_id, session_id, generation,
           snapshot_version, snapshot, last_event_sequence, active_task_id,
           last_task_id, continuity_state, updated_at
@@ -122,7 +178,22 @@ type CompleteIssueCoordinatorSessionParams struct {
 	LeaderAgentID pgtype.UUID `json:"leader_agent_id"`
 }
 
-func (q *Queries) CompleteIssueCoordinatorSession(ctx context.Context, arg CompleteIssueCoordinatorSessionParams) (IssueCoordinatorSession, error) {
+type CompleteIssueCoordinatorSessionRow struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	LeaderAgentID     pgtype.UUID        `json:"leader_agent_id"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	SessionID         pgtype.Text        `json:"session_id"`
+	Generation        int64              `json:"generation"`
+	SnapshotVersion   int64              `json:"snapshot_version"`
+	Snapshot          []byte             `json:"snapshot"`
+	LastEventSequence int64              `json:"last_event_sequence"`
+	ActiveTaskID      pgtype.UUID        `json:"active_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	ContinuityState   string             `json:"continuity_state"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) CompleteIssueCoordinatorSession(ctx context.Context, arg CompleteIssueCoordinatorSessionParams) (CompleteIssueCoordinatorSessionRow, error) {
 	row := q.db.QueryRow(ctx, completeIssueCoordinatorSession,
 		arg.RuntimeID,
 		arg.SessionID,
@@ -131,7 +202,7 @@ func (q *Queries) CompleteIssueCoordinatorSession(ctx context.Context, arg Compl
 		arg.IssueID,
 		arg.LeaderAgentID,
 	)
-	var i IssueCoordinatorSession
+	var i CompleteIssueCoordinatorSessionRow
 	err := row.Scan(
 		&i.IssueID,
 		&i.LeaderAgentID,
@@ -147,6 +218,25 @@ func (q *Queries) CompleteIssueCoordinatorSession(ctx context.Context, arg Compl
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getIssueCoordinatorReadObservations = `-- name: GetIssueCoordinatorReadObservations :one
+SELECT read_observations
+FROM issue_coordinator_session
+WHERE issue_id = $1
+  AND leader_agent_id = $2
+`
+
+type GetIssueCoordinatorReadObservationsParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	LeaderAgentID pgtype.UUID `json:"leader_agent_id"`
+}
+
+func (q *Queries) GetIssueCoordinatorReadObservations(ctx context.Context, arg GetIssueCoordinatorReadObservationsParams) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getIssueCoordinatorReadObservations, arg.IssueID, arg.LeaderAgentID)
+	var read_observations []byte
+	err := row.Scan(&read_observations)
+	return read_observations, err
 }
 
 const getIssueCoordinatorSession = `-- name: GetIssueCoordinatorSession :one
@@ -163,9 +253,24 @@ type GetIssueCoordinatorSessionParams struct {
 	LeaderAgentID pgtype.UUID `json:"leader_agent_id"`
 }
 
-func (q *Queries) GetIssueCoordinatorSession(ctx context.Context, arg GetIssueCoordinatorSessionParams) (IssueCoordinatorSession, error) {
+type GetIssueCoordinatorSessionRow struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	LeaderAgentID     pgtype.UUID        `json:"leader_agent_id"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	SessionID         pgtype.Text        `json:"session_id"`
+	Generation        int64              `json:"generation"`
+	SnapshotVersion   int64              `json:"snapshot_version"`
+	Snapshot          []byte             `json:"snapshot"`
+	LastEventSequence int64              `json:"last_event_sequence"`
+	ActiveTaskID      pgtype.UUID        `json:"active_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	ContinuityState   string             `json:"continuity_state"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) GetIssueCoordinatorSession(ctx context.Context, arg GetIssueCoordinatorSessionParams) (GetIssueCoordinatorSessionRow, error) {
 	row := q.db.QueryRow(ctx, getIssueCoordinatorSession, arg.IssueID, arg.LeaderAgentID)
-	var i IssueCoordinatorSession
+	var i GetIssueCoordinatorSessionRow
 	err := row.Scan(
 		&i.IssueID,
 		&i.LeaderAgentID,
@@ -181,4 +286,78 @@ func (q *Queries) GetIssueCoordinatorSession(ctx context.Context, arg GetIssueCo
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listIssueCoordinatorDecisionRefs = `-- name: ListIssueCoordinatorDecisionRefs :many
+SELECT id, status, answer_comment_id
+FROM issue_decisions
+WHERE issue_id = $1
+  AND workspace_id = $2
+ORDER BY created_at DESC, id DESC
+LIMIT $3
+`
+
+type ListIssueCoordinatorDecisionRefsParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+type ListIssueCoordinatorDecisionRefsRow struct {
+	ID              pgtype.UUID `json:"id"`
+	Status          string      `json:"status"`
+	AnswerCommentID pgtype.UUID `json:"answer_comment_id"`
+}
+
+func (q *Queries) ListIssueCoordinatorDecisionRefs(ctx context.Context, arg ListIssueCoordinatorDecisionRefsParams) ([]ListIssueCoordinatorDecisionRefsRow, error) {
+	rows, err := q.db.Query(ctx, listIssueCoordinatorDecisionRefs, arg.IssueID, arg.WorkspaceID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssueCoordinatorDecisionRefsRow{}
+	for rows.Next() {
+		var i ListIssueCoordinatorDecisionRefsRow
+		if err := rows.Scan(&i.ID, &i.Status, &i.AnswerCommentID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordIssueCoordinatorRead = `-- name: RecordIssueCoordinatorRead :execrows
+UPDATE issue_coordinator_session
+SET active_issue_reads = active_issue_reads + CASE WHEN $1::text = 'issue' THEN 1 ELSE 0 END,
+    active_comment_reads = active_comment_reads + CASE WHEN $1::text = 'comment' THEN 1 ELSE 0 END
+WHERE issue_id = $2
+  AND leader_agent_id = $3
+  AND active_task_id = $4
+  AND $1::text IN ('issue', 'comment')
+`
+
+type RecordIssueCoordinatorReadParams struct {
+	ReadKind      string      `json:"read_kind"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	LeaderAgentID pgtype.UUID `json:"leader_agent_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+}
+
+// Count successful task-token GETs to the Issue detail and comment-list
+// endpoints for the active coordinator task. Completion stores the per-run
+// totals plus duplicate counts (max(reads - 1, 0)) in read_observations.
+func (q *Queries) RecordIssueCoordinatorRead(ctx context.Context, arg RecordIssueCoordinatorReadParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordIssueCoordinatorRead,
+		arg.ReadKind,
+		arg.IssueID,
+		arg.LeaderAgentID,
+		arg.TaskID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -1107,18 +1107,23 @@ type Issue struct {
 }
 
 type IssueCoordinatorSession struct {
-	IssueID           pgtype.UUID        `json:"issue_id"`
-	LeaderAgentID     pgtype.UUID        `json:"leader_agent_id"`
-	RuntimeID         pgtype.UUID        `json:"runtime_id"`
-	SessionID         pgtype.Text        `json:"session_id"`
-	Generation        int64              `json:"generation"`
-	SnapshotVersion   int64              `json:"snapshot_version"`
-	Snapshot          []byte             `json:"snapshot"`
-	LastEventSequence int64              `json:"last_event_sequence"`
-	ActiveTaskID      pgtype.UUID        `json:"active_task_id"`
-	LastTaskID        pgtype.UUID        `json:"last_task_id"`
-	ContinuityState   string             `json:"continuity_state"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	IssueID              pgtype.UUID        `json:"issue_id"`
+	LeaderAgentID        pgtype.UUID        `json:"leader_agent_id"`
+	RuntimeID            pgtype.UUID        `json:"runtime_id"`
+	SessionID            pgtype.Text        `json:"session_id"`
+	Generation           int64              `json:"generation"`
+	SnapshotVersion      int64              `json:"snapshot_version"`
+	Snapshot             []byte             `json:"snapshot"`
+	ClaimGeneration      int64              `json:"claim_generation"`
+	ClaimSnapshotVersion int64              `json:"claim_snapshot_version"`
+	ActiveIssueReads     int32              `json:"active_issue_reads"`
+	ActiveCommentReads   int32              `json:"active_comment_reads"`
+	ReadObservations     []byte             `json:"read_observations"`
+	LastEventSequence    int64              `json:"last_event_sequence"`
+	ActiveTaskID         pgtype.UUID        `json:"active_task_id"`
+	LastTaskID           pgtype.UUID        `json:"last_task_id"`
+	ContinuityState      string             `json:"continuity_state"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
 type IssueDecision struct {
