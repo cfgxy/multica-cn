@@ -36,14 +36,14 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, ChatMessage, ChatPendingTask } from "@multica/core/types";
+import type { Agent, Attachment, CancelTaskResponse, ChatMessage, ChatPendingTask, ChatSession } from "@multica/core/types";
 import {
   enqueuePendingChatTask,
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
-import { api } from "@/data/api";
+import { api, ApiError } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
@@ -82,6 +82,8 @@ import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
+import { ChatQueuePanel } from "@/components/chat/chat-queue-panel";
+import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
@@ -123,6 +125,7 @@ export default function ChatDetailScreen() {
   // RUYI-449: 非空时经 VoiceSessionOverlay 对当前 agent 发起语音会话
   // （425 链路）；关闭即结束，不影响文本发送。
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [restoredAttachments, setRestoredAttachments] = useState<Attachment[]>([]);
 
   // ── Server state ───────────────────────────────────────────────────────
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
@@ -435,6 +438,96 @@ export default function ChatDetailScreen() {
       .finally(() => invalidatePendingTask(qc, sessionId));
   }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
 
+  const restoreCancelledMessage = useCallback((restored: CancelTaskResponse["cancelled_chat_message"]) => {
+    if (!restored?.restore_to_input || restored.chat_session_id !== activeSessionId) return;
+    setDraft(restored.chat_session_id, restored.content);
+    setRestoredAttachments(restored.attachments ?? []);
+  }, [activeSessionId, setDraft]);
+
+  const handleQueuedAction = useCallback(async (
+    task: NonNullable<ChatPendingTask["queued_tasks"]>[number],
+    action: "edit" | "remove",
+  ) => {
+    if (!activeSessionId) return;
+    try {
+      const result = await api.cancelTaskById(task.task_id, { sessionId: activeSessionId, queuedAction: action });
+      if (action === "edit") restoreCancelledMessage(result.cancelled_chat_message);
+    } catch (error) {
+      Alert.alert(
+        t("mobile.queue.action_failed_title", "Queue changed"),
+        error instanceof ApiError && error.status === 409
+          ? t("mobile.queue.stale", "This queued message changed. The queue has been refreshed.")
+          : t("mobile.queue.action_failed", "Could not update the queue. Try again."),
+      );
+    } finally {
+      invalidatePendingTask(qc, activeSessionId);
+      qc.invalidateQueries({ queryKey: chatKeys.messages(activeSessionId) });
+    }
+  }, [activeSessionId, restoreCancelledMessage, qc, t]);
+
+  const handlePrioritizeQueuedTask = useCallback(async (
+    task: NonNullable<ChatPendingTask["queued_tasks"]>[number],
+  ) => {
+    if (!activeSessionId) return;
+    try {
+      const result = await api.prioritizeQueuedChatTask(activeSessionId, task.task_id);
+      if (result.active_task_id) {
+        const stopped = await api.cancelTaskById(result.active_task_id);
+        restoreCancelledMessage(stopped.cancelled_chat_message);
+      }
+    } catch (error) {
+      Alert.alert(
+        t("mobile.queue.action_failed_title", "Queue changed"),
+        error instanceof ApiError && error.status === 409
+          ? t("mobile.queue.stale", "This queued message changed. The queue has been refreshed.")
+          : t("mobile.queue.action_failed", "Could not update the queue. Try again."),
+      );
+    } finally {
+      invalidatePendingTask(qc, activeSessionId);
+    }
+  }, [activeSessionId, restoreCancelledMessage, qc, t]);
+
+  const handleClearQueue = useCallback(() => {
+    if (!activeSessionId) return;
+    Alert.alert(
+      t("queue.clear_confirm_title", "Clear queued messages?"),
+      t("queue.clear_confirm_body", "This removes queued messages only. The current task will keep running."),
+      [
+        { text: t("common.cancel", "Cancel"), style: "cancel" },
+        {
+          text: t("queue.clear", "Clear queue"),
+          style: "destructive",
+          onPress: () => {
+            void api.clearQueuedChatTasks(activeSessionId)
+              .catch(() => Alert.alert(t("mobile.queue.action_failed_title", "Queue changed"), t("mobile.queue.action_failed", "Could not update the queue. Try again.")))
+              .finally(() => {
+                invalidatePendingTask(qc, activeSessionId);
+                qc.invalidateQueries({ queryKey: chatKeys.messages(activeSessionId) });
+              });
+          },
+        },
+      ],
+    );
+  }, [activeSessionId, qc, t]);
+
+  const handleSessionModelSelect = useCallback(async (model: string | null) => {
+    if (!activeSessionId) return;
+    try {
+      await api.setChatSessionModel(activeSessionId, model);
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+        old?.map((session) => session.id === activeSessionId ? { ...session, model_override: model } : session),
+      );
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    } catch (error) {
+      Alert.alert(
+        t("mobile.model.save_failed_title", "Model not changed"),
+        error instanceof ApiError && error.status === 409
+          ? t("mobile.model.unavailable", "This model or session is no longer available. Your previous selection is unchanged.")
+          : t("mobile.model.save_failed", "Could not save this model. Your previous selection is unchanged."),
+      );
+    }
+  }, [activeSessionId, qc, wsId, t]);
+
   // ── New-chat agent selection (list "+" multi-agent flow) ──────────────
   const handleNewChat = useCallback(() => {
     if (availableAgents.length > 1) {
@@ -617,6 +710,15 @@ export default function ChatDetailScreen() {
       />
       {availability === "none" ? <NoAgentBanner /> : null}
       <KeyboardAvoidingView behavior="padding" className="flex-1">
+        {activeSession && currentAgent ? (
+          <ChatSessionModelPicker
+            runtimeId={currentAgent.runtime_id ?? null}
+            modelOverride={activeSession.model_override ?? null}
+            agentModel={currentAgent.model ?? null}
+            disabled={isArchived || accessRevoked || !runtimeBound}
+            onSelect={handleSessionModelSelect}
+          />
+        ) : null}
         <ChatMessageList
           messages={visibleMessages}
           loading={messagesLoading}
@@ -639,6 +741,14 @@ export default function ChatDetailScreen() {
         ) : currentAgent ? (
           <RuntimeRequiredBanner agentName={currentAgent.name} />
         ) : null}
+        <ChatQueuePanel
+          pendingTask={pendingTask}
+          canPrioritize={!accessRevoked}
+          onEdit={(task) => handleQueuedAction(task, "edit")}
+          onRemove={(task) => handleQueuedAction(task, "remove")}
+          onPrioritize={handlePrioritizeQueuedTask}
+          onClear={handleClearQueue}
+        />
         <ChatComposer
           value={draft}
           onChangeText={(next) => setDraft(draftKey, next)}
@@ -646,12 +756,15 @@ export default function ChatDetailScreen() {
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}
+          allowSubmitWhileRunning={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}
           incomingSharedFiles={incomingSharedFiles}
           onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
           voiceGate={runtimeBound && currentAgent !== null ? voiceGate : null}
           onOpenVoice={() => setVoiceOpen(true)}
+          restoredAttachments={restoredAttachments}
+          onRestoredAttachmentsConsumed={() => setRestoredAttachments([])}
         />
       </KeyboardAvoidingView>
 

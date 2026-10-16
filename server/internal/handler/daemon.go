@@ -2396,6 +2396,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// kept verbatim, the clause region is rebuilt from the task_kind-
 	// filtered effective set.
 	agentInstructions := filterClauses(promptVersionScopeAgent, agent.ID, agent.Instructions)
+	model := agent.Model.String
+	if task.ChatModelSnapshot.Valid {
+		model = task.ChatModelSnapshot.String
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                      uuidToString(agent.ID),
 		Name:                    agent.Name,
@@ -2403,7 +2407,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		CustomEnv:               customEnv,
 		CustomArgs:              customArgs,
 		McpConfig:               mcpConfig,
-		Model:                   agent.Model.String,
+		Model:                   model,
 		ThinkingLevel:           agent.ThinkingLevel.String,
 		ServiceTier:             agent.ServiceTier.String,
 		RuntimeConfig:           runtimeConfig,
