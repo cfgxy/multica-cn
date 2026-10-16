@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
+.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-render mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
@@ -452,6 +452,7 @@ mcp-build: ## Build @multica/mcp from this checkout only (tsc -> dist/), without
 	pnpm --filter @multica/mcp build
 
 MCP_AUDIT_CREDENTIAL_FILE ?= $(HOME)/.config/multica/mcp-audit-credential
+export MCP_AUDIT_CREDENTIAL_FILE
 
 mcp-install: mcp-build ## Register @multica/mcp with every detected client; credential is read from a user-only file, never copied into client config
 	node "$(CURDIR)/apps/mcp/dist/install-cli.js" "$(CURDIR)/apps/mcp/dist/index.js" "$(MCP_AUDIT_CREDENTIAL_FILE)"
@@ -484,6 +485,17 @@ MCP_MEMORY_MAX ?= 768M
 
 MCP_HTTP_UNIT_DIR := $(HOME)/.config/systemd/user
 MCP_HTTP_UNIT := $(MCP_HTTP_UNIT_DIR)/multica-mcp-http.service
+MCP_HTTP_UNIT_RENDER = sed -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
+	    -e 's|@PORT@|$(MCP_HTTP_PORT)|g' \
+	    -e 's|@HOST@|$(MCP_HTTP_HOST)|g' \
+	    -e 's|@CPU_QUOTA@|$(MCP_CPU_QUOTA)|g' \
+	    -e 's|@MEMORY_HIGH@|$(MCP_MEMORY_HIGH)|g' \
+	    -e 's|@MEMORY_MAX@|$(MCP_MEMORY_MAX)|g' \
+	    deploy/multica-mcp-http.service.template | \
+	    perl -pe 's/\@AUDIT_CREDENTIAL_FILE\@/$$ENV{MCP_AUDIT_CREDENTIAL_FILE}/g'
+
+mcp-http-render: ## Render the MCP HTTP unit to stdout without installing it
+	@$(MCP_HTTP_UNIT_RENDER)
 
 mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport with a systemd credential file (zero sudo): make mcp-http-install [MCP_AUDIT_CREDENTIAL_FILE=/path/to/credential]
 	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
@@ -500,14 +512,7 @@ mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport with a syst
 		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
 	esac; \
 	mkdir -p "$(MCP_HTTP_UNIT_DIR)"; \
-	sed -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
-	    -e 's|@PORT@|$(MCP_HTTP_PORT)|g' \
-	    -e 's|@HOST@|$(MCP_HTTP_HOST)|g' \
-	    -e 's|@CPU_QUOTA@|$(MCP_CPU_QUOTA)|g' \
-	    -e 's|@MEMORY_HIGH@|$(MCP_MEMORY_HIGH)|g' \
-	    -e 's|@MEMORY_MAX@|$(MCP_MEMORY_MAX)|g' \
-	    -e 's|@AUDIT_CREDENTIAL_FILE@|$(MCP_AUDIT_CREDENTIAL_FILE)|g' \
-	    deploy/multica-mcp-http.service.template > "$(MCP_HTTP_UNIT)"; \
+	$(MCP_HTTP_UNIT_RENDER) > "$(MCP_HTTP_UNIT)"; \
 	systemctl --user daemon-reload; \
 	systemctl --user enable --now multica-mcp-http.service; \
 	if [ "$$(loginctl show-user $$(id -un) -p Linger --value 2>/dev/null)" != "yes" ]; then \
