@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { Logger } from "../src/log.js";
 import {
@@ -96,6 +98,19 @@ describe("wwwAuthenticateChallenge", () => {
   it("degrades to a bare challenge when no site root is configured", () => {
     expect(wwwAuthenticateChallenge(undefined)).toBe("Bearer");
     expect(wwwAuthenticateChallenge("   ")).toBe("Bearer");
+  });
+});
+
+describe("HTTP systemd credential wiring", () => {
+  it("uses systemd LoadCredential and passes only its runtime file path to MCP", () => {
+    const template = readFileSync(
+      join(process.cwd(), "..", "..", "deploy", "multica-mcp-http.service.template"),
+      "utf8",
+    );
+    expect(template).toContain("LoadCredential=multica-mcp-audit:@AUDIT_CREDENTIAL_FILE@");
+    expect(template).toContain('--audit-credential-file "$CREDENTIALS_DIRECTORY/multica-mcp-audit"');
+    expect(template).not.toContain("SetCredential=");
+    expect(template).not.toContain("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=");
   });
 });
 

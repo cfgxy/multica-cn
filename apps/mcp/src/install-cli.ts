@@ -15,8 +15,9 @@
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 
+import { readAuditCredential } from "./audit-credential.js";
 import { createClientTargets } from "./install/clients.js";
 import { formatInstallReport, runInstall } from "./install/installer.js";
 
@@ -38,7 +39,16 @@ function main(): void {
   }
 
   const targets = createClientTargets(homedir());
-  const results = runInstall(targets, { distPath });
+  const auditCredentialFile = process.argv[3] ?? join(homedir(), ".config", "multica", "mcp-audit-credential");
+  if (!isAbsolute(auditCredentialFile)) {
+    fail(`audit credential file path must be absolute, got: ${auditCredentialFile}`);
+  }
+  try {
+    readAuditCredential(auditCredentialFile);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "unable to load MCP audit credential file");
+  }
+  const results = runInstall(targets, { distPath, auditCredentialFile });
   process.stdout.write(`${formatInstallReport(results)}\n`);
 }
 
