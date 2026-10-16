@@ -246,21 +246,24 @@ type Attachment struct {
 }
 
 type AuditEvent struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Domain      string             `json:"domain"`
-	EventType   string             `json:"event_type"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	ActorType   string             `json:"actor_type"`
-	ActorID     pgtype.UUID        `json:"actor_id"`
-	TriggerKind pgtype.Text        `json:"trigger_kind"`
-	TriggerRef  pgtype.Text        `json:"trigger_ref"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	Reason      pgtype.Text        `json:"reason"`
-	Details     []byte             `json:"details"`
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Domain       string             `json:"domain"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	TriggerKind  pgtype.Text        `json:"trigger_kind"`
+	TriggerRef   pgtype.Text        `json:"trigger_ref"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Autopilot struct {
@@ -1501,6 +1504,28 @@ type MarketplacePromptVersion struct {
 	WithdrawnBy          pgtype.UUID        `json:"withdrawn_by"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpInvocationAuditOutbox struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	EventType     string             `json:"event_type"`
+	OccurredAt    pgtype.Timestamptz `json:"occurred_at"`
+	ActorType     string             `json:"actor_type"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	InvocationID  pgtype.UUID        `json:"invocation_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	RuntimeID     pgtype.UUID        `json:"runtime_id"`
+	Reason        pgtype.Text        `json:"reason"`
+	Details       []byte             `json:"details"`
+	Sensitive     bool               `json:"sensitive"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	Attempts      int32              `json:"attempts"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+	LastErrorCode pgtype.Text        `json:"last_error_code"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type Member struct {

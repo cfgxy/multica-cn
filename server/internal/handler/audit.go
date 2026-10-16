@@ -14,8 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const (
@@ -28,21 +28,23 @@ const (
 // occurred_at is RFC3339Nano: clients page with it as the keyset cursor, so it
 // must keep the same sub-second precision as next_cursor.
 type auditEventDTO struct {
-	ID          string          `json:"id"`
-	WorkspaceID string          `json:"workspace_id"`
-	Domain      string          `json:"domain"`
-	EventType   string          `json:"event_type"`
-	OccurredAt  *string         `json:"occurred_at"`
-	ActorType   string          `json:"actor_type"`
-	ActorID     *string         `json:"actor_id"`
-	TriggerKind *string         `json:"trigger_kind"`
-	TriggerRef  *string         `json:"trigger_ref"`
-	IssueID     *string         `json:"issue_id"`
-	TaskID      *string         `json:"task_id"`
-	AgentID     *string         `json:"agent_id"`
-	RuntimeID   *string         `json:"runtime_id"`
-	Reason      *string         `json:"reason"`
-	Details     json.RawMessage `json:"details"`
+	ID           string          `json:"id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	Domain       string          `json:"domain"`
+	EventType    string          `json:"event_type"`
+	OccurredAt   *string         `json:"occurred_at"`
+	ActorType    string          `json:"actor_type"`
+	ActorID      *string         `json:"actor_id"`
+	TriggerKind  *string         `json:"trigger_kind"`
+	TriggerRef   *string         `json:"trigger_ref"`
+	IssueID      *string         `json:"issue_id"`
+	TaskID       *string         `json:"task_id"`
+	AgentID      *string         `json:"agent_id"`
+	RuntimeID    *string         `json:"runtime_id"`
+	Reason       *string         `json:"reason"`
+	InvocationID *string         `json:"invocation_id,omitempty"`
+	Sensitive    bool            `json:"sensitive"`
+	Details      json.RawMessage `json:"details"`
 }
 
 // optionalUUIDStr renders a nullable uuid dimension: invalid becomes null,
@@ -61,21 +63,23 @@ func auditEventToDTO(e db.AuditEvent) auditEventDTO {
 		details = json.RawMessage("{}")
 	}
 	return auditEventDTO{
-		ID:          uuidToString(e.ID),
-		WorkspaceID: uuidToString(e.WorkspaceID),
-		Domain:      e.Domain,
-		EventType:   e.EventType,
-		OccurredAt:  timestampToNanoPtr(e.OccurredAt),
-		ActorType:   e.ActorType,
-		ActorID:     optionalUUIDStr(e.ActorID),
-		TriggerKind: textToPtr(e.TriggerKind),
-		TriggerRef:  textToPtr(e.TriggerRef),
-		IssueID:     optionalUUIDStr(e.IssueID),
-		TaskID:      optionalUUIDStr(e.TaskID),
-		AgentID:     optionalUUIDStr(e.AgentID),
-		RuntimeID:   optionalUUIDStr(e.RuntimeID),
-		Reason:      textToPtr(e.Reason),
-		Details:     details,
+		ID:           uuidToString(e.ID),
+		WorkspaceID:  uuidToString(e.WorkspaceID),
+		Domain:       e.Domain,
+		EventType:    e.EventType,
+		OccurredAt:   timestampToNanoPtr(e.OccurredAt),
+		ActorType:    e.ActorType,
+		ActorID:      optionalUUIDStr(e.ActorID),
+		TriggerKind:  textToPtr(e.TriggerKind),
+		TriggerRef:   textToPtr(e.TriggerRef),
+		IssueID:      optionalUUIDStr(e.IssueID),
+		TaskID:       optionalUUIDStr(e.TaskID),
+		AgentID:      optionalUUIDStr(e.AgentID),
+		RuntimeID:    optionalUUIDStr(e.RuntimeID),
+		Reason:       textToPtr(e.Reason),
+		InvocationID: optionalUUIDStr(e.InvocationID),
+		Sensitive:    e.Sensitive,
+		Details:      details,
 	}
 }
 
@@ -83,20 +87,21 @@ func auditEventToDTO(e db.AuditEvent) auditEventDTO {
 // and issue-level endpoints. Invalid values are rejected rather than skipped:
 // a typo'd filter silently widening the result set is worse than a 400.
 type listAuditEventsParams struct {
-	domain    pgtype.Text
-	eventType pgtype.Text
-	actorType pgtype.Text
-	actorID   pgtype.UUID
-	issueID   pgtype.UUID
-	taskID    pgtype.UUID
-	agentID   pgtype.UUID
-	runtimeID pgtype.UUID
-	reason    pgtype.Text
-	since     pgtype.Timestamptz
-	until     pgtype.Timestamptz
-	limit     int32
-	cursor    pgtype.Timestamptz
-	cursorID  pgtype.UUID
+	domain       pgtype.Text
+	eventType    pgtype.Text
+	actorType    pgtype.Text
+	actorID      pgtype.UUID
+	issueID      pgtype.UUID
+	taskID       pgtype.UUID
+	agentID      pgtype.UUID
+	runtimeID    pgtype.UUID
+	reason       pgtype.Text
+	invocationID pgtype.UUID
+	since        pgtype.Timestamptz
+	until        pgtype.Timestamptz
+	limit        int32
+	cursor       pgtype.Timestamptz
+	cursorID     pgtype.UUID
 }
 
 func textParamIfSet(v string) pgtype.Text {
@@ -141,6 +146,9 @@ func parseListAuditEventsParams(w http.ResponseWriter, r *http.Request) (listAud
 		return p, false
 	}
 	if p.runtimeID, ok = uuidParam(w, "runtime_id", q.Get("runtime_id")); !ok {
+		return p, false
+	}
+	if p.invocationID, ok = uuidParam(w, "invocation_id", q.Get("invocation_id")); !ok {
 		return p, false
 	}
 
@@ -208,6 +216,10 @@ func (h *Handler) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	member, ok := h.requireWorkspaceMember(w, r, uuidToString(workspaceID), "workspace not found")
+	if !ok {
+		return
+	}
 	p, ok := parseListAuditEventsParams(w, r)
 	if !ok {
 		return
@@ -225,13 +237,15 @@ func (h *Handler) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
 		// The MCP search_audit_events tool passes issue_id through this
 		// endpoint, so the filter must bite here — leaving it open silently
 		// widened the MCP result to the whole workspace trail.
-		FilterIssueID:   p.issueID,
-		FilterTaskID:    p.taskID,
-		FilterAgentID:   p.agentID,
-		FilterRuntimeID: p.runtimeID,
-		FilterReason:    p.reason,
-		CursorAt:        p.cursor,
-		CursorID:        p.cursorID,
+		FilterIssueID:      p.issueID,
+		FilterTaskID:       p.taskID,
+		FilterAgentID:      p.agentID,
+		FilterRuntimeID:    p.runtimeID,
+		FilterReason:       p.reason,
+		FilterInvocationID: p.invocationID,
+		IncludeSensitive:   roleAllowed(member.Role, "owner", "admin"),
+		CursorAt:           p.cursor,
+		CursorID:           p.cursorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list audit events")
@@ -249,27 +263,33 @@ func (h *Handler) ListIssueAuditEvents(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	member, ok := h.requireWorkspaceMember(w, r, uuidToString(issue.WorkspaceID), "issue not found")
+	if !ok {
+		return
+	}
 	p, ok := parseListAuditEventsParams(w, r)
 	if !ok {
 		return
 	}
 
 	rows, err := h.Queries.ListAuditEvents(r.Context(), db.ListAuditEventsParams{
-		WorkspaceID:     issue.WorkspaceID,
-		Limit:           p.limit,
-		Since:           p.since,
-		Until:           p.until,
-		FilterDomain:    p.domain,
-		FilterEventType: p.eventType,
-		FilterActorType: p.actorType,
-		FilterActorID:   p.actorID,
-		FilterIssueID:   issue.ID,
-		FilterTaskID:    p.taskID,
-		FilterAgentID:   p.agentID,
-		FilterRuntimeID: p.runtimeID,
-		FilterReason:    p.reason,
-		CursorAt:        p.cursor,
-		CursorID:        p.cursorID,
+		WorkspaceID:        issue.WorkspaceID,
+		Limit:              p.limit,
+		Since:              p.since,
+		Until:              p.until,
+		FilterDomain:       p.domain,
+		FilterEventType:    p.eventType,
+		FilterActorType:    p.actorType,
+		FilterActorID:      p.actorID,
+		FilterIssueID:      issue.ID,
+		FilterTaskID:       p.taskID,
+		FilterAgentID:      p.agentID,
+		FilterRuntimeID:    p.runtimeID,
+		FilterReason:       p.reason,
+		FilterInvocationID: p.invocationID,
+		IncludeSensitive:   roleAllowed(member.Role, "owner", "admin"),
+		CursorAt:           p.cursor,
+		CursorID:           p.cursorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list audit events")
