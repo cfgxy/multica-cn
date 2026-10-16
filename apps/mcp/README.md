@@ -129,6 +129,11 @@ mention 准入拒绝）以结构化 `code` 返回，不复用异常字符串。�
 默认后端地址为 Multica Cloud（`https://api.multica.ai`）；自托管部署用
 `--server-url` 或 `MULTICA_SERVER_URL` 覆盖。
 
+Inbox 工具通过后端现有的 MCP invocation audit 端点记录调用。部署时须在 MCP
+进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`；未配置时，
+Inbox 操作会在执行前失败关闭。审计只记录操作者、工具、工作区、耗时和结果，
+不记录通知正文、认证头或凭据。
+
 ## 用法
 
 stdio（claude code 示例，`.mcp.json`）：
