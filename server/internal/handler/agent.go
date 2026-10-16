@@ -76,8 +76,8 @@ type AgentResponse struct {
 	VoiceProviderID string          `json:"voice_provider_id"`
 	VoiceModel      string          `json:"voice_model"`
 	VoiceAdvanced   json.RawMessage `json:"voice_advanced"`
-	Name              string `json:"name"`
-	Description       string `json:"description"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
 	// Instructions is what this agent's owner wrote. For a system agent it
 	// holds only the workspace's own notes — the product half lives in
 	// SystemInstructions and is never stored on the row.
@@ -561,9 +561,9 @@ type AgentTaskResponse struct {
 	// undeclared tasks (primary-resource fallback, lock-free whole-root
 	// snapshot). Mirror field: internal/daemon/types.go, same JSON name.
 	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
-	CreatedAt           string                `json:"created_at"`
-	PriorSessionID      string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir        string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	CreatedAt           string          `json:"created_at"`
+	PriorSessionID      string          `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	PriorWorkDir        string          `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback. The daemon surfaces the continuity gap in
@@ -580,7 +580,11 @@ type AgentTaskResponse struct {
 	// fresh session — worse than the brief, still better than the overflow the
 	// gate is preventing. Mirror field: internal/daemon/types.go, same JSON name
 	PriorContextBrief string `json:"prior_context_brief,omitempty"`
-	WorkDir           string `json:"work_dir,omitempty"` // local working directory pinned for this task; populated once the daemon reports it
+	// IssueCoordinator carries bounded continuity metadata for the opt-in
+	// Codex leader PoC. It contains references and counters, never transcript.
+	IssueCoordinator        *IssueCoordinatorClaim `json:"issue_coordinator,omitempty"`
+	IssueCoordinatorEnabled bool                   `json:"-"`
+	WorkDir                 string                 `json:"work_dir,omitempty"` // local working directory pinned for this task; populated once the daemon reports it
 	// RelativeWorkDir is a privacy-safe display form of WorkDir intended for
 	// the UI. For standard tasks it strips the daemon's workspaces root while
 	// preserving either the legacy or readable workspace/task segments; for local_directory
@@ -737,6 +741,13 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+}
+
+type IssueCoordinatorClaim struct {
+	Generation        int64  `json:"generation"`
+	SnapshotVersion   int64  `json:"snapshot_version"`
+	LastEventSequence int64  `json:"last_event_sequence"`
+	ContinuityState   string `json:"continuity_state"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -1405,7 +1416,7 @@ type CreateAgentRequest struct {
 	// VoiceRuntimeID optionally binds the voice slot (RUYI-425). Empty = the
 	// historical text-only shape. The target must be a workspace runtime whose
 	// protocol family declares realtime_voice, and must differ from runtime_id.
-	VoiceRuntimeID string            `json:"voice_runtime_id"`
+	VoiceRuntimeID string `json:"voice_runtime_id"`
 	// VoiceProviderID optionally points the D2 voice override at a
 	// workspace voice_provider pool entry (RUYI-693). Non-empty requires the
 	// entry to exist in this workspace, be enabled, and speak a family the
@@ -1414,11 +1425,11 @@ type CreateAgentRequest struct {
 	VoiceProviderID string            `json:"voice_provider_id"`
 	VoiceModel      string            `json:"voice_model"`
 	VoiceAdvanced   json.RawMessage   `json:"voice_advanced"`
-	RuntimeConfig  any               `json:"runtime_config"`
-	CustomEnv      map[string]string `json:"custom_env"`
-	CustomArgs     []string          `json:"custom_args"`
-	McpConfig      json.RawMessage   `json:"mcp_config"`
-	Visibility     string            `json:"visibility"`
+	RuntimeConfig   any               `json:"runtime_config"`
+	CustomEnv       map[string]string `json:"custom_env"`
+	CustomArgs      []string          `json:"custom_args"`
+	McpConfig       json.RawMessage   `json:"mcp_config"`
+	Visibility      string            `json:"visibility"`
 	// PermissionMode + InvocationTargets are the new invocation-permission
 	// inputs (MUL-3963). When permission_mode is present it is authoritative
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
@@ -1878,9 +1889,9 @@ type UpdateAgentRequest struct {
 	// half-configured level can never exist. voice_advanced keeps the
 	// not-set semantics of agentVoiceAdvancedRaw: null/"" preserves (the
 	// COALESCE contract), {} stores an explicit empty refinement.
-	VoiceProviderID *string          `json:"voice_provider_id"`
-	VoiceModel      *string          `json:"voice_model"`
-	VoiceAdvanced   json.RawMessage  `json:"voice_advanced"`
+	VoiceProviderID *string         `json:"voice_provider_id"`
+	VoiceModel      *string         `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage `json:"voice_advanced"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)

@@ -68,6 +68,10 @@ const (
 	// default; set the flag to true to fall back fleet-wide. Per-run
 	// computation failures degrade on their own without this switch.
 	ClauseDynamicInjectionDisabled = "clause_dynamic_injection_disabled"
+	// IssueCoordinatorSessionPOC enables opt-in Codex leader continuity for
+	// specifically targeted issue_id and agent_id flag rules. It stays off by
+	// default and does not affect other runtimes or the existing task queue.
+	IssueCoordinatorSessionPOC = "issue_coordinator_session_poc"
 )
 
 var frontendPublicFlags = []string{

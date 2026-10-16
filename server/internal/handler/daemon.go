@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
+	"github.com/multica-ai/multica/server/internal/issuecoordinator"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -1889,7 +1890,8 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID: parseUUID(resp.WorkspaceID),
 			UserID:      rt.OwnerID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-		}, deliveredCommentIDs, commentBackedTask, daemonTokens...)
+		}, deliveredCommentIDs, commentBackedTask, resp.IssueCoordinatorEnabled,
+			resp.IssueCoordinatorEnabled && (resp.PriorSessionResumeUnavailable || resp.PriorContextBrief != ""), daemonTokens...)
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
@@ -3568,8 +3570,62 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
 	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections)
+	if h.issueCoordinatorEnabled(r.Context(), *task, runtime, runtimeWorkspaceID) {
+		resp.IssueCoordinatorEnabled = true
+		coordinator, coordErr := h.Queries.GetIssueCoordinatorSession(r.Context(), db.GetIssueCoordinatorSessionParams{
+			IssueID:       task.IssueID,
+			LeaderAgentID: task.AgentID,
+		})
+		switch {
+		case coordErr == nil:
+			resp.IssueCoordinator = &IssueCoordinatorClaim{
+				Generation:        coordinator.Generation,
+				SnapshotVersion:   coordinator.SnapshotVersion,
+				LastEventSequence: coordinator.LastEventSequence,
+				ContinuityState:   coordinator.ContinuityState,
+			}
+			if coordinator.RuntimeID == task.RuntimeID && coordinator.SessionID.Valid &&
+				(resp.PriorSessionID == coordinator.SessionID.String || (resp.PriorSessionID == "" && resp.PriorContextBrief == "" && !resp.PriorSessionResumeUnavailable)) {
+				resp.PriorSessionID = coordinator.SessionID.String
+			}
+			if coordinator.RuntimeID != task.RuntimeID || !coordinator.SessionID.Valid || coordinator.ContinuityState == "cold_start" {
+				resp.PriorSessionID = ""
+				h.applyIssueCoordinatorColdStartBrief(r.Context(), &resp, *task, runtimeWorkspaceID, coordinator)
+			}
+		case errors.Is(coordErr, pgx.ErrNoRows):
+			resp.IssueCoordinator = &IssueCoordinatorClaim{Generation: 1, ContinuityState: "cold_start"}
+			resp.PriorSessionID = ""
+			h.applyIssueCoordinatorColdStartBrief(r.Context(), &resp, *task, runtimeWorkspaceID, db.IssueCoordinatorSession{Generation: 1})
+		default:
+			slog.Warn("issue coordinator: load state failed; using existing task continuity",
+				"task_id", uuidToString(task.ID), "error", coordErr)
+		}
+	}
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+func (h *Handler) issueCoordinatorEnabled(ctx context.Context, task db.AgentTaskQueue, runtime db.AgentRuntime, workspaceID string) bool {
+	return issuecoordinator.Enabled(ctx, h.FeatureFlags, normalizeProvider(runtime.Provider), workspaceID,
+		uuidToString(task.IssueID), uuidToString(task.AgentID), task.IsLeaderTask)
+}
+
+func (h *Handler) applyIssueCoordinatorColdStartBrief(ctx context.Context, resp *AgentTaskResponse, task db.AgentTaskQueue, workspaceID string, coordinator db.IssueCoordinatorSession) {
+	if resp.PriorContextBrief == "" {
+		var inputs sessionBriefInputs
+		if latest, err := h.Queries.GetLatestTerminalTaskForBrief(ctx, db.GetLatestTerminalTaskForBriefParams{
+			AgentID: task.AgentID,
+			IssueID: task.IssueID,
+		}); err == nil {
+			inputs.priorResult = latest.Result
+			inputs.continuityGap = latest.SessionRolloutMissing
+		}
+		brief := h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(workspaceID), task.AgentID, inputs)
+		resp.PriorContextBrief = fmt.Sprintf(
+			"Issue coordinator cold start (generation %d, snapshot version %d, event sequence %d). The prior session was not resumed; use current Issue activity as the source of truth.\n\n%s",
+			coordinator.Generation, coordinator.SnapshotVersion, coordinator.LastEventSequence, brief)
+	}
+	resp.PriorSessionResumeUnavailable = false
 }
 
 // recordClaimedPromptVersions resolves the current prompt_version.version
@@ -3824,7 +3880,8 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: parseUUID(resp.WorkspaceID),
 		UserID:      runtime.OwnerID,
 		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
-	}, deliveredCommentIDs, commentBackedTask, daemonTokens...)
+	}, deliveredCommentIDs, commentBackedTask, resp.IssueCoordinatorEnabled,
+		resp.IssueCoordinatorEnabled && (resp.PriorSessionResumeUnavailable || resp.PriorContextBrief != ""), daemonTokens...)
 	if ferr != nil {
 		outcome = "error_claim_finalize"
 		slog.Error("task claim: failed to finalize token and comment delivery receipt",

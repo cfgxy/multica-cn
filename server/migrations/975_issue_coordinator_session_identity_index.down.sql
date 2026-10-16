@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS issue_coordinator_session_identity_uidx;

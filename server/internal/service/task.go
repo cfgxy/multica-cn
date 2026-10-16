@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/issuecoordinator"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -4090,6 +4091,8 @@ func (s *TaskService) FinalizeTaskClaim(
 	token db.CreateTaskTokenParams,
 	deliveredCommentIDs []pgtype.UUID,
 	recordCommentReceipt bool,
+	issueCoordinatorEnabled bool,
+	issueCoordinatorColdStart bool,
 	daemonTokens ...db.CreateDaemonTokenParams,
 ) ([]pgtype.UUID, error) {
 	if len(daemonTokens) > 1 {
@@ -4097,6 +4100,17 @@ func (s *TaskService) FinalizeTaskClaim(
 	}
 	receipt := task.DeliveredCommentIds
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if issueCoordinatorEnabled {
+			if _, err := qtx.ClaimIssueCoordinatorSession(ctx, db.ClaimIssueCoordinatorSessionParams{
+				IssueID:        task.IssueID,
+				LeaderAgentID:  task.AgentID,
+				RuntimeID:      task.RuntimeID,
+				TaskID:         task.ID,
+				ForceColdStart: issueCoordinatorColdStart,
+			}); err != nil {
+				return fmt.Errorf("claim issue coordinator session: %w", err)
+			}
+		}
 		if _, err := qtx.CreateTaskToken(ctx, token); err != nil {
 			return fmt.Errorf("create task token: %w", err)
 		}
@@ -4742,6 +4756,31 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			return err
 		}
 		task = t
+		if t.IsLeaderTask && t.IssueID.Valid {
+			coordinator, coordErr := qtx.GetIssueCoordinatorSession(ctx, db.GetIssueCoordinatorSessionParams{
+				IssueID:       t.IssueID,
+				LeaderAgentID: t.AgentID,
+			})
+			if coordErr != nil && !errors.Is(coordErr, pgx.ErrNoRows) {
+				return fmt.Errorf("load issue coordinator session: %w", coordErr)
+			}
+			if coordErr == nil && coordinator.ActiveTaskID == t.ID {
+				snapshot, marshalErr := issuecoordinator.Snapshot(util.UUIDToString(t.ID), result)
+				if marshalErr != nil {
+					return fmt.Errorf("marshal issue coordinator snapshot: %w", marshalErr)
+				}
+				if _, err := qtx.CompleteIssueCoordinatorSession(ctx, db.CompleteIssueCoordinatorSessionParams{
+					RuntimeID:     t.RuntimeID,
+					SessionID:     sessionID,
+					Snapshot:      snapshot,
+					TaskID:        t.ID,
+					IssueID:       t.IssueID,
+					LeaderAgentID: t.AgentID,
+				}); err != nil {
+					return fmt.Errorf("complete issue coordinator session: %w", err)
+				}
+			}
+		}
 
 		// Atomic with the status flip: a crash between the two would leave a
 		// finished obligation looking pending forever.

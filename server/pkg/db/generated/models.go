@@ -1106,6 +1106,21 @@ type Issue struct {
 	RunSuppressedAt    pgtype.Timestamptz `json:"run_suppressed_at"`
 }
 
+type IssueCoordinatorSession struct {
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	LeaderAgentID     pgtype.UUID        `json:"leader_agent_id"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	SessionID         pgtype.Text        `json:"session_id"`
+	Generation        int64              `json:"generation"`
+	SnapshotVersion   int64              `json:"snapshot_version"`
+	Snapshot          []byte             `json:"snapshot"`
+	LastEventSequence int64              `json:"last_event_sequence"`
+	ActiveTaskID      pgtype.UUID        `json:"active_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	ContinuityState   string             `json:"continuity_state"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type IssueDecision struct {
 	ID                    pgtype.UUID        `json:"id"`
 	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
