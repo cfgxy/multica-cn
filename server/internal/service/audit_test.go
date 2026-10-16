@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -54,6 +55,12 @@ func TestValidateAcceptsMinimalEventPerDomain(t *testing.T) {
 			e.Domain, e.EventType = AuditDomainOps, AuditOpsServerStarted
 			e.TaskID = pgtype.UUID{}
 		}},
+		{"mcp", func(e *Event) {
+			e.Domain, e.EventType = AuditDomainMCP, AuditMCPInvocationStarted
+			e.TaskID = pgtype.UUID{}
+			e.InvocationID = pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+			e.ExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,6 +70,35 @@ func TestValidateAcceptsMinimalEventPerDomain(t *testing.T) {
 				t.Fatalf("minimal %s event must validate, got: %v", tc.name, err)
 			}
 		})
+	}
+}
+
+func TestMCPInvocationAuditEventHasStablePhaseIdentity(t *testing.T) {
+	invocationID := uuid.New()
+	ctx := MCPInvocationAuditContext{
+		InvocationID: pgtype.UUID{Bytes: invocationID, Valid: true},
+		WorkspaceID:  pgtype.UUID{Bytes: [16]byte{1}, Valid: true},
+		ActorType:    AuditActorMember,
+		ActorID:      pgtype.UUID{Bytes: [16]byte{2}, Valid: true},
+	}
+	first := MCPInvocationAuditEvent(ctx, AuditMCPInvocationStarted, map[string]string{"tool": "list_files"}, false)
+	retry := MCPInvocationAuditEvent(ctx, AuditMCPInvocationStarted, map[string]string{"tool": "list_files"}, false)
+	finish := MCPInvocationAuditEvent(ctx, AuditMCPInvocationFinished, map[string]string{"status": "ok"}, false)
+	if first.ID != retry.ID {
+		t.Fatal("a retried start must use the same audit event id")
+	}
+	if first.ID == finish.ID {
+		t.Fatal("start and finish must have distinct audit event ids")
+	}
+	if first.InvocationID != ctx.InvocationID || !first.ExpiresAt.Valid || first.ActorType != AuditActorMember {
+		t.Fatalf("invocation identity, retention or actor was not carried: %+v", first)
+	}
+	if err := first.Validate(); err != nil {
+		t.Fatalf("valid MCP start event rejected: %v", err)
+	}
+	first.InvocationID = pgtype.UUID{}
+	if err := first.Validate(); err == nil || !strings.Contains(err.Error(), "invocation_id") {
+		t.Fatalf("missing invocation id must be rejected, got %v", err)
 	}
 }
 

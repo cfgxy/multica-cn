@@ -25,19 +25,26 @@ type auditEventsPageWire struct {
 }
 
 type auditEventWire struct {
-	ID         string  `json:"id"`
-	Domain     string  `json:"domain"`
-	EventType  string  `json:"event_type"`
-	OccurredAt string  `json:"occurred_at"`
-	ActorType  string  `json:"actor_type"`
-	IssueID    *string `json:"issue_id"`
-	TaskID     *string `json:"task_id"`
+	ID           string  `json:"id"`
+	Domain       string  `json:"domain"`
+	EventType    string  `json:"event_type"`
+	OccurredAt   string  `json:"occurred_at"`
+	ActorType    string  `json:"actor_type"`
+	IssueID      *string `json:"issue_id"`
+	TaskID       *string `json:"task_id"`
+	InvocationID *string `json:"invocation_id"`
+	Sensitive    bool    `json:"sensitive"`
 }
 
 func fetchWorkspaceAuditEvents(t *testing.T, query string) (auditEventsPageWire, int) {
+	return fetchWorkspaceAuditEventsAs(t, testUserID, query)
+}
+
+func fetchWorkspaceAuditEventsAs(t *testing.T, userID, query string) (auditEventsPageWire, int) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	req := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/audit-events?"+query, nil)
+	req.Header.Set("X-User-ID", userID)
 	req = withURLParam(req, "id", testWorkspaceID)
 	testHandler.ListAuditEvents(w, req)
 	var page auditEventsPageWire
@@ -50,9 +57,14 @@ func fetchWorkspaceAuditEvents(t *testing.T, query string) (auditEventsPageWire,
 }
 
 func fetchIssueAuditEvents(t *testing.T, issueID, query string) (auditEventsPageWire, int) {
+	return fetchIssueAuditEventsAs(t, testUserID, issueID, query)
+}
+
+func fetchIssueAuditEventsAs(t *testing.T, userID, issueID, query string) (auditEventsPageWire, int) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	req := newRequest("GET", "/api/issues/"+issueID+"/audit-events?"+query, nil)
+	req.Header.Set("X-User-ID", userID)
 	req = withURLParam(req, "id", issueID)
 	testHandler.ListIssueAuditEvents(w, req)
 	var page auditEventsPageWire
@@ -62,6 +74,61 @@ func fetchIssueAuditEvents(t *testing.T, issueID, query string) (auditEventsPage
 		}
 	}
 	return page, w.Code
+}
+
+func TestSensitiveAuditEventsAreOwnerAdminOnly(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	invocationID := uuid.NewString()
+	sensitiveID := seedAuditEvent(t, time.Now().UTC(), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": invocationID,
+		"sensitive": true, "details": testutil.Raw("'{\"path\":\"/private/report.txt\"}'::jsonb"),
+	})
+	ordinaryInvocationID := uuid.NewString()
+	ordinaryID := seedAuditEvent(t, time.Now().UTC().Add(time.Second), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": ordinaryInvocationID,
+		"details": testutil.Raw("'{\"tool\":\"search\"}'::jsonb"),
+	})
+	memberID := dbfx.User(t, "audit reader "+handlerFixtureSuffix, "audit-reader-"+handlerFixtureSuffix+"@example.test")
+	dbfx.Member(t, testWorkspaceID, memberID, "member")
+	adminID := dbfx.User(t, "audit admin "+handlerFixtureSuffix, "audit-admin-"+handlerFixtureSuffix+"@example.test")
+	dbfx.Member(t, testWorkspaceID, adminID, "admin")
+
+	ownerPage, code := fetchWorkspaceAuditEvents(t, "invocation_id="+invocationID)
+	if code != http.StatusOK || len(ownerPage.Events) != 1 || ownerPage.Events[0].ID != sensitiveID || !ownerPage.Events[0].Sensitive {
+		t.Fatalf("owner sensitive query: status=%d events=%+v", code, ownerPage.Events)
+	}
+	adminPage, code := fetchWorkspaceAuditEventsAs(t, adminID, "invocation_id="+invocationID)
+	if code != http.StatusOK || len(adminPage.Events) != 1 || adminPage.Events[0].ID != sensitiveID {
+		t.Fatalf("admin sensitive query: status=%d events=%+v", code, adminPage.Events)
+	}
+	memberPage, code := fetchWorkspaceAuditEventsAs(t, memberID, "invocation_id="+invocationID)
+	if code != http.StatusOK || len(memberPage.Events) != 0 {
+		t.Fatalf("member sensitive query must be empty: status=%d events=%+v", code, memberPage.Events)
+	}
+	memberPage, code = fetchWorkspaceAuditEventsAs(t, memberID, "")
+	if code != http.StatusOK || len(memberPage.Events) == 0 || containsID(eventIDs(memberPage), sensitiveID) || !containsID(eventIDs(memberPage), ordinaryID) {
+		t.Fatalf("member list must hide sensitive rows and retain standard rows: status=%d ids=%v", code, eventIDs(memberPage))
+	}
+	if _, code = fetchWorkspaceAuditEventsAs(t, memberID, "invocation_id=invalid"); code != http.StatusBadRequest {
+		t.Fatalf("invalid invocation id: got %d, want 400", code)
+	}
+
+	issueID := dbfx.Issue(t, "sensitive audit route "+handlerFixtureSuffix)
+	issueInvocationID := uuid.NewString()
+	issueSensitiveID := seedAuditEvent(t, time.Now().UTC(), issueID, "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": issueInvocationID,
+		"sensitive": true, "details": testutil.Raw("'{\"path\":\"/private/issue.txt\"}'::jsonb"),
+	})
+	issuePage, code := fetchIssueAuditEventsAs(t, memberID, issueID, "invocation_id="+issueInvocationID)
+	if code != http.StatusOK || len(issuePage.Events) != 0 {
+		t.Fatalf("member issue audit query must hide sensitive rows: status=%d events=%+v", code, issuePage.Events)
+	}
+	issuePage, code = fetchIssueAuditEventsAs(t, adminID, issueID, "invocation_id="+issueInvocationID)
+	if code != http.StatusOK || len(issuePage.Events) != 1 || issuePage.Events[0].ID != issueSensitiveID {
+		t.Fatalf("admin issue audit query: status=%d events=%+v", code, issuePage.Events)
+	}
 }
 
 // seedAuditEvent inserts one audit_event row in the suite workspace and
