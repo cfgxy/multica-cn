@@ -1204,6 +1204,12 @@
     "auth_approve_default": "同意",
     "auth_deny_default": "拒绝",
     "auth_execute_failed": "执行失败：{{reason}}",
-    "auth_answer_failed": "授权操作失败"
+    "auth_answer_failed": "授权操作失败",
+    "context_title": "决策背景",
+    "context_why_now": "为何现在决策",
+    "context_facts": "已确认事实与证据",
+    "context_impact": "影响范围",
+    "context_recommendation": "推荐理由",
+    "context_unknowns": "尚不确定"
   }
 }

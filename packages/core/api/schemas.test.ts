@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { IssueDecisionSchema } from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -99,7 +100,6 @@ describe("skill list response", () => {
     expect(parseWithFallback([{ id: 8, name: "bad" }], SkillSummaryListSchema, [], { endpoint: "listSkills" })).toEqual([]);
   });
 });
-
 describe("ListGitLabRepositoriesResponseSchema", () => {
   it("accepts a paginated minimal GitLab projection", () => {
     const value = { repositories: [{ id: 3, full_name: "team/sub/app", clone_url: "git@git.test:team/sub/app.git", archived: false, private: true, description: null }], next_page: 2 };
@@ -2475,5 +2475,42 @@ describe("prompt quiz schemas (RUYI-185)", () => {
     expect(parsed).toEqual(EMPTY_PROMPT_QUIZ_BASELINE);
     expect(parsed.measured).toBe(false);
     expect(parsed.comparison).toBeUndefined();
+  });
+});
+describe("IssueDecisionSchema context compatibility", () => {
+  const legacy = {
+    id: "d-1",
+    issue_id: "i-1",
+    question: "Choose?",
+    options: [{ label: "A" }, { label: "B" }],
+    multi_select: false,
+    recommended_indices: [],
+    status: "open",
+    selected_indices: [],
+    created_by_type: "agent",
+    created_by_id: "a-1",
+    created_at: "2026-10-16T00:00:00Z",
+    updated_at: "2026-10-16T00:00:00Z",
+  };
+
+  it("accepts legacy cards without context and structured context", () => {
+    expect(IssueDecisionSchema.safeParse(legacy).success).toBe(true);
+    expect(IssueDecisionSchema.safeParse({
+      ...legacy,
+      context: {
+        why_now: "Now",
+        facts: [{ statement: "Known", evidence: ["CI 123"] }],
+        impact: "Impact",
+        recommendation_reason: "Reason",
+        unknowns: ["Unknown"],
+      },
+    }).success).toBe(true);
+  });
+
+  it("rejects malformed structured context at the response boundary", () => {
+    expect(IssueDecisionSchema.safeParse({
+      ...legacy,
+      context: { facts: [{ evidence: ["missing statement"] }] },
+    }).success).toBe(false);
   });
 });

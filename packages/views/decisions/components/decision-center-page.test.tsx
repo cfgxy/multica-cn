@@ -70,6 +70,13 @@ function makeItem(over: Partial<WorkspaceDecisionInbox["items"][number]> & { id:
     issue_identifier: "RUYI-494",
     issue_title: "Decision Inbox",
     question: "Choose an option",
+    context: {
+      why_now: "The release window closes today.",
+      facts: [{ statement: "The build passed.", evidence: ["CI run 123"] }],
+      impact: "A delay moves launch one week.",
+      recommendation_reason: "Monday leaves rollback time.",
+      unknowns: ["Review timing"],
+    },
     options: [{ label: "A" }, { label: "B" }],
     multi_select: false,
     recommended_indices: [],
@@ -213,10 +220,10 @@ describe("DecisionCenterPage", () => {
     expect(screen.getAllByTestId("decision-inbox-recommended")).toHaveLength(1);
   });
 
-  it("deep-links each row to its own card via #decision-<id> (AC12)", async () => {
+  it("opens the selected card details and provides its task anchor (AC12)", async () => {
     inboxRef.current = {
       items: [
-        makeItem({ id: "d1", issue_id: "issue-9" }),
+        makeItem({ id: "d1", issue_id: "issue-9", recommended_indices: [0] }),
         makeItem({ id: "d2", issue_id: "issue-9", question: "second" }),
       ],
       counts: { open: 2, answered: 0, cancelled: 0 },
@@ -224,8 +231,22 @@ describe("DecisionCenterPage", () => {
     renderPage();
 
     const [first, second] = await rowAnchors();
-    expect(first?.getAttribute("href")).toBe("/acme/issues/issue-9#decision-d1");
-    expect(second?.getAttribute("href")).toBe("/acme/issues/issue-9#decision-d2");
+    fireEvent.click(first!);
+    expect(await screen.findByTestId("decision-detail-sheet")).toBeInTheDocument();
+    expect(screen.getByText("The release window closes today.")).toBeInTheDocument();
+    expect(screen.getByTestId("decision-detail-option-0").textContent).toContain("A");
+    expect(screen.getByTestId("decision-detail-option-0").textContent).toContain("Recommended");
+    expect(screen.getByTestId("decision-detail-open-task")).toHaveAttribute(
+      "href",
+      "/acme/issues/issue-9#decision-d1",
+    );
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("decision-detail-sheet")).toBeNull());
+    fireEvent.click(second!);
+    expect(await screen.findByTestId("decision-detail-open-task")).toHaveAttribute(
+      "href",
+      "/acme/issues/issue-9#decision-d2",
+    );
   });
 
   it("shows the empty state when the workspace has no cards", async () => {
@@ -300,7 +321,7 @@ describe("DecisionCenterPage view modes (RUYI-547)", () => {
     expect(open.textContent).toContain("5");
   });
 
-  it("keeps every card field on board cards: identifier, title, question, recommendation, deep link", async () => {
+  it("opens full details from board cards and keeps issue context", async () => {
     inboxRef.current = {
       items: [makeItem({ id: "d1", recommended_indices: [0] })],
       counts: { open: 1, answered: 0, cancelled: 0 },
@@ -313,8 +334,12 @@ describe("DecisionCenterPage view modes (RUYI-547)", () => {
     expect(card.textContent).toContain("RUYI-494");
     expect(card.textContent).toContain("Decision Inbox");
     expect(card.textContent).toContain("Choose an option");
-    expect(card.getAttribute("href")).toBe("/acme/issues/issue-1#decision-d1");
     expect(card.querySelector('[data-testid="decision-inbox-recommended"]')).not.toBeNull();
+    fireEvent.click(card);
+    expect(await screen.findByTestId("decision-detail-open-task")).toHaveAttribute(
+      "href",
+      "/acme/issues/issue-1#decision-d1",
+    );
   });
 
   it("switching back to list restores the rows", async () => {
