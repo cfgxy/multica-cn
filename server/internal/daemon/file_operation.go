@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"container/heap"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -60,33 +61,18 @@ func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) 
 			return nil, err
 		}
 		defer dir.Close()
-		entries, err := dir.ReadDir(fileaccess.MaxListEntries + 1)
-		if err != nil {
-			return nil, fileaccess.ErrorPathNotAllowed
-		}
-		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 		cursor, err := fileaccess.DecodeCursor(op.Cursor)
 		if err != nil {
 			return nil, err
 		}
-		out := fileaccess.ListResult{TargetID: op.TargetID, Path: canonical, Entries: []fileaccess.Entry{}}
-		for _, ent := range entries {
-			if ent.Name() <= cursor {
-				continue
-			}
-			if len(out.Entries) >= normalizedListLimit(op.Limit) {
-				out.Next = fileaccess.EncodeCursor(out.Entries[len(out.Entries)-1].Name)
-				break
-			}
-			info, err := ent.Info()
-			if err != nil {
-				continue
-			}
-			child := filepath.Join(canonical, ent.Name())
-			if _, err := fileaccess.ResolveRootPath(op.Roots, child); err != nil {
-				continue
-			}
-			out.Entries = append(out.Entries, fileaccess.Entry{Name: ent.Name(), Path: child, IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime().UTC()})
+		limit := normalizedListLimit(op.Limit)
+		entries, hasMore, err := readDirectoryPage(dir, op.Roots, canonical, cursor, limit)
+		if err != nil {
+			return nil, fileaccess.ErrorPathNotAllowed
+		}
+		out := fileaccess.ListResult{TargetID: op.TargetID, Path: canonical, Entries: entries}
+		if hasMore && len(entries) > 0 {
+			out.Next = fileaccess.EncodeCursor(entries[len(entries)-1].Name)
 		}
 		return out, nil
 	case fileaccess.KindMetadata:
@@ -130,6 +116,63 @@ func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) 
 	default:
 		return nil, fileaccess.ErrorPermissionDenied
 	}
+}
+
+const directoryReadBatchSize = 128
+
+type directoryEntryHeap []fileaccess.Entry
+
+func (h directoryEntryHeap) Len() int           { return len(h) }
+func (h directoryEntryHeap) Less(i, j int) bool { return h[i].Name > h[j].Name }
+func (h directoryEntryHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *directoryEntryHeap) Push(value any)    { *h = append(*h, value.(fileaccess.Entry)) }
+func (h *directoryEntryHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
+}
+
+// readDirectoryPage scans the full iterator while retaining only limit+1 valid entries after the cursor.
+func readDirectoryPage(dir *os.File, roots []string, path, cursor string, limit int) ([]fileaccess.Entry, bool, error) {
+	candidates := make(directoryEntryHeap, 0, limit+1)
+	heap.Init(&candidates)
+	for {
+		batch, err := dir.ReadDir(directoryReadBatchSize)
+		for _, ent := range batch {
+			name := ent.Name()
+			if name <= cursor {
+				continue
+			}
+			child := filepath.Join(path, name)
+			if _, resolveErr := fileaccess.ResolveRootPath(roots, child); resolveErr != nil {
+				continue
+			}
+			info, infoErr := ent.Info()
+			if infoErr != nil {
+				continue
+			}
+			entry := fileaccess.Entry{Name: name, Path: child, IsDir: info.IsDir(), Size: info.Size(), ModTime: info.ModTime().UTC()}
+			if len(candidates) < limit+1 {
+				heap.Push(&candidates, entry)
+			} else if name < candidates[0].Name {
+				heap.Pop(&candidates)
+				heap.Push(&candidates, entry)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, false, err
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
+	hasMore := len(candidates) > limit
+	if hasMore {
+		candidates = candidates[:limit]
+	}
+	return []fileaccess.Entry(candidates), hasMore, nil
 }
 
 func normalizedListLimit(limit int) int {

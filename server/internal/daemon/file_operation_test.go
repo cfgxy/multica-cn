@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,6 +26,51 @@ func TestExecuteFileOperation_ReadChunk(t *testing.T) {
 	result := got.(fileaccess.ReadResult)
 	if result.Data != "Y2Rl" || result.Length != 3 || result.EOF {
 		t.Fatalf("read result = %+v", result)
+	}
+}
+
+func TestExecuteFileOperation_ListPagesAllEntriesInNameOrder(t *testing.T) {
+	root := t.TempDir()
+	const entryCount = 450
+	for i := entryCount - 1; i >= 0; i-- {
+		name := fmt.Sprintf("entry-%04d.txt", i)
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	seen := make(map[string]bool, entryCount)
+	cursor := ""
+	pageCount := 0
+	for {
+		got, err := executeFileOperation(protocol.DaemonFileOperationDispatch{
+			TargetID: "fixture", Kind: string(fileaccess.KindList), Path: root, Limit: 73, Cursor: cursor, Roots: []string{root},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := got.(fileaccess.ListResult)
+		pageCount++
+		for i, entry := range page.Entries {
+			wantName := fmt.Sprintf("entry-%04d.txt", len(seen))
+			if entry.Name != wantName {
+				t.Fatalf("page %d entry %d = %q, want %q", pageCount, i, entry.Name, wantName)
+			}
+			if seen[entry.Name] {
+				t.Fatalf("entry %q appeared more than once", entry.Name)
+			}
+			seen[entry.Name] = true
+		}
+		if page.Next == "" {
+			if pageCount < 2 {
+				t.Fatalf("expected multiple pages, got %d", pageCount)
+			}
+			break
+		}
+		cursor = page.Next
+	}
+	if len(seen) != entryCount {
+		t.Fatalf("listed %d entries, want %d", len(seen), entryCount)
 	}
 }
 
