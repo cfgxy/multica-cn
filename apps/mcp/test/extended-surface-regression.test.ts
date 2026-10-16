@@ -68,7 +68,6 @@ const PURE_READ_TOOLS = [
   "get_daemon_instance",
   "list_runtimes",
   "get_runtime",
-  "get_runtime_models",
   "get_agent_runtime_config",
   "list_execution_profiles",
   "get_execution_profile",
@@ -76,6 +75,7 @@ const PURE_READ_TOOLS = [
   "search_audit_events",
   // Workspace management reads.
   "list_runs",
+  "list_quick_replies",
   "get_agent",
   "list_squads",
   "get_squad",
