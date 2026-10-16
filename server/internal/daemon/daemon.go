@@ -4391,6 +4391,13 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			}
 		}
 	}
+	if len(resp.PendingFileOperations) > 0 {
+		if rt := d.findRuntime(runtimeID); rt != nil {
+			for _, op := range resp.PendingFileOperations {
+				go d.handleFileOperation(ctx, *rt, op)
+			}
+		}
+	}
 	// Prefer the batch field (new backend); fall back to singular (old backend).
 	if len(resp.PendingLocalSkillImports) > 0 {
 		if rt := d.findRuntime(runtimeID); rt != nil {
