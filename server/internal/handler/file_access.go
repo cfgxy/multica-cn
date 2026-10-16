@@ -97,29 +97,36 @@ func (h *Handler) ReadRuntimeFileChunk(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, kind fileaccess.Kind) {
-	runtimeID := chi.URLParam(r, "runtimeId")
-	rt, member, ok := h.requireRuntimeReadAccess(w, r, "runtime_file_access", runtimeID)
-	if !ok {
-		return
-	}
 	var req fileaccess.Request
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8*1024)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
-	}
-	if req.TargetID == "" {
-		req.TargetID = "local"
 	}
 	req.Kind = kind
 	if err := fileaccess.ValidateRequest(req); err != nil {
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
-	target, err := h.Queries.GetFileAccessTargetByRuntime(r.Context(), db.GetFileAccessTargetByRuntimeParams{ID: req.TargetID, RuntimeID: rt.ID})
+	targets, err := h.Queries.ListFileAccessTargetsByHost(r.Context(), req.TargetID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, fileaccess.ErrorHostNotRegistered.Error())
 		return
 	}
+	target, err := resolveFileAccessTargetByHost(req.TargetID, targets)
+	if err != nil {
+		writeError(w, http.StatusNotFound, fileaccess.ErrorHostNotRegistered.Error())
+		return
+	}
+	runtimeID := uuidToString(target.RuntimeID)
+	rt, member, ok := h.requireRuntimeReadAccess(w, r, "runtime_file_access", runtimeID)
+	if !ok {
+		return
+	}
+	if routeRuntimeID := chi.URLParam(r, "runtimeId"); routeRuntimeID != "" && routeRuntimeID != runtimeID {
+		writeError(w, http.StatusNotFound, fileaccess.ErrorHostNotRegistered.Error())
+		return
+	}
+	req.TargetID = target.ID
 	var workspaceIDs, memberIDs []string
 	if json.Unmarshal(target.WorkspaceAcl, &workspaceIDs) != nil || json.Unmarshal(target.MemberAcl, &memberIDs) != nil {
 		writeError(w, http.StatusForbidden, fileaccess.ErrorPermissionDenied.Error())
@@ -169,6 +176,23 @@ func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, ki
 	}
 	h.requestDaemonPendingWork(runtimeID, protocol.PendingWorkKindFileAccess)
 	writeJSON(w, http.StatusAccepted, map[string]any{"operation_id": uuidToString(operation.ID), "status": operation.Status, "target_id": target.ID, "path": canonical})
+}
+
+func resolveFileAccessTargetByHost(host string, targets []db.DaemonFileAccessTarget) (db.DaemonFileAccessTarget, error) {
+	registrations := make([]fileaccess.Target, 0, len(targets))
+	for _, target := range targets {
+		registrations = append(registrations, fileaccess.Target{ID: target.ID, RuntimeID: uuidToString(target.RuntimeID)})
+	}
+	targetID, err := fileaccess.ResolveTargetIDByHost(host, registrations)
+	if err != nil {
+		return db.DaemonFileAccessTarget{}, fileaccess.ErrorHostNotRegistered
+	}
+	for _, target := range targets {
+		if target.ID == targetID {
+			return target, nil
+		}
+	}
+	return db.DaemonFileAccessTarget{}, fileaccess.ErrorHostNotRegistered
 }
 
 func (h *Handler) GetRuntimeFileOperation(w http.ResponseWriter, r *http.Request) {
