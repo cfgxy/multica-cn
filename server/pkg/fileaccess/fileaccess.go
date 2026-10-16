@@ -206,6 +206,23 @@ func HasTargetAccess(target Target, workspaceID, memberID string) error {
 	return nil
 }
 
+func ResolveTargetIDByHost(host string, targets []Target) (string, error) {
+	resolvedID := ""
+	for _, target := range targets {
+		if target.ID != host && target.RuntimeID != host {
+			continue
+		}
+		if resolvedID != "" && target.ID != resolvedID {
+			return "", ErrorHostNotRegistered
+		}
+		resolvedID = target.ID
+	}
+	if host == "" || resolvedID == "" {
+		return "", ErrorHostNotRegistered
+	}
+	return resolvedID, nil
+}
+
 func PathWithinRoots(roots []string, path string) bool {
 	clean, err := NormalizePath(path)
 	if err != nil {
