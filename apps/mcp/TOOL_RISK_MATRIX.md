@@ -98,6 +98,29 @@ bounded metadata domain.
 `answer_decisions` can start, resume, cancel, or otherwise affect agent runs.
 `get_runtime_models` may enqueue a Daemon model-discovery request when the
 catalog cache is cold.
+
+## Follow-up: Server-side Per-call Approval
+
+Recommendation for a separately scoped change: place an approval gate at the
+server operation boundary for destructive writes and actions that can start,
+resume, or cancel execution. Keep MCP annotations as descriptive hints; a
+server gate would enforce the decision for every MCP client, including clients
+that ignore hints. Do not route ordinary bounded metadata reads or additive
+writes through that gate.
+
+The follow-up should compare a server-enforced one-time approval with
+client-only confirmation and a hybrid policy. The server option provides
+consistent enforcement and an auditable decision, but requires a way to
+present, bind, expire, and consume approval for the exact operation and
+arguments. Client-only confirmation is simpler but depends on each client.
+The hybrid option can use client prompts for usability while retaining a
+server gate for high-risk operations.
+
+Open decisions for that work: which operation classes require approval;
+whether approval binds to normalized arguments and a short expiry; what happens
+for unattended agent calls; and how approval records appear in the audit
+trail. This recommendation does not alter the current OAuth authorization
+model and is not implemented by this change.
 Deletion and destructive configuration changes are identified by the
 `destructiveHint` column. No server-side per-call approval or OAuth behavior is
 changed here.
