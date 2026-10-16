@@ -749,16 +749,48 @@ func TestCodexRawErrorNotificationTerminal(t *testing.T) {
 	if got := c.getTurnError(); got != "boom" {
 		t.Fatalf("expected terminal error captured, got %q", got)
 	}
-	if done {
-		t.Fatal("terminal error must wait for turn/completed")
+	if !done {
+		t.Fatal("terminal error must finish the turn immediately")
 	}
 	if got, want := strings.Join(activities, ","), "error:terminal"; got != want {
 		t.Fatalf("semantic activity = %q, want %q", got, want)
 	}
 
-	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-error","status":"failed","error":{"message":"boom"}}}}`)
+}
+
+func TestCodexRawErrorNotificationQuotaOverridesRetry(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	done := false
+	c.onTurnDone = func(aborted bool) { done = true }
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"usage limit reached; token=private-value"},"willRetry":true}}`)
+
 	if !done {
-		t.Fatal("turn/completed should finish the failed turn")
+		t.Fatal("terminal quota error should finish immediately despite willRetry")
+	}
+	if got, want := c.getTurnError(), "Codex account usage limit reached. Check the account limit or retry after it resets."; got != want {
+		t.Fatalf("terminal error = %q, want classified message %q", got, want)
+	}
+}
+
+func TestCodexTerminalProviderErrorClassifiesCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "quota code", text: "usage_limit_reached", want: "Codex account usage limit reached."},
+		{name: "capacity code", text: "server_overloaded", want: "Codex service is at capacity."},
+		{name: "ordinary error", text: "temporary network disconnect", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexTerminalProviderError(tc.text); !strings.HasPrefix(got, tc.want) || tc.want == "" && got != "" {
+				t.Fatalf("codexTerminalProviderError(%q) = %q, want prefix %q", tc.text, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -3851,6 +3883,34 @@ func TestCodexExecuteLegacyFirstTurnMessageSatisfiesProgress(t *testing.T) {
 	}
 }
 
+func TestCodexExecuteReconnectWindowBoundsRetryingErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	previous := codexReconnectTimeoutNanos.Swap(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexReconnectTimeoutNanos.Store(previous) })
+
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-reconnect"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-reconnect","turn":{"id":"turn-reconnect"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"error","params":{"threadId":"thr-reconnect","error":{"message":"temporary reconnect"},"willRetry":true}}'`+"\n"+
+		`sleep 2`+"\n")
+
+	result := executeFakeCodex(t, fakePath, ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 3 * time.Second,
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "could not reconnect within 100ms") {
+		t.Fatalf("result = status %q, error %q; want bounded reconnect failure", result.Status, result.Error)
+	}
+}
+
 func TestCodexExecuteSemanticInactivityAllowsContinuousMessages(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -4812,7 +4872,6 @@ func TestEnsureCodexMcpConfigTranslatesRemoteHTTPServer(t *testing.T) {
 		`[mcp_servers.composio]`,
 		`url = "https://mcp.example.test/notion"`,
 		`http_headers = { Authorization = "Bearer test-token", x-api-key = "secret" }`,
-		`experimental_use_rmcp_client = true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
@@ -4820,6 +4879,7 @@ func TestEnsureCodexMcpConfigTranslatesRemoteHTTPServer(t *testing.T) {
 	}
 	for _, unexpected := range []string{
 		`type = "http"`,
+		`experimental_use_rmcp_client`,
 		"\nheaders = ",
 	} {
 		if strings.Contains(got, unexpected) {
@@ -4832,7 +4892,7 @@ func TestEnsureCodexMcpConfigDropsInternalSelectors(t *testing.T) {
 	t.Parallel()
 
 	tmp := filepath.Join(t.TempDir(), "config.toml")
-	raw := json.RawMessage(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"],"env":{"API_KEY":"secret"},"timeout":30,"tools":{"include":["kb_get"]},"prompts":{"include":["daily"]},"resources":{"include":["docs"]}}}}`)
+	raw := json.RawMessage(`{"mcpServers":{"fetch":{"type":"stdio","experimental_use_rmcp_client":true,"command":"uvx","args":["mcp-server-fetch"],"env":{"API_KEY":"secret"},"timeout":30,"tools":{"include":["kb_get"]},"prompts":{"include":["daily"]},"resources":{"include":["docs"]}}}}`)
 	if err := ensureCodexMcpConfig(tmp, raw, slog.Default()); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -4860,6 +4920,8 @@ func TestEnsureCodexMcpConfigDropsInternalSelectors(t *testing.T) {
 		"kb_get",
 		"daily",
 		"docs",
+		`type = "stdio"`,
+		`experimental_use_rmcp_client`,
 	} {
 		if strings.Contains(got, unexpected) {
 			t.Fatalf("internal MCP selector %q must not render into Codex config.toml:\n%s", unexpected, got)
@@ -4871,7 +4933,7 @@ func TestEnsureCodexMcpConfigDropsInternalSelectorsFromRemoteHTTPServer(t *testi
 	t.Parallel()
 
 	tmp := filepath.Join(t.TempDir(), "config.toml")
-	raw := json.RawMessage(`{"mcpServers":{"remote":{"type":"http","url":"https://mcp.example.test/session","headers":{"Authorization":"Bearer test-token"},"timeout":45,"tools":{"include":["kb_get"]},"prompts":{"include":["daily"]},"resources":{"include":["docs"]}}}}`)
+	raw := json.RawMessage(`{"mcpServers":{"remote":{"type":"http","experimental_use_rmcp_client":true,"url":"https://mcp.example.test/session","headers":{"Authorization":"Bearer test-token"},"timeout":45,"tools":{"include":["kb_get"]},"prompts":{"include":["daily"]},"resources":{"include":["docs"]}}}}`)
 	if err := ensureCodexMcpConfig(tmp, raw, slog.Default()); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
@@ -4886,7 +4948,6 @@ func TestEnsureCodexMcpConfigDropsInternalSelectorsFromRemoteHTTPServer(t *testi
 		`url = "https://mcp.example.test/session"`,
 		`http_headers = { Authorization = "Bearer test-token" }`,
 		`timeout = 45`,
-		`experimental_use_rmcp_client = true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in:\n%s", want, got)
@@ -4900,6 +4961,7 @@ func TestEnsureCodexMcpConfigDropsInternalSelectorsFromRemoteHTTPServer(t *testi
 		"daily",
 		"docs",
 		`type = "http"`,
+		`experimental_use_rmcp_client`,
 		"\nheaders = ",
 	} {
 		if strings.Contains(got, unexpected) {
@@ -4921,7 +4983,6 @@ func TestRenderCodexMcpServersBlockTreatsURLOnlyServerAsRemote(t *testing.T) {
 	for _, want := range []string{
 		`[mcp_servers.remote]`,
 		`url = "https://mcp.example.test/session"`,
-		`experimental_use_rmcp_client = true`,
 	} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("expected %q in:\n%s", want, block)
