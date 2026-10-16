@@ -76,6 +76,7 @@ async function main(): Promise<void> {
     const client = new MulticaClient({
       serverUrl: credentials.serverUrl,
       token: credentials.token,
+      auditServiceCredential: process.env["MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL"],
     });
     await runStdio(client, stderrLogger);
     return;
@@ -105,6 +106,7 @@ async function main(): Promise<void> {
       host,
       serverUrl,
       siteRoot,
+      auditServiceCredential: process.env["MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL"],
     });
     const shutdown = (): void => {
       httpServer.close(() => process.exit(0));
