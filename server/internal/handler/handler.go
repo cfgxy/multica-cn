@@ -71,9 +71,13 @@ type dbExecutor interface {
 }
 
 type Config struct {
-	AllowSignup         bool
-	AllowedEmails       []string
-	AllowedEmailDomains []string
+	// MCPAuditServiceCredential is the private credential held by the MCP
+	// service when recording tool invocation lifecycle events. Empty disables
+	// the internal audit-write endpoints; it is never returned by an API.
+	MCPAuditServiceCredential string
+	AllowSignup               bool
+	AllowedEmails             []string
+	AllowedEmailDomains       []string
 	// SuperAdminEmails is the SUPER_ADMIN_EMAILS deployment env (comma
 	// separated, RUYI-47). At login, an account whose email is on the list
 	// is granted the instance-level super-admin flag idempotently. The

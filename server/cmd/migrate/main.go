@@ -323,6 +323,10 @@ var concurrentIndexCleanups = map[string][]string{
 	"919_issue_dependency_relationships":                        {"uq_issue_dependency_edge"},
 	"927_issue_decision_workspace_inbox":                        {"idx_issue_decisions_workspace_status"},
 	"936_agent_task_queue_failed_retry_reeval_index":            {"idx_agent_task_queue_failed_retry_reeval"},
+	"973_mcp_invocation_audit_audit_event_expiry_index":         {"audit_event_mcp_expiry_idx"},
+	"973_mcp_invocation_audit_invocation_id_index":              {"audit_event_mcp_invocation_idx"},
+	"973_mcp_invocation_audit_outbox_expiry_index":              {"mcp_invocation_audit_outbox_expiry_idx"},
+	"973_mcp_invocation_audit_outbox_id_index":                  {"mcp_invocation_audit_outbox_id_uidx"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
