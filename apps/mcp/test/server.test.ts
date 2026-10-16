@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Logger } from "../src/log.js";
 import { MulticaClient } from "../src/rest.js";
 import { createMcpServer, SERVER_NAME } from "../src/server.js";
+import { TOOL_RISK_MATRIX } from "../src/tool-risk.js";
 
 const TOKEN = `mul_${"a1b2c3d4e5".repeat(4)}`;
 
@@ -141,6 +142,33 @@ describe("createMcpServer (via in-memory client)", () => {
     for (const tool of tools) {
       expect(tool.inputSchema).toMatchObject({ type: "object" });
     }
+  });
+
+  it("exposes exhaustive, explicit risk annotations over the MCP protocol", async () => {
+    const { client, cleanup } = await connectServer(async () => []);
+    fixtures.push(cleanup);
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name).sort();
+    expect(names).toEqual(Object.keys(TOOL_RISK_MATRIX).sort());
+
+    for (const tool of tools) {
+      expect(tool.annotations, tool.name).toEqual(TOOL_RISK_MATRIX[tool.name]?.annotations);
+      expect(tool.annotations, tool.name).toMatchObject({
+        readOnlyHint: expect.any(Boolean),
+        destructiveHint: expect.any(Boolean),
+        idempotentHint: expect.any(Boolean),
+        openWorldHint: expect.any(Boolean),
+      });
+    }
+    expect(tools.find((tool) => tool.name === "list_quick_replies")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.find((tool) => tool.name === "get_runtime_models")?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+    expect(tools.find((tool) => tool.name === "add_comment")?.annotations?.openWorldHint).toBe(true);
+    expect(tools.find((tool) => tool.name === "answer_decisions")?.annotations?.openWorldHint).toBe(true);
   });
 
   it("tools/call returns pretty JSON text for successful calls", async () => {
