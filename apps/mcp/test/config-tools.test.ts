@@ -15,7 +15,8 @@
  *   - apply_execution_profile's squad mapping (decision 1): agent members
  *     materialize one-to-one with the shared template, humans are skipped,
  *     the roster is read once (later roster changes do not follow);
- *   - the nine read faces stay wire-read-only.
+ *   - the eight pure-read faces stay wire-read-only; model discovery is
+ *     checked separately because a cold cache starts a Daemon request.
  *
  * fakeClient records EVERY client method call (base and per-test overrides
  * alike) through a Proxy, so call-count assertions survive overrides. Agent
@@ -720,25 +721,30 @@ describe("get_execution_topology", () => {
 // ---- surface invariants ------------------------------------------------------
 
 describe("config surface invariants", () => {
-  it("keeps the nine config reads wire-read-only and every other config face a write", () => {
+  it("keeps pure reads read-only and identifies daemon model discovery separately", () => {
     const readOnly = new Set([
       "list_daemon_instances", "get_daemon_instance", "list_runtimes", "get_runtime",
-      "get_runtime_models", "get_agent_runtime_config", "list_execution_profiles",
+      "get_agent_runtime_config", "list_execution_profiles",
       "get_execution_profile", "get_execution_topology",
     ]);
+    const externalRead = new Set(["get_runtime_models"]);
     const configWrite = new Set([
       "update_agent_runtime_config", "bulk_update_agent_runtime_config",
       "create_execution_profile", "update_execution_profile",
       "delete_execution_profile", "apply_execution_profile",
     ]);
     for (const tool of TOOL_DEFINITIONS) {
-      if (!readOnly.has(tool.name) && !configWrite.has(tool.name)) continue;
+      if (!readOnly.has(tool.name) && !externalRead.has(tool.name) && !configWrite.has(tool.name)) continue;
       const description = tool.description.toLowerCase();
       if (readOnly.has(tool.name)) {
         expect(description, tool.name).toContain("read-only");
       }
       if (configWrite.has(tool.name)) {
         expect(description, tool.name).toMatch(/never starts a run|never triggers|nothing is rewritten|rewrite/i);
+      }
+      if (externalRead.has(tool.name)) {
+        expect(description, tool.name).toMatch(/starts a model-discovery request/i);
+        expect(description, tool.name).not.toMatch(/read-only/i);
       }
     }
   });

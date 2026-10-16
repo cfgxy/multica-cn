@@ -2879,8 +2879,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "get_runtime_models",
     description:
       "Discover a runtime's model catalog: the models the daemon advertises (each with its per-model thinking/effort levels), the ones marked unavailable, and which is the runtime default. " +
-      "Answers from the server-side catalog cache when warm; otherwise asks the daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
-      "An offline runtime returns code runtime_offline. Read-only; this is also the source for valid model / thinking_level values on the config-write faces.",
+      "Answers from the server-side catalog cache when warm; otherwise starts a model-discovery request with the runtime daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
+      "Calling without request_id may start a new daemon request when the cache is cold. This does not change runtime configuration. " +
+      "An offline runtime returns code runtime_offline. This is also the source for valid model / thinking_level values on the config-write faces.",
     inputSchema: {
       type: "object",
       properties: {
