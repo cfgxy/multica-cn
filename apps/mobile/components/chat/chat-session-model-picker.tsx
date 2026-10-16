@@ -27,6 +27,10 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
     staleTime: 60_000,
   });
   const currentLabel = modelOverride ?? agentModel ?? t("mobile.model.agent_default", "Agent default");
+  const selectModel = async (model: string | null) => {
+    if (disabled) return;
+    await onSelect(model);
+  };
 
   return (
     <DropdownMenu>
@@ -43,7 +47,7 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
         </Pressable>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-h-80 w-72">
-        <DropdownMenuItem onPress={() => void onSelect(null)}>
+        <DropdownMenuItem disabled={disabled} onPress={() => void selectModel(null)}>
           <View className="flex-1">
             <Text>{t("mobile.model.agent_default", "Agent default")}</Text>
             <Text className="text-xs text-muted-foreground">{agentModel || t("mobile.model.runtime_default", "Runtime default")}</Text>
@@ -51,7 +55,7 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
           {modelOverride === null ? <Ionicons name="checkmark" size={16} color={theme.brand} /> : null}
         </DropdownMenuItem>
         {models.data?.supported ? models.data.models.map((model) => (
-          <DropdownMenuItem key={model.id} onPress={() => void onSelect(model.id)}>
+          <DropdownMenuItem key={model.id} disabled={disabled} onPress={() => void selectModel(model.id)}>
             <Text className="flex-1">{model.label || model.id}</Text>
             {modelOverride === model.id ? <Ionicons name="checkmark" size={16} color={theme.brand} /> : null}
           </DropdownMenuItem>
