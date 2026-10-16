@@ -1,7 +1,7 @@
 # MCP Tool Risk Matrix
 
 This inventory covers the complete static `TOOL_DEFINITIONS` registry exposed
-by `tools/list` (65 tools at this revision). `src/tool-risk.ts` is the runtime
+by `tools/list` (77 tools at this revision). `src/tool-risk.ts` is the runtime
 source of truth; `test/server.test.ts` verifies exact name coverage and the
 serialized annotations over an in-memory MCP client/server connection.
 
@@ -17,6 +17,10 @@ bounded metadata domain.
 
 | Tool | Risk class | Read only | Destructive | Idempotent | Open world | Effect evidence |
 | --- | --- | --- | --- | --- | --- | --- |
+| `archive_all_inbox` | write | false | false | true | false | Archives the current user's active workspace inbox items. |
+| `archive_all_read_inbox` | write | false | false | true | false | Archives read inbox groups using the backend's newest-row grouping. |
+| `archive_completed_inbox` | write | false | false | true | false | Archives inbox rows linked to terminal issues. |
+| `archive_inbox_item` | write | false | false | true | false | Archives an item and its issue siblings as defined by the backend. |
 | `list_workspaces` | read | true | false | true | false | Reads workspaces visible to the credential. |
 | `list_agents` | read | true | false | true | false | Reads workspace agents. |
 | `list_projects` | read | true | false | true | false | Reads projects. |
@@ -24,6 +28,10 @@ bounded metadata domain.
 | `create_project` | write | false | false | false | false | Adds a project. |
 | `update_project` | destructive | false | true | false | false | Replaces project metadata. |
 | `list_issues` | read | true | false | true | false | Reads issues. |
+| `list_inbox` | read | true | false | true | false | Reads active notifications, including issue-less system notices. |
+| `list_archived_inbox` | read | true | false | true | false | Reads the backend's bounded archived groups. |
+| `get_inbox_unread_count` | read | true | false | true | false | Reads one workspace's unread count. |
+| `get_inbox_unread_summary` | read | true | false | true | false | Reads the user's cross-workspace unread summary. |
 | `get_issue` | read | true | false | true | false | Reads issue and optional comments. |
 | `search_issues` | read | true | false | true | false | Searches issues. |
 | `progress_digest` | read | true | false | true | false | Aggregates project progress reads. |
@@ -38,6 +46,9 @@ bounded metadata domain.
 | `assign_issue` | external | false | true | false | true | Changes assignee; assigning an agent or squad can start a run. |
 | `get_issue_relations` | read | true | false | true | false | Reads issue relations. |
 | `manage_issue_relations` | destructive | false | true | false | false | Adds, removes, or changes relations and parent; description rules out runs. |
+| `mark_all_inbox_read` | write | false | false | true | false | Marks active workspace inbox items read. |
+| `mark_inbox_item_read` | write | false | false | true | false | Marks one authorized item read. |
+| `mark_inbox_item_unread` | write | false | false | true | false | Marks one authorized item unread. |
 | `bulk_update_issues` | external | false | true | false | true | Batch status or assignment changes can start runs per item. |
 | `dispatch_agent` | external | false | true | false | true | Creates and assigns an issue, immediately starting a run and consuming quota. |
 | `list_issue_runs` | read | true | false | true | false | Reads issue run history. |
@@ -82,6 +93,7 @@ bounded metadata domain.
 | `list_decisions` | read | true | false | true | false | Reads decision cards. |
 | `get_decision` | read | true | false | true | false | Reads a decision card. |
 | `answer_decisions` | external | false | true | false | true | Answers a card and posts a creator-Agent mention that can resume its run. |
+| `unarchive_inbox_item` | write | false | false | true | false | Restores an item and issue siblings while preserving read state. |
 
 ## Coverage Notes
 
