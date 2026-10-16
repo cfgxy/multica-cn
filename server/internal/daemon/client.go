@@ -716,6 +716,10 @@ func (c *Client) ReportOpsCommandResult(ctx context.Context, runtimeID, commandI
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/ops-commands/%s/result", runtimeID, commandID), receipt, nil)
 }
 
+func (c *Client) ReportFileOperationResult(ctx context.Context, runtimeID, operationID string, receipt map[string]any) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/file-operations/%s/result", runtimeID, operationID), receipt, nil)
+}
+
 // ReportInventory posts this machine's service inventory (and ops caps
 // context lives in the register payload). Machine-scoped: keyed by daemon_id.
 func (c *Client) ReportInventory(ctx context.Context, report map[string]any) error {

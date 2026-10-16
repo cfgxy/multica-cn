@@ -707,6 +707,34 @@ type DaemonConnection struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DaemonFileAccessTarget struct {
+	ID           string             `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Enabled      bool               `json:"enabled"`
+	Roots        []byte             `json:"roots"`
+	WorkspaceAcl []byte             `json:"workspace_acl"`
+	MemberAcl    []byte             `json:"member_acl"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonFileOperation struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	TargetID    string             `json:"target_id"`
+	Kind        string             `json:"kind"`
+	Request     []byte             `json:"request"`
+	Status      string             `json:"status"`
+	LeaseEpoch  int64              `json:"lease_epoch"`
+	Result      []byte             `json:"result"`
+	ErrorClass  pgtype.Text        `json:"error_class"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	ClaimedAt   pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt  pgtype.Timestamptz `json:"finished_at"`
+}
+
 type DaemonOpsCommand struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`

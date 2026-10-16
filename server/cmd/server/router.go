@@ -1708,6 +1708,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// RUYI-645: read-only ops channel — command receipts (lease-epoch
 		// checked) and the machine service inventory report.
 		r.Post("/runtimes/{runtimeId}/ops-commands/{commandId}/result", h.ReportOpsCommandResult)
+		r.Post("/runtimes/{runtimeId}/file-operations/{operationId}/result", h.ReportFileOperationResult)
 		r.Post("/inventory", h.ReportDaemonInventory)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
@@ -2887,6 +2888,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/ops/commands", h.SubmitRuntimeOpsCommand)
 					r.Get("/ops/commands", h.ListRuntimeOpsCommands)
 					r.Get("/ops/commands/{commandId}", h.GetRuntimeOpsCommand)
+					// Typed file operations have a separate daemon channel and never enter argv execution.
+					r.Put("/file-access-target", h.PutRuntimeFileAccessTarget)
+					r.Post("/files/list", h.ListRuntimeFiles)
+					r.Post("/files/metadata", h.GetRuntimeFileMetadata)
+					r.Post("/files/read", h.ReadRuntimeFileChunk)
+					r.Get("/files/operations/{operationId}", h.GetRuntimeFileOperation)
 					r.Delete("/", h.DeleteAgentRuntime)
 					// Confirmed variant of DELETE: unbind every agent bound to
 					// this runtime (they keep their configuration and chats and
