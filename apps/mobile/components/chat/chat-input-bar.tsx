@@ -36,6 +36,7 @@ import { DictationBar } from "@/components/chat/dictation-bar";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { assetFromSharedFile } from "@/lib/picked-asset";
 import type { SharedFile } from "@/lib/share-payload";
+import type { Attachment } from "@multica/core/types";
 import {
   canSubmitMessageDraft,
   completedAttachmentIds,
@@ -74,6 +75,7 @@ interface Props {
   onStop: () => void;
   sending: boolean;
   allowStop?: boolean;
+  allowSubmitWhileRunning?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   incomingSharedFiles?: SharedFile[];
@@ -86,6 +88,8 @@ interface Props {
   onOpenVoice: () => void;
   /** 技能指令 picker 路由；不传则不渲染该项与 / 触发。 */
   skillPickerPath?: Href;
+  restoredAttachments?: Attachment[];
+  onRestoredAttachmentsConsumed?: () => void;
 }
 
 export function ChatInputBar({
@@ -95,6 +99,7 @@ export function ChatInputBar({
   onStop,
   sending,
   allowStop = true,
+  allowSubmitWhileRunning = false,
   disabled = false,
   disabledReason,
   incomingSharedFiles,
@@ -102,6 +107,8 @@ export function ChatInputBar({
   voiceGate,
   onOpenVoice,
   skillPickerPath,
+  restoredAttachments,
+  onRestoredAttachmentsConsumed,
 }: Props) {
   const { t } = useT("chat");
   const { t: tVoice } = useT("voice");
@@ -138,6 +145,21 @@ export function ChatInputBar({
     enqueueAssets,
     uploading,
   } = useFileAttach({ alertOnError: false, onAttachmentsEnqueued: focusInput });
+
+  useEffect(() => {
+    if (!restoredAttachments?.length) return;
+    restoreAttachments(restoredAttachments.map((attachment) => ({
+      localId: attachment.id,
+      localUri: attachment.url || attachment.download_url,
+      filename: attachment.filename,
+      mimeType: attachment.content_type,
+      status: "completed" as const,
+      id: attachment.id,
+      url: attachment.url,
+      downloadUrl: attachment.download_url,
+    })));
+    onRestoredAttachmentsConsumed?.();
+  }, [restoredAttachments, restoreAttachments, onRestoredAttachmentsConsumed]);
 
   // 系统分享附件一次性入队（与 MessageComposer 同语义：ref 防重复）。
   const consumedSharedRef = useRef<SharedFile[] | null>(null);
@@ -230,7 +252,7 @@ export function ChatInputBar({
     mentions,
     attachments,
     disabled,
-    isSending: sending,
+    isSending: sending && !allowSubmitWhileRunning,
     submitting,
   });
 
@@ -349,7 +371,7 @@ export function ChatInputBar({
   const voice = voiceGateVerdict(voiceGate);
   const shape = resolveInputShape({
     disabled,
-    sending,
+    sending: sending && !allowSubmitWhileRunning,
     allowStop,
     hasDraft: value.trim().length > 0,
     dictationOpen,
@@ -398,7 +420,7 @@ export function ChatInputBar({
   };
 
   return (
-    <View className="px-3 pb-2" style={{ paddingTop: 2 }}>
+    <View className="relative px-3 pb-2" style={{ paddingTop: 2 }}>
       {hasZone ? (
         <View className="mb-1.5 rounded-2xl bg-secondary/70 px-2 py-1.5">
           <AttachmentZone
@@ -410,6 +432,24 @@ export function ChatInputBar({
           />
         </View>
       ) : null}
+      <PlusPanel
+        visible={plusOpen}
+        onClose={() => setPlusOpen(false)}
+        onMention={openMentionPicker}
+        onCamera={() => {
+          setPlusOpen(false);
+          void takeAndUploadPhoto();
+        }}
+        onImage={() => {
+          setPlusOpen(false);
+          void pickAndUploadImages();
+        }}
+        onFiles={() => {
+          setPlusOpen(false);
+          void pickAndUploadFiles();
+        }}
+        onSkill={hasSkillPicker ? openSkillPicker : undefined}
+      />
       <View className="flex-row items-center gap-1 px-1.5" style={[{ height: BAR_HEIGHT }, barStyle]}>
         <Pressable
           onPress={() => {
@@ -452,24 +492,6 @@ export function ChatInputBar({
           onStop={onStop}
         />
       </View>
-      <PlusPanel
-        visible={plusOpen}
-        onClose={() => setPlusOpen(false)}
-        onMention={openMentionPicker}
-        onCamera={() => {
-          setPlusOpen(false);
-          void takeAndUploadPhoto();
-        }}
-        onImage={() => {
-          setPlusOpen(false);
-          void pickAndUploadImages();
-        }}
-        onFiles={() => {
-          setPlusOpen(false);
-          void pickAndUploadFiles();
-        }}
-        onSkill={hasSkillPicker ? openSkillPicker : undefined}
-      />
       <ActionSheetModal {...imageSourceModalProps} />
     </View>
   );
