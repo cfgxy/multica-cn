@@ -1496,6 +1496,7 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 	// Redis probe needed), so it stays cheap on empty-queue ticks and is
 	// safe under concurrent server instances.
 	h.claimOpsCommands(ctx, rt, ack)
+	h.claimFileOperations(ctx, rt, ack)
 
 	return ack, m, nil
 }

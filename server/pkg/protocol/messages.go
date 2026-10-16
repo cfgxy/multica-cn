@@ -134,6 +134,7 @@ const (
 	// claim itself happens inside the heartbeat ack, so a dropped hint only
 	// costs the normal heartbeat delay.
 	PendingWorkKindOpsCommand = "ops_command"
+	PendingWorkKindFileAccess = "file_access"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -434,6 +435,24 @@ type DaemonHeartbeatAckPayload struct {
 	// silently ignore it, and a claimed-but-undeliverable command simply
 	// times out on the server side (never re-dispatched).
 	PendingOpsCommands []DaemonOpsCommandDispatch `json:"pending_ops_commands,omitempty"`
+	// PendingFileOperations contains typed read-only file requests. It is a
+	// separate channel from ops commands so it can never reach an argv runner.
+	PendingFileOperations []DaemonFileOperationDispatch `json:"pending_file_operations,omitempty"`
+}
+
+type DaemonFileOperationDispatch struct {
+	OperationID     string   `json:"operation_id"`
+	TargetID        string   `json:"target_id"`
+	Kind            string   `json:"kind"`
+	Path            string   `json:"path"`
+	Offset          int64    `json:"offset,omitempty"`
+	Length          int64    `json:"length,omitempty"`
+	Limit           int      `json:"limit,omitempty"`
+	Cursor          string   `json:"cursor,omitempty"`
+	ExpectedSize    *int64   `json:"expected_size,omitempty"`
+	ExpectedModTime string   `json:"expected_mtime,omitempty"`
+	LeaseEpoch      int64    `json:"lease_epoch"`
+	Roots           []string `json:"roots,omitempty"`
 }
 
 // DaemonOpsCommandDispatch is one claimed read-only ops command handed to a

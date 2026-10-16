@@ -12,12 +12,14 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/fileaccess"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -160,6 +162,48 @@ func (h *Handler) claimOpsCommands(ctx context.Context, rt db.AgentRuntime, ack 
 		})
 	}
 	ack.PendingOpsCommands = dispatches
+}
+
+func (h *Handler) claimFileOperations(ctx context.Context, rt db.AgentRuntime, ack *protocol.DaemonHeartbeatAckPayload) {
+	if rt.Status != "online" {
+		return
+	}
+	if err := h.Queries.ExpireFileOperations(ctx); err != nil {
+		slog.Warn("file operation expiration failed", "runtime_id", uuidToString(rt.ID), "error", err)
+	}
+	claimed, err := h.Queries.ClaimFileOperations(ctx, db.ClaimFileOperationsParams{RuntimeID: rt.ID, Limit: 3})
+	if err != nil {
+		slog.Warn("file operation claim failed", "runtime_id", uuidToString(rt.ID), "error", err)
+		return
+	}
+	for _, row := range claimed {
+		var req fileaccess.Request
+		if json.Unmarshal(row.Request, &req) != nil {
+			continue
+		}
+		var target db.DaemonFileAccessTarget
+		target, err = h.Queries.GetFileAccessTargetByRuntime(ctx, db.GetFileAccessTargetByRuntimeParams{ID: row.TargetID, RuntimeID: rt.ID})
+		if err != nil || !target.Enabled {
+			continue
+		}
+		var roots []string
+		if json.Unmarshal(target.Roots, &roots) != nil || len(roots) == 0 {
+			continue
+		}
+		ack.PendingFileOperations = append(ack.PendingFileOperations, protocol.DaemonFileOperationDispatch{
+			OperationID: uuidToString(row.ID), TargetID: row.TargetID, Kind: row.Kind,
+			Path: req.Path, Offset: req.Offset, Length: req.Length, Limit: req.Limit,
+			Cursor: req.Cursor, ExpectedSize: req.ExpectedSize, ExpectedModTime: formatTime(req.ExpectedModTime),
+			LeaseEpoch: row.LeaseEpoch, Roots: roots,
+		})
+	}
+}
+
+func formatTime(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func trimSpace(s string) string { return strings.TrimSpace(s) }
