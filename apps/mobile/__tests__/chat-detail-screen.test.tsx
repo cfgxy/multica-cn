@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React from "react";
 import { Alert } from "react-native";
-import { fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import ChatDetailScreen from "@/app/(app)/[workspace]/chat/[sessionId]";
 import { useChatAgentRequestStore } from "@/data/stores/chat-agent-request-store";
 
@@ -45,6 +45,10 @@ const mockSeenMessageOptionIds = [];
 const mockMarkReadMutate = jest.fn();
 const mockDeleteMutate = jest.fn();
 const mockCreateMutateAsync = jest.fn();
+const mockModelSelectHandler = { current: null as null | ((model: string | null) => Promise<void>) };
+const mockModelDisabledState = { current: false };
+const mockSetSessionQueryData = jest.fn();
+const mockSetChatSessionModel = jest.fn();
 
 jest.mock("@tanstack/react-query", () => ({
   queryOptions: (opts: Record<string, unknown>) => opts,
@@ -98,7 +102,7 @@ jest.mock("@tanstack/react-query", () => ({
     return { data: [], isLoading: false };
   },
   useQueryClient: () => ({
-    setQueryData: jest.fn(),
+    setQueryData: mockSetSessionQueryData,
     invalidateQueries: jest.fn(),
     cancelQueries: jest.fn(),
   }),
@@ -106,6 +110,7 @@ jest.mock("@tanstack/react-query", () => ({
 
 jest.mock("@/data/queries/chat", () => ({
   chatKeys: {
+    sessions: (id) => ["chat", id, "sessions"],
     messages: (id) => ["chat", "messages", id],
     pendingTask: (id) => ["chat", "pending-task", id],
   },
@@ -222,7 +227,11 @@ jest.mock("@/data/auth-store", () => ({
 }));
 
 jest.mock("@/data/api", () => ({
-  api: { sendChatMessage: jest.fn(async () => ({})) },
+  ApiError: class ApiError extends Error { status: number; },
+  api: {
+    sendChatMessage: jest.fn(async () => ({})),
+    setChatSessionModel: (...args) => mockSetChatSessionModel(...args),
+  },
 }));
 
 jest.mock("@/components/ui/text", () => {
@@ -263,6 +272,22 @@ jest.mock("@/components/chat/chat-composer", () => {
         { testID: "chat-composer", disabled: String(disabled) },
         disabledReason ? [React.createElement(Text, { key: "r" }, disabledReason)] : null,
       ),
+  };
+});
+
+jest.mock("@/components/chat/chat-session-model-picker", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { Pressable, Text } = jest.requireActual<typeof import("react-native")>("react-native");
+  return {
+    ChatSessionModelPicker: ({ disabled, onSelect }) => {
+      mockModelSelectHandler.current = onSelect;
+      mockModelDisabledState.current = disabled;
+      return React.createElement(Pressable, {
+        testID: "model-picker",
+        disabled,
+        onPress: () => void onSelect("requested-model"),
+      }, React.createElement(Text, null, "Model picker"));
+    },
   };
 });
 
@@ -371,6 +396,8 @@ function seedWorld() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockModelSelectHandler.current = null;
+  mockModelDisabledState.current = false;
   mockRoute.sessionId = "sa";
   mockRoute.agentId = undefined;
   mockSeenMessageOptionIds.length = 0;
@@ -379,6 +406,40 @@ beforeEach(() => {
 });
 
 describe("ChatDetailScreen (RUYI-496)", () => {
+  it("serializes model changes and only applies the server-confirmed override", async () => {
+    const alertSpy = jest.spyOn(Alert, "alert");
+    let resolveModel!: (session: { id: string; model_override: string | null }) => void;
+    let firstSelection!: Promise<void>;
+    mockSetChatSessionModel.mockImplementation(() => new Promise((resolve) => { resolveModel = resolve; }));
+    await render(<ChatDetailScreen />);
+
+    await act(async () => {
+      firstSelection = mockModelSelectHandler.current!("requested-model");
+      void mockModelSelectHandler.current!("other-model");
+      await Promise.resolve();
+    });
+    expect(mockSetChatSessionModel).toHaveBeenCalledTimes(1);
+    expect(mockSetChatSessionModel).toHaveBeenCalledWith("sa", "requested-model");
+    expect(mockModelDisabledState.current).toBe(true);
+    expect(mockSetSessionQueryData).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveModel({ id: "sa", model_override: "server-confirmed-model" });
+      await firstSelection;
+    });
+    expect(await mockSetChatSessionModel.mock.results[0].value).toEqual({ id: "sa", model_override: "server-confirmed-model" });
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(mockSetSessionQueryData).toHaveBeenCalledTimes(1);
+    const [, update] = mockSetSessionQueryData.mock.calls[0];
+    expect(update(mockSessions)).toEqual(
+      mockSessions.map((session) => session.id === "sa"
+        ? { ...session, model_override: "server-confirmed-model" }
+        : session),
+    );
+    expect(mockModelDisabledState.current).toBe(false);
+    alertSpy.mockRestore();
+  });
+
   it("AC4: queries and renders messages of the routed session only", async () => {
     await render(<ChatDetailScreen />);
     expect(mockSeenMessageOptionIds).toContain("sa");
