@@ -132,8 +132,9 @@ func (d *PluginEventDispatcher) sweepOnce() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	cutoff := pgtype.Timestamptz{Time: time.Now().Add(-invocationRetention), Valid: true}
-	removed, err := d.service.Queries.DeleteExpiredPluginInvocations(ctx, cutoff)
+	now := time.Now()
+	pluginCutoff := pgtype.Timestamptz{Time: now.Add(-invocationRetention), Valid: true}
+	removed, err := d.service.Queries.DeleteExpiredPluginInvocations(ctx, pluginCutoff)
 	if err != nil {
 		slog.Warn("plugins: invocation sweep failed", "error", err)
 		return
@@ -141,6 +142,17 @@ func (d *PluginEventDispatcher) sweepOnce() {
 	if removed > 0 {
 		slog.Info("plugins: swept expired hook invocations", "removed", removed)
 	}
+	mcpExpiryCutoff := pgtype.Timestamptz{Time: now, Valid: true}
+	removedAudit, err := d.service.Queries.DeleteExpiredMCPInvocationAuditEvents(ctx, mcpExpiryCutoff)
+	if err != nil {
+		slog.Warn("MCP invocation audit retention sweep failed", "error_code", "audit_retention_sweep_failed")
+	} else if removedAudit > 0 {
+		slog.Info("MCP invocation audit retention sweep removed expired rows", "removed", removedAudit)
+	}
+	if _, err := d.service.Queries.DeleteExpiredMCPInvocationAuditOutbox(ctx, mcpExpiryCutoff); err != nil {
+		slog.Warn("MCP invocation audit outbox retention sweep failed", "error_code", "outbox_retention_sweep_failed")
+	}
+	DrainMCPInvocationAuditOutbox(ctx, d.service.Queries, 100)
 }
 
 // Dispatch is what the bus listener calls. It must return promptly: the caller

@@ -461,18 +461,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	origins := allowedOrigins()
 
 	signupConfig := handler.Config{
-		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
-		AllowedEmails:            splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
-		AllowedEmailDomains:      splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
-		SuperAdminEmails:         splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
-		DisableWorkspaceCreation: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
-		VCSIntegrationEnabled:    os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
-		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
-		AppURL:                   appURLFromEnv(),
-		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
-		CloudURL:                 strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
-		CloudTimeout:             35 * time.Second,
-		AttachmentDownloadMode:   os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
+		MCPAuditServiceCredential: strings.TrimSpace(os.Getenv("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL")),
+		AllowSignup:               os.Getenv("ALLOW_SIGNUP") != "false",
+		AllowedEmails:             splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
+		AllowedEmailDomains:       splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		SuperAdminEmails:          splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
+		DisableWorkspaceCreation:  os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		VCSIntegrationEnabled:     os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
+		PublicURL:                 strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		AppURL:                    appURLFromEnv(),
+		TrustedProxies:            parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		CloudURL:                  strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
+		CloudTimeout:              35 * time.Second,
+		AttachmentDownloadMode:    os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
 		// 0 defers to handler.New, which fills in
 		// defaultAttachmentDownloadURLTTL — one owner for the default so this
 		// wiring cannot drift from it (RUYI-103).
@@ -1788,6 +1789,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// no workspace in the path to gate on.
 		// --- User-scoped routes (no workspace context required) ---
 		r.Get("/api/me", h.GetMe)
+		r.Post("/api/mcp/audit-start", h.StartMCPInvocationAudit)
+		r.Post("/api/mcp/audit-finish", h.FinishMCPInvocationAudit)
 		r.Patch("/api/me", h.UpdateMe)
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)

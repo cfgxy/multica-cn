@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // These exercise the real outbound path — a live HTTPS server, a real request,
@@ -387,6 +387,31 @@ func TestInvokeHookRefusesDisabledInstallation(t *testing.T) {
 		Trigger:      plugincontract.TriggerManual,
 	}, 1); err == nil {
 		t.Fatal("a disabled installation must not call out")
+	}
+}
+
+func TestInvokeHookFailsClosedWhenStartAuditCannotPersist(t *testing.T) {
+	harness := newHookTestServer(t)
+	service := hookTestService(t, harness)
+	service.Queries = nil
+	installation := hookTestInstallation(t, harness.server.URL+"/hooks/summarize", hookTestHost(harness), []string{plugincontract.TriggerManual})
+	hook, err := FindHook(installation, "summarize")
+	if err != nil {
+		t.Fatalf("find hook: %v", err)
+	}
+	result, err := service.InvokeHook(context.Background(), HookInvocation{
+		Installation: installation,
+		Hook:         hook,
+		Trigger:      plugincontract.TriggerManual,
+		Input:        map[string]string{"secret": "must-not-be-called"},
+	}, 1)
+	if err == nil || result.AuditStatus != "unrecorded" {
+		t.Fatalf("missing audit storage must refuse the call: result=%+v err=%v", result, err)
+	}
+	select {
+	case <-harness.received:
+		t.Fatal("the hook endpoint received a request without a persisted start audit")
+	default:
 	}
 }
 
