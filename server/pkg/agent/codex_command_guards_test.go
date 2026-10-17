@@ -144,13 +144,21 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 	home := filepath.Join(root, "home")
 	guardBin := filepath.Join(root, "codex-home", codexGuardBinDir)
 	nativeBin := filepath.Join(root, "native-bin")
+	nativeGitLog := filepath.Join(root, "native-git.log")
+	gitConfig := filepath.Join(root, "gitconfig")
 	nativePath := nativeBin + string(os.PathListSeparator) + "/usr/bin:/bin"
 	if err := os.MkdirAll(nativeBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeExecutable(t, filepath.Join(nativeBin, "git"), "#!/bin/sh\nprintf 'native git\\n'\n")
+	writeExecutable(t, filepath.Join(nativeBin, "git"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$NATIVE_GIT_LOG\"\nprintf 'native git\\n'\n")
 	writeExecutable(t, filepath.Join(nativeBin, "gh"), "#!/bin/sh\nprintf 'native gh\\n'\n")
-	env, err := installCodexCommandGuards([]string{"HOME=" + home, "PATH=" + nativePath}, guardBin, home)
+	if err := os.WriteFile(nativeGitLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gitConfig, []byte("[alias]\n\tpublish-feature = !git push origin feature\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env, err := installCodexCommandGuards([]string{"HOME=" + home, "PATH=" + nativePath, "NATIVE_GIT_LOG=" + nativeGitLog, "GIT_CONFIG_GLOBAL=" + gitConfig}, guardBin, home)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +195,35 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 				}
 			})
 		}
+		for _, tc := range []struct {
+			name string
+			args []string
+		}{
+			{name: "send-pack", args: []string{"send-pack", "origin", "refs/heads/feature"}},
+			{name: "alias indirect push", args: []string{"publish-feature"}},
+		} {
+			t.Run(tc.name+" with "+state+" guard", func(t *testing.T) {
+				cmd := exec.Command(filepath.Join(guardBin, "git"), tc.args...)
+				cmd.Env = env
+				out, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Fatalf("%s unexpectedly succeeded: %s", state, out)
+				}
+				if !strings.Contains(string(out), "git guard missing or not executable") {
+					t.Fatalf("guard failure reason absent from output: %s", out)
+				}
+				if strings.Contains(string(out), "native git") {
+					t.Fatalf("rejected command reached native git: %s", out)
+				}
+			})
+		}
+		calls, err := os.ReadFile(nativeGitLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(calls), "send-pack") || strings.Contains(string(calls), "publish-feature") || strings.Contains(string(calls), "push origin feature") {
+			t.Fatalf("rejected remote write reached native git: %q", calls)
+		}
 		if state == "not executable" {
 			for _, path := range guardPaths {
 				if err := os.Remove(path); err != nil {
@@ -200,10 +237,10 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("non-push git command should delegate to native git: %v\n%s", err, out)
+		t.Fatalf("read-only git status should delegate to native git: %v\n%s", err, out)
 	}
 	if string(out) != "native git\n" {
-		t.Fatalf("non-push git output = %q, want native delegation", out)
+		t.Fatalf("git status output = %q, want native delegation", out)
 	}
 }
 

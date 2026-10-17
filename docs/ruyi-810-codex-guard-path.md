@@ -9,7 +9,7 @@ The defaults follow the existing installers:
 - `$HOME/.config/gh-guard/gh-pr-guard`.
 - `$HOME/.config/git-push-guard/git-push-guard`.
 
-When the gh guard is absent or not executable, the shim refuses the command. When the git guard is absent or not executable, the shim refuses `git push` and delegates other Git commands to the native executable. Guard decisions and canonical repository policy remain owned by the existing scripts.
+When the gh guard is absent or not executable, the shim refuses the command. When the git guard is absent or not executable, the shim delegates only `git status` to the native executable and refuses every other Git subcommand. This keeps the explicitly allowed read-only status check available while preventing protocol write commands and configured aliases from falling through to native Git. Guard decisions and canonical repository policy remain owned by the existing scripts when the guard is present.
 
 ## Options
 
@@ -25,7 +25,7 @@ The chosen approach is narrow to Codex processes and does not depend on `.bashrc
 
 ## Verification and operations
 
-The package tests use temporary homes, fake native binaries, and fake guards to verify command resolution, argument-preserving delegation, no recursive resolution, and missing-guard rejection without writing to GitHub or a remote Git repository. Existing guard tests remain responsible for canonical repository, upstream, and protected-branch policy.
+The package tests use temporary homes, fake native binaries, and fake guards to verify command resolution, argument-preserving delegation, no recursive resolution, and missing-guard rejection (including `send-pack` and a configured alias) without writing to GitHub or a remote Git repository. With a missing Git guard, only `git status` is delegated to native Git. Existing guard tests remain responsible for canonical repository, upstream, and protected-branch policy.
 
 For a host installation, the two existing guard files and their canonical repository configuration must be installed at the defaults above. Guard paths are derived from the daemon OS user's home and cannot be overridden by an agent profile. Restarting the daemon starts new Codex processes with the injected PATH. A newly started Codex task should report the generated shim first in `command -v` and `type -a`, and the native executable later in `type -a`. The shims live under the user's Multica cache and are replaced atomically on launch.
 
@@ -34,6 +34,6 @@ Rollback is a daemon rollback to the previous build. That build does not prepend
 ## Known limits
 
 - PATH shims do not stop direct calls such as `/usr/bin/git push`, `command -p git push`, a replaced PATH, or another client that bypasses Codex.
-- The guard scripts must be installed and executable. The shims fail closed for guarded operations when they are missing; they do not silently fall back to an unguarded write path.
+- The guard scripts must be installed and executable. The Git shim fails closed for every command except `status` when its guard is missing; that exception is a command-resolution policy, not a general Git authorization boundary.
 - Bash is required for the current shim scripts. Windows hosts need a separate native wrapper implementation before this behavior can be claimed there.
 - Replacing the host shell, profile-specific command environment, or daemon launcher is outside this change. QA must verify the actual daemon profile and restart persistence on its authorized host.
