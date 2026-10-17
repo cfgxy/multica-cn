@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createClientTargets } from "../src/install/clients.js";
+import { readAuditCredential } from "../src/audit-credential.js";
 import {
   formatInstallReport,
   formatStatusReport,
@@ -72,7 +73,11 @@ describe("Claude Code / Kimi / Cursor (shared stdio JSON shape)", () => {
 
       const written = JSON.parse(readFileSync(configPath, "utf8"));
       expect(written.mcpServers.other).toEqual({ command: "npx", args: ["other-mcp"] });
-      expect(written.mcpServers.multica).toEqual({ type: "stdio", command: "node", args: [DIST_PATH] });
+      expect(written.mcpServers.multica).toEqual({
+        type: "stdio",
+        command: "node",
+        args: [DIST_PATH, "--audit-credential-file", join(home, ".config", "multica", "mcp-audit-credential")],
+      });
     });
 
     it(`${id}: creates the config file fresh when none exists yet`, () => {
@@ -82,7 +87,7 @@ describe("Claude Code / Kimi / Cursor (shared stdio JSON shape)", () => {
       const outcome = targetById(id).apply({ distPath: DIST_PATH });
       expect(outcome.status).toBe("installed");
       const written = JSON.parse(readFileSync(configPath, "utf8"));
-      expect(written.mcpServers.multica).toEqual({ type: "stdio", command: "node", args: [DIST_PATH] });
+      expect(written.mcpServers.multica.args).toContain(join(home, ".config", "multica", "mcp-audit-credential"));
     });
 
     it(`${id}: second run is idempotent (no duplicate entries)`, () => {
@@ -126,7 +131,7 @@ describe("ZCode (nested mcp.servers.multica)", () => {
     const written = JSON.parse(readFileSync(configPath, "utf8"));
     expect(written.model).toBe("glm");
     expect(written.mcp.servers.other).toEqual({ type: "stdio", command: "other" });
-    expect(written.mcp.servers.multica).toEqual({ type: "stdio", command: "node", args: [DIST_PATH] });
+    expect(written.mcp.servers.multica.args).toContain(join(home, ".config", "multica", "mcp-audit-credential"));
   });
 });
 
@@ -138,7 +143,11 @@ describe("OpenCode (mcp.multica, local command array)", () => {
 
     const configPath = join(home, ".config", "opencode", "opencode.json");
     const written = JSON.parse(readFileSync(configPath, "utf8"));
-    expect(written.mcp.multica).toEqual({ type: "local", command: ["node", DIST_PATH], enabled: true });
+    expect(written.mcp.multica).toEqual({
+      type: "local",
+      command: ["node", DIST_PATH, "--audit-credential-file", join(home, ".config", "multica", "mcp-audit-credential")],
+      enabled: true,
+    });
   });
 });
 
@@ -162,7 +171,7 @@ describe("Codex (TOML block replace)", () => {
     expect(written).toContain('command = "npx"');
     expect(written).toContain("[mcp_servers.multica]");
     expect(written).toContain('command = "node"');
-    expect(written).toContain(`args = ["${DIST_PATH}"]`);
+    expect(written).toContain(`args = ["${DIST_PATH}", "--audit-credential-file", "${join(home, ".config", "multica", "mcp-audit-credential")}"]`);
   });
 
   it("replaces an existing [mcp_servers.multica] table in place instead of duplicating it", () => {
@@ -184,7 +193,7 @@ describe("Codex (TOML block replace)", () => {
     const written = readFileSync(configPath(), "utf8");
     expect(written.match(/\[mcp_servers\.multica\]/g)?.length).toBe(1);
     expect(written).not.toContain("/old/path/dist/index.js");
-    expect(written).toContain(`args = ["${DIST_PATH}"]`);
+    expect(written).toContain("--audit-credential-file");
     expect(written).toContain("[mcp_servers.other]");
   });
 
@@ -219,6 +228,37 @@ describe("Codex (TOML block replace)", () => {
 });
 
 describe("credential hygiene", () => {
+  it("passes a protected credential file through the registered stdio process without writing its contents to config or report", () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const credentialFile = join(home, "audit-credential");
+    const secret = "audit-secret-value";
+    writeFileSync(credentialFile, `${secret}\n`, { mode: 0o600 });
+    chmodSync(credentialFile, 0o600);
+
+    const results = runInstall(createClientTargets(home), { distPath: DIST_PATH, auditCredentialFile: credentialFile });
+    const result = results.find(({ target }) => target.id === "claude-code")?.outcome;
+    expect(result?.status).toBe("installed");
+    const configPath = join(home, ".claude.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    const args = config.mcpServers.multica.args as string[];
+    const fileIndex = args.indexOf("--audit-credential-file") + 1;
+
+    expect(args[fileIndex]).toBe(credentialFile);
+    expect(readAuditCredential(args[fileIndex])).toBe(secret);
+    expect(readFileSync(configPath, "utf8")).not.toContain(secret);
+    expect(formatInstallReport(results)).not.toContain(secret);
+  });
+
+  it("gives an actionable error when the protected audit credential file is missing", () => {
+    expect(() => readAuditCredential(undefined)).toThrow("Run `make mcp-install`");
+    expect(() => readAuditCredential(join(home, "missing-audit-credential"))).toThrow("chmod 600");
+
+    const permissiveFile = join(home, "permissive-audit-credential");
+    writeFileSync(permissiveFile, "private", { mode: 0o644 });
+    chmodSync(permissiveFile, 0o644);
+    expect(() => readAuditCredential(permissiveFile)).toThrow("permissions must be restricted");
+  });
+
   it("never writes token/credential-shaped fields into any client's multica entry", () => {
     for (const id of ["claude-code", "kimi", "zcode", "cursor", "opencode"]) {
       const markerDirs: Record<string, string[]> = {
@@ -428,7 +468,11 @@ describe("update (refresh only already-registered clients)", () => {
 
     expect(results[0]!.outcome).toEqual({ status: "installed", path: join(home, ".claude.json") });
     const written = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
-    expect(written.mcpServers.multica.args).toEqual([newDistPath]);
+    expect(written.mcpServers.multica.args).toEqual([
+      newDistPath,
+      "--audit-credential-file",
+      join(home, ".config", "multica", "mcp-audit-credential"),
+    ]);
   });
 
   it("does not register a client that was only detected, never installed", () => {
