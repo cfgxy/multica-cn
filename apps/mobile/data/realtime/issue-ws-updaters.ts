@@ -312,24 +312,10 @@ export function reconcileCreatedComment(
         .filter((index) => index !== -1);
 
       // A realtime event has no client mutation id. Keep ambiguous successes
-      // in the timeline and record them so a later HTTP error cannot turn the
-      // already-saved comment into a retryable failure.
+      // staged until an HTTP response identifies its request. A request that
+      // already failed cannot be assumed to own this event when identical
+      // sends are still in flight.
       if (!optimisticId && pendingIndexes.length > 1) {
-        const failedIndex = pendingIndexes.find((index) =>
-          failedIds.has(old.entries[index].id),
-        );
-        if (failedIndex !== undefined) {
-          const failedId = old.entries[failedIndex].id;
-          clearedFailedIds.push(failedId);
-          const next = [...old.entries];
-          next.splice(failedIndex, 1);
-          next.push(entry);
-          const sorted = sortTimelineEntriesAsc(next);
-          crossedKind =
-            !old.truncatedKinds.includes("comment") &&
-            crossedTimelineHardCap(old.entries, sorted, "comment");
-          return updateTimelineEntries(old, () => sorted);
-        }
         return {
           ...old,
           observedCreatedComments: [...(old.observedCreatedComments ?? []), entry],
