@@ -41,7 +41,7 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
@@ -153,11 +153,6 @@ export function Markdown({
     [baseStyle, compact],
   );
 
-  const segments = useMemo(() => {
-    const processed = preprocessMobileMarkdown(content);
-    return splitMarkdown(processed);
-  }, [content]);
-
   // RUYI-635 tail aggregation, carried forward under the RUYI-728 body
   // contract. Scanned from the RAW content, not the preprocessed text: the
   // autolink pass turns bare `MR !N` / `owner/repo#N` tokens into links, and
@@ -176,6 +171,39 @@ export function Markdown({
   // exact match stays the backstop.
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const workspacePrefix = useWorkspaceIssuePrefix();
+  const segments = useMemo(() => {
+    const processed = preprocessMobileMarkdown(content, { workspacePrefix });
+    return splitMarkdown(processed);
+  }, [content, workspacePrefix]);
+  const linkIntent = useRef({
+    content,
+    wsId,
+    wsSlug,
+    generation: 0,
+    latest: 0,
+    pending: new Map<string, { intent: number }>(),
+  });
+  if (
+    linkIntent.current.content !== content ||
+    linkIntent.current.wsId !== wsId ||
+    linkIntent.current.wsSlug !== wsSlug
+  ) {
+    linkIntent.current = {
+      content,
+      wsId,
+      wsSlug,
+      generation: linkIntent.current.generation + 1,
+      latest: linkIntent.current.latest + 1,
+      pending: new Map<string, { intent: number }>(),
+    };
+  }
+  useEffect(
+    () => () => {
+      linkIntent.current.generation += 1;
+      linkIntent.current.pending.clear();
+    },
+    [],
+  );
   if (__DEV__ && BARE_IDENTIFIER_SHAPE.test(content)) {
     // Diagnostics for the gate QA could not observe from the outside (the
     // 2026-10-11 FAIL report's black-box boundary): any identifier-bearing
@@ -207,6 +235,39 @@ export function Markdown({
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
       const action = resolveLinkAction(url, wsSlug ?? null);
+      if (action.kind === "pullRequest" || action.kind === "mergeRequest") {
+        const state = linkIntent.current;
+        const key = `${wsId ?? ""}:${action.kind}:${action.number}`;
+        const pendingIntent = state.pending.get(key);
+        if (pendingIntent) {
+          pendingIntent.intent = ++state.latest;
+          return;
+        }
+
+        const generation = state.generation;
+        const currentIntent = { intent: ++state.latest };
+        state.pending.set(key, currentIntent);
+        const lookup = api.lookupPullRequestByNumber(wsId ?? "", action.number);
+        void lookup
+          .then(async (pr) => {
+            if (
+              !pr ||
+              linkIntent.current !== state ||
+              state.generation !== generation ||
+              state.latest !== currentIntent.intent ||
+              state.pending.get(key) !== currentIntent
+            ) {
+              return;
+            }
+            await openExternalUrl(pr.html_url, Linking);
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (state.pending.get(key) === currentIntent) state.pending.delete(key);
+          });
+        return;
+      }
+      linkIntent.current.latest += 1;
       switch (action.kind) {
         case "route":
           router.push(action.path);
@@ -224,23 +285,6 @@ export function Markdown({
             fallbackUrl: action.fallbackUrl,
           });
           return;
-        case "mergeRequest": {
-          // RUYI-728: body-text `MR !N` links have no in-app page — resolve
-          // the number to a PR at tap time and hand the canonical URL to the
-          // OS (github.com App Links / Universal Links land in the GitHub
-          // app when installed, see lib/pull-request-link.ts). A miss (never
-          // synced / cross-repo ambiguous) and a failed open both stay
-          // silent — the same doctrine as the `external` branch; the
-          // reference sheet's degraded row is where the unresolved state is
-          // visible.
-          void api
-            .lookupPullRequestByNumber(wsId ?? "", action.number)
-            .then((pr) => {
-              if (pr) void openExternalUrl(pr.html_url, Linking);
-            })
-            .catch(() => {});
-          return;
-        }
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
           // keeps a stray tap from crashing the screen. Silent: failing

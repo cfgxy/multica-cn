@@ -117,6 +117,15 @@ const (
 	// RUYI-355 P2-3: ops.server_started only reaches workspaces that exist
 	// at boot; the creation event anchors workspaces born mid-flight.
 	AuditOpsWorkspaceCreated = "ops.workspace_created"
+
+	// RUYI-645: read-only ops command channel. submitted carries
+	// operator/kind/args (never the result content); finalized carries
+	// kind/status/exit_code/duration/lease_epoch, also without output
+	// content — journalctl-style output stays in daemon_ops_command.result
+	// behind the operator API, never in the audit trail.
+	AuditOpsCommandSubmitted = "ops.command_submitted"
+	AuditOpsCommandFinalized = "ops.command_finalized"
+
 	// Workspace-level scheduling freeze lifecycle (RUYI-608): no single
 	// agent dimension to anchor, so the workspace is the object.
 	AuditOpsSchedulingPaused  = "ops.scheduling_paused"

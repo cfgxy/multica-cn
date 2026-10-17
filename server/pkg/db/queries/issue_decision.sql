@@ -1,11 +1,11 @@
 -- name: CreateIssueDecision :one
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
-    question, options, multi_select, recommended_indices,
+    question, context, options, multi_select, recommended_indices,
     created_by_type, created_by_id, client_request_id
 ) VALUES (
     @id, @workspace_id, @issue_id, @source_comment_id,
-    @question, @options::jsonb, @multi_select, @recommended_indices::jsonb,
+    @question, @context::jsonb, @options::jsonb, @multi_select, @recommended_indices::jsonb,
     @created_by_type, @created_by_id, @client_request_id
 )
 RETURNING *;

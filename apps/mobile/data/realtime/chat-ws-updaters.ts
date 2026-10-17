@@ -190,8 +190,13 @@ export function applyChatDoneToCache(
   qc.invalidateQueries({
     queryKey: chatKeys.messages(payload.chat_session_id),
   });
-  // A queued successor may already exist. Refetch the server-authoritative
-  // head instead of clearing it and briefly presenting the session as idle.
+  // chat:done is authoritative for this task. Remove only its id so a queued
+  // successor becomes the head immediately, matching web's cache transition;
+  // the refetch below still reconciles the server-authoritative queue.
+  qc.setQueryData<ChatPendingTask>(
+    chatKeys.pendingTask(payload.chat_session_id),
+    (old) => removePendingChatTask(old, payload.task_id),
+  );
   invalidatePendingTask(qc, payload.chat_session_id);
 }
 

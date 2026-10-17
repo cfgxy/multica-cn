@@ -78,6 +78,18 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 			"973_mcp_invocation_audit_outbox_id_index",
 		},
 	},
+	"975": {
+		issue: "RUYI-789",
+		stems: []string{
+			"975_daemon_file_access",
+			"975_file_access_target_id_index",
+			"975_file_operation_id_index",
+		},
+		concurrentIndexes: []string{
+			"975_file_access_target_id_index",
+			"975_file_operation_id_index",
+		},
+	},
 }
 
 var concurrentIndexUpPattern = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b[^;]*;?\s*$`)
@@ -139,20 +151,22 @@ func TestMigrationNumericPrefixesStayUniqueAfterLegacySet(t *testing.T) {
 }
 
 func TestConcurrentMigrationPrefixGroupsRequireExactStemSet(t *testing.T) {
-	group := concurrentMigrationPrefixGroups["973"]
-
-	if !matchesRegisteredMigrationPrefixGroup("973", group.stems, concurrentMigrationPrefixGroups) {
-		t.Fatal("registered 973 stems should match the complete group")
-	}
-	if matchesRegisteredMigrationPrefixGroup("974", group.stems, concurrentMigrationPrefixGroups) {
-		t.Fatal("unregistered prefix must not be accepted")
-	}
-	if matchesRegisteredMigrationPrefixGroup("973", group.stems[:len(group.stems)-1], concurrentMigrationPrefixGroups) {
-		t.Fatal("incomplete registered prefix group must not be accepted")
-	}
-	extraStem := append(append([]string(nil), group.stems...), "973_unregistered_migration")
-	if matchesRegisteredMigrationPrefixGroup("973", extraStem, concurrentMigrationPrefixGroups) {
-		t.Fatal("registered prefix group must reject an additional stem")
+	for prefix, group := range concurrentMigrationPrefixGroups {
+		t.Run(prefix, func(t *testing.T) {
+			if !matchesRegisteredMigrationPrefixGroup(prefix, group.stems, concurrentMigrationPrefixGroups) {
+				t.Fatal("registered stems should match the complete group")
+			}
+			if matchesRegisteredMigrationPrefixGroup("unregistered", group.stems, concurrentMigrationPrefixGroups) {
+				t.Fatal("unregistered prefix must not be accepted")
+			}
+			if matchesRegisteredMigrationPrefixGroup(prefix, group.stems[:len(group.stems)-1], concurrentMigrationPrefixGroups) {
+				t.Fatal("incomplete registered prefix group must not be accepted")
+			}
+			extraStem := append(append([]string(nil), group.stems...), prefix+"_unregistered_migration")
+			if matchesRegisteredMigrationPrefixGroup(prefix, extraStem, concurrentMigrationPrefixGroups) {
+				t.Fatal("registered prefix group must reject an additional stem")
+			}
+		})
 	}
 }
 

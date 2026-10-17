@@ -83,5 +83,15 @@
     "detail_error": "Failed to load step details",
     "answer_failed": "Failed to record your answer",
     "cancel_failed": "Failed to revoke"
+  },
+  "detail": {
+    "read_only": "Read-only decision details",
+    "no_context": "No additional context was provided.",
+    "options": "Options",
+    "recommended": "Recommended",
+    "selected": "Selected",
+    "single_select": "Select one option",
+    "multi_select": "Select one or more options",
+    "open_task": "Open task to answer"
   }
 }

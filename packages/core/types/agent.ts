@@ -1798,6 +1798,62 @@ export interface RuntimeLocalSkillImportRequest {
   updated_at: string;
 }
 
+export type RuntimeOpsCommandStatus =
+  | "pending"
+  | "claimed"
+  | "succeeded"
+  | "failed"
+  | "rejected"
+  | "timeout"
+  | "expired";
+
+export interface RuntimeOpsService {
+  name: string;
+  type?: string;
+  status: string;
+  detail?: string;
+}
+
+export interface RuntimeOpsInventory {
+  daemon_id: string;
+  collect_status: "ok" | "unavailable";
+  services: RuntimeOpsService[];
+  error?: string | null;
+  last_report_at?: string | null;
+  last_success_at?: string | null;
+}
+
+export interface RuntimeOpsCommandResult {
+  stdout?: string;
+  stderr?: string;
+  truncated?: boolean;
+}
+
+export interface RuntimeOpsCommand {
+  id: string;
+  runtime_id: string;
+  kind: string;
+  args?: unknown;
+  status: RuntimeOpsCommandStatus;
+  timeout_s: number;
+  lease_epoch: number;
+  exit_code?: number | null;
+  result?: RuntimeOpsCommandResult | null;
+  reject_reason?: string | null;
+  submission_key?: string | null;
+  created_at: string;
+  claimed_at?: string | null;
+  finished_at?: string | null;
+  idempotent?: boolean;
+}
+
+export interface CreateRuntimeOpsCommandRequest {
+  kind: string;
+  args?: Record<string, unknown>;
+  timeout_s?: number;
+  submission_key?: string;
+}
+
 export interface RuntimeLocalSkillsResult {
   skills: RuntimeLocalSkillSummary[];
   supported: boolean;

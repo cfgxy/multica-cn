@@ -86,6 +86,9 @@ import type {
   PromptTargetState,
   PromptVersion,
   PromptQualityDashboard,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
   SelfEvolutionOverview,
   SelfEvolutionConfigValidation,
   SelfEvolutionModelConfig,
@@ -152,6 +155,9 @@ import type {
   RuntimeLocalSkillListRequest,
   CreateRuntimeLocalSkillImportRequest,
   RuntimeLocalSkillImportRequest,
+  CreateRuntimeOpsCommandRequest,
+  RuntimeOpsCommand,
+  RuntimeOpsInventory,
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
@@ -623,6 +629,12 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
+  ClauseGovernanceOverviewSchema,
+  EMPTY_CLAUSE_GOVERNANCE_OVERVIEW,
+  ClauseGovernanceDetailSchema,
+  EMPTY_CLAUSE_GOVERNANCE_DETAIL,
+  ClauseGovernanceReconciliationSchema,
+  EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION,
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionModelConfigSchema,
@@ -3296,6 +3308,31 @@ export class ApiClient {
     return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import/${requestId}`);
   }
 
+  async getRuntimeOpsInventory(runtimeId: string): Promise<RuntimeOpsInventory> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/inventory`);
+  }
+
+  async submitRuntimeOpsCommand(
+    runtimeId: string,
+    data: CreateRuntimeOpsCommandRequest,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRuntimeOpsCommands(runtimeId: string): Promise<RuntimeOpsCommand[]> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands?limit=50`);
+  }
+
+  async getRuntimeOpsCommand(
+    runtimeId: string,
+    commandId: string,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands/${commandId}`);
+  }
+
   async listAgentTasks(agentId: string): Promise<AgentTask[]> {
     return this.fetch(`/api/agents/${agentId}/tasks`);
   }
@@ -3957,6 +3994,37 @@ export class ApiClient {
     );
     return parseWithFallback(raw, PromptQualityDashboardSchema, EMPTY_PROMPT_QUALITY_DASHBOARD, {
       endpoint: "GET /api/prompt-governance/{scope}/{id}/quality",
+    });
+  }
+
+  async getClauseGovernanceOverview(days: number): Promise<ClauseGovernanceOverview> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/governance/clauses?${query.toString()}`);
+    return parseWithFallback(raw, ClauseGovernanceOverviewSchema, EMPTY_CLAUSE_GOVERNANCE_OVERVIEW, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceDetail(clauseId: string, days: number): Promise<ClauseGovernanceDetail> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceDetailSchema, EMPTY_CLAUSE_GOVERNANCE_DETAIL, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses/{clauseId}",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceReconciliation(days: number): Promise<ClauseGovernanceReconciliation> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/reconciliation?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceReconciliationSchema, EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION, {
+      endpoint: "GET /api/prompt-legislation/governance/reconciliation",
+      redactContent: true,
     });
   }
 
