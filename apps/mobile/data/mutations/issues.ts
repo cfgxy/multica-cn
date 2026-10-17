@@ -46,6 +46,7 @@ import {
   commentToTimelineEntry,
   patchIssueLabels,
   reconcileCreatedComment,
+  reconcileFailedCreatedComment,
   replaceCommentTimelineEntry,
 } from "@/data/realtime/issue-ws-updaters";
 
@@ -125,10 +126,18 @@ export function useCreateComment(issueId: string) {
       // only mutation in the issues file that intentionally avoids
       // rollback — every other path treats error as "undo the optimism".
       if (ctx?.optimisticId) {
+        const observedSuccess = wsId && userId
+          ? reconcileFailedCreatedComment(qc, wsId, issueId, ctx.optimisticId, {
+              actor_type: "member",
+              actor_id: userId,
+              content: vars.content,
+              parent_id: vars.parentId ?? null,
+            })
+          : false;
         const stillPending = qc
           .getQueryData<TimelineQueryData>(ctx.key)
           ?.entries.some((entry) => entry.id === ctx.optimisticId);
-        if (stillPending) {
+        if (stillPending && !observedSuccess) {
           useFailedCommentsStore.getState().markFailed(ctx.optimisticId, {
             content: vars.content,
             parentId: vars.parentId,
