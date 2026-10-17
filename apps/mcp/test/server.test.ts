@@ -22,6 +22,7 @@ interface Fixture {
 async function connectServer(
   backendHandler: (pathname: string, input?: RequestInfo | URL, init?: RequestInit) => unknown | Promise<unknown>,
   backendStatus = 200,
+  mcpInstanceId?: string,
 ): Promise<Fixture> {
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const pathname = new URL(String(input)).pathname;
@@ -37,6 +38,7 @@ async function connectServer(
     fetchImpl,
     logger: silentLogger(),
     auditServiceCredential: "private-audit-credential",
+    ...(mcpInstanceId ? { mcpInstanceId, fileAccessInstanceCredential: "private-instance-credential" } : {}),
   });
   const server = createMcpServer(restClient);
   const mcpClient = new Client({ name: "vitest", version: "0.0.0" });
@@ -107,6 +109,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "get_decision",
       "get_execution_profile",
       "get_execution_topology",
+      "get_file_metadata",
       "get_inbox_unread_count",
       "get_inbox_unread_summary",
       "get_issue",
@@ -122,6 +125,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "list_daemon_instances",
       "list_decisions",
       "list_execution_profiles",
+      "list_files",
       "list_inbox",
       "list_issue_runs",
       "list_issues",
@@ -137,6 +141,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "mark_inbox_item_read",
       "mark_inbox_item_unread",
       "progress_digest",
+      "read_file_chunk",
       "restore_agent",
       "retry_run",
       "search_audit_events",
@@ -228,6 +233,10 @@ describe("createMcpServer (via in-memory client)", () => {
     ]);
     const auditBodies = `${calls[0]?.body}\n${calls[2]?.body}`;
     expect(auditBodies).toContain("list_inbox");
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toMatchObject({
+      reported_client_name: "vitest",
+      reported_client_version: "0.0.0",
+    });
     expect(auditBodies).not.toContain("private notification body");
     expect(auditBodies).not.toContain(TOKEN);
     expect(calls[0]?.headers["X-Multica-MCP-Service-Credential"]).toBe("private-audit-credential");
@@ -249,6 +258,30 @@ describe("createMcpServer (via in-memory client)", () => {
 
     expect(result.isError).toBe(true);
     expect(paths).toEqual(["/api/mcp/audit-start"]);
+  });
+
+  it("classifies rejected file operations as refusals and exposes queued finish audit", async () => {
+    const calls: Array<{ path: string; body: string }> = [];
+    const fixture = await connectServer(async (pathname, _input, init) => {
+      calls.push({ path: pathname, body: String(init?.body ?? "") });
+      if (pathname === "/api/file-access/metadata") return { operation_id: "op-1", status: "pending" };
+      if (pathname === "/api/file-access/operations/op-1") {
+        return { operation_id: "op-1", kind: "metadata", status: "rejected", result: null, error: "permission_denied" };
+      }
+      if (pathname === "/api/mcp/audit-finish") return { status: "queued" };
+      return { status: "recorded" };
+    }, 200, "mcp-test-instance");
+    fixtures.push(fixture.cleanup);
+
+    const result = await fixture.client.callTool({
+      name: "get_file_metadata",
+      arguments: { workspace: "0b7f4c1e-1111-4222-8333-abcdefabcdef", path: "/srv/data/a.txt" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("audit_status: queued");
+    const finish = JSON.parse(calls.find((call) => call.path === "/api/mcp/audit-finish")?.body ?? "{}");
+    expect(finish, JSON.stringify(calls)).toMatchObject({ status: "refused", error_code: "permission_denied", operation_id: "op-1" });
   });
 
   it("tools/call maps backend errors to isError results without leaking the token", async () => {

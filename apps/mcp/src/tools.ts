@@ -6,7 +6,8 @@
  * matter (runs started, quota spent, destructive outcomes). Parameter-level
  * constraints live in the input schema, not the description.
  *
- * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
+ * Read: list_workspaces, list_files, get_file_metadata, read_file_chunk,
+ *       list_agents, list_projects, get_project, list_issues,
  *       get_issue, search_issues, progress_digest, list_comments, get_comment,
  *       get_issue_relations.
  * Write (issues): create_issue, add_comment, update_issue_status,
@@ -1065,6 +1066,80 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           issue_prefix: workspace.issue_prefix,
         })),
       };
+    },
+  },
+  {
+    name: "list_files",
+    description: "List entries in a path on the explicitly registered local or remote file target for this workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        path: { type: "string", description: "Absolute path on the registered target." },
+        host: { type: "string", description: "Registered target ID or alias; omitted to use this MCP instance's explicit local binding." },
+        limit: { type: "integer", description: "Maximum entries (1-200).", minimum: 1, maximum: 200 },
+        cursor: { type: "string", description: "Opaque pagination cursor returned by the previous page." },
+      },
+      required: ["workspace", "path"],
+    },
+    async handler(args, client) {
+      return client.runFileAccessTool({
+        tool: "list_files",
+        workspace: requireString(args, "workspace"),
+        path: requireString(args, "path"),
+        invocation_id: requireString(args, "_mcp_invocation_id"),
+        host: optionalString(args, "host"),
+        limit: optionalInt(args, "limit", { min: 1, max: 200 }),
+        cursor: optionalString(args, "cursor"),
+      });
+    },
+  },
+  {
+    name: "get_file_metadata",
+    description: "Read metadata for one file on the explicitly registered local or remote file target for this workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        path: { type: "string", description: "Absolute path on the registered target." },
+        host: { type: "string", description: "Registered target ID or alias; omitted to use this MCP instance's explicit local binding." },
+      },
+      required: ["workspace", "path"],
+    },
+    async handler(args, client) {
+      return client.runFileAccessTool({
+        tool: "get_file_metadata",
+        workspace: requireString(args, "workspace"),
+        path: requireString(args, "path"),
+        invocation_id: requireString(args, "_mcp_invocation_id"),
+        host: optionalString(args, "host"),
+      });
+    },
+  },
+  {
+    name: "read_file_chunk",
+    description: "Read a bounded byte chunk from one file on the explicitly registered local or remote file target for this workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        path: { type: "string", description: "Absolute path on the registered target." },
+        host: { type: "string", description: "Registered target ID or alias; omitted to use this MCP instance's explicit local binding." },
+        offset: { type: "integer", description: "Byte offset from the start of the file.", minimum: 0 },
+        length: { type: "integer", description: "Number of bytes to read (1-65536).", minimum: 1, maximum: 65536 },
+      },
+      required: ["workspace", "path", "offset", "length"],
+    },
+    async handler(args, client) {
+      return client.runFileAccessTool({
+        tool: "read_file_chunk",
+        workspace: requireString(args, "workspace"),
+        path: requireString(args, "path"),
+        invocation_id: requireString(args, "_mcp_invocation_id"),
+        host: optionalString(args, "host"),
+        offset: optionalInt(args, "offset", { min: 0 }),
+        length: optionalInt(args, "length", { min: 1, max: 65_536 }),
+      });
     },
   },
   {

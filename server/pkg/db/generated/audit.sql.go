@@ -114,6 +114,18 @@ func (q *Queries) DeleteExpiredMCPInvocationAuditOutbox(ctx context.Context, cut
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredMCPPreAuthRejections = `-- name: DeleteExpiredMCPPreAuthRejections :execrows
+DELETE FROM mcp_pre_auth_rejection WHERE expires_at <= $1
+`
+
+func (q *Queries) DeleteExpiredMCPPreAuthRejections(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMCPPreAuthRejections, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteMCPInvocationAuditOutbox = `-- name: DeleteMCPInvocationAuditOutbox :exec
 DELETE FROM mcp_invocation_audit_outbox WHERE id = $1
 `
@@ -124,7 +136,7 @@ func (q *Queries) DeleteMCPInvocationAuditOutbox(ctx context.Context, id pgtype.
 }
 
 const getMCPInvocationAuditStart = `-- name: GetMCPInvocationAuditStart :one
-SELECT invocation_id, workspace_id, actor_id, sensitive
+SELECT invocation_id, workspace_id, actor_id, sensitive, details
 FROM audit_event
 WHERE domain = 'mcp'
   AND event_type = 'mcp.invocation_started'
@@ -137,6 +149,7 @@ type GetMCPInvocationAuditStartRow struct {
 	WorkspaceID  pgtype.UUID `json:"workspace_id"`
 	ActorID      pgtype.UUID `json:"actor_id"`
 	Sensitive    bool        `json:"sensitive"`
+	Details      []byte      `json:"details"`
 }
 
 func (q *Queries) GetMCPInvocationAuditStart(ctx context.Context, invocationID pgtype.UUID) (GetMCPInvocationAuditStartRow, error) {
@@ -147,8 +160,35 @@ func (q *Queries) GetMCPInvocationAuditStart(ctx context.Context, invocationID p
 		&i.WorkspaceID,
 		&i.ActorID,
 		&i.Sensitive,
+		&i.Details,
 	)
 	return i, err
+}
+
+const insertMCPPreAuthRejection = `-- name: InsertMCPPreAuthRejection :execrows
+INSERT INTO mcp_pre_auth_rejection (invocation_id, instance_id, reason_code, file_tool_name, recorded_at, expires_at)
+VALUES ($1, $2, $3, $4, now(), now() + interval '7 days')
+ON CONFLICT (invocation_id) DO NOTHING
+`
+
+type InsertMCPPreAuthRejectionParams struct {
+	InvocationID pgtype.UUID `json:"invocation_id"`
+	InstanceID   string      `json:"instance_id"`
+	ReasonCode   string      `json:"reason_code"`
+	FileToolName pgtype.Text `json:"file_tool_name"`
+}
+
+func (q *Queries) InsertMCPPreAuthRejection(ctx context.Context, arg InsertMCPPreAuthRejectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertMCPPreAuthRejection,
+		arg.InvocationID,
+		arg.InstanceID,
+		arg.ReasonCode,
+		arg.FileToolName,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listAllWorkspaceIDs = `-- name: ListAllWorkspaceIDs :many
@@ -407,6 +447,59 @@ func (q *Queries) ListMCPInvocationAuditOutbox(ctx context.Context, limit int32)
 			&i.Sensitive,
 			&i.ExpiresAt,
 			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMCPPreAuthRejections = `-- name: ListMCPPreAuthRejections :many
+SELECT invocation_id, instance_id, reason_code, file_tool_name, recorded_at, expires_at
+FROM mcp_pre_auth_rejection
+WHERE expires_at > now()
+  AND ($1::text IS NULL OR instance_id = $1)
+  AND ($2::text IS NULL OR reason_code = $2)
+  AND ($3::timestamptz IS NULL OR recorded_at >= $3)
+  AND ($4::timestamptz IS NULL OR recorded_at <= $4)
+ORDER BY recorded_at DESC, invocation_id DESC
+LIMIT $5
+`
+
+type ListMCPPreAuthRejectionsParams struct {
+	InstanceID pgtype.Text        `json:"instance_id"`
+	ReasonCode pgtype.Text        `json:"reason_code"`
+	Since      pgtype.Timestamptz `json:"since"`
+	Until      pgtype.Timestamptz `json:"until"`
+	Limit      int32              `json:"limit"`
+}
+
+func (q *Queries) ListMCPPreAuthRejections(ctx context.Context, arg ListMCPPreAuthRejectionsParams) ([]McpPreAuthRejection, error) {
+	rows, err := q.db.Query(ctx, listMCPPreAuthRejections,
+		arg.InstanceID,
+		arg.ReasonCode,
+		arg.Since,
+		arg.Until,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []McpPreAuthRejection{}
+	for rows.Next() {
+		var i McpPreAuthRejection
+		if err := rows.Scan(
+			&i.InvocationID,
+			&i.InstanceID,
+			&i.ReasonCode,
+			&i.FileToolName,
+			&i.RecordedAt,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
