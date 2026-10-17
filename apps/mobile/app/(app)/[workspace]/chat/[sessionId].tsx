@@ -124,6 +124,8 @@ export default function ChatDetailScreen() {
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [savingSessionModel, setSavingSessionModel] = useState(false);
   const savingSessionModelRef = useRef(false);
+  const stopInFlightRef = useRef<string | null>(null);
+  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   // RUYI-449: 非空时经 VoiceSessionOverlay 对当前 agent 发起语音会话
   // （425 链路）；关闭即结束，不影响文本发送。
   const [voiceOpen, setVoiceOpen] = useState(false);
@@ -430,28 +432,48 @@ export default function ChatDetailScreen() {
     ],
   );
 
-  // ── Cancel in-flight ───────────────────────────────────────────────────
-  const handleStop = useCallback(() => {
-    if (!pendingTask?.task_id || !activeSessionId) return;
-    if (pendingTask.status === "queued") return;
-    const taskId = pendingTask.task_id;
-    const sessionId = activeSessionId;
-    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), (old) =>
-      removePendingChatTask(old, taskId),
-    );
-    void api
-      .cancelTaskById(taskId)
-      .catch(() => {
-        // Silent — task may have already terminated server-side.
-      })
-      .finally(() => invalidatePendingTask(qc, sessionId));
-  }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
-
   const restoreCancelledMessage = useCallback((restored: CancelTaskResponse["cancelled_chat_message"]) => {
     if (!restored?.restore_to_input || restored.chat_session_id !== activeSessionId) return;
     setDraft(restored.chat_session_id, restored.content);
     setRestoredAttachments(restored.attachments ?? []);
   }, [activeSessionId, setDraft]);
+
+  // ── Cancel in-flight ───────────────────────────────────────────────────
+  const handleStop = useCallback(async () => {
+    const taskId = pendingTask?.task_id;
+    const sessionId = activeSessionId;
+    if (!taskId || !sessionId || pendingTask?.status === "queued") return;
+    if (stopInFlightRef.current) return;
+
+    stopInFlightRef.current = taskId;
+    setStoppingTaskId(taskId);
+    const pendingKey = chatKeys.pendingTask(sessionId);
+    try {
+      await qc.cancelQueries({ queryKey: pendingKey });
+      const snapshot = qc.getQueryData<ChatPendingTask>(pendingKey) ?? pendingTask;
+      if (!snapshot || snapshot.task_id !== taskId || snapshot.status === "queued") return;
+
+      qc.setQueryData<ChatPendingTask>(pendingKey, (old) =>
+        removePendingChatTask(old, taskId),
+      );
+      try {
+        const result = await api.cancelTaskById(taskId);
+        restoreCancelledMessage(result.cancelled_chat_message);
+      } catch {
+        qc.setQueryData(pendingKey, snapshot);
+        Alert.alert(
+          t("mobile.composer.stop_failed_title", "Could not stop agent"),
+          t("mobile.composer.stop_failed", "Try again. The current message was kept."),
+        );
+      } finally {
+        invalidatePendingTask(qc, sessionId);
+        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+      }
+    } finally {
+      stopInFlightRef.current = null;
+      setStoppingTaskId(null);
+    }
+  }, [pendingTask, activeSessionId, qc, restoreCancelledMessage, t]);
 
   const handleQueuedAction = useCallback(async (
     task: NonNullable<ChatPendingTask["queued_tasks"]>[number],
@@ -762,6 +784,7 @@ export default function ChatDetailScreen() {
           onSend={handleSend}
           onStop={handleStop}
           sending={sending}
+          stopPending={stoppingTaskId !== null}
           allowStop={pendingTask?.status !== "queued"}
           allowSubmitWhileRunning={pendingTask?.supports_queue === true}
           disabled={disabled}
