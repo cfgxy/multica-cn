@@ -265,9 +265,18 @@ export function reconcileCreatedComment(
       const serverIndex = old.entries.findIndex(
         (existing) => existing.type === entry.type && existing.id === entry.id,
       );
-      if (serverIndex !== -1) return old;
+      if (serverIndex !== -1) {
+        if (!optimisticId) return old;
+        const pendingIndex = old.entries.findIndex(
+          (existing) => existing.type === "comment" && existing.id === optimisticId,
+        );
+        if (pendingIndex === -1) return old;
+        return updateTimelineEntries(old, (entries) =>
+          entries.filter((_, index) => index !== pendingIndex),
+        );
+      }
 
-      const pendingIndex = old.entries.findIndex((existing) => {
+      const matchesPending = (existing: TimelineEntry) => {
         if (existing.type !== "comment" || !existing.id.startsWith("optimistic-")) {
           return false;
         }
@@ -280,9 +289,18 @@ export function reconcileCreatedComment(
           existing.content === entry.content &&
           existing.parent_id === entry.parent_id
         );
-      });
+      };
+      const pendingIndexes = old.entries
+        .map((existing, index) => (matchesPending(existing) ? index : -1))
+        .filter((index) => index !== -1);
+
+      // A realtime event has no client mutation id. With identical sends in
+      // flight, matching any one pending row can steal another request's slot.
+      // Let each response reconcile its own optimistic id instead.
+      if (!optimisticId && pendingIndexes.length > 1) return old;
 
       const next = [...old.entries];
+      const pendingIndex = pendingIndexes[0] ?? -1;
       if (pendingIndex === -1) {
         next.push(entry);
       } else {

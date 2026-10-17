@@ -202,7 +202,25 @@ describe("reconcileCreatedComment", () => {
     qc.clear();
   });
 
-  it("reconciles identical sends one at a time and preserves failed rows", () => {
+  it("removes only the matching optimistic row when the server row already exists", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("comment-1"),
+      commentEntry("optimistic-1"),
+      commentEntry("optimistic-2"),
+    ]));
+
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-1"), "optimistic-1");
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-1",
+      "optimistic-2",
+    ]);
+    qc.clear();
+  });
+
+  it("reconciles identical responses by optimistic id and preserves failed rows", () => {
     const qc = new QueryClient();
     const key = issueKeys.timeline(wsId, issueId);
     qc.setQueryData<TimelineQueryData>(key, timelineData([
@@ -217,7 +235,7 @@ describe("reconcileCreatedComment", () => {
       wsId,
       issueId,
       commentEntry("comment-1"),
-      undefined,
+      "optimistic-1",
       failedIds,
     );
     reconcileCreatedComment(
@@ -225,7 +243,7 @@ describe("reconcileCreatedComment", () => {
       wsId,
       issueId,
       commentEntry("comment-2"),
-      undefined,
+      "optimistic-2",
       failedIds,
     );
 
@@ -236,6 +254,29 @@ describe("reconcileCreatedComment", () => {
       "comment-1",
       "comment-2",
     ]));
+    qc.clear();
+  });
+
+  it("defers an ambiguous realtime event until each identical send response arrives", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-a"),
+      commentEntry("optimistic-b"),
+    ]));
+
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-b"));
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "optimistic-a",
+      "optimistic-b",
+    ]);
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-a"), "optimistic-a");
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-b"), "optimistic-b");
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-a",
+      "comment-b",
+    ]);
     qc.clear();
   });
 });

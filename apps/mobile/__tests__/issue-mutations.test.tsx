@@ -38,6 +38,7 @@ jest.mock("i18next", () => ({
 
 import { useCreateComment, useEditComment } from "@/data/mutations/issues";
 import { issueKeys } from "@/data/queries/issues";
+import { reconcileCreatedComment } from "@/data/realtime/issue-ws-updaters";
 
 function wrapperFor(queryClient: QueryClient) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
@@ -168,6 +169,72 @@ describe("useCreateComment timeline cache", () => {
       entries?.[0].id,
       expect.objectContaining({ content: "hello", error: "offline" }),
     );
+    await unmount();
+    queryClient.clear();
+    queryClient.unmount();
+  });
+
+  it("keeps failure ownership when an identical realtime event matches multiple sends", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const key = issueKeys.timeline("workspace-1", "issue-1");
+    queryClient.setQueryData<TimelineQueryData>(key, { entries: [], truncatedKinds: [] });
+    let rejectFirst: (error: Error) => void = () => undefined;
+    let resolveSecond: (value: unknown) => void = () => undefined;
+    mockCreateComment
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+    const { result, unmount } = await renderHook(() => useCreateComment("issue-1"), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    await act(async () => {
+      first = result.current.mutateAsync({ content: "hello" });
+      second = result.current.mutateAsync({ content: "hello" });
+      await Promise.resolve();
+    });
+    const optimisticIds = queryClient
+      .getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id) ?? [];
+    reconcileCreatedComment(queryClient, "workspace-1", "issue-1", {
+      type: "comment",
+      id: "comment-from-realtime",
+      actor_type: "member",
+      actor_id: "member-1",
+      content: "hello",
+      parent_id: null,
+      created_at: "2026-09-05T09:00:00Z",
+    });
+
+    await act(async () => {
+      rejectFirst(new Error("offline"));
+      await first?.catch(() => undefined);
+    });
+    await act(async () => {
+      resolveSecond({
+        id: "comment-second",
+        issue_id: "issue-1",
+        author_type: "member",
+        author_id: "member-1",
+        content: "hello",
+        parent_id: null,
+        created_at: "2026-09-05T09:00:00Z",
+        updated_at: "2026-09-05T09:00:00Z",
+        type: "comment",
+        reactions: [],
+        attachments: [],
+      });
+      await second;
+    });
+
+    expect(optimisticIds).toHaveLength(2);
+    expect(mockMarkFailed).toHaveBeenCalledWith(
+      optimisticIds[0],
+      expect.objectContaining({ content: "hello", error: "offline" }),
+    );
+    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries).toHaveLength(2);
     await unmount();
     queryClient.clear();
     queryClient.unmount();
