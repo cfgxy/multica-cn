@@ -400,6 +400,15 @@ SELECT id FROM chat_session
 WHERE id = $1
 FOR UPDATE;
 
+-- name: LockChatSessionsForAgentRuntimeBind :many
+-- Runtime rebinding changes the model catalog that every chat session uses.
+-- Lock all of the Agent's sessions in a stable order before updating the Agent
+-- row so model saves and chat enqueue serialize with the rebind transaction.
+SELECT id FROM chat_session
+WHERE agent_id = $1
+ORDER BY id
+FOR UPDATE;
+
 -- name: LockChatSessionForEnqueue :one
 -- The chat-task enqueue's answer to archiving, and the one lock on this row
 -- that a concurrent inbound message must NOT wait behind.
