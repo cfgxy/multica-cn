@@ -1,4 +1,8 @@
 import { afterAll, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { Logger } from "../src/log.js";
 import {
@@ -96,6 +100,38 @@ describe("wwwAuthenticateChallenge", () => {
   it("degrades to a bare challenge when no site root is configured", () => {
     expect(wwwAuthenticateChallenge(undefined)).toBe("Bearer");
     expect(wwwAuthenticateChallenge("   ")).toBe("Bearer");
+  });
+});
+
+describe("HTTP systemd credential wiring", () => {
+  it("uses systemd LoadCredential and passes only its runtime file path to MCP", () => {
+    const template = readFileSync(
+      join(process.cwd(), "..", "..", "deploy", "multica-mcp-http.service.template"),
+      "utf8",
+    );
+    expect(template).toContain("LoadCredential=multica-mcp-audit:@AUDIT_CREDENTIAL_FILE@");
+    expect(template).toContain('--audit-credential-file "$CREDENTIALS_DIRECTORY/multica-mcp-audit"');
+    expect(template).not.toContain("SetCredential=");
+    expect(template).not.toContain("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=");
+  });
+
+  it("renders custom credential paths with sed replacement characters literally", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mcp-audit-"));
+    const credentialPath = join(directory, "audit&key|file");
+    const credential = "secret-audit-credential";
+    writeFileSync(credentialPath, credential);
+
+    try {
+      const unit = execFileSync(
+        "make",
+        ["--silent", "mcp-http-render", `MCP_AUDIT_CREDENTIAL_FILE=${credentialPath}`],
+        { cwd: join(process.cwd(), "..", ".."), encoding: "utf8" },
+      );
+      expect(unit).toContain(`LoadCredential=multica-mcp-audit:${credentialPath}`);
+      expect(unit).not.toContain(credential);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -212,11 +248,24 @@ describe("http transport gate", () => {
     const contentType = response.headers.get("Content-Type") ?? "";
     expect(contentType).toContain("application/json");
     const payload = (await response.json()) as {
-      result?: { tools?: Array<{ name: string }> };
+      result?: { tools?: Array<{ name: string; annotations?: Record<string, unknown> }> };
     };
-    const names = (payload.result?.tools ?? []).map((tool) => tool.name);
+    const tools = payload.result?.tools ?? [];
+    const names = tools.map((tool) => tool.name);
     expect(names).toContain("list_workspaces");
     expect(names).toContain("dispatch_agent");
+    expect(tools.find((tool) => tool.name === "list_workspaces")?.annotations).toEqual({
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    expect(tools.find((tool) => tool.name === "get_runtime_models")?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
   });
 
   it("keeps requests isolated per bearer token (stateless)", async () => {

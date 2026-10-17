@@ -674,17 +674,24 @@ grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "slot env must carry the 
 # composio_mcp_apps gates the creator MCP Apps tab off by default; the E2E
 # surface (e2e/agent-mcp.spec.ts) needs it on, so slots ship it enabled (RUYI-632).
 grep -q '^FF_COMPOSIO_MCP_APPS=true$' "$slot_env" || fail "slot env must enable FF_COMPOSIO_MCP_APPS for the E2E surface"
+# Credential master key (RUYI-749): without it the server fail-closes voice
+# credential writes with 503, so the slot env must ship a LoadKey-valid one.
+cred_key_line="$(grep '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$slot_env")"
+[ -n "$cred_key_line" ] || fail "slot env must carry MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY (credential writes fail-closed without it)"
+printf '%s' "${cred_key_line#*=}" | base64 -d | wc -c | grep -q '^32$' || fail "MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY must decode to exactly 32 bytes (secretbox.LoadKey)"
 
 # Env files generated before RUYI-428 predate the MCP lines: `use` upgrades
 # them in place (append only) instead of regenerating, so the stored account
 # password — the one the shared instance's role was provisioned with — survives.
-sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^FF_COMPOSIO_MCP_APPS=/d' "$slot_env"
+sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
 password_before="$(grep '^POSTGRES_PASSWORD=' "$slot_env")"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "use must accept a pre-MCP legacy env"
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "legacy env must gain MCP_URL via the in-place upgrade"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "legacy env must gain MULTICA_MCP_PORT via the in-place upgrade"
 grep -q '^FF_COMPOSIO_MCP_APPS=true$' "$slot_env" || fail "legacy env must gain FF_COMPOSIO_MCP_APPS via the in-place upgrade"
 [ "$(grep '^POSTGRES_PASSWORD=' "$slot_env")" = "$password_before" ] || fail "the in-place upgrade must not rotate the stored password"
+grep -q '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$slot_env" || fail "legacy env must gain MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY via the in-place upgrade"
+[ "$(grep '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$slot_env")" = "$cred_key_line" ] || fail "the re-appended credential key must be deterministic (derived from the stored password)"
 
 lines_before="$(wc -l < "$psql_log")"
 status=0

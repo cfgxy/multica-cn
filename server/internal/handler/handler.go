@@ -37,7 +37,9 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
+
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -69,9 +71,13 @@ type dbExecutor interface {
 }
 
 type Config struct {
-	AllowSignup         bool
-	AllowedEmails       []string
-	AllowedEmailDomains []string
+	// MCPAuditServiceCredential is the private credential held by the MCP
+	// service when recording tool invocation lifecycle events. Empty disables
+	// the internal audit-write endpoints; it is never returned by an API.
+	MCPAuditServiceCredential string
+	AllowSignup               bool
+	AllowedEmails             []string
+	AllowedEmailDomains       []string
 	// SuperAdminEmails is the SUPER_ADMIN_EMAILS deployment env (comma
 	// separated, RUYI-47). At login, an account whose email is on the list
 	// is granted the instance-level super-admin flag idempotently. The
@@ -191,11 +197,17 @@ type Handler struct {
 	DaemonHub              *daemonws.Hub
 	DaemonProfileRefresh   RuntimeProfileRefreshNotifier
 	DaemonWorkspaceRefresh WorkspaceSetRefreshNotifier
-	Bus                    *events.Bus
-	TaskService            *service.TaskService
-	PluginService          *service.PluginService
-	IssueService           *service.IssueService
-	AutopilotService       *service.AutopilotService
+	// Prometheus serves the usage page's system-resource and model-traffic
+	// panels (RUYI-618) by proxying PromQL range queries. Optional: nil or
+	// an unconfigured client (PROMETHEUS_URL unset) makes both endpoints
+	// report configured=false, which the frontend renders as a hidden
+	// section rather than an error.
+	Prometheus       *promquery.Client
+	Bus              *events.Bus
+	TaskService      *service.TaskService
+	PluginService    *service.PluginService
+	IssueService     *service.IssueService
+	AutopilotService *service.AutopilotService
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
@@ -739,6 +751,16 @@ func uuidStringsOrEmpty(us []pgtype.UUID) []string {
 		return []string{}
 	}
 	return out
+}
+
+// jsonRawOrEmpty normalizes a nullable JSONB byte slice for RawMessage
+// passthrough: NULL and SQL-empty become nil (field omitted on the wire), so
+// a declared-but-empty scope never masquerades as an empty JSON array.
+func jsonRawOrEmpty(b []byte) json.RawMessage {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.RawMessage(b)
 }
 
 func int8ToPtr(v pgtype.Int8) *int64 { return util.Int8ToPtr(v) }

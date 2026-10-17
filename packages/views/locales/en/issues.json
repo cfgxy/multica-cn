@@ -1245,6 +1245,12 @@
     "auth_approve_default": "Approve",
     "auth_deny_default": "Deny",
     "auth_execute_failed": "Execution failed: {{reason}}",
-    "auth_answer_failed": "Failed to record your answer"
+    "auth_answer_failed": "Failed to record your answer",
+    "context_title": "Decision context",
+    "context_why_now": "Why now",
+    "context_facts": "Confirmed facts and evidence",
+    "context_impact": "Impact",
+    "context_recommendation": "Recommendation rationale",
+    "context_unknowns": "Unknowns"
   }
 }

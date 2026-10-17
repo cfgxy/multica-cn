@@ -248,11 +248,46 @@ function commentBrief(comment: CommentInfo): Record<string, unknown> {
     // exists beyond this.
     revision: comment.revision,
     content: comment.content,
+    // summary-mode reads only: the server clipped this body to ~200
+    // characters; absent on full reads.
+    ...(comment.content_truncated != null
+      ? { content_truncated: comment.content_truncated }
+      : {}),
     // roots_only reads only: orientation stats promised by the tool
     // description; absent on other bounded reads.
     reply_count: comment.reply_count,
     last_activity_at: comment.last_activity_at,
   };
+}
+
+// get_issue's default comment read keeps only the newest comments whose
+// serialized briefs fit this UTF-8 budget, on top of the server's ~200-char
+// body clip (summary mode). Sized against the RUYI-750 sample — the RUYI-706
+// issue record alone is 12.2KB — so issue + bounded comments stay under the
+// ~20KB default-response target even on CJK-heavy threads.
+const GET_ISSUE_COMMENTS_BYTE_BUDGET = 6_500;
+
+const utf8 = new TextEncoder();
+
+/**
+ * Keep the newest suffix of `briefs` whose serialized JSON fits `budget`
+ * UTF-8 bytes. Chronological order is preserved, and at least one comment is
+ * always kept, so even a single oversized body still anchors the thread end.
+ */
+function newestWithinByteBudget(
+  briefs: Array<Record<string, unknown>>,
+  budget: number,
+): Array<Record<string, unknown>> {
+  let used = 0;
+  let start = briefs.length;
+  while (start > 0) {
+    // +1 for the joining comma in the serialized array.
+    const cost = utf8.encode(JSON.stringify(briefs[start - 1])).length + 1;
+    if (used + cost > budget && start < briefs.length) break;
+    used += cost;
+    start -= 1;
+  }
+  return briefs.slice(start);
 }
 
 function buildBulkItemBody(
@@ -956,6 +991,7 @@ function decisionCardBrief(
     issue_number: issue?.number ?? null,
     issue_title: issue?.title ?? null,
     question: card.question,
+    ...(card.context ? { context: card.context } : {}),
     options: card.options.map((label, index) => ({
       letter: String.fromCharCode(65 + index),
       label,
@@ -1286,6 +1322,102 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "list_inbox",
+    description: "List the current user's active inbox notifications, including system notices with no linked issue. The backend returns the full current projection with no filters, sorting, or pagination.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.listInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "list_archived_inbox",
+    description: "List archived inbox notifications, including issue-less system notices. The backend returns at most 200 issue groups and its selected rows/comment anchors; there is no cursor or pagination contract.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.listArchivedInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "get_inbox_unread_count",
+    description: "Read the current workspace's unread inbox count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.countUnreadInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "get_inbox_unread_summary",
+    description: "Read the authenticated user's unread counts across all workspaces. workspace is used only as the audit membership context; the backend summary itself is account-wide.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.unreadInboxSummary(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "mark_all_inbox_read",
+    description: "Mark every active inbox item read for the authenticated user in this workspace; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.markAllInboxRead(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_all_inbox",
+    description: "Archive all active inbox items for the authenticated user in this workspace; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveAllInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_all_read_inbox",
+    description: "Archive all inbox groups whose newest active notification is read. Issue groups are archived together; the backend returns a changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveAllReadInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_completed_inbox",
+    description: "Archive inbox notifications linked to issues in a terminal status. Issue-less system notices remain governed by the backend query; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveCompletedInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "mark_inbox_item_read",
+    description: "Mark one authorized inbox item read. Item ownership and workspace access are enforced by the backend.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.markInboxItemRead(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "mark_inbox_item_unread",
+    description: "Mark one authorized inbox item unread. This is item-level and follows the backend's existing notification semantics.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.markInboxItemUnread(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "archive_inbox_item",
+    description: "Archive one authorized inbox item. The backend also archives sibling notifications for the same issue; issue-less system notices remain item-level.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.archiveInboxItem(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "unarchive_inbox_item",
+    description: "Restore one authorized archived inbox item. The backend restores sibling notifications for the same issue and preserves their read state.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.unarchiveInboxItem(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
     name: "list_issues",
     description:
       "List issues in a workspace with optional filters (status, project, assignee, sort, pagination). " +
@@ -1344,9 +1476,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_issue",
     description:
-      "Read one issue's full record — title, description, status, assignee, relations context — with its comment thread included by default (include_comments=false for a lighter read). " +
-      "Read-only. The issue can be referenced by identifier (e.g. ENG-42) or UUID; find identifiers via list_issues or search_issues, " +
-      "and use list_comments/get_comment for threaded comment access.",
+      "Read one issue's full record — title, description, status, assignee, relations context — with its comment thread included by default as a bounded read: bodies clipped to ~200 characters and only the newest comments kept within a small byte budget (comments_bounded=true and comments_total mark it; clipped bodies carry content_truncated). " +
+      "Pass include_comments=true for the full unclipped thread, or false to skip comments; use list_comments for bounded thread reads and get_comment for one full body. " +
+      "Read-only. The issue can be referenced by identifier (e.g. ENG-42) or UUID; find identifiers via list_issues or search_issues.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1354,7 +1486,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         issue: issueProperty(),
         include_comments: {
           type: "boolean",
-          description: "Include the comment thread (default true).",
+          description:
+            "true = full unclipped comment thread; false = no comments; omitted (default) = bounded read — bodies clipped to ~200 chars, newest comments kept within a byte budget (comments_bounded/comments_total set).",
         },
       },
       required: ["workspace", "issue"],
@@ -1362,12 +1495,28 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     async handler(args, client) {
       const workspace = requireString(args, "workspace");
       const issueId = requireString(args, "issue");
-      const includeComments = optionalBoolean(args, "include_comments") ?? true;
+      // Three-state: omitted = bounded default read (server-clipped bodies,
+      // newest slice within a byte budget); explicit true = the full
+      // unclipped thread; false = no comments. RUYI-750: "true by default"
+      // dragged the whole comment thread into every read.
+      const includeComments = optionalBoolean(args, "include_comments");
       const issue = await client.getIssue(workspace, issueId);
       const result: Record<string, unknown> = { issue };
-      if (includeComments) {
-        const comments = await client.listComments(workspace, issueId);
-        result.comments = comments.map(commentBrief);
+      if (includeComments !== false) {
+        const bounded = includeComments === undefined;
+        const comments = await client.listComments(
+          workspace,
+          issueId,
+          bounded ? { summary: true } : {},
+        );
+        const briefs = comments.map(commentBrief);
+        if (bounded) {
+          result.comments = newestWithinByteBudget(briefs, GET_ISSUE_COMMENTS_BYTE_BUDGET);
+          result.comments_bounded = true;
+          result.comments_total = comments.length;
+        } else {
+          result.comments = briefs;
+        }
       }
       return result;
     },
@@ -2436,7 +2585,13 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       if (args.trigger !== undefined && trigger === undefined) {
         throw new ToolInputError("'trigger' must be one of: comment, autopilot, rerun, system_retry");
       }
-      const limit = optionalInt(args, "limit", { min: 1, max: 1000 });
+      // The wire always carries an explicit limit: the server's absent-param
+      // contract is the FULL run history (the web UI and the CLI short-ID
+      // resolver depend on it and must not change), while this tool documents
+      // a 200 default. RUYI-750: an omitted limit used to request the
+      // unbounded history plus its usage/attribution/backpressure hydration
+      // rounds — description and behavior drifted.
+      const limit = optionalInt(args, "limit", { min: 1, max: 1000 }) ?? 200;
       // listIssueRuns resolves to the server's bare array — see rest.ts.
       const tasks = await client.listIssueRuns(workspace, issueId, {
         status,
@@ -2821,8 +2976,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "get_runtime_models",
     description:
       "Discover a runtime's model catalog: the models the daemon advertises (each with its per-model thinking/effort levels), the ones marked unavailable, and which is the runtime default. " +
-      "Answers from the server-side catalog cache when warm; otherwise asks the daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
-      "An offline runtime returns code runtime_offline. Read-only; this is also the source for valid model / thinking_level values on the config-write faces.",
+      "Answers from the server-side catalog cache when warm; otherwise starts a model-discovery request with the runtime daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
+      "Calling without request_id may start a new daemon request when the cache is cold. This does not change runtime configuration. " +
+      "An offline runtime returns code runtime_offline. This is also the source for valid model / thinking_level values on the config-write faces.",
     inputSchema: {
       type: "object",
       properties: {

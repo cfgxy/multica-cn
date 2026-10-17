@@ -195,28 +195,40 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (strin
 // Cleanup in lockstep — both paths consult the same table so a new provider
 // added to one side cannot drift past the other.
 func runtimeConfigPath(workDir, provider string) string {
+	rel := runtimeConfigRelPath(provider)
+	if rel == "" {
+		return ""
+	}
+	return filepath.Join(workDir, rel)
+}
+
+// runtimeConfigRelPath returns the workdir-relative name of the runtime config
+// file for the given provider (e.g. "AGENTS.md"), or "" when the provider has
+// no file-based config target. Snapshot-mode injection joins the same relative
+// name under the upper layer, so both routes stay on one filename table.
+func runtimeConfigRelPath(provider string) string {
 	// Built-in runtime identities (e.g. "omp") inherit their config file
 	// from their protocol family — resolve the family from the descriptor
 	// and delegate to the family's switch case. This avoids hardcoding
 	// "AGENTS.md" for every descriptor; a compatible runtime on Claude,
 	// CodeBuddy, or Qwen would otherwise write the wrong file.
 	if desc, ok := agent.BuiltinRuntimeByID(provider); ok {
-		return runtimeConfigPath(workDir, desc.ProtocolFamily)
+		return runtimeConfigRelPath(desc.ProtocolFamily)
 	}
 	switch provider {
 	case "claude":
-		return filepath.Join(workDir, "CLAUDE.md")
+		return "CLAUDE.md"
 	case "codebuddy":
 		// CodeBuddy Code's native memory file is CODEBUDDY.md, not
 		// CLAUDE.md — see https://www.codebuddy.ai/docs/cli/codebuddy-dir
 		// ("CODEBUDDY.md / .codebuddy/CODEBUDDY.md — Project-level memory
 		// file"). CodeBuddy only reads CLAUDE.md if the user manually
 		// migrates/symlinks it in.
-		return filepath.Join(workDir, "CODEBUDDY.md")
+		return "CODEBUDDY.md"
 	case "qwen":
-		return filepath.Join(workDir, "QWEN.md")
+		return "QWEN.md"
 	case "codex", "copilot", "opencode", "codearts", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "dim", "zeroclaw", "zcode":
-		return filepath.Join(workDir, "AGENTS.md")
+		return "AGENTS.md"
 	case "deerflow":
 		// No file-based target. DeerFlow's prompts are owned by its own
 		// deployment (it reads config.yaml and its prompt templates relative to
@@ -257,29 +269,74 @@ func writeRuntimeConfigFile(path, brief string) error {
 
 	existing, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return os.WriteFile(path, []byte(block), 0o644)
+		return os.WriteFile(path, []byte(composeRuntimeConfigBlock("", false, block)), 0o644)
 	}
 	if err != nil {
 		return fmt.Errorf("read existing runtime config %s: %w", path, err)
 	}
+	return os.WriteFile(path, []byte(composeRuntimeConfigBlock(string(existing), true, block)), 0o644)
+}
 
-	existingStr := string(existing)
+// composeRuntimeConfigBlock merges the brief block into a runtime config
+// file's content, applying the three Inject states of writeRuntimeConfigFile:
+// missing file → block only; present file without a block → the managed
+// separator plus the block; present file with a block → replace in place.
+// `existed` distinguishes a missing file from a present-but-empty one — both
+// carry empty content but must compose to different bytes (the separator is
+// part of the managed region only when the file pre-existed).
+func composeRuntimeConfigBlock(existingStr string, existed bool, block string) string {
+	if !existed {
+		return block
+	}
 	if start, end, ok := locateMarkerBlock(existingStr); ok {
-		// Replace the existing block in place. locateMarkerBlock already
-		// consumes the trailing newline that closed the previous block, so
-		// successive runs don't accumulate blank lines around the block.
-		// The managed separator (if any) lives in existingStr[:start] and
-		// is preserved untouched.
-		newContent := existingStr[:start] + block + existingStr[end:]
-		return os.WriteFile(path, []byte(newContent), 0o644)
+		return existingStr[:start] + block + existingStr[end:]
+	}
+	return existingStr + runtimeManagedSeparator + block
+}
+
+// InjectRuntimeConfigSnapshot is the snapshot-mode twin of InjectRuntimeConfig
+// (RUYI-669): it composes the same brief into the task's overlay upper layer
+// instead of writing the host-side directory the view covers. viewDir is the
+// pristine path the task's view will sit over (read-only here); upperDir is
+// the primary unit's upperdir. Inside the worker's namespace the composed file
+// appears at the view path, byte-identical to what an in-place inject would
+// have produced.
+//
+// Writing the upper layer instead of viewDir closes the two risk surfaces of
+// the host-side write it replaces: a daemon crash between inject and cleanup
+// cannot leak the brief into the user's tree (the pristine directory gains
+// zero transient files, and an upper layer belongs to its own task's snapshot
+// tree, reaped by the ledger-driven GC), and two concurrent tasks rooted at
+// the same directory compose into their own uppers instead of overwriting one
+// shared host file. The base content is read from viewDir — whatever the
+// overlay's lower layer carries at the same path — so a user-authored
+// AGENTS.md keeps its place above the managed block, and a stale block left
+// by an earlier in-place run is refreshed in the upper copy only.
+//
+// There is no Cleanup twin: the upper layer dies with the snapshot tree, so
+// nothing needs excising — callers must simply not run CleanupRuntimeConfig
+// against the pristine path for snapshot tasks.
+func InjectRuntimeConfigSnapshot(viewDir, upperDir, provider string, ctx TaskContextForEnv) (string, error) {
+	content := buildMetaSkillContent(provider, ctx)
+	rel := runtimeConfigRelPath(provider)
+	if rel == "" {
+		// Unknown provider — skip config injection, prompt-only mode.
+		return content, nil
+	}
+	block := runtimeMarkerBegin + "\n" + strings.TrimRight(content, "\n") + "\n" + runtimeMarkerEnd + "\n"
+
+	basePath := filepath.Join(viewDir, rel)
+	base, err := os.ReadFile(basePath)
+	existed := err == nil
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return content, fmt.Errorf("read pristine runtime config base %s: %w", basePath, err)
 	}
 
-	// No marker block present. Append the fixed managed separator followed
-	// by the block. The separator is unconditional — including for files
-	// that already end in two or more newlines — so the byte boundary
-	// between user content and the managed region is deterministic, which
-	// is what lets Cleanup roll back to the user's exact original bytes.
-	return os.WriteFile(path, []byte(existingStr+runtimeManagedSeparator+block), 0o644)
+	upperPath := filepath.Join(upperDir, rel)
+	if err := os.MkdirAll(filepath.Dir(upperPath), 0o755); err != nil {
+		return content, fmt.Errorf("create snapshot upper config dir %s: %w", filepath.Dir(upperPath), err)
+	}
+	return content, os.WriteFile(upperPath, []byte(composeRuntimeConfigBlock(string(base), existed, block)), 0o644)
 }
 
 // locateMarkerBlock finds the [start, end) byte range of the Multica marker

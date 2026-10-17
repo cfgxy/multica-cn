@@ -39,6 +39,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// so like admin_audit_log they are left in place with workspace_id
 	// intact — the trail still shows what the deleted workspace did.
 	"audit_event":                 workspaceDeleteSettle,
+	"mcp_invocation_audit_outbox": workspaceDelete,
 	"autopilot":                   workspaceDelete,
 	"autopilot_collaborator":      workspaceDelete,
 	"autopilot_param":             workspaceDelete,
@@ -73,7 +74,26 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"comment":                       workspaceDelete,
 	"comment_reaction":              workspaceDelete,
 	"contact_sales_inquiry":         workspaceDeleteKeep,
-	"daemon_connection":             workspaceDelete,
+	// Clause asset family (RUYI-751 / ADR 007): identity, versions, bindings,
+	// injection attribution and the daily quality rollup all die with the
+	// workspace (DeleteWorkspaceClauseAssets). The rollup watermark is a
+	// global singleton keyed to no workspace and is kept, like its
+	// prompt-quality twin (task_usage_hourly_rollup_state).
+	"clause":                      workspaceDelete,
+	"clause_binding":              workspaceDelete,
+	"clause_injection":            workspaceDelete,
+	"clause_quality_daily":        workspaceDelete,
+	"clause_quality_rollup_state": workspaceDeleteKeep,
+	"clause_version":              workspaceDelete,
+	// RUYI-729: daemon-host backpressure tables (no FK, house rule). Event
+	// history dies with the workspace; a settings row is swept only once no
+	// runtime anywhere still points at its daemon_id, so a shared daemon
+	// serving another workspace keeps its gate config.
+	"daemon_backpressure_event":    workspaceDelete,
+	"daemon_backpressure_settings": workspaceDelete,
+	"daemon_connection":            workspaceDelete,
+	"daemon_file_access_target":    workspaceDelete,
+	"daemon_file_operation":        workspaceDelete,
 	// Ops command ledger (RUYI-645): workspace-scoped operational evidence
 	// with no foreign keys by design, swept explicitly through the
 	// application-layer deletion graph like the other evidence leaves.
@@ -225,20 +245,20 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"runtime_credential": workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
-	"runtime_skill_discovery":        workspaceDelete,
-	"schema_migrations":              workspaceDeleteKeep,
-	"seat_capacity_outbox":           workspaceDeleteSettle,
-	"skill":                          workspaceDelete,
-	"skill_file":                     workspaceDelete,
-	"skill_version":                  workspaceDelete,
-	"skill_to_label":                 workspaceDelete,
+	"runtime_skill_discovery": workspaceDelete,
+	"schema_migrations":       workspaceDeleteKeep,
+	"seat_capacity_outbox":    workspaceDeleteSettle,
+	"skill":                   workspaceDelete,
+	"skill_file":              workspaceDelete,
+	"skill_version":           workspaceDelete,
+	"skill_to_label":          workspaceDelete,
 	// Scheduling freezes (RUYI-608) are pure operational state owned by the
 	// workspace; no FK (house rule), swept explicitly by DeleteWorkspace's
 	// cleared_scheduling_pauses CTE. A freeze has no meaning once the
 	// workspace (and its agents) are gone.
-	"scheduling_pause": workspaceDelete,
-	"squad":            workspaceDelete,
-	"squad_member":     workspaceDelete,
+	"scheduling_pause":               workspaceDelete,
+	"squad":                          workspaceDelete,
+	"squad_member":                   workspaceDelete,
 	"sys_cron_executions":            workspaceDeleteKeep,
 	"task_message":                   workspaceDelete,
 	"task_token":                     workspaceDelete,
@@ -256,11 +276,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Their credentials live in runtime_credential keyed by the provider id
 	// and are swept by the deleted_runtime_credentials CTE in
 	// DeleteWorkspaceRuntimesAndProjects (which also covers provider rows).
-	"voice_provider":                 workspaceDelete,
-	"webhook_delivery":               workspaceDelete,
-	"workspace":                      workspaceDelete,
-	"workspace_invitation":           workspaceDelete,
-	"workspace_share_link":           workspaceDelete,
+	"voice_provider":                  workspaceDelete,
+	"webhook_delivery":                workspaceDelete,
+	"workspace":                       workspaceDelete,
+	"workspace_backpressure_settings": workspaceDelete,
+	"workspace_invitation":            workspaceDelete,
+	"workspace_share_link":            workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {

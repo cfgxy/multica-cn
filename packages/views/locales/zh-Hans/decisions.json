@@ -82,5 +82,15 @@
     "detail_error": "步骤详情加载失败",
     "answer_failed": "授权操作失败",
     "cancel_failed": "撤销失败"
+  },
+  "detail": {
+    "read_only": "只读决策详情",
+    "no_context": "未提供补充背景。",
+    "options": "候选方案",
+    "recommended": "推荐",
+    "selected": "已选择",
+    "single_select": "选择一个方案",
+    "multi_select": "可选择一个或多个方案",
+    "open_task": "前往任务作答"
   }
 }

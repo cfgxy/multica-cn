@@ -101,6 +101,8 @@ export interface HttpServerOptions {
    * challenge to a bare `Bearer`, which is the pre-OAuth behaviour.
    */
   siteRoot?: string | undefined;
+  /** Private credential used only for the backend's existing invocation audit endpoints. */
+  auditServiceCredential?: string | undefined;
   logger?: Logger;
 }
 
@@ -108,7 +110,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const logger = options.logger ?? stderrLogger;
   const challenge = wwwAuthenticateChallenge(options.siteRoot);
   const httpServer = createServer((request, response) => {
-    void handleRequest(request, response, options.serverUrl, challenge, logger);
+    void handleRequest(request, response, options.serverUrl, challenge, options.auditServiceCredential, logger);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -126,6 +128,7 @@ async function handleRequest(
   response: ServerResponse,
   backendUrl: string,
   challenge: string,
+  auditServiceCredential: string | undefined,
   logger: Logger,
 ): Promise<void> {
   const url = request.url ?? "/";
@@ -185,7 +188,12 @@ async function handleRequest(
       return;
     }
 
-    const client = new MulticaClient({ serverUrl: backendUrl, token, logger });
+    const client = new MulticaClient({
+      serverUrl: backendUrl,
+      token,
+      logger,
+      auditServiceCredential,
+    });
     const mcpServer = createMcpServer(client);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

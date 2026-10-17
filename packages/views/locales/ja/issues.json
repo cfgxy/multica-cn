@@ -1204,6 +1204,12 @@
     "auth_approve_default": "承認",
     "auth_deny_default": "却下",
     "auth_execute_failed": "実行失敗：{{reason}}",
-    "auth_answer_failed": "承認操作に失敗しました"
+    "auth_answer_failed": "承認操作に失敗しました",
+    "context_title": "判断の背景",
+    "context_why_now": "今判断する理由",
+    "context_facts": "確認済みの事実と根拠",
+    "context_impact": "影響範囲",
+    "context_recommendation": "推奨理由",
+    "context_unknowns": "未確認事項"
   }
 }

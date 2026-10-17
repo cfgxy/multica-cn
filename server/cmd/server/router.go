@@ -39,6 +39,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -291,6 +292,11 @@ type RouterOptions struct {
 	// any test that happened to have the variable set. nil means unset, which
 	// is what tests and NewRouter get.
 	LLMMaxRetries *llm.RetryOverride
+
+	// Prometheus backs the usage page's system-resource and model-traffic
+	// panels. main.go builds it from PROMETHEUS_URL; nil (or an empty URL)
+	// keeps both proxy endpoints reporting configured=false.
+	Prometheus *promquery.Client
 }
 
 func buildChannelSupervisor(
@@ -455,18 +461,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	origins := allowedOrigins()
 
 	signupConfig := handler.Config{
-		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
-		AllowedEmails:            splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
-		AllowedEmailDomains:      splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
-		SuperAdminEmails:         splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
-		DisableWorkspaceCreation: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
-		VCSIntegrationEnabled:    os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
-		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
-		AppURL:                   appURLFromEnv(),
-		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
-		CloudURL:                 strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
-		CloudTimeout:             35 * time.Second,
-		AttachmentDownloadMode:   os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
+		MCPAuditServiceCredential: strings.TrimSpace(os.Getenv("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL")),
+		AllowSignup:               os.Getenv("ALLOW_SIGNUP") != "false",
+		AllowedEmails:             splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
+		AllowedEmailDomains:       splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		SuperAdminEmails:          splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
+		DisableWorkspaceCreation:  os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		VCSIntegrationEnabled:     os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
+		PublicURL:                 strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		AppURL:                    appURLFromEnv(),
+		TrustedProxies:            parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		CloudURL:                  strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
+		CloudTimeout:              35 * time.Second,
+		AttachmentDownloadMode:    os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
 		// 0 defers to handler.New, which fills in
 		// defaultAttachmentDownloadURLTTL — one owner for the default so this
 		// wiring cannot drift from it (RUYI-103).
@@ -1396,6 +1403,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
 	}
+	if opts.Prometheus != nil {
+		h.Prometheus = opts.Prometheus
+	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
 	// (invalidate). DaemonTokenCache backs the DaemonAuth mdt_ path. Both
@@ -1784,6 +1794,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// no workspace in the path to gate on.
 		// --- User-scoped routes (no workspace context required) ---
 		r.Get("/api/me", h.GetMe)
+		r.Post("/api/mcp/audit-start", h.StartMCPInvocationAudit)
+		r.Post("/api/mcp/audit-finish", h.FinishMCPInvocationAudit)
 		r.Patch("/api/me", h.UpdateMe)
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)
@@ -1909,6 +1921,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// PR text-reference lookup for the reference tail
 					// (RUYI-635 增量): member-visible, read-only, DB snapshot.
 					r.Get("/pull-requests/lookup", h.LookupPullRequestByRef)
+					// Number-only `MR !N` lookup for body links + tail rows
+					// (RUYI-728): same visibility and snapshot discipline.
+					r.Get("/pull-requests/lookup-by-number", h.LookupPullRequestByNumber)
 					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
@@ -2036,8 +2051,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
 				// Voice provider pool (RUYI-693): the listing is
-				// member-visible — the settings page renders the pool for
-				// everyone — while pool writes are workspace-admin state,
+				// member-visible — the pool feeds the availability gate
+				// and the agent override picker, which render for every
+				// member — while pool writes are workspace-admin state,
 				// the same split as the workspace settings themselves.
 				r.Route("/voice-providers", func(r chi.Router) {
 					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
@@ -2355,6 +2371,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// accepts a member route. Approval requires the full-carrier diff to
 		// have been previewed first (confirm_diff_previewed), the injection
 		// defence for a channel that writes into every agent's context.
+		// Clause governance views (RUYI-751, ADR 007 §9): reads over the
+		// clause asset library — overview, per-clause detail, and the
+		// standing reconciliation checks (层集合 ⊆ invariant, degraded
+		// share, marker-vs-asset drift). Member-visible like the quality
+		// dashboard; writes stay in the proposal pool routes above.
+		r.Route("/api/prompt-legislation/governance", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/clauses", h.ListClauseGovernance)
+			r.Get("/clauses/{clauseId}", h.GetClauseGovernanceDetail)
+			r.Get("/reconciliation", h.GetClauseReconciliation)
+		})
+
 		r.Route("/api/prompt-legislation/proposals", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Group(func(r chi.Router) {
@@ -2430,6 +2459,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+			})
+		})
+
+		// Workspace-level host backpressure settings (RUYI-618): the
+		// watermarks pause task claiming on every daemon host in the
+		// workspace, so reads are member-visible but saves are owner-only.
+		// Delivered to daemons on heartbeat acks (see processHeartbeat).
+		r.Route("/api/workspace/backpressure-settings", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspaceBackpressureSettings)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Put("/", h.PutWorkspaceBackpressureSettings)
 			})
 		})
 
@@ -2856,6 +2899,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
+				// Observability panels (RUYI-618): Prometheus-proxied
+				// system-resource and model-traffic series for the usage
+				// page. Both report configured=false when PROMETHEUS_URL
+				// is unset — the browser never talks to Prometheus.
+				r.Get("/usage/resources", h.GetDashboardUsageResources)
+				r.Get("/usage/traffic", h.GetDashboardUsageTraffic)
 			})
 
 			// (RUYI-626's POST /api/voice-sessions/{id}/complete was retired
@@ -2870,6 +2919,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					// Daemon host backpressure settings + trigger history
+					// (RUYI-729 stage 1): reads member-visible, saves
+					// owner/admin-only, delivery over the heartbeat ack.
+					r.Get("/backpressure-settings", h.GetRuntimeBackpressureSettings)
+					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
+					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
+					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)
