@@ -247,10 +247,7 @@ export function Markdown({
         const generation = state.generation;
         const currentIntent = { intent: ++state.latest };
         state.pending.set(key, currentIntent);
-        const lookup =
-          action.kind === "mergeRequest"
-            ? api.lookupMergeRequestByNumber(wsId ?? "", action.number)
-            : api.lookupPullRequestByNumber(wsId ?? "", action.number);
+        const lookup = api.lookupPullRequestByNumber(wsId ?? "", action.number);
         void lookup
           .then(async (pr) => {
             if (
