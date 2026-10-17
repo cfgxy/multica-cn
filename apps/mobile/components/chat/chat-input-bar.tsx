@@ -80,6 +80,7 @@ interface Props {
   sending: boolean;
   allowStop?: boolean;
   allowSubmitWhileRunning?: boolean;
+  stopPending?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   incomingSharedFiles?: SharedFile[];
@@ -104,6 +105,7 @@ export function ChatInputBar({
   sending,
   allowStop = true,
   allowSubmitWhileRunning = false,
+  stopPending = false,
   disabled = false,
   disabledReason,
   incomingSharedFiles,
@@ -257,7 +259,7 @@ export function ChatInputBar({
     attachments,
     disabled,
     isSending: sending && !allowSubmitWhileRunning,
-    submitting,
+    submitting: submitting || stopPending,
   });
 
   const handleSubmit = useCallback(async () => {
@@ -375,8 +377,9 @@ export function ChatInputBar({
   const voice = voiceGateVerdict(voiceGate);
   const shape = resolveInputShape({
     disabled,
-    sending: sending && !allowSubmitWhileRunning,
+    sending,
     allowStop,
+    allowSubmitWhileRunning,
     hasDraft: value.trim().length > 0,
     dictationOpen,
     voice,
@@ -483,19 +486,26 @@ export function ChatInputBar({
           style={[textStyle, { height: inputHeight }]}
           accessibilityLabel={t("mobile.composer.placeholder", "Message…")}
         />
-        <RightSlot
-          shape={shape.rightSlot}
-          canSend={canSend}
-          submitting={submitting}
-          uploading={uploading}
-          onSubmit={handleSubmit}
-          dictationReady={
-            dictation.entry === "ondevice" || dictation.entry === "degraded"
-          }
-          onOpenDictation={openDictation}
-          onOpenVoice={onOpenVoice}
-          onStop={onStop}
-        />
+        <View className="flex-row items-center gap-1">
+          {shape.showStopAction ? (
+            <StopAction onStop={onStop} disabled={stopPending} />
+          ) : null}
+          <RightSlot
+            shape={shape.rightSlot}
+            canSend={canSend}
+            submitting={submitting}
+            uploading={uploading}
+            onSubmit={handleSubmit}
+            dictationReady={
+              dictation.entry === "ondevice" || dictation.entry === "degraded"
+            }
+            disabled={stopPending}
+            onOpenDictation={openDictation}
+            onOpenVoice={onOpenVoice}
+            onStop={onStop}
+            stopPending={stopPending}
+          />
+        </View>
       </View>
       <ActionSheetModal {...imageSourceModalProps} />
     </View>
@@ -507,21 +517,25 @@ function RightSlot({
   canSend,
   submitting,
   uploading,
+  disabled,
   onSubmit,
   dictationReady,
   onOpenDictation,
   onOpenVoice,
   onStop,
+  stopPending,
 }: {
   shape: "stop" | "voice" | "send" | "muted-send";
   canSend: boolean;
   submitting: boolean;
   uploading: boolean;
+  disabled: boolean;
   onSubmit: () => void;
   dictationReady: boolean;
   onOpenDictation: () => void;
   onOpenVoice: () => void;
   onStop: () => void;
+  stopPending: boolean;
 }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
@@ -531,22 +545,7 @@ function RightSlot({
   if (shape === "stop") {
     return (
       <Animated.View key="stop" entering={FadeIn.duration(120)} exiting={FadeOut.duration(120)}>
-        <Pressable
-          onPress={onStop}
-          className="h-9 w-9 items-center justify-center rounded-full bg-foreground active:opacity-80"
-          hitSlop={12}
-          accessibilityRole="button"
-          accessibilityLabel={t("mobile.composer.stop_agent", "Stop agent")}
-        >
-          <View
-            style={{
-              width: 10,
-              height: 10,
-              backgroundColor: theme.background,
-              borderRadius: 1.5,
-            }}
-          />
-        </Pressable>
+        <StopAction onStop={onStop} disabled={stopPending} />
       </Animated.View>
     );
   }
@@ -559,6 +558,7 @@ function RightSlot({
             onPress={onOpenDictation}
             hitSlop={6}
             accessibilityRole="button"
+            disabled={disabled}
             accessibilityLabel={tVoice("dictation.open", "Dictation")}
             className="h-9 w-9 items-center justify-center rounded-full active:opacity-70"
           >
@@ -569,6 +569,7 @@ function RightSlot({
           onPress={onOpenVoice}
           hitSlop={6}
           accessibilityRole="button"
+          disabled={disabled}
           accessibilityLabel={tVoice("button.start", "Start voice conversation")}
           className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
         >
@@ -597,6 +598,33 @@ function RightSlot({
         name="arrow-up"
         size={22}
         color={active ? theme.primaryForeground : theme.mutedForeground}
+      />
+    </Pressable>
+  );
+}
+
+function StopAction({ onStop, disabled }: { onStop: () => void; disabled: boolean }) {
+  const { t } = useT("chat");
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+
+  return (
+    <Pressable
+      onPress={onStop}
+      disabled={disabled}
+      className="h-9 w-9 items-center justify-center rounded-full bg-foreground active:opacity-80"
+      hitSlop={12}
+      accessibilityRole="button"
+      accessibilityLabel={t("mobile.composer.stop_agent", "Stop agent")}
+      accessibilityState={{ disabled }}
+    >
+      <View
+        style={{
+          width: 10,
+          height: 10,
+          backgroundColor: theme.background,
+          borderRadius: 1.5,
+        }}
       />
     </Pressable>
   );
