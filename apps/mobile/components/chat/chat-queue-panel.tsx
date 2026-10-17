@@ -53,7 +53,11 @@ export function ChatQueuePanel({
   };
 
   return (
-    <View className="mb-2 rounded-lg border border-border bg-background px-3 py-2" style={{ maxHeight }} accessibilityLabel={t("queue.title", "Queued messages")}>
+    <View
+      className="mb-2 rounded-lg border border-border bg-background px-3 py-2"
+      style={{ height: maxHeight, maxHeight, minHeight: 0 }}
+      accessibilityLabel={t("queue.title", "Queued messages")}
+    >
       <View className="mb-1 flex-row items-center justify-between">
         <Text className="font-medium text-foreground">
           {t("queue.title", "Queue")} ({tasks.length})
@@ -80,7 +84,14 @@ export function ChatQueuePanel({
           <Text className="text-xs text-muted-foreground">{t("queue.clear", "Clear")}</Text>
         </Pressable>
       </View>
-      <ScrollView style={{ maxHeight: Math.max(0, maxHeight - 52) }} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        style={{
+          flex: 1,
+          minHeight: 0,
+          maxHeight: Math.max(0, maxHeight - 52),
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
         {tasks.map((task, index) => {
           const disabled = busyId !== null || !canManage;
           return (

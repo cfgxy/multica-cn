@@ -48,6 +48,7 @@ describe("ChatQueuePanel", () => {
     await render(
       <ChatQueuePanel
         pendingTask={pendingTask()}
+        maxHeight={96}
         canManage={false}
         onClear={onClear}
         onEdit={onEdit}
@@ -73,6 +74,7 @@ describe("ChatQueuePanel", () => {
     await render(
       <ChatQueuePanel
         pendingTask={pendingTask()}
+        maxHeight={96}
         canManage
         onClear={onClear}
         onEdit={onEdit}
