@@ -103,6 +103,8 @@ export interface HttpServerOptions {
   siteRoot?: string | undefined;
   /** Private credential used only for the backend's existing invocation audit endpoints. */
   auditServiceCredential?: string | undefined;
+  mcpInstanceId?: string | undefined;
+  fileAccessInstanceCredential?: string | undefined;
   logger?: Logger;
 }
 
@@ -110,7 +112,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const logger = options.logger ?? stderrLogger;
   const challenge = wwwAuthenticateChallenge(options.siteRoot);
   const httpServer = createServer((request, response) => {
-    void handleRequest(request, response, options.serverUrl, challenge, options.auditServiceCredential, logger);
+    void handleRequest(request, response, options.serverUrl, challenge, options.auditServiceCredential, options.mcpInstanceId, options.fileAccessInstanceCredential, logger);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -129,6 +131,8 @@ async function handleRequest(
   backendUrl: string,
   challenge: string,
   auditServiceCredential: string | undefined,
+  mcpInstanceId: string | undefined,
+  fileAccessInstanceCredential: string | undefined,
   logger: Logger,
 ): Promise<void> {
   const url = request.url ?? "/";
@@ -193,6 +197,8 @@ async function handleRequest(
       token,
       logger,
       auditServiceCredential,
+      mcpInstanceId,
+      fileAccessInstanceCredential,
     });
     const mcpServer = createMcpServer(client);
     const transport = new StreamableHTTPServerTransport({

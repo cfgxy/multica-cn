@@ -89,11 +89,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// history dies with the workspace; a settings row is swept only once no
 	// runtime anywhere still points at its daemon_id, so a shared daemon
 	// serving another workspace keeps its gate config.
-	"daemon_backpressure_event":    workspaceDelete,
-	"daemon_backpressure_settings": workspaceDelete,
-	"daemon_connection":            workspaceDelete,
-	"daemon_file_access_target":    workspaceDelete,
-	"daemon_file_operation":        workspaceDelete,
+	"daemon_backpressure_event":        workspaceDelete,
+	"daemon_backpressure_settings":     workspaceDelete,
+	"daemon_connection":                workspaceDelete,
+	"daemon_file_access_target":        workspaceDelete,
+	"daemon_file_operation":            workspaceDelete,
+	"mcp_file_access_instance_binding": workspaceDelete,
+	"mcp_pre_auth_rejection":           workspaceDeleteKeep,
 	// Ops command ledger (RUYI-645): workspace-scoped operational evidence
 	// with no foreign keys by design, swept explicitly through the
 	// application-layer deletion graph like the other evidence leaves.

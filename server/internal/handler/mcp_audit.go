@@ -17,6 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/fileaccess"
 )
 
 const mcpAuditRequestLimit = 8 << 10
@@ -25,6 +27,7 @@ type mcpAuditStartRequest struct {
 	InvocationID   string `json:"invocation_id"`
 	WorkspaceID    string `json:"workspace_id"`
 	ToolName       string `json:"tool_name"`
+	InstanceID     string `json:"instance_id,omitempty"`
 	TargetType     string `json:"target_type,omitempty"`
 	TargetID       string `json:"target_id,omitempty"`
 	NormalizedPath string `json:"normalized_path,omitempty"`
@@ -32,6 +35,7 @@ type mcpAuditStartRequest struct {
 
 type mcpAuditFinishRequest struct {
 	InvocationID string `json:"invocation_id"`
+	OperationID  string `json:"operation_id,omitempty"`
 	Status       string `json:"status"`
 	DurationMS   int64  `json:"duration_ms"`
 	ErrorCode    string `json:"error_code,omitempty"`
@@ -89,6 +93,23 @@ func (h *Handler) StartMCPInvocationAudit(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid tool_name")
 		return
 	}
+	if input.InstanceID != "" {
+		if !isMCPFileToolName(input.ToolName) || input.TargetType != "" || input.TargetID != "" || input.NormalizedPath != "" {
+			writeError(w, http.StatusBadRequest, "invalid MCP file invocation start")
+			return
+		}
+		instanceID, ok := h.requireMCPFileAccessInstance(w, r)
+		if !ok {
+			return
+		}
+		if instanceID != input.InstanceID {
+			writeError(w, http.StatusForbidden, "MCP instance mismatch")
+			return
+		}
+	} else if isMCPFileToolName(input.ToolName) {
+		writeError(w, http.StatusBadRequest, "MCP file invocation requires an instance identity")
+		return
+	}
 	if len(input.TargetType) > 32 || len(input.TargetID) > 128 || strings.ContainsAny(input.TargetType+input.TargetID, "\r\n\x00") {
 		writeError(w, http.StatusBadRequest, "invalid target")
 		return
@@ -115,6 +136,9 @@ func (h *Handler) StartMCPInvocationAudit(w http.ResponseWriter, r *http.Request
 		return
 	}
 	details := map[string]any{"tool_name": input.ToolName}
+	if input.InstanceID != "" {
+		details["instance_id"] = input.InstanceID
+	}
 	if input.TargetType != "" {
 		details["target_type"] = input.TargetType
 	}
@@ -179,6 +203,15 @@ func (h *Handler) FinishMCPInvocationAudit(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid error_code")
 		return
 	}
+	operationID := pgtype.UUID{}
+	if input.OperationID != "" {
+		parsed, err := uuid.Parse(input.OperationID)
+		if err != nil || strings.TrimSpace(input.OperationID) != input.OperationID {
+			writeError(w, http.StatusBadRequest, "invalid operation_id")
+			return
+		}
+		operationID = pgtype.UUID{Bytes: parsed, Valid: true}
+	}
 	actorID, ok := requireUserID(w, r)
 	if !ok {
 		return
@@ -197,10 +230,60 @@ func (h *Handler) FinishMCPInvocationAudit(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusForbidden, "MCP invocation actor mismatch")
 		return
 	}
+	var startDetails map[string]any
+	if err := json.Unmarshal(start.Details, &startDetails); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid MCP invocation start")
+		return
+	}
+	fileInvocation := false
+	instanceID, _ := startDetails["instance_id"].(string)
+	toolName, _ := startDetails["tool_name"].(string)
+	if instanceID != "" {
+		fileInvocation = true
+		providedInstanceID, ok := h.requireMCPFileAccessInstance(w, r)
+		if !ok {
+			return
+		}
+		if instanceID != providedInstanceID || !isMCPFileToolName(toolName) {
+			writeError(w, http.StatusForbidden, "MCP instance mismatch")
+			return
+		}
+	} else if operationID.Valid {
+		writeError(w, http.StatusBadRequest, "operation_id is only valid for a file invocation")
+		return
+	}
+	if fileInvocation && input.Status == "success" && !operationID.Valid {
+		writeError(w, http.StatusBadRequest, "successful file invocation requires operation_id")
+		return
+	}
 	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(start.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
 	details := map[string]any{"status": input.Status, "duration_ms": input.DurationMS}
+	if fileInvocation {
+		details["instance_id"] = instanceID
+		if operationID.Valid {
+			op, err := h.Queries.GetFileOperationForInvocation(r.Context(), db.GetFileOperationForInvocationParams{ID: operationID, InvocationID: start.InvocationID})
+			if err != nil || uuidToString(op.WorkspaceID) != uuidToString(start.WorkspaceID) {
+				writeError(w, http.StatusNotFound, "file operation not found")
+				return
+			}
+			expectedKind := map[string]string{"list_files": "file_list", "get_file_metadata": "file_metadata", "read_file_chunk": "file_read_chunk"}[toolName]
+			if op.Kind != expectedKind {
+				writeError(w, http.StatusForbidden, "file operation type mismatch")
+				return
+			}
+			var stored fileaccess.Request
+			if json.Unmarshal(op.Request, &stored) != nil || stored.Path == "" {
+				writeError(w, http.StatusInternalServerError, "invalid stored file operation")
+				return
+			}
+			details["operation_id"] = input.OperationID
+			details["operation_status"] = op.Status
+			details["target_id"] = op.TargetID
+			details["normalized_path"] = stored.Path
+		}
+	}
 	if input.ErrorCode != "" {
 		details["error_code"] = input.ErrorCode
 	}
@@ -228,4 +311,8 @@ func isMCPToolName(value string) bool {
 		return false
 	}
 	return true
+}
+
+func isMCPFileToolName(value string) bool {
+	return value == "list_files" || value == "get_file_metadata" || value == "read_file_chunk"
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -86,6 +87,9 @@ var corsAllowedHeaders = []string{
 	"X-Client-Capabilities",
 	// Sent by the host page when it relays a plugin surface's Action API call.
 	"X-Multica-Plugin-Installation",
+	"X-Multica-MCP-Service-Credential",
+	"X-Multica-MCP-Instance-ID",
+	"X-Multica-MCP-Instance-Credential",
 }
 
 // corsExposedHeaders lists response headers browser clients are allowed to read.
@@ -137,6 +141,33 @@ func allowedOrigins() []string {
 		return defaultOrigins
 	}
 	return origins
+}
+
+func parseMCPFileAccessInstanceCredentials(raw string) map[string]string {
+	credentials := make(map[string]string)
+	if strings.TrimSpace(raw) == "" {
+		return credentials
+	}
+	var configured map[string]string
+	if err := json.Unmarshal([]byte(raw), &configured); err != nil {
+		slog.Error("invalid MCP file access instance credential configuration")
+		return credentials
+	}
+	for instanceID, credential := range configured {
+		validID := instanceID != "" && len(instanceID) <= 64
+		for _, ch := range instanceID {
+			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+				validID = false
+				break
+			}
+		}
+		if !validID || strings.TrimSpace(credential) == "" || len(credential) > 512 {
+			slog.Error("invalid MCP file access instance credential entry")
+			return map[string]string{}
+		}
+		credentials[instanceID] = credential
+	}
+	return credentials
 }
 
 // appURLFromEnv resolves the user-facing web app URL. It prefers
@@ -461,19 +492,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	origins := allowedOrigins()
 
 	signupConfig := handler.Config{
-		MCPAuditServiceCredential: strings.TrimSpace(os.Getenv("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL")),
-		AllowSignup:               os.Getenv("ALLOW_SIGNUP") != "false",
-		AllowedEmails:             splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
-		AllowedEmailDomains:       splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
-		SuperAdminEmails:          splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
-		DisableWorkspaceCreation:  os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
-		VCSIntegrationEnabled:     os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
-		PublicURL:                 strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
-		AppURL:                    appURLFromEnv(),
-		TrustedProxies:            parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
-		CloudURL:                  strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
-		CloudTimeout:              35 * time.Second,
-		AttachmentDownloadMode:    os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
+		MCPAuditServiceCredential:        strings.TrimSpace(os.Getenv("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL")),
+		MCPFileAccessInstanceCredentials: parseMCPFileAccessInstanceCredentials(os.Getenv("MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS")),
+		AllowSignup:                      os.Getenv("ALLOW_SIGNUP") != "false",
+		AllowedEmails:                    splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
+		AllowedEmailDomains:              splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		SuperAdminEmails:                 splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
+		DisableWorkspaceCreation:         os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		VCSIntegrationEnabled:            os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
+		PublicURL:                        strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		AppURL:                           appURLFromEnv(),
+		TrustedProxies:                   parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		CloudURL:                         strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
+		CloudTimeout:                     35 * time.Second,
+		AttachmentDownloadMode:           os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
 		// 0 defers to handler.New, which fills in
 		// defaultAttachmentDownloadURLTTL — one owner for the default so this
 		// wiring cannot drift from it (RUYI-103).
@@ -1503,6 +1535,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Use(chimw.Recoverer)
 	r.Use(h.PluginSurfaceHostBoundary)
 	r.Use(middleware.ContentSecurityPolicy)
+	r.With(middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_MCP_PREAUTH", 60), time.Minute, signupConfig.TrustedProxies)).Post("/api/mcp/pre-auth-rejections", h.RecordMCPPreAuthRejection)
 
 	// Share allowed origins with WebSocket origin checker.
 	realtime.SetAllowedOrigins(origins)
@@ -1867,6 +1900,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// never carry the secret hash (plaintext appears exactly once,
 			// in the create and rotate responses).
 			r.Get("/oauth/clients", h.AdminListOAuthClients)
+			r.Get("/mcp/pre-auth-rejections", h.ListMCPPreAuthRejections)
 			r.Post("/oauth/clients", h.AdminCreateOAuthClient)
 			r.Get("/oauth/clients/{id}", h.AdminGetOAuthClient)
 			r.Patch("/oauth/clients/{id}", h.AdminUpdateOAuthClient)
@@ -2479,6 +2513,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Route("/api/file-access", func(r chi.Router) {
+				r.Post("/list", h.ListMCPFiles)
+				r.Post("/metadata", h.GetMCPFileMetadata)
+				r.Post("/read", h.ReadMCPFileChunk)
+				r.Get("/operations/{operationId}", h.GetMCPFileOperation)
+			})
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
@@ -2946,6 +2986,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/ops/commands/{commandId}", h.GetRuntimeOpsCommand)
 					// Typed file operations have a separate daemon channel and never enter argv execution.
 					r.Put("/file-access-target", h.PutRuntimeFileAccessTarget)
+					r.Put("/file-access-instance-bindings/{instanceId}", h.PutMCPFileAccessInstanceBinding)
 					r.Post("/files/list", h.ListRuntimeFiles)
 					r.Post("/files/metadata", h.GetRuntimeFileMetadata)
 					r.Post("/files/read", h.ReadRuntimeFileChunk)

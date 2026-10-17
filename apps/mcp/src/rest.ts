@@ -136,6 +136,8 @@ export interface MulticaClientOptions {
   timeoutMs?: number;
   logger?: Logger;
   auditServiceCredential?: string | undefined;
+  mcpInstanceId?: string | undefined;
+  fileAccessInstanceCredential?: string | undefined;
 }
 
 interface RequestOptions {
@@ -143,6 +145,7 @@ interface RequestOptions {
   query?: Record<string, string | number | boolean | undefined> | undefined;
   body?: unknown;
   auditService?: boolean | undefined;
+  fileAccessInstance?: boolean | undefined;
 }
 
 export class MulticaClient {
@@ -152,6 +155,8 @@ export class MulticaClient {
   private readonly timeoutMs: number;
   private readonly logger: Logger;
   private readonly auditServiceCredential: string | undefined;
+  private readonly mcpInstanceId: string | undefined;
+  private readonly fileAccessInstanceCredential: string | undefined;
 
   constructor(options: MulticaClientOptions) {
     this.baseUrl = options.serverUrl.replace(/\/+$/, "");
@@ -160,6 +165,12 @@ export class MulticaClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.logger = options.logger ?? stderrLogger;
     this.auditServiceCredential = options.auditServiceCredential?.trim() || undefined;
+    this.mcpInstanceId = options.mcpInstanceId?.trim() || undefined;
+    this.fileAccessInstanceCredential = options.fileAccessInstanceCredential?.trim() || undefined;
+  }
+
+  get mcpInstanceIdentity(): string | undefined {
+    return this.mcpInstanceId;
   }
 
   // ---- workspace-scoped operations -------------------------------------
@@ -224,19 +235,94 @@ export class MulticaClient {
     invocation_id: string;
     workspace_id: string;
     tool_name: string;
-    target_type: "workspace";
-    target_id: string;
+    target_type?: "workspace";
+    target_id?: string;
+    instance_id?: string;
   }): Promise<void> {
-    await this.request("POST", "/api/mcp/audit-start", { body: input, auditService: true });
+    await this.request("POST", "/api/mcp/audit-start", {
+      body: input,
+      auditService: true,
+      fileAccessInstance: input.instance_id !== undefined,
+    });
   }
 
   async finishMcpInvocationAudit(input: {
     invocation_id: string;
-    status: "success" | "failure";
+    status: "success" | "failure" | "refused";
     duration_ms: number;
+    operation_id?: string;
+    instance_id?: string;
     error_code?: "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal";
+  }): Promise<"recorded" | "queued" | "unrecorded"> {
+    const response = await this.request<{ status: "recorded" | "queued" | "unrecorded" }>("POST", "/api/mcp/audit-finish", {
+      body: input,
+      auditService: true,
+      fileAccessInstance: input.instance_id !== undefined,
+    });
+    return response.status;
+  }
+
+  async recordMcpPreAuthRejection(input: {
+    invocation_id: string;
+    reason_code: "unknown_tool" | "missing_workspace" | "invalid_workspace" | "unauthenticated_actor" | "entry_rejected";
+    file_tool_name?: "list_files" | "get_file_metadata" | "read_file_chunk";
   }): Promise<void> {
-    await this.request("POST", "/api/mcp/audit-finish", { body: input, auditService: true });
+    await this.request("POST", "/api/mcp/pre-auth-rejections", {
+      body: input,
+      auditService: true,
+      fileAccessInstance: true,
+    });
+  }
+
+  async runFileAccessTool(input: {
+    tool: "list_files" | "get_file_metadata" | "read_file_chunk";
+    workspace: string;
+    invocation_id: string;
+    path: string;
+    host?: string;
+    offset?: number;
+    length?: number;
+    limit?: number;
+    cursor?: string;
+  }): Promise<MCPFileAccessResult> {
+    const route = {
+      list_files: "/api/file-access/list",
+      get_file_metadata: "/api/file-access/metadata",
+      read_file_chunk: "/api/file-access/read",
+    }[input.tool];
+    const { operation_id: operationId } = await this.request<{ operation_id: string; status: string }>("POST", route, {
+      workspace: input.workspace,
+      body: {
+        invocation_id: input.invocation_id,
+        ...(input.host !== undefined ? { host: input.host } : {}),
+        path: input.path,
+        ...(input.offset !== undefined ? { offset: input.offset } : {}),
+        ...(input.length !== undefined ? { length: input.length } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+      },
+      fileAccessInstance: true,
+    });
+    const deadline = Date.now() + 110_000;
+    while (Date.now() < deadline) {
+      const operation = await this.request<{
+        operation_id: string;
+        kind: string;
+        status: "pending" | "claimed" | "succeeded" | "rejected" | "failed" | "timeout" | "expired";
+        result: unknown;
+        error: string;
+      }>("GET", `/api/file-access/operations/${encodeURIComponent(operationId)}`, {
+        workspace: input.workspace,
+        query: { invocation_id: input.invocation_id },
+        fileAccessInstance: true,
+      });
+      if (operation.status === "succeeded") return new MCPFileAccessResult(operation.result, operationId);
+      if (operation.status === "failed" || operation.status === "rejected" || operation.status === "expired" || operation.status === "timeout") {
+        throw new MCPFileAccessError(operation.error || "internal", operation.status, operationId);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new MCPFileAccessError("timeout", "timeout", operationId);
   }
 
   async listAgents(workspace: string): Promise<AgentInfo[]> {
@@ -976,6 +1062,13 @@ export class MulticaClient {
       }
       headers["X-Multica-MCP-Service-Credential"] = this.auditServiceCredential;
     }
+    if (options.fileAccessInstance) {
+      if (!this.mcpInstanceId || !this.fileAccessInstanceCredential) {
+        throw new MulticaRequestError("MCP file access instance credential is not configured");
+      }
+      headers["X-Multica-MCP-Instance-ID"] = this.mcpInstanceId;
+      headers["X-Multica-MCP-Instance-Credential"] = this.fileAccessInstanceCredential;
+    }
     let requestBody: string | undefined;
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -1026,6 +1119,24 @@ export class MulticaClient {
       );
     }
   }
+}
+
+export class MCPFileAccessError extends Error {
+  readonly code: string;
+  readonly status: string;
+  readonly operationId: string | undefined;
+
+  constructor(code: string, status: string, operationId?: string) {
+    super(`MCP file access ${status}: ${code}`);
+    this.name = "MCPFileAccessError";
+    this.code = code;
+    this.status = status;
+    this.operationId = operationId;
+  }
+}
+
+export class MCPFileAccessResult {
+  constructor(readonly result: unknown, readonly operationId: string) {}
 }
 
 function describeErrorBody(rawBody: string, status: number): string {
