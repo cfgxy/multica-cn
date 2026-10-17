@@ -863,17 +863,17 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			return
 		}
 		userID = uid
+	}
 
-		if !writeWSAuthFrame(
-			conn,
-			[]byte(`{"type":"auth_ack"}`),
-			"auth_ack",
-			"workspace_id", workspaceID,
-			"user_id", userID,
-		) {
-			conn.Close()
-			return
-		}
+	if !writeWSAuthFrame(
+		conn,
+		[]byte(`{"type":"auth_ack"}`),
+		"auth_ack",
+		"workspace_id", workspaceID,
+		"user_id", userID,
+	) {
+		conn.Close()
+		return
 	}
 
 	// Capture client metadata from query params (browsers cannot set custom

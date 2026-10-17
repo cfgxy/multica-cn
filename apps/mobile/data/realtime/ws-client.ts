@@ -205,6 +205,7 @@ export class WSClient {
     }
 
     const ws = new WebSocket(url.toString());
+    let authenticated = false;
     this.ws = ws;
     this.logger.info("[ws] dialing", url.toString().replace(/token=[^&]*/, "token=…"));
 
@@ -226,6 +227,8 @@ export class WSClient {
 
       const type = (msg as { type?: string }).type;
       if (type === "auth_ack") {
+        if (authenticated) return;
+        authenticated = true;
         this.onAuthenticated();
         return;
       }
