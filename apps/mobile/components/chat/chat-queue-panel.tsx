@@ -32,6 +32,11 @@ export function ChatQueuePanel({
   const tasks = pendingTask?.queued_tasks ?? [];
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
+  const title = t(
+    tasks.length === 1 ? "queue.title_single" : "queue.title_multiple",
+    tasks.length === 1 ? "{{number}} queued message" : "{{number}} queued messages",
+    { number: tasks.length },
+  );
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -57,11 +62,11 @@ export function ChatQueuePanel({
     <View
       className="mb-2 rounded-lg border border-border bg-background px-3 py-2"
       style={{ height: maxHeight, maxHeight, minHeight: 0 }}
-      accessibilityLabel={t("queue.title", "{{count}} queued messages", { count: tasks.length })}
+      accessibilityLabel={title}
     >
       <View className="mb-1 flex-row items-center justify-between">
         <Text className="font-medium text-foreground">
-          {t("queue.title", "{{count}} queued messages", { count: tasks.length })}
+          {title}
         </Text>
         <Pressable
           onPress={() => {
