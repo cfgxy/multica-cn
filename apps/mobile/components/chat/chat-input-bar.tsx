@@ -12,7 +12,7 @@
  *     （API<31 / 无识别服务）经服务端转写降级（RUYI-710，需语音门禁
  *     可用 + workspace 就绪）；权限被拒或非 Android 隐藏。
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Keyboard,
@@ -61,9 +61,13 @@ import { useDictation } from "@/lib/voice/use-dictation";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
+import {
+  CHAT_COMPOSER_INPUT_MAX_HEIGHT,
+  CHAT_COMPOSER_INPUT_MIN_HEIGHT,
+  CHAT_COMPOSER_MIN_HEIGHT,
+  resolveChatComposerInputHeight,
+} from "@/lib/chat-composer-layout";
 import { Text } from "@/components/ui/text";
-
-const BAR_HEIGHT = 52;
 
 interface Props {
   value: string;
@@ -126,7 +130,7 @@ export function ChatInputBar({
   const [submitting, setSubmitting] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [dictationOpen, setDictationOpen] = useState(false);
-  const [inputHeight, setInputHeight] = useState(BAR_HEIGHT - 24);
+  const [inputHeight, setInputHeight] = useState(CHAT_COMPOSER_INPUT_MIN_HEIGHT);
 
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -402,7 +406,7 @@ export function ChatInputBar({
   }
 
   const barStyle: StyleProp<ViewStyle> = {
-    borderRadius: BAR_HEIGHT / 2,
+    borderRadius: CHAT_COMPOSER_MIN_HEIGHT / 2,
     backgroundColor: theme.secondary,
     shadowColor: "#0f172a",
     shadowOffset: { width: 0, height: 4 },
@@ -412,8 +416,8 @@ export function ChatInputBar({
   };
   const textStyle: StyleProp<TextStyle> = {
     flex: 1,
-    minHeight: 36,
-    maxHeight: 120,
+    minHeight: CHAT_COMPOSER_INPUT_MIN_HEIGHT,
+    maxHeight: CHAT_COMPOSER_INPUT_MAX_HEIGHT,
     paddingVertical: 8,
     fontSize: 16,
     color: theme.foreground,
@@ -450,7 +454,7 @@ export function ChatInputBar({
         }}
         onSkill={hasSkillPicker ? openSkillPicker : undefined}
       />
-      <View className="flex-row items-center gap-1 px-1.5" style={[{ height: BAR_HEIGHT }, barStyle]}>
+      <View className="flex-row items-center gap-1 px-1.5" style={[{ minHeight: CHAT_COMPOSER_MIN_HEIGHT }, barStyle]}>
         <Pressable
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -469,13 +473,14 @@ export function ChatInputBar({
           onChangeText={handleChangeText}
           onSelectionChange={onSelectionChange}
           onContentSizeChange={(e) =>
-            setInputHeight(e.nativeEvent.contentSize.height)
+            setInputHeight(resolveChatComposerInputHeight(e.nativeEvent.contentSize.height))
           }
           editable={!disabled}
           multiline
+          scrollEnabled
           placeholder={sending ? t("mobile.composer.agent_working", "Agent is working…") : t("mobile.composer.placeholder", "Message…")}
           placeholderTextColor={theme.mutedForeground}
-          style={[textStyle, { height: Math.min(Math.max(36, inputHeight), 120) }]}
+          style={[textStyle, { height: inputHeight }]}
           accessibilityLabel={t("mobile.composer.placeholder", "Message…")}
         />
         <RightSlot
