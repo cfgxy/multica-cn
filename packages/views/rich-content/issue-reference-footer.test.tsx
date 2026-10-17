@@ -239,7 +239,28 @@ describe("IssueReferenceFooter", () => {
     );
     expect(prRow.getAttribute("target")).toBe("_blank");
     expect(prRow.getAttribute("rel")).toContain("noreferrer");
-    expect(prRow.textContent).toContain("cfgxy/multica-cn#338");
+    expect(prRow.querySelector(".issue-reference-identifier")?.textContent)
+      .toBe("#338");
+    expect(prRow.querySelector(".issue-reference-pr-project")?.textContent)
+      .toBe("multica-cn/");
+    expect(prRow.querySelector(".issue-reference-title")?.textContent)
+      .toBe("Pull request #338");
+  });
+
+  it("keeps the owner visible for PRs outside the cfgxy organization", () => {
+    const otherOwnerPr = {
+      ...pr(339, "open", "Support another repository"),
+      repo_owner: "example",
+      repo_name: "project",
+    } as GitHubPullRequest;
+    resolutions = { ["pull_request:example/project#339"]: otherOwnerPr };
+    const { container } = renderFooter([prRef("example/project#339")]);
+
+    const row = container.querySelector("a[data-reference-kind='pr']")!;
+    expect(row.querySelector(".issue-reference-identifier")?.textContent)
+      .toBe("#339");
+    expect(row.querySelector(".issue-reference-pr-project")?.textContent)
+      .toBe("example/project/");
   });
 
   it("keeps unresolved references as non-clickable plain-text slots in first-appearance order", () => {
