@@ -75,11 +75,11 @@ func PreflightWorktree(cwd string) (WorktreePreflight, error) {
 			result.Errors = append(result.Errors, fmt.Sprintf("resolve managed branch %s: %v", marker.Branch, tipErr))
 		}
 	}
-	if marker.BaseCommit != "" && result.BranchTip != "" {
-		if _, ancestorErr := runGit(gitRoot, "merge-base", "--is-ancestor", marker.BaseCommit, result.BranchTip); ancestorErr == nil {
+	if marker.BaseCommit != "" && result.Head != "" {
+		if _, ancestorErr := runGit(gitRoot, "merge-base", "--is-ancestor", marker.BaseCommit, result.Head); ancestorErr == nil {
 			result.BaseIsAncestor = true
 		} else {
-			result.Errors = append(result.Errors, fmt.Sprintf("base commit %s is not proven as an ancestor of managed branch tip", marker.BaseCommit))
+			result.Errors = append(result.Errors, fmt.Sprintf("base commit %s is not proven as an ancestor of HEAD %s", marker.BaseCommit, result.Head))
 		}
 	}
 	if status, statusErr := runGit(gitRoot, "status", "--short", "--branch", "--untracked-files=all"); statusErr == nil {

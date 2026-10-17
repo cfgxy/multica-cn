@@ -99,6 +99,29 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		}
 	})
 
+	t.Run("base ancestry is checked against current HEAD when on an unmanaged branch", func(t *testing.T) {
+		repo, base := newPreflightRepo(t)
+		writePreflightMarker(t, repo, "task-4", "agent/managed", base)
+		gitPreflight(t, repo, "switch", "--orphan", "agent/unmanaged")
+		if err := os.WriteFile(filepath.Join(repo, "unrelated.txt"), []byte("unrelated\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitPreflight(t, repo, "add", "unrelated.txt")
+		gitPreflight(t, repo, "commit", "-m", "unrelated root")
+		head := gitPreflight(t, repo, "rev-parse", "HEAD")
+
+		got, err := runPreflightCLI(t, repo)
+		if err == nil {
+			t.Fatal("expected preflight to reject the unmanaged branch")
+		}
+		if got["status"] != "fail" || got["base_is_ancestor"] != false {
+			t.Fatalf("preflight JSON = %#v, want fail with base_is_ancestor=false", got)
+		}
+		if got["expected_branch"] != "agent/managed" || got["current_branch"] != "agent/unmanaged" || got["head"] != head || got["managed_branch_tip"] != base {
+			t.Fatalf("preflight diagnostics = %#v, want expected/current branch, HEAD %s, and managed tip %s", got, head, base)
+		}
+	})
+
 	t.Run("missing task context fails closed", func(t *testing.T) {
 		repo, _ := newPreflightRepo(t)
 		got, err := runPreflightCLI(t, repo)
