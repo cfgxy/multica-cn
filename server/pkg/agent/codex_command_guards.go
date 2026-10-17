@@ -58,11 +58,15 @@ if [[ -z "$guard" || ! -x "$guard" ]]; then
       *) command_name="$1"; break ;;
     esac
   done
+  if [[ "$command_name" == "status" ]]; then
+    exec git "$@"
+  fi
   if [[ "$command_name" == "push" ]]; then
     printf 'codex-guard: git push guard missing or not executable; refusing push\n' >&2
-    exit 126
+  else
+    printf 'codex-guard: git guard missing or not executable; refusing command: %s\n' "$command_name" >&2
   fi
-  exec git "$@"
+  exit 126
 fi
 exec "$guard" "$@"
 `
