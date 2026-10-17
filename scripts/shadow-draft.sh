@@ -135,8 +135,12 @@ if not isinstance(provider, dict):
     print("selected model_provider configuration is missing", file=sys.stderr)
     raise SystemExit(2)
 
+provider_display_name = provider.get("name")
 base_url = provider.get("base_url")
 wire_api = provider.get("wire_api")
+if not isinstance(provider_display_name, str) or not provider_display_name.strip():
+    print("selected provider requires a non-empty name", file=sys.stderr)
+    raise SystemExit(2)
 if not isinstance(base_url, str) or not base_url or not isinstance(wire_api, str) or not wire_api:
     print("selected provider requires base_url and wire_api", file=sys.stderr)
     raise SystemExit(2)
@@ -171,6 +175,7 @@ for header_name, variable_name in env_headers.items():
 with open(destination, "x", encoding="utf-8") as output:
     output.write(f"model_provider = {json.dumps(provider_name)}\n\n")
     output.write(f"[model_providers.{provider_name}]\n")
+    output.write(f"name = {json.dumps(provider_display_name)}\n")
     output.write(f"base_url = {json.dumps(base_url)}\n")
     output.write(f"wire_api = {json.dumps(wire_api)}\n")
     if resolved_headers:

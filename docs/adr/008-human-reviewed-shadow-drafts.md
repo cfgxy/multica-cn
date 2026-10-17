@@ -31,11 +31,12 @@ Use `scripts/shadow-draft.sh` as the first pilot entry point.
    Codex view.
 3. The child gets a fresh `CODEX_HOME` containing provider authentication and
    a generated `config.toml`. The runner parses the selected provider from the
-   host config and copies only its `base_url`, `wire_api`, and authentication
-   headers (`http_headers` plus values resolved from `env_http_headers`). Other
-   provider settings, providers, MCP servers, skills, and user config are not
-   copied. `env_http_headers` cannot reference a `MULTICA_*` variable. The child
-   does not inherit any `MULTICA_*` variable, task state, or platform credential.
+   host config and copies only its display `name`, `base_url`, `wire_api`, and
+   authentication headers (`http_headers` plus values resolved from
+   `env_http_headers`). Other provider settings, providers, MCP servers, skills,
+   and user config are not copied. `env_http_headers` cannot reference a
+   `MULTICA_*` variable. The child does not inherit any `MULTICA_*` variable,
+   task state, or platform credential.
 4. The runner accepts a deadline from 1 to 600 seconds, defaulting to 120.
    It starts Codex in a dedicated process group, sends TERM at the deadline,
    then sends KILL after two seconds. A deadline expiry is recorded as
@@ -86,5 +87,8 @@ for repeated invocations, checks that artifact paths and hashes remain
 independently traceable, and covers empty output and child exit codes 42 and
 124. A hanging fake process verifies that the deadline records a 124 channel
 error and terminates the process group. This is synthetic process and
-file-namespace evidence; real Codex interruption, provider communication, and
-the CLI read-only sandbox's network restriction remain QA requirements.
+file-namespace evidence. An explicit `SHADOW_DRAFT_REAL_CLI_CONTRACT=1` mode
+checks the installed Codex parser against isolated temporary homes and an
+unreachable loopback address; it verifies provider `name` parsing without a
+host account or inference. Real provider communication, Codex interruption,
+and the CLI read-only sandbox's network restriction remain QA requirements.
