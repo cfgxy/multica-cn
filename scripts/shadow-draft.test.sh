@@ -6,6 +6,22 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/codex-home" "$tmp/audit" "$tmp/outside"
 printf 'provider-auth' >"$tmp/codex-home/auth.json"
+cat >"$tmp/codex-home/config.toml" <<'EOF'
+model_provider = "fixture"
+
+[model_providers.fixture]
+base_url = "https://provider.invalid/v1"
+wire_api = "responses"
+env_http_headers = { Authorization = "SHADOW_DRAFT_FIXTURE_HEADER" }
+request_max_retries = 99
+
+[model_providers.untrusted]
+base_url = "https://untrusted.invalid/v1"
+wire_api = "chat"
+
+[mcp_servers.fixture]
+command = "must-not-be-copied"
+EOF
 printf 'must remain outside the Codex view\n' >"$tmp/outside/private.txt"
 printf '{"title":"real issue snapshot","mode":"success"}\n' >"$tmp/snapshot.json"
 
@@ -26,7 +42,15 @@ if env | grep -q '^MULTICA_'; then
   exit 70
 fi
 test "$(stat -c %a "$CODEX_HOME/auth.json")" = 600
-test "$(find "$CODEX_HOME" -type f | wc -l)" -eq 1
+test "$(find "$CODEX_HOME" -type f | wc -l)" -eq 2
+test "$(stat -c %a "$CODEX_HOME/config.toml")" = 600
+grep -Fq 'base_url = "https://provider.invalid/v1"' "$CODEX_HOME/config.toml"
+grep -Fq 'wire_api = "responses"' "$CODEX_HOME/config.toml"
+grep -Fq '"Authorization" = "fixture-header-secret"' "$CODEX_HOME/config.toml"
+if grep -Eq 'untrusted|mcp_servers|must-not-be-copied|request_max_retries|SHADOW_DRAFT_FIXTURE_HEADER' "$CODEX_HOME/config.toml"; then
+  echo 'unapproved Codex configuration reached the child' >&2
+  exit 74
+fi
 test "$PWD" = /run/issue-context
 test -f "$PWD/issue-snapshot"
 test "$(find "$PWD" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 1
@@ -75,7 +99,7 @@ EOF
 chmod +x "$tmp/bin/date"
 
 run() {
-  PATH="$tmp/bin:$PATH" CODEX_HOME="$tmp/codex-home" SHADOW_DRAFT_TIMEOUT_SECONDS=2 MULTICA_TOKEN=must-not-leak \
+  PATH="$tmp/bin:$PATH" CODEX_HOME="$tmp/codex-home" SHADOW_DRAFT_TIMEOUT_SECONDS=2 SHADOW_DRAFT_FIXTURE_HEADER=fixture-header-secret MULTICA_TOKEN=must-not-leak \
     MULTICA_SERVER_URL=http://must-not-leak MULTICA_TEST_SENTINEL=must-not-leak \
     "$root/scripts/shadow-draft.sh" --issue-ref RUYI-746 --snapshot "$tmp/snapshot.json" --audit-dir "$tmp/audit"
 }
@@ -86,7 +110,10 @@ run
 grep -q 'outside-file=denied' "$tmp/audit"/*/events.jsonl
 grep -q -- '--sandbox read-only' "$tmp/audit"/*/events.jsonl
 grep -q -- '--ephemeral' "$tmp/audit"/*/events.jsonl
-grep -q -- '--ignore-user-config' "$tmp/audit"/*/events.jsonl
+if grep -q -- '--ignore-user-config' "$tmp/audit"/*/events.jsonl; then
+  echo 'runner unexpectedly ignored its generated provider config' >&2
+  exit 1
+fi
 grep -q -- '--ignore-rules' "$tmp/audit"/*/events.jsonl
 grep -q -- '--model deepseek-v4-flash' "$tmp/audit"/*/events.jsonl
 grep -q '/run/codex-home' "$tmp/audit"/*/events.jsonl
@@ -98,6 +125,36 @@ if PATH="$tmp/bin:$PATH" CODEX_HOME="$tmp/codex-home" SHADOW_DRAFT_TIMEOUT_SECON
 else
   test "$?" -eq 2
 fi
+
+mkdir -p "$tmp/missing-config-home"
+printf 'provider-auth' >"$tmp/missing-config-home/auth.json"
+if PATH="$tmp/bin:$PATH" CODEX_HOME="$tmp/missing-config-home" \
+  "$root/scripts/shadow-draft.sh" --issue-ref RUYI-746 --snapshot "$tmp/snapshot.json" --audit-dir "$tmp/audit" 2>"$tmp/missing-config.log"; then
+  echo 'accepted missing provider configuration' >&2
+  exit 1
+else
+  test "$?" -eq 2
+fi
+grep -q 'CODEX_HOME/config.toml with a supported provider is required' "$tmp/missing-config.log"
+
+mkdir -p "$tmp/platform-header-home"
+printf 'provider-auth' >"$tmp/platform-header-home/auth.json"
+cat >"$tmp/platform-header-home/config.toml" <<'EOF'
+model_provider = "fixture"
+
+[model_providers.fixture]
+base_url = "https://provider.invalid/v1"
+wire_api = "responses"
+env_http_headers = { Authorization = "MULTICA_TOKEN" }
+EOF
+if PATH="$tmp/bin:$PATH" CODEX_HOME="$tmp/platform-header-home" MULTICA_TOKEN=platform-secret \
+  "$root/scripts/shadow-draft.sh" --issue-ref RUYI-746 --snapshot "$tmp/snapshot.json" --audit-dir "$tmp/audit" 2>"$tmp/platform-header.log"; then
+  echo 'accepted a platform environment variable as a provider credential' >&2
+  exit 1
+else
+  test "$?" -eq 2
+fi
+grep -q 'platform environment variables cannot supply provider headers' "$tmp/platform-header.log"
 
 for mode in empty error timeout-status hang; do
   printf '{"title":"real issue snapshot","mode":"%s"}\n' "$mode" >"$tmp/snapshot.json"
