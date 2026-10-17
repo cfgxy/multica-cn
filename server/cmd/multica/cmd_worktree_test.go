@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -129,6 +130,65 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 			t.Fatalf("preflight = %#v, error = %v; want missing context failure", got, err)
 		}
 	})
+}
+
+func TestWorktreePreflightDoesNotRefreshIndexStatCache(t *testing.T) {
+	repo, base := newPreflightRepo(t)
+	writePreflightMarker(t, repo, "task-readonly", "agent/managed", base)
+	trackedPath := filepath.Join(repo, "initial.txt")
+	trackedBefore, err := os.ReadFile(trackedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(10 * time.Second)
+	if err := os.Chtimes(trackedPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	indexPath := filepath.Join(repo, ".git", "index")
+	indexBefore, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refsBefore := gitPreflight(t, repo, "show-ref", "--head")
+	markerPath := filepath.Join(repo, execenv.TaskContextMarkerRelPath)
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A caller setting optional locks must not change preflight's read-only behavior.
+	t.Setenv("GIT_OPTIONAL_LOCKS", "1")
+	got, err := runPreflightCLI(t, repo)
+	if err != nil || got["status"] != "pass" {
+		t.Fatalf("preflight = %#v, error = %v; want pass", got, err)
+	}
+
+	indexAfter, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(indexBefore, indexAfter) {
+		t.Fatal("preflight changed .git/index")
+	}
+	if refsAfter := gitPreflight(t, repo, "show-ref", "--head"); refsAfter != refsBefore {
+		t.Fatalf("preflight changed refs: before %q, after %q", refsBefore, refsAfter)
+	}
+	trackedAfter, err := os.ReadFile(trackedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(trackedBefore, trackedAfter) {
+		t.Fatal("preflight changed tracked worktree file bytes")
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(markerBefore, markerAfter) {
+		t.Fatal("preflight changed managed marker bytes")
+	}
+	t.Logf("probe: status=%v index_unchanged=true refs_unchanged=true tracked_file_bytes_unchanged=true marker_bytes_unchanged=true", got["status"])
 }
 
 func TestWorktreePreflightRejectsArguments(t *testing.T) {
