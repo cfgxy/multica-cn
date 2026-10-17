@@ -141,6 +141,12 @@ const (
 	PendingWorkKindModelList        = "model_list"
 	PendingWorkKindLocalSkills      = "local_skills"
 	PendingWorkKindLocalSkillImport = "local_skill_import"
+	// PendingWorkKindOpsCommand (RUYI-645): a whitelisted read-only ops
+	// command was submitted for this runtime. Same advisory semantics — the
+	// claim itself happens inside the heartbeat ack, so a dropped hint only
+	// costs the normal heartbeat delay.
+	PendingWorkKindOpsCommand = "ops_command"
+	PendingWorkKindFileAccess = "file_access"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -464,6 +470,44 @@ type DaemonHeartbeatAckPayload struct {
 	// within one heartbeat, no restart. Daemons that predate the field
 	// ignore it (standard JSON behavior).
 	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
+	// PendingOpsCommands (RUYI-645) carries whitelisted read-only ops
+	// commands atomically claimed for this runtime. Same backwards-compat
+	// shape as PendingLocalSkillImports: daemons built before the field
+	// silently ignore it, and a claimed-but-undeliverable command simply
+	// times out on the server side (never re-dispatched).
+	PendingOpsCommands []DaemonOpsCommandDispatch `json:"pending_ops_commands,omitempty"`
+	// PendingFileOperations contains typed read-only file requests. It is a
+	// separate channel from ops commands so it can never reach an argv runner.
+	PendingFileOperations []DaemonFileOperationDispatch `json:"pending_file_operations,omitempty"`
+}
+
+type DaemonFileOperationDispatch struct {
+	OperationID     string   `json:"operation_id"`
+	TargetID        string   `json:"target_id"`
+	Kind            string   `json:"kind"`
+	Path            string   `json:"path"`
+	Offset          int64    `json:"offset,omitempty"`
+	Length          int64    `json:"length,omitempty"`
+	Limit           int      `json:"limit,omitempty"`
+	Cursor          string   `json:"cursor,omitempty"`
+	ExpectedSize    *int64   `json:"expected_size,omitempty"`
+	ExpectedModTime string   `json:"expected_mtime,omitempty"`
+	LeaseEpoch      int64    `json:"lease_epoch"`
+	Roots           []string `json:"roots,omitempty"`
+}
+
+// DaemonOpsCommandDispatch is one claimed read-only ops command handed to a
+// daemon inside a heartbeat ack. Args is the raw JSON object exactly as the
+// server validated it; the daemon re-validates against the shared opskind
+// registry before executing (second line of defense). LeaseEpoch must be
+// echoed on the result POST — the server accepts receipts only for the
+// current generation of the command row.
+type DaemonOpsCommandDispatch struct {
+	CommandID  string          `json:"command_id"`
+	Kind       string          `json:"kind"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	TimeoutS   int             `json:"timeout_s"`
+	LeaseEpoch int64           `json:"lease_epoch"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

@@ -991,6 +991,7 @@ function decisionCardBrief(
     issue_number: issue?.number ?? null,
     issue_title: issue?.title ?? null,
     question: card.question,
+    ...(card.context ? { context: card.context } : {}),
     options: card.options.map((label, index) => ({
       letter: String.fromCharCode(65 + index),
       label,
@@ -1318,6 +1319,102 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         updated: true,
         ...projectFull(project),
       };
+    },
+  },
+  {
+    name: "list_inbox",
+    description: "List the current user's active inbox notifications, including system notices with no linked issue. The backend returns the full current projection with no filters, sorting, or pagination.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.listInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "list_archived_inbox",
+    description: "List archived inbox notifications, including issue-less system notices. The backend returns at most 200 issue groups and its selected rows/comment anchors; there is no cursor or pagination contract.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.listArchivedInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "get_inbox_unread_count",
+    description: "Read the current workspace's unread inbox count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.countUnreadInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "get_inbox_unread_summary",
+    description: "Read the authenticated user's unread counts across all workspaces. workspace is used only as the audit membership context; the backend summary itself is account-wide.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.unreadInboxSummary(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "mark_all_inbox_read",
+    description: "Mark every active inbox item read for the authenticated user in this workspace; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.markAllInboxRead(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_all_inbox",
+    description: "Archive all active inbox items for the authenticated user in this workspace; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveAllInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_all_read_inbox",
+    description: "Archive all inbox groups whose newest active notification is read. Issue groups are archived together; the backend returns a changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveAllReadInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_completed_inbox",
+    description: "Archive inbox notifications linked to issues in a terminal status. Issue-less system notices remain governed by the backend query; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveCompletedInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "mark_inbox_item_read",
+    description: "Mark one authorized inbox item read. Item ownership and workspace access are enforced by the backend.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.markInboxItemRead(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "mark_inbox_item_unread",
+    description: "Mark one authorized inbox item unread. This is item-level and follows the backend's existing notification semantics.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.markInboxItemUnread(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "archive_inbox_item",
+    description: "Archive one authorized inbox item. The backend also archives sibling notifications for the same issue; issue-less system notices remain item-level.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.archiveInboxItem(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "unarchive_inbox_item",
+    description: "Restore one authorized archived inbox item. The backend restores sibling notifications for the same issue and preserves their read state.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.unarchiveInboxItem(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
     },
   },
   {
@@ -2879,8 +2976,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "get_runtime_models",
     description:
       "Discover a runtime's model catalog: the models the daemon advertises (each with its per-model thinking/effort levels), the ones marked unavailable, and which is the runtime default. " +
-      "Answers from the server-side catalog cache when warm; otherwise asks the daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
-      "An offline runtime returns code runtime_offline. Read-only; this is also the source for valid model / thinking_level values on the config-write faces.",
+      "Answers from the server-side catalog cache when warm; otherwise starts a model-discovery request with the runtime daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
+      "Calling without request_id may start a new daemon request when the cache is cold. This does not change runtime configuration. " +
+      "An offline runtime returns code runtime_offline. This is also the source for valid model / thinking_level values on the config-write faces.",
     inputSchema: {
       type: "object",
       properties: {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -48,6 +49,7 @@ func init() {
 	issueDecisionCmd.AddCommand(issueDecisionListCmd)
 
 	issueDecisionAddCmd.Flags().String("question", "", "The decision question (1-500 characters)")
+	issueDecisionAddCmd.Flags().String("context", "", "Structured decision context as a JSON object")
 	// RUYI-691: option labels are free-form text (e.g. "{provider_id, model,
 	// advanced}") — StringArray keeps each occurrence verbatim where
 	// StringSlice would CSV-split it on English commas.
@@ -109,6 +111,33 @@ func validateDecisionOptions(question string, options []string, recommended []in
 	return nil
 }
 
+func parseDecisionContextJSON(raw string) (map[string]any, error) {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil || len(value) == 0 || !hasDecisionContextContent(value) {
+		return nil, fmt.Errorf("--context must be a non-empty JSON object")
+	}
+	return value, nil
+}
+
+func hasDecisionContextContent(value map[string]any) bool {
+	for _, key := range []string{"why_now", "impact", "recommendation_reason"} {
+		if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
+			return true
+		}
+	}
+	if facts, ok := value["facts"].([]any); ok && len(facts) > 0 {
+		return true
+	}
+	if unknowns, ok := value["unknowns"].([]any); ok {
+		for _, unknown := range unknowns {
+			if text, ok := unknown.(string); ok && strings.TrimSpace(text) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 	question, _ := cmd.Flags().GetString("question")
 	options, _ := cmd.Flags().GetStringArray("option")
@@ -154,6 +183,13 @@ func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 	}
 	if len(recommended) > 0 {
 		body["recommended_indices"] = recommended
+	}
+	if rawContext, _ := cmd.Flags().GetString("context"); rawContext != "" {
+		decisionContext, err := parseDecisionContextJSON(rawContext)
+		if err != nil {
+			return err
+		}
+		body["context"] = decisionContext
 	}
 	if sourceComment, _ := cmd.Flags().GetString("source-comment"); sourceComment != "" {
 		body["source_comment_id"] = sourceComment
