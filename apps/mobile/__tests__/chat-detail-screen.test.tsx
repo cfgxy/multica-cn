@@ -51,6 +51,10 @@ const mockSetSessionQueryData = jest.fn();
 const mockSetChatSessionModel = jest.fn();
 const mockArchivedAgentIds = new Set<string>();
 const mockQueueCanManage = { current: false };
+const mockPendingTask = { current: null as null | Record<string, unknown> };
+const mockCancelTaskById = jest.fn();
+const mockComposerProps = { current: null as null | Record<string, any> };
+const mockSetDraft = jest.fn();
 
 jest.mock("@tanstack/react-query", () => ({
   queryOptions: (opts: Record<string, unknown>) => opts,
@@ -65,7 +69,7 @@ jest.mock("@tanstack/react-query", () => ({
       return { data: mockMessagesBySession[sessionId] ?? [], isLoading: false };
     }
     if (key.includes('"pending-task"') || key.includes("task-messages")) {
-      return { data: null, isLoading: false };
+      return { data: mockPendingTask.current, isLoading: false };
     }
     if (opts.queryKey[0] === "agents") {
       return {
@@ -105,6 +109,7 @@ jest.mock("@tanstack/react-query", () => ({
   },
   useQueryClient: () => ({
     setQueryData: mockSetSessionQueryData,
+    getQueryData: () => mockPendingTask.current,
     invalidateQueries: jest.fn(),
     cancelQueries: jest.fn(),
   }),
@@ -161,7 +166,7 @@ jest.mock("@/data/stores/chat-drafts-store", () => ({
   useChatDraftsStore: (selector) =>
     selector({
       drafts: {},
-      setDraft: jest.fn(),
+      setDraft: mockSetDraft,
       clearDraft: jest.fn(),
       promoteNewDraft: jest.fn(),
     }),
@@ -232,6 +237,7 @@ jest.mock("@/data/api", () => ({
   ApiError: class ApiError extends Error { status: number; },
   api: {
     sendChatMessage: jest.fn(async () => ({})),
+    cancelTaskById: (...args) => mockCancelTaskById(...args),
     setChatSessionModel: (...args) => mockSetChatSessionModel(...args),
   },
 }));
@@ -268,12 +274,14 @@ jest.mock("@/components/chat/chat-composer", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text, View } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    ChatComposer: ({ disabled, disabledReason }) =>
-      React.createElement(
+    ChatComposer: (props) => {
+      mockComposerProps.current = props;
+      return React.createElement(
         View,
-        { testID: "chat-composer", disabled: String(disabled) },
-        disabledReason ? [React.createElement(Text, { key: "r" }, disabledReason)] : null,
-      ),
+        { testID: "chat-composer", disabled: String(props.disabled) },
+        props.disabledReason ? React.createElement(Text, null, props.disabledReason) : null,
+      );
+    },
   };
 });
 
@@ -408,6 +416,10 @@ beforeEach(() => {
   mockModelSelectHandler.current = null;
   mockModelDisabledState.current = false;
   mockQueueCanManage.current = false;
+  mockPendingTask.current = null;
+  mockComposerProps.current = null;
+  mockCancelTaskById.mockReset();
+  mockSetDraft.mockReset();
   mockArchivedAgentIds.clear();
   mockRoute.sessionId = "sa";
   mockRoute.agentId = undefined;
@@ -417,6 +429,55 @@ beforeEach(() => {
 });
 
 describe("ChatDetailScreen (RUYI-496)", () => {
+  it("offers direct stop while queue submission is available and restores the cancelled message", async () => {
+    mockPendingTask.current = {
+      task_id: "active-task",
+      status: "running",
+      supports_queue: true,
+      queued_tasks: [],
+    };
+    let resolveCancel!: (result: Record<string, unknown>) => void;
+    mockCancelTaskById.mockReturnValue(new Promise((resolve) => { resolveCancel = resolve; }));
+    const cancelResult = {
+      cancelled_chat_message: {
+        chat_session_id: "sa",
+        message_id: "cancelled-message",
+        content: "the interrupted prompt",
+        restore_to_input: true,
+        attachments: [{ id: "attachment-1", filename: "notes.txt" }],
+      },
+    };
+
+    await render(<ChatDetailScreen />);
+    expect(mockComposerProps.current).toMatchObject({
+      sending: true,
+      allowStop: true,
+      allowSubmitWhileRunning: true,
+    });
+
+    let stopRequest!: Promise<void>;
+    await act(async () => {
+      stopRequest = mockComposerProps.current.onStop();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await mockComposerProps.current.onStop();
+    });
+
+    expect(mockCancelTaskById).toHaveBeenCalledTimes(1);
+    expect(mockCancelTaskById).toHaveBeenCalledWith("active-task");
+    expect(mockComposerProps.current.stopPending).toBe(true);
+
+    await act(async () => {
+      resolveCancel(cancelResult);
+      await stopRequest;
+    });
+    expect(mockSetDraft).toHaveBeenCalledWith("sa", "the interrupted prompt");
+    expect(mockComposerProps.current.restoredAttachments).toEqual([
+      { id: "attachment-1", filename: "notes.txt" },
+    ]);
+  });
+
   it("serializes model changes and only applies the server-confirmed override", async () => {
     const alertSpy = jest.spyOn(Alert, "alert");
     let resolveModel!: (session: { id: string; model_override: string | null }) => void;
