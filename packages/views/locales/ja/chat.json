@@ -35,6 +35,8 @@
   "queue": {
     "title_other": "キュー内のメッセージ {{count}} 件",
     "clear": "すべて削除",
+    "clear_confirm_title": "キュー内のメッセージを削除しますか？",
+    "clear_confirm_body": "キュー内のメッセージのみ削除されます。現在のタスクは引き続き実行されます。",
     "steer": "指示",
     "steer_unavailable": "現在の返信が開始されると指示できます",
     "steer_no_permission": "このエージェントを実行する権限がありません",

@@ -35,6 +35,8 @@
   "queue": {
     "title_other": "{{count}} 条排队消息",
     "clear": "全部清空",
+    "clear_confirm_title": "清空排队消息？",
+    "clear_confirm_body": "仅清空排队中的消息，当前任务会继续运行。",
     "steer": "引导",
     "steer_unavailable": "当前回复开始后才能引导",
     "steer_no_permission": "你已没有运行该智能体的权限",
