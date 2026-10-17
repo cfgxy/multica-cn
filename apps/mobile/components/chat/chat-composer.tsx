@@ -46,6 +46,7 @@ interface Props {
   /** Queued tasks remain busy, but do not expose Stop without draft restore. */
   allowStop?: boolean;
   allowSubmitWhileRunning?: boolean;
+  hasQueuedMessages?: boolean;
   stopPending?: boolean;
   /** Hard-disable typing + send（no agent / revoked / archived / runtime
    *  missing——R1 灰 pill 语义不变）。 */
@@ -73,6 +74,7 @@ export function ChatComposer({
   sending,
   allowStop = true,
   allowSubmitWhileRunning = false,
+  hasQueuedMessages = false,
   stopPending = false,
   disabled = false,
   disabledReason,
@@ -99,6 +101,7 @@ export function ChatComposer({
       sending={sending}
       allowStop={allowStop}
       allowSubmitWhileRunning={allowSubmitWhileRunning}
+      hasQueuedMessages={hasQueuedMessages}
       stopPending={stopPending}
       disabled={disabled}
       disabledReason={disabledReason}
