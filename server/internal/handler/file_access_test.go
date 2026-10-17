@@ -124,25 +124,22 @@ func TestSubmitRuntimeFileAccessDBBackedRejectionsAndQueue(t *testing.T) {
 	registerFileAccessTarget(t, runtimeID, disabledID, false, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
 
 	unknown := submitFilesRequest(runtimeID, "missing-"+uuid.NewString(), "/srv/data/a.txt", testUserID)
-	unknownResponse := testutil.Call(t, testHandler.ListRuntimeFiles, unknown).Want(http.StatusNotFound)
-	if !strings.Contains(unknownResponse.Body.String(), fileaccess.ErrorHostNotRegistered.Error()) {
-		t.Fatalf("unknown target response = %q, want stable host-not-registered error", unknownResponse.Body.String())
-	}
-	testutil.Call(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, disabledID, "/srv/data/a.txt", testUserID)).Want(http.StatusForbidden)
-	testutil.Call(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, memberOnlyID, "/srv/data/a.txt", deniedUserID)).Want(http.StatusForbidden)
-	testutil.Call(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/etc/passwd", testUserID)).Want(http.StatusForbidden)
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, unknown, http.StatusNotFound, fileaccess.ErrorHostNotRegistered.Error())
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, disabledID, "/srv/data/a.txt", testUserID), http.StatusForbidden, fileaccess.ErrorTargetDisabled.Error())
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, memberOnlyID, "/srv/data/a.txt", deniedUserID), http.StatusForbidden, fileaccess.ErrorPermissionDenied.Error())
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/etc/passwd", testUserID), http.StatusForbidden, fileaccess.ErrorPathNotAllowed.Error())
 	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE runtime_id = $1`, runtimeID); got != 0 {
 		t.Fatalf("rejected requests queued %d operations, want 0", got)
 	}
 
 	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, runtimeID)
-	testutil.Call(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/srv/data/a.txt", testUserID)).Want(http.StatusConflict)
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/srv/data/a.txt", testUserID), http.StatusConflict, fileaccess.ErrorTargetUnreachable.Error())
 	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'online' WHERE id = $1`, runtimeID)
 
 	for i := 0; i < 5; i++ {
 		insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
 	}
-	testutil.Call(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/srv/data/a.txt", testUserID)).Want(http.StatusTooManyRequests)
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/srv/data/a.txt", testUserID), http.StatusTooManyRequests, "rate_limited")
 	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE runtime_id = $1 AND status = 'pending'`, runtimeID); got != 5 {
 		t.Fatalf("quota rejection left %d pending operations, want 5", got)
 	}
@@ -187,12 +184,12 @@ func TestGetRuntimeFileOperationIsolatedByRuntimeAndACL(t *testing.T) {
 	}
 
 	request := testutil.WithURLParams(newRequest(http.MethodGet, "/api/runtimes/"+otherRuntimeID+"/file-operations/"+opID, nil), "runtimeId", otherRuntimeID, "operationId", opID)
-	testutil.Call(t, testHandler.GetRuntimeFileOperation, request).Want(http.StatusNotFound)
+	wantFileAccessError(t, testHandler.GetRuntimeFileOperation, request, http.StatusNotFound, "operation not found")
 
 	deniedID := dbfx.User(t, "File operation ACL denied", "file-operation-acl+"+uuid.NewString()+"@multica.test")
 	dbfx.Member(t, testWorkspaceID, deniedID, "member")
 	deniedRequest := testutil.WithURLParams(newRequestAs(deniedID, http.MethodGet, "/api/runtimes/"+runtimeID+"/file-operations/"+opID, nil), "runtimeId", runtimeID, "operationId", opID)
-	testutil.Call(t, testHandler.GetRuntimeFileOperation, deniedRequest).Want(http.StatusNotFound)
+	wantFileAccessError(t, testHandler.GetRuntimeFileOperation, deniedRequest, http.StatusNotFound, "operation not found")
 }
 
 func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
@@ -211,9 +208,9 @@ func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
 		}, testWorkspaceID, "file-operation-receipt-test")
 		return testutil.WithURLParams(request, "runtimeId", runtimeID, "operationId", id)
 	}
-	testutil.Call(t, testHandler.ReportFileOperationResult, report(pendingID, 1)).Want(http.StatusConflict)
-	testutil.Call(t, testHandler.ReportFileOperationResult, report(expiredID, 1)).Want(http.StatusConflict)
-	testutil.Call(t, testHandler.ReportFileOperationResult, report(staleID, 2)).Want(http.StatusConflict)
+	wantFileAccessError(t, testHandler.ReportFileOperationResult, report(pendingID, 1), http.StatusConflict, "file operation lease is stale")
+	wantFileAccessError(t, testHandler.ReportFileOperationResult, report(expiredID, 1), http.StatusConflict, "file operation lease is stale")
+	wantFileAccessError(t, testHandler.ReportFileOperationResult, report(staleID, 2), http.StatusConflict, "file operation lease is stale")
 	testutil.Call(t, testHandler.ReportFileOperationResult, report(validID, 3)).Want(http.StatusOK)
 
 	var status string
@@ -247,6 +244,14 @@ func registerFileAccessTarget(t *testing.T, runtimeID, id string, enabled bool, 
 		"id": id, "workspace_id": testWorkspaceID, "runtime_id": runtimeID, "enabled": enabled,
 		"roots": rootJSON, "workspace_acl": workspaceJSON, "member_acl": memberJSON,
 	})
+}
+
+func wantFileAccessError(t *testing.T, handler http.HandlerFunc, request *http.Request, status int, message string) {
+	t.Helper()
+	response := testutil.Call(t, handler, request).Want(status)
+	if !strings.Contains(response.Body.String(), message) {
+		t.Fatalf("response = %q, want error %q", response.Body.String(), message)
+	}
 }
 
 func submitFilesRequest(runtimeID, targetID, path, userID string) *http.Request {
