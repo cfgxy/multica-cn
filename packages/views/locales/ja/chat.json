@@ -33,6 +33,7 @@
     "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です"
   },
   "queue": {
+    "title_other": "キュー内のメッセージ {{count}} 件",
     "title_single": "キュー内のメッセージ {{number}} 件",
     "title_multiple": "キュー内のメッセージ {{number}} 件",
     "clear": "すべて削除",
