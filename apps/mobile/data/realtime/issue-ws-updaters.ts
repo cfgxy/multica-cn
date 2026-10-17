@@ -45,6 +45,9 @@ import { issueKeys } from "@/data/queries/issue-keys";
 
 type TimelinePredicate = (entry: TimelineEntry) => boolean;
 type TimelineMutate = (entry: TimelineEntry) => TimelineEntry;
+type MobileTimelineQueryData = TimelineQueryData & {
+  observedCreatedComments?: TimelineEntry[];
+};
 
 const auxiliaryIssueRevisions = new WeakMap<QueryClient, Map<string, number>>();
 
@@ -245,6 +248,277 @@ export function appendTimelineEntry(
   if (crossedKind) {
     qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
   }
+}
+
+/** Replace one matching pending comment with its server-backed entry. */
+export function reconcileCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  entry: TimelineEntry,
+  optimisticId?: string,
+  failedIds: ReadonlySet<string> = new Set(),
+): string[] {
+  let crossedKind = false;
+  const clearedFailedIds: string[] = [];
+  qc.setQueryData<MobileTimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+
+      const serverIndex = old.entries.findIndex(
+        (existing) => existing.type === entry.type && existing.id === entry.id,
+      );
+      if (serverIndex !== -1) {
+        if (!optimisticId) return old;
+        const pendingIndex = old.entries.findIndex(
+          (existing) => existing.type === "comment" && existing.id === optimisticId,
+        );
+        if (pendingIndex === -1) return old;
+        return removeObservedCreatedComment(
+          updateTimelineEntries(old, (entries) =>
+            entries.filter((_, index) => index !== pendingIndex),
+          ),
+          entry.id,
+        );
+      }
+
+      if (
+        !optimisticId &&
+        (old.observedCreatedComments ?? []).some(
+          (existing) => existing.type === entry.type && existing.id === entry.id,
+        )
+      ) {
+        return old;
+      }
+
+      const matchesPending = (existing: TimelineEntry) => {
+        if (existing.type !== "comment" || !existing.id.startsWith("optimistic-")) {
+          return false;
+        }
+        if (optimisticId) return existing.id === optimisticId;
+        return (
+          existing.actor_type === entry.actor_type &&
+          existing.actor_id === entry.actor_id &&
+          typeof existing.content === "string" &&
+          typeof entry.content === "string" &&
+          normalizeCommentContentForMatch(existing.content) ===
+            normalizeCommentContentForMatch(entry.content) &&
+          existing.parent_id === entry.parent_id
+        );
+      };
+      const pendingIndexes = old.entries
+        .map((existing, index) => (matchesPending(existing) ? index : -1))
+        .filter((index) => index !== -1);
+
+      // A realtime event has no client mutation id. Keep ambiguous successes
+      // staged while any matching request is still in flight. Once every
+      // matching request has failed, each server event must consume one failed
+      // row because no later HTTP callback can reconcile the staged event.
+      const hasInFlightMatch = pendingIndexes.some(
+        (index) => !failedIds.has(old.entries[index].id),
+      );
+      if (!optimisticId && pendingIndexes.length > 1 && hasInFlightMatch) {
+        return {
+          ...old,
+          observedCreatedComments: [...(old.observedCreatedComments ?? []), entry],
+        };
+      }
+
+      const next = [...old.entries];
+      const pendingIndex = pendingIndexes[0] ?? -1;
+      if (pendingIndex === -1) {
+        next.push(entry);
+      } else {
+        next[pendingIndex] = entry;
+      }
+      let consumedObservedId: string | undefined;
+      if (optimisticId && pendingIndex !== -1) {
+        const failedIndex = next.findIndex(
+          (existing) =>
+            existing.type === "comment" &&
+            failedIds.has(existing.id) &&
+            existing.actor_type === entry.actor_type &&
+            existing.actor_id === entry.actor_id &&
+            typeof existing.content === "string" &&
+            typeof entry.content === "string" &&
+            normalizeCommentContentForMatch(existing.content) ===
+              normalizeCommentContentForMatch(entry.content) &&
+            existing.parent_id === entry.parent_id,
+        );
+        const observed = (old.observedCreatedComments ?? []).find(
+          (candidate) =>
+            candidate.type === "comment" &&
+            candidate.id !== entry.id &&
+            candidate.actor_type === entry.actor_type &&
+            candidate.actor_id === entry.actor_id &&
+            typeof candidate.content === "string" &&
+            typeof entry.content === "string" &&
+            normalizeCommentContentForMatch(candidate.content) ===
+              normalizeCommentContentForMatch(entry.content) &&
+            candidate.parent_id === entry.parent_id,
+        );
+        if (failedIndex !== -1 && observed) {
+          clearedFailedIds.push(next[failedIndex].id);
+          next[failedIndex] = observed;
+          consumedObservedId = observed.id;
+        }
+      }
+      const sorted = sortTimelineEntriesAsc(next);
+      crossedKind =
+        !old.truncatedKinds.includes("comment") &&
+        crossedTimelineHardCap(old.entries, sorted, "comment");
+      const updated = updateTimelineEntries(old, () => sorted);
+      if (!optimisticId && pendingIndex !== -1 && failedIds.has(old.entries[pendingIndex].id)) {
+        clearedFailedIds.push(old.entries[pendingIndex].id);
+      }
+      if (!optimisticId) return updated;
+      return consumedObservedId
+        ? removeObservedCreatedComment(
+            removeObservedCreatedComment(updated, entry.id),
+            consumedObservedId,
+          )
+        : removeObservedCreatedComment(updated, entry.id);
+    },
+  );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  return clearedFailedIds;
+}
+
+/** Consume one ambiguous realtime success when its matching request fails. */
+export function reconcileFailedCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  optimisticId: string,
+  expected: Pick<TimelineEntry, "actor_type" | "actor_id" | "content" | "parent_id">,
+  failedIds: ReadonlySet<string> = new Set(),
+) {
+  const reconciledIds: string[] = [];
+  let crossedKind = false;
+  qc.setQueryData<MobileTimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      const matchesExpected = (entry: TimelineEntry) =>
+        entry.actor_type === expected.actor_type &&
+        entry.actor_id === expected.actor_id &&
+        typeof entry.content === "string" &&
+        typeof expected.content === "string" &&
+        normalizeCommentContentForMatch(entry.content) ===
+          normalizeCommentContentForMatch(expected.content) &&
+        entry.parent_id === expected.parent_id;
+      const observedComments = (old.observedCreatedComments ?? []).filter(
+        (entry, index, entries) =>
+          matchesExpected(entry) &&
+          entries.findIndex((candidate) => candidate.id === entry.id) === index,
+      );
+      const matchingPendingIds = old.entries
+        .filter((entry) =>
+          entry.type === "comment" &&
+          entry.id.startsWith("optimistic-") &&
+          matchesExpected(entry),
+        )
+        .map(({ id }) => id);
+      const allMatchingRequestsFailed = matchingPendingIds.every(
+        (id) => id === optimisticId || failedIds.has(id),
+      );
+      if (
+        observedComments.length < matchingPendingIds.length &&
+        !allMatchingRequestsFailed
+      ) {
+        return old;
+      }
+      if (allMatchingRequestsFailed && observedComments.length > 0) {
+        const observedIds = new Set(observedComments.map(({ id }) => id));
+        const targets = matchingPendingIds.filter(
+          (id) => id === optimisticId || failedIds.has(id),
+        );
+        const nextEntries = [...old.entries];
+        const consumedIds = new Set<string>();
+        const remainingObserved = new Set(observedIds);
+        for (const observed of observedComments) {
+          const targetId = targets.find((id) => !consumedIds.has(id));
+          if (!targetId) break;
+          const targetIndex = nextEntries.findIndex((entry) => entry.id === targetId);
+          if (targetIndex === -1) continue;
+          nextEntries[targetIndex] = observed;
+          consumedIds.add(targetId);
+          remainingObserved.delete(observed.id);
+          reconciledIds.push(targetId);
+        }
+        for (const observed of observedComments) {
+          if (remainingObserved.has(observed.id)) nextEntries.push(observed);
+        }
+        const observedCreatedComments = (old.observedCreatedComments ?? []).filter(
+          (entry) => !observedIds.has(entry.id),
+        );
+        const withoutObserved = observedCreatedComments.length
+          ? { ...old, observedCreatedComments }
+          : omitObservedCreatedComments({ ...old, observedCreatedComments });
+        const sorted = sortTimelineEntriesAsc(nextEntries);
+        crossedKind =
+          !old.truncatedKinds.includes("comment") &&
+          crossedTimelineHardCap(old.entries, sorted, "comment");
+        return updateTimelineEntries(withoutObserved, () => sorted);
+      }
+      const observedIndex = (old.observedCreatedComments ?? []).findIndex(
+        (entry) => matchesExpected(entry),
+      );
+      if (observedIndex === -1) return old;
+      const observedCreatedComments = [...(old.observedCreatedComments ?? [])];
+      const [observed] = observedCreatedComments.splice(observedIndex, 1);
+      const withoutObserved = observedCreatedComments.length
+        ? { ...old, observedCreatedComments }
+        : omitObservedCreatedComments({ ...old, observedCreatedComments });
+      const hasServerEntry = old.entries.some(
+        (entry) => entry.type === "comment" && entry.id === observed.id,
+      );
+      const targetOptimisticId =
+        observedComments.length < matchingPendingIds.length && allMatchingRequestsFailed
+          ? matchingPendingIds.find((id) => id !== optimisticId && failedIds.has(id)) ?? optimisticId
+          : optimisticId;
+      reconciledIds.push(targetOptimisticId);
+      const nextEntries = hasServerEntry
+        ? old.entries.filter((entry) => entry.id !== targetOptimisticId)
+        : old.entries.some((entry) => entry.id === targetOptimisticId)
+          ? old.entries.map((entry) => entry.id === targetOptimisticId ? observed : entry)
+          : [...old.entries, observed];
+      const sorted = sortTimelineEntriesAsc(nextEntries);
+      crossedKind =
+        !old.truncatedKinds.includes("comment") &&
+        crossedTimelineHardCap(old.entries, sorted, "comment");
+      return updateTimelineEntries(withoutObserved, () => sorted);
+    },
+  );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  return reconciledIds;
+}
+
+function removeObservedCreatedComment(
+  data: MobileTimelineQueryData | undefined,
+  commentId: string,
+) {
+  if (!data || !("observedCreatedComments" in data)) return data;
+  const observedCreatedComments = data.observedCreatedComments?.filter(
+    (entry) => entry.id !== commentId,
+  );
+  return observedCreatedComments?.length
+    ? { ...data, observedCreatedComments }
+    : omitObservedCreatedComments(data);
+}
+
+function omitObservedCreatedComments(data: MobileTimelineQueryData) {
+  const { observedCreatedComments: _observed, ...rest } = data;
+  return rest;
+}
+
+function normalizeCommentContentForMatch(content: string) {
+  return content.replace(/\u0000/g, "");
 }
 
 export function patchTimelineEntry(
