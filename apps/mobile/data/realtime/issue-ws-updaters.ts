@@ -312,10 +312,13 @@ export function reconcileCreatedComment(
         .filter((index) => index !== -1);
 
       // A realtime event has no client mutation id. Keep ambiguous successes
-      // staged until an HTTP response identifies its request. A request that
-      // already failed cannot be assumed to own this event when identical
-      // sends are still in flight.
-      if (!optimisticId && pendingIndexes.length > 1) {
+      // staged while any matching request is still in flight. Once every
+      // matching request has failed, each server event must consume one failed
+      // row because no later HTTP callback can reconcile the staged event.
+      const hasInFlightMatch = pendingIndexes.some(
+        (index) => !failedIds.has(old.entries[index].id),
+      );
+      if (!optimisticId && pendingIndexes.length > 1 && hasInFlightMatch) {
         return {
           ...old,
           observedCreatedComments: [...(old.observedCreatedComments ?? []), entry],
