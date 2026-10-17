@@ -105,6 +105,46 @@ describe("applyChatDoneToCache", () => {
 
     expect(qc.getQueryData<ChatMessage[]>(chatKeys.messages(SESSION))).toHaveLength(1);
   });
+
+  it("clears the completed task and promotes its queued successor", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
+      task_id: "task-1",
+      status: "running",
+      queued_tasks: [{
+        task_id: "task-2",
+        status: "queued",
+        created_at: "2026-07-09T00:00:01Z",
+      }],
+    });
+
+    applyChatDoneToCache(qc, donePayload());
+
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toEqual({
+      task_id: "task-2",
+      status: "queued",
+      created_at: "2026-07-09T00:00:01Z",
+      queued_tasks: [],
+    });
+  });
+
+  it("does not clear a newer active task when an older completion arrives", () => {
+    const qc = new QueryClient();
+    const newerTask: ChatPendingTask = {
+      task_id: "task-2",
+      status: "running",
+      queued_tasks: [{
+        task_id: "task-3",
+        status: "queued",
+        created_at: "2026-07-09T00:00:02Z",
+      }],
+    };
+    qc.setQueryData(chatKeys.pendingTask(SESSION), newerTask);
+
+    applyChatDoneToCache(qc, donePayload({ task_id: "task-1" }));
+
+    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(newerTask);
+  });
 });
 
 describe("pending task queue events", () => {

@@ -33,6 +33,13 @@ const silentLogger: Logger = { info() {}, error() {} };
 interface FakeCard {
   id: string;
   question: string;
+  context?: {
+    why_now?: string;
+    facts?: Array<{ statement: string; evidence?: string[] }>;
+    impact?: string;
+    recommendation_reason?: string;
+    unknowns?: string[];
+  };
   labels: string[];
   multi_select: boolean;
   recommended_indices: number[];
@@ -49,6 +56,7 @@ function wireCard(card: FakeCard, issueId = ISSUE_ID): Record<string, unknown> {
     issue_id: issueId,
     source_comment_id: null,
     question: card.question,
+    ...(card.context ? { context: card.context } : {}),
     options: card.labels.map((label) => ({ label })),
     multi_select: card.multi_select,
     recommended_indices: card.recommended_indices,
@@ -232,6 +240,13 @@ async function callJson(
 const OPEN_A: FakeCard = {
   id: "d-1",
   question: "选哪个部署窗口？",
+  context: {
+    why_now: "发布窗口本周关闭。",
+    facts: [{ statement: "候选版本已通过冒烟。", evidence: ["CI run 123"] }],
+    impact: "延期会错过本周窗口。",
+    recommendation_reason: "周一方案保留回滚时间。",
+    unknowns: ["外部审核是否提前完成"],
+  },
   labels: ["今晚", "明晚", "下周一"],
   multi_select: false,
   recommended_indices: [0],
@@ -243,6 +258,7 @@ const OPEN_A: FakeCard = {
 const OPEN_B: FakeCard = {
   id: "d-2",
   question: "带哪些回归范围？",
+  context: { why_now: "回归资源需要今天排期。" },
   labels: ["冒烟", "全量", "全量+性能"],
   multi_select: true,
   recommended_indices: [],
@@ -316,6 +332,7 @@ describe("list_decisions", () => {
     ]);
     expect(first.recommended).toEqual(["A"]);
     expect(first.question).toBe("选哪个部署窗口？");
+    expect(first.context).toEqual(OPEN_A.context);
     expect(typeof first.updated_at).toBe("string");
   });
 
@@ -363,6 +380,7 @@ describe("get_decision", () => {
     ]);
     expect(decision.multi_select).toBe(true);
     expect(decision.status).toBe("open");
+    expect(decision.context).toEqual(OPEN_B.context);
     const issue = result.issue as Record<string, unknown>;
     expect(issue.identifier).toBe("VOI-42");
     expect(issue.number).toBe(42);

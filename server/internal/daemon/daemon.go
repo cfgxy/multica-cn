@@ -2192,6 +2192,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
 	go d.heartbeatLoop(ctx)
+	// Node ops channel (RUYI-645): periodic service inventory collector.
+	go d.opsInventoryLoop(ctx)
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
@@ -2842,6 +2844,7 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
+		"ops_caps":          d.opsCaps(),
 		"runtimes":          runtimes,
 		"failed_profiles":   failedProfiles,
 	}
@@ -2887,6 +2890,7 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"device_name":       d.cfg.DeviceName,
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
+		"ops_caps":          d.opsCaps(),
 		"runtimes":          runtimes,
 		// Deliberately empty: this call carries no profiles, so it must not
 		// report profile failures either.
@@ -4444,6 +4448,20 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 	if resp.PendingLocalSkills != nil {
 		if rt := d.findRuntime(runtimeID); rt != nil {
 			go d.handleLocalSkillList(ctx, *rt, resp.PendingLocalSkills.ID)
+		}
+	}
+	if len(resp.PendingOpsCommands) > 0 {
+		if rt := d.findRuntime(runtimeID); rt != nil {
+			for _, cmd := range resp.PendingOpsCommands {
+				go d.handleOpsCommand(ctx, *rt, cmd)
+			}
+		}
+	}
+	if len(resp.PendingFileOperations) > 0 {
+		if rt := d.findRuntime(runtimeID); rt != nil {
+			for _, op := range resp.PendingFileOperations {
+				go d.handleFileOperation(ctx, *rt, op)
+			}
 		}
 	}
 	// Prefer the batch field (new backend); fall back to singular (old backend).

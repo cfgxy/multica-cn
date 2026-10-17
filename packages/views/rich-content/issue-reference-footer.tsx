@@ -89,8 +89,11 @@ const PR_STATE_ICON: Record<PullRequestVisualState, {
   unknown: { Icon: GitPullRequest, className: "text-muted-foreground" },
 };
 
-function prIdentifier(pr: GitHubPullRequest): string {
-  return `${pr.repo_owner}/${pr.repo_name}#${pr.number}`;
+function prRepositoryLabel(pr: GitHubPullRequest): string {
+  const repository = pr.repo_owner === "cfgxy"
+    ? pr.repo_name
+    : `${pr.repo_owner}/${pr.repo_name}`;
+  return `${repository}/`;
 }
 
 function IssueReferenceFooter({ references }: { references: IssueReference[] }) {
@@ -171,16 +174,23 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
           className="issue-reference-row no-underline"
           data-reference-kind="pr"
         >
-          <Icon
-            aria-hidden
-            className={`h-[15px] w-[15px] shrink-0 ${className} ${
-              visual.dimmed ? "opacity-80" : ""
-            }`}
-          />
-          <span className="issue-reference-identifier" translate="no">
-            {prIdentifier(row.pr)}
+          <span className="issue-reference-pr-leading">
+            <Icon
+              aria-hidden
+              className={`h-[15px] w-[15px] shrink-0 ${className} ${
+                visual.dimmed ? "opacity-80" : ""
+              }`}
+            />
+            <span className="issue-reference-identifier" translate="no">
+              #{row.pr.number}
+            </span>
           </span>
-          <span className="issue-reference-title">{row.pr.title}</span>
+          <span className="issue-reference-pr-content">
+            <span className="issue-reference-pr-project" translate="no">
+              {prRepositoryLabel(row.pr)}
+            </span>
+            <span className="issue-reference-title">{row.pr.title}</span>
+          </span>
         </a>
       );
     }

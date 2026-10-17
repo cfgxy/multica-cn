@@ -2719,27 +2719,31 @@ func (w *LocalWorktree) verifyDeliveryPoint(tip string) error {
 		// Nothing will be recorded for this branch, so there is nothing to prove.
 		return nil
 	}
+	return verifyDeliveryPoint(w.GitRoot, w.Branch, w.BaseCommit, tip)
+}
+
+func verifyDeliveryPoint(gitRoot, branch, baseCommit, tip string) error {
 	if tip == "" {
 		return errors.New("the task worktree has no resolvable HEAD")
 	}
-	branchTip, err := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", "refs/heads/"+w.Branch)
+	branchTip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
-		return fmt.Errorf("resolve branch %s: %w", w.Branch, err)
+		return fmt.Errorf("resolve branch %s: %w", branch, err)
 	}
 	if branchTip != tip {
 		return &DeliveryGuardError{
 			Err: fmt.Errorf("the worktree delivered %s while branch %s points at %s, so the run did not deliver onto its own branch",
-				shortID(tip), w.Branch, shortID(branchTip)),
+				shortID(tip), branch, shortID(branchTip)),
 			Kind: taskfailure.GuardKindBranchMismatch,
 		}
 	}
-	if w.BaseCommit == "" {
-		return fmt.Errorf("branch %s has no commit of this task's own to prove it by", w.Branch)
+	if baseCommit == "" {
+		return fmt.Errorf("branch %s has no commit of this task's own to prove it by", branch)
 	}
-	if _, err := runGit(w.GitRoot, "merge-base", "--is-ancestor", w.BaseCommit, tip); err != nil {
+	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", baseCommit, tip); err != nil {
 		return &DeliveryGuardError{
 			Err: fmt.Errorf("the delivered commit %s no longer contains %s, the commit this turn started from",
-				shortID(tip), shortID(w.BaseCommit)),
+				shortID(tip), shortID(baseCommit)),
 			Kind: taskfailure.GuardKindAncestorBreak,
 		}
 	}
