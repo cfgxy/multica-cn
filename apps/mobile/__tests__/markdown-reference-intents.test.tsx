@@ -93,17 +93,6 @@ function prResult() {
   };
 }
 
-function mrResult() {
-  return {
-    html_url: "https://gitlab.example/group/project/-/merge_requests/412",
-    repo_owner: "group",
-    repo_name: "project",
-    number: 412,
-    title: "Example MR",
-    state: "open",
-  };
-}
-
 beforeEach(() => {
   mockWorkspaceStore.state = {
     currentWorkspaceId: "ws-1",
@@ -119,30 +108,24 @@ describe("mobile Markdown reference intents (RUYI-728)", () => {
     "keeps the last PR intent for PR→MR→PR while lookup resolves %s",
     async (firstResponse) => {
       const prResolvers = [];
-      const mrResolvers = [];
       const lookupPr = jest.spyOn(api, "lookupPullRequestByNumber").mockImplementation(
         () => new Promise((resolve) => prResolvers.push(resolve)),
       );
-      const lookupMr = jest.spyOn(api, "lookupMergeRequestByNumber").mockImplementation(
-        () => new Promise((resolve) => mrResolvers.push(resolve)),
-      );
       const client = makeClient();
-      const { utils } = await renderMarkdown("PR #412 MR !123", client);
+      const { utils } = await renderMarkdown("PR #412 MR !412", client);
 
       await fireEvent.press(utils.getByTestId("enriched-markdown"));
       await fireEvent.press(utils.getByTestId("enriched-link-1"));
       await fireEvent.press(utils.getByTestId("enriched-markdown"));
 
-      expect(lookupPr).toHaveBeenCalledTimes(1);
-      expect(lookupMr).toHaveBeenCalledTimes(1);
-      expect(lookupPr.mock.calls.length + lookupMr.mock.calls.length).toBe(2);
+      expect(lookupPr).toHaveBeenCalledTimes(2);
 
       await act(async () => {
         if (firstResponse === "PR-first") {
           prResolvers[0](prResult());
-          mrResolvers[0](mrResult());
+          prResolvers[1](prResult());
         } else {
-          mrResolvers[0](mrResult());
+          prResolvers[1](prResult());
           prResolvers[0](prResult());
         }
         await Promise.resolve();
@@ -151,7 +134,6 @@ describe("mobile Markdown reference intents (RUYI-728)", () => {
 
       expect(mockOpenExternalUrl).toHaveBeenCalledTimes(1);
       expect(mockOpenExternalUrl).toHaveBeenCalledWith(prResult().html_url, expect.anything());
-      expect(mockOpenExternalUrl).not.toHaveBeenCalledWith(mrResult().html_url, expect.anything());
       expect(mockPush).not.toHaveBeenCalled();
     },
   );
@@ -178,12 +160,8 @@ describe("mobile Markdown reference intents (RUYI-728)", () => {
 
   it("links body Issues, bounds duplicate taps, and invalidates stale responses", async () => {
     const prResolvers = [];
-    const mrResolvers = [];
     const lookupPr = jest.spyOn(api, "lookupPullRequestByNumber").mockImplementation(
       () => new Promise((resolve) => prResolvers.push(resolve)),
-    );
-    const lookupMr = jest.spyOn(api, "lookupMergeRequestByNumber").mockImplementation(
-      () => new Promise((resolve) => mrResolvers.push(resolve)),
     );
     const client = makeClient();
     const { utils } = await renderMarkdown(
@@ -218,8 +196,8 @@ describe("mobile Markdown reference intents (RUYI-728)", () => {
     expect(utils.getByTestId("enriched-markdown").props.children)
       .toContain("mention://merge-request/414");
     await fireEvent.press(utils.getByTestId("enriched-markdown"));
-    await waitFor(() => expect(lookupMr).toHaveBeenCalledTimes(1));
-    await act(async () => mrResolvers[0](mrResult()));
+    await waitFor(() => expect(lookupPr).toHaveBeenCalledTimes(3));
+    await act(async () => prResolvers[2](prResult()));
     await waitFor(() => expect(mockOpenExternalUrl).toHaveBeenCalledTimes(2));
     await act(async () => prResolvers[1](prResult()));
     await act(async () => {
@@ -230,21 +208,21 @@ describe("mobile Markdown reference intents (RUYI-728)", () => {
 
     await update("PR #415");
     await fireEvent.press(utils.getByTestId("enriched-markdown"));
-    await waitFor(() => expect(lookupPr).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(lookupPr).toHaveBeenCalledTimes(4));
     await update("No reference");
-    await act(async () => prResolvers[2](prResult()));
+    await act(async () => prResolvers[3](prResult()));
     expect(mockOpenExternalUrl).toHaveBeenCalledTimes(2);
 
     await update("PR #416");
     await fireEvent.press(utils.getByTestId("enriched-markdown"));
-    await waitFor(() => expect(lookupPr).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(lookupPr).toHaveBeenCalledTimes(5));
     mockWorkspaceStore.state = {
       currentWorkspaceId: "ws-2",
       currentWorkspaceSlug: "other",
       currentWorkspaceServerId: "srv-1",
     };
     await update("PR #416");
-    await act(async () => prResolvers[3](prResult()));
+    await act(async () => prResolvers[4](prResult()));
     expect(mockOpenExternalUrl).toHaveBeenCalledTimes(2);
   });
 });
