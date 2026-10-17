@@ -175,40 +175,6 @@ func (q *Queries) GetFileAccessTargetByRuntime(ctx context.Context, arg GetFileA
 	return i, err
 }
 
-const listFileAccessTargetsByHost = `-- name: ListFileAccessTargetsByHost :many
-SELECT id, workspace_id, runtime_id, enabled, roots, workspace_acl, member_acl, created_at, updated_at FROM daemon_file_access_target WHERE id = $1 OR runtime_id::text = $1
-`
-
-func (q *Queries) ListFileAccessTargetsByHost(ctx context.Context, host string) ([]DaemonFileAccessTarget, error) {
-	rows, err := q.db.Query(ctx, listFileAccessTargetsByHost, host)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DaemonFileAccessTarget{}
-	for rows.Next() {
-		var i DaemonFileAccessTarget
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.RuntimeID,
-			&i.Enabled,
-			&i.Roots,
-			&i.WorkspaceAcl,
-			&i.MemberAcl,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getFileOperation = `-- name: GetFileOperation :one
 SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at FROM daemon_file_operation WHERE id = $1
 `
@@ -274,6 +240,40 @@ func (q *Queries) InsertFileOperation(ctx context.Context, arg InsertFileOperati
 		&i.FinishedAt,
 	)
 	return i, err
+}
+
+const listFileAccessTargetsByHost = `-- name: ListFileAccessTargetsByHost :many
+SELECT id, workspace_id, runtime_id, enabled, roots, workspace_acl, member_acl, created_at, updated_at FROM daemon_file_access_target WHERE id = $1 OR runtime_id::text = $1
+`
+
+func (q *Queries) ListFileAccessTargetsByHost(ctx context.Context, host string) ([]DaemonFileAccessTarget, error) {
+	rows, err := q.db.Query(ctx, listFileAccessTargetsByHost, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DaemonFileAccessTarget{}
+	for rows.Next() {
+		var i DaemonFileAccessTarget
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.RuntimeID,
+			&i.Enabled,
+			&i.Roots,
+			&i.WorkspaceAcl,
+			&i.MemberAcl,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listFileOperations = `-- name: ListFileOperations :many
