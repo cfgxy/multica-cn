@@ -82,7 +82,7 @@ func PreflightWorktree(cwd string) (WorktreePreflight, error) {
 			result.Errors = append(result.Errors, fmt.Sprintf("base commit %s is not proven as an ancestor of HEAD %s", marker.BaseCommit, result.Head))
 		}
 	}
-	if status, statusErr := runGit(gitRoot, "status", "--short", "--branch", "--untracked-files=all"); statusErr == nil {
+	if status, statusErr := runPreflightGit(gitRoot, "status", "--short", "--branch", "--untracked-files=all"); statusErr == nil {
 		result.WorktreeStatus = splitStatusLines(status)
 	} else {
 		result.Errors = append(result.Errors, fmt.Sprintf("read worktree status: %v", statusErr))
@@ -101,6 +101,10 @@ func PreflightWorktree(cwd string) (WorktreePreflight, error) {
 		return result, nil
 	}
 	return result, errors.New(strings.Join(result.Errors, "; "))
+}
+
+func runPreflightGit(dir string, args ...string) (string, error) {
+	return runGitEnv(dir, []string{"GIT_OPTIONAL_LOCKS=0"}, args...)
 }
 
 func findPreflightTaskMarker(start string) (preflightTaskMarker, error) {
