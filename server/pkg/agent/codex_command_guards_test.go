@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -39,6 +40,7 @@ func TestInstallCodexCommandGuardsPrependsExecutableShims(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	guardBin = filepath.Dir(envValue(env, "BASH_ENV"))
 	if got, want := envValue(env, "PATH"), guardBin+string(os.PathListSeparator)+nativePath; got != want {
 		t.Fatalf("PATH = %q, want %q", got, want)
 	}
@@ -102,14 +104,15 @@ func TestCodexGuardShimsDelegateWithoutRecursion(t *testing.T) {
 	nativeBin := filepath.Join(root, "native-bin")
 	guardAlias := filepath.Join(root, "guard-bin-alias")
 	nativePath := guardAlias + string(os.PathListSeparator) + nativeBin + string(os.PathListSeparator) + "/usr/bin:/bin"
+	originalBashEnv := filepath.Join(root, "original-bash-env")
+	if err := os.WriteFile(originalBashEnv, []byte("export PATH='"+guardAlias+"':\"$PATH\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	guardDir := filepath.Join(home, ".config")
 	for _, dir := range []string{nativeBin, guardDir, guardBin} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if err := os.Symlink(guardBin, guardAlias); err != nil {
-		t.Fatal(err)
 	}
 	writeExecutable(t, filepath.Join(nativeBin, "git"), "#!/bin/sh\nprintf 'native git\\n'\n")
 	writeExecutable(t, filepath.Join(nativeBin, "gh"), "#!/bin/sh\nprintf 'native gh\\n'\n")
@@ -126,8 +129,13 @@ func TestCodexGuardShimsDelegateWithoutRecursion(t *testing.T) {
 	env, err := installCodexCommandGuards([]string{
 		"HOME=" + home,
 		"PATH=" + nativePath,
+		"BASH_ENV=" + originalBashEnv,
 	}, guardBin, home)
 	if err != nil {
+		t.Fatal(err)
+	}
+	guardBin = filepath.Dir(envValue(env, "BASH_ENV"))
+	if err := os.Symlink(guardBin, guardAlias); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -184,6 +192,7 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	guardBin = filepath.Dir(envValue(env, "BASH_ENV"))
 	guardPaths := []string{
 		filepath.Join(home, ".config", "gh-guard", "gh-pr-guard"),
 		filepath.Join(home, ".config", "git-push-guard", "git-push-guard"),
@@ -277,5 +286,73 @@ func writeExecutable(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Starting a second profile must not mutate the startup script of a running one.
+func TestCodexGuardProfilesDoNotOverwriteRunningEnvironment(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shims")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	bin := filepath.Join(root, "guards")
+	var environments [][]string
+	var inputs [][]string
+	for _, profile := range []string{"first", "second"} {
+		original := filepath.Join(root, profile+"-env")
+		if err := os.WriteFile(original, []byte("export PROFILE="+profile+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		input := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "BASH_ENV=" + original}
+		inputs = append(inputs, input)
+		env, err := installCodexCommandGuards(input, bin, home)
+		if err != nil {
+			t.Fatal(err)
+		}
+		environments = append(environments, env)
+	}
+	// Simulate overlapping launches/restarts of both profiles. Old processes
+	// must keep their environment, and same-profile installs must remain atomic.
+	var wg sync.WaitGroup
+	errors := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := installCodexCommandGuards(inputs[i%2], bin, home)
+			errors <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, profile := range []string{"first", "second"} {
+		cmd := exec.Command("/bin/bash", "-c", `printf '%s' "$PROFILE"`)
+		cmd.Env = environments[i]
+		out, err := cmd.CombinedOutput()
+		if err != nil || string(out) != profile {
+			t.Fatalf("profile %s: got %q, error %v", profile, out, err)
+		}
+	}
+}
+
+func TestCodexGuardInstallFailureDoesNotReturnUnguardedEnvironment(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "file")
+	if err := os.WriteFile(blocked, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ bin, home string }{
+		{"", root}, {filepath.Join(root, "guards"), ""}, {filepath.Join(blocked, "guards"), root},
+	} {
+		env, err := installCodexCommandGuards([]string{"PATH=/usr/bin:/bin"}, tc.bin, tc.home)
+		if err == nil || env != nil {
+			t.Fatalf("failed install returned env %v, err %v", env, err)
+		}
 	}
 }
