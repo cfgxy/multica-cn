@@ -6,6 +6,7 @@ import type { TimelineEntry } from "@multica/core/types";
 
 const mockCreateComment = jest.fn();
 const mockUpdateComment = jest.fn();
+const mockMarkFailed = jest.fn();
 
 jest.mock("@/data/api", () => ({
   api: {
@@ -26,7 +27,7 @@ jest.mock("@/data/auth-store", () => ({
 
 jest.mock("@/data/stores/failed-comments-store", () => ({
   useFailedCommentsStore: {
-    getState: () => ({ markFailed: jest.fn(), clear: jest.fn() }),
+    getState: () => ({ markFailed: mockMarkFailed, clear: jest.fn() }),
   },
 }));
 
@@ -130,6 +131,43 @@ describe("useCreateComment timeline cache", () => {
       await mutationPromise;
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(queryClient.getQueryData<TimelineQueryData>(key)).toMatchObject({
+      truncatedKinds: ["activity"],
+      entries: [expect.objectContaining({ id: "comment-1", content: "hello" })],
+    });
+    await unmount();
+    queryClient.clear();
+    queryClient.unmount();
+  });
+
+  it("keeps a failed optimistic comment available for retry", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const key = issueKeys.timeline("workspace-1", "issue-1");
+    queryClient.setQueryData<TimelineQueryData>(key, {
+      entries: [],
+      truncatedKinds: [],
+    });
+    mockCreateComment.mockRejectedValueOnce(new Error("offline"));
+    const { result, unmount } = await renderHook(() => useCreateComment("issue-1"), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ content: "hello" }).catch(() => undefined);
+    });
+
+    const entries = queryClient.getQueryData<TimelineQueryData>(key)?.entries;
+    expect(entries).toHaveLength(1);
+    expect(entries?.[0]).toMatchObject({
+      id: expect.stringMatching(/^optimistic-/),
+      content: "hello",
+    });
+    expect(mockMarkFailed).toHaveBeenCalledWith(
+      entries?.[0].id,
+      expect.objectContaining({ content: "hello", error: "offline" }),
+    );
     await unmount();
     queryClient.clear();
     queryClient.unmount();
