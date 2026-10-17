@@ -144,6 +144,9 @@ var postConsolidationStems = []string{
 	"943_daemon_ops_command_channel",                 // RUYI-645 (938, 940 reserved by in-flight issues)
 	"961_voice_provider_config",                      // RUYI-693
 	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
+	"975_daemon_file_access",                         // RUYI-789
+	"975_file_access_target_id_index",                // RUYI-789
+	"975_file_operation_id_index",                    // RUYI-789
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
