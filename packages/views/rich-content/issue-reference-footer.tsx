@@ -89,8 +89,11 @@ const PR_STATE_ICON: Record<PullRequestVisualState, {
   unknown: { Icon: GitPullRequest, className: "text-muted-foreground" },
 };
 
-function prIdentifier(pr: GitHubPullRequest): string {
-  return `${pr.repo_owner}/${pr.repo_name}#${pr.number}`;
+function prRepositoryLabel(pr: GitHubPullRequest): string {
+  const repository = pr.repo_owner === "cfgxy"
+    ? pr.repo_name
+    : `${pr.repo_owner}/${pr.repo_name}`;
+  return `${repository}/`;
 }
 
 function IssueReferenceFooter({ references }: { references: IssueReference[] }) {
@@ -178,9 +181,14 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
             }`}
           />
           <span className="issue-reference-identifier" translate="no">
-            {prIdentifier(row.pr)}
+            #{row.pr.number}
           </span>
-          <span className="issue-reference-title">{row.pr.title}</span>
+          <span className="issue-reference-pr-content">
+            <span className="issue-reference-pr-project" translate="no">
+              {prRepositoryLabel(row.pr)}
+            </span>
+            <span className="issue-reference-title">{row.pr.title}</span>
+          </span>
         </a>
       );
     }
