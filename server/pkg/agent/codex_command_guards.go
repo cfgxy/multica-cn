@@ -9,9 +9,23 @@ import (
 )
 
 const (
-	codexGuardBinDir     = "command-guards"
-	codexGuardPathMarker = "__MULTICA_GUARD_PATH__"
+	codexGuardBinDir       = "command-guards"
+	codexGuardShellEnvFile = "bash-env"
+	codexGuardPathMarker   = "__MULTICA_GUARD_PATH__"
 )
+
+const codexGuardShellEnv = `original_bash_env=__MULTICA_ORIGINAL_BASH_ENV__
+if [[ -n "$original_bash_env" && -r "$original_bash_env" ]]; then source "$original_bash_env"; fi
+if [[ "${MULTICA_CODEX_GUARD_ACTIVE:-}" == "1" ]]; then return; fi
+guard_bin=__MULTICA_GUARD_BIN__
+filtered_path="$guard_bin"
+IFS=: read -r -a path_parts <<< "${PATH:-}"
+for part in "${path_parts[@]}"; do
+  [[ -z "$part" || "$part" == "$guard_bin" ]] && continue
+  filtered_path="$filtered_path:$part"
+done
+export PATH="$filtered_path"
+`
 
 const codexGHShim = `#!/usr/bin/env bash
 set -u
@@ -31,6 +45,7 @@ for part in "${path_parts[@]}"; do
   if [[ -z "$filtered_path" ]]; then filtered_path="$part"; else filtered_path="$filtered_path:$part"; fi
 done
 export PATH="$filtered_path"
+export MULTICA_CODEX_GUARD_ACTIVE=1
 exec "$guard" "$@"
 `
 
@@ -50,16 +65,19 @@ done
 export PATH="$filtered_path"
 if [[ -z "$guard" || ! -x "$guard" ]]; then
   command_name=""
-  while (($#)); do
-    case "$1" in
-      -c|-C|--git-dir|--work-tree|--namespace|--super-prefix) shift 2 || break ;;
-      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|-c*|-C*) shift ;;
-      -*) shift ;;
-      *) command_name="$1"; break ;;
+  git_args=("$@")
+  parse_args=("$@")
+  while ((${#parse_args[@]})); do
+    case "${parse_args[0]}" in
+      -c|-C|--git-dir|--work-tree|--namespace|--super-prefix) parse_args=("${parse_args[@]:2}") ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|-c*|-C*) parse_args=("${parse_args[@]:1}") ;;
+      -*) parse_args=("${parse_args[@]:1}") ;;
+      *) command_name="${parse_args[0]}"; break ;;
     esac
   done
   if [[ "$command_name" == "status" ]]; then
-    exec git "$@"
+    export MULTICA_CODEX_GUARD_ACTIVE=1
+    exec git "${git_args[@]}"
   fi
   if [[ "$command_name" == "push" ]]; then
     printf 'codex-guard: git push guard missing or not executable; refusing push\n' >&2
@@ -68,6 +86,7 @@ if [[ -z "$guard" || ! -x "$guard" ]]; then
   fi
   exit 126
 fi
+export MULTICA_CODEX_GUARD_ACTIVE=1
 exec "$guard" "$@"
 `
 
@@ -89,11 +108,25 @@ func installCodexCommandGuards(env []string, guardBinDir, home string) ([]string
 	if err := writeCodexGuardShim(filepath.Join(guardBinDir, "git"), renderCodexGuardShim(codexGitShim, gitGuard)); err != nil {
 		return nil, fmt.Errorf("install git command guard: %w", err)
 	}
+	shellEnvPath := filepath.Join(guardBinDir, codexGuardShellEnvFile)
+	originalShellEnv := envValue(env, "BASH_ENV")
+	if filepath.Clean(originalShellEnv) == filepath.Clean(shellEnvPath) {
+		originalShellEnv = ""
+	}
+	quotedGuardBin := "'" + strings.ReplaceAll(guardBinDir, "'", "'\\''") + "'"
+	quotedOriginalShellEnv := "'" + strings.ReplaceAll(originalShellEnv, "'", "'\\''") + "'"
+	shellEnv := strings.ReplaceAll(codexGuardShellEnv, "__MULTICA_GUARD_BIN__", quotedGuardBin)
+	shellEnv = strings.ReplaceAll(shellEnv, "__MULTICA_ORIGINAL_BASH_ENV__", quotedOriginalShellEnv)
+	if err := writeCodexGuardShim(filepath.Join(guardBinDir, codexGuardShellEnvFile), shellEnv); err != nil {
+		return nil, fmt.Errorf("install Codex shell environment: %w", err)
+	}
 	path := envValue(env, "PATH")
 	if path == "" {
 		path = os.Getenv("PATH")
 	}
 	env = setEnvValue(env, "PATH", guardBinDir+string(os.PathListSeparator)+path)
+	env = setEnvValue(env, "BASH_ENV", shellEnvPath)
+	env = setEnvValue(env, "MULTICA_CODEX_GUARD_ACTIVE", "")
 	return env, nil
 }
 

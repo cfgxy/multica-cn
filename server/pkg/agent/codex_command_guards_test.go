@@ -18,21 +18,32 @@ func TestInstallCodexCommandGuardsPrependsExecutableShims(t *testing.T) {
 	guardBin := filepath.Join(root, "codex-home", codexGuardBinDir)
 	nativeBin := filepath.Join(root, "native-bin")
 	nativePath := nativeBin + string(os.PathListSeparator) + "/usr/bin:/bin"
+	originalBashEnv := filepath.Join(root, "original-bash-env")
+	if err := os.WriteFile(originalBashEnv, []byte("export MULTICA_TEST_ORIGINAL_BASH_ENV=loaded\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(nativeBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeExecutable(t, filepath.Join(nativeBin, "git"), "#!/bin/sh\nprintf 'native git\\n'\n")
 	writeExecutable(t, filepath.Join(nativeBin, "gh"), "#!/bin/sh\nprintf 'native gh\\n'\n")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	env, err := installCodexCommandGuards([]string{
 		"HOME=" + home,
 		"PATH=" + nativePath,
+		"BASH_ENV=" + originalBashEnv,
 	}, guardBin, home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := envValue(env, "PATH"), guardBin+string(os.PathListSeparator)+nativePath; got != want {
 		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+	if got, want := envValue(env, "BASH_ENV"), filepath.Join(guardBin, codexGuardShellEnvFile); got != want {
+		t.Fatalf("BASH_ENV = %q, want %q", got, want)
 	}
 	for _, tc := range []struct {
 		name string
@@ -59,7 +70,10 @@ func TestInstallCodexCommandGuardsPrependsExecutableShims(t *testing.T) {
 		}
 	}
 
-	cmd := exec.Command("/bin/bash", "-c", "command -v git; type -a git; command -v gh; type -a gh")
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte("export PATH=\""+nativePath+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/bash", "-lc", "printf 'original=%s\\n' \"$MULTICA_TEST_ORIGINAL_BASH_ENV\"; command -v git; type -a git; command -v gh; type -a gh")
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -67,10 +81,13 @@ func TestInstallCodexCommandGuardsPrependsExecutableShims(t *testing.T) {
 	}
 	text := string(out)
 	t.Logf("non-interactive command resolution:\n%s", strings.TrimSpace(text))
-	if !strings.Contains(text, filepath.Join(guardBin, "git")) || !strings.Contains(text, filepath.Join(nativeBin, "git")) {
+	if !strings.HasPrefix(text, "original=loaded\n") {
+		t.Fatalf("existing BASH_ENV was not loaded: %q", text)
+	}
+	if !strings.Contains(text, "original=loaded\n"+filepath.Join(guardBin, "git")+"\n") || !strings.Contains(text, filepath.Join(nativeBin, "git")) {
 		t.Fatalf("git shim/native resolution missing from output:\n%s", text)
 	}
-	if !strings.Contains(text, filepath.Join(guardBin, "gh")) || !strings.Contains(text, filepath.Join(nativeBin, "gh")) {
+	if !strings.Contains(text, "\n"+filepath.Join(guardBin, "gh")+"\n") || !strings.Contains(text, filepath.Join(nativeBin, "gh")) {
 		t.Fatalf("gh shim/native resolution missing from output:\n%s", text)
 	}
 }
@@ -155,6 +172,10 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 	if err := os.WriteFile(nativeGitLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(gitConfig, []byte("[alias]\n\tpublish-feature = !git push origin feature\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +245,15 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 		if strings.Contains(string(calls), "send-pack") || strings.Contains(string(calls), "publish-feature") || strings.Contains(string(calls), "push origin feature") {
 			t.Fatalf("rejected remote write reached native git: %q", calls)
 		}
+		cmd := exec.Command(filepath.Join(guardBin, "git"), "-C", repo, "status", "--porcelain")
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("read-only git status with %s guard should delegate to native git: %v\n%s", state, err, out)
+		}
+		if string(out) != "native git\n" {
+			t.Fatalf("git status output with %s guard = %q, want native delegation", state, out)
+		}
 		if state == "not executable" {
 			for _, path := range guardPaths {
 				if err := os.Remove(path); err != nil {
@@ -233,14 +263,13 @@ func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 		}
 	}
 
-	cmd := exec.Command(filepath.Join(guardBin, "git"), "status", "--short")
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	calls, err := os.ReadFile(nativeGitLog)
 	if err != nil {
-		t.Fatalf("read-only git status should delegate to native git: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if string(out) != "native git\n" {
-		t.Fatalf("git status output = %q, want native delegation", out)
+	wantCalls := "-C " + repo + " status --porcelain\n-C " + repo + " status --porcelain\n"
+	if string(calls) != wantCalls {
+		t.Fatalf("native git args = %q, want %q", calls, wantCalls)
 	}
 }
 
