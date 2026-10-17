@@ -2790,6 +2790,36 @@ func (q *Queries) LockChatSessionsByWorkspace(ctx context.Context, workspaceID p
 	return items, nil
 }
 
+const lockChatSessionsForAgentRuntimeBind = `-- name: LockChatSessionsForAgentRuntimeBind :many
+SELECT id FROM chat_session
+WHERE agent_id = $1
+ORDER BY id
+FOR UPDATE
+`
+
+// Runtime rebinding changes the model catalog that every chat session uses.
+// Lock all of the Agent's sessions in a stable order before updating the Agent
+// row so model saves and chat enqueue serialize with the rebind transaction.
+func (q *Queries) LockChatSessionsForAgentRuntimeBind(ctx context.Context, agentID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockChatSessionsForAgentRuntimeBind, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCreated :one
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())

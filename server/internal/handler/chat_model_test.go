@@ -28,6 +28,41 @@ func putTestModelCatalog(t *testing.T, runtimeID, modelID string) {
 	}
 }
 
+func waitForWaiterCountBlockedBy(t *testing.T, holderPID, want int, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		var waiting int
+		if err := testPool.QueryRow(context.Background(), `
+			WITH RECURSIVE blocked(pid) AS (
+				SELECT pid FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND state = 'active'
+				  AND wait_event_type = 'Lock'
+				  AND wait_event IN ('transactionid', 'tuple')
+				  AND $1::int = ANY(pg_blocking_pids(pid))
+				UNION
+				SELECT activity.pid FROM pg_stat_activity activity
+				JOIN blocked parent ON parent.pid = ANY(pg_blocking_pids(activity.pid))
+				WHERE activity.datname = current_database()
+				  AND activity.state = 'active'
+				  AND activity.wait_event_type = 'Lock'
+				  AND activity.wait_event IN ('transactionid', 'tuple')
+			)
+			SELECT count(*) FROM blocked
+		`, holderPID).Scan(&waiting); err != nil {
+			t.Fatalf("probe pg_stat_activity for waiters blocked by pid %d: %v", holderPID, err)
+		}
+		if waiting >= want {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestSetChatSessionModelWaitsForRuntimeRebind(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -89,6 +124,100 @@ func TestSetChatSessionModelWaitsForRuntimeRebind(t *testing.T) {
 	}
 	if override.Valid {
 		t.Fatalf("stale runtime model was persisted after rebind: %q", override.String)
+	}
+}
+
+func TestOrdinaryRuntimeRebindSerializesChatModelUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, oldRuntimeID, newRuntimeID := rebindAgentFixture(t, "chat-model-ordinary-rebind")
+	sessionID := createHandlerTestChatSession(t, agentID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM task_message WHERE task_id IN (SELECT id FROM agent_task_queue WHERE chat_session_id = $1)`, sessionID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, sessionID)
+	})
+	putTestModelCatalog(t, oldRuntimeID, "old-runtime-only-model")
+	putTestModelCatalog(t, newRuntimeID, "new-runtime-only-model")
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin session lock transaction: %v", err)
+	}
+	defer tx.Rollback(context.Background())
+	holderPID := holderBackendPID(t, ctx, tx)
+	if _, err := testHandler.Queries.WithTx(tx).LockChatSessionForRuntimeBind(ctx, parseUUID(sessionID)); err != nil {
+		t.Fatalf("lock chat session: %v", err)
+	}
+
+	type result struct {
+		code int
+		body string
+	}
+	rebindResults := make(chan result, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
+			"runtime_id": newRuntimeID,
+		}), "id", agentID)
+		testHandler.UpdateAgent(w, req)
+		rebindResults <- result{code: w.Code, body: w.Body.String()}
+	}()
+	if !waitForWaiterBlockedBy(t, holderPID, 10*time.Second) {
+		t.Fatalf("ordinary UpdateAgent runtime rebind did not wait on the chat session lock")
+	}
+
+	modelResults := make(chan result, 1)
+	go func() {
+		w := setChatModel(t, sessionID, "old-runtime-only-model")
+		modelResults <- result{code: w.Code, body: w.Body.String()}
+	}()
+	if !waitForWaiterCountBlockedBy(t, holderPID, 2, 10*time.Second) {
+		t.Fatalf("expected UpdateAgent and chat model update to wait on the chat session lock")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit session lock transaction: %v", err)
+	}
+
+	select {
+	case got := <-rebindResults:
+		if got.code != http.StatusOK {
+			t.Fatalf("UpdateAgent runtime rebind: got %d: %s", got.code, got.body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ordinary runtime rebind did not finish after session lock release")
+	}
+	select {
+	case got := <-modelResults:
+		if got.code != http.StatusConflict {
+			t.Fatalf("old-runtime model save after rebind: got %d, want 409: %s", got.code, got.body)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("chat model update did not finish after session lock release")
+	}
+
+	session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("reload chat session: %v", err)
+	}
+	if session.ModelOverride.Valid {
+		t.Fatalf("old-runtime model override persisted after rebind: %q", session.ModelOverride.String)
+	}
+	agent, err := testHandler.Queries.GetAgent(ctx, parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("reload rebound agent: %v", err)
+	}
+	sent, err := testHandler.TaskService.SendDirectChatMessage(ctx, session, agent, parseUUID(testUserID), "send after ordinary runtime rebind", nil, "member", parseUUID(testUserID))
+	if err != nil {
+		t.Fatalf("send chat after ordinary runtime rebind: %v", err)
+	}
+	if !sent.Task.RuntimeID.Valid || uuidToString(sent.Task.RuntimeID) != newRuntimeID {
+		t.Fatalf("sent task runtime = %+v, want %s", sent.Task.RuntimeID, newRuntimeID)
+	}
+	if !sent.Task.ChatModelSnapshot.Valid || sent.Task.ChatModelSnapshot.String == "old-runtime-only-model" {
+		t.Fatalf("sent task retained old-runtime model snapshot: %+v", sent.Task.ChatModelSnapshot)
 	}
 }
 
