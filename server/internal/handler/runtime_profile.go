@@ -444,6 +444,15 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "runtime profile not found")
 		return
 	}
+	// Match the per-runtime teardown lock order across the whole profile. The
+	// runtime IDs are returned in stable order, and session IDs are ordered by
+	// the query, so concurrent teardowns cannot lock this set in reverse order.
+	for _, runtimeID := range runtimeIDs {
+		if _, err := qtx.LockChatSessionsForRuntimeBind(r.Context(), runtimeID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to lock profile chat sessions")
+			return
+		}
+	}
 	for _, runtimeID := range runtimeIDs {
 		if _, err := qtx.ListUserAgentsByRuntimeForUpdate(r.Context(), runtimeID); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to lock profile dependencies")
