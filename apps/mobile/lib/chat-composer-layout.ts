@@ -28,11 +28,15 @@ export function resolvePlusPanelMaxHeight(
 }
 
 export function resolveChatQueuePanelMaxHeight(contentHeight: number): number {
-  return Math.max(
-    CHAT_QUEUE_PANEL_MIN_HEIGHT,
-    Math.min(
-      CHAT_QUEUE_PANEL_MAX_HEIGHT,
-      contentHeight - CHAT_LAYOUT_RESERVED_HEIGHT,
+  const availableHeight = Math.max(0, contentHeight);
+  return Math.min(
+    availableHeight,
+    Math.max(
+      CHAT_QUEUE_PANEL_MIN_HEIGHT,
+      Math.min(
+        CHAT_QUEUE_PANEL_MAX_HEIGHT,
+        availableHeight - CHAT_LAYOUT_RESERVED_HEIGHT,
+      ),
     ),
   );
 }
