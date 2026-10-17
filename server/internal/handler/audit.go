@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -97,6 +98,15 @@ type listAuditEventsParams struct {
 	runtimeID    pgtype.UUID
 	reason       pgtype.Text
 	invocationID pgtype.UUID
+	timeBasis    pgtype.Text
+	clientName   pgtype.Text
+	clientVer    pgtype.Text
+	toolName     pgtype.Text
+	resultStatus pgtype.Text
+	resultCode   pgtype.Text
+	targetType   pgtype.Text
+	targetID     pgtype.Text
+	filterStart  bool
 	since        pgtype.Timestamptz
 	until        pgtype.Timestamptz
 	limit        int32
@@ -131,6 +141,50 @@ func parseListAuditEventsParams(w http.ResponseWriter, r *http.Request) (listAud
 	p.eventType = textParamIfSet(q.Get("event_type"))
 	p.actorType = textParamIfSet(q.Get("actor_type"))
 	p.reason = textParamIfSet(q.Get("reason"))
+	if raw := q.Get("time_basis"); raw != "" {
+		if raw != "invocation_start" {
+			writeError(w, http.StatusBadRequest, "invalid time_basis parameter")
+			return p, false
+		}
+		p.timeBasis = pgtype.Text{String: raw, Valid: true}
+	}
+	for name, max := range map[string]int{"client_name": 128, "client_version": 64, "tool_name": 64} {
+		value := q.Get(name)
+		if len(value) > max || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+			writeError(w, http.StatusBadRequest, "invalid "+name+" parameter")
+			return p, false
+		}
+	}
+	p.clientName = textParamIfSet(q.Get("client_name"))
+	p.clientVer = textParamIfSet(q.Get("client_version"))
+	p.toolName = textParamIfSet(q.Get("tool_name"))
+	p.resultStatus = textParamIfSet(q.Get("result_status"))
+	p.resultCode = textParamIfSet(q.Get("result_error_code"))
+	p.targetType = textParamIfSet(q.Get("target_type"))
+	p.targetID = textParamIfSet(q.Get("target_id"))
+	if p.resultStatus.Valid && p.resultStatus.String != "success" && p.resultStatus.String != "failure" && p.resultStatus.String != "refused" {
+		writeError(w, http.StatusBadRequest, "invalid result_status parameter")
+		return p, false
+	}
+	if p.resultCode.Valid && p.resultCode.String != "invalid_input" && p.resultCode.String != "not_found" &&
+		p.resultCode.String != "permission_denied" && p.resultCode.String != "unavailable" &&
+		p.resultCode.String != "timeout" && p.resultCode.String != "internal" {
+		writeError(w, http.StatusBadRequest, "invalid result_error_code parameter")
+		return p, false
+	}
+	if p.targetType.Valid && p.targetType.String != "workspace" && p.targetType.String != "issue" && p.targetType.String != "host" {
+		writeError(w, http.StatusBadRequest, "invalid target_type parameter")
+		return p, false
+	}
+	if len(q.Get("target_id")) > 128 || strings.IndexFunc(q.Get("target_id"), func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		writeError(w, http.StatusBadRequest, "invalid target_id parameter")
+		return p, false
+	}
+	if p.targetType.Valid != p.targetID.Valid {
+		writeError(w, http.StatusBadRequest, "target_type and target_id must be provided together")
+		return p, false
+	}
+	p.filterStart = p.clientName.Valid || p.clientVer.Valid || p.toolName.Valid || p.targetType.Valid
 
 	var ok bool
 	if p.actorID, ok = uuidParam(w, "actor_id", q.Get("actor_id")); !ok {
@@ -167,6 +221,9 @@ func parseListAuditEventsParams(w http.ResponseWriter, r *http.Request) (listAud
 			return p, false
 		}
 		p.until = pgtype.Timestamptz{Time: t, Valid: true}
+	}
+	if p.timeBasis.Valid && (p.since.Valid || p.until.Valid || p.actorID.Valid || p.actorType.Valid) {
+		p.filterStart = true
 	}
 
 	p.limit = auditEventsDefaultLimit
@@ -237,15 +294,24 @@ func (h *Handler) ListAuditEvents(w http.ResponseWriter, r *http.Request) {
 		// The MCP search_audit_events tool passes issue_id through this
 		// endpoint, so the filter must bite here — leaving it open silently
 		// widened the MCP result to the whole workspace trail.
-		FilterIssueID:      p.issueID,
-		FilterTaskID:       p.taskID,
-		FilterAgentID:      p.agentID,
-		FilterRuntimeID:    p.runtimeID,
-		FilterReason:       p.reason,
-		FilterInvocationID: p.invocationID,
-		IncludeSensitive:   roleAllowed(member.Role, "owner", "admin"),
-		CursorAt:           p.cursor,
-		CursorID:           p.cursorID,
+		FilterIssueID:         p.issueID,
+		FilterTaskID:          p.taskID,
+		FilterAgentID:         p.agentID,
+		FilterRuntimeID:       p.runtimeID,
+		FilterReason:          p.reason,
+		FilterInvocationID:    p.invocationID,
+		TimeBasis:             p.timeBasis,
+		FilterClientName:      p.clientName,
+		FilterClientVersion:   p.clientVer,
+		FilterToolName:        p.toolName,
+		FilterResultStatus:    p.resultStatus,
+		FilterResultCode:      p.resultCode,
+		FilterTargetType:      p.targetType,
+		FilterTargetID:        p.targetID,
+		FilterInvocationStart: p.filterStart,
+		IncludeSensitive:      roleAllowed(member.Role, "owner", "admin"),
+		CursorAt:              p.cursor,
+		CursorID:              p.cursorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list audit events")
@@ -273,23 +339,32 @@ func (h *Handler) ListIssueAuditEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.Queries.ListAuditEvents(r.Context(), db.ListAuditEventsParams{
-		WorkspaceID:        issue.WorkspaceID,
-		Limit:              p.limit,
-		Since:              p.since,
-		Until:              p.until,
-		FilterDomain:       p.domain,
-		FilterEventType:    p.eventType,
-		FilterActorType:    p.actorType,
-		FilterActorID:      p.actorID,
-		FilterIssueID:      issue.ID,
-		FilterTaskID:       p.taskID,
-		FilterAgentID:      p.agentID,
-		FilterRuntimeID:    p.runtimeID,
-		FilterReason:       p.reason,
-		FilterInvocationID: p.invocationID,
-		IncludeSensitive:   roleAllowed(member.Role, "owner", "admin"),
-		CursorAt:           p.cursor,
-		CursorID:           p.cursorID,
+		WorkspaceID:           issue.WorkspaceID,
+		Limit:                 p.limit,
+		Since:                 p.since,
+		Until:                 p.until,
+		FilterDomain:          p.domain,
+		FilterEventType:       p.eventType,
+		FilterActorType:       p.actorType,
+		FilterActorID:         p.actorID,
+		FilterIssueID:         issue.ID,
+		FilterTaskID:          p.taskID,
+		FilterAgentID:         p.agentID,
+		FilterRuntimeID:       p.runtimeID,
+		FilterReason:          p.reason,
+		FilterInvocationID:    p.invocationID,
+		TimeBasis:             p.timeBasis,
+		FilterClientName:      p.clientName,
+		FilterClientVersion:   p.clientVer,
+		FilterToolName:        p.toolName,
+		FilterResultStatus:    p.resultStatus,
+		FilterResultCode:      p.resultCode,
+		FilterTargetType:      p.targetType,
+		FilterTargetID:        p.targetID,
+		FilterInvocationStart: p.filterStart,
+		IncludeSensitive:      roleAllowed(member.Role, "owner", "admin"),
+		CursorAt:              p.cursor,
+		CursorID:              p.cursorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list audit events")
