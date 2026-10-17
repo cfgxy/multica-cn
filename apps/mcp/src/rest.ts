@@ -235,6 +235,8 @@ export class MulticaClient {
     invocation_id: string;
     workspace_id: string;
     tool_name: string;
+    reported_client_name?: string;
+    reported_client_version?: string;
     target_type?: "workspace";
     target_id?: string;
     instance_id?: string;

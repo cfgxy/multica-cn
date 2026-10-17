@@ -95,11 +95,14 @@ export function createMcpServer(client: MulticaClient): Server {
         const invocationId = randomUUID();
         const startedAt = Date.now();
         const isFileTool = AUDITED_FILE_TOOLS.has(tool.name);
+        const reportedClient = server.getClientVersion();
         try {
           await client.startMcpInvocationAudit({
             invocation_id: invocationId,
             workspace_id: workspaceId,
             tool_name: tool.name,
+            ...(reportedClient?.name ? { reported_client_name: reportedClient.name } : {}),
+            ...(reportedClient?.version ? { reported_client_version: reportedClient.version } : {}),
             ...(isFileTool
               ? { instance_id: client.mcpInstanceIdentity }
               : { target_type: "workspace" as const, target_id: workspaceId }),
