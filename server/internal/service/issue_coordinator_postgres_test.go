@@ -56,12 +56,12 @@ func issueCoordinatorTestDB(t *testing.T) (*pgxpool.Pool, *db.Queries) {
 	_, err = pool.Exec(context.Background(), `
 CREATE TABLE issue_coordinator_session (
     issue_id uuid NOT NULL, leader_agent_id uuid NOT NULL, runtime_id uuid NOT NULL,
-    session_id text, generation bigint NOT NULL, snapshot_version bigint NOT NULL,
-    snapshot jsonb NOT NULL, claim_generation bigint NOT NULL,
-    claim_snapshot_version bigint NOT NULL, active_issue_reads integer NOT NULL,
-    active_comment_reads integer NOT NULL, read_observations jsonb NOT NULL,
-    last_event_sequence bigint NOT NULL, active_task_id uuid, last_task_id uuid,
-    continuity_state text NOT NULL, updated_at timestamptz NOT NULL
+    session_id text, generation bigint NOT NULL DEFAULT 1, snapshot_version bigint NOT NULL DEFAULT 0,
+    snapshot jsonb NOT NULL DEFAULT '{}'::jsonb, claim_generation bigint NOT NULL DEFAULT 1,
+    claim_snapshot_version bigint NOT NULL DEFAULT 0, active_issue_reads integer NOT NULL DEFAULT 0,
+    active_comment_reads integer NOT NULL DEFAULT 0, read_observations jsonb NOT NULL DEFAULT '[]'::jsonb,
+    last_event_sequence bigint NOT NULL DEFAULT 0, active_task_id uuid, last_task_id uuid,
+    continuity_state text NOT NULL DEFAULT 'fresh', updated_at timestamptz NOT NULL DEFAULT now()
 );
 `)
 	if err != nil {
