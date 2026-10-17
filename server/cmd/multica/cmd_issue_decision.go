@@ -113,29 +113,10 @@ func validateDecisionOptions(question string, options []string, recommended []in
 
 func parseDecisionContextJSON(raw string) (map[string]any, error) {
 	var value map[string]any
-	if err := json.Unmarshal([]byte(raw), &value); err != nil || len(value) == 0 || !hasDecisionContextContent(value) {
-		return nil, fmt.Errorf("--context must be a non-empty JSON object")
+	if err := json.Unmarshal([]byte(raw), &value); err != nil || value == nil {
+		return nil, fmt.Errorf("--context must be a JSON object")
 	}
 	return value, nil
-}
-
-func hasDecisionContextContent(value map[string]any) bool {
-	for _, key := range []string{"why_now", "impact", "recommendation_reason"} {
-		if text, ok := value[key].(string); ok && strings.TrimSpace(text) != "" {
-			return true
-		}
-	}
-	if facts, ok := value["facts"].([]any); ok && len(facts) > 0 {
-		return true
-	}
-	if unknowns, ok := value["unknowns"].([]any); ok {
-		for _, unknown := range unknowns {
-			if text, ok := unknown.(string); ok && strings.TrimSpace(text) != "" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
