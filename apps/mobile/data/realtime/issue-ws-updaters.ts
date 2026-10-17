@@ -431,6 +431,39 @@ export function reconcileFailedCreatedComment(
       ) {
         return old;
       }
+      if (allMatchingRequestsFailed && observedComments.length > 0) {
+        const observedIds = new Set(observedComments.map(({ id }) => id));
+        const targets = matchingPendingIds.filter(
+          (id) => id === optimisticId || failedIds.has(id),
+        );
+        const nextEntries = [...old.entries];
+        const consumedIds = new Set<string>();
+        const remainingObserved = new Set(observedIds);
+        for (const observed of observedComments) {
+          const targetId = targets.find((id) => !consumedIds.has(id));
+          if (!targetId) break;
+          const targetIndex = nextEntries.findIndex((entry) => entry.id === targetId);
+          if (targetIndex === -1) continue;
+          nextEntries[targetIndex] = observed;
+          consumedIds.add(targetId);
+          remainingObserved.delete(observed.id);
+          reconciledIds.push(targetId);
+        }
+        for (const observed of observedComments) {
+          if (remainingObserved.has(observed.id)) nextEntries.push(observed);
+        }
+        const observedCreatedComments = (old.observedCreatedComments ?? []).filter(
+          (entry) => !observedIds.has(entry.id),
+        );
+        const withoutObserved = observedCreatedComments.length
+          ? { ...old, observedCreatedComments }
+          : omitObservedCreatedComments({ ...old, observedCreatedComments });
+        const sorted = sortTimelineEntriesAsc(nextEntries);
+        crossedKind =
+          !old.truncatedKinds.includes("comment") &&
+          crossedTimelineHardCap(old.entries, sorted, "comment");
+        return updateTimelineEntries(withoutObserved, () => sorted);
+      }
       const observedIndex = (old.observedCreatedComments ?? []).findIndex(
         (entry) => matchesExpected(entry),
       );
