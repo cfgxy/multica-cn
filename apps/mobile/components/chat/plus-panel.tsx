@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
   BackHandler,
-  Dimensions,
   Pressable,
   ScrollView,
   View,
@@ -19,8 +18,6 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
 
-const PANEL_MAX_HEIGHT = Math.round(Dimensions.get("window").height * 0.42);
-
 interface GridEntry {
   key: string;
   icon: keyof typeof Ionicons.glyphMap;
@@ -30,6 +27,7 @@ interface GridEntry {
 
 interface Props {
   visible: boolean;
+  maxHeight: number;
   onClose: () => void;
   onMention: () => void;
   /** 拍照（直启相机）。 */
@@ -45,6 +43,7 @@ interface Props {
 
 export function PlusPanel({
   visible,
+  maxHeight,
   onClose,
   onMention,
   onCamera,
@@ -122,8 +121,16 @@ export function PlusPanel({
     <Animated.View
       entering={SlideInUp.duration(220)}
       exiting={SlideOutDown.duration(180)}
-      className="mb-2 self-start rounded-xl border border-border bg-background px-3 pb-4 shadow-lg"
-      style={{ maxHeight: PANEL_MAX_HEIGHT, width: "92%" }}
+      className="self-start rounded-xl border border-border bg-background px-3 pb-4 shadow-lg"
+      style={{
+        position: "absolute",
+        bottom: "100%",
+        left: 0,
+        zIndex: 10,
+        maxHeight,
+        width: "92%",
+        marginBottom: 8,
+      }}
     >
       <ScrollView keyboardShouldPersistTaps="handled" bounces={false}>
           <View

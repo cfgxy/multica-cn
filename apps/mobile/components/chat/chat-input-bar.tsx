@@ -21,6 +21,8 @@ import {
   TextInput,
   ToastAndroid,
   View,
+  useWindowDimensions,
+  type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
   type ViewStyle,
@@ -66,6 +68,7 @@ import {
   CHAT_COMPOSER_INPUT_MIN_HEIGHT,
   CHAT_COMPOSER_MIN_HEIGHT,
   resolveChatComposerInputHeight,
+  resolvePlusPanelMaxHeight,
 } from "@/lib/chat-composer-layout";
 import { Text } from "@/components/ui/text";
 
@@ -133,6 +136,13 @@ export function ChatInputBar({
   const [plusOpen, setPlusOpen] = useState(false);
   const [dictationOpen, setDictationOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(CHAT_COMPOSER_INPUT_MIN_HEIGHT);
+  const [composerTop, setComposerTop] = useState(0);
+  const { height: windowHeight } = useWindowDimensions();
+  const plusPanelMaxHeight = resolvePlusPanelMaxHeight(windowHeight, composerTop);
+
+  const handleComposerLayout = useCallback((event: LayoutChangeEvent) => {
+    setComposerTop(event.nativeEvent.layout.y);
+  }, []);
 
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -427,7 +437,11 @@ export function ChatInputBar({
   };
 
   return (
-    <View className="relative px-3 pb-2" style={{ paddingTop: 2 }}>
+    <View
+      className="relative px-3 pb-2"
+      style={{ paddingTop: 2 }}
+      onLayout={handleComposerLayout}
+    >
       {hasZone ? (
         <View className="mb-1.5 rounded-2xl bg-secondary/70 px-2 py-1.5">
           <AttachmentZone
@@ -439,24 +453,6 @@ export function ChatInputBar({
           />
         </View>
       ) : null}
-      <PlusPanel
-        visible={plusOpen}
-        onClose={() => setPlusOpen(false)}
-        onMention={openMentionPicker}
-        onCamera={() => {
-          setPlusOpen(false);
-          void takeAndUploadPhoto();
-        }}
-        onImage={() => {
-          setPlusOpen(false);
-          void pickAndUploadImages();
-        }}
-        onFiles={() => {
-          setPlusOpen(false);
-          void pickAndUploadFiles();
-        }}
-        onSkill={hasSkillPicker ? openSkillPicker : undefined}
-      />
       <View className="flex-row items-center gap-1 px-1.5" style={[{ minHeight: CHAT_COMPOSER_MIN_HEIGHT }, barStyle]}>
         <Pressable
           onPress={() => {
@@ -507,6 +503,25 @@ export function ChatInputBar({
           />
         </View>
       </View>
+      <PlusPanel
+        visible={plusOpen}
+        maxHeight={plusPanelMaxHeight}
+        onClose={() => setPlusOpen(false)}
+        onMention={openMentionPicker}
+        onCamera={() => {
+          setPlusOpen(false);
+          void takeAndUploadPhoto();
+        }}
+        onImage={() => {
+          setPlusOpen(false);
+          void pickAndUploadImages();
+        }}
+        onFiles={() => {
+          setPlusOpen(false);
+          void pickAndUploadFiles();
+        }}
+        onSkill={hasSkillPicker ? openSkillPicker : undefined}
+      />
       <ActionSheetModal {...imageSourceModalProps} />
     </View>
   );
