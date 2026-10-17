@@ -23,6 +23,7 @@ WHERE domain = 'run'
   AND event_type = 'run.activity_read'
   AND actor_id = sqlc.arg('actor_id')
   AND task_id = sqlc.arg('task_id')
+  AND details->>'result' = 'success'
   AND occurred_at > now() - interval '10 seconds';
 
 -- name: CreateMCPInvocationAuditEvent :execrows

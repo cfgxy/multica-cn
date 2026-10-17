@@ -1,11 +1,16 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -45,6 +50,136 @@ func TestParseRunActivityCursorAndLimit(t *testing.T) {
 			t.Fatalf("parseRunActivityLimit(%q) = (%d, %v)", tt.input, got, err)
 		}
 	}
+}
+
+func TestGetRunActivitySerializesRateLimitAndAllowsRetryAfterWindow(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	issueID, taskID := createRunActivityTestIssueTask(t)
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			statuses <- getRunActivityStatus(testHandler, issueID, taskID)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(statuses)
+	counts := map[int]int{}
+	for status := range statuses {
+		counts[status]++
+	}
+	if counts[http.StatusOK] != 1 || counts[http.StatusTooManyRequests] != 1 {
+		t.Fatalf("concurrent statuses = %v, want one 200 and one 429", counts)
+	}
+
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE audit_event
+		SET occurred_at = now() - interval '11 seconds'
+		WHERE domain = 'run' AND event_type = 'run.activity_read'
+		  AND task_id = $1 AND details->>'result' = 'success'
+	`, taskID); err != nil {
+		t.Fatalf("expire success audit window: %v", err)
+	}
+	if got := getRunActivityStatus(testHandler, issueID, taskID); got != http.StatusOK {
+		t.Fatalf("status after 10-second window = %d, want 200", got)
+	}
+}
+
+func TestGetRunActivityAuditsUnresolvedRunsWithoutLeakingRunIdentity(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	issueID, _ := createRunActivityTestIssueTask(t)
+	otherIssueID, otherTaskID := createRunActivityTestIssueTask(t)
+	for _, taskID := range []string{uuid.NewString(), otherTaskID} {
+		w := httptest.NewRecorder()
+		req := newRequestAs(testUserID, http.MethodGet, "/api/issues/"+issueID+"/tasks/"+taskID+"/activity", nil)
+		req = withURLParams(req, "id", issueID, "taskId", taskID)
+		testHandler.GetRunActivity(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("run %s response = %d, want 404", taskID, w.Code)
+		}
+		if strings.Contains(w.Body.String(), taskID) || strings.Contains(w.Body.String(), otherIssueID) {
+			t.Fatalf("rejection disclosed run identity: %s", w.Body.String())
+		}
+	}
+	var rejectionCount int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_event
+		WHERE domain = 'run' AND event_type = 'run.activity_read'
+		  AND issue_id = $1 AND task_id IS NULL AND details->>'result' = 'not_found'
+	`, issueID).Scan(&rejectionCount); err != nil {
+		t.Fatalf("read rejection audit count: %v", err)
+	}
+	if rejectionCount != 2 {
+		t.Fatalf("rejection audit count = %d, want 2", rejectionCount)
+	}
+}
+
+func TestGetRunActivityFailsClosedWhenRejectionAuditFails(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	issueID, _ := createRunActivityTestIssueTask(t)
+	h := *testHandler
+	h.runActivityAuditWriter = func(*http.Request, *db.Queries, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string, int32, int, string, runActivityResponse, int, string) bool {
+		return false
+	}
+	taskID := uuid.NewString()
+	w := httptest.NewRecorder()
+	req := newRequestAs(testUserID, http.MethodGet, "/api/issues/"+issueID+"/tasks/"+taskID+"/activity", nil)
+	req = withURLParams(req, "id", issueID, "taskId", taskID)
+	h.GetRunActivity(w, req)
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "messages") || strings.Contains(w.Body.String(), taskID) {
+		t.Fatalf("audit failure response = %d %q, want body-free 503", w.Code, w.Body.String())
+	}
+}
+
+func createRunActivityTestIssueTask(t *testing.T) (string, string) {
+	t.Helper()
+	ctx := context.Background()
+	var agentID, runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT id, runtime_id FROM agent WHERE workspace_id = $1 AND name = 'Handler Test Agent'`, testWorkspaceID).Scan(&agentID, &runtimeID); err != nil {
+		t.Fatalf("find handler test agent: %v", err)
+	}
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, number, position)
+		SELECT $1, 'run activity test', 'todo', 'none', 'member', $2,
+		       COALESCE(max(number), 0) + 1, COALESCE(max(position), 0) + 1
+		FROM issue WHERE workspace_id = $1
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create run activity issue: %v", err)
+	}
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		VALUES ($1, $2, $3, 'queued', 0) RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("create run activity task: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM audit_event WHERE issue_id = $1`, issueID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+	return issueID, taskID
+}
+
+func getRunActivityStatus(h *Handler, issueID, taskID string) int {
+	w := httptest.NewRecorder()
+	req := newRequestAs(testUserID, http.MethodGet, "/api/issues/"+issueID+"/tasks/"+taskID+"/activity", nil)
+	req = withURLParams(req, "id", issueID, "taskId", taskID)
+	h.GetRunActivity(w, req)
+	return w.Code
 }
 
 func TestRunActivityProgressSeparatesSnapshotAndNewEvidence(t *testing.T) {

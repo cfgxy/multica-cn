@@ -18,6 +18,7 @@ WHERE domain = 'run'
   AND event_type = 'run.activity_read'
   AND actor_id = $1
   AND task_id = $2
+  AND details->>'result' = 'success'
   AND occurred_at > now() - interval '10 seconds'
 `
 
