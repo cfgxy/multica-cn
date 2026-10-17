@@ -150,8 +150,22 @@ WHERE audit_event.workspace_id = $1
              AND (sqlc.narg('filter_client_name')::text IS NULL OR invocation_start.details->>'reported_client_name' = sqlc.narg('filter_client_name'))
              AND (sqlc.narg('filter_client_version')::text IS NULL OR invocation_start.details->>'reported_client_version' = sqlc.narg('filter_client_version'))
              AND (sqlc.narg('filter_tool_name')::text IS NULL OR invocation_start.details->>'tool_name' = sqlc.narg('filter_tool_name'))
-             AND (sqlc.narg('filter_target_type')::text IS NULL OR invocation_start.details->>'target_type' = sqlc.narg('filter_target_type'))
-             AND (sqlc.narg('filter_target_id')::text IS NULL OR invocation_start.details->>'target_id' = sqlc.narg('filter_target_id'))
+             AND (
+                 (sqlc.narg('filter_target_type')::text IS NULL AND sqlc.narg('filter_target_id')::text IS NULL)
+                 OR (
+                     (sqlc.narg('filter_target_type')::text IS NULL OR invocation_start.details->>'target_type' = sqlc.narg('filter_target_type'))
+                     AND (sqlc.narg('filter_target_id')::text IS NULL OR invocation_start.details->>'target_id' = sqlc.narg('filter_target_id'))
+                 )
+                 OR (
+                     EXISTS (
+                         SELECT 1 FROM daemon_file_operation AS file_operation
+                         WHERE file_operation.workspace_id = invocation_start.workspace_id
+                           AND file_operation.invocation_id = invocation_start.invocation_id
+                           AND (sqlc.narg('filter_target_type')::text IS NULL OR sqlc.narg('filter_target_type')::text = 'host')
+                           AND (sqlc.narg('filter_target_id')::text IS NULL OR file_operation.target_id = sqlc.narg('filter_target_id'))
+                     )
+                 )
+             )
        )))
   AND (sqlc.narg('filter_result_status')::text IS NULL AND sqlc.narg('filter_result_code')::text IS NULL OR (
        audit_event.domain = 'mcp'
