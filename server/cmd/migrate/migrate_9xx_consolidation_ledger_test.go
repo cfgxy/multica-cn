@@ -149,6 +149,7 @@ var postConsolidationStems = []string{
 	"969_daemon_backpressure_settings",               // RUYI-729 (daemon-level gate card + trigger/recovery event history)
 	"970_clause_asset_injection",                     // RUYI-751 (ADR 007 phase 1: clause/clause_version/clause_binding/clause_injection/clause_quality_daily + prompt_version legislation source)
 	"971_prompt_proposal_migrate_clause",             // RUYI-764 (ADR 007 拆单 5: migrate_clause change kind for legacy-migration inventory adoption)
+	"972_issue_decision_context",                     // RUYI-770
 	"973_mcp_invocation_audit",                       // RUYI-788 (server-trusted MCP invocation lifecycle, restricted sensitive reads and finish outbox)
 	"973_mcp_invocation_audit_audit_event_expiry_index",
 	"973_mcp_invocation_audit_invocation_id_index",

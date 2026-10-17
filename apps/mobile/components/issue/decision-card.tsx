@@ -195,6 +195,15 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   );
 }
 
+function ContextField({ label, value }: { label: string; value: string }) {
+  return (
+    <View>
+      <Text className="text-xs font-medium text-muted-foreground">{label}</Text>
+      <Text className="mt-0.5 text-sm">{value}</Text>
+    </View>
+  );
+}
+
 export function DecisionCard({ decision }: { decision: IssueDecision }) {
   if (decision.decision_kind === "authorization") {
     return <AuthorizationCard decision={decision} />;
@@ -304,6 +313,18 @@ function AnswerableDecisionCard({ decision }: { decision: IssueDecision }) {
               )}
             </View>
             <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
+            {decision.context && (
+              <View className="mt-2 gap-2 border-l-2 border-brand/40 pl-3" testID="decision-context">
+                <Text className="text-xs font-semibold">{t("decisions.context_title", "Decision context")}</Text>
+                {decision.context.why_now ? <ContextField label={t("decisions.context_why_now", "Why now")} value={decision.context.why_now} /> : null}
+                {decision.context.facts?.map((fact, index) => (
+                  <ContextField key={`${fact.statement}-${index}`} label={t("decisions.context_facts", "Confirmed facts and evidence")} value={[fact.statement, ...(fact.evidence ?? [])].join("\n")} />
+                ))}
+                {decision.context.impact ? <ContextField label={t("decisions.context_impact", "Impact")} value={decision.context.impact} /> : null}
+                {decision.context.recommendation_reason ? <ContextField label={t("decisions.context_recommendation", "Recommendation rationale")} value={decision.context.recommendation_reason} /> : null}
+                {decision.context.unknowns?.length ? <ContextField label={t("decisions.context_unknowns", "Unknowns")} value={decision.context.unknowns.join("\n")} /> : null}
+              </View>
+            )}
             <Text className="mt-0.5 text-xs text-muted-foreground">
               {creatorName} · {timeAgo(decision.created_at)}
             </Text>

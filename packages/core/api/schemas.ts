@@ -1047,11 +1047,23 @@ export const DecisionOptionSchema = z.object({
   label: z.string(),
 }).loose();
 
+export const DecisionContextSchema = z.object({
+  why_now: z.string().optional(),
+  facts: z.array(z.object({
+    statement: z.string(),
+    evidence: z.array(z.string()).optional(),
+  }).loose()).optional(),
+  impact: z.string().optional(),
+  recommendation_reason: z.string().optional(),
+  unknowns: z.array(z.string()).optional(),
+}).loose();
+
 export const IssueDecisionSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
   source_comment_id: z.string().nullable().optional(),
   question: z.string(),
+  context: DecisionContextSchema.nullable().optional(),
   options: z.array(DecisionOptionSchema),
   multi_select: z.boolean(),
   recommended_indices: z.array(z.number().int()),

@@ -811,6 +811,13 @@ export interface DecisionCardInfo {
   issue_id: string;
   source_comment_id?: string | null;
   question: string;
+  context?: {
+    why_now?: string;
+    facts?: Array<{ statement: string; evidence?: string[] }>;
+    impact?: string;
+    recommendation_reason?: string;
+    unknowns?: string[];
+  } | null;
   /** Option labels in display order; the letter for label[i] is A+i. */
   options: string[];
   multi_select: boolean;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import { Columns3, Filter, FilterX, Gavel, List, ShieldCheck } from "lucide-react";
@@ -34,9 +34,11 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
+import type { WorkspaceDecisionInboxItem } from "@multica/core/types";
 import { DecisionListView } from "./decision-list-view";
 import { DecisionBoardView } from "./decision-board-view";
 import { DecisionRequestRow } from "./decision-request-row";
+import { DecisionDetailSheet } from "./decision-detail-sheet";
 import {
   DECISION_STATUS_CONFIG,
   DECISION_STATUS_ORDER,
@@ -58,6 +60,8 @@ const VIEW_ICON: Record<DecisionCenterViewMode, typeof List> = {
 export function DecisionCenterPage() {
   const { t } = useT("decisions");
   const workspace = useCurrentWorkspace();
+  const [selectedDecision, setSelectedDecision] = useState<WorkspaceDecisionInboxItem | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const viewMode = useStore(decisionCenterPrefsStore, (s) => s.viewMode);
   const hiddenStatuses = useStore(decisionCenterPrefsStore, (s) => s.hiddenStatuses);
@@ -273,6 +277,7 @@ export function DecisionCenterPage() {
               items={data?.items ?? []}
               counts={data?.counts ?? { open: 0, answered: 0, cancelled: 0 }}
               visibleStatuses={visibleStatuses}
+              onSelect={(item) => { setSelectedDecision(item); setDetailOpen(true); }}
             />
           )}
           {viewMode === "board" && (
@@ -280,10 +285,16 @@ export function DecisionCenterPage() {
               items={data?.items ?? []}
               counts={data?.counts ?? { open: 0, answered: 0, cancelled: 0 }}
               visibleStatuses={visibleStatuses}
+              onSelect={(item) => { setSelectedDecision(item); setDetailOpen(true); }}
             />
           )}
         </>
       )}
+      <DecisionDetailSheet
+        item={selectedDecision}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+      />
     </div>
   );
 }
