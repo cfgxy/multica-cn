@@ -71,12 +71,31 @@ DELETE FROM audit_event
 WHERE domain = 'mcp' AND expires_at IS NOT NULL AND expires_at <= sqlc.arg('cutoff');
 
 -- name: GetMCPInvocationAuditStart :one
-SELECT invocation_id, workspace_id, actor_id, sensitive
+SELECT invocation_id, workspace_id, actor_id, sensitive, details
 FROM audit_event
 WHERE domain = 'mcp'
   AND event_type = 'mcp.invocation_started'
   AND invocation_id = sqlc.arg('invocation_id')
 LIMIT 1;
+
+-- name: InsertMCPPreAuthRejection :execrows
+INSERT INTO mcp_pre_auth_rejection (invocation_id, instance_id, reason_code, file_tool_name, recorded_at, expires_at)
+VALUES (sqlc.arg('invocation_id'), sqlc.arg('instance_id'), sqlc.arg('reason_code'), sqlc.narg('file_tool_name'), now(), now() + interval '7 days')
+ON CONFLICT (invocation_id) DO NOTHING;
+
+-- name: DeleteExpiredMCPPreAuthRejections :execrows
+DELETE FROM mcp_pre_auth_rejection WHERE expires_at <= sqlc.arg('cutoff');
+
+-- name: ListMCPPreAuthRejections :many
+SELECT invocation_id, instance_id, reason_code, file_tool_name, recorded_at, expires_at
+FROM mcp_pre_auth_rejection
+WHERE expires_at > now()
+  AND (sqlc.narg('instance_id')::text IS NULL OR instance_id = sqlc.narg('instance_id'))
+  AND (sqlc.narg('reason_code')::text IS NULL OR reason_code = sqlc.narg('reason_code'))
+  AND (sqlc.narg('since')::timestamptz IS NULL OR recorded_at >= sqlc.narg('since'))
+  AND (sqlc.narg('until')::timestamptz IS NULL OR recorded_at <= sqlc.narg('until'))
+ORDER BY recorded_at DESC, invocation_id DESC
+LIMIT sqlc.arg('limit');
 
 -- name: ListAuditEvents :many
 -- Workspace-level audit search: time window + domain/event_type + actor +
