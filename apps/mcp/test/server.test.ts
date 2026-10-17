@@ -107,6 +107,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "get_decision",
       "get_execution_profile",
       "get_execution_topology",
+      "get_file_metadata",
       "get_inbox_unread_count",
       "get_inbox_unread_summary",
       "get_issue",
@@ -122,6 +123,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "list_daemon_instances",
       "list_decisions",
       "list_execution_profiles",
+      "list_files",
       "list_inbox",
       "list_issue_runs",
       "list_issues",
@@ -137,6 +139,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "mark_inbox_item_read",
       "mark_inbox_item_unread",
       "progress_digest",
+      "read_file_chunk",
       "restore_agent",
       "retry_run",
       "search_audit_events",
@@ -228,6 +231,10 @@ describe("createMcpServer (via in-memory client)", () => {
     ]);
     const auditBodies = `${calls[0]?.body}\n${calls[2]?.body}`;
     expect(auditBodies).toContain("list_inbox");
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toMatchObject({
+      reported_client_name: "vitest",
+      reported_client_version: "0.0.0",
+    });
     expect(auditBodies).not.toContain("private notification body");
     expect(auditBodies).not.toContain(TOKEN);
     expect(calls[0]?.headers["X-Multica-MCP-Service-Credential"]).toBe("private-audit-credential");

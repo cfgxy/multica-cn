@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -24,13 +26,15 @@ import (
 const mcpAuditRequestLimit = 8 << 10
 
 type mcpAuditStartRequest struct {
-	InvocationID   string `json:"invocation_id"`
-	WorkspaceID    string `json:"workspace_id"`
-	ToolName       string `json:"tool_name"`
-	InstanceID     string `json:"instance_id,omitempty"`
-	TargetType     string `json:"target_type,omitempty"`
-	TargetID       string `json:"target_id,omitempty"`
-	NormalizedPath string `json:"normalized_path,omitempty"`
+	InvocationID          string `json:"invocation_id"`
+	WorkspaceID           string `json:"workspace_id"`
+	ToolName              string `json:"tool_name"`
+	ReportedClientName    string `json:"reported_client_name,omitempty"`
+	ReportedClientVersion string `json:"reported_client_version,omitempty"`
+	InstanceID            string `json:"instance_id,omitempty"`
+	TargetType            string `json:"target_type,omitempty"`
+	TargetID              string `json:"target_id,omitempty"`
+	NormalizedPath        string `json:"normalized_path,omitempty"`
 }
 
 type mcpAuditFinishRequest struct {
@@ -136,6 +140,12 @@ func (h *Handler) StartMCPInvocationAudit(w http.ResponseWriter, r *http.Request
 		return
 	}
 	details := map[string]any{"tool_name": input.ToolName}
+	if name := sanitizeMCPReportedClientValue(input.ReportedClientName, 128); name != "" {
+		details["reported_client_name"] = name
+	}
+	if version := sanitizeMCPReportedClientValue(input.ReportedClientVersion, 128); version != "" {
+		details["reported_client_version"] = version
+	}
 	if input.InstanceID != "" {
 		details["instance_id"] = input.InstanceID
 	}
@@ -153,7 +163,7 @@ func (h *Handler) StartMCPInvocationAudit(w http.ResponseWriter, r *http.Request
 		WorkspaceID:  workspaceID,
 		ActorType:    service.AuditActorMember,
 		ActorID:      parsedActor,
-	}, service.AuditMCPInvocationStarted, details, input.NormalizedPath != "" || input.TargetType == "host")
+	}, service.AuditMCPInvocationStarted, details, input.InstanceID != "" || input.NormalizedPath != "" || input.TargetType == "host")
 	inserted, err := service.AppendMCPInvocationAuditEvent(r.Context(), h.Queries, event)
 	if err != nil {
 		logMCPAuditWriteFailure("start", err)
@@ -315,4 +325,18 @@ func isMCPToolName(value string) bool {
 
 func isMCPFileToolName(value string) bool {
 	return value == "list_files" || value == "get_file_metadata" || value == "read_file_chunk"
+}
+
+func sanitizeMCPReportedClientValue(value string, maxBytes int) string {
+	var cleaned strings.Builder
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			continue
+		}
+		if cleaned.Len()+utf8.RuneLen(r) > maxBytes {
+			break
+		}
+		cleaned.WriteRune(r)
+	}
+	return strings.TrimSpace(cleaned.String())
 }
