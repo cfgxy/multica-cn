@@ -100,6 +100,15 @@ printf '20261017T043200Z\n'
 EOF
 chmod +x "$tmp/bin/date"
 
+real_bwrap=$(command -v bwrap)
+cat >"$tmp/bin/bwrap" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$@" >>"$tmp/bwrap-args.log"
+exec "$real_bwrap" "\$@"
+EOF
+chmod +x "$tmp/bin/bwrap"
+
 run() {
   PATH="$tmp/bin:$PATH" CODEX_HOME="$tmp/codex-home" SHADOW_DRAFT_TIMEOUT_SECONDS=2 SHADOW_DRAFT_FIXTURE_HEADER=fixture-header-secret MULTICA_TOKEN=must-not-leak \
     MULTICA_SERVER_URL=http://must-not-leak MULTICA_TEST_SENTINEL=must-not-leak \
@@ -108,6 +117,20 @@ run() {
 
 run
 run
+
+python3 - "$tmp/bwrap-args.log" <<'PY'
+import pathlib
+import sys
+
+args = pathlib.Path(sys.argv[1]).read_text().splitlines()
+for ca_dir in ('/etc/pki/ca-trust', '/etc/pki/tls/certs'):
+    if pathlib.Path(ca_dir).is_dir():
+        assert any(args[index:index + 3] == ['--ro-bind', ca_dir, ca_dir] for index in range(len(args) - 2))
+assert not any(args[index:index + 3] == ['--ro-bind', '/etc/pki', '/etc/pki'] for index in range(len(args) - 2))
+PY
+grep -Fq 'for ca_dir in /etc/pki/ca-trust /etc/pki/tls/certs; do' "$root/scripts/shadow-draft.sh"
+grep -Fq 'if [[ -d $ca_dir ]]; then' "$root/scripts/shadow-draft.sh"
+grep -Fq 'bwrap_args+=(--ro-bind "$ca_dir" "$ca_dir")' "$root/scripts/shadow-draft.sh"
 
 grep -q 'outside-file=denied' "$tmp/audit"/*/events.jsonl
 grep -q -- '--sandbox read-only' "$tmp/audit"/*/events.jsonl
