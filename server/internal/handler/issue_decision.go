@@ -215,7 +215,7 @@ func validateDecisionContext(value *DecisionContext) (*DecisionContext, error) {
 		}
 	}
 	if value.WhyNow == "" && len(value.Facts) == 0 && value.Impact == "" && value.RecommendationReason == "" && len(value.Unknowns) == 0 {
-		return nil, errDecisionValidation{"context must contain at least one field"}
+		return nil, nil
 	}
 	return value, nil
 }
