@@ -68,6 +68,7 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	start := map[string]any{
 		"invocation_id": id.String(), "workspace_id": testWorkspaceID,
 		"tool_name": "read_file", "target_type": "host", "target_id": "local",
+		"reported_client_name": "vitest\nclient", "reported_client_version": " 1.2.3\u001b ",
 		"normalized_path": "/workspace/private/report.txt",
 	}
 	if status, response := callMCPAudit(t, testHandler.StartMCPInvocationAudit, testUserID, start, mcpAuditTestCredential); status != http.StatusCreated || response.Status != "recorded" {
@@ -79,6 +80,13 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	stored, err := testHandler.Queries.GetMCPInvocationAuditStart(t.Context(), pgtype.UUID{Bytes: id, Valid: true})
 	if err != nil || !stored.Sensitive {
 		t.Fatalf("sensitive start row not stored: row=%+v err=%v", stored, err)
+	}
+	var startDetails map[string]any
+	if err := json.Unmarshal(stored.Details, &startDetails); err != nil {
+		t.Fatal(err)
+	}
+	if startDetails["reported_client_name"] != "vitestclient" || startDetails["reported_client_version"] != "1.2.3" {
+		t.Fatalf("reported client details = %#v", startDetails)
 	}
 
 	otherUser := dbfx.User(t, "mcp audit other "+handlerFixtureSuffix, "mcp-audit-other-"+handlerFixtureSuffix+"@example.test")
@@ -96,6 +104,18 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	err = testPool.QueryRow(t.Context(), `SELECT count(*) FROM audit_event WHERE invocation_id = $1`, pgtype.UUID{Bytes: id, Valid: true}).Scan(&count)
 	if err != nil || count != 2 {
 		t.Fatalf("invocation should have exactly start+finish rows: count=%d err=%v", count, err)
+	}
+}
+
+func TestSanitizeMCPReportedClientValue(t *testing.T) {
+	if got := sanitizeMCPReportedClientValue("  cli\nname\x00  ", 128); got != "cliname" {
+		t.Fatalf("control characters and surrounding whitespace should be removed: %q", got)
+	}
+	if got := sanitizeMCPReportedClientValue("ééé", 4); got != "éé" {
+		t.Fatalf("value should be capped at a UTF-8 boundary: %q", got)
+	}
+	if got := sanitizeMCPReportedClientValue("\n \t", 128); got != "" {
+		t.Fatalf("empty sanitized value should not be persisted: %q", got)
 	}
 }
 

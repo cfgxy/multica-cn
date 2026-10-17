@@ -51,7 +51,11 @@ func (h *Handler) PutMCPFileAccessInstanceBinding(w http.ResponseWriter, r *http
 		return
 	}
 	runtimeID := chi.URLParam(r, "runtimeId")
-	rt, member, ok := h.requireRuntimeOpsAccess(w, r, runtimeID)
+	rt, ok := h.requireRuntimeOpsAccess(w, r, runtimeID)
+	if !ok {
+		return
+	}
+	memberID, ok := requireUserID(w, r)
 	if !ok {
 		return
 	}
@@ -65,7 +69,7 @@ func (h *Handler) PutMCPFileAccessInstanceBinding(w http.ResponseWriter, r *http
 	}
 	row, err := h.Queries.UpsertMCPFileAccessInstanceBinding(r.Context(), db.UpsertMCPFileAccessInstanceBindingParams{
 		InstanceID: instanceID, WorkspaceID: rt.WorkspaceID, TargetID: input.TargetID,
-		Enabled: input.Enabled, UpdatedBy: parseUUID(member.UserID),
+		Enabled: input.Enabled, UpdatedBy: parseUUID(memberID),
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "file access target not found for runtime workspace")
@@ -101,6 +105,7 @@ func (h *Handler) submitMCPFileOperation(w http.ResponseWriter, r *http.Request,
 	}
 	req := fileaccess.Request{TargetID: input.Host, Kind: kind, Path: input.Path, Offset: input.Offset, Length: input.Length, Limit: input.Limit, Cursor: input.Cursor}
 	var target db.DaemonFileAccessTarget
+	var err error
 	if input.Host == "" {
 		target, err = h.Queries.GetMCPFileAccessInstanceBindingTarget(r.Context(), db.GetMCPFileAccessInstanceBindingTargetParams{InstanceID: instanceID, WorkspaceID: workspaceID})
 	} else {
