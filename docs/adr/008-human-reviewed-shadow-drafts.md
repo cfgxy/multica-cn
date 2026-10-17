@@ -23,22 +23,26 @@ Use `scripts/shadow-draft.sh` as the first pilot entry point.
 1. A human exports a minimal issue snapshot and explicitly invokes the script
    at an eligible real dispatch point.
 2. The script starts Codex with `deepseek-v4-flash`, `--sandbox read-only`,
-   `--ephemeral`, `--ignore-user-config`, and `--ignore-rules`, inside a
+   `--ephemeral`, and `--ignore-rules`, inside a
    bubblewrap mount namespace. The namespace exposes the Codex runtime and
    system certificates/resolver, a per-invocation provider-auth home, a
    read-only issue-snapshot directory, and only the draft output file. Host
    project files, user home contents, and audit files are not mounted into the
    Codex view.
-3. The child gets a fresh `CODEX_HOME` containing only provider authentication.
-   It does not inherit any `MULTICA_*` variable, project config, MCP server,
-   skill, task state, or platform credential.
+3. The child gets a fresh `CODEX_HOME` containing provider authentication and
+   a generated `config.toml`. The runner parses the selected provider from the
+   host config and copies only its `base_url`, `wire_api`, and authentication
+   headers (`http_headers` plus values resolved from `env_http_headers`). Other
+   provider settings, providers, MCP servers, skills, and user config are not
+   copied. `env_http_headers` cannot reference a `MULTICA_*` variable. The child
+   does not inherit any `MULTICA_*` variable, task state, or platform credential.
 4. The runner accepts a deadline from 1 to 600 seconds, defaulting to 120.
    It starts Codex in a dedicated process group, sends TERM at the deadline,
    then sends KILL after two seconds. A deadline expiry is recorded as
    `channel_error` with exit code 124, and any draft is removed. Before it
-   starts, the runner requires `setsid`, `bwrap`, the Codex CLI options used
-   below, and a successful bubblewrap user/network namespace probe. Missing
-   prerequisites reject the run before a model invocation.
+   starts, the runner requires `setsid`, `bwrap`, Python 3.11 TOML support, the
+   Codex CLI options used below, and a successful bubblewrap user namespace
+   probe. Missing prerequisites reject the run before a model invocation.
 5. The child writes no platform record. The parent writes a local append-only
    ledger with snapshot and draft SHA256 values, output paths, and a
    `draft_created` or `channel_error` outcome. Each invocation atomically
@@ -73,13 +77,14 @@ deployment authority nor model platform write access.
 
 `scripts/shadow-draft.test.sh` substitutes a fake Codex binary on the same
 bubblewrap launch path. It verifies that an unmounted file outside the snapshot
-cannot be read, the snapshot and provider-auth home are the only task data
-visible, platform variables do not reach the child, and the read-only,
-ephemeral, and config-isolation options are present. A successful invocation
-produces a hash-linked ledger entry. The fixture also freezes time for repeated
-invocations, checks that artifact paths and hashes remain independently
-traceable, and covers empty output and child exit codes 42 and 124. A hanging
-fake process verifies that the deadline records a 124 channel error and
-terminates the process group. This is synthetic process and file-namespace
-evidence; real Codex interruption, provider communication, and the CLI
-read-only sandbox's network restriction remain QA requirements.
+cannot be read, the snapshot and generated provider-auth home are the only task
+data visible, only selected provider connection/authentication fields are
+copied, MCP and unrelated settings are omitted, platform variables do not reach
+the child, and the read-only and ephemeral options are present. A successful
+invocation produces a hash-linked ledger entry. The fixture also freezes time
+for repeated invocations, checks that artifact paths and hashes remain
+independently traceable, and covers empty output and child exit codes 42 and
+124. A hanging fake process verifies that the deadline records a 124 channel
+error and terminates the process group. This is synthetic process and
+file-namespace evidence; real Codex interruption, provider communication, and
+the CLI read-only sandbox's network restriction remain QA requirements.

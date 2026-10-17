@@ -40,6 +40,12 @@ done
   echo 'CODEX_HOME/auth.json is required for provider authentication' >&2
   exit 2
 }
+[[ -f $CODEX_HOME/config.toml ]] || {
+  echo 'CODEX_HOME/config.toml with a supported provider is required' >&2
+  exit 2
+}
+command -v python3 >/dev/null || { echo 'Python 3.11 with TOML support is required' >&2; exit 2; }
+python3 -c 'import tomllib' >/dev/null 2>&1 || { echo 'Python 3.11 with TOML support is required' >&2; exit 2; }
 codex_bin=$(command -v codex) || { echo 'codex CLI is required' >&2; exit 2; }
 codex_bin=$(readlink -f "$codex_bin")
 node_bin=""
@@ -55,7 +61,7 @@ codex_help=$("$codex_bin" exec --help 2>&1) || {
   echo 'unable to inspect Codex exec sandbox support' >&2
   exit 2
 }
-for required_flag in --ephemeral --ignore-user-config --ignore-rules --sandbox --skip-git-repo-check --cd; do
+for required_flag in --ephemeral --ignore-rules --sandbox --skip-git-repo-check --cd; do
   grep -Fq -- "$required_flag" <<<"$codex_help" || {
     printf 'installed Codex CLI lacks required isolation option: %s\n' "$required_flag" >&2
     exit 2
@@ -101,8 +107,81 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 143' INT TERM HUP
 
-# Keep the child home and its only working file inside the per-run context.
+# Keep the child home and its only working files inside the per-run context.
 install -m 600 "$CODEX_HOME/auth.json" "$run_home/auth.json"
+if ! python3 - "$CODEX_HOME/config.toml" "$run_home/config.toml" <<'PY'
+import json
+import os
+import re
+import sys
+import tomllib
+
+source, destination = sys.argv[1:]
+try:
+    with open(source, "rb") as config_file:
+        config = tomllib.load(config_file)
+except (OSError, tomllib.TOMLDecodeError):
+    print("unable to read provider configuration", file=sys.stderr)
+    raise SystemExit(2)
+
+provider_name = config.get("model_provider")
+if not isinstance(provider_name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", provider_name):
+    print("a supported model_provider selection is required", file=sys.stderr)
+    raise SystemExit(2)
+
+providers = config.get("model_providers")
+provider = providers.get(provider_name) if isinstance(providers, dict) else None
+if not isinstance(provider, dict):
+    print("selected model_provider configuration is missing", file=sys.stderr)
+    raise SystemExit(2)
+
+base_url = provider.get("base_url")
+wire_api = provider.get("wire_api")
+if not isinstance(base_url, str) or not base_url or not isinstance(wire_api, str) or not wire_api:
+    print("selected provider requires base_url and wire_api", file=sys.stderr)
+    raise SystemExit(2)
+
+headers = provider.get("http_headers", {})
+env_headers = provider.get("env_http_headers", {})
+if not isinstance(headers, dict) or not isinstance(env_headers, dict):
+    print("provider authentication headers must be tables", file=sys.stderr)
+    raise SystemExit(2)
+resolved_headers = {}
+for header_name, value in headers.items():
+    if not isinstance(header_name, str) or not isinstance(value, str):
+        print("provider authentication headers must contain strings", file=sys.stderr)
+        raise SystemExit(2)
+    resolved_headers[header_name] = value
+for header_name, variable_name in env_headers.items():
+    if not isinstance(header_name, str) or not isinstance(variable_name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable_name):
+        print("provider environment header mapping is invalid", file=sys.stderr)
+        raise SystemExit(2)
+    if variable_name.startswith("MULTICA_"):
+        print("platform environment variables cannot supply provider headers", file=sys.stderr)
+        raise SystemExit(2)
+    value = os.environ.get(variable_name)
+    if not value:
+        print("required provider authentication header value is missing", file=sys.stderr)
+        raise SystemExit(2)
+    if header_name in resolved_headers:
+        print("provider authentication header is configured more than once", file=sys.stderr)
+        raise SystemExit(2)
+    resolved_headers[header_name] = value
+
+with open(destination, "x", encoding="utf-8") as output:
+    output.write(f"model_provider = {json.dumps(provider_name)}\n\n")
+    output.write(f"[model_providers.{provider_name}]\n")
+    output.write(f"base_url = {json.dumps(base_url)}\n")
+    output.write(f"wire_api = {json.dumps(wire_api)}\n")
+    if resolved_headers:
+        pairs = ", ".join(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in sorted(resolved_headers.items()))
+        output.write(f"http_headers = {{ {pairs} }}\n")
+os.chmod(destination, 0o600)
+PY
+then
+  rm -rf "$run_audit"
+  exit 2
+fi
 cat >"$run_input" <<EOF
 You are a shadow drafting model. Produce a concise Chinese dispatch recommendation
 for the issue snapshot below. This is a draft for a human Leader only.
@@ -200,7 +279,7 @@ setsid env -i \
   CODEX_HOME=/run/codex-home \
   LANG="${LANG:-C.UTF-8}" \
   "$bwrap_bin" "${bwrap_args[@]}" --chdir /run/issue-context -- \
-    "$codex_bin" exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only \
+    "$codex_bin" exec --ephemeral --ignore-rules --sandbox read-only \
       --skip-git-repo-check --model deepseek-v4-flash --cd /run/issue-context \
       --output-last-message /run/shadow-draft.md --json \
       <"$run_input" >"$events" 2>"$stderr_log" &
