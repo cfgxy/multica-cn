@@ -125,6 +125,14 @@ describe("preprocessMobileMarkdown — 引用链接化（RUYI-728）", () => {
     expect(preprocessMobileMarkdown(input, { workspacePrefix: "RUYI" })).toBe(input);
   });
 
+  it.each([null, undefined])(
+    "前缀未解析时保留裸 Issue 标识符（workspacePrefix=%s）",
+    (workspacePrefix) => {
+      const input = "RUYI-1 and AC-2";
+      expect(preprocessMobileMarkdown(input, { workspacePrefix })).toBe(input);
+    },
+  );
+
   it("正文 PR #N 改写为 pull-request 动作链接", () => {
     expect(preprocessMobileMarkdown("见 PR #412。")).toBe(
       "见 [PR #412](mention://pull-request/412)。",

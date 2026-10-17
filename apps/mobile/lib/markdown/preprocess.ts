@@ -94,7 +94,12 @@ function rewriteBodyReferences(input: string, workspacePrefix?: string | null): 
       ) {
         continue;
       }
-      if (prefixGated && workspacePrefix && !id.toUpperCase().startsWith(`${workspacePrefix.toUpperCase()}-`)) continue;
+      if (
+        prefixGated &&
+        (!workspacePrefix || !id.toUpperCase().startsWith(`${workspacePrefix.toUpperCase()}-`))
+      ) {
+        continue;
+      }
       rewrites.push({ start, end, replacement: replacement(token, id) });
     }
   };
