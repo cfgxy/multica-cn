@@ -29,7 +29,10 @@ Use `scripts/shadow-draft.sh` as the first pilot entry point.
    skill, task state, or platform credential.
 4. The child writes no platform record. The parent writes a local append-only
    ledger with snapshot and draft SHA256 values, output paths, and a
-   `draft_created` or `channel_error` outcome.
+   `draft_created` or `channel_error` outcome. Each invocation atomically
+   reserves its own audit subdirectory; ledger paths are relative to the
+   audit root. A zero process exit without a nonempty draft records
+   `channel_error` and returns exit code 1.
 5. The Leader reads the draft and performs any subsequent platform action
    manually. A draft is not an adoption record until that manual review is
    recorded separately.
@@ -52,3 +55,8 @@ deployment authority nor model platform write access.
 that `MULTICA_TOKEN` and `MULTICA_SERVER_URL` do not reach the child, the
 read-only/ephemeral flags are present, and a successful invocation produces a
 hash-linked ledger entry.
+It also freezes time for repeated invocations, checks all artifact paths and
+hashes remain independently traceable, and covers empty output and child
+exit codes 42 and 124. The 124 case is a simulated process status, not proof
+of a real timeout interrupt. The fake executable locates its fixtures without
+allowing test environment variables through the production isolation boundary.
