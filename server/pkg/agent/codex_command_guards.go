@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,9 +15,9 @@ const (
 	codexGuardPathMarker   = "__MULTICA_GUARD_PATH__"
 )
 
-const codexGuardShellEnv = `original_bash_env=__MULTICA_ORIGINAL_BASH_ENV__
+const codexGuardShellEnv = `if [[ "${MULTICA_CODEX_GUARD_ACTIVE:-}" == "1" ]]; then return; fi
+original_bash_env=__MULTICA_ORIGINAL_BASH_ENV__
 if [[ -n "$original_bash_env" && -r "$original_bash_env" ]]; then source "$original_bash_env"; fi
-if [[ "${MULTICA_CODEX_GUARD_ACTIVE:-}" == "1" ]]; then return; fi
 guard_bin=__MULTICA_GUARD_BIN__
 filtered_path="$guard_bin"
 IFS=: read -r -a path_parts <<< "${PATH:-}"
@@ -100,6 +101,12 @@ func installCodexCommandGuards(env []string, guardBinDir, home string) ([]string
 	if home == "" {
 		return nil, fmt.Errorf("home directory is empty")
 	}
+	// Each profile owns immutable configuration paths. Atomic file replacement
+	// alone cannot stop a later launch from changing a running profile's BASH_ENV
+	// (or the pinned guard home). Equal configurations may safely share files.
+	originalShellEnv := envValue(env, "BASH_ENV")
+	configID := sha256.Sum256([]byte(home + "\x00" + originalShellEnv))
+	guardBinDir = filepath.Join(guardBinDir, fmt.Sprintf("%x", configID))
 	ghGuard := filepath.Join(home, ".config", "gh-guard", "gh-pr-guard")
 	gitGuard := filepath.Join(home, ".config", "git-push-guard", "git-push-guard")
 	if err := writeCodexGuardShim(filepath.Join(guardBinDir, "gh"), renderCodexGuardShim(codexGHShim, ghGuard)); err != nil {
@@ -109,10 +116,6 @@ func installCodexCommandGuards(env []string, guardBinDir, home string) ([]string
 		return nil, fmt.Errorf("install git command guard: %w", err)
 	}
 	shellEnvPath := filepath.Join(guardBinDir, codexGuardShellEnvFile)
-	originalShellEnv := envValue(env, "BASH_ENV")
-	if filepath.Clean(originalShellEnv) == filepath.Clean(shellEnvPath) {
-		originalShellEnv = ""
-	}
 	quotedGuardBin := "'" + strings.ReplaceAll(guardBinDir, "'", "'\\''") + "'"
 	quotedOriginalShellEnv := "'" + strings.ReplaceAll(originalShellEnv, "'", "'\\''") + "'"
 	shellEnv := strings.ReplaceAll(codexGuardShellEnv, "__MULTICA_GUARD_BIN__", quotedGuardBin)
