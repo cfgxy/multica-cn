@@ -285,6 +285,23 @@ export function invalidatePendingTask(
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
 
+/**
+ * Apply a terminal task event immediately, then reconcile against the server.
+ * The event identifies the settled task, so the active indicator should not
+ * wait for a pending-task refetch that may race the server's persistence.
+ */
+export function settlePendingChatTask(
+  qc: QueryClient,
+  sessionId: string,
+  taskId: string,
+) {
+  qc.setQueryData<ChatPendingTask>(
+    chatKeys.pendingTask(sessionId),
+    (old) => removePendingChatTask(old, taskId),
+  );
+  invalidatePendingTask(qc, sessionId);
+}
+
 export function seedAcceptedPendingTask(
   qc: QueryClient,
   payload: {

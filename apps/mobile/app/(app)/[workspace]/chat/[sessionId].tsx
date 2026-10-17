@@ -226,9 +226,17 @@ export default function ChatDetailScreen() {
     router.back();
   });
 
-  // Exit text-selection mode whenever this screen loses focus.
+  // A list-level WS subscription can refresh the preview while this screen is
+  // unmounted. The messages cache is infinitely fresh, so explicitly refetch
+  // both session-owned queries whenever the detail becomes visible again.
   useFocusEffect(
-    useCallback(() => () => useChatSelectStore.getState().clear(), []),
+    useCallback(() => {
+      if (activeSessionId) {
+        void qc.invalidateQueries({ queryKey: chatKeys.messages(activeSessionId) });
+        void qc.invalidateQueries({ queryKey: chatKeys.pendingTask(activeSessionId) });
+      }
+      return () => useChatSelectStore.getState().clear();
+    }, [activeSessionId, qc]),
   );
 
   // ── Auto markRead while viewing a session with unread state ──────────
