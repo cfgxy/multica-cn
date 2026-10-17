@@ -67,7 +67,8 @@ import {
   CHAT_COMPOSER_INPUT_MAX_HEIGHT,
   CHAT_COMPOSER_INPUT_MIN_HEIGHT,
   CHAT_COMPOSER_MIN_HEIGHT,
-  resolveChatComposerInputHeight,
+  resolveBoundedChatComposerInputHeight,
+  resolveChatComposerInputMaxHeight,
   resolvePlusPanelMaxHeight,
 } from "@/lib/chat-composer-layout";
 import { Text } from "@/components/ui/text";
@@ -83,6 +84,7 @@ interface Props {
   sending: boolean;
   allowStop?: boolean;
   allowSubmitWhileRunning?: boolean;
+  hasQueuedMessages?: boolean;
   stopPending?: boolean;
   disabled?: boolean;
   disabledReason?: string;
@@ -108,6 +110,7 @@ export function ChatInputBar({
   sending,
   allowStop = true,
   allowSubmitWhileRunning = false,
+  hasQueuedMessages = false,
   stopPending = false,
   disabled = false,
   disabledReason,
@@ -135,7 +138,7 @@ export function ChatInputBar({
   const [submitting, setSubmitting] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [dictationOpen, setDictationOpen] = useState(false);
-  const [inputHeight, setInputHeight] = useState(CHAT_COMPOSER_INPUT_MIN_HEIGHT);
+  const [inputContentHeight, setInputContentHeight] = useState(CHAT_COMPOSER_INPUT_MIN_HEIGHT);
   const [composerTop, setComposerTop] = useState(0);
   const { height: windowHeight } = useWindowDimensions();
   const plusPanelMaxHeight = resolvePlusPanelMaxHeight(windowHeight, composerTop);
@@ -396,6 +399,14 @@ export function ChatInputBar({
   });
 
   const hasZone = mentions.length > 0 || attachments.length > 0;
+  const inputMaxHeight = resolveChatComposerInputMaxHeight(
+    attachments.length > 0,
+    hasQueuedMessages,
+  );
+  const inputHeight = resolveBoundedChatComposerInputHeight(
+    inputContentHeight,
+    inputMaxHeight,
+  );
 
   if (disabled) {
     return <DisabledPill reason={disabledReason} />;
@@ -472,7 +483,7 @@ export function ChatInputBar({
           onChangeText={handleChangeText}
           onSelectionChange={onSelectionChange}
           onContentSizeChange={(e) =>
-            setInputHeight(resolveChatComposerInputHeight(e.nativeEvent.contentSize.height))
+            setInputContentHeight(e.nativeEvent.contentSize.height)
           }
           editable={!disabled}
           multiline
