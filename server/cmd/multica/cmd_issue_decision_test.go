@@ -50,10 +50,24 @@ func TestParseDecisionContextJSON(t *testing.T) {
 	if !ok || len(facts) != 1 {
 		t.Fatalf("facts = %#v, want one fact", value["facts"])
 	}
-	for _, raw := range []string{"", "null", "[]", `{"unknowns":[]}`, "not-json"} {
+	empty, err := parseDecisionContextJSON(`{}`)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("parse empty optional context: value=%#v err=%v", empty, err)
+	}
+	for _, raw := range []string{"null", "[]", "not-json"} {
 		if _, err := parseDecisionContextJSON(raw); err == nil {
 			t.Fatalf("parseDecisionContextJSON(%q) succeeded, want error", raw)
 		}
+	}
+}
+
+func TestDecisionContextFlagIsOptional(t *testing.T) {
+	f := issueDecisionAddCmd.Flags().Lookup("context")
+	if f == nil {
+		t.Fatal("--context flag is not registered on the decision add command")
+	}
+	if f.DefValue != "" {
+		t.Fatalf("--context default = %q, want empty for backward-compatible calls", f.DefValue)
 	}
 }
 
