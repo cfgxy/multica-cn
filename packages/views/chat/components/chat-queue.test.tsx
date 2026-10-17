@@ -1,12 +1,21 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { describe, expect, it, vi } from "vitest";
 import enChat from "../../locales/en/chat.json";
+import zhHansChat from "../../locales/zh-Hans/chat.json";
 import { ChatQueue } from "./chat-queue";
 
-const TEST_RESOURCES = { en: { chat: enChat } };
+const TEST_RESOURCES = {
+  en: { chat: enChat },
+  "zh-Hans": { chat: zhHansChat },
+};
 
-function renderQueue(headStatus = "running", sendNowDisabled = false) {
+function renderQueue(
+  headStatus = "running",
+  sendNowDisabled = false,
+  locale: "en" | "zh-Hans" = "en",
+  taskCount = 2,
+) {
   const callbacks = {
     onSendNow: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
     onEdit: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
@@ -14,24 +23,16 @@ function renderQueue(headStatus = "running", sendNowDisabled = false) {
     onClear: vi.fn<() => Promise<void>>().mockResolvedValue(),
   };
   const view = render(
-    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+    <I18nProvider locale={locale} resources={TEST_RESOURCES}>
       <ChatQueue
         headStatus={headStatus}
         sendNowDisabled={sendNowDisabled}
-        tasks={[
-          {
-            task_id: "task-2",
-            status: "queued",
-            content: "First follow-up",
-            created_at: "2026-07-01T00:01:00Z",
-          },
-          {
-            task_id: "task-3",
-            status: "queued",
-            content: "",
-            created_at: "2026-07-01T00:02:00Z",
-          },
-        ]}
+        tasks={Array.from({ length: taskCount }, (_, index) => ({
+          task_id: `task-${index + 2}`,
+          status: "queued" as const,
+          content: index === 0 ? "First follow-up" : "",
+          created_at: `2026-07-01T00:0${index + 1}:00Z`,
+        }))}
         {...callbacks}
       />
     </I18nProvider>,
@@ -40,6 +41,19 @@ function renderQueue(headStatus = "running", sendNowDisabled = false) {
 }
 
 describe("ChatQueue", () => {
+  it("keeps the shared localized title contract for English and Chinese counts", () => {
+    renderQueue("running", false, "en", 1);
+    expect(screen.getByRole("region", { name: "1 queued message" })).toBeInTheDocument();
+    cleanup();
+
+    renderQueue("running", false, "en", 2);
+    expect(screen.getByRole("region", { name: "2 queued messages" })).toBeInTheDocument();
+    cleanup();
+
+    renderQueue("running", false, "zh-Hans", 1);
+    expect(screen.getByRole("region", { name: "1 条排队消息" })).toBeInTheDocument();
+  });
+
   it("renders a standalone queue card without a separate header", () => {
     const { container } = renderQueue();
 
