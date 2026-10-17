@@ -1102,8 +1102,8 @@ WHERE id = $1
 FOR UPDATE
 `
 
-// Acquires a row-level exclusive lock on the runtime row. Used at the
-// top of the cascade-delete transaction so that:
+// Acquires a row-level exclusive lock on the runtime row. Teardown callers
+// first lock affected chat sessions in stable order, then use this lock so:
 //  1. PostgreSQL's FK validation on agent.runtime_id (FK ... ON DELETE
 //     RESTRICT) needs FOR KEY SHARE on the parent runtime row, which
 //     conflicts with FOR UPDATE — so any concurrent INSERT or UPDATE
@@ -1194,11 +1194,10 @@ ORDER BY w.id
 FOR KEY SHARE
 `
 
-// Step 1 of the legacy runtime merge's fence, and the same first step every task
-// write takes (lock_task_owner_rows, migration 284): the workspace row, FOR KEY
-// SHARE. Taking it here rather than relying on the fence inside the reassignment
-// keeps the merge's lock order identical to the writers' — workspaces before owner
-// rows — so the two can never hold each other's next lock (MUL-5999).
+// Step 1 of the legacy runtime merge's owner fence, using the same workspace
+// row and FOR KEY SHARE mode as task writes (lock_task_owner_rows, migration 284).
+// It remains compatible with enqueue while preventing workspace teardown from
+// overtaking the merge before it takes chat-session locks (MUL-5999).
 func (q *Queries) LockWorkspaceForRuntimeMerge(ctx context.Context, runtimeIds []pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, lockWorkspaceForRuntimeMerge, runtimeIds)
 	return err

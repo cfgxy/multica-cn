@@ -409,6 +409,17 @@ WHERE agent_id = $1
 ORDER BY id
 FOR UPDATE;
 
+-- name: LockChatSessionsForRuntimeBind :many
+-- Bulk runtime changes must acquire the same chat-session locks as model saves
+-- and sends before locking runtime or agent rows. This order lets a send finish
+-- its task insert (which takes a runtime FK lock) before a merge or teardown
+-- waits on its session, avoiding a runtime -> session lock cycle.
+SELECT cs.id FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+WHERE a.runtime_id = $1
+ORDER BY cs.id
+FOR UPDATE OF cs;
+
 -- name: LockChatSessionForEnqueue :one
 -- The chat-task enqueue's answer to archiving, and the one lock on this row
 -- that a concurrent inbound message must NOT wait behind.
