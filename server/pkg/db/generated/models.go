@@ -1141,6 +1141,7 @@ type IssueDecision struct {
 	ExecutionResult       []byte             `json:"execution_result"`
 	ExecutionError        pgtype.Text        `json:"execution_error"`
 	ExecutedAt            pgtype.Timestamptz `json:"executed_at"`
+	Context               []byte             `json:"context"`
 }
 
 type IssueDependency struct {
