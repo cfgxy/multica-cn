@@ -12,7 +12,7 @@
  *     （API<31 / 无识别服务）经服务端转写降级（RUYI-710，需语音门禁
  *     可用 + workspace 就绪）；权限被拒或非 Android 隐藏。
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Keyboard,
@@ -21,6 +21,8 @@ import {
   TextInput,
   ToastAndroid,
   View,
+  useWindowDimensions,
+  type LayoutChangeEvent,
   type StyleProp,
   type TextStyle,
   type ViewStyle,
@@ -36,6 +38,7 @@ import { DictationBar } from "@/components/chat/dictation-bar";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { assetFromSharedFile } from "@/lib/picked-asset";
 import type { SharedFile } from "@/lib/share-payload";
+import type { Attachment } from "@multica/core/types";
 import {
   canSubmitMessageDraft,
   completedAttachmentIds,
@@ -60,9 +63,15 @@ import { useDictation } from "@/lib/voice/use-dictation";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
+import {
+  CHAT_COMPOSER_INPUT_MAX_HEIGHT,
+  CHAT_COMPOSER_INPUT_MIN_HEIGHT,
+  CHAT_COMPOSER_MIN_HEIGHT,
+  resolveBoundedChatComposerInputHeight,
+  resolveChatComposerInputMaxHeight,
+  resolvePlusPanelMaxHeight,
+} from "@/lib/chat-composer-layout";
 import { Text } from "@/components/ui/text";
-
-const BAR_HEIGHT = 52;
 
 interface Props {
   value: string;
@@ -74,6 +83,9 @@ interface Props {
   onStop: () => void;
   sending: boolean;
   allowStop?: boolean;
+  allowSubmitWhileRunning?: boolean;
+  hasQueuedMessages?: boolean;
+  stopPending?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   incomingSharedFiles?: SharedFile[];
@@ -86,6 +98,8 @@ interface Props {
   onOpenVoice: () => void;
   /** 技能指令 picker 路由；不传则不渲染该项与 / 触发。 */
   skillPickerPath?: Href;
+  restoredAttachments?: Attachment[];
+  onRestoredAttachmentsConsumed?: () => void;
 }
 
 export function ChatInputBar({
@@ -95,6 +109,9 @@ export function ChatInputBar({
   onStop,
   sending,
   allowStop = true,
+  allowSubmitWhileRunning = false,
+  hasQueuedMessages = false,
+  stopPending = false,
   disabled = false,
   disabledReason,
   incomingSharedFiles,
@@ -102,6 +119,8 @@ export function ChatInputBar({
   voiceGate,
   onOpenVoice,
   skillPickerPath,
+  restoredAttachments,
+  onRestoredAttachmentsConsumed,
 }: Props) {
   const { t } = useT("chat");
   const { t: tVoice } = useT("voice");
@@ -119,7 +138,14 @@ export function ChatInputBar({
   const [submitting, setSubmitting] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [dictationOpen, setDictationOpen] = useState(false);
-  const [inputHeight, setInputHeight] = useState(BAR_HEIGHT - 24);
+  const [inputContentHeight, setInputContentHeight] = useState(CHAT_COMPOSER_INPUT_MIN_HEIGHT);
+  const [composerTop, setComposerTop] = useState(0);
+  const { height: windowHeight } = useWindowDimensions();
+  const plusPanelMaxHeight = resolvePlusPanelMaxHeight(windowHeight, composerTop);
+
+  const handleComposerLayout = useCallback((event: LayoutChangeEvent) => {
+    setComposerTop(event.nativeEvent.layout.y);
+  }, []);
 
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -138,6 +164,21 @@ export function ChatInputBar({
     enqueueAssets,
     uploading,
   } = useFileAttach({ alertOnError: false, onAttachmentsEnqueued: focusInput });
+
+  useEffect(() => {
+    if (!restoredAttachments?.length) return;
+    restoreAttachments(restoredAttachments.map((attachment) => ({
+      localId: attachment.id,
+      localUri: attachment.url || attachment.download_url,
+      filename: attachment.filename,
+      mimeType: attachment.content_type,
+      status: "completed" as const,
+      id: attachment.id,
+      url: attachment.url,
+      downloadUrl: attachment.download_url,
+    })));
+    onRestoredAttachmentsConsumed?.();
+  }, [restoredAttachments, restoreAttachments, onRestoredAttachmentsConsumed]);
 
   // 系统分享附件一次性入队（与 MessageComposer 同语义：ref 防重复）。
   const consumedSharedRef = useRef<SharedFile[] | null>(null);
@@ -230,8 +271,8 @@ export function ChatInputBar({
     mentions,
     attachments,
     disabled,
-    isSending: sending,
-    submitting,
+    isSending: sending && !allowSubmitWhileRunning,
+    submitting: submitting || stopPending,
   });
 
   const handleSubmit = useCallback(async () => {
@@ -351,12 +392,21 @@ export function ChatInputBar({
     disabled,
     sending,
     allowStop,
+    allowSubmitWhileRunning,
     hasDraft: value.trim().length > 0,
     dictationOpen,
     voice,
   });
 
   const hasZone = mentions.length > 0 || attachments.length > 0;
+  const inputMaxHeight = resolveChatComposerInputMaxHeight(
+    attachments.length > 0,
+    hasQueuedMessages,
+  );
+  const inputHeight = resolveBoundedChatComposerInputHeight(
+    inputContentHeight,
+    inputMaxHeight,
+  );
 
   if (disabled) {
     return <DisabledPill reason={disabledReason} />;
@@ -380,7 +430,7 @@ export function ChatInputBar({
   }
 
   const barStyle: StyleProp<ViewStyle> = {
-    borderRadius: BAR_HEIGHT / 2,
+    borderRadius: CHAT_COMPOSER_MIN_HEIGHT / 2,
     backgroundColor: theme.secondary,
     shadowColor: "#0f172a",
     shadowOffset: { width: 0, height: 4 },
@@ -390,15 +440,19 @@ export function ChatInputBar({
   };
   const textStyle: StyleProp<TextStyle> = {
     flex: 1,
-    minHeight: 36,
-    maxHeight: 120,
+    minHeight: CHAT_COMPOSER_INPUT_MIN_HEIGHT,
+    maxHeight: CHAT_COMPOSER_INPUT_MAX_HEIGHT,
     paddingVertical: 8,
     fontSize: 16,
     color: theme.foreground,
   };
 
   return (
-    <View className="px-3 pb-2" style={{ paddingTop: 2 }}>
+    <View
+      className="relative px-3 pb-2"
+      style={{ paddingTop: 2 }}
+      onLayout={handleComposerLayout}
+    >
       {hasZone ? (
         <View className="mb-1.5 rounded-2xl bg-secondary/70 px-2 py-1.5">
           <AttachmentZone
@@ -410,7 +464,7 @@ export function ChatInputBar({
           />
         </View>
       ) : null}
-      <View className="flex-row items-center gap-1 px-1.5" style={[{ height: BAR_HEIGHT }, barStyle]}>
+      <View className="flex-row items-center gap-1 px-1.5" style={[{ minHeight: CHAT_COMPOSER_MIN_HEIGHT }, barStyle]}>
         <Pressable
           onPress={() => {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -429,31 +483,40 @@ export function ChatInputBar({
           onChangeText={handleChangeText}
           onSelectionChange={onSelectionChange}
           onContentSizeChange={(e) =>
-            setInputHeight(e.nativeEvent.contentSize.height)
+            setInputContentHeight(e.nativeEvent.contentSize.height)
           }
           editable={!disabled}
           multiline
+          scrollEnabled
           placeholder={sending ? t("mobile.composer.agent_working", "Agent is working…") : t("mobile.composer.placeholder", "Message…")}
           placeholderTextColor={theme.mutedForeground}
-          style={[textStyle, { height: Math.min(Math.max(36, inputHeight), 120) }]}
+          style={[textStyle, { height: inputHeight }]}
           accessibilityLabel={t("mobile.composer.placeholder", "Message…")}
         />
-        <RightSlot
-          shape={shape.rightSlot}
-          canSend={canSend}
-          submitting={submitting}
-          uploading={uploading}
-          onSubmit={handleSubmit}
-          dictationReady={
-            dictation.entry === "ondevice" || dictation.entry === "degraded"
-          }
-          onOpenDictation={openDictation}
-          onOpenVoice={onOpenVoice}
-          onStop={onStop}
-        />
+        <View className="flex-row items-center gap-1">
+          {shape.showStopAction ? (
+            <StopAction onStop={onStop} disabled={stopPending} />
+          ) : null}
+          <RightSlot
+            shape={shape.rightSlot}
+            canSend={canSend}
+            submitting={submitting}
+            uploading={uploading}
+            onSubmit={handleSubmit}
+            dictationReady={
+              dictation.entry === "ondevice" || dictation.entry === "degraded"
+            }
+            disabled={stopPending}
+            onOpenDictation={openDictation}
+            onOpenVoice={onOpenVoice}
+            onStop={onStop}
+            stopPending={stopPending}
+          />
+        </View>
       </View>
       <PlusPanel
         visible={plusOpen}
+        maxHeight={plusPanelMaxHeight}
         onClose={() => setPlusOpen(false)}
         onMention={openMentionPicker}
         onCamera={() => {
@@ -480,21 +543,25 @@ function RightSlot({
   canSend,
   submitting,
   uploading,
+  disabled,
   onSubmit,
   dictationReady,
   onOpenDictation,
   onOpenVoice,
   onStop,
+  stopPending,
 }: {
   shape: "stop" | "voice" | "send" | "muted-send";
   canSend: boolean;
   submitting: boolean;
   uploading: boolean;
+  disabled: boolean;
   onSubmit: () => void;
   dictationReady: boolean;
   onOpenDictation: () => void;
   onOpenVoice: () => void;
   onStop: () => void;
+  stopPending: boolean;
 }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
@@ -504,22 +571,7 @@ function RightSlot({
   if (shape === "stop") {
     return (
       <Animated.View key="stop" entering={FadeIn.duration(120)} exiting={FadeOut.duration(120)}>
-        <Pressable
-          onPress={onStop}
-          className="h-9 w-9 items-center justify-center rounded-full bg-foreground active:opacity-80"
-          hitSlop={12}
-          accessibilityRole="button"
-          accessibilityLabel={t("mobile.composer.stop_agent", "Stop agent")}
-        >
-          <View
-            style={{
-              width: 10,
-              height: 10,
-              backgroundColor: theme.background,
-              borderRadius: 1.5,
-            }}
-          />
-        </Pressable>
+        <StopAction onStop={onStop} disabled={stopPending} />
       </Animated.View>
     );
   }
@@ -532,6 +584,7 @@ function RightSlot({
             onPress={onOpenDictation}
             hitSlop={6}
             accessibilityRole="button"
+            disabled={disabled}
             accessibilityLabel={tVoice("dictation.open", "Dictation")}
             className="h-9 w-9 items-center justify-center rounded-full active:opacity-70"
           >
@@ -542,6 +595,7 @@ function RightSlot({
           onPress={onOpenVoice}
           hitSlop={6}
           accessibilityRole="button"
+          disabled={disabled}
           accessibilityLabel={tVoice("button.start", "Start voice conversation")}
           className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
         >
@@ -570,6 +624,33 @@ function RightSlot({
         name="arrow-up"
         size={22}
         color={active ? theme.primaryForeground : theme.mutedForeground}
+      />
+    </Pressable>
+  );
+}
+
+function StopAction({ onStop, disabled }: { onStop: () => void; disabled: boolean }) {
+  const { t } = useT("chat");
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+
+  return (
+    <Pressable
+      onPress={onStop}
+      disabled={disabled}
+      className="h-9 w-9 items-center justify-center rounded-full bg-foreground active:opacity-80"
+      hitSlop={12}
+      accessibilityRole="button"
+      accessibilityLabel={t("mobile.composer.stop_agent", "Stop agent")}
+      accessibilityState={{ disabled }}
+    >
+      <View
+        style={{
+          width: 10,
+          height: 10,
+          backgroundColor: theme.background,
+          borderRadius: 1.5,
+        }}
       />
     </Pressable>
   );

@@ -170,6 +170,12 @@ describe("ChatSessionSchema", () => {
     expect(parsed.is_current_channel_route).toBe(false);
   });
 
+  it("parses the nullable session-only model override", () => {
+    expect(ChatSessionSchema.parse({ ...baseSession, model_override: "model-a" }).model_override).toBe("model-a");
+    expect(ChatSessionSchema.parse({ ...baseSession, model_override: null }).model_override).toBeNull();
+    expect(() => ChatSessionSchema.parse({ ...baseSession, model_override: 7 })).toThrow();
+  });
+
   it("degrades malformed session metadata without dropping the Chat", () => {
     const parsed = ChatSessionSchema.parse({
       ...baseSession,

@@ -73,6 +73,32 @@ describe("ApiClient agent conversation-starter compatibility", () => {
   });
 });
 
+describe("ApiClient chat session model selection", () => {
+  it("writes the override to the session endpoint and parses the durable result", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "session-1",
+      workspace_id: "workspace-1",
+      agent_id: "agent-1",
+      creator_id: "user-1",
+      title: "Chat",
+      status: "active",
+      has_unread: false,
+      model_override: "model-a",
+      created_at: "2026-10-17T00:00:00Z",
+      updated_at: "2026-10-17T00:00:00Z",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    const session = await client.setChatSessionModel("session-1", "model-a");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/chat/sessions/session-1/model");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ model_override: "model-a" });
+    expect(session.model_override).toBe("model-a");
+  });
+});
+
 describe("ApiClient edit guards", () => {
   it("does not accept malformed comment write responses as successful saves", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response("{}", {

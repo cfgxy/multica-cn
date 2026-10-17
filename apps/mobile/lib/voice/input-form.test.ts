@@ -10,6 +10,7 @@ const base: InputShapeInput = {
   disabled: false,
   sending: false,
   allowStop: true,
+  allowSubmitWhileRunning: false,
   hasDraft: false,
   dictationOpen: false,
   voice: "available",
@@ -49,6 +50,7 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       dictation: false,
       pill: false,
       rightSlot: "voice",
+      showStopAction: false,
     });
   });
 
@@ -71,10 +73,16 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
     ).toBe("send");
   });
 
-  it("发送中 → stop（现状逻辑保留）；queued（allowStop=false）不抢 Stop", () => {
+  it("发送中 → stop；队列可用时并列保留直接停止入口", () => {
     expect(resolveInputShape({ ...base, sending: true }).rightSlot).toBe(
       "stop",
     );
+    expect(resolveInputShape({
+      ...base,
+      sending: true,
+      allowSubmitWhileRunning: true,
+      hasDraft: true,
+    })).toMatchObject({ rightSlot: "send", showStopAction: true });
     expect(
       resolveInputShape({ ...base, sending: true, allowStop: false })
         .rightSlot,
@@ -86,6 +94,7 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       dictation: false,
       pill: true,
       rightSlot: "muted-send",
+      showStopAction: false,
     });
     expect(
       resolveInputShape({ ...base, disabled: true, dictationOpen: true }).pill,
@@ -97,6 +106,7 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       dictation: true,
       pill: false,
       rightSlot: "send",
+      showStopAction: false,
     });
     expect(
       resolveInputShape({ ...base, dictationOpen: true, sending: true })
