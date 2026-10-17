@@ -47,7 +47,10 @@ const SERVER_INSTRUCTIONS =
   "progress; create_issue captures ideas anywhere; dispatch_agent runs a real " +
   "agent and consumes quota — only on explicit request.";
 
-export function createMcpServer(client: MulticaClient): Server {
+export function createMcpServer(
+  client: MulticaClient,
+  reportedClient?: { name: string; version: string },
+): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -95,14 +98,14 @@ export function createMcpServer(client: MulticaClient): Server {
         const invocationId = randomUUID();
         const startedAt = Date.now();
         const isFileTool = AUDITED_FILE_TOOLS.has(tool.name);
-        const reportedClient = server.getClientVersion();
+        const clientVersion = server.getClientVersion() ?? reportedClient;
         try {
           await client.startMcpInvocationAudit({
             invocation_id: invocationId,
             workspace_id: workspaceId,
             tool_name: tool.name,
-            ...(reportedClient?.name ? { reported_client_name: reportedClient.name } : {}),
-            ...(reportedClient?.version ? { reported_client_version: reportedClient.version } : {}),
+            ...(clientVersion?.name ? { reported_client_name: clientVersion.name } : {}),
+            ...(clientVersion?.version ? { reported_client_version: clientVersion.version } : {}),
             ...(isFileTool
               ? { instance_id: client.mcpInstanceIdentity }
               : { target_type: "workspace" as const, target_id: workspaceId }),
@@ -141,10 +144,11 @@ export function createMcpServer(client: MulticaClient): Server {
           }
           return textResult(JSON.stringify(visibleResult, null, 2));
         } catch (error) {
+          let auditStatus: "recorded" | "queued" | "unrecorded" = "unrecorded";
           try {
-            await client.finishMcpInvocationAudit({
+            auditStatus = await client.finishMcpInvocationAudit({
               invocation_id: invocationId,
-              status: isFileTool && (error instanceof ToolInputError || error instanceof MulticaApiError && error.status < 500)
+              status: isFileTool && (error instanceof ToolInputError || error instanceof MulticaApiError && error.status < 500 || error instanceof MCPFileAccessError && error.status === "rejected")
                 ? "refused"
                 : "failure",
               duration_ms: Math.max(0, Date.now() - startedAt),
@@ -153,10 +157,10 @@ export function createMcpServer(client: MulticaClient): Server {
               ...(isFileTool && client.mcpInstanceIdentity ? { instance_id: client.mcpInstanceIdentity } : {}),
             });
           } catch {
-            // Keep the operation error as the caller-facing result. The audit
-            // endpoint durably queues an unavailable finish where possible.
+            // The original error remains primary; the response below reports the audit failure.
           }
-          throw error;
+          const visibleError = redactUnknown(error);
+          throw new MCPInvocationError(visibleError, auditStatus);
         }
       }
       const result = await tool.handler(args, client);
@@ -170,6 +174,13 @@ export function createMcpServer(client: MulticaClient): Server {
 }
 
 type FileToolName = "list_files" | "get_file_metadata" | "read_file_chunk";
+
+class MCPInvocationError extends Error {
+  constructor(message: string, auditStatus: "recorded" | "queued" | "unrecorded") {
+    super(`${message} (audit_status: ${auditStatus})`);
+    this.name = "MCPInvocationError";
+  }
+}
 
 async function recordPreAuth(
   client: MulticaClient,
@@ -190,7 +201,7 @@ async function recordPreAuth(
 
 function auditErrorCode(error: unknown): "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal" {
   if (error instanceof MCPFileAccessError) {
-    return error.code as ReturnType<typeof auditErrorCode>;
+    return error.code;
   }
   if (error instanceof ToolInputError) return "invalid_input";
   if (error instanceof MulticaApiError) {

@@ -13,6 +13,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http";
+import { createHash, randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 
@@ -24,6 +25,9 @@ import { createMcpServer } from "./server.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const CLIENT_INFO_TTL_MS = 30 * 60 * 1000;
+const CLIENT_INFO_LIMIT = 1024;
+const reportedClients = new Map<string, { name: string; version: string; expiresAt: number }>();
 
 // Two credential shapes, one transport. `mul_…` is the Multica PAT this
 // server has always taken. The second branch is a compact JWS — the OAuth
@@ -105,6 +109,7 @@ export interface HttpServerOptions {
   auditServiceCredential?: string | undefined;
   mcpInstanceId?: string | undefined;
   fileAccessInstanceCredential?: string | undefined;
+  fetchImpl?: typeof fetch | undefined;
   logger?: Logger;
 }
 
@@ -112,7 +117,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
   const logger = options.logger ?? stderrLogger;
   const challenge = wwwAuthenticateChallenge(options.siteRoot);
   const httpServer = createServer((request, response) => {
-    void handleRequest(request, response, options.serverUrl, challenge, options.auditServiceCredential, options.mcpInstanceId, options.fileAccessInstanceCredential, logger);
+    void handleRequest(request, response, options.serverUrl, challenge, options.auditServiceCredential, options.mcpInstanceId, options.fileAccessInstanceCredential, options.fetchImpl, logger);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -133,6 +138,7 @@ async function handleRequest(
   auditServiceCredential: string | undefined,
   mcpInstanceId: string | undefined,
   fileAccessInstanceCredential: string | undefined,
+  fetchImpl: typeof fetch | undefined,
   logger: Logger,
 ): Promise<void> {
   const url = request.url ?? "/";
@@ -176,6 +182,16 @@ async function handleRequest(
 
     const token = extractBearerToken(request.headers.authorization);
     if (token === null) {
+      await recordHttpPreAuthRejection(
+        backendUrl,
+        "",
+        auditServiceCredential,
+        mcpInstanceId,
+        fileAccessInstanceCredential,
+        fetchImpl,
+        "unauthenticated_actor",
+        logger,
+      );
       response.setHeader("WWW-Authenticate", challenge);
       sendJsonError(
         response,
@@ -188,8 +204,25 @@ async function handleRequest(
 
     const parsed = await readJsonBody(request);
     if (!parsed.ok) {
+      await recordHttpPreAuthRejection(
+        backendUrl,
+        token,
+        auditServiceCredential,
+        mcpInstanceId,
+        fileAccessInstanceCredential,
+        fetchImpl,
+        "entry_rejected",
+        logger,
+      );
       sendJsonError(response, parsed.status, parsed.message);
       return;
+    }
+
+    const clientKey = createHash("sha256").update(token).digest("hex");
+    const reportedClient = getReportedClient(clientKey);
+    if (isInitializeRequest(parsed.body)) {
+      const clientInfo = readReportedClient(parsed.body);
+      if (clientInfo !== undefined) rememberReportedClient(clientKey, clientInfo);
     }
 
     const client = new MulticaClient({
@@ -199,8 +232,9 @@ async function handleRequest(
       auditServiceCredential,
       mcpInstanceId,
       fileAccessInstanceCredential,
+      fetchImpl,
     });
-    const mcpServer = createMcpServer(client);
+    const mcpServer = createMcpServer(client, reportedClient);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -219,6 +253,75 @@ async function handleRequest(
     } else {
       response.end();
     }
+  }
+}
+
+function getReportedClient(key: string): { name: string; version: string } | undefined {
+  const value = reportedClients.get(key);
+  if (value === undefined) return undefined;
+  if (value.expiresAt <= Date.now()) {
+    reportedClients.delete(key);
+    return undefined;
+  }
+  return { name: value.name, version: value.version };
+}
+
+function rememberReportedClient(key: string, value: { name: string; version: string }): void {
+  const now = Date.now();
+  for (const [entryKey, entry] of reportedClients) {
+    if (entry.expiresAt <= now) reportedClients.delete(entryKey);
+  }
+  if (!reportedClients.has(key) && reportedClients.size >= CLIENT_INFO_LIMIT) {
+    const oldestKey = reportedClients.keys().next().value;
+    if (oldestKey !== undefined) reportedClients.delete(oldestKey);
+  }
+  reportedClients.delete(key);
+  reportedClients.set(key, { ...value, expiresAt: now + CLIENT_INFO_TTL_MS });
+}
+
+function isInitializeRequest(value: unknown): boolean {
+  return typeof value === "object" && value !== null &&
+    (value as Record<string, unknown>).method === "initialize";
+}
+
+function readReportedClient(value: unknown): { name: string; version: string } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const params = (value as Record<string, unknown>).params;
+  if (typeof params !== "object" || params === null) return undefined;
+  const info = (params as Record<string, unknown>).clientInfo;
+  if (typeof info !== "object" || info === null) return undefined;
+  const { name, version } = info as Record<string, unknown>;
+  if (typeof name !== "string" || typeof version !== "string" || !name.trim() || !version.trim()) return undefined;
+  return { name: name.trim().slice(0, 128), version: version.trim().slice(0, 128) };
+}
+
+async function recordHttpPreAuthRejection(
+  backendUrl: string,
+  token: string,
+  auditServiceCredential: string | undefined,
+  mcpInstanceId: string | undefined,
+  fileAccessInstanceCredential: string | undefined,
+  fetchImpl: typeof fetch | undefined,
+  reason: "unauthenticated_actor" | "entry_rejected",
+  logger: Logger,
+): Promise<void> {
+  if (!auditServiceCredential || !mcpInstanceId || !fileAccessInstanceCredential) return;
+  const client = new MulticaClient({
+    serverUrl: backendUrl,
+    token,
+    logger,
+    auditServiceCredential,
+    mcpInstanceId,
+    fileAccessInstanceCredential,
+    fetchImpl,
+  });
+  try {
+    await client.recordMcpPreAuthRejection({
+      invocation_id: randomUUID(),
+      reason_code: reason,
+    });
+  } catch {
+    // Early protocol rejection remains unchanged if its audit write is unavailable.
   }
 }
 

@@ -90,20 +90,20 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 			"975_file_operation_id_index",
 		},
 	},
-	"976": {
+	"977": {
 		issue: "RUYI-793",
 		stems: []string{
-			"976_mcp_file_access",
-			"976_mcp_file_access_binding_index",
-			"976_mcp_file_access_operation_invocation_index",
-			"976_mcp_pre_auth_rejection_expiry_index",
-			"976_mcp_pre_auth_rejection_invocation_index",
+			"977_mcp_file_access",
+			"977_mcp_file_access_binding_index",
+			"977_mcp_file_access_operation_invocation_index",
+			"977_mcp_pre_auth_rejection_expiry_index",
+			"977_mcp_pre_auth_rejection_invocation_index",
 		},
 		concurrentIndexes: []string{
-			"976_mcp_file_access_binding_index",
-			"976_mcp_file_access_operation_invocation_index",
-			"976_mcp_pre_auth_rejection_expiry_index",
-			"976_mcp_pre_auth_rejection_invocation_index",
+			"977_mcp_file_access_binding_index",
+			"977_mcp_file_access_operation_invocation_index",
+			"977_mcp_pre_auth_rejection_expiry_index",
+			"977_mcp_pre_auth_rejection_invocation_index",
 		},
 	},
 }

@@ -320,7 +320,7 @@ export class MulticaClient {
       });
       if (operation.status === "succeeded") return new MCPFileAccessResult(operation.result, operationId);
       if (operation.status === "failed" || operation.status === "rejected" || operation.status === "expired" || operation.status === "timeout") {
-        throw new MCPFileAccessError(operation.error || "internal", operation.status, operationId);
+        throw new MCPFileAccessError(normalizeFileAccessErrorCode(operation.error || "internal"), operation.status, operationId);
       }
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
@@ -1124,16 +1124,33 @@ export class MulticaClient {
 }
 
 export class MCPFileAccessError extends Error {
-  readonly code: string;
-  readonly status: string;
+  readonly code: MCPFileAccessErrorCode;
+  readonly status: MCPFileAccessStatus;
   readonly operationId: string | undefined;
 
-  constructor(code: string, status: string, operationId?: string) {
+  constructor(code: MCPFileAccessErrorCode, status: MCPFileAccessStatus, operationId?: string) {
     super(`MCP file access ${status}: ${code}`);
     this.name = "MCPFileAccessError";
     this.code = code;
     this.status = status;
     this.operationId = operationId;
+  }
+}
+
+type MCPFileAccessErrorCode = "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal";
+type MCPFileAccessStatus = "rejected" | "failed" | "expired" | "timeout";
+
+function normalizeFileAccessErrorCode(code: string): MCPFileAccessErrorCode {
+  switch (code) {
+    case "invalid_input":
+    case "not_found":
+    case "permission_denied":
+    case "unavailable":
+    case "timeout":
+    case "internal":
+      return code;
+    default:
+      return "internal";
   }
 }
 
