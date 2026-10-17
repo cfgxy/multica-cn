@@ -258,6 +258,8 @@ export type {
   BatchDecisionAnswerStatus,
   BatchIssueDecisionAnswer,
   DecisionAnswerSource,
+  DecisionContext,
+  DecisionContextFact,
   DecisionInboxCounts,
   DecisionOption,
   DecisionRequest,

@@ -991,6 +991,7 @@ function decisionCardBrief(
     issue_number: issue?.number ?? null,
     issue_title: issue?.title ?? null,
     question: card.question,
+    ...(card.context ? { context: card.context } : {}),
     options: card.options.map((label, index) => ({
       letter: String.fromCharCode(65 + index),
       label,
