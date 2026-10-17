@@ -1075,6 +1075,22 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		cmd.Dir = opts.Cwd
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("prepare codex command guards: resolve cache directory: %w", err)
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("prepare codex command guards: resolve home directory: %w", err)
+	}
+	guardedEnv, err := installCodexCommandGuards(cmd.Env, filepath.Join(cacheDir, "multica", codexGuardBinDir), userHome)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("prepare codex command guards: %w", err)
+	}
+	cmd.Env = guardedEnv
 
 	// RUYI-349: session decides at Start between the legacy direct child
 	// and the supervised transient unit (daemon injects Supervision for
