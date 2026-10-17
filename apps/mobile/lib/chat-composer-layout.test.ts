@@ -48,4 +48,9 @@ describe("resolveChatQueuePanelMaxHeight", () => {
   it("retains a scrollable queue header at the minimum available height", () => {
     expect(resolveChatQueuePanelMaxHeight(100)).toBe(CHAT_QUEUE_PANEL_MIN_HEIGHT);
   });
+
+  it("never allocates more height than the measured content area", () => {
+    expect(resolveChatQueuePanelMaxHeight(72)).toBe(72);
+    expect(resolveChatQueuePanelMaxHeight(0)).toBe(0);
+  });
 });
