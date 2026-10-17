@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React from "react";
 import { Alert } from "react-native";
-import i18next from "i18next";
+import { createInstance } from "i18next";
 import { act, fireEvent, render, screen } from "@testing-library/react-native";
 import type { ChatPendingTask } from "@multica/core/types";
 import { RESOURCES } from "@multica/views/locales";
@@ -15,7 +15,7 @@ jest.mock("@/components/ui/text", () => {
 jest.mock("@/lib/use-color-scheme", () => ({ useColorScheme: () => ({ colorScheme: "light" }) }));
 jest.mock("@/lib/theme", () => ({ THEME: { light: { mutedForeground: "#666", brand: "#00f" } } }));
 jest.mock("@/lib/use-t", () => ({
-  useT: () => ({ t: (_key: string, fallback: string, values?: { position?: number }) => fallback?.replace("{{position}}", String(values?.position ?? "")) }),
+  useT: () => ({ t: (_key: string, fallback: string, values?: { position?: number; number?: number }) => fallback?.replace("{{position}}", String(values?.position ?? "")).replace("{{number}}", String(values?.number ?? "")) }),
 }));
 jest.mock("@/components/ui/dropdown-menu", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -48,7 +48,7 @@ function deferred() {
 
 describe("ChatQueuePanel", () => {
   it("resolves localized queue text and count plurals from the registered resources", async () => {
-    const translator = i18next.createInstance();
+    const translator = createInstance();
     await translator.init({
       resources: RESOURCES,
       lng: "en",
@@ -57,13 +57,37 @@ describe("ChatQueuePanel", () => {
       interpolation: { escapeValue: false },
     });
 
-    expect(translator.t("queue.title", { ns: "chat", count: 1 })).toBe("1 queued message");
-    expect(translator.t("queue.title", { ns: "chat", count: 2 })).toBe("2 queued messages");
+    expect(translator.t("queue.title_single", { ns: "chat", number: 1 })).toBe("1 queued message");
+    expect(translator.t("queue.title_multiple", { ns: "chat", number: 2 })).toBe("2 queued messages");
     expect(translator.t("queue.clear_confirm_title", { ns: "chat" })).toBe("Clear queued messages?");
     expect(translator.t("queue.clear_confirm_body", { ns: "chat" })).toBe("This removes queued messages only. The current task will keep running.");
 
     await translator.changeLanguage("zh-Hans");
-    expect(translator.t("queue.title", { ns: "chat", count: 2 })).toBe("2 条排队消息");
+    const pluralRulesDescriptor = Object.getOwnPropertyDescriptor(Intl, "PluralRules");
+    const NativePluralRules = Intl.PluralRules;
+    Object.defineProperty(Intl, "PluralRules", {
+      configurable: true,
+      value: class extends NativePluralRules {
+        select() { return "one"; }
+      },
+    });
+    try {
+      const legacyTranslator = createInstance();
+      await legacyTranslator.init({
+        resources: {
+          en: { chat: { queue: { title_one: "{{count}} queued message", title_other: "{{count}} queued messages" } } },
+          "zh-Hans": { chat: { queue: { title_other: "{{count}} 条排队消息" } } },
+        },
+        lng: "zh-Hans",
+        fallbackLng: "en",
+        interpolation: { escapeValue: false },
+      });
+      expect(legacyTranslator.t("queue.title", { ns: "chat", count: 1 })).toBe("1 queued message");
+      expect(translator.t("queue.title_single", { ns: "chat", number: 1 })).toBe("1 条排队消息");
+      expect(translator.t("queue.title_multiple", { ns: "chat", number: 2 })).toBe("2 条排队消息");
+    } finally {
+      if (pluralRulesDescriptor) Object.defineProperty(Intl, "PluralRules", pluralRulesDescriptor);
+    }
     expect(translator.t("queue.clear", { ns: "chat" })).toBe("全部清空");
     expect(translator.t("queue.clear_confirm_title", { ns: "chat" })).toBe("清空排队消息？");
     expect(translator.t("queue.clear_confirm_body", { ns: "chat" })).toBe("仅清空排队中的消息，当前任务会继续运行。");
@@ -84,6 +108,8 @@ describe("ChatQueuePanel", () => {
       />,
     );
 
+    expect(screen.getByText("1 queued message")).toBeTruthy();
+    expect(screen.getByLabelText("1 queued message")).toBeTruthy();
     fireEvent.press(screen.getByLabelText("Clear all"));
     const [title, body, buttons] = alertSpy.mock.calls.at(-1)!;
     expect(title).toBe("Clear queued messages?");
