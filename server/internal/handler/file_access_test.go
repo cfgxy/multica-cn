@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -332,6 +333,78 @@ func TestMCPFileAccessQueuesAuditedOperationAndEnforcesTargetACL(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM audit_event WHERE invocation_id = ANY($1::uuid[])`, []string{invocationID, deniedInvocationID})
 	})
+}
+
+func TestMCPFileInvocationTargetFilterUsesQueuedOperation(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const instanceID = "mcp-file-audit-filter-test"
+	const instanceCredential = "test-mcp-file-audit-filter-instance-credential"
+	previousAuditCredential := testHandler.cfg.MCPAuditServiceCredential
+	previousInstanceCredentials := testHandler.cfg.MCPFileAccessInstanceCredentials
+	testHandler.cfg.MCPAuditServiceCredential = mcpAuditTestCredential
+	testHandler.cfg.MCPFileAccessInstanceCredentials = map[string]string{instanceID: instanceCredential}
+	t.Cleanup(func() {
+		testHandler.cfg.MCPAuditServiceCredential = previousAuditCredential
+		testHandler.cfg.MCPFileAccessInstanceCredentials = previousInstanceCredentials
+	})
+
+	runtimeID := dbfx.Runtime(t, "MCP audit filter runtime", testutil.Cols{"visibility": "public"})
+	targetID := "mcp-audit-filter-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, []string{testUserID})
+	invocationID := uuid.NewString()
+	startBody, err := json.Marshal(map[string]any{
+		"invocation_id": invocationID, "workspace_id": testWorkspaceID,
+		"tool_name": "read_file_chunk", "instance_id": instanceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := httptest.NewRequest(http.MethodPost, "/api/mcp/audit-start", bytes.NewReader(startBody))
+	start.Header.Set("X-User-ID", testUserID)
+	start.Header.Set("X-Multica-MCP-Service-Credential", mcpAuditTestCredential)
+	start.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	start.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	startRecorder := httptest.NewRecorder()
+	testHandler.StartMCPInvocationAudit(startRecorder, start)
+	if startRecorder.Code != http.StatusCreated {
+		t.Fatalf("start MCP file invocation: status=%d body=%s", startRecorder.Code, startRecorder.Body.String())
+	}
+
+	queue := newRequest(http.MethodPost, "/api/file-access/read-chunk", map[string]any{
+		"invocation_id": invocationID, "host": targetID, "path": "/srv/data/report.txt", "offset": 0, "length": 64,
+	})
+	queue.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	queue.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	var queued struct {
+		OperationID string `json:"operation_id"`
+		Status      string `json:"status"`
+	}
+	testutil.Call(t, testHandler.ReadMCPFileChunk, queue).Want(http.StatusAccepted).JSON(&queued)
+	if queued.OperationID == "" || queued.Status != "pending" {
+		t.Fatalf("queued operation = %+v", queued)
+	}
+
+	query := "time_basis=invocation_start&tool_name=read_file_chunk&target_type=host&target_id=" + url.QueryEscape(targetID)
+	page, code := fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 1 || page.Events[0].ID == "" || page.Events[0].EventType != "mcp.invocation_started" {
+		t.Fatalf("pending file invocation target filter: status=%d events=%+v", code, page.Events)
+	}
+	if _, err := testPool.Exec(t.Context(), `UPDATE daemon_file_operation SET status = 'claimed' WHERE id = $1`, queued.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	page, code = fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 1 {
+		t.Fatalf("claimed file invocation target filter: status=%d events=%+v", code, page.Events)
+	}
+	if _, err := testPool.Exec(t.Context(), `UPDATE daemon_file_operation SET status = 'timeout' WHERE id = $1`, queued.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	page, code = fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 1 {
+		t.Fatalf("timed out file invocation target filter: status=%d events=%+v", code, page.Events)
+	}
 }
 
 func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {

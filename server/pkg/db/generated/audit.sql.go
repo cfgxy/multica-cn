@@ -267,8 +267,22 @@ WHERE audit_event.workspace_id = $1
              AND ($18::text IS NULL OR invocation_start.details->>'reported_client_name' = $18)
              AND ($19::text IS NULL OR invocation_start.details->>'reported_client_version' = $19)
              AND ($20::text IS NULL OR invocation_start.details->>'tool_name' = $20)
-             AND ($21::text IS NULL OR invocation_start.details->>'target_type' = $21)
-             AND ($22::text IS NULL OR invocation_start.details->>'target_id' = $22)
+             AND (
+                 ($21::text IS NULL AND $22::text IS NULL)
+                 OR (
+                     ($21::text IS NULL OR invocation_start.details->>'target_type' = $21)
+                     AND ($22::text IS NULL OR invocation_start.details->>'target_id' = $22)
+                 )
+                 OR (
+                     EXISTS (
+                         SELECT 1 FROM daemon_file_operation AS file_operation
+                         WHERE file_operation.workspace_id = invocation_start.workspace_id
+                           AND file_operation.invocation_id = invocation_start.invocation_id
+                           AND ($21::text IS NULL OR $21::text = 'host')
+                           AND ($22::text IS NULL OR file_operation.target_id = $22)
+                     )
+                 )
+             )
        )))
   AND ($23::text IS NULL AND $24::text IS NULL OR (
        audit_event.domain = 'mcp'
