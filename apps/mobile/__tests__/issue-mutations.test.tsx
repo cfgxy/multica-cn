@@ -491,6 +491,93 @@ describe("useCreateComment timeline cache", () => {
     queryClient.unmount();
   });
 
+  it("keeps an earlier failed send when another identical send emits its event then response", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const key = issueKeys.timeline("workspace-1", "issue-1");
+    queryClient.setQueryData<TimelineQueryData>(key, { entries: [], truncatedKinds: [] });
+    let rejectFirst: (error: Error) => void = () => undefined;
+    let resolveSecond: (value: unknown) => void = () => undefined;
+    mockCreateComment
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+    const { result, unmount } = await renderHook(() => useCreateComment("issue-1"), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    await act(async () => {
+      first = result.current.mutateAsync({
+        content: "hello",
+        parentId: "parent-1",
+        attachmentIds: ["attachment-1"],
+      });
+      second = result.current.mutateAsync({ content: "hello", parentId: "parent-1" });
+      await Promise.resolve();
+    });
+    const optimisticIds = queryClient
+      .getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id) ?? [];
+
+    await act(async () => {
+      rejectFirst(new Error("offline"));
+      await first?.catch(() => undefined);
+    });
+    expect(Object.keys(mockFailedComments)).toEqual([optimisticIds[0]]);
+
+    const commentEvent = {
+      type: "comment" as const,
+      id: "comment-saved",
+      actor_type: "member" as const,
+      actor_id: "member-1",
+      content: "hello",
+      parent_id: "parent-1",
+      created_at: "2026-09-05T09:00:00Z",
+    };
+    // Match the production realtime callback's failedIds argument.
+    reconcileCreatedComment(
+      queryClient,
+      "workspace-1",
+      "issue-1",
+      commentEvent,
+      undefined,
+      new Set(Object.keys(mockFailedComments)),
+    );
+
+    await act(async () => {
+      resolveSecond({
+        id: "comment-saved",
+        issue_id: "issue-1",
+        author_type: "member",
+        author_id: "member-1",
+        content: "hello",
+        parent_id: "parent-1",
+        created_at: "2026-09-05T09:00:00Z",
+        updated_at: "2026-09-05T09:00:00Z",
+        type: "comment",
+        reactions: [],
+        attachments: [],
+      });
+      await second;
+    });
+
+    expect(Object.keys(mockFailedComments)).toEqual([optimisticIds[0]]);
+    expect(mockFailedComments[optimisticIds[0]]).toEqual(expect.objectContaining({
+      content: "hello",
+      parentId: "parent-1",
+      attachmentIds: ["attachment-1"],
+      error: "offline",
+    }));
+    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: optimisticIds[0], content: "hello", parent_id: "parent-1" }),
+      expect.objectContaining({ id: "comment-saved", content: "hello", parent_id: "parent-1" }),
+    ]));
+    await unmount();
+    queryClient.clear();
+    queryClient.unmount();
+  });
+
   it("keeps two comments when the same event id is delivered twice before both requests fail", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
