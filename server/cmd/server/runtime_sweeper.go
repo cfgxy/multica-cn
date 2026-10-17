@@ -177,7 +177,20 @@ func runRuntimeSweeper(ctx context.Context, queries *db.Queries, liveness handle
 		sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
 		sweepFailedTaskRetryReevaluations(ctx, taskSvc)
 		sweepDeferredChatFinalizations(ctx, queries, taskSvc)
+		// RUYI-645: finalize ops-command drift states (expired pending /
+		// timed-out claims) in the same periodic round — no new timer.
+		sweepOpsCommands(ctx, queries)
 	})
+}
+
+// sweepOpsCommands finalizes the read-only ops channel's drift states so a
+// node that vanished mid-claim cannot leave rows pending/claimed forever.
+// Never re-dispatches (assertion 5): expired and timed-out are terminal.
+func sweepOpsCommands(ctx context.Context, queries *db.Queries) {
+	expired, timedOut := service.SweepOpsCommands(ctx, queries)
+	if expired > 0 || timedOut > 0 {
+		slog.Info("ops command sweep", "expired", expired, "timed_out", timedOut)
+	}
 }
 
 func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.TaskService) {
