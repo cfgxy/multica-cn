@@ -243,6 +243,18 @@ if [[ -f /etc/resolv.conf ]]; then
   fi
   bwrap_args+=(--ro-bind "$resolv_conf" /etc/resolv.conf)
 fi
+for ca_dir in /etc/pki/ca-trust /etc/pki/tls/certs; do
+  if [[ -d $ca_dir ]]; then
+    ca_parent=${ca_dir%/*}
+    parent_chain=()
+    while [[ -n $ca_parent && $ca_parent != / && $ca_parent != /etc ]]; do
+      parent_chain=("$ca_parent" "${parent_chain[@]}")
+      ca_parent=${ca_parent%/*}
+    done
+    for dir in "${parent_chain[@]}"; do add_bwrap_dir "$dir"; done
+    bwrap_args+=(--ro-bind "$ca_dir" "$ca_dir")
+  fi
+done
 if [[ $codex_bin != /usr/* ]]; then
   codex_parent=${codex_bin%/*}
   parent_chain=()
