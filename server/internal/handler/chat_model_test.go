@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 func setChatModel(t *testing.T, sessionID string, body any) *httptest.ResponseRecorder {
@@ -212,6 +213,184 @@ func TestOrdinaryRuntimeRebindSerializesChatModelUpdate(t *testing.T) {
 	sent, err := testHandler.TaskService.SendDirectChatMessage(ctx, session, agent, parseUUID(testUserID), "send after ordinary runtime rebind", nil, "member", parseUUID(testUserID))
 	if err != nil {
 		t.Fatalf("send chat after ordinary runtime rebind: %v", err)
+	}
+	if !sent.Task.RuntimeID.Valid || uuidToString(sent.Task.RuntimeID) != newRuntimeID {
+		t.Fatalf("sent task runtime = %+v, want %s", sent.Task.RuntimeID, newRuntimeID)
+	}
+	if !sent.Task.ChatModelSnapshot.Valid || sent.Task.ChatModelSnapshot.String == "old-runtime-only-model" {
+		t.Fatalf("sent task retained old-runtime model snapshot: %+v", sent.Task.ChatModelSnapshot)
+	}
+}
+
+func TestRuntimeTeardownSerializesChatModelUpdate(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, oldRuntimeID, newRuntimeID := rebindAgentFixture(t, "chat-model-teardown")
+	sessionID := createHandlerTestChatSession(t, agentID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM task_message WHERE task_id IN (SELECT id FROM agent_task_queue WHERE chat_session_id = $1)`, sessionID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, sessionID)
+	})
+	putTestModelCatalog(t, oldRuntimeID, "old-runtime-only-model")
+	putTestModelCatalog(t, newRuntimeID, "new-runtime-only-model")
+
+	blocker, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin runtime lock transaction: %v", err)
+	}
+	defer blocker.Rollback(context.Background())
+	blockerPID := holderBackendPID(t, ctx, blocker)
+	if _, err := blocker.Exec(ctx, `SELECT id FROM agent_runtime WHERE id = $1 FOR UPDATE`, oldRuntimeID); err != nil {
+		t.Fatalf("lock runtime row: %v", err)
+	}
+
+	teardownResults := make(chan error, 1)
+	go func() {
+		tx, err := testPool.Begin(ctx)
+		if err != nil {
+			teardownResults <- err
+			return
+		}
+		defer tx.Rollback(context.Background())
+		qtx := testHandler.Queries.WithTx(tx)
+		if _, err := service.TeardownRuntime(ctx, qtx, parseUUID(oldRuntimeID), service.RuntimeTeardownOptions{CancelNonTerminalTasks: true}); err != nil {
+			teardownResults <- err
+			return
+		}
+		if err := qtx.DeleteAgentRuntime(ctx, parseUUID(oldRuntimeID)); err != nil {
+			teardownResults <- err
+			return
+		}
+		teardownResults <- tx.Commit(ctx)
+	}()
+	if !waitForWaiterBlockedBy(t, blockerPID, 10*time.Second) {
+		t.Fatal("runtime teardown did not reach its runtime lock after locking chat sessions")
+	}
+
+	modelResults := make(chan *httptest.ResponseRecorder, 1)
+	go func() { modelResults <- setChatModel(t, sessionID, "old-runtime-only-model") }()
+	if !waitForWaiterCountBlockedBy(t, blockerPID, 2, 10*time.Second) {
+		t.Fatal("model update did not wait behind teardown's chat-session lock")
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release runtime lock: %v", err)
+	}
+	if err := <-teardownResults; err != nil {
+		t.Fatalf("TeardownRuntime: %v", err)
+	}
+	select {
+	case w := <-modelResults:
+		if w.Code != http.StatusConflict {
+			t.Fatalf("old-runtime model after teardown: got %d, want 409: %s", w.Code, w.Body.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("model update did not finish after runtime teardown")
+	}
+
+	var override pgtype.Text
+	if err := testPool.QueryRow(ctx, `SELECT model_override FROM chat_session WHERE id = $1`, sessionID).Scan(&override); err != nil {
+		t.Fatalf("read model override: %v", err)
+	}
+	if override.Valid {
+		t.Fatalf("old-runtime model persisted after teardown: %q", override.String)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET runtime_id = $1 WHERE id = $2`, newRuntimeID, agentID); err != nil {
+		t.Fatalf("bind agent to replacement runtime: %v", err)
+	}
+	session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("reload chat session: %v", err)
+	}
+	agent, err := testHandler.Queries.GetAgent(ctx, parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("reload chat agent: %v", err)
+	}
+	sent, err := testHandler.TaskService.SendDirectChatMessage(ctx, session, agent, parseUUID(testUserID), "send after runtime teardown", nil, "member", parseUUID(testUserID))
+	if err != nil {
+		t.Fatalf("send after runtime teardown: %v", err)
+	}
+	if !sent.Task.RuntimeID.Valid || uuidToString(sent.Task.RuntimeID) != newRuntimeID {
+		t.Fatalf("sent task runtime = %+v, want %s", sent.Task.RuntimeID, newRuntimeID)
+	}
+	if !sent.Task.ChatModelSnapshot.Valid || sent.Task.ChatModelSnapshot.String == "old-runtime-only-model" {
+		t.Fatalf("sent task retained old-runtime model snapshot: %+v", sent.Task.ChatModelSnapshot)
+	}
+}
+
+func TestLegacyRuntimeMergeSerializesChatModelUpdate(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, oldRuntimeID, newRuntimeID := rebindAgentFixture(t, "chat-model-legacy-merge")
+	sessionID := createHandlerTestChatSession(t, agentID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM task_message WHERE task_id IN (SELECT id FROM agent_task_queue WHERE chat_session_id = $1)`, sessionID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM chat_message WHERE chat_session_id = $1`, sessionID)
+		_, _ = testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, sessionID)
+	})
+	putTestModelCatalog(t, oldRuntimeID, "old-runtime-only-model")
+	putTestModelCatalog(t, newRuntimeID, "new-runtime-only-model")
+
+	blocker, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin runtime lock transaction: %v", err)
+	}
+	defer blocker.Rollback(context.Background())
+	blockerPID := holderBackendPID(t, ctx, blocker)
+	if _, err := blocker.Exec(ctx, `SELECT id FROM agent_runtime WHERE id = $1 FOR UPDATE`, oldRuntimeID); err != nil {
+		t.Fatalf("lock old runtime row: %v", err)
+	}
+
+	mergeResults := make(chan error, 1)
+	go func() {
+		mergeResults <- testHandler.mergeLegacyRuntime(ctx, parseUUID(newRuntimeID), parseUUID(oldRuntimeID), "legacy-daemon", "chat-model-test")
+	}()
+	if !waitForWaiterBlockedBy(t, blockerPID, 10*time.Second) {
+		t.Fatal("legacy merge did not reach its runtime lock after locking chat sessions")
+	}
+
+	modelResults := make(chan *httptest.ResponseRecorder, 1)
+	go func() { modelResults <- setChatModel(t, sessionID, "old-runtime-only-model") }()
+	if !waitForWaiterCountBlockedBy(t, blockerPID, 2, 10*time.Second) {
+		t.Fatal("model update did not wait behind legacy merge's chat-session lock")
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release runtime lock: %v", err)
+	}
+	if err := <-mergeResults; err != nil {
+		t.Fatalf("mergeLegacyRuntime: %v", err)
+	}
+	select {
+	case w := <-modelResults:
+		if w.Code != http.StatusConflict {
+			t.Fatalf("old-runtime model after legacy merge: got %d, want 409: %s", w.Code, w.Body.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("model update did not finish after legacy merge")
+	}
+
+	var override pgtype.Text
+	if err := testPool.QueryRow(ctx, `SELECT model_override FROM chat_session WHERE id = $1`, sessionID).Scan(&override); err != nil {
+		t.Fatalf("read model override: %v", err)
+	}
+	if override.Valid {
+		t.Fatalf("old-runtime model persisted after legacy merge: %q", override.String)
+	}
+	session, err := testHandler.Queries.GetChatSession(ctx, parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("reload chat session: %v", err)
+	}
+	agent, err := testHandler.Queries.GetAgent(ctx, parseUUID(agentID))
+	if err != nil {
+		t.Fatalf("reload merged chat agent: %v", err)
+	}
+	sent, err := testHandler.TaskService.SendDirectChatMessage(ctx, session, agent, parseUUID(testUserID), "send after legacy runtime merge", nil, "member", parseUUID(testUserID))
+	if err != nil {
+		t.Fatalf("send after legacy runtime merge: %v", err)
 	}
 	if !sent.Task.RuntimeID.Valid || uuidToString(sent.Task.RuntimeID) != newRuntimeID {
 		t.Fatalf("sent task runtime = %+v, want %s", sent.Task.RuntimeID, newRuntimeID)

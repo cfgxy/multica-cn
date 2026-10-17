@@ -2820,6 +2820,38 @@ func (q *Queries) LockChatSessionsForAgentRuntimeBind(ctx context.Context, agent
 	return items, nil
 }
 
+const lockChatSessionsForRuntimeBind = `-- name: LockChatSessionsForRuntimeBind :many
+SELECT cs.id FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+WHERE a.runtime_id = $1
+ORDER BY cs.id
+FOR UPDATE OF cs
+`
+
+// Bulk runtime changes must acquire the same chat-session locks as model saves
+// and sends before locking runtime or agent rows. This order lets a send finish
+// its task insert (which takes a runtime FK lock) before a merge or teardown
+// waits on its session, avoiding a runtime -> session lock cycle.
+func (q *Queries) LockChatSessionsForRuntimeBind(ctx context.Context, runtimeID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockChatSessionsForRuntimeBind, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCreated :one
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())

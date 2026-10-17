@@ -573,6 +573,13 @@ func gcRuntime(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Qu
 	}()
 	qtx := queries.WithTx(tx)
 
+	// Chat sends take chat_session before the runtime FK lock used by task
+	// inserts. Lock sessions first so GC cannot hold the runtime while waiting
+	// for a send that is waiting to reference it.
+	if _, err := qtx.LockChatSessionsForRuntimeBind(ctx, runtimeID); err != nil {
+		return result, fmt.Errorf("lock runtime chat sessions: %w", err)
+	}
+
 	runtime, err := qtx.LockAgentRuntime(ctx, runtimeID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, nil
