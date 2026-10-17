@@ -43,6 +43,16 @@ func TestEnabledDefaultsOff(t *testing.T) {
 	}
 }
 
+func TestEnabledRespectsExplicitFalseFlag(t *testing.T) {
+	provider := featureflag.NewStaticProvider()
+	provider.Set("issue_coordinator_session_poc", featureflag.Rule{Default: false})
+	flags := featureflag.NewService(provider)
+
+	if Enabled(context.Background(), flags, "codex", "workspace", "issue", "agent", true) {
+		t.Fatal("explicitly disabled coordinator flag must retain the legacy claim path")
+	}
+}
+
 func TestRequiresColdStartForUnsafeContinuityInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name              string

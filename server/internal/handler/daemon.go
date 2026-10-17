@@ -3612,6 +3612,7 @@ func (h *Handler) issueCoordinatorEnabled(ctx context.Context, task db.AgentTask
 }
 
 func (h *Handler) applyIssueCoordinatorColdStartBrief(ctx context.Context, resp *AgentTaskResponse, task db.AgentTaskQueue, workspaceID string, coordinator db.GetIssueCoordinatorSessionRow) {
+	resp.PriorSessionID = ""
 	brief := resp.PriorContextBrief
 	if brief == "" {
 		var inputs sessionBriefInputs
