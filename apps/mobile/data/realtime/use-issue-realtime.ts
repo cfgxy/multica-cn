@@ -133,7 +133,7 @@ export function useIssueRealtime(
         // ----- Comments / activity -----
         ws.on("comment:created", (payload) => {
           if (payload.comment.issue_id !== issueId) return;
-          reconcileCreatedComment(
+          const reconciledFailedIds = reconcileCreatedComment(
             qc,
             wsId,
             issueId,
@@ -141,6 +141,7 @@ export function useIssueRealtime(
             undefined,
             new Set(Object.keys(useFailedCommentsStore.getState().failed)),
           );
+          reconciledFailedIds.forEach((id) => useFailedCommentsStore.getState().clear(id));
           onIssueAuxiliaryRevision(qc, wsId, issueId, payload.issue_revision);
         }),
         ws.on("comment:updated", (payload) => {

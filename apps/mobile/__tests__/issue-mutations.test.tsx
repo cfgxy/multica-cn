@@ -174,7 +174,7 @@ describe("useCreateComment timeline cache", () => {
     queryClient.unmount();
   });
 
-  it("keeps failure ownership when an identical realtime event matches multiple sends", async () => {
+  it("does not mark an ambiguous realtime success as failed when its HTTP response errors", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -230,11 +230,162 @@ describe("useCreateComment timeline cache", () => {
     });
 
     expect(optimisticIds).toHaveLength(2);
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries).toHaveLength(2);
+    await unmount();
+    queryClient.clear();
+    queryClient.unmount();
+  });
+
+  it("preserves two successful realtime comments when both HTTP responses error", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const key = issueKeys.timeline("workspace-1", "issue-1");
+    queryClient.setQueryData<TimelineQueryData>(key, { entries: [], truncatedKinds: [] });
+    let rejectFirst: (error: Error) => void = () => undefined;
+    let rejectSecond: (error: Error) => void = () => undefined;
+    mockCreateComment
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject; }));
+    const { result, unmount } = await renderHook(() => useCreateComment("issue-1"), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    await act(async () => {
+      first = result.current.mutateAsync({ content: "hello" });
+      second = result.current.mutateAsync({ content: "hello" });
+      await Promise.resolve();
+    });
+    reconcileCreatedComment(queryClient, "workspace-1", "issue-1", {
+      type: "comment",
+      id: "comment-a",
+      actor_type: "member",
+      actor_id: "member-1",
+      content: "hello",
+      parent_id: null,
+      created_at: "2026-09-05T09:00:00Z",
+    });
+    reconcileCreatedComment(queryClient, "workspace-1", "issue-1", {
+      type: "comment",
+      id: "comment-b",
+      actor_type: "member",
+      actor_id: "member-1",
+      content: "hello",
+      parent_id: null,
+      created_at: "2026-09-05T09:00:01Z",
+    });
+
+    await act(async () => {
+      rejectFirst(new Error("connection lost"));
+      rejectSecond(new Error("connection lost"));
+      await Promise.all([first?.catch(() => undefined), second?.catch(() => undefined)]);
+    });
+
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-a",
+      "comment-b",
+    ]);
+    await unmount();
+    queryClient.clear();
+    queryClient.unmount();
+  });
+
+  it("keeps one real failure retryable when only one identical send has a realtime success", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const key = issueKeys.timeline("workspace-1", "issue-1");
+    queryClient.setQueryData<TimelineQueryData>(key, { entries: [], truncatedKinds: [] });
+    let rejectFirst: (error: Error) => void = () => undefined;
+    let rejectSecond: (error: Error) => void = () => undefined;
+    mockCreateComment
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSecond = reject; }));
+    const { result, unmount } = await renderHook(() => useCreateComment("issue-1"), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    await act(async () => {
+      first = result.current.mutateAsync({ content: "hello" });
+      second = result.current.mutateAsync({ content: "hello" });
+      await Promise.resolve();
+    });
+    const optimisticIds = queryClient
+      .getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id) ?? [];
+    reconcileCreatedComment(queryClient, "workspace-1", "issue-1", {
+      type: "comment",
+      id: "comment-saved",
+      actor_type: "member",
+      actor_id: "member-1",
+      content: "hello",
+      parent_id: null,
+      created_at: "2026-09-05T09:00:00Z",
+    });
+
+    await act(async () => {
+      rejectFirst(new Error("connection lost"));
+      rejectSecond(new Error("offline"));
+      await Promise.all([first?.catch(() => undefined), second?.catch(() => undefined)]);
+    });
+
+    expect(mockMarkFailed).toHaveBeenCalledTimes(1);
     expect(mockMarkFailed).toHaveBeenCalledWith(
-      optimisticIds[0],
+      expect.stringMatching(/^optimistic-/),
       expect.objectContaining({ content: "hello", error: "offline" }),
     );
-    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries).toHaveLength(2);
+    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-saved",
+      expect.stringMatching(/^optimistic-/),
+    ]);
+    expect(optimisticIds).toHaveLength(2);
+    await unmount();
+    queryClient.clear();
+    queryClient.unmount();
+  });
+
+  it("does not expose a normalized realtime success as retryable after its response errors", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const key = issueKeys.timeline("workspace-1", "issue-1");
+    queryClient.setQueryData<TimelineQueryData>(key, { entries: [], truncatedKinds: [] });
+    let rejectCreate: (error: Error) => void = () => undefined;
+    mockCreateComment.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectCreate = reject; }),
+    );
+    const { result, unmount } = await renderHook(() => useCreateComment("issue-1"), {
+      wrapper: wrapperFor(queryClient),
+    });
+
+    let mutation: Promise<unknown> | undefined;
+    await act(async () => {
+      mutation = result.current.mutateAsync({ content: "hello\u0000" });
+      await Promise.resolve();
+    });
+    reconcileCreatedComment(queryClient, "workspace-1", "issue-1", {
+      type: "comment",
+      id: "comment-normalized",
+      actor_type: "member",
+      actor_id: "member-1",
+      content: "hello",
+      parent_id: null,
+      created_at: "2026-09-05T09:00:00Z",
+    });
+    await act(async () => {
+      rejectCreate(new Error("connection lost"));
+      await mutation?.catch(() => undefined);
+    });
+
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-normalized",
+    ]);
     await unmount();
     queryClient.clear();
     queryClient.unmount();
