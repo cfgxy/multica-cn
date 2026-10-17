@@ -84,25 +84,74 @@ LIMIT 1;
 -- cursor. NULL filters are skipped (sqlc.narg keeps them nullable on the Go
 -- side). The issue-level endpoint is the same query with issue_id pinned —
 -- one query, one code path (RUYI-355).
-SELECT * FROM audit_event
-WHERE workspace_id = $1
-  AND (sqlc.narg('since')::timestamptz IS NULL OR occurred_at >= sqlc.narg('since'))
-  AND (sqlc.narg('until')::timestamptz IS NULL OR occurred_at <= sqlc.narg('until'))
-  AND (sqlc.narg('filter_domain')::text IS NULL OR domain = sqlc.narg('filter_domain'))
-  AND (sqlc.narg('filter_event_type')::text IS NULL OR event_type = sqlc.narg('filter_event_type'))
-  AND (sqlc.narg('filter_actor_type')::text IS NULL OR actor_type = sqlc.narg('filter_actor_type'))
-  AND (sqlc.narg('filter_actor_id')::uuid IS NULL OR actor_id = sqlc.narg('filter_actor_id'))
-  AND (sqlc.narg('filter_issue_id')::uuid IS NULL OR issue_id = sqlc.narg('filter_issue_id'))
-  AND (sqlc.narg('filter_task_id')::uuid IS NULL OR task_id = sqlc.narg('filter_task_id'))
-  AND (sqlc.narg('filter_agent_id')::uuid IS NULL OR agent_id = sqlc.narg('filter_agent_id'))
-  AND (sqlc.narg('filter_runtime_id')::uuid IS NULL OR runtime_id = sqlc.narg('filter_runtime_id'))
-  AND (sqlc.narg('filter_reason')::text IS NULL OR reason = sqlc.narg('filter_reason'))
-  AND (sqlc.arg('include_sensitive')::boolean OR sensitive = false)
-  AND (sqlc.narg('filter_invocation_id')::uuid IS NULL OR (domain = 'mcp' AND invocation_id = sqlc.narg('filter_invocation_id')))
-  AND (domain <> 'mcp' OR expires_at IS NULL OR expires_at > now())
+SELECT audit_event.* FROM audit_event AS audit_event
+WHERE audit_event.workspace_id = $1
+  AND (
+       (sqlc.narg('time_basis')::text = 'invocation_start' AND audit_event.domain = 'mcp'
+        AND (sqlc.narg('since')::timestamptz IS NULL AND sqlc.narg('until')::timestamptz IS NULL
+             OR EXISTS (
+                 SELECT 1 FROM audit_event AS invocation_start
+                 WHERE invocation_start.workspace_id = audit_event.workspace_id
+                   AND invocation_start.invocation_id = audit_event.invocation_id
+                   AND invocation_start.domain = 'mcp'
+                   AND invocation_start.event_type = 'mcp.invocation_started'
+                   AND (sqlc.narg('since')::timestamptz IS NULL OR invocation_start.occurred_at >= sqlc.narg('since'))
+                   AND (sqlc.narg('until')::timestamptz IS NULL OR invocation_start.occurred_at <= sqlc.narg('until'))
+                   AND (sqlc.arg('include_sensitive')::boolean OR invocation_start.sensitive = false)
+                   AND (invocation_start.expires_at IS NULL OR invocation_start.expires_at > now())
+             )))
+       OR ((sqlc.narg('time_basis')::text IS NULL OR sqlc.narg('time_basis')::text <> 'invocation_start' OR audit_event.domain <> 'mcp')
+           AND (sqlc.narg('since')::timestamptz IS NULL OR audit_event.occurred_at >= sqlc.narg('since'))
+           AND (sqlc.narg('until')::timestamptz IS NULL OR audit_event.occurred_at <= sqlc.narg('until')))
+  )
+  AND (sqlc.narg('filter_domain')::text IS NULL OR audit_event.domain = sqlc.narg('filter_domain'))
+  AND (sqlc.narg('filter_event_type')::text IS NULL OR audit_event.event_type = sqlc.narg('filter_event_type'))
+  AND (sqlc.narg('filter_actor_type')::text IS NULL OR audit_event.actor_type = sqlc.narg('filter_actor_type'))
+  AND (sqlc.narg('filter_actor_id')::uuid IS NULL OR audit_event.actor_id = sqlc.narg('filter_actor_id'))
+  AND (sqlc.narg('filter_issue_id')::uuid IS NULL OR audit_event.issue_id = sqlc.narg('filter_issue_id'))
+  AND (sqlc.narg('filter_task_id')::uuid IS NULL OR audit_event.task_id = sqlc.narg('filter_task_id'))
+  AND (sqlc.narg('filter_agent_id')::uuid IS NULL OR audit_event.agent_id = sqlc.narg('filter_agent_id'))
+  AND (sqlc.narg('filter_runtime_id')::uuid IS NULL OR audit_event.runtime_id = sqlc.narg('filter_runtime_id'))
+  AND (sqlc.narg('filter_reason')::text IS NULL OR audit_event.reason = sqlc.narg('filter_reason'))
+  AND (sqlc.arg('include_sensitive')::boolean OR audit_event.sensitive = false)
+  AND (sqlc.narg('filter_invocation_id')::uuid IS NULL OR (audit_event.domain = 'mcp' AND audit_event.invocation_id = sqlc.narg('filter_invocation_id')))
+  AND (NOT sqlc.arg('filter_invocation_start')::boolean OR (
+       audit_event.domain = 'mcp'
+       AND audit_event.invocation_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM audit_event AS invocation_start
+           WHERE invocation_start.workspace_id = audit_event.workspace_id
+             AND invocation_start.invocation_id = audit_event.invocation_id
+             AND invocation_start.domain = 'mcp'
+             AND invocation_start.event_type = 'mcp.invocation_started'
+             AND (sqlc.arg('include_sensitive')::boolean OR invocation_start.sensitive = false)
+             AND (invocation_start.expires_at IS NULL OR invocation_start.expires_at > now())
+             AND (sqlc.narg('filter_actor_type')::text IS NULL OR invocation_start.actor_type = sqlc.narg('filter_actor_type'))
+             AND (sqlc.narg('filter_actor_id')::uuid IS NULL OR invocation_start.actor_id = sqlc.narg('filter_actor_id'))
+             AND (sqlc.narg('filter_client_name')::text IS NULL OR invocation_start.details->>'reported_client_name' = sqlc.narg('filter_client_name'))
+             AND (sqlc.narg('filter_client_version')::text IS NULL OR invocation_start.details->>'reported_client_version' = sqlc.narg('filter_client_version'))
+             AND (sqlc.narg('filter_tool_name')::text IS NULL OR invocation_start.details->>'tool_name' = sqlc.narg('filter_tool_name'))
+             AND (sqlc.narg('filter_target_type')::text IS NULL OR invocation_start.details->>'target_type' = sqlc.narg('filter_target_type'))
+             AND (sqlc.narg('filter_target_id')::text IS NULL OR invocation_start.details->>'target_id' = sqlc.narg('filter_target_id'))
+       )))
+  AND (sqlc.narg('filter_result_status')::text IS NULL AND sqlc.narg('filter_result_code')::text IS NULL OR (
+       audit_event.domain = 'mcp'
+       AND audit_event.invocation_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM audit_event AS invocation_finish
+           WHERE invocation_finish.workspace_id = audit_event.workspace_id
+             AND invocation_finish.invocation_id = audit_event.invocation_id
+             AND invocation_finish.domain = 'mcp'
+             AND invocation_finish.event_type = 'mcp.invocation_finished'
+             AND (sqlc.arg('include_sensitive')::boolean OR invocation_finish.sensitive = false)
+             AND (invocation_finish.expires_at IS NULL OR invocation_finish.expires_at > now())
+             AND (sqlc.narg('filter_result_status')::text IS NULL OR invocation_finish.details->>'status' = sqlc.narg('filter_result_status'))
+             AND (sqlc.narg('filter_result_code')::text IS NULL OR invocation_finish.details->>'error_code' = sqlc.narg('filter_result_code'))
+       )))
+  AND (audit_event.domain <> 'mcp' OR audit_event.expires_at IS NULL OR audit_event.expires_at > now())
   AND (sqlc.narg('cursor_at')::timestamptz IS NULL
-       OR (occurred_at, id) < (sqlc.narg('cursor_at'), sqlc.narg('cursor_id')::uuid))
-ORDER BY occurred_at DESC, id DESC
+       OR (audit_event.occurred_at, audit_event.id) < (sqlc.narg('cursor_at'), sqlc.narg('cursor_id')::uuid))
+ORDER BY audit_event.occurred_at DESC, audit_event.id DESC
 LIMIT $2;
 
 -- name: ListAllWorkspaceIDs :many
