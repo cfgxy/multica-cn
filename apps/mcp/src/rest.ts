@@ -47,6 +47,8 @@ import type {
   IssueListResult,
   IssueRelationType,
   IssueRelationsInfo,
+  InboxItemInfo,
+  InboxWorkspaceUnreadInfo,
   ModelListRequestInfo,
   ProjectInfo,
   ProjectResourceInfo,
@@ -133,12 +135,14 @@ export interface MulticaClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   logger?: Logger;
+  auditServiceCredential?: string | undefined;
 }
 
 interface RequestOptions {
   workspace?: string | undefined;
   query?: Record<string, string | number | boolean | undefined> | undefined;
   body?: unknown;
+  auditService?: boolean | undefined;
 }
 
 export class MulticaClient {
@@ -147,6 +151,7 @@ export class MulticaClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly logger: Logger;
+  private readonly auditServiceCredential: string | undefined;
 
   constructor(options: MulticaClientOptions) {
     this.baseUrl = options.serverUrl.replace(/\/+$/, "");
@@ -154,12 +159,84 @@ export class MulticaClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.logger = options.logger ?? stderrLogger;
+    this.auditServiceCredential = options.auditServiceCredential?.trim() || undefined;
   }
 
   // ---- workspace-scoped operations -------------------------------------
 
   async listWorkspaces(): Promise<WorkspaceInfo[]> {
     return this.request<WorkspaceInfo[]>("GET", "/api/workspaces");
+  }
+
+  async resolveWorkspaceId(workspace: string): Promise<string> {
+    return isUuid(workspace) ? workspace : this.resolveWorkspaceIdBySlug(workspace);
+  }
+
+  async listInbox(workspace: string): Promise<InboxItemInfo[]> {
+    return this.request("GET", "/api/inbox", { workspace });
+  }
+
+  async listArchivedInbox(workspace: string): Promise<InboxItemInfo[]> {
+    return this.request("GET", "/api/inbox/archived", { workspace });
+  }
+
+  async countUnreadInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("GET", "/api/inbox/unread-count", { workspace });
+  }
+
+  async unreadInboxSummary(workspace: string): Promise<InboxWorkspaceUnreadInfo[]> {
+    return this.request("GET", "/api/inbox/unread-summary", { workspace });
+  }
+
+  async markAllInboxRead(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/mark-all-read", { workspace, body: {} });
+  }
+
+  async archiveAllInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/archive-all", { workspace, body: {} });
+  }
+
+  async archiveAllReadInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/archive-all-read", { workspace, body: {} });
+  }
+
+  async archiveCompletedInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/archive-completed", { workspace, body: {} });
+  }
+
+  async markInboxItemRead(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/read`, { workspace, body: {} });
+  }
+
+  async markInboxItemUnread(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/unread`, { workspace, body: {} });
+  }
+
+  async archiveInboxItem(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/archive`, { workspace, body: {} });
+  }
+
+  async unarchiveInboxItem(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/unarchive`, { workspace, body: {} });
+  }
+
+  async startMcpInvocationAudit(input: {
+    invocation_id: string;
+    workspace_id: string;
+    tool_name: string;
+    target_type: "workspace";
+    target_id: string;
+  }): Promise<void> {
+    await this.request("POST", "/api/mcp/audit-start", { body: input, auditService: true });
+  }
+
+  async finishMcpInvocationAudit(input: {
+    invocation_id: string;
+    status: "success" | "failure";
+    duration_ms: number;
+    error_code?: "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal";
+  }): Promise<void> {
+    await this.request("POST", "/api/mcp/audit-finish", { body: input, auditService: true });
   }
 
   async listAgents(workspace: string): Promise<AgentInfo[]> {
@@ -892,6 +969,12 @@ export class MulticaClient {
     };
     if (options.workspace !== undefined) {
       Object.assign(headers, this.workspaceHeaders(options.workspace));
+    }
+    if (options.auditService) {
+      if (!this.auditServiceCredential) {
+        throw new MulticaRequestError("MCP audit service credential is not configured");
+      }
+      headers["X-Multica-MCP-Service-Credential"] = this.auditServiceCredential;
     }
     let requestBody: string | undefined;
     if (options.body !== undefined) {

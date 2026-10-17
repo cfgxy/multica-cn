@@ -14,6 +14,7 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
+import { readAuditCredential } from "./audit-credential.js";
 import { resolveCredentials, resolveServerUrl, type CredentialOverrides } from "./config.js";
 import { stderrLogger } from "./log.js";
 import { MulticaClient } from "./rest.js";
@@ -27,6 +28,7 @@ interface ParsedFlags {
   token?: string;
   serverUrl?: string;
   profile?: string;
+  auditCredentialFile?: string;
 }
 
 function fail(message: string): never {
@@ -44,6 +46,7 @@ function parseFlags(): ParsedFlags {
         token: { type: "string" },
         "server-url": { type: "string" },
         profile: { type: "string" },
+        "audit-credential-file": { type: "string" },
       },
     });
     return {
@@ -53,6 +56,7 @@ function parseFlags(): ParsedFlags {
       token: values.token,
       serverUrl: values["server-url"],
       profile: values.profile,
+      auditCredentialFile: values["audit-credential-file"],
     };
   } catch (error) {
     fail(`invalid arguments: ${error instanceof Error ? error.message : String(error)}`);
@@ -76,6 +80,7 @@ async function main(): Promise<void> {
     const client = new MulticaClient({
       serverUrl: credentials.serverUrl,
       token: credentials.token,
+      auditServiceCredential: readAuditCredential(flags.auditCredentialFile),
     });
     await runStdio(client, stderrLogger);
     return;
@@ -105,6 +110,7 @@ async function main(): Promise<void> {
       host,
       serverUrl,
       siteRoot,
+      auditServiceCredential: readAuditCredential(flags.auditCredentialFile),
     });
     const shutdown = (): void => {
       httpServer.close(() => process.exit(0));

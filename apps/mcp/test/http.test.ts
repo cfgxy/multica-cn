@@ -1,4 +1,8 @@
 import { afterAll, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { Logger } from "../src/log.js";
 import {
@@ -96,6 +100,38 @@ describe("wwwAuthenticateChallenge", () => {
   it("degrades to a bare challenge when no site root is configured", () => {
     expect(wwwAuthenticateChallenge(undefined)).toBe("Bearer");
     expect(wwwAuthenticateChallenge("   ")).toBe("Bearer");
+  });
+});
+
+describe("HTTP systemd credential wiring", () => {
+  it("uses systemd LoadCredential and passes only its runtime file path to MCP", () => {
+    const template = readFileSync(
+      join(process.cwd(), "..", "..", "deploy", "multica-mcp-http.service.template"),
+      "utf8",
+    );
+    expect(template).toContain("LoadCredential=multica-mcp-audit:@AUDIT_CREDENTIAL_FILE@");
+    expect(template).toContain('--audit-credential-file "$CREDENTIALS_DIRECTORY/multica-mcp-audit"');
+    expect(template).not.toContain("SetCredential=");
+    expect(template).not.toContain("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=");
+  });
+
+  it("renders custom credential paths with sed replacement characters literally", () => {
+    const directory = mkdtempSync(join(tmpdir(), "mcp-audit-"));
+    const credentialPath = join(directory, "audit&key|file");
+    const credential = "secret-audit-credential";
+    writeFileSync(credentialPath, credential);
+
+    try {
+      const unit = execFileSync(
+        "make",
+        ["--silent", "mcp-http-render", `MCP_AUDIT_CREDENTIAL_FILE=${credentialPath}`],
+        { cwd: join(process.cwd(), "..", ".."), encoding: "utf8" },
+      );
+      expect(unit).toContain(`LoadCredential=multica-mcp-audit:${credentialPath}`);
+      expect(unit).not.toContain(credential);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

@@ -9,7 +9,11 @@ import type { ClientTarget, McpEntry } from "./types.js";
  * Code, Kimi CLI, ZCode and the Cursor CLI all share for a local stdio MCP
  * server. */
 function stdioEntry(entry: McpEntry): unknown {
-  return { type: "stdio", command: "node", args: [entry.distPath] };
+  return {
+    type: "stdio",
+    command: "node",
+    args: [entry.distPath, "--audit-credential-file", entry.auditCredentialFile],
+  };
 }
 
 /** Inverse of `stdioEntry`: pulls `distPath` back out of a previously
@@ -44,6 +48,11 @@ function extractOpencodeDistPath(rawEntry: unknown): string | undefined {
  * keeps every target unit-testable against an isolated fixture directory.
  */
 export function createClientTargets(homeDir: string): ClientTarget[] {
+  const auditCredentialFile = join(homeDir, ".config", "multica", "mcp-audit-credential");
+  const withCredentialFile = (entry: McpEntry): McpEntry => ({
+    ...entry,
+    auditCredentialFile: entry.auditCredentialFile ?? auditCredentialFile,
+  });
   const claudeCodeDetected = () =>
     existsSync(join(homeDir, ".claude.json")) || existsSync(join(homeDir, ".claude"));
   const codexDetected = () => existsSync(join(homeDir, ".codex"));
@@ -60,12 +69,13 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       configPath: join(homeDir, ".claude.json"),
       detect: claudeCodeDetected,
       serversPath: ["mcpServers"],
-      buildEntry: stdioEntry,
+      buildEntry: (entry) => stdioEntry(withCredentialFile(entry)),
       extractDistPath: extractStdioDistPath,
     }),
     createCodexClientTarget({
       configPath: join(homeDir, ".codex", "config.toml"),
       detect: codexDetected,
+      auditCredentialFile,
     }),
     createJsonClientTarget({
       id: "kimi",
@@ -73,7 +83,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       configPath: join(homeDir, ".kimi-code", "mcp.json"),
       detect: kimiDetected,
       serversPath: ["mcpServers"],
-      buildEntry: stdioEntry,
+      buildEntry: (entry) => stdioEntry(withCredentialFile(entry)),
       extractDistPath: extractStdioDistPath,
     }),
     createJsonClientTarget({
@@ -82,7 +92,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       configPath: join(homeDir, ".zcode", "cli", "config.json"),
       detect: zcodeDetected,
       serversPath: ["mcp", "servers"],
-      buildEntry: stdioEntry,
+      buildEntry: (entry) => stdioEntry(withCredentialFile(entry)),
       extractDistPath: extractStdioDistPath,
     }),
     createJsonClientTarget({
@@ -91,7 +101,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       configPath: join(homeDir, ".cursor", "mcp.json"),
       detect: cursorDetected,
       serversPath: ["mcpServers"],
-      buildEntry: stdioEntry,
+      buildEntry: (entry) => stdioEntry(withCredentialFile(entry)),
       extractDistPath: extractStdioDistPath,
     }),
     createJsonClientTarget({
@@ -100,7 +110,14 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       configPath: join(homeDir, ".config", "opencode", "opencode.json"),
       detect: opencodeDetected,
       serversPath: ["mcp"],
-      buildEntry: (entry) => ({ type: "local", command: ["node", entry.distPath], enabled: true }),
+      buildEntry: (entry) => {
+        const configured = withCredentialFile(entry);
+        return {
+          type: "local",
+          command: ["node", configured.distPath, "--audit-credential-file", configured.auditCredentialFile],
+          enabled: true,
+        };
+      },
       extractDistPath: extractOpencodeDistPath,
     }),
   ];

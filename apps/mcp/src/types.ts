@@ -863,3 +863,30 @@ export interface DecisionInboxResult {
   items: DecisionInboxItemInfo[];
   counts: { open: number; answered: number; cancelled: number };
 }
+
+/** The existing inbox API projection, including issue-less system notices. */
+export interface InboxItemInfo {
+  id: string;
+  workspace_id: string;
+  recipient_type: "member" | "agent";
+  recipient_id: string;
+  type: string;
+  severity: string;
+  issue_id: string | null;
+  title: string;
+  body: string | null;
+  read: boolean;
+  archived: boolean;
+  created_at: string;
+  issue_status: string | null;
+  issue_priority: string | null;
+  issue_identifier: string | null;
+  actor_type: string | null;
+  actor_id: string | null;
+  details: unknown;
+}
+
+export interface InboxWorkspaceUnreadInfo {
+  workspace_id: string;
+  count: number;
+}
