@@ -794,6 +794,7 @@ export default function ChatDetailScreen() {
           sending={sending}
           stopPending={stoppingTaskId !== null}
           allowStop={pendingTask?.status !== "queued"}
+          hasQueuedMessages={(pendingTask?.queued_tasks?.length ?? 0) > 0}
           allowSubmitWhileRunning={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}

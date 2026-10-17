@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   CHAT_COMPOSER_INPUT_MAX_HEIGHT,
   CHAT_COMPOSER_INPUT_MIN_HEIGHT,
+  CHAT_COMPOSER_INPUT_QUEUE_MAX_HEIGHT,
   CHAT_QUEUE_PANEL_MAX_HEIGHT,
   CHAT_QUEUE_PANEL_MIN_HEIGHT,
   PLUS_PANEL_GAP,
+  resolveBoundedChatComposerInputHeight,
   resolveChatQueuePanelMaxHeight,
+  resolveChatComposerInputMaxHeight,
   resolveChatComposerInputHeight,
   resolvePlusPanelMaxHeight,
 } from "./chat-composer-layout";
@@ -19,6 +22,32 @@ describe("resolveChatComposerInputHeight", () => {
 
   it("caps long content so it scrolls inside the input", () => {
     expect(resolveChatComposerInputHeight(480)).toBe(CHAT_COMPOSER_INPUT_MAX_HEIGHT);
+  });
+});
+
+describe("attachment and queue space allocation", () => {
+  it("keeps the full multiline viewport without an attachment or queued items", () => {
+    expect(resolveChatComposerInputMaxHeight(false, false)).toBe(
+      CHAT_COMPOSER_INPUT_MAX_HEIGHT,
+    );
+    expect(resolveChatComposerInputMaxHeight(true, false)).toBe(
+      CHAT_COMPOSER_INPUT_MAX_HEIGHT,
+    );
+    expect(resolveChatComposerInputMaxHeight(false, true)).toBe(
+      CHAT_COMPOSER_INPUT_MAX_HEIGHT,
+    );
+  });
+
+  it("reclaims one attachment row for a queued list and keeps long text scrollable", () => {
+    expect(resolveChatComposerInputMaxHeight(true, true)).toBe(
+      CHAT_COMPOSER_INPUT_QUEUE_MAX_HEIGHT,
+    );
+    expect(
+      resolveBoundedChatComposerInputHeight(480, CHAT_COMPOSER_INPUT_QUEUE_MAX_HEIGHT),
+    ).toBe(CHAT_COMPOSER_INPUT_QUEUE_MAX_HEIGHT);
+    expect(
+      resolveBoundedChatComposerInputHeight(10, CHAT_COMPOSER_INPUT_QUEUE_MAX_HEIGHT),
+    ).toBe(CHAT_COMPOSER_INPUT_MIN_HEIGHT);
   });
 });
 
