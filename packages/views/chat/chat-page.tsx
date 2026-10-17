@@ -249,6 +249,13 @@ export function ChatPage() {
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
+          showModelSelector={!!c.activeAgent}
+          modelSelectorDisabled={
+            c.isSessionArchived ||
+            c.isAgentArchived ||
+            c.isAgentAccessRevoked ||
+            !c.isAgentRuntimeBound
+          }
         />
       )}
       {c.showSkeleton ? (
