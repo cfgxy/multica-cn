@@ -1535,8 +1535,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Use(chimw.Recoverer)
 	r.Use(h.PluginSurfaceHostBoundary)
 	r.Use(middleware.ContentSecurityPolicy)
-	r.With(middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_MCP_PREAUTH", 60), time.Minute, signupConfig.TrustedProxies)).Post("/api/mcp/pre-auth-rejections", h.RecordMCPPreAuthRejection)
-
 	// Share allowed origins with WebSocket origin checker.
 	realtime.SetAllowedOrigins(origins)
 
@@ -1553,6 +1551,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.With(middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_MCP_PREAUTH", 60), time.Minute, middleware.ParseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")))).Post("/api/mcp/pre-auth-rejections", h.RecordMCPPreAuthRejection)
 
 	// Health / readiness checks
 	r.Get("/health", health.liveHandler)
