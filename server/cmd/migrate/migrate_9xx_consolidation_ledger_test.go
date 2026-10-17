@@ -156,6 +156,7 @@ var postConsolidationStems = []string{
 	"973_mcp_invocation_audit_invocation_id_index",
 	"973_mcp_invocation_audit_outbox_expiry_index",
 	"973_mcp_invocation_audit_outbox_id_index",
+	"974_chat_session_model_override", // RUYI-796
 	"975_daemon_file_access",          // RUYI-789
 	"975_file_access_target_id_index", // RUYI-789
 	"975_file_operation_id_index",     // RUYI-789

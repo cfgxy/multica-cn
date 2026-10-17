@@ -841,15 +841,16 @@ func (h *Handler) mergeLegacyRuntime(ctx context.Context, newRuntimeID, oldRunti
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
-	// Fence, in the same order every task write uses: workspace row first, then the
-	// owner rows. Without the FOR UPDATE on the runtimes, a concurrent enqueue
-	// against the OLD runtime slipped through after the task scan — writers hold
-	// only FOR KEY SHARE on the workspace, and so did this merge, and two KEY SHARE
-	// locks do not conflict — and DeleteAgentRuntime below then removed that
-	// brand-new task through ON DELETE CASCADE.
+	// Keep the task-owner fence first. Its workspace FOR KEY SHARE is compatible
+	// with enqueue, and lets workspace teardown finish before this transaction
+	// takes chat-session locks. Then lock sessions before runtimes: a send may need
+	// a runtime FK lock after its session lock while inserting the task.
 	runtimeIDs := []pgtype.UUID{oldRuntimeID, newRuntimeID}
 	if err := qtx.LockWorkspaceForRuntimeMerge(ctx, runtimeIDs); err != nil {
 		return fmt.Errorf("lock workspace: %w", err)
+	}
+	if _, err := qtx.LockChatSessionsForRuntimeBind(ctx, oldRuntimeID); err != nil {
+		return fmt.Errorf("lock legacy runtime chat sessions: %w", err)
 	}
 	locked, err := qtx.LockRuntimesForMerge(ctx, runtimeIDs)
 	if err != nil {
@@ -2421,6 +2422,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// kept verbatim, the clause region is rebuilt from the task_kind-
 	// filtered effective set.
 	agentInstructions := filterClauses(promptVersionScopeAgent, agent.ID, agent.Instructions)
+	model := agent.Model.String
+	if task.ChatModelSnapshot.Valid {
+		model = task.ChatModelSnapshot.String
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                      uuidToString(agent.ID),
 		Name:                    agent.Name,
@@ -2428,7 +2433,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		CustomEnv:               customEnv,
 		CustomArgs:              customArgs,
 		McpConfig:               mcpConfig,
-		Model:                   agent.Model.String,
+		Model:                   model,
 		ThinkingLevel:           agent.ThinkingLevel.String,
 		ServiceTier:             agent.ServiceTier.String,
 		RuntimeConfig:           runtimeConfig,

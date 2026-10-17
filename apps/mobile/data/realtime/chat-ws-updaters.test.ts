@@ -455,6 +455,17 @@ function sessionUpdatedPayload(
 }
 
 describe("applyChatSessionUpdatedToCache", () => {
+  it("applies and clears a nullable model override from another client", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), [chatSession({ id: SESSION, model_override: null })]);
+
+    applyChatSessionUpdatedToCache(qc, "ws", sessionUpdatedPayload({ model_override: "model-a" }));
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"))?.[0]?.model_override).toBe("model-a");
+
+    applyChatSessionUpdatedToCache(qc, "ws", sessionUpdatedPayload({ model_override: null }));
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"))?.[0]?.model_override).toBeNull();
+  });
+
   it("patches a plain rename without re-sorting", () => {
     const rows = [
       chatSession({

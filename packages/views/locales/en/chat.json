@@ -250,6 +250,14 @@
     "delete": "Delete chat"
   },
   "mobile": {
+    "model": {
+      "agent_default": "Agent default",
+      "loading": "Loading models…",
+      "load_failed": "Could not load models",
+      "unsupported": "Runtime does not support model selection",
+      "unavailable": "Model or session is no longer available",
+      "save_failed": "Could not save model selection"
+    },
     "send_blocked": {
       "no_permission_title": "No permission to run this agent",
       "no_permission_message": "You no longer have permission to run this agent, so the message was not sent. Ask its owner for access.",
