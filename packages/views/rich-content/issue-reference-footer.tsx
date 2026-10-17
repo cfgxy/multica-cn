@@ -174,14 +174,16 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
           className="issue-reference-row no-underline"
           data-reference-kind="pr"
         >
-          <Icon
-            aria-hidden
-            className={`h-[15px] w-[15px] shrink-0 ${className} ${
-              visual.dimmed ? "opacity-80" : ""
-            }`}
-          />
-          <span className="issue-reference-identifier" translate="no">
-            #{row.pr.number}
+          <span className="issue-reference-pr-leading">
+            <Icon
+              aria-hidden
+              className={`h-[15px] w-[15px] shrink-0 ${className} ${
+                visual.dimmed ? "opacity-80" : ""
+              }`}
+            />
+            <span className="issue-reference-identifier" translate="no">
+              #{row.pr.number}
+            </span>
           </span>
           <span className="issue-reference-pr-content">
             <span className="issue-reference-pr-project" translate="no">
