@@ -36,6 +36,7 @@ import type {
   TaskQueuedPayload,
 } from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
+import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   addCommentReaction,
@@ -44,6 +45,7 @@ import {
   appendTimelineEntry,
   clearIssueDetail,
   commentToTimelineEntry,
+  reconcileCreatedComment,
   invalidateIssueAfterReconnect,
   patchIssueDetail,
   patchIssueLabels,
@@ -131,12 +133,15 @@ export function useIssueRealtime(
         // ----- Comments / activity -----
         ws.on("comment:created", (payload) => {
           if (payload.comment.issue_id !== issueId) return;
-          appendTimelineEntry(
+          const reconciledFailedIds = reconcileCreatedComment(
             qc,
             wsId,
             issueId,
             commentToTimelineEntry(payload.comment),
+            undefined,
+            new Set(Object.keys(useFailedCommentsStore.getState().failed)),
           );
+          reconciledFailedIds.forEach((id) => useFailedCommentsStore.getState().clear(id));
           onIssueAuxiliaryRevision(qc, wsId, issueId, payload.issue_revision);
         }),
         ws.on("comment:updated", (payload) => {
