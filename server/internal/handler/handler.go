@@ -192,6 +192,7 @@ type DaemonPendingWorkNotifier interface {
 
 type Handler struct {
 	Queries                *db.Queries
+	runActivityAuditWriter runActivityAuditWriter
 	DB                     dbExecutor
 	TxStarter              txStarter
 	Hub                    *realtime.Hub
@@ -518,6 +519,8 @@ type Handler struct {
 	PRRefresh *ghsnapshot.Manager
 	cfg       Config
 }
+
+type runActivityAuditWriter func(*http.Request, *db.Queries, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string, int32, int, string, runActivityResponse, int, string) bool
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
 	var executor dbExecutor

@@ -93,6 +93,10 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
 	if err != nil || task.IssueID != issue.ID {
+		if !h.auditRunActivity(r, h.Queries, actorUUID, issue.WorkspaceID, issue.ID, pgtype.UUID{}, r.URL.Query().Get("stream"), 0, 16<<10, "", runActivityResponse{}, 0, "not_found") {
+			writeError(w, http.StatusServiceUnavailable, "run activity audit unavailable")
+			return
+		}
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
@@ -126,7 +130,19 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	reads, err := h.Queries.CountRecentRunActivityReads(r.Context(), db.CountRecentRunActivityReadsParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "run activity temporarily unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	lockKey := "run-activity:" + uuid.UUID(actorUUID.Bytes).String() + ":" + uuid.UUID(taskID.Bytes).String()
+	if _, err := tx.Exec(r.Context(), "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", lockKey); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "run activity temporarily unavailable")
+		return
+	}
+	reads, err := qtx.CountRecentRunActivityReads(r.Context(), db.CountRecentRunActivityReadsParams{
 		ActorID: actorUUID,
 		TaskID:  taskID,
 	})
@@ -135,7 +151,11 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if reads > 0 {
-		if !writeRunActivityAudit(r, h, actorUUID, issue.WorkspaceID, issue.ID, task.ID, r.URL.Query().Get("stream"), afterSeq, tailBytes, workerCursor, runActivityResponse{}, 0, "rate_limited") {
+		if !h.auditRunActivity(r, qtx, actorUUID, issue.WorkspaceID, issue.ID, task.ID, r.URL.Query().Get("stream"), afterSeq, tailBytes, workerCursor, runActivityResponse{}, 0, "rate_limited") {
+			writeError(w, http.StatusServiceUnavailable, "run activity audit unavailable")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "run activity audit unavailable")
 			return
 		}
@@ -144,7 +164,7 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page, err := h.Queries.ListTaskMessagesPage(r.Context(), db.ListTaskMessagesPageParams{
+	page, err := qtx.ListTaskMessagesPage(r.Context(), db.ListTaskMessagesPageParams{
 		TaskID: taskID,
 		Seq:    afterSeq,
 		Limit:  int32(limit + 1),
@@ -153,7 +173,7 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read run activity")
 		return
 	}
-	latestAt, latestErr := h.Queries.GetLatestTaskMessage(r.Context(), taskID)
+	latestAt, latestErr := qtx.GetLatestTaskMessage(r.Context(), taskID)
 	if latestErr != nil && !errors.Is(latestErr, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to read run activity")
 		return
@@ -186,7 +206,11 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.SemanticActivity.HasMore = true
 	}
-	if !writeRunActivityAudit(r, h, actorUUID, issue.WorkspaceID, issue.ID, task.ID, r.URL.Query().Get("stream"), afterSeq, tailBytes, workerCursor, resp, len(encoded), "success") {
+	if !h.auditRunActivity(r, qtx, actorUUID, issue.WorkspaceID, issue.ID, task.ID, r.URL.Query().Get("stream"), afterSeq, tailBytes, workerCursor, resp, len(encoded), "success") {
+		writeError(w, http.StatusServiceUnavailable, "run activity audit unavailable")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "run activity audit unavailable")
 		return
 	}
@@ -333,7 +357,7 @@ func validBoolPtr(value pgtype.Bool) *bool {
 	return &out
 }
 
-func writeRunActivityAudit(r *http.Request, h *Handler, actorID, workspaceID, issueID, taskID pgtype.UUID, stream string, afterSeq int32, tailBytes int, workerCursor string, response runActivityResponse, responseBytes int, result string) bool {
+func writeRunActivityAudit(r *http.Request, q *db.Queries, actorID, workspaceID, issueID, taskID pgtype.UUID, stream string, afterSeq int32, tailBytes int, workerCursor string, response runActivityResponse, responseBytes int, result string) bool {
 	details := map[string]any{
 		"tool_name":         "get_run_activity",
 		"stream":            normalizedActivityStream(stream),
@@ -360,7 +384,14 @@ func writeRunActivityAudit(r *http.Request, h *Handler, actorID, workspaceID, is
 		OccurredAt: time.Now().UTC(), ActorType: service.AuditActorMember, ActorID: actorID,
 		IssueID: issueID, TaskID: taskID, Details: service.JSONDetails(details), Sensitive: true,
 	}
-	return service.AppendAuditEvents(r.Context(), h.Queries, event) == nil
+	return service.AppendAuditEvents(r.Context(), q, event) == nil
+}
+
+func (h *Handler) auditRunActivity(r *http.Request, q *db.Queries, actorID, workspaceID, issueID, taskID pgtype.UUID, stream string, afterSeq int32, tailBytes int, workerCursor string, response runActivityResponse, responseBytes int, result string) bool {
+	if h.runActivityAuditWriter != nil {
+		return h.runActivityAuditWriter(r, q, actorID, workspaceID, issueID, taskID, stream, afterSeq, tailBytes, workerCursor, response, responseBytes, result)
+	}
+	return writeRunActivityAudit(r, q, actorID, workspaceID, issueID, taskID, stream, afterSeq, tailBytes, workerCursor, response, responseBytes, result)
 }
 
 func normalizedActivityStream(stream string) string {
