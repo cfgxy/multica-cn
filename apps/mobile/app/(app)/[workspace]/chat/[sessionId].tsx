@@ -93,10 +93,9 @@ import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 import { useVoiceAvailability } from "@/data/voice-providers";
 import { useT } from "@/lib/use-t";
-import { useColorScheme } from "@/lib/use-color-scheme";
-import { THEME } from "@/lib/theme";
 import { IconButton } from "@/components/ui/icon-button";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+import { resolveChatQueuePanelMaxHeight } from "@/lib/chat-composer-layout";
 
 /** Literal route param for a blank new chat (session ids are UUIDs). */
 export const NEW_CHAT_SESSION_ID = "new";
@@ -104,8 +103,6 @@ export const NEW_CHAT_SESSION_ID = "new";
 export default function ChatDetailScreen() {
   const qc = useQueryClient();
   const { t } = useT("chat");
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
   const params = useLocalSearchParams<{
     sessionId: string;
     agentId?: string;
@@ -129,6 +126,8 @@ export default function ChatDetailScreen() {
   // RUYI-449: 非空时经 VoiceSessionOverlay 对当前 agent 发起语音会话
   // （425 链路）；关闭即结束，不影响文本发送。
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [chatContentHeight, setChatContentHeight] = useState(0);
+  const queuePanelMaxHeight = resolveChatQueuePanelMaxHeight(chatContentHeight);
   const [restoredAttachments, setRestoredAttachments] = useState<Attachment[]>([]);
 
   // ── Server state ───────────────────────────────────────────────────────
@@ -739,45 +738,54 @@ export default function ChatDetailScreen() {
       />
       {availability === "none" ? <NoAgentBanner /> : null}
       <KeyboardAvoidingView behavior="padding" className="flex-1">
-        {activeSession && currentAgent ? (
-          <ChatSessionModelPicker
-            runtimeId={currentAgent.runtime_id ?? null}
-            modelOverride={activeSession.model_override ?? null}
-            agentModel={currentAgent.model ?? null}
-            disabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
-            onSelect={handleSessionModelSelect}
-          />
-        ) : null}
-        <ChatMessageList
-          messages={visibleMessages}
-          loading={messagesLoading}
-          hasSessions={sessions.length > 0}
-          agent={currentAgent}
-          onPickPrompt={(text) => setDraft(draftKey, text)}
-          onQuickAction={(action) =>
-            handleSend(action.prompt, [], { clearDraft: false })
+        <View
+          className="flex-1"
+          style={{ minHeight: 0, overflow: "hidden" }}
+          onLayout={(event) =>
+            setChatContentHeight(event.nativeEvent.layout.height)
           }
-          quickActionsDisabled={sending || disabled}
-          pendingTask={pendingTask}
-          liveTaskMessages={liveTaskMessages}
-          availability={presenceAvailability}
-        />
-        {runtimeBound ? (
-          <OfflineBanner
-            agentName={currentAgent?.name}
+        >
+          {activeSession && currentAgent ? (
+            <ChatSessionModelPicker
+              runtimeId={currentAgent.runtime_id ?? null}
+              modelOverride={activeSession.model_override ?? null}
+              agentModel={currentAgent.model ?? null}
+              disabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
+              onSelect={handleSessionModelSelect}
+            />
+          ) : null}
+          <ChatMessageList
+            messages={visibleMessages}
+            loading={messagesLoading}
+            hasSessions={sessions.length > 0}
+            agent={currentAgent}
+            onPickPrompt={(text) => setDraft(draftKey, text)}
+            onQuickAction={(action) =>
+              handleSend(action.prompt, [], { clearDraft: false })
+            }
+            quickActionsDisabled={sending || disabled}
+            pendingTask={pendingTask}
+            liveTaskMessages={liveTaskMessages}
             availability={presenceAvailability}
           />
-        ) : currentAgent ? (
-          <RuntimeRequiredBanner agentName={currentAgent.name} />
-        ) : null}
-        <ChatQueuePanel
-          pendingTask={pendingTask}
-          canManage={canManageQueue}
-          onEdit={(task) => handleQueuedAction(task, "edit")}
-          onRemove={(task) => handleQueuedAction(task, "remove")}
-          onPrioritize={handlePrioritizeQueuedTask}
-          onClear={handleClearQueue}
-        />
+          {runtimeBound ? (
+            <OfflineBanner
+              agentName={currentAgent?.name}
+              availability={presenceAvailability}
+            />
+          ) : currentAgent ? (
+            <RuntimeRequiredBanner agentName={currentAgent.name} />
+          ) : null}
+          <ChatQueuePanel
+            pendingTask={pendingTask}
+            maxHeight={queuePanelMaxHeight}
+            canManage={canManageQueue}
+            onEdit={(task) => handleQueuedAction(task, "edit")}
+            onRemove={(task) => handleQueuedAction(task, "remove")}
+            onPrioritize={handlePrioritizeQueuedTask}
+            onClear={handleClearQueue}
+          />
+        </View>
         <ChatComposer
           value={draft}
           onChangeText={(next) => setDraft(draftKey, next)}
