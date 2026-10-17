@@ -196,19 +196,20 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:          uuidToString(s.ID),
-				WorkspaceID: uuidToString(s.WorkspaceID),
-				AgentID:     uuidToString(s.AgentID),
-				CreatorID:   uuidToString(s.CreatorID),
-				ProjectID:   uuidToPtr(s.ProjectID),
-				Title:       s.Title,
-				Status:      s.Status,
-				HasUnread:   s.UnreadCount > 0,
-				UnreadCount: int(s.UnreadCount),
-				LastMessage: buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:      s.PinnedAt.Valid,
-				CreatedAt:   timestampToString(s.CreatedAt),
-				UpdatedAt:   timestampToString(s.UpdatedAt),
+				ID:            uuidToString(s.ID),
+				WorkspaceID:   uuidToString(s.WorkspaceID),
+				AgentID:       uuidToString(s.AgentID),
+				CreatorID:     uuidToString(s.CreatorID),
+				ProjectID:     uuidToPtr(s.ProjectID),
+				ModelOverride: textToPtr(s.ModelOverride),
+				Title:         s.Title,
+				Status:        s.Status,
+				HasUnread:     s.UnreadCount > 0,
+				UnreadCount:   int(s.UnreadCount),
+				LastMessage:   buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:        s.PinnedAt.Valid,
+				CreatedAt:     timestampToString(s.CreatedAt),
+				UpdatedAt:     timestampToString(s.UpdatedAt),
 			})
 		}
 	} else {
@@ -226,19 +227,20 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:          uuidToString(s.ID),
-				WorkspaceID: uuidToString(s.WorkspaceID),
-				AgentID:     uuidToString(s.AgentID),
-				CreatorID:   uuidToString(s.CreatorID),
-				ProjectID:   uuidToPtr(s.ProjectID),
-				Title:       s.Title,
-				Status:      s.Status,
-				HasUnread:   s.UnreadCount > 0,
-				UnreadCount: int(s.UnreadCount),
-				LastMessage: buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:      s.PinnedAt.Valid,
-				CreatedAt:   timestampToString(s.CreatedAt),
-				UpdatedAt:   timestampToString(s.UpdatedAt),
+				ID:            uuidToString(s.ID),
+				WorkspaceID:   uuidToString(s.WorkspaceID),
+				AgentID:       uuidToString(s.AgentID),
+				CreatorID:     uuidToString(s.CreatorID),
+				ProjectID:     uuidToPtr(s.ProjectID),
+				ModelOverride: textToPtr(s.ModelOverride),
+				Title:         s.Title,
+				Status:        s.Status,
+				HasUnread:     s.UnreadCount > 0,
+				UnreadCount:   int(s.UnreadCount),
+				LastMessage:   buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:        s.PinnedAt.Valid,
+				CreatedAt:     timestampToString(s.CreatedAt),
+				UpdatedAt:     timestampToString(s.UpdatedAt),
 			})
 		}
 	}
