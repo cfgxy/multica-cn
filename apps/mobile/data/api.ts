@@ -18,9 +18,11 @@ import type {
   Agent,
   AgentEnvResponse,
   AgentTask,
+  CancelTaskResponse,
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  PrioritizeQueuedChatTaskResponse,
   ChatSession,
   Comment,
   CreateAgentRequest,
@@ -98,6 +100,10 @@ import type {
   DecisionRequestsList,
 } from "@multica/core/types";
 import {
+  EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+  PrioritizeQueuedChatTaskResponseSchema,
+} from "@multica/core/api/schemas";
+import {
   parseTimelineTruncatedKinds,
   type TimelineQueryData,
 } from "@multica/core/issues/timeline-query";
@@ -105,6 +111,7 @@ import {
   AgentEnvResponseSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
+  CancelTaskResponseSchema,
   EMPTY_AGENT_ENV,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
@@ -2541,8 +2548,60 @@ class ApiClient {
     });
   }
 
-  async cancelTaskById(taskId: string): Promise<void> {
-    await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+  async setChatSessionModel(id: string, modelOverride: string | null): Promise<ChatSession> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, {
+      id: "", workspace_id: "", agent_id: "", creator_id: "", title: "",
+      status: "active", has_unread: false, created_at: "", updated_at: "",
+    }, { endpoint: "PATCH /api/chat/sessions/:id/model" });
+  }
+
+  async clearQueuedChatTasks(sessionId: string): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${sessionId}/queued-tasks`, { method: "DELETE" });
+  }
+
+  async prioritizeQueuedChatTask(sessionId: string, taskId: string): Promise<PrioritizeQueuedChatTaskResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/queued-tasks/${taskId}/prioritize`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PrioritizeQueuedChatTaskResponseSchema,
+      EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+      { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  async cancelTaskById(
+    taskId: string,
+    options?: { sessionId: string; queuedAction: "edit" | "remove" },
+  ): Promise<CancelTaskResponse> {
+    const params = new URLSearchParams();
+    if (options) {
+      params.set("expected_status", "queued");
+      params.set("chat_session_id", options.sessionId);
+      params.set("queue_action", options.queuedAction);
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}/cancel${query}`, { method: "POST" });
+    return parseWithFallback(raw, CancelTaskResponseSchema, {
+      id: "",
+      agent_id: "",
+      runtime_id: "",
+      issue_id: "",
+      status: "cancelled",
+      priority: 0,
+      dispatched_at: null,
+      started_at: null,
+      completed_at: null,
+      result: null,
+      error: null,
+      created_at: "",
+    }, {
+      endpoint: "POST /api/tasks/:id/cancel",
+    });
   }
 
   // Full per-agent task list (active + terminal) — RUYI-538 ② run history.

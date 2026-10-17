@@ -32,6 +32,7 @@ import { isImeComposing } from "@multica/core/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink } from "../../navigation";
 import { useT } from "../../i18n";
+import { ChatSessionModelSelector } from "./chat-session-model-selector";
 
 /**
  * Per-session header for the conversation pane: agent avatar + editable chat
@@ -43,6 +44,8 @@ export function ChatSessionHeader({
   session,
   agent,
   onArchive,
+  showModelSelector = false,
+  modelSelectorDisabled = false,
 }: {
   session: ChatSession;
   agent: Agent | null;
@@ -50,6 +53,8 @@ export function ChatSessionHeader({
   // next chat on desktop, back to the list on mobile), so the parent owns it —
   // see ChatPage.handleArchive. Falls back to a plain status flip if unwired.
   onArchive?: (session: ChatSession) => void;
+  showModelSelector?: boolean;
+  modelSelectorDisabled?: boolean;
 }) {
   const { t } = useT("chat");
   const wsPaths = useWorkspacePaths();
@@ -206,6 +211,16 @@ export function ChatSessionHeader({
           </div>
         )}
       </div>
+
+      {showModelSelector && agent ? (
+        <ChatSessionModelSelector
+          session={session}
+          wsId={session.workspace_id}
+          runtimeId={agent.runtime_id ?? null}
+          agentModel={agent.model ?? null}
+          disabled={modelSelectorDisabled}
+        />
+      ) : null}
 
       <DropdownMenu>
         <DropdownMenuTrigger
