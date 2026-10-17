@@ -70,6 +70,7 @@ export function applyChatSessionUpdatedToCache(
   payload: {
     chat_session_id: string;
     title?: string;
+    model_override?: string | null;
     pinned?: boolean;
     status?: "active" | "archived";
     updated_at?: string;
@@ -82,6 +83,7 @@ export function applyChatSessionUpdatedToCache(
         ? {
             ...s,
             title: payload.title ?? s.title,
+            ...("model_override" in payload ? { model_override: payload.model_override } : {}),
             pinned: payload.pinned ?? s.pinned,
             status: payload.status ?? s.status,
             updated_at: payload.updated_at ?? s.updated_at,
