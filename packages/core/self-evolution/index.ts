@@ -9,6 +9,12 @@ export {
 export type { DimensionCard, MeasureView } from "./measure";
 export { formatRetrospectiveStamp } from "./retrospective-title";
 export { promptQualityDashboardOptions, promptQualityKeys } from "./queries";
+export {
+  clauseGovernanceKeys,
+  clauseGovernanceOverviewOptions,
+  clauseGovernanceDetailOptions,
+  clauseGovernanceReconciliationOptions,
+} from "./clause-governance-queries";
 export { quizVerdict, quizDiscrimination, toQuizView, quizOutcomeCount } from "./quiz";
 export type { QuizVerdict, QuizDiscrimination, QuizView, Incomparable } from "./quiz";
 export {

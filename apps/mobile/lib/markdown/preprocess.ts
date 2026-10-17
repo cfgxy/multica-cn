@@ -8,12 +8,16 @@
  *      `@multica/core/markdown` (single source of truth — same regex web/
  *      desktop run).
  *
- *   2. Issue mention links `[label](mention://issue/id)` → plain body text
- *      (RUYI-635): web renders mentions as plain text and aggregates the
- *      references into a tail list; the demote pass applies the same body-text
- *      contract here, and navigation moves to the tail list rendered by
- *      `IssueReferenceList`. Also lives in `@multica/core/markdown` so the
- *      display token can't drift from web.
+ *   2. Bare reference tokens `MR !N` / `owner/repo#N` → markdown links
+ *      (RUYI-728): an MR number becomes `mention://merge-request/<N>` (the
+ *      tap resolves the number to a PR and hands it to the OS — see
+ *      `link-route.ts`), `owner/repo#N` becomes the canonical GitHub PR URL
+ *      (GitHub redirects /pull/N ↔ /issues/N automatically). Issue mention
+ *      links stay links — the RUYI-635 demote pass is gone: web now
+ *      linkifies in-body references (rich-content.tsx) and mobile follows,
+ *      while `IssueReferenceList` still aggregates the same tokens into the
+ *      tail sheet. Lives in `@multica/core/markdown` so the token grammar
+ *      can't drift from web.
  *
  *   3. File card lines `!file[name](url)` → standard link `[📎 name](url)`.
  *      marked.js doesn't recognize the `!file` prefix; web's preprocess
@@ -28,9 +32,91 @@
  * hyperlinks — same tap behavior, just no 📎 prefix. Acceptable degradation.
  */
 import {
-  demoteIssueMentionLinks,
+  autolinkReferenceTokens,
   preprocessMentionShortcodes,
 } from "@multica/core/markdown";
+
+export interface PreprocessMobileMarkdownOptions {
+  workspacePrefix?: string | null;
+}
+
+const BARE_ISSUE_RE = /(?<![A-Za-z0-9_-])([A-Z][A-Z0-9]*-\d+)(?![A-Za-z0-9_-])/g;
+const BODY_PULL_REQUEST_RE = /(?<![A-Za-z0-9])PR ?#(\d+)(?![A-Za-z0-9])/g;
+
+function overlaps(
+  range: { start: number; end: number },
+  other: { start: number; end: number },
+): boolean {
+  return range.start < other.end && other.start < range.end;
+}
+
+function protectedRanges(input: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  const patterns = [
+    /```[\s\S]*?```/g,
+    /(?<!`)`(?!`)[^`\n]+`(?!`)/g,
+    /!?\[[^\]]*\]\([^)]*\)/g,
+    /https?:\/\/[^\s)]+/g,
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(input)) !== null) {
+      ranges.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return ranges;
+}
+
+function rewriteBodyReferences(input: string, workspacePrefix?: string | null): string {
+  if (!/[A-Z][A-Z0-9]*-\d|\bPR ?#\d/.test(input)) return input;
+  const protectedTextRanges = protectedRanges(input);
+  const rewrites: Array<{ start: number; end: number; replacement: string }> = [];
+
+  const addMatches = (
+    pattern: RegExp,
+    replacement: (match: string, id: string) => string,
+    prefixGated = false,
+  ) => {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(input)) !== null) {
+      const token = match[0];
+      const id = match[1];
+      if (!token || !id) continue;
+      const start = match.index;
+      const end = start + token.length;
+      if (protectedTextRanges.some((range) => overlaps({ start, end }, range))) continue;
+      if (
+        (input[end] === "." && /[A-Za-z0-9]/.test(input[end + 1] ?? "")) ||
+        input[end] === "/" ||
+        input[start - 1] === "/" ||
+        input[start - 1] === "."
+      ) {
+        continue;
+      }
+      if (
+        prefixGated &&
+        (!workspacePrefix || !id.toUpperCase().startsWith(`${workspacePrefix.toUpperCase()}-`))
+      ) {
+        continue;
+      }
+      rewrites.push({ start, end, replacement: replacement(token, id) });
+    }
+  };
+
+  addMatches(BARE_ISSUE_RE, (token) => `[${token}](mention://issue/${token})`, true);
+  addMatches(BODY_PULL_REQUEST_RE, (token, number) => `[${token}](mention://pull-request/${number})`);
+  if (!rewrites.length) return input;
+  rewrites.sort((a, b) => a.start - b.start);
+  let output = "";
+  let cursor = 0;
+  for (const rewrite of rewrites) {
+    if (rewrite.start < cursor) continue;
+    output += input.slice(cursor, rewrite.start) + rewrite.replacement;
+    cursor = rewrite.end;
+  }
+  return output + input.slice(cursor);
+}
 
 // File-card line matcher, kept in sync with web's parser in
 // `packages/ui/markdown/file-cards.ts` (NEW_FILE_CARD_RE + FILE_CARD_URL_PATTERN):
@@ -166,13 +252,19 @@ function stripHtml(input: string): string {
     .replace(/<\/?[a-z][^>]*>/gi, "");
 }
 
-export function preprocessMobileMarkdown(input: string): string {
+export function preprocessMobileMarkdown(
+  input: string,
+  options?: PreprocessMobileMarkdownOptions,
+): string {
   if (!input) return "";
   return preprocessTaskListStrikethrough(
     preprocessCommentAnchors(
       preprocessFileCards(
-        demoteIssueMentionLinks(
-          preprocessMentionShortcodes(stripHtml(input)),
+        autolinkReferenceTokens(
+          rewriteBodyReferences(
+            preprocessMentionShortcodes(stripHtml(input)),
+            options?.workspacePrefix,
+          ),
         ),
       ),
     ),

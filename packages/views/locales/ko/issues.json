@@ -1204,6 +1204,12 @@
     "auth_approve_default": "승인",
     "auth_deny_default": "거부",
     "auth_execute_failed": "실행 실패: {{reason}}",
-    "auth_answer_failed": "승인 작업에 실패했습니다"
+    "auth_answer_failed": "승인 작업에 실패했습니다",
+    "context_title": "결정 배경",
+    "context_why_now": "지금 결정하는 이유",
+    "context_facts": "확인된 사실과 근거",
+    "context_impact": "영향 범위",
+    "context_recommendation": "추천 이유",
+    "context_unknowns": "미확인 사항"
   }
 }

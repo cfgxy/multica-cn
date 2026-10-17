@@ -190,6 +190,67 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 	return i, err
 }
 
+const getGitHubPullRequestsByNumber = `-- name: GetGitHubPullRequestsByNumber :many
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
+WHERE workspace_id = $1 AND pr_number = $2
+`
+
+type GetGitHubPullRequestsByNumberParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PrNumber    int32       `json:"pr_number"`
+}
+
+// Number-only lookup for `MR !N` text references (RUYI-728): the handler
+// enforces the unique-hit contract (0 rows → 404, >1 rows → 409 ambiguous).
+func (q *Queries) GetGitHubPullRequestsByNumber(ctx context.Context, arg GetGitHubPullRequestsByNumberParams) ([]GithubPullRequest, error) {
+	rows, err := q.db.Query(ctx, getGitHubPullRequestsByNumber, arg.WorkspaceID, arg.PrNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubPullRequest{}
+	for rows.Next() {
+		var i GithubPullRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InstallationID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.PrNumber,
+			&i.Title,
+			&i.State,
+			&i.HtmlUrl,
+			&i.Branch,
+			&i.AuthorLogin,
+			&i.AuthorAvatarUrl,
+			&i.MergedAt,
+			&i.ClosedAt,
+			&i.PrCreatedAt,
+			&i.PrUpdatedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.HeadSha,
+			&i.MergeableState,
+			&i.Additions,
+			&i.Deletions,
+			&i.ChangedFiles,
+			&i.ApiMergeable,
+			&i.ApiMergeStateStatus,
+			&i.ChecksRollupState,
+			&i.SnapshotHeadSha,
+			&i.SnapshotFetchedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getIssuePullRequestCloseAggregate = `-- name: GetIssuePullRequestCloseAggregate :one
 SELECT
     COALESCE(SUM(CASE WHEN pr.state IN ('open', 'draft') THEN 1 ELSE 0 END), 0)::bigint AS open_count,

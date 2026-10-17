@@ -237,7 +237,7 @@ export function ServerSettingsDialog({
           if (!next) onClose();
         }}
       >
-        <DialogContent className="max-w-lg" data-testid="server-settings-dialog">
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto" data-testid="server-settings-dialog">
           <DialogHeader>
             <DialogTitle>{t(($) => $.server.manage_title)}</DialogTitle>
             <DialogDescription className="text-caption">

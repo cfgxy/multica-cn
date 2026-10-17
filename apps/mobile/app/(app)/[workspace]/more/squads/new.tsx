@@ -167,7 +167,7 @@ export default function NewSquadScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior="padding">
-      {/* modal 自绘头部；状态栏避让恒定（modal 无档位，RUYI-540 场景 RUYI-698 收敛），见 more/runtimes/new。 */}
+      {/* modal 自绘头部；状态栏避让恒定（modal 无档位，RUYI-540 场景 RUYI-698 收敛）。 */}
       <SheetHeader className="flex-row items-center px-4 pb-2 border-b border-border" gap={12} initialAtLargeDetent>
         <Pressable
           onPress={() => router.back()}

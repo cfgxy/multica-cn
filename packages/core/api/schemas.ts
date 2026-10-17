@@ -94,6 +94,9 @@ import type {
   SquadMember,
   TimelineEntry,
   User,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
 } from "../types";
 import type {
   AdminUser,
@@ -1044,11 +1047,23 @@ export const DecisionOptionSchema = z.object({
   label: z.string(),
 }).loose();
 
+export const DecisionContextSchema = z.object({
+  why_now: z.string().optional(),
+  facts: z.array(z.object({
+    statement: z.string(),
+    evidence: z.array(z.string()).optional(),
+  }).loose()).optional(),
+  impact: z.string().optional(),
+  recommendation_reason: z.string().optional(),
+  unknowns: z.array(z.string()).optional(),
+}).loose();
+
 export const IssueDecisionSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
   source_comment_id: z.string().nullable().optional(),
   question: z.string(),
+  context: DecisionContextSchema.nullable().optional(),
   options: z.array(DecisionOptionSchema),
   multi_select: z.boolean(),
   recommended_indices: z.array(z.number().int()),
@@ -1873,6 +1888,35 @@ const DashboardUsageDailySchema = z.object({
 }).loose();
 
 export const DashboardUsageDailyListSchema = z.array(DashboardUsageDailySchema);
+
+// Usage-panel proxy payloads (RUYI-618). `configured: false` means the
+// backend has no PROMETHEUS_URL — the UI hides the section, so everything
+// else is allowed to be absent. Series keys vary per panel and grow with
+// new charts, hence the open z.record instead of an enum.
+const UsageMetricPointSchema = z.object({
+  t: z.number(),
+  v: z.number(),
+});
+
+const UsageMetricSeriesSchema = z.object({
+  labels: z.record(z.string(), z.string()).default({}),
+  points: z.array(UsageMetricPointSchema).default([]),
+});
+
+export const DashboardUsageResourcesSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export const DashboardUsageTrafficSchema = z.object({
+  configured: z.boolean(),
+  window: z.string().optional(),
+  by: z.string().default("provider"),
+  step_seconds: z.number().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
 
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
@@ -4903,11 +4947,17 @@ export const PromptProposalSchema = z.object({
   gate_answer_cost: z.string(),
   gate_answer_conflict: z.string(),
   gate_answer_dedup: z.string(),
+  // RUYI-723 decision context: retrospective drafts only, absent elsewhere.
+  problem: z.string().optional(),
+  expected_effect: z.string().optional(),
+  expected_gain: z.string().optional(),
+  value_score: z.number().optional(),
   evidence_anchors: z.array(z.record(z.string(), z.unknown())),
   status: z.string(),
   gate_errors: z.array(LegislationGateFindingSchema),
   gate_warnings: z.array(LegislationGateFindingSchema),
   enacted_version: z.number().optional(),
+  rollback_of_version: z.number().optional(),
   rollback_reason: z.string(),
   merged_from: z.array(PromptProposalMergeRefSchema),
   source: z.string(),
@@ -5167,3 +5217,258 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   message: z.string().default(""),
   validated_at: z.string().optional(),
 });
+
+// Workspace host-backpressure settings (RUYI-618): the effective card the
+// settings form saves and every daemon receives on heartbeat acks. All
+// numeric fields default to the daemon code defaults so an old server
+// response degrades to "not customized" instead of a broken form.
+export const WorkspaceBackpressureSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  custom: z.boolean().default(false),
+});
+
+// ---- Daemon host backpressure settings + event history (RUYI-729) ----
+// The daemon-host override card (Runtime detail page) and its report/event
+// shapes. Coexists with the workspace card above: the workspace settings are
+// the per-workspace default plane, a saved daemon row is the host-level
+// override delivered on its own ack field.
+
+const DaemonBackpressureConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  mem_high_pct: z.number().default(15),
+  mem_recovery_pct: z.number().default(25),
+  swap_high_pct: z.number().default(80),
+  swap_recovery_pct: z.number().default(60),
+  psi_high_pct: z.number().default(50),
+  psi_recovery_pct: z.number().default(20),
+  sample_interval_seconds: z.number().default(5),
+  window_size: z.number().default(6),
+  config_version: z.number().optional(),
+  source: z.string().optional(),
+}).loose();
+
+export type DaemonBackpressureConfig = z.infer<typeof DaemonBackpressureConfigSchema>;
+
+const DaemonBackpressureConditionSchema = z.object({
+  condition: z.string().default(""),
+  value: z.number().default(0),
+  threshold: z.number().default(0),
+  triggered: z.boolean().default(false),
+});
+
+const DaemonBackpressureReportSchema = z.object({
+  active: z.boolean().default(false),
+  reason: z.string().default(""),
+  mem_available_pct: z.number().default(0),
+  swap_used_pct: z.number().default(0),
+  psi_memory_some_avg10: z.number().default(0),
+  psi_read_ok: z.boolean().default(false),
+  deferred_claims: z.number().default(0),
+  config: DaemonBackpressureConfigSchema.nullish().catch(null),
+  conditions: z.array(DaemonBackpressureConditionSchema).optional(),
+}).loose();
+
+export const RuntimeBackpressureSettingsSchema = z.object({
+  daemon_id: z.string().default(""),
+  configured: z.boolean().default(false),
+  config: DaemonBackpressureConfigSchema.nullish().catch(null),
+  updated_by: z.string().optional(),
+  updated_at: z.string().optional(),
+  report: DaemonBackpressureReportSchema.nullish().catch(null),
+}).loose();
+
+export type RuntimeBackpressureSettings = z.infer<typeof RuntimeBackpressureSettingsSchema>;
+
+const DaemonBackpressureEventSchema = z.object({
+  id: z.string().default(""),
+  event_type: z.string().default(""),
+  reason: z.string().default(""),
+  mem_available_pct: z.number().default(0),
+  swap_used_pct: z.number().default(0),
+  psi_some_avg10: z.number().default(0),
+  psi_read_ok: z.boolean().default(false),
+  deferred_claims: z.number().default(0),
+  effective_config: DaemonBackpressureConfigSchema.default({} as DaemonBackpressureConfig),
+  hits: z.array(DaemonBackpressureConditionSchema).default([]),
+  occurred_at: z.string().default(""),
+}).loose();
+
+export const RuntimeBackpressureEventListSchema = z.array(DaemonBackpressureEventSchema);
+
+export type RuntimeBackpressureEvent = z.infer<typeof DaemonBackpressureEventSchema>;
+
+const ClauseGovernanceTotalsSchema = z.object({
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  degraded_rows: z.number().default(0),
+  degraded_runs: z.number().default(0),
+  clause_tokens: z.number().default(0),
+}).loose();
+
+const ClauseGovernanceClauseSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  status: z.string().default(""),
+  latest_version: z.number().default(0),
+  bound_scope: z.string().optional(),
+  bound_scope_id: z.string().optional(),
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  injected_tokens: z.number().default(0),
+  tokens_pending: z.boolean().default(false),
+}).loose();
+
+const ClauseGovernanceMigrationSchema = z.object({
+  total_carriers: z.number().default(0),
+  bound_carriers: z.number().default(0),
+  by_scope: z.record(z.string(), z.number()).default({}),
+  by_scope_total: z.record(z.string(), z.number()).default({}),
+}).loose();
+
+export const ClauseGovernanceOverviewSchema = z.object({
+  workspace_id: z.string().default(""),
+  since: z.string().default(""),
+  dynamic_injection_disabled: z.boolean().default(false),
+  clauses: z.array(ClauseGovernanceClauseSchema).default([]),
+  status_counts: z.record(z.string(), z.number()).default({}),
+  totals: ClauseGovernanceTotalsSchema.default({
+    injections: 0,
+    runs: 0,
+    degraded_rows: 0,
+    degraded_runs: 0,
+    clause_tokens: 0,
+  }),
+  migration: ClauseGovernanceMigrationSchema.default({
+    total_carriers: 0,
+    bound_carriers: 0,
+    by_scope: {},
+    by_scope_total: {},
+  }),
+  rollback_suggestions: z.array(PromptProposalSchema).default([]),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_OVERVIEW: ClauseGovernanceOverview = {
+  workspace_id: "",
+  since: "",
+  dynamic_injection_disabled: false,
+  clauses: [],
+  status_counts: {},
+  totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
+  migration: { total_carriers: 0, bound_carriers: 0, by_scope: {}, by_scope_total: {} },
+  rollback_suggestions: [],
+};
+
+const ClauseGovernanceVersionSchema = z.object({
+  version: z.number().default(0),
+  content: z.string().default(""),
+  content_sha256: z.string().default(""),
+  source: z.string().default(""),
+  carrier_scope: z.string().default(""),
+  created_by_type: z.string().default(""),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseGovernanceBindingSchema = z.object({
+  id: z.string().default(""),
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  status: z.string().default(""),
+  conditions: z.object({ task_kinds: z.array(z.string()).optional() }).loose().nullable().optional(),
+  since_clause_version: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseGovernanceQualityDaySchema = z.object({
+  day: z.string().default(""),
+  clause_version: z.number().default(0),
+  finished_runs: z.number().default(0),
+  injected_tokens: z.number().nullable().optional(),
+  run_tokens_median: z.number().nullable().optional(),
+  attributable_failed_runs: z.number().default(0),
+  excluded_failed_runs: z.number().default(0),
+}).loose();
+
+export const ClauseGovernanceDetailSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  status: z.string().default(""),
+  latest_version: z.number().default(0),
+  versions: z.array(ClauseGovernanceVersionSchema).default([]),
+  bindings: z.array(ClauseGovernanceBindingSchema).default([]),
+  proposals: z.array(PromptProposalSchema).default([]),
+  quality_daily: z.array(ClauseGovernanceQualityDaySchema).default([]),
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  injected_tokens: z.number().default(0),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_DETAIL: ClauseGovernanceDetail = {
+  id: "",
+  slug: "",
+  title: "",
+  status: "",
+  latest_version: 0,
+  versions: [],
+  bindings: [],
+  proposals: [],
+  quality_daily: [],
+  injections: 0,
+  runs: 0,
+  injected_tokens: 0,
+};
+
+const ClauseLayerSetViolationSchema = z.object({
+  task_id: z.string().default(""),
+  clause_id: z.string().default(""),
+  clause_version: z.number().default(0),
+  carrier_scope: z.string().default(""),
+  degraded: z.boolean().default(false),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseDriftEntrySchema = z.object({
+  kind: z.string().default(""),
+  slug: z.string().default(""),
+  marker_rev: z.number().optional(),
+  expected_rev: z.number().optional(),
+}).loose();
+
+const ClauseDriftCarrierSchema = z.object({
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  entries: z.array(ClauseDriftEntrySchema).default([]),
+}).loose();
+
+export const ClauseGovernanceReconciliationSchema = z.object({
+  since: z.string().default(""),
+  healthy: z.boolean().default(false),
+  layer_set_violations: z.array(ClauseLayerSetViolationSchema).default([]),
+  totals: ClauseGovernanceTotalsSchema.default({
+    injections: 0,
+    runs: 0,
+    degraded_rows: 0,
+    degraded_runs: 0,
+    clause_tokens: 0,
+  }),
+  drift: z.array(ClauseDriftCarrierSchema).default([]),
+  carriers_scanned: z.number().default(0),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION: ClauseGovernanceReconciliation = {
+  since: "",
+  healthy: false,
+  layer_set_violations: [],
+  totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
+  drift: [],
+  carriers_scanned: 0,
+};

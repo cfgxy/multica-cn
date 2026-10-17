@@ -65,6 +65,7 @@ const (
 	// healthy calls crossing the 30s budget used for local initialize, so keep
 	// their default separate without slowing failures for lightweight RPCs.
 	defaultCodexThreadHandshakeTimeout = 60 * time.Second
+	defaultCodexReconnectTimeout       = 2 * time.Minute
 	codexVersionDiagnosticTimeout      = 2 * time.Second
 	// codexGracefulShutdownTimeout bounds how long the lifecycle goroutine
 	// waits for codex to exit on its own after stdin is closed, before forcing
@@ -87,6 +88,29 @@ var codexProcessWaitDelayNanos atomic.Int64
 var activeCodexLaunches atomic.Int64
 var maxActiveCodexLaunchesObserved atomic.Int64
 var codexCleanupConfirmationOverride atomic.Int32
+var codexReconnectTimeoutNanos atomic.Int64
+
+func codexReconnectWindow() time.Duration {
+	if n := codexReconnectTimeoutNanos.Load(); n > 0 {
+		return time.Duration(n)
+	}
+	return defaultCodexReconnectTimeout
+}
+
+func codexTerminalProviderError(message string) string {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "usage limit"), strings.Contains(lower, "usage_limit"),
+		strings.Contains(lower, "quota"), strings.Contains(lower, "insufficient_quota"):
+		return "Codex account usage limit reached. Check the account limit or retry after it resets."
+	case strings.Contains(lower, "overloaded"), strings.Contains(lower, "server_overloaded"),
+		strings.Contains(lower, "high_load"), strings.Contains(lower, "high load"),
+		strings.Contains(lower, "at capacity"), strings.Contains(lower, "capacity exceeded"):
+		return "Codex service is at capacity. Retry the task shortly."
+	default:
+		return ""
+	}
+}
 
 func sanitizeCodexDiagnostic(value string) string {
 	return sanitizeAgentDiagnostic(value)
@@ -652,7 +676,7 @@ func normalizeCodexMcpServerConfig(server map[string]any) map[string]any {
 	if !isCodexRemoteMcpServer(server) {
 		normalized := make(map[string]any, len(server))
 		for k, v := range server {
-			if isMulticaMcpSelectorKey(k) {
+			if isMulticaMcpSelectorKey(k) || isDeprecatedCodexMcpServerKey(k) || k == "type" {
 				continue
 			}
 			normalized[k] = v
@@ -663,7 +687,7 @@ func normalizeCodexMcpServerConfig(server map[string]any) map[string]any {
 	normalized := make(map[string]any, len(server)+1)
 	for k, v := range server {
 		switch {
-		case isMulticaMcpSelectorKey(k):
+		case isMulticaMcpSelectorKey(k), isDeprecatedCodexMcpServerKey(k):
 			continue
 		case k == "type":
 			continue
@@ -675,8 +699,11 @@ func normalizeCodexMcpServerConfig(server map[string]any) map[string]any {
 			normalized[k] = v
 		}
 	}
-	normalized["experimental_use_rmcp_client"] = true
 	return normalized
+}
+
+func isDeprecatedCodexMcpServerKey(key string) bool {
+	return key == "experimental_use_rmcp_client"
 }
 
 func isMulticaMcpSelectorKey(k string) bool {
@@ -1527,6 +1554,13 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		lastSemanticActivityDescription := "turn/start"
 		semanticTimer := time.NewTimer(semanticInactivityTimeout)
 		defer semanticTimer.Stop()
+		var reconnectTimer *time.Timer
+		var reconnectTimerC <-chan time.Time
+		defer func() {
+			if reconnectTimer != nil {
+				reconnectTimer.Stop()
+			}
+		}()
 
 		firstTurnNoProgressTimeout := codexFirstTurnNoProgressTimeout(semanticInactivityTimeout, opts.FirstTurnNoProgressTimeout)
 		var firstTurnNoProgressTimer *time.Timer
@@ -1626,6 +1660,15 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				lastSemanticActivity = time.Now()
 				lastSemanticActivityDescription = activity
 				resetTimer(semanticTimer, semanticInactivityTimeout)
+				if isCodexFirstTurnProgressActivity(activity) && reconnectTimer != nil {
+					stopTimer(reconnectTimer)
+					reconnectTimer = nil
+					reconnectTimerC = nil
+				}
+				if activity == "error:retry" && reconnectTimer == nil {
+					reconnectTimer = time.NewTimer(codexReconnectWindow())
+					reconnectTimerC = reconnectTimer.C
+				}
 				if activity == "status:running" && !firstTurnStarted {
 					firstTurnStarted = true
 					firstItemWait.start(time.Now())
@@ -1678,6 +1721,17 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 					"timeout", semanticInactivityTimeout.String(),
 					"last_activity", lastSemanticActivityDescription,
 					"idle_for", time.Since(lastSemanticActivity).Round(time.Millisecond).String(),
+				)
+			case <-reconnectTimerC:
+				waitingForTurn = false
+				finishFirstItemWait("reconnect_timeout")
+				finalStatus = "failed"
+				finalError = fmt.Sprintf("Codex could not reconnect within %s. Retry the task.", codexReconnectWindow())
+				b.cfg.Logger.Warn("codex reconnect window exhausted",
+					"pid", sess.PID(),
+					"thread_id", threadID,
+					"turn_id", c.turnID,
+					"timeout", codexReconnectWindow().String(),
 				)
 			case <-runCtx.Done():
 				finishRunContextDone()
@@ -3376,6 +3430,16 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			if errMsg == "" {
 				errMsg = "codex turn failed"
 			}
+			classificationInput := strings.Join([]string{
+				errMsg,
+				extractNestedString(params, "turn", "error", "type"),
+				extractNestedString(params, "turn", "error", "code"),
+			}, " ")
+			if classified := codexTerminalProviderError(classificationInput); classified != "" {
+				errMsg = classified
+			} else {
+				errMsg = sanitizeCodexDiagnostic(errMsg)
+			}
 			c.setTurnError(errMsg)
 		}
 
@@ -3398,7 +3462,18 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			errMsg = extractNestedString(params, "message")
 		}
 		if errMsg != "" {
-			c.cfg.Logger.Warn("codex error notification", "message", errMsg, "will_retry", willRetry)
+			classificationInput := strings.Join([]string{
+				errMsg,
+				extractNestedString(params, "error", "type"),
+				extractNestedString(params, "error", "code"),
+			}, " ")
+			if classified := codexTerminalProviderError(classificationInput); classified != "" {
+				errMsg = classified
+				willRetry = false
+			} else {
+				errMsg = sanitizeCodexDiagnostic(errMsg)
+			}
+			c.cfg.Logger.Warn("codex error notification", "message", sanitizeCodexDiagnostic(errMsg), "will_retry", willRetry)
 			if c.onSemanticActivity != nil {
 				if willRetry {
 					c.onSemanticActivity("error:retry")
@@ -3408,6 +3483,12 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			}
 			if !willRetry {
 				c.setTurnError(errMsg)
+				if !c.turnCompleted {
+					c.turnCompleted = true
+					if c.onTurnDone != nil {
+						c.onTurnDone(false)
+					}
+				}
 			}
 		}
 

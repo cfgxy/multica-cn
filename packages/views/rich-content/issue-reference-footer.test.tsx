@@ -1,28 +1,29 @@
 /**
- * Tail aggregation of issue references (RUYI-635 + 增量).
+ * IssueReferenceFooter (RUYI-731) — the flat, navigable reference tail.
  *
- * RichContent hands every collected reference to IssueReferenceFooter. The
- * fixtures below pin the RUYI-635 增量 contract:
- *   - anti-mistouch: the whole block is ONE button; inline rows are spans and
- *     never navigate — the full list lives in the popover;
- *   - fold partition: at most 2 inline preview rows, the rest collapse into an
- *     "N more references (incl. M PRs)" line;
- *   - PR text references (`owner/repo#N`) render as first-class rows;
- *   - unresolved references keep their slot as non-clickable plain text;
- *   - the popover groups Tasks / Pull Request only when both kinds mix, keeps
- *     first-appearance order, and navigates per kind (issue → in-app route,
- *     PR → canonical URL in a new tab).
+ * The 增量's two-level surface (2-row preview budget + "N more" fold line +
+ * popover) is retired: every reference renders as one row in
+ * first-appearance order, and rows navigate per kind (issue → in-app route,
+ * PR → canonical URL in a new tab). Two behaviours carry this issue:
+ *   - self-filter: inside the issue-detail render context, a reference that
+ *     resolves to the CURRENT issue renders no row. The comment and the
+ *     issue-description surfaces share this footer, so the context seam is
+ *     what's under test here (the description host is pinned in
+ *     issue-reference-tail.test.tsx);
+ *   - no budget: N=1 and N=10 render identically — no fold line, no second
+ *     level, no "N more" arithmetic.
+ * Surfaces without a current-issue context (chat, inbox) keep every row.
  *
- * Resolution is stubbed at the hook seam; row rendering, dedup, grouping, and
- * fold policy are exercised for real. The popover shell is stubbed to a
- * controlled div (Base UI owns its own open/close mechanics) — grouping and
- * row semantics are what's under test.
+ * Resolution is stubbed at the hook seam; row rendering, dedup, filtering and
+ * navigation semantics are exercised for real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { render } from "@testing-library/react";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
+import {
+  CurrentIssueRenderContextProvider,
+} from "../issues/current-issue-render-context";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
 import type { IssueReference } from "@multica/core/markdown";
 import type { IssueReferenceResolution } from "../issues/hooks/use-issue-reference-resolutions";
@@ -79,54 +80,6 @@ vi.mock("@multica/core/issue-statuses/hooks", () => ({
   useIssueStatuses: () => ({ colorOf: () => "#123456" }),
 }));
 
-// Controlled stub of the Base UI popover: the trigger toggles `open` through
-// the component's own onOpenChange, content mounts only while open.
-const popoverState: {
-  open: boolean;
-  onOpenChange?: (open: boolean) => void;
-} = { open: false };
-
-vi.mock("@multica/ui/components/ui/popover", async () => {
-  const React = await vi.importActual<typeof import("react")>("react");
-  return {
-    Popover: ({
-      children,
-      open,
-      onOpenChange,
-    }: {
-      children: ReactNode;
-      open: boolean;
-      onOpenChange?: (open: boolean) => void;
-    }) => {
-      popoverState.open = open;
-      popoverState.onOpenChange = onOpenChange;
-      return <div data-testid="popover">{children}</div>;
-    },
-    PopoverTrigger: ({
-      children,
-      ...props
-    }: { children?: ReactNode } & Record<string, unknown>) =>
-      React.createElement(
-        "button",
-        {
-          type: "button",
-          ...props,
-          onClick: () => popoverState.onOpenChange?.(!popoverState.open),
-        },
-        children,
-      ),
-    PopoverContent: ({
-      children,
-      ...props
-    }: { children?: ReactNode } & Record<string, unknown>) =>
-      popoverState.open ? (
-        <div data-testid="popover-content" {...props}>
-          {children}
-        </div>
-      ) : null,
-  };
-});
-
 import { IssueReferenceFooter } from "./issue-reference-footer";
 
 const UUID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed";
@@ -181,9 +134,11 @@ function prRef(token: string): IssueReference {
 }
 
 const PR338 = "pull_request:cfgxy/multica-cn#338";
-const PR341 = "pull_request:cfgxy/multica-cn#341";
 
-function renderFooter(references: IssueReference[]) {
+function renderFooter(
+  references: IssueReference[],
+  currentIssueId?: string | null,
+) {
   const adapter: NavigationAdapter = {
     push: vi.fn(),
     replace: vi.fn(),
@@ -193,62 +148,51 @@ function renderFooter(references: IssueReference[]) {
     hash: "",
     getShareableUrl: (p) => `https://app.multica.ai${p}`,
   };
+  const footer = <IssueReferenceFooter references={references} />;
   return render(
     <NavigationProvider value={adapter}>
-      <IssueReferenceFooter references={references} />
+      {currentIssueId ? (
+        <CurrentIssueRenderContextProvider
+          value={{ id: currentIssueId, identifier: "MUL-7" }}
+        >
+          {footer}
+        </CurrentIssueRenderContextProvider>
+      ) : (
+        footer
+      )}
     </NavigationProvider>,
   );
-}
-
-function openPopover(container: HTMLElement) {
-  fireEvent.click(
-    container.querySelector("button[data-issue-reference-footer]")!,
-  );
-  return container.querySelector("[data-testid='popover-content']")!;
 }
 
 describe("IssueReferenceFooter", () => {
   beforeEach(() => {
     resolutions = {};
-    popoverState.open = false;
-    popoverState.onOpenChange = undefined;
   });
 
-  it("renders one non-navigating preview row inside a single trigger button", () => {
+  it("renders one navigable row per reference", () => {
     resolutions = { [`mention:${UUID}`]: issue(UUID, "MUL-7", "Fix the thing") };
     const { container } = renderFooter([mention(UUID, "MUL-7")]);
 
-    const trigger = container.querySelector(
-      "button[data-issue-reference-footer]",
-    )!;
-    expect(trigger).not.toBeNull();
-    expect(trigger.textContent).toContain("References · 1");
-    // Inline rows are spans — the anti-mistouch contract forbids any inline
-    // navigation; the whole block is the only press target.
-    expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(0);
-    const row = container.querySelector(".issue-reference-row")!;
+    const footer = container.querySelector("[data-issue-reference-footer]")!;
+    expect(footer.textContent).toContain("References · 1");
+    // Rows are the navigation surface now (RUYI-731): a resolved issue row is
+    // an in-app link, not a span behind a popover.
+    const row = container.querySelector("a.issue-reference-row")!;
+    expect(row).not.toBeNull();
+    expect(row.getAttribute("href")).toBe(`/acme/issues/${UUID}`);
     expect(row.textContent).toContain("MUL-7");
     expect(row.textContent).toContain("Fix the thing");
   });
 
-  it("collapses repeated mentions of the same issue into one row", () => {
-    resolutions = { [`mention:${UUID}`]: issue(UUID, "MUL-7", "Fix the thing") };
-    const { container } = renderFooter([
-      mention(UUID, "MUL-7"),
-      mention(UUID, "MUL-7"),
-    ]);
-
-    expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(1);
-  });
-
-  it("collapses a UUID mention and a bare identifier of the same issue into one row", () => {
+  it("collapses repeated and cross-form mentions of the same issue into one row", () => {
     resolutions = {
       [`mention:${UUID}`]: issue(UUID, "MUL-7", "Fix the thing"),
       [`identifier:MUL-7`]: issue(UUID, "MUL-7", "Fix the thing"),
     };
     const { container } = renderFooter([
-      bare("MUL-7"),
       mention(UUID, "MUL-7"),
+      mention(UUID, "MUL-7"),
+      bare("MUL-7"),
     ]);
 
     expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(1);
@@ -259,74 +203,88 @@ describe("IssueReferenceFooter", () => {
     expect(container.querySelector("[data-issue-reference-footer]")).toBeNull();
   });
 
-  it("shows every row inline when the list fits the preview budget", () => {
-    resolutions = {
-      "identifier:MUL-1": issue(UUID, "MUL-1", "First"),
-      "identifier:MUL-2": issue(UUID2, "MUL-2", "Second"),
-    };
-    const { container } = renderFooter([bare("MUL-1"), bare("MUL-2")]);
+  it("renders every reference flat — N rows for N references, no fold line, no second level", () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `id-${i}`);
+    resolutions = Object.fromEntries(
+      ids.map((id, i) => [`identifier:MUL-${i}`, issue(id, `MUL-${i}`, `T${i}`)]),
+    );
+    const refs = ids.map((_, i) => bare(`MUL-${i}`));
+    const { container } = renderFooter(refs);
 
-    expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(2);
+    const footer = container.querySelector("[data-issue-reference-footer]")!;
+    expect(footer.textContent).toContain("References · 10");
+    expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(10);
+    // The fold affordances are retired outright: no "N more" line, no
+    // popover/bottom-sheet layer, N=1 and N=10 behave the same.
     expect(container.querySelector(".issue-reference-collapsed")).toBeNull();
+    expect(container.querySelector(".issue-reference-chevron")).toBeNull();
   });
 
-  it("folds past two rows with an incl.-PR count line", () => {
+  it("navigates rows per kind: issue in-app, PR canonical URL in a new tab", () => {
     resolutions = {
       "identifier:MUL-1": issue(UUID, "MUL-1", "First"),
-      "identifier:MUL-2": issue(UUID2, "MUL-2", "Second"),
-      "identifier:MUL-3": issue("id-3", "MUL-3", "Third"),
       [PR338]: pr(338, "merged"),
-      [PR341]: pr(341, "open"),
     };
     const { container } = renderFooter([
       bare("MUL-1"),
-      bare("MUL-2"),
-      bare("MUL-3"),
       prRef("cfgxy/multica-cn#338"),
-      prRef("cfgxy/multica-cn#341"),
     ]);
 
-    expect(
-      container.querySelector("button[data-issue-reference-footer]")!
-        .textContent,
-    ).toContain("References · 5");
-    expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(2);
-    const collapsed = container.querySelector(".issue-reference-collapsed")!;
-    expect(collapsed.textContent).toBe("3 more references (incl. 2 PRs)");
+    const issueRow = container.querySelector("a[data-reference-kind='issue']")!;
+    expect(issueRow.getAttribute("href")).toBe(`/acme/issues/${UUID}`);
+
+    const prRow = container.querySelector("a[data-reference-kind='pr']")!;
+    expect(prRow.getAttribute("href")).toBe(
+      "https://github.com/cfgxy/multica-cn/pull/338",
+    );
+    expect(prRow.getAttribute("target")).toBe("_blank");
+    expect(prRow.getAttribute("rel")).toContain("noreferrer");
+    const prRegions = Array.from(prRow.children);
+    expect(prRegions).toHaveLength(2);
+    const prLeading = prRegions[0]!;
+    const prContent = prRegions[1]!;
+    expect(prLeading.classList.contains("issue-reference-pr-leading"))
+      .toBe(true);
+    expect(prLeading.querySelector("svg")).not.toBeNull();
+    expect(prLeading.querySelector(".issue-reference-identifier")?.textContent)
+      .toBe("#338");
+    expect(prContent.classList.contains("issue-reference-pr-content"))
+      .toBe(true);
+    expect(prContent.children).toHaveLength(2);
+    expect(prRow.querySelector(".issue-reference-pr-project")?.textContent)
+      .toBe("multica-cn/");
+    expect(prRow.querySelector(".issue-reference-title")?.textContent)
+      .toBe("Pull request #338");
   });
 
-  it("degrades an unresolved identifier to plain identifier text", () => {
-    resolutions = { "identifier:MUL-404": null };
-    const { container } = renderFooter([bare("MUL-404")]);
+  it("keeps the owner visible for PRs outside the cfgxy organization", () => {
+    const otherOwnerPr = {
+      ...pr(339, "open", "Support another repository"),
+      repo_owner: "example",
+      repo_name: "project",
+    } as GitHubPullRequest;
+    resolutions = { ["pull_request:example/project#339"]: otherOwnerPr };
+    const { container } = renderFooter([prRef("example/project#339")]);
 
-    expect(container.querySelector("a.issue-reference-row")).toBeNull();
-    const row = container.querySelector(".issue-reference-degraded")!;
-    expect(row.textContent).toBe("MUL-404");
+    const row = container.querySelector("a[data-reference-kind='pr']")!;
+    expect(row.children).toHaveLength(2);
+    expect(row.children[0]!.querySelector(".issue-reference-identifier")?.textContent)
+      .toBe("#339");
+    expect(row.children[1]!.children).toHaveLength(2);
+    expect(row.querySelector(".issue-reference-pr-project")?.textContent)
+      .toBe("example/project/");
   });
 
-  it("degrades an unresolved UUID mention to its authored label", () => {
-    const { container } = renderFooter([mention(UUID, "MUL-7")]);
-
-    const row = container.querySelector(".issue-reference-degraded")!;
-    expect(row.textContent).toBe("MUL-7");
-  });
-
-  it("degrades an unresolved PR reference to the raw token", () => {
-    const { container } = renderFooter([prRef("cfgxy/multica-cn#99999")]);
-
-    expect(container.querySelector("a.issue-reference-row")).toBeNull();
-    const row = container.querySelector(".issue-reference-degraded")!;
-    expect(row.textContent).toBe("cfgxy/multica-cn#99999");
-  });
-
-  it("keeps first-appearance order across resolved and degraded rows", () => {
+  it("keeps unresolved references as non-clickable plain-text slots in first-appearance order", () => {
     resolutions = {
       [`mention:${UUID2}`]: issue(UUID2, "MUL-9", "Later issue"),
       "identifier:MUL-2": null,
+      [PR338]: null,
     };
     const { container } = renderFooter([
       bare("MUL-2"),
       mention(UUID2, "MUL-9"),
+      prRef("cfgxy/multica-cn#338"),
     ]);
 
     const rows = Array.from(
@@ -335,100 +293,74 @@ describe("IssueReferenceFooter", () => {
     expect(rows.map((r) => r.textContent)).toEqual([
       "MUL-2",
       "MUL-9Later issue",
+      "cfgxy/multica-cn#338",
     ]);
-  });
-
-  it("opens a popover that groups tasks and pull requests when both kinds mix", () => {
-    resolutions = {
-      "identifier:MUL-1": issue(UUID, "MUL-1", "First"),
-      "identifier:MUL-2": issue(UUID2, "MUL-2", "Second"),
-      [PR338]: pr(338, "merged"),
-      [PR341]: pr(341, "open"),
-    };
-    const { container } = renderFooter([
-      bare("MUL-1"),
-      bare("MUL-2"),
-      prRef("cfgxy/multica-cn#338"),
-      prRef("cfgxy/multica-cn#341"),
-    ]);
-
-    const panel = openPopover(container);
-
-    const groups = Array.from(
-      panel.querySelectorAll(".issue-reference-popover-group"),
-    );
-    expect(groups.map((g) => g.textContent)).toEqual([
-      "Tasks",
-      "Pull Request",
-    ]);
-
-    const issueRows = Array.from(
-      panel.querySelectorAll("a[data-reference-kind='issue']"),
-    );
-    expect(issueRows.map((r) => r.getAttribute("href"))).toEqual([
-      `/acme/issues/${UUID}`,
-      `/acme/issues/${UUID2}`,
-    ]);
-
-    const prRows = Array.from(
-      panel.querySelectorAll("a[data-reference-kind='pr']"),
-    );
-    expect(prRows.map((r) => r.getAttribute("href"))).toEqual([
-      "https://github.com/cfgxy/multica-cn/pull/338",
-      "https://github.com/cfgxy/multica-cn/pull/341",
-    ]);
-    for (const row of prRows) {
-      expect(row.getAttribute("target")).toBe("_blank");
-      expect(row.getAttribute("rel")).toContain("noreferrer");
-    }
-    expect(prRows[0]!.textContent).toContain("cfgxy/multica-cn#338");
-  });
-
-  it("keeps the popover ungrouped for a single-kind list in first-appearance order", () => {
-    resolutions = {
-      "identifier:MUL-1": issue(UUID, "MUL-1", "First"),
-      "identifier:MUL-2": issue(UUID2, "MUL-2", "Second"),
-    };
-    const { container } = renderFooter([bare("MUL-1"), bare("MUL-2")]);
-
-    const panel = openPopover(container);
-
+    // Degraded slots stay plain text — no authored-label navigation.
     expect(
-      panel.querySelectorAll(".issue-reference-popover-group"),
+      container.querySelectorAll("a.issue-reference-degraded"),
     ).toHaveLength(0);
-    const rows = Array.from(
-      panel.querySelectorAll("a[data-reference-kind='issue']"),
-    );
-    expect(rows.map((r) => r.textContent)).toEqual([
-      "MUL-1First",
-      "MUL-2Second",
-    ]);
+    const degraded = container.querySelector(".issue-reference-degraded")!;
+    expect(degraded.tagName).toBe("SPAN");
+    // RUYI-730: the degraded slot keeps a placeholder glyph so its text
+    // starts on the same grid as resolved rows (icon column aligned).
+    expect(degraded.querySelector("svg")).not.toBeNull();
   });
 
-  it("renders unresolved rows in the popover as non-clickable plain-text slots", () => {
+  it("drops a reference that resolves to the current issue (self-filter)", () => {
+    resolutions = { [`mention:${UUID}`]: issue(UUID, "MUL-7", "Fix the thing") };
+    const { container } = renderFooter([mention(UUID, "MUL-7")], UUID);
+
+    // Every reference was a self-reference: no rows, no block. This assertion
+    // fails the moment the filter is removed — the resolved row would render.
+    expect(container.querySelector("[data-issue-reference-footer]")).toBeNull();
+  });
+
+  it("drops a cross-form self-reference (mention + bare identifier of the current issue)", () => {
     resolutions = {
-      "identifier:MUL-1": issue(UUID, "MUL-1", "First"),
-      "identifier:MUL-404": null,
-      [PR338]: pr(338, "open"),
+      [`mention:${UUID}`]: issue(UUID, "MUL-7", "Fix the thing"),
+      "identifier:MUL-7": issue(UUID, "MUL-7", "Fix the thing"),
     };
-    const { container } = renderFooter([
-      bare("MUL-1"),
-      bare("MUL-404"),
-      prRef("cfgxy/multica-cn#338"),
-    ]);
-
-    const panel = openPopover(container);
-
-    const degraded = panel.querySelector(
-      "span.issue-reference-popover-row.issue-reference-degraded",
-    )!;
-    expect(degraded.textContent).toBe("MUL-404");
-    // The degraded slot must not leak into either clickable group.
-    expect(
-      panel.querySelectorAll("a[data-reference-kind='issue']"),
-    ).toHaveLength(1);
-    expect(panel.querySelectorAll("a[data-reference-kind='pr']")).toHaveLength(
-      1,
+    const { container } = renderFooter(
+      [mention(UUID, "MUL-7"), bare("MUL-7")],
+      UUID,
     );
+
+    expect(container.querySelector("[data-issue-reference-footer]")).toBeNull();
+  });
+
+  it("drops only the self row and keeps the rest, with the header count following", () => {
+    resolutions = {
+      [`mention:${UUID}`]: issue(UUID, "MUL-7", "Self"),
+      "identifier:MUL-9": issue(UUID2, "MUL-9", "Other"),
+    };
+    const { container } = renderFooter(
+      [mention(UUID, "MUL-7"), bare("MUL-9")],
+      UUID,
+    );
+
+    const rows = container.querySelectorAll(".issue-reference-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.textContent).toContain("MUL-9");
+    expect(
+      container.querySelector("[data-issue-reference-footer]")!.textContent,
+    ).toContain("References · 1");
+  });
+
+  it("keeps every row on surfaces without a current-issue context (chat, inbox)", () => {
+    resolutions = { [`mention:${UUID}`]: issue(UUID, "MUL-7", "Fix the thing") };
+    const { container } = renderFooter([mention(UUID, "MUL-7")], null);
+
+    expect(
+      container.querySelectorAll(".issue-reference-row"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps a row whose resolved id differs from the current issue", () => {
+    resolutions = { "identifier:MUL-9": issue(UUID2, "MUL-9", "Other") };
+    const { container } = renderFooter([bare("MUL-9")], UUID);
+
+    expect(
+      container.querySelectorAll(".issue-reference-row"),
+    ).toHaveLength(1);
   });
 });

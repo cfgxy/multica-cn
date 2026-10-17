@@ -101,13 +101,18 @@ func (q *Queries) CountInFlightOpsCommands(ctx context.Context, runtimeID pgtype
 	return count, err
 }
 
-const deleteWorkspaceOpsCommands = `-- name: DeleteWorkspaceOpsCommands :exec
-DELETE FROM daemon_ops_command WHERE workspace_id = $1
+const deleteWorkspaceDaemonData = `-- name: DeleteWorkspaceDaemonData :exec
+WITH deleted_ops_commands AS (
+    DELETE FROM daemon_ops_command AS ops WHERE ops.workspace_id = $1 RETURNING 1
+), deleted_file_operations AS (
+    DELETE FROM daemon_file_operation AS operations WHERE operations.workspace_id = $1 RETURNING 1
+)
+DELETE FROM daemon_file_access_target AS targets WHERE targets.workspace_id = $1
 `
 
 // Workspace teardown (application-layer graph; no FK by design).
-func (q *Queries) DeleteWorkspaceOpsCommands(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteWorkspaceOpsCommands, workspaceID)
+func (q *Queries) DeleteWorkspaceDaemonData(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceDaemonData, workspaceID)
 	return err
 }
 
