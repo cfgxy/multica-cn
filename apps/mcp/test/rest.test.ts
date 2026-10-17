@@ -85,6 +85,26 @@ describe("MulticaClient", () => {
     expect(headers["Authorization"]).toBe(`Bearer ${TOKEN}`);
   });
 
+  it("requests bounded run activity for the selected issue and run", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { progress_assessment: { status: "unknown", basis: [] } }, calls));
+    await client.getIssueRunActivity("workspace-1", "VOI-1", "run/1", {
+      after_seq: 7,
+      semantic_limit: 20,
+      stream: "stderr",
+      tail_bytes: 1024,
+      worker_cursor: "opaque cursor",
+    });
+    const url = calls[0]?.url;
+    expect(url?.pathname).toBe("/api/issues/VOI-1/tasks/run%2F1/activity");
+    expect(calls[0]?.init.headers).toMatchObject({ "X-Workspace-Slug": "workspace-1" });
+    expect(url?.searchParams.get("after_seq")).toBe("7");
+    expect(url?.searchParams.get("semantic_limit")).toBe("20");
+    expect(url?.searchParams.get("stream")).toBe("stderr");
+    expect(url?.searchParams.get("tail_bytes")).toBe("1024");
+    expect(url?.searchParams.get("worker_cursor")).toBe("opaque cursor");
+  });
+
   it("routes slug workspaces through X-Workspace-Slug", async () => {
     const calls: CapturedCall[] = [];
     const client = makeClient(makeFetch(200, { issues: [], total: 0 }, calls));

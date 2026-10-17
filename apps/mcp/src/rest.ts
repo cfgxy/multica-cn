@@ -57,6 +57,7 @@ import type {
   QuickReplyInfo,
   RemoveIssueRelationResult,
   RunDetail,
+  RunActivity,
   RunInfo,
   RuntimeInfo,
   SearchIssueInfo,
@@ -638,6 +639,25 @@ export class MulticaClient {
       "GET",
       `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}`,
       { workspace },
+    );
+  }
+
+  async getIssueRunActivity(
+    workspace: string,
+    issueId: string,
+    runId: string,
+    params: {
+      after_seq?: number;
+      semantic_limit?: number;
+      stream?: "stdout" | "stderr" | "both";
+      tail_bytes?: number;
+      worker_cursor?: string;
+    } = {},
+  ): Promise<RunActivity> {
+    return this.request(
+      "GET",
+      `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}/activity`,
+      { workspace, query: params },
     );
   }
 
