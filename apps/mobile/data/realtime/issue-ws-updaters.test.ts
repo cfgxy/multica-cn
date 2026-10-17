@@ -12,6 +12,7 @@ import {
   addCommentReaction,
   addIssueReaction,
   appendTimelineEntry,
+  reconcileCreatedComment,
   onIssueAuxiliaryRevision,
   invalidateIssueAfterReconnect,
   patchIssueDetail,
@@ -149,6 +150,93 @@ describe("appendTimelineEntry", () => {
     appendTimelineEntry(qc, wsId, issueId, timelineEntry("activity-1"));
 
     expect(qc.getQueryData<TimelineQueryData>(key)).toBeUndefined();
+  });
+});
+
+describe("reconcileCreatedComment", () => {
+  const wsId = "workspace-1";
+  const issueId = "issue-1";
+
+  function commentEntry(id: string, overrides: Partial<TimelineEntry> = {}): TimelineEntry {
+    return {
+      type: "comment",
+      id,
+      actor_type: "member",
+      actor_id: "member-1",
+      content: "same text",
+      parent_id: null,
+      created_at: "2026-09-05T09:00:00Z",
+      ...overrides,
+    };
+  }
+
+  it("replaces the pending row when the realtime event arrives before the response", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-1"),
+    ]));
+
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-1"));
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-1"), "optimistic-1");
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-1",
+    ]);
+    qc.clear();
+  });
+
+  it("keeps the response row when the realtime event arrives after the response", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-1"),
+    ]));
+
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-1"), "optimistic-1");
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-1"));
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-1",
+    ]);
+    qc.clear();
+  });
+
+  it("reconciles identical sends one at a time and preserves failed rows", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-failed"),
+      commentEntry("optimistic-1"),
+      commentEntry("optimistic-2"),
+    ]));
+
+    const failedIds = new Set(["optimistic-failed"]);
+    reconcileCreatedComment(
+      qc,
+      wsId,
+      issueId,
+      commentEntry("comment-1"),
+      undefined,
+      failedIds,
+    );
+    reconcileCreatedComment(
+      qc,
+      wsId,
+      issueId,
+      commentEntry("comment-2"),
+      undefined,
+      failedIds,
+    );
+
+    const ids = qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id);
+    expect(ids).toHaveLength(3);
+    expect(ids).toEqual(expect.arrayContaining([
+      "optimistic-failed",
+      "comment-1",
+      "comment-2",
+    ]));
+    qc.clear();
   });
 });
 
