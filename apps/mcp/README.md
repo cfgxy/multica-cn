@@ -30,6 +30,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `get_issue_relations` | 单条 issue 结构化关系：parent 与 blocks/blocked_by/relates_to/supersedes/superseded_by 五向视图 |
 | 读 | `list_issue_runs` | 单条 issue 全部执行 run：状态/agent/触发源/耗时/失败摘要，status 与 trigger 过滤 |
 | 读 | `get_run` | 单个 run 详情：状态、耗时、失败原因、取消归因与完整重试链 |
+| 读 | `get_run_activity` | 单个 run 的有界语义消息增量与独立状态诊断；首读建立基线，worker 终端/存活证据在认证 daemon 代理解锁前明确不可用 |
 | 读 | `list_runs` | workspace 级全部 run 视图：status/agent/project/issue/trigger/时间窗过滤，limit 1–200（默认 50）+ offset 分页，返回 issue 编号/标题与失败摘要等定位字段 |
 | 读 | `get_agent` | 单个 agent 管理视图：元数据与运行配置指示器（`has_custom_env`/`custom_env_key_count`/`mcp_config_redacted`），秘密值永不过此层 |
 | 读 | `list_runtimes` | 工作区运行时清单（admin 全量、普通成员可见子集） |
@@ -64,6 +65,8 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 配置读 | `list_runtimes` | runtime 清单：provider/mode/在线状态/可见性/owner |
 | 配置读 | `get_runtime` | 单 runtime 详情 + `used_by` 绑定 agent 清单 |
 | 配置读 | `get_runtime_models` | runtime 模型目录发现：模型清单/不可用项/默认项/每模型 thinking 档位，缓存命中即答、冷目录轮询 |
+
+`get_run_activity` requires `workspace`, `issue`, and `run_id`. `after_seq` is an optional non-negative sequence cursor; `semantic_limit` accepts 1–100 (default 50). `stream` accepts `stdout`, `stderr`, or `both`; `tail_bytes` accepts 1–65536 (default 16384); `worker_cursor` is opaque and limited to 512 bytes. The response separates `run_state`, `semantic_activity`, `worker_evidence`, and `progress_assessment`; the initial read is a baseline, and `running` alone never means `advancing`. A caller is limited to one read per run every 10 seconds. The server records the activity read synchronously and returns no activity body when audit persistence fails. Until the authenticated daemon proxy is available, worker logs and process liveness return `daemon_unreachable` and `unknown`.
 | 配置读 | `get_agent_runtime_config` | 单 agent 执行配置读回：runtime/model/thinking/revision（乐观锁令牌） |
 | 配置读 | `list_execution_profiles` | 执行 profile 清单：entry 数/是否激活/revision |
 | 配置读 | `get_execution_profile` | 单 profile 完整读回：全部 entry + revision |

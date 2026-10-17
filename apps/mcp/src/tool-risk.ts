@@ -115,6 +115,7 @@ export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   list_issue_runs: read("读取 Issue 运行历史"),
   search_audit_events: read("搜索审计事件"),
   get_run: read("读取运行详情"),
+  get_run_activity: read("读取单个运行的增量语义活动、状态诊断和受限 worker 证据"),
   cancel_run: external("请求取消正在执行的运行"),
   retry_run: external("重试已结束运行并创建新运行"),
   list_daemon_instances: read("读取 Daemon 实例"),

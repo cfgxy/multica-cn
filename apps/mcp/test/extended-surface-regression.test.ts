@@ -71,6 +71,7 @@ const PURE_READ_TOOLS = [
   "get_issue_relations",
   "list_issue_runs",
   "get_run",
+  "get_run_activity",
   // Execution-config reads.
   "list_daemon_instances",
   "get_daemon_instance",

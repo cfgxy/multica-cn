@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countRecentRunActivityReads = `-- name: CountRecentRunActivityReads :one
+SELECT count(*)::int8
+FROM audit_event
+WHERE domain = 'run'
+  AND event_type = 'run.activity_read'
+  AND actor_id = $1
+  AND task_id = $2
+  AND occurred_at > now() - interval '10 seconds'
+`
+
+type CountRecentRunActivityReadsParams struct {
+	ActorID pgtype.UUID `json:"actor_id"`
+	TaskID  pgtype.UUID `json:"task_id"`
+}
+
+func (q *Queries) CountRecentRunActivityReads(ctx context.Context, arg CountRecentRunActivityReadsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentRunActivityReads, arg.ActorID, arg.TaskID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 type CreateAuditEventsParams struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
