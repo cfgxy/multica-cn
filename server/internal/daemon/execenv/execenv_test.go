@@ -529,6 +529,7 @@ func TestPrepareDirectoryMode(t *testing.T) {
 	}
 	var marker struct {
 		ManagedBy string `json:"managed_by"`
+		TaskID    string `json:"task_id"`
 		IssueID   string `json:"issue_id"`
 	}
 	if err := json.Unmarshal(markerContent, &marker); err != nil {
@@ -539,6 +540,9 @@ func TestPrepareDirectoryMode(t *testing.T) {
 	}
 	if marker.IssueID != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
 		t.Fatalf("marker issue_id = %q, want issue id", marker.IssueID)
+	}
+	if marker.TaskID != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
+		t.Fatalf("marker task_id = %q, want task id", marker.TaskID)
 	}
 
 	// Verify skill files.
