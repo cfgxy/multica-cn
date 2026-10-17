@@ -87,11 +87,11 @@ SET runtime_id = sqlc.arg(runtime_id),
     last_event_sequence = last_event_sequence + 1,
     active_task_id = NULL,
     read_observations = (
-        SELECT COALESCE(jsonb_agg(observation ORDER BY ordinal DESC), '[]'::jsonb)
+        SELECT COALESCE(jsonb_agg(observation ORDER BY ordinal), '[]'::jsonb)
         FROM (
             SELECT observation, ordinal
             FROM (
-                SELECT observation, ordinal
+                SELECT observation, ordinal + 1 AS ordinal
                 FROM jsonb_array_elements(read_observations) WITH ORDINALITY AS previous(observation, ordinal)
                 UNION ALL
                 SELECT jsonb_build_object(
@@ -100,9 +100,9 @@ SET runtime_id = sqlc.arg(runtime_id),
                     'comment_reads', active_comment_reads,
                     'duplicate_issue_reads', GREATEST(active_issue_reads - 1, 0),
                     'duplicate_comment_reads', GREATEST(active_comment_reads - 1, 0)
-                ), COALESCE(jsonb_array_length(read_observations), 0) + 1
+                ), 0
             ) all_observations
-            ORDER BY ordinal DESC
+            ORDER BY ordinal
             LIMIT 30
         ) observations
     ),

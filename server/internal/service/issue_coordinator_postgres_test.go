@@ -195,8 +195,65 @@ func TestIssueCoordinatorPostgresCASRecoveryAndReadObservations(t *testing.T) {
 			}
 		}
 	}
-	var observationCount int
-	if err := pool.QueryRow(ctx, `SELECT jsonb_array_length(read_observations) FROM issue_coordinator_session WHERE issue_id=$1`, issueID).Scan(&observationCount); err != nil || observationCount == 0 || observationCount > 30 {
-		t.Fatalf("observation history count = %d, err=%v", observationCount, err)
+	rollingTaskIDs := make([]string, 31)
+	for i := range rollingTaskIDs {
+		taskID := uuid.NewString()
+		task := util.MustParseUUID(taskID)
+		rollingTaskIDs[i] = taskID
+		if _, err := pool.Exec(ctx, `INSERT INTO agent_task_queue (id, status) VALUES ($1, 'completed')`, task); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := queries.ClaimIssueCoordinatorSession(ctx, db.ClaimIssueCoordinatorSessionParams{
+			IssueID: issueID, LeaderAgentID: leaderID, RuntimeID: newRuntime, TaskID: task,
+		})
+		if err != nil || claimed.ActiveTaskID != task {
+			t.Fatalf("rolling claim %d = %+v, err=%v", i+1, claimed, err)
+		}
+		issueReads, commentReads := i%3+1, i%2+1
+		for read := 0; read < issueReads; read++ {
+			if _, err := queries.RecordIssueCoordinatorRead(ctx, db.RecordIssueCoordinatorReadParams{
+				IssueID: issueID, LeaderAgentID: leaderID, TaskID: task, ReadKind: "issue",
+			}); err != nil {
+				t.Fatalf("record issue read for rolling task %d: %v", i+1, err)
+			}
+		}
+		for read := 0; read < commentReads; read++ {
+			if _, err := queries.RecordIssueCoordinatorRead(ctx, db.RecordIssueCoordinatorReadParams{
+				IssueID: issueID, LeaderAgentID: leaderID, TaskID: task, ReadKind: "comment",
+			}); err != nil {
+				t.Fatalf("record comment read for rolling task %d: %v", i+1, err)
+			}
+		}
+		if err := complete(task, newRuntime, fmt.Sprintf("rolling-session-%d", i+1)); err != nil {
+			t.Fatalf("complete rolling task %d: %v", i+1, err)
+		}
+	}
+	observationsJSON, err = queries.GetIssueCoordinatorReadObservations(ctx, db.GetIssueCoordinatorReadObservationsParams{
+		IssueID: issueID, LeaderAgentID: leaderID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained []struct {
+		TaskID                string `json:"task_id"`
+		IssueReads            int    `json:"issue_reads"`
+		CommentReads          int    `json:"comment_reads"`
+		DuplicateIssueReads   int    `json:"duplicate_issue_reads"`
+		DuplicateCommentReads int    `json:"duplicate_comment_reads"`
+	}
+	if err := json.Unmarshal(observationsJSON, &retained); err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 30 {
+		t.Fatalf("retained observations = %d, want exactly 30: %s", len(retained), observationsJSON)
+	}
+	for i, observation := range retained {
+		run := len(rollingTaskIDs) - 1 - i
+		wantTaskID := rollingTaskIDs[run]
+		wantIssueReads, wantCommentReads := run%3+1, run%2+1
+		if observation.TaskID != wantTaskID || observation.IssueReads != wantIssueReads || observation.CommentReads != wantCommentReads ||
+			observation.DuplicateIssueReads != wantIssueReads-1 || observation.DuplicateCommentReads != wantCommentReads-1 {
+			t.Fatalf("retained observation %d = %+v, want task=%q issue/comment reads=%d/%d; observations=%s", i, observation, wantTaskID, wantIssueReads, wantCommentReads, observationsJSON)
+		}
 	}
 }

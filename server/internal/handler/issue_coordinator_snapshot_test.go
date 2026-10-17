@@ -25,7 +25,10 @@ func TestIssueCoordinatorSnapshotBriefRestoresStructuredReferences(t *testing.T)
 }
 
 func TestIssueCoordinatorSnapshotBriefRejectsMalformedAndOversizedInput(t *testing.T) {
-	if got := issueCoordinatorSnapshotBrief([]byte(`{"version":1,"issue_id":"issue-1","issue_status":"todo"}`)); got != "" {
+	if got := issueCoordinatorSnapshotBrief([]byte(`{"version":1,"issue_id":"issue-1"`)); got != "" {
+		t.Fatalf("snapshot missing issue status was rendered: %q", got)
+	}
+	if got := issueCoordinatorSnapshotBrief([]byte(`{"version":1,"issue_id":"issue-1","issue_status":"todo"`)); got != "" {
 		t.Fatalf("malformed snapshot was rendered: %q", got)
 	}
 	if got := issueCoordinatorSnapshotBrief(make([]byte, issuecoordinator.MaxSnapshotBytes+1)); got != "" {
