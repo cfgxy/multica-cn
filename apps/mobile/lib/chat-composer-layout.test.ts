@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   CHAT_COMPOSER_INPUT_MAX_HEIGHT,
   CHAT_COMPOSER_INPUT_MIN_HEIGHT,
+  CHAT_QUEUE_PANEL_MAX_HEIGHT,
+  CHAT_QUEUE_PANEL_MIN_HEIGHT,
   PLUS_PANEL_GAP,
+  resolveChatQueuePanelMaxHeight,
   resolveChatComposerInputHeight,
   resolvePlusPanelMaxHeight,
 } from "./chat-composer-layout";
@@ -30,5 +33,19 @@ describe("resolvePlusPanelMaxHeight", () => {
 
   it("never returns a negative height when the composer is near the top", () => {
     expect(resolvePlusPanelMaxHeight(800, 0)).toBe(0);
+  });
+});
+
+describe("resolveChatQueuePanelMaxHeight", () => {
+  it("keeps the full queue window when the keyboard leaves enough room", () => {
+    expect(resolveChatQueuePanelMaxHeight(500)).toBe(CHAT_QUEUE_PANEL_MAX_HEIGHT);
+  });
+
+  it("shrinks the queue window as the composer area gets shorter", () => {
+    expect(resolveChatQueuePanelMaxHeight(260)).toBe(100);
+  });
+
+  it("retains a scrollable queue header at the minimum available height", () => {
+    expect(resolveChatQueuePanelMaxHeight(100)).toBe(CHAT_QUEUE_PANEL_MIN_HEIGHT);
   });
 });

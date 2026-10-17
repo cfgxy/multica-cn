@@ -12,6 +12,7 @@ type QueuedTask = NonNullable<ChatPendingTask["queued_tasks"]>[number];
 
 interface Props {
   pendingTask: ChatPendingTask | undefined;
+  maxHeight: number;
   canManage: boolean;
   onEdit: (task: QueuedTask) => Promise<void>;
   onRemove: (task: QueuedTask) => Promise<void>;
@@ -21,6 +22,7 @@ interface Props {
 
 export function ChatQueuePanel({
   pendingTask,
+  maxHeight,
   canManage,
   onEdit,
   onRemove,
@@ -51,7 +53,7 @@ export function ChatQueuePanel({
   };
 
   return (
-    <View className="mb-2 rounded-lg border border-border bg-background px-3 py-2" accessibilityLabel={t("queue.title", "Queued messages")}>
+    <View className="mb-2 rounded-lg border border-border bg-background px-3 py-2" style={{ maxHeight }} accessibilityLabel={t("queue.title", "Queued messages")}>
       <View className="mb-1 flex-row items-center justify-between">
         <Text className="font-medium text-foreground">
           {t("queue.title", "Queue")} ({tasks.length})
@@ -78,7 +80,7 @@ export function ChatQueuePanel({
           <Text className="text-xs text-muted-foreground">{t("queue.clear", "Clear")}</Text>
         </Pressable>
       </View>
-      <ScrollView className="max-h-40" keyboardShouldPersistTaps="handled">
+      <ScrollView style={{ maxHeight: Math.max(0, maxHeight - 52) }} keyboardShouldPersistTaps="handled">
         {tasks.map((task, index) => {
           const disabled = busyId !== null || !canManage;
           return (
