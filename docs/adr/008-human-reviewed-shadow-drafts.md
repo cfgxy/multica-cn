@@ -23,19 +23,39 @@ Use `scripts/shadow-draft.sh` as the first pilot entry point.
 1. A human exports a minimal issue snapshot and explicitly invokes the script
    at an eligible real dispatch point.
 2. The script starts Codex with `deepseek-v4-flash`, `--sandbox read-only`,
-   `--ephemeral`, and `--ignore-user-config`.
+   `--ephemeral`, `--ignore-user-config`, and `--ignore-rules`, inside a
+   bubblewrap mount namespace. The namespace exposes the Codex runtime and
+   system certificates/resolver, a per-invocation provider-auth home, a
+   read-only issue-snapshot directory, and only the draft output file. Host
+   project files, user home contents, and audit files are not mounted into the
+   Codex view.
 3. The child gets a fresh `CODEX_HOME` containing only provider authentication.
    It does not inherit any `MULTICA_*` variable, project config, MCP server,
    skill, task state, or platform credential.
-4. The child writes no platform record. The parent writes a local append-only
+4. The runner accepts a deadline from 1 to 600 seconds, defaulting to 120.
+   It starts Codex in a dedicated process group, sends TERM at the deadline,
+   then sends KILL after two seconds. A deadline expiry is recorded as
+   `channel_error` with exit code 124, and any draft is removed. Before it
+   starts, the runner requires `setsid`, `bwrap`, the Codex CLI options used
+   below, and a successful bubblewrap user/network namespace probe. Missing
+   prerequisites reject the run before a model invocation.
+5. The child writes no platform record. The parent writes a local append-only
    ledger with snapshot and draft SHA256 values, output paths, and a
    `draft_created` or `channel_error` outcome. Each invocation atomically
    reserves its own audit subdirectory; ledger paths are relative to the
    audit root. A zero process exit without a nonempty draft records
    `channel_error` and returns exit code 1.
-5. The Leader reads the draft and performs any subsequent platform action
+6. The Leader reads the draft and performs any subsequent platform action
    manually. A draft is not an adoption record until that manual review is
    recorded separately.
+
+The model provider connection is required for inference. The outer bubblewrap
+namespace deliberately retains host networking so Codex can reach its
+provider; it limits filesystem visibility but does not filter network traffic.
+The Codex CLI's `read-only` sandbox is the separate boundary for
+model-invoked tools, including their additional network access. A real Codex
+run must verify that provider inference succeeds while tool execution cannot
+read outside the snapshot context or make additional network requests.
 
 ## Consequences
 
@@ -51,12 +71,15 @@ deployment authority nor model platform write access.
 
 ## Verification
 
-`scripts/shadow-draft.test.sh` substitutes a fake Codex binary and verifies
-that `MULTICA_TOKEN` and `MULTICA_SERVER_URL` do not reach the child, the
-read-only/ephemeral flags are present, and a successful invocation produces a
-hash-linked ledger entry.
-It also freezes time for repeated invocations, checks all artifact paths and
-hashes remain independently traceable, and covers empty output and child
-exit codes 42 and 124. The 124 case is a simulated process status, not proof
-of a real timeout interrupt. The fake executable locates its fixtures without
-allowing test environment variables through the production isolation boundary.
+`scripts/shadow-draft.test.sh` substitutes a fake Codex binary on the same
+bubblewrap launch path. It verifies that an unmounted file outside the snapshot
+cannot be read, the snapshot and provider-auth home are the only task data
+visible, platform variables do not reach the child, and the read-only,
+ephemeral, and config-isolation options are present. A successful invocation
+produces a hash-linked ledger entry. The fixture also freezes time for repeated
+invocations, checks that artifact paths and hashes remain independently
+traceable, and covers empty output and child exit codes 42 and 124. A hanging
+fake process verifies that the deadline records a 124 channel error and
+terminates the process group. This is synthetic process and file-namespace
+evidence; real Codex interruption, provider communication, and the CLI
+read-only sandbox's network restriction remain QA requirements.
