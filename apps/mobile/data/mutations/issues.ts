@@ -126,14 +126,17 @@ export function useCreateComment(issueId: string) {
       // only mutation in the issues file that intentionally avoids
       // rollback — every other path treats error as "undo the optimism".
       if (ctx?.optimisticId) {
-        const observedSuccess = wsId && userId
+        const failedState = useFailedCommentsStore.getState();
+        const reconciledIds = wsId && userId
           ? reconcileFailedCreatedComment(qc, wsId, issueId, ctx.optimisticId, {
               actor_type: "member",
               actor_id: userId,
               content: vars.content,
               parent_id: vars.parentId ?? null,
-            })
-          : false;
+            }, new Set(Object.keys(failedState.failed)))
+          : [];
+        reconciledIds.forEach((id) => failedState.clear(id));
+        const observedSuccess = reconciledIds.includes(ctx.optimisticId);
         const stillPending = qc
           .getQueryData<TimelineQueryData>(ctx.key)
           ?.entries.some((entry) => entry.id === ctx.optimisticId);
@@ -155,13 +158,16 @@ export function useCreateComment(issueId: string) {
     onSuccess: (comment, _vars, ctx) => {
       if (wsId) {
         onIssueAuxiliaryRevision(qc, wsId, issueId, comment.issue_revision);
-        reconcileCreatedComment(
+        const failedState = useFailedCommentsStore.getState();
+        const clearedFailedIds = reconcileCreatedComment(
           qc,
           wsId,
           issueId,
           commentToTimelineEntry(comment),
           ctx?.optimisticId ?? undefined,
+          new Set(Object.keys(failedState.failed)),
         );
+        clearedFailedIds.forEach((id) => failedState.clear(id));
       }
       qc.invalidateQueries({
         queryKey: issueKeys.timeline(wsId, issueId),
