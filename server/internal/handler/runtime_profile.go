@@ -429,9 +429,9 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Lock runtime rows in deterministic ID order. Their agent/task foreign-key
-	// inserts take KEY SHARE locks, preventing dependencies from appearing after
-	// the active-agent check.
+	// Enumerate without locking runtime rows. SendChatMessage locks its session
+	// before its task insert takes a runtime KEY SHARE lock, so acquiring runtime
+	// locks before the session locks here would create a deadlock cycle.
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByProfile(r.Context(), db.ListAgentRuntimeIDsByProfileParams{
 		ProfileID:   profileUUID,
 		WorkspaceID: wsUUID,
@@ -442,6 +442,25 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if profileMissing && len(runtimeIDs) == 0 {
 		writeError(w, http.StatusNotFound, "runtime profile not found")
+		return
+	}
+	// Match the per-runtime teardown lock order across the whole profile. The
+	// runtime IDs are returned in stable order, and session IDs are ordered by
+	// the query, so concurrent teardowns cannot lock this set in reverse order.
+	for _, runtimeID := range runtimeIDs {
+		if _, err := qtx.LockChatSessionsForRuntimeBind(r.Context(), runtimeID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to lock profile chat sessions")
+			return
+		}
+	}
+	// Once no sender can still hold one of these sessions, lock runtime rows in
+	// deterministic order. The locks prevent new agent/task FK dependencies
+	// from appearing after the active-agent check.
+	if _, err := qtx.LockAgentRuntimesByProfile(r.Context(), db.LockAgentRuntimesByProfileParams{
+		ProfileID:   profileUUID,
+		WorkspaceID: wsUUID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock profile runtimes")
 		return
 	}
 	for _, runtimeID := range runtimeIDs {

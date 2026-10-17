@@ -2777,7 +2777,8 @@ func (h *Handler) resolveAgentProviderForContext(ctx context.Context, workspaceI
 // follows the agent's current runtime, so a torn rebind that left a queued
 // row on the old runtime would strand it forever — invisible to the new
 // runtime's claim candidates, with no error and no log. Returns the number of
-// queue rows migrated (always 0 when not rebinding).
+// queue rows migrated (always 0 when not rebinding). Runtime rebinds lock all
+// chat sessions first, matching the chat model save and enqueue lock order.
 func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgentParams, rebinding bool) (db.Agent, int64, error) {
 	if !rebinding {
 		updated, err := h.Queries.UpdateAgent(ctx, params)
@@ -2789,6 +2790,9 @@ func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgen
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockChatSessionsForAgentRuntimeBind(ctx, params.ID); err != nil {
+		return db.Agent{}, 0, fmt.Errorf("lock chat sessions for runtime rebind: %w", err)
+	}
 	updated, err := qtx.UpdateAgent(ctx, params)
 	if err != nil {
 		return db.Agent{}, 0, err

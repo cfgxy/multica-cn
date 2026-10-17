@@ -246,6 +246,14 @@
     "unarchive": "채팅 보관 해제"
   },
   "mobile": {
+    "model": {
+      "agent_default": "에이전트 기본 모델",
+      "loading": "모델을 불러오는 중…",
+      "load_failed": "모델을 불러올 수 없습니다",
+      "unsupported": "이 런타임은 모델 선택을 지원하지 않습니다",
+      "unavailable": "모델 또는 세션을 사용할 수 없습니다",
+      "save_failed": "모델 선택을 저장할 수 없습니다"
+    },
     "send_blocked": {
       "no_permission_title": "이 에이전트를 실행할 권한이 없습니다",
       "no_permission_message": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다. 소유자에게 액세스 권한을 요청하세요.",

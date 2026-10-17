@@ -101,6 +101,16 @@ WHERE ar.profile_id = $1 AND ar.workspace_id = $2 AND a.archived_at IS NULL;
 -- archived-squad / autopilot teardown the runtime-delete path uses before
 -- removing each runtime row — agent.runtime_id is ON DELETE RESTRICT, so a
 -- bare delete would 500 whenever an archived agent still references the row.
+-- This enumeration intentionally does not lock runtime rows: profile deletion
+-- must lock the associated chat sessions first, matching the send path's
+-- session -> runtime foreign-key order.
+SELECT id FROM agent_runtime
+WHERE profile_id = $1 AND workspace_id = $2
+ORDER BY id;
+
+-- name: LockAgentRuntimesByProfile :many
+-- Lock runtime rows only after profile deletion has locked every associated
+-- chat session, preserving the same session -> runtime order as chat sends.
 SELECT id FROM agent_runtime
 WHERE profile_id = $1 AND workspace_id = $2
 ORDER BY id
