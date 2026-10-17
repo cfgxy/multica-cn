@@ -239,8 +239,18 @@ describe("IssueReferenceFooter", () => {
     );
     expect(prRow.getAttribute("target")).toBe("_blank");
     expect(prRow.getAttribute("rel")).toContain("noreferrer");
-    expect(prRow.querySelector(".issue-reference-identifier")?.textContent)
+    const prRegions = Array.from(prRow.children);
+    expect(prRegions).toHaveLength(2);
+    const prLeading = prRegions[0]!;
+    const prContent = prRegions[1]!;
+    expect(prLeading.classList.contains("issue-reference-pr-leading"))
+      .toBe(true);
+    expect(prLeading.querySelector("svg")).not.toBeNull();
+    expect(prLeading.querySelector(".issue-reference-identifier")?.textContent)
       .toBe("#338");
+    expect(prContent.classList.contains("issue-reference-pr-content"))
+      .toBe(true);
+    expect(prContent.children).toHaveLength(2);
     expect(prRow.querySelector(".issue-reference-pr-project")?.textContent)
       .toBe("multica-cn/");
     expect(prRow.querySelector(".issue-reference-title")?.textContent)
@@ -257,8 +267,10 @@ describe("IssueReferenceFooter", () => {
     const { container } = renderFooter([prRef("example/project#339")]);
 
     const row = container.querySelector("a[data-reference-kind='pr']")!;
-    expect(row.querySelector(".issue-reference-identifier")?.textContent)
+    expect(row.children).toHaveLength(2);
+    expect(row.children[0]!.querySelector(".issue-reference-identifier")?.textContent)
       .toBe("#339");
+    expect(row.children[1]!.children).toHaveLength(2);
     expect(row.querySelector(".issue-reference-pr-project")?.textContent)
       .toBe("example/project/");
   });
