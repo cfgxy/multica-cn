@@ -19,6 +19,7 @@ export type SeNavKey =
   | "knowledge"
   | "skills"
   | "quality"
+  | "clauseGovernance"
   | "quiz"
   | "proposals"
   | "versions"
@@ -27,7 +28,7 @@ export type SeNavKey =
 
 export const SE_NAV_GROUPS: { labelKey: "groupKnowledgeAssets" | "groupMeasures" | "groupLoop" | "groupConfig"; items: SeNavKey[] }[] = [
   { labelKey: "groupKnowledgeAssets", items: ["knowledge", "skills"] },
-  { labelKey: "groupMeasures", items: ["quality", "quiz"] },
+  { labelKey: "groupMeasures", items: ["quality", "clauseGovernance", "quiz"] },
   { labelKey: "groupLoop", items: ["proposals", "versions", "retrospective"] },
   { labelKey: "groupConfig", items: ["config"] },
 ];
@@ -51,6 +52,8 @@ export function SeSubNav({ wsId }: { wsId: string }) {
         return p.selfEvolutionSkills();
       case "quality":
         return p.selfEvolutionQuality();
+      case "clauseGovernance":
+        return p.selfEvolutionClauseGovernance();
       case "quiz":
         return p.selfEvolutionQuiz();
       case "proposals":
