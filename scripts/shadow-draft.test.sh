@@ -10,6 +10,7 @@ cat >"$tmp/codex-home/config.toml" <<'EOF'
 model_provider = "fixture"
 
 [model_providers.fixture]
+name = "Fixture Provider"
 base_url = "https://provider.invalid/v1"
 wire_api = "responses"
 env_http_headers = { Authorization = "SHADOW_DRAFT_FIXTURE_HEADER" }
@@ -45,6 +46,7 @@ test "$(stat -c %a "$CODEX_HOME/auth.json")" = 600
 test "$(find "$CODEX_HOME" -type f | wc -l)" -eq 2
 test "$(stat -c %a "$CODEX_HOME/config.toml")" = 600
 grep -Fq 'base_url = "https://provider.invalid/v1"' "$CODEX_HOME/config.toml"
+grep -Fq 'name = "Fixture Provider"' "$CODEX_HOME/config.toml"
 grep -Fq 'wire_api = "responses"' "$CODEX_HOME/config.toml"
 grep -Fq '"Authorization" = "fixture-header-secret"' "$CODEX_HOME/config.toml"
 if grep -Eq 'untrusted|mcp_servers|must-not-be-copied|request_max_retries|SHADOW_DRAFT_FIXTURE_HEADER' "$CODEX_HOME/config.toml"; then
@@ -137,12 +139,34 @@ else
 fi
 grep -q 'CODEX_HOME/config.toml with a supported provider is required' "$tmp/missing-config.log"
 
+for name_case in missing empty wrong-type; do
+  name_home="$tmp/provider-name-$name_case-home"
+  mkdir -p "$name_home"
+  printf 'provider-auth' >"$name_home/auth.json"
+  case "$name_case" in
+    missing) name_line="" ;;
+    empty) name_line='name = ""' ;;
+    wrong-type) name_line='name = 7' ;;
+  esac
+  printf 'model_provider = "fixture"\n\n[model_providers.fixture]\n%s\nbase_url = "https://provider.invalid/v1"\nwire_api = "responses"\n' \
+    "$name_line" >"$name_home/config.toml"
+  if PATH="$tmp/bin:$PATH" CODEX_HOME="$name_home" \
+    "$root/scripts/shadow-draft.sh" --issue-ref RUYI-746 --snapshot "$tmp/snapshot.json" --audit-dir "$tmp/audit" 2>"$tmp/provider-name-$name_case.log"; then
+    echo "accepted provider name case: $name_case" >&2
+    exit 1
+  else
+    test "$?" -eq 2
+  fi
+  grep -q 'selected provider requires a non-empty name' "$tmp/provider-name-$name_case.log"
+done
+
 mkdir -p "$tmp/platform-header-home"
 printf 'provider-auth' >"$tmp/platform-header-home/auth.json"
 cat >"$tmp/platform-header-home/config.toml" <<'EOF'
 model_provider = "fixture"
 
 [model_providers.fixture]
+name = "Fixture Provider"
 base_url = "https://provider.invalid/v1"
 wire_api = "responses"
 env_http_headers = { Authorization = "MULTICA_TOKEN" }
@@ -213,3 +237,48 @@ assert len(paths) == len(set(paths)), 'invocations share audit artifacts'
 assert len(list(audit.rglob('shadow-draft.md'))) == 2
 PY
 echo 'shadow-draft test: PASS'
+
+# Explicit opt-in only: the isolated Codex homes and unreachable loopback URL
+# exercise the real CLI parser without reading an account or contacting a provider.
+if [[ ${SHADOW_DRAFT_REAL_CLI_CONTRACT:-} == 1 ]]; then
+  real_codex=${SHADOW_DRAFT_REAL_CLI_BIN:-}
+  [[ -n $real_codex && -x $real_codex ]] || {
+    echo 'SHADOW_DRAFT_REAL_CLI_BIN must name an executable Codex CLI' >&2
+    exit 2
+  }
+  for name_case in present missing; do
+    contract_home="$tmp/real-cli-$name_case-home"
+    mkdir -p "$contract_home"
+    printf '{}' >"$contract_home/auth.json"
+    if [[ $name_case == present ]]; then
+      provider_name_line='name = "Fixture Provider"'
+    else
+      provider_name_line=""
+    fi
+    printf 'model_provider = "fixture"\n\n[model_providers.fixture]\n%s\nbase_url = "http://127.0.0.1:9/v1"\nwire_api = "responses"\nhttp_headers = { Authorization = "fixture-dummy" }\n' \
+      "$provider_name_line" >"$contract_home/config.toml"
+    set +e
+    CODEX_HOME="$contract_home" HOME="$contract_home" timeout 3 "$real_codex" exec \
+      --ephemeral --skip-git-repo-check --model deepseek-v4-flash --cd "$tmp" -- \
+      'configuration contract probe' </dev/null >"$tmp/real-cli-$name_case.out" 2>"$tmp/real-cli-$name_case.err"
+    cli_status=$?
+    set -e
+    if [[ $name_case == present ]]; then
+      if grep -q 'Error loading config.toml' "$tmp/real-cli-present.err"; then
+        echo 'real Codex rejected provider config with name' >&2
+        exit 1
+      fi
+      [[ $cli_status -eq 1 || $cli_status -eq 124 ]] || {
+        echo "unexpected real Codex status for isolated provider config: $cli_status" >&2
+        exit 1
+      }
+    else
+      [[ $cli_status -eq 1 ]] || {
+        echo "expected real Codex to reject provider config without name, got: $cli_status" >&2
+        exit 1
+      }
+      grep -q 'provider name must not be empty' "$tmp/real-cli-missing.err"
+    fi
+  done
+  echo 'shadow-draft real Codex config contract: PASS'
+fi
