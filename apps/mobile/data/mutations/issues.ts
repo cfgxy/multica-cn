@@ -45,6 +45,7 @@ import {
   reconcileIssueFullSnapshotRevision,
   commentToTimelineEntry,
   patchIssueLabels,
+  reconcileCreatedComment,
   replaceCommentTimelineEntry,
 } from "@/data/realtime/issue-ws-updaters";
 
@@ -76,6 +77,8 @@ export type CreateCommentVars = {
   attachmentIds?: string[];
 };
 
+let optimisticCommentSequence = 0;
+
 export function useCreateComment(issueId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -90,7 +93,7 @@ export function useCreateComment(issueId: string) {
       const prev = qc.getQueryData<TimelineQueryData>(key);
       if (!userId) return { prev, key, optimisticId: null };
 
-      const optimisticId = `optimistic-${Date.now()}`;
+      const optimisticId = `optimistic-${Date.now()}-${++optimisticCommentSequence}`;
       const optimistic: TimelineEntry = {
         type: "comment",
         id: optimisticId,
@@ -122,24 +125,34 @@ export function useCreateComment(issueId: string) {
       // only mutation in the issues file that intentionally avoids
       // rollback — every other path treats error as "undo the optimism".
       if (ctx?.optimisticId) {
-        useFailedCommentsStore.getState().markFailed(ctx.optimisticId, {
-          content: vars.content,
-          parentId: vars.parentId,
-          attachmentIds: vars.attachmentIds,
-          error:
-            err instanceof Error
-              ? err.message
-              : i18n.t("issues:mobile.comment.send_failed", "Couldn't send"),
-        });
+        const stillPending = qc
+          .getQueryData<TimelineQueryData>(ctx.key)
+          ?.entries.some((entry) => entry.id === ctx.optimisticId);
+        if (stillPending) {
+          useFailedCommentsStore.getState().markFailed(ctx.optimisticId, {
+            content: vars.content,
+            parentId: vars.parentId,
+            attachmentIds: vars.attachmentIds,
+            error:
+              err instanceof Error
+                ? err.message
+                : i18n.t("issues:mobile.comment.send_failed", "Couldn't send"),
+          });
+        }
       }
     },
-    // Invalidate only on success — the failed-comment path needs the cache
-    // to keep its optimistic entry so the inline retry UI has something to
-    // render against. The success refetch replaces the synthetic id with
-    // the server-issued one (same ASC bottom position).
-    onSuccess: (comment) => {
+    // Keep failed optimistic entries for the inline retry UI. Success
+    // reconciles the response immediately, then refetches as before.
+    onSuccess: (comment, _vars, ctx) => {
       if (wsId) {
         onIssueAuxiliaryRevision(qc, wsId, issueId, comment.issue_revision);
+        reconcileCreatedComment(
+          qc,
+          wsId,
+          issueId,
+          commentToTimelineEntry(comment),
+          ctx?.optimisticId ?? undefined,
+        );
       }
       qc.invalidateQueries({
         queryKey: issueKeys.timeline(wsId, issueId),

@@ -247,6 +247,59 @@ export function appendTimelineEntry(
   }
 }
 
+/** Replace one matching pending comment with its server-backed entry. */
+export function reconcileCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  entry: TimelineEntry,
+  optimisticId?: string,
+  failedIds: ReadonlySet<string> = new Set(),
+) {
+  let crossedKind = false;
+  qc.setQueryData<TimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+
+      const serverIndex = old.entries.findIndex(
+        (existing) => existing.type === entry.type && existing.id === entry.id,
+      );
+      if (serverIndex !== -1) return old;
+
+      const pendingIndex = old.entries.findIndex((existing) => {
+        if (existing.type !== "comment" || !existing.id.startsWith("optimistic-")) {
+          return false;
+        }
+        if (optimisticId ? existing.id !== optimisticId : failedIds.has(existing.id)) {
+          return false;
+        }
+        return (
+          existing.actor_type === entry.actor_type &&
+          existing.actor_id === entry.actor_id &&
+          existing.content === entry.content &&
+          existing.parent_id === entry.parent_id
+        );
+      });
+
+      const next = [...old.entries];
+      if (pendingIndex === -1) {
+        next.push(entry);
+      } else {
+        next[pendingIndex] = entry;
+      }
+      const sorted = sortTimelineEntriesAsc(next);
+      crossedKind =
+        !old.truncatedKinds.includes("comment") &&
+        crossedTimelineHardCap(old.entries, sorted, "comment");
+      return updateTimelineEntries(old, () => sorted);
+    },
+  );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+}
+
 export function patchTimelineEntry(
   qc: QueryClient,
   wsId: string,
