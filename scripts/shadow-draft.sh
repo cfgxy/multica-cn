@@ -36,10 +36,12 @@ done
 
 mkdir -p "$audit_dir"
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-draft="$audit_dir/${timestamp}-${issue_ref}-shadow-draft.md"
+# Atomically reserve a directory so even concurrent calls cannot share artifacts.
+run_audit=$(mktemp -d "$audit_dir/${timestamp}-${issue_ref}-XXXXXX")
+draft="$run_audit/shadow-draft.md"
 ledger="$audit_dir/ledger.jsonl"
-events="$audit_dir/${timestamp}-${issue_ref}-events.jsonl"
-stderr_log="$audit_dir/${timestamp}-${issue_ref}-stderr.log"
+events="$run_audit/events.jsonl"
+stderr_log="$run_audit/stderr.log"
 run_home=$(mktemp -d)
 run_input=$(mktemp)
 trap 'rm -rf "$run_home" "$run_input"' EXIT
@@ -78,13 +80,17 @@ snapshot_sha=$(sha256sum "$snapshot" | awk '{print $1}')
 if [[ $status -eq 0 && -s $draft ]]; then
   draft_sha=$(sha256sum "$draft" | awk '{print $1}')
   printf '{"timestamp":"%s","issue_ref":"%s","model":"deepseek-v4-flash","outcome":"draft_created","snapshot_sha256":"%s","draft":"%s","draft_sha256":"%s","events":"%s","stderr":"%s"}\n' \
-    "$timestamp" "$issue_ref" "$snapshot_sha" "$(basename "$draft")" "$draft_sha" "$(basename "$events")" "$(basename "$stderr_log")" >>"$ledger"
+    "$timestamp" "$issue_ref" "$snapshot_sha" "$(basename "$run_audit")/$(basename "$draft")" "$draft_sha" "$(basename "$run_audit")/$(basename "$events")" "$(basename "$run_audit")/$(basename "$stderr_log")" >>"$ledger"
   printf 'draft=%s\nledger=%s\n' "$draft" "$ledger"
   exit 0
 fi
 
 rm -f "$draft"
+# A successful process without a draft is still a failed channel invocation.
+if [[ $status -eq 0 ]]; then
+  status=1
+fi
 printf '{"timestamp":"%s","issue_ref":"%s","model":"deepseek-v4-flash","outcome":"channel_error","exit_code":%s,"snapshot_sha256":"%s","events":"%s","stderr":"%s"}\n' \
-  "$timestamp" "$issue_ref" "$status" "$snapshot_sha" "$(basename "$events")" "$(basename "$stderr_log")" >>"$ledger"
+  "$timestamp" "$issue_ref" "$status" "$snapshot_sha" "$(basename "$run_audit")/$(basename "$events")" "$(basename "$run_audit")/$(basename "$stderr_log")" >>"$ledger"
 printf 'shadow draft failed; recorded channel_error in %s\n' "$ledger" >&2
 exit "$status"
