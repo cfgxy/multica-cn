@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { ChatSession } from "@multica/core/types";
+import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
 
 const updateMutate = vi.hoisted(() => vi.fn());
@@ -27,6 +27,22 @@ vi.mock("../../common/actor-avatar", () => ({
 
 vi.mock("../../navigation", () => ({
   AppLink: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+}));
+
+vi.mock("./chat-session-model-selector", () => ({
+  ChatSessionModelSelector: ({
+    session: currentSession,
+    agentModel,
+    disabled,
+  }: {
+    session: ChatSession;
+    agentModel: string | null;
+    disabled: boolean;
+  }) => (
+    <button type="button" data-testid="session-model-selector" disabled={disabled}>
+      {currentSession.model_override ?? agentModel}
+    </button>
+  ),
 }));
 
 import { ChatSessionHeader } from "./chat-session-header";
@@ -178,5 +194,31 @@ describe("ChatSessionHeader rename keyboard behavior", () => {
     expect(updateMutate).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox", { name: RENAME_LABEL })).not.toBeInTheDocument();
     expect(screen.getByText("Original title")).toBeInTheDocument();
+  });
+});
+
+describe("ChatSessionHeader model selector", () => {
+  it("shows the current session model selector when enabled by the page", () => {
+    const agent = {
+      id: "agent-1",
+      name: "Agent",
+      runtime_id: "runtime-1",
+      model: "agent-default",
+    } as Agent;
+    const sessionWithOverride = { ...session, model_override: "session-model-b" };
+
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader
+          session={sessionWithOverride}
+          agent={agent}
+          showModelSelector
+          modelSelectorDisabled
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByTestId("session-model-selector")).toHaveTextContent("session-model-b");
+    expect(screen.getByTestId("session-model-selector")).toBeDisabled();
   });
 });

@@ -5455,6 +5455,19 @@ export class ApiClient {
     });
   }
 
+  async setChatSessionModel(
+    id: string,
+    modelOverride: string | null,
+  ): Promise<ChatSession> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "PATCH /api/chat/sessions/:id/model",
+    });
+  }
+
   async setChatSessionPinned(id: string, pinned: boolean): Promise<ChatSession> {
     return this.fetch(`/api/chat/sessions/${id}/pin`, {
       method: "PATCH",

@@ -219,6 +219,7 @@ type AgentTaskQueue struct {
 	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
 	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 	LocalDirectoryScope     []byte             `json:"local_directory_scope"`
+	ChatModelSnapshot       pgtype.Text        `json:"chat_model_snapshot"`
 }
 
 type AgentToLabel struct {
@@ -630,6 +631,7 @@ type ChatSession struct {
 	PinnedAt            pgtype.Timestamptz `json:"pinned_at"`
 	ProjectID           pgtype.UUID        `json:"project_id"`
 	ExplicitlyCreatedAt pgtype.Timestamptz `json:"explicitly_created_at"`
+	ModelOverride       pgtype.Text        `json:"model_override"`
 }
 
 // Governance clause asset (RUYI-751 / ADR 007): stable identity and lifecycle status only. The effective body lives in clause_version, the effective scope in clause_binding — this row is never the read source for injected text.

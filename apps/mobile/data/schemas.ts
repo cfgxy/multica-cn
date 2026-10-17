@@ -254,6 +254,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
+  model_override: z.string().nullable().optional(),
   title: z.string().default(""),
   // Enum drift defense (root CLAUDE.md "Enum drift downgrades, not crashes"):
   // unknown server values fall back to "active" so the row still renders.

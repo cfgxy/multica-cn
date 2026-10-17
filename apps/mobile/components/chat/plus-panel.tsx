@@ -1,30 +1,15 @@
-/**
- * 「+」面板（RUYI-694 板2）：把散在工具栏的附件入口收进一个面板。
- *
- *   - 顶部大按钮行：拍照 / 图片（h86，品牌色 10% 底、圆角 18）。
- *   - 网格 4 列：@提及 / 技能指令 / 快捷回复 / 文件（h76，中性底）。
- *     技能指令、快捷回复仅在调用方传入对应入口时渲染——chat 现状
- *     没有这两个数据源（MessageComposer 的 skillPickerPath /
- *     quickReplies 都是 optional），不渲染空入口。
- *
- * 动效：面板 slide-up 260ms、遮罩 fade 200ms rgba(12,15,24,0.44)；
- * 关闭 = 点遮罩 / 下拉把手位移 > 80dp（× 按钮由调用方头部提供）。
- */
-import { useCallback, useRef } from "react";
+/** Composer attachment and mention actions, rendered above the input row. */
+import { useCallback, useEffect, useRef } from "react";
 import {
-  Modal,
+  BackHandler,
   Pressable,
+  ScrollView,
   View,
   type GestureResponderEvent,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
-import Animated, {
-  FadeIn,
-  FadeOut,
-  SlideInDown,
-  SlideOutDown,
-} from "react-native-reanimated";
+import Animated, { SlideInUp, SlideOutDown } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Text } from "@/components/ui/text";
@@ -32,8 +17,6 @@ import { withAlphaColor } from "@/lib/color-alpha";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
-
-const PANEL_MIN_HEIGHT = 300;
 
 interface GridEntry {
   key: string;
@@ -44,6 +27,7 @@ interface GridEntry {
 
 interface Props {
   visible: boolean;
+  maxHeight: number;
   onClose: () => void;
   onMention: () => void;
   /** 拍照（直启相机）。 */
@@ -59,6 +43,7 @@ interface Props {
 
 export function PlusPanel({
   visible,
+  maxHeight,
   onClose,
   onMention,
   onCamera,
@@ -71,6 +56,15 @@ export function PlusPanel({
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const dragStartY = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      onClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onClose, visible]);
 
   const haptic = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -111,7 +105,7 @@ export function PlusPanel({
     },
   ];
 
-  // 下拉把手：位移超过 80dp 视为关闭手势。grant 记起点，release 比对。
+  // A downward pull of more than 80dp closes the panel.
   const handleStyle: StyleProp<ViewStyle> = {
     width: 40,
     height: 4,
@@ -124,22 +118,21 @@ export function PlusPanel({
   if (!visible) return null;
 
   return (
-    <Modal transparent visible={visible} animationType="none" onRequestClose={onClose}>
-      <View className="flex-1 justify-end">
-        <Animated.View
-          entering={FadeIn.duration(200)}
-          exiting={FadeOut.duration(200)}
-          style={{ ...({ backgroundColor: "rgba(12,15,24,0.44)" } as ViewStyle) }}
-          className="absolute inset-0"
-        >
-          <Pressable className="flex-1" onPress={onClose} accessibilityLabel={t("mobile.plus.close", "Close")} />
-        </Animated.View>
-        <Animated.View
-          entering={SlideInDown.duration(260)}
-          exiting={SlideOutDown.duration(260)}
-          className="rounded-t-3xl bg-background px-3 pb-6"
-          style={{ minHeight: PANEL_MIN_HEIGHT }}
-        >
+    <Animated.View
+      entering={SlideInUp.duration(220)}
+      exiting={SlideOutDown.duration(180)}
+      className="self-start rounded-xl border border-border bg-background px-3 pb-4 shadow-lg"
+      style={{
+        position: "absolute",
+        bottom: "100%",
+        left: 0,
+        zIndex: 10,
+        maxHeight,
+        width: "92%",
+        marginBottom: 8,
+      }}
+    >
+      <ScrollView keyboardShouldPersistTaps="handled" bounces={false}>
           <View
             style={handleStyle}
             onTouchStart={(e: GestureResponderEvent) => {
@@ -199,9 +192,8 @@ export function PlusPanel({
               />
             ))}
           </View>
-        </Animated.View>
-      </View>
-    </Modal>
+      </ScrollView>
+    </Animated.View>
   );
 }
 
