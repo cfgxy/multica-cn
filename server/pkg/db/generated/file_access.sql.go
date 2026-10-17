@@ -88,7 +88,7 @@ func (q *Queries) ExpireFileOperations(ctx context.Context) error {
 const finalizeFileOperation = `-- name: FinalizeFileOperation :one
 UPDATE daemon_file_operation SET status = $3, result = $4, error_class = $5, finished_at = now()
 WHERE id = $1 AND runtime_id = $2 AND status = 'claimed' AND lease_epoch = $6
-RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at
+RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
 `
 
 type FinalizeFileOperationParams struct {
@@ -124,6 +124,7 @@ func (q *Queries) FinalizeFileOperation(ctx context.Context, arg FinalizeFileOpe
 		&i.CreatedAt,
 		&i.ClaimedAt,
 		&i.FinishedAt,
+		&i.InvocationID,
 	)
 	return i, err
 }
@@ -176,7 +177,7 @@ func (q *Queries) GetFileAccessTargetByRuntime(ctx context.Context, arg GetFileA
 }
 
 const getFileOperation = `-- name: GetFileOperation :one
-SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at FROM daemon_file_operation WHERE id = $1
+SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id FROM daemon_file_operation WHERE id = $1
 `
 
 func (q *Queries) GetFileOperation(ctx context.Context, id pgtype.UUID) (DaemonFileOperation, error) {
@@ -196,22 +197,111 @@ func (q *Queries) GetFileOperation(ctx context.Context, id pgtype.UUID) (DaemonF
 		&i.CreatedAt,
 		&i.ClaimedAt,
 		&i.FinishedAt,
+		&i.InvocationID,
+	)
+	return i, err
+}
+
+const getFileOperationForInvocation = `-- name: GetFileOperationForInvocation :one
+SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id FROM daemon_file_operation
+WHERE id = $1 AND invocation_id = $2
+`
+
+type GetFileOperationForInvocationParams struct {
+	ID           pgtype.UUID `json:"id"`
+	InvocationID pgtype.UUID `json:"invocation_id"`
+}
+
+func (q *Queries) GetFileOperationForInvocation(ctx context.Context, arg GetFileOperationForInvocationParams) (DaemonFileOperation, error) {
+	row := q.db.QueryRow(ctx, getFileOperationForInvocation, arg.ID, arg.InvocationID)
+	var i DaemonFileOperation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.RuntimeID,
+		&i.TargetID,
+		&i.Kind,
+		&i.Request,
+		&i.Status,
+		&i.LeaseEpoch,
+		&i.Result,
+		&i.ErrorClass,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.FinishedAt,
+		&i.InvocationID,
+	)
+	return i, err
+}
+
+const getMCPFileAccessInstanceBinding = `-- name: GetMCPFileAccessInstanceBinding :one
+SELECT instance_id, workspace_id, target_id, enabled, updated_by, updated_at FROM mcp_file_access_instance_binding
+WHERE instance_id = $1 AND workspace_id = $2
+`
+
+type GetMCPFileAccessInstanceBindingParams struct {
+	InstanceID  string      `json:"instance_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetMCPFileAccessInstanceBinding(ctx context.Context, arg GetMCPFileAccessInstanceBindingParams) (McpFileAccessInstanceBinding, error) {
+	row := q.db.QueryRow(ctx, getMCPFileAccessInstanceBinding, arg.InstanceID, arg.WorkspaceID)
+	var i McpFileAccessInstanceBinding
+	err := row.Scan(
+		&i.InstanceID,
+		&i.WorkspaceID,
+		&i.TargetID,
+		&i.Enabled,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getMCPFileAccessInstanceBindingTarget = `-- name: GetMCPFileAccessInstanceBindingTarget :one
+SELECT target.id, target.workspace_id, target.runtime_id, target.enabled, target.roots, target.workspace_acl, target.member_acl, target.created_at, target.updated_at FROM mcp_file_access_instance_binding AS binding
+JOIN daemon_file_access_target AS target ON target.id = binding.target_id
+    AND target.workspace_id = binding.workspace_id
+WHERE binding.instance_id = $1
+  AND binding.workspace_id = $2
+  AND binding.enabled = TRUE
+`
+
+type GetMCPFileAccessInstanceBindingTargetParams struct {
+	InstanceID  string      `json:"instance_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetMCPFileAccessInstanceBindingTarget(ctx context.Context, arg GetMCPFileAccessInstanceBindingTargetParams) (DaemonFileAccessTarget, error) {
+	row := q.db.QueryRow(ctx, getMCPFileAccessInstanceBindingTarget, arg.InstanceID, arg.WorkspaceID)
+	var i DaemonFileAccessTarget
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.RuntimeID,
+		&i.Enabled,
+		&i.Roots,
+		&i.WorkspaceAcl,
+		&i.MemberAcl,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const insertFileOperation = `-- name: InsertFileOperation :one
-INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at
+INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, invocation_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
 `
 
 type InsertFileOperationParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RuntimeID   pgtype.UUID `json:"runtime_id"`
-	TargetID    string      `json:"target_id"`
-	Kind        string      `json:"kind"`
-	Request     []byte      `json:"request"`
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	RuntimeID    pgtype.UUID `json:"runtime_id"`
+	TargetID     string      `json:"target_id"`
+	Kind         string      `json:"kind"`
+	Request      []byte      `json:"request"`
+	InvocationID pgtype.UUID `json:"invocation_id"`
 }
 
 func (q *Queries) InsertFileOperation(ctx context.Context, arg InsertFileOperationParams) (DaemonFileOperation, error) {
@@ -222,6 +312,7 @@ func (q *Queries) InsertFileOperation(ctx context.Context, arg InsertFileOperati
 		arg.TargetID,
 		arg.Kind,
 		arg.Request,
+		arg.InvocationID,
 	)
 	var i DaemonFileOperation
 	err := row.Scan(
@@ -238,6 +329,7 @@ func (q *Queries) InsertFileOperation(ctx context.Context, arg InsertFileOperati
 		&i.CreatedAt,
 		&i.ClaimedAt,
 		&i.FinishedAt,
+		&i.InvocationID,
 	)
 	return i, err
 }
@@ -277,7 +369,7 @@ func (q *Queries) ListFileAccessTargetsByHost(ctx context.Context, host string) 
 }
 
 const listFileOperations = `-- name: ListFileOperations :many
-SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at FROM daemon_file_operation WHERE workspace_id = $1 AND target_id = $2
+SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id FROM daemon_file_operation WHERE workspace_id = $1 AND target_id = $2
 ORDER BY created_at DESC, id DESC LIMIT $3
 `
 
@@ -310,6 +402,7 @@ func (q *Queries) ListFileOperations(ctx context.Context, arg ListFileOperations
 			&i.CreatedAt,
 			&i.ClaimedAt,
 			&i.FinishedAt,
+			&i.InvocationID,
 		); err != nil {
 			return nil, err
 		}
@@ -364,6 +457,45 @@ func (q *Queries) UpsertFileAccessTarget(ctx context.Context, arg UpsertFileAcce
 		&i.WorkspaceAcl,
 		&i.MemberAcl,
 		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertMCPFileAccessInstanceBinding = `-- name: UpsertMCPFileAccessInstanceBinding :one
+INSERT INTO mcp_file_access_instance_binding (instance_id, workspace_id, target_id, enabled, updated_by, updated_at)
+SELECT $1, target.workspace_id, target.id, $2, $3, now()
+FROM daemon_file_access_target AS target
+WHERE target.id = $4 AND target.workspace_id = $5
+ON CONFLICT (instance_id, workspace_id) DO UPDATE SET
+    target_id = EXCLUDED.target_id, enabled = EXCLUDED.enabled,
+    updated_by = EXCLUDED.updated_by, updated_at = now()
+RETURNING instance_id, workspace_id, target_id, enabled, updated_by, updated_at
+`
+
+type UpsertMCPFileAccessInstanceBindingParams struct {
+	InstanceID  string      `json:"instance_id"`
+	Enabled     bool        `json:"enabled"`
+	UpdatedBy   pgtype.UUID `json:"updated_by"`
+	TargetID    string      `json:"target_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) UpsertMCPFileAccessInstanceBinding(ctx context.Context, arg UpsertMCPFileAccessInstanceBindingParams) (McpFileAccessInstanceBinding, error) {
+	row := q.db.QueryRow(ctx, upsertMCPFileAccessInstanceBinding,
+		arg.InstanceID,
+		arg.Enabled,
+		arg.UpdatedBy,
+		arg.TargetID,
+		arg.WorkspaceID,
+	)
+	var i McpFileAccessInstanceBinding
+	err := row.Scan(
+		&i.InstanceID,
+		&i.WorkspaceID,
+		&i.TargetID,
+		&i.Enabled,
+		&i.UpdatedBy,
 		&i.UpdatedAt,
 	)
 	return i, err

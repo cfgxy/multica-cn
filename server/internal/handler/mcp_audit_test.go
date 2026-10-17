@@ -56,6 +56,68 @@ func TestMCPAuditWriteRequiresPrivateCredentialAndRejectsUnknownFields(t *testin
 	}
 }
 
+func TestMCPPreAuthRejectionIsBoundedAndIdempotent(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const instanceID = "mcp-pre-auth-test"
+	const instanceCredential = "test-mcp-pre-auth-instance-credential"
+	previousAuditCredential := testHandler.cfg.MCPAuditServiceCredential
+	previousInstanceCredentials := testHandler.cfg.MCPFileAccessInstanceCredentials
+	testHandler.cfg.MCPAuditServiceCredential = mcpAuditTestCredential
+	testHandler.cfg.MCPFileAccessInstanceCredentials = map[string]string{instanceID: instanceCredential}
+	t.Cleanup(func() {
+		testHandler.cfg.MCPAuditServiceCredential = previousAuditCredential
+		testHandler.cfg.MCPFileAccessInstanceCredentials = previousInstanceCredentials
+	})
+
+	invocationID := uuid.NewString()
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM mcp_pre_auth_rejection WHERE invocation_id = $1`, invocationID)
+	})
+	callWithInstance := func(reasonCode, fileToolName string) (int, mcpAuditWriteResponse) {
+		t.Helper()
+		encoded, err := json.Marshal(map[string]any{
+			"invocation_id": invocationID, "reason_code": reasonCode, "file_tool_name": fileToolName,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/mcp/pre-auth-rejection", bytes.NewReader(encoded))
+		req.Header.Set("X-User-ID", testUserID)
+		req.Header.Set("X-Multica-MCP-Service-Credential", mcpAuditTestCredential)
+		req.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+		req.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+		recorder := httptest.NewRecorder()
+		testHandler.RecordMCPPreAuthRejection(recorder, req)
+		var response mcpAuditWriteResponse
+		_ = json.Unmarshal(recorder.Body.Bytes(), &response)
+		return recorder.Code, response
+	}
+
+	if status, response := callWithInstance("entry_rejected", "list_files"); status != http.StatusCreated || response.Status != "recorded" {
+		t.Fatalf("record pre-auth rejection: status=%d response=%+v", status, response)
+	}
+	if status, response := callWithInstance("entry_rejected", "list_files"); status != http.StatusConflict || response.Status != "already_recorded" {
+		t.Fatalf("duplicate pre-auth rejection: status=%d response=%+v", status, response)
+	}
+	var reasonCode, toolName string
+	if err := testPool.QueryRow(t.Context(), `
+		SELECT reason_code, file_tool_name FROM mcp_pre_auth_rejection WHERE invocation_id = $1
+	`, invocationID).Scan(&reasonCode, &toolName); err != nil {
+		t.Fatal(err)
+	}
+	if reasonCode != "entry_rejected" || toolName != "list_files" {
+		t.Fatalf("stored pre-auth rejection = %q/%q", reasonCode, toolName)
+	}
+	if status, _ := callWithInstance("unknown_tool", "list_files"); status != http.StatusBadRequest {
+		t.Fatalf("unknown tool rejection must not record tool name: got %d, want 400", status)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM mcp_pre_auth_rejection WHERE invocation_id = $1`, invocationID); got != 1 {
+		t.Fatalf("pre-auth rejection count = %d, want exactly one", got)
+	}
+}
+
 func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -68,6 +130,7 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	start := map[string]any{
 		"invocation_id": id.String(), "workspace_id": testWorkspaceID,
 		"tool_name": "read_file", "target_type": "host", "target_id": "local",
+		"reported_client_name": "vitest\nclient", "reported_client_version": " 1.2.3\u001b ",
 		"normalized_path": "/workspace/private/report.txt",
 	}
 	if status, response := callMCPAudit(t, testHandler.StartMCPInvocationAudit, testUserID, start, mcpAuditTestCredential); status != http.StatusCreated || response.Status != "recorded" {
@@ -79,6 +142,13 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	stored, err := testHandler.Queries.GetMCPInvocationAuditStart(t.Context(), pgtype.UUID{Bytes: id, Valid: true})
 	if err != nil || !stored.Sensitive {
 		t.Fatalf("sensitive start row not stored: row=%+v err=%v", stored, err)
+	}
+	var startDetails map[string]any
+	if err := json.Unmarshal(stored.Details, &startDetails); err != nil {
+		t.Fatal(err)
+	}
+	if startDetails["reported_client_name"] != "vitestclient" || startDetails["reported_client_version"] != "1.2.3" {
+		t.Fatalf("reported client details = %#v", startDetails)
 	}
 
 	otherUser := dbfx.User(t, "mcp audit other "+handlerFixtureSuffix, "mcp-audit-other-"+handlerFixtureSuffix+"@example.test")
@@ -96,6 +166,18 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	err = testPool.QueryRow(t.Context(), `SELECT count(*) FROM audit_event WHERE invocation_id = $1`, pgtype.UUID{Bytes: id, Valid: true}).Scan(&count)
 	if err != nil || count != 2 {
 		t.Fatalf("invocation should have exactly start+finish rows: count=%d err=%v", count, err)
+	}
+}
+
+func TestSanitizeMCPReportedClientValue(t *testing.T) {
+	if got := sanitizeMCPReportedClientValue("  cli\nname\x00  ", 128); got != "cliname" {
+		t.Fatalf("control characters and surrounding whitespace should be removed: %q", got)
+	}
+	if got := sanitizeMCPReportedClientValue("ééé", 4); got != "éé" {
+		t.Fatalf("value should be capped at a UTF-8 boundary: %q", got)
+	}
+	if got := sanitizeMCPReportedClientValue("\n \t", 128); got != "" {
+		t.Fatalf("empty sanitized value should not be persisted: %q", got)
 	}
 }
 
