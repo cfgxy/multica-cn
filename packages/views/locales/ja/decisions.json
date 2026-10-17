@@ -82,5 +82,15 @@
     "detail_error": "ステップ詳細の読み込みに失敗しました",
     "answer_failed": "承認操作に失敗しました",
     "cancel_failed": "取り下げに失敗しました"
+  },
+  "detail": {
+    "read_only": "読み取り専用の判断詳細",
+    "no_context": "追加の背景はありません。",
+    "options": "選択肢",
+    "recommended": "推奨",
+    "selected": "選択済み",
+    "single_select": "選択肢を1つ選んでください",
+    "multi_select": "1つ以上選択できます",
+    "open_task": "タスクを開いて回答"
   }
 }

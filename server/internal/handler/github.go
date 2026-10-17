@@ -1068,6 +1068,44 @@ func (h *Handler) LookupPullRequestByRef(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// LookupPullRequestByNumber backs `MR !N` body links and tail rows (RUYI-728):
+// prose that TEXT-references a merge request without naming a repo resolves
+// against the workspace's PR snapshot by number alone. The number-only form is
+// only meaningful when exactly one snapshot row carries it, so the contract
+// is: exactly one row → 200, none → 404, several → 409 — the client treats
+// every miss as plain text, so an ambiguous number must never guess. Read-only
+// and DB-only, the same snapshot discipline as LookupPullRequestByRef.
+func (h *Handler) LookupPullRequestByNumber(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	number, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("number")), 10, 32)
+	if err != nil || number <= 0 {
+		writeError(w, http.StatusBadRequest, "a positive number is required")
+		return
+	}
+	prs, err := h.Queries.GetGitHubPullRequestsByNumber(r.Context(), db.GetGitHubPullRequestsByNumberParams{
+		WorkspaceID: wsUUID,
+		PrNumber:    int32(number),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up pull request")
+		return
+	}
+	if len(prs) == 0 {
+		writeError(w, http.StatusNotFound, "pull request not found")
+		return
+	}
+	if len(prs) > 1 {
+		writeError(w, http.StatusConflict, "pull request number is ambiguous across repositories")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pull_request": githubPullRequestToResponse(prs[0], h.PRRefresh.Enabled()),
+	})
+}
+
 // ── Webhook ─────────────────────────────────────────────────────────────────
 
 // identifierRe extracts identifiers like "MUL-1510" from text. Case-insensitive

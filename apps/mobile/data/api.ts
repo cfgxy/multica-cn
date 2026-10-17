@@ -13,10 +13,6 @@
  *   3. X-Request-ID per request + structured logger (debug + tracing)
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
-import type {
-  VoiceDirectSessionHandoff,
-  VoiceSessionCompleteRequest,
-} from "@multica/core/voice";
 import i18n from "i18next";
 import type {
   Agent,
@@ -34,7 +30,6 @@ import type {
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
-  CreateRuntimeProfileRequest,
   ExecutionProfile,
   ExecutionProfileActivationResponse,
   ExecutionProfileEntry,
@@ -74,7 +69,6 @@ import type {
   ReorderPinsRequest,
   RemoveSquadMemberRequest,
   RuntimeDevice,
-  RuntimeProfile,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ListIssueStatusesResponse,
@@ -194,9 +188,7 @@ import {
   EMPTY_NOTIFICATION_PREFERENCES,
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
-  EMPTY_RUNTIME,
   EMPTY_RUNTIME_LIST,
-  EMPTY_RUNTIME_PROFILE_LIST_RESPONSE,
   EMPTY_SEARCH_ISSUES_RESPONSE,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
   EMPTY_SQUAD_LIST,
@@ -217,8 +209,6 @@ import {
   PinnedItemSchema,
   ProjectSchema,
   RuntimeListSchema,
-  RuntimeProfileListResponseSchema,
-  RuntimeSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SendChatMessageResponseSchema,
@@ -231,7 +221,6 @@ import {
 } from "./schemas";
 import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
-import type { RuntimeCredentialPutResult } from "./schemas";
 import { getCurrentSlug } from "./workspace-store";
 import { getApiUrl } from "./server-store";
 import { parseWithFallback } from "@/lib/parse-response";
@@ -270,6 +259,26 @@ export interface FileAsset {
   type: string;
 }
 
+/** Pool row of `GET /api/workspaces/:id/voice-providers` (RUYI-693 D2) —
+ *  mirrors server VoiceProviderResponse. No secret material: the credential
+ *  surfaces only as the coarse badge + last probe verdict. */
+export interface VoiceProvider {
+  id: string;
+  workspace_id: string;
+  display_name: string;
+  provider_type: string;
+  enabled: boolean;
+  credential_status: string;
+  credential_probe?: {
+    status: string;
+    http_status?: number;
+    checked_at: string;
+  } | null;
+  source_runtime_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
  *  its own copy per the `mirror, don't import` rule in apps/mobile/CLAUDE.md. */
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
@@ -289,6 +298,11 @@ const FETCH_TIMEOUT_MS = 30_000;
  *  Applies only to sendCode / verifyCode / getMe; every other request keeps
  *  the 30s FETCH_TIMEOUT_MS ceiling. */
 const LOGIN_TIMEOUT_MS = 10_000;
+
+/** RUYI-710 阶段 2 降级听写转写预算：录音上限 60s（hook 的 MAX_RECORD_MS）
+ *  ≈ 1.9MB（16kHz PCM16）上行，叠加服务端供应商转写一轮往返；60s 覆盖
+ *  弱网上行 + 慢供应商，超时即走「转写失败，请重试」toast。 */
+const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /** Budget for `/api/upload-file` (RUYI-569). Much larger than
  *  FETCH_TIMEOUT_MS because the ceiling is MAX_FILE_SIZE (100MB) over a
@@ -352,13 +366,18 @@ class ApiClient {
     const method = init.method ?? "GET";
 
     const headers: Record<string, string> = {
-      "Content-Type": "application/json",
       "X-Client-Platform": "mobile",
       "X-Client-OS": this.options.clientOS ?? "ios",
       "X-Client-Version": "0.1.0",
       "X-Request-ID": rid,
       ...((init.headers as Record<string, string>) ?? {}),
     };
+    // FormData body 的 multipart boundary 由 fetch 的序列化层自己生成并
+    // 写入请求头（uploadFile 同一条先例注释）；客户端预设 Content-Type
+    // 会与实际 boundary 错位导致服务端解析失败。
+    if (!(init.body instanceof FormData) && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
     if (this.token) {
       headers["Authorization"] = `Bearer ${this.token}`;
     }
@@ -665,6 +684,143 @@ class ApiClient {
     });
   }
 
+  // GET /api/workspaces/:id/voice-providers (RUYI-693 D2 pool) —
+  // member-visible; carries no secret material, only the coarse
+  // credential_status badge and the last probe verdict (RUYI-694 D3
+  // availability gate).
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
+
+  // POST /api/workspaces/:id/voice-transcriptions (RUYI-710 阶段 1 端点) —
+  // 降级听写：16kHz PCM16 WAV 一次上传，服务端走 workspace 的 voice.asr
+  // 解析链调供应商转写，返回 {"text"}。凭据只在服务端持有，端侧零凭据。
+  // 空 text（供应商未识别到语音）原样返回空串，由状态机收敛成
+  // 「未识别到语音」toast；非 2xx（含 409 VOICE_UNAVAILABLE、502 供应商
+  // 不可达）抛 ApiError，由 hook 统一收敛「转写失败」toast。
+  async transcribeVoiceAudio(
+    workspaceId: string,
+    audio: Blob,
+    opts?: { signal?: AbortSignal },
+  ): Promise<string> {
+    const formData = new FormData();
+    // Blob part（内存 WAV，不落盘）；文件名只进 Content-Disposition，
+    // 服务端按 magic 嗅探容器不读文件名。
+    formData.append("audio", audio, "dictation.wav");
+    const res = await this.fetchRaw(
+      `/api/workspaces/${workspaceId}/voice-transcriptions`,
+      {
+        method: "POST",
+        body: formData,
+        signal: opts?.signal,
+        timeoutMs: VOICE_TRANSCRIBE_TIMEOUT_MS,
+      },
+    );
+    const data = (await res.json()) as { text?: unknown };
+    return typeof data.text === "string" ? data.text : "";
+  }
+
+  // --- Voice provider pool writes (RUYI-749) ---
+  // Owner/admin only (server-enforced; the screens gate on the member role
+  // first). Endpoint paths + wire shapes mirror packages/core/api/client.ts
+  // one-for-one; mobile keeps its own client so the X-Workspace-Slug header
+  // follows the workspace store. The API key travels once in the PUT body
+  // and is never returned — responses carry only the coarse status badge
+  // plus the probe verdict (保存即探针: the credential PUT probes before
+  // responding, so the returned row already carries the fresh verdict).
+
+  // POST /api/workspaces/:id/voice-providers
+  async createVoiceProvider(
+    workspaceId: string,
+    body: { display_name: string; provider_type: string },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+
+  // PATCH /api/workspaces/:id/voice-providers/:providerId
+  async updateVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+    patch: { display_name?: string; enabled?: boolean },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  // DELETE /api/workspaces/:id/voice-providers/:providerId — the server
+  // transaction also clears agent override triples and workspace
+  // settings references; cleared_agents feeds the confirm dialog.
+  async deleteVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ id: string; cleared_agents: number }> {
+    return this.fetch<{ id: string; cleared_agents: number }>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // PUT /api/workspaces/:id/voice-providers/:providerId/credentials/:key —
+  // returns the refreshed row (probe included), not a bare 204.
+  async putVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "PUT", body: JSON.stringify({ value }) },
+    );
+  }
+
+  // DELETE /api/workspaces/:id/voice-providers/:providerId/credentials/:key
+  async deleteVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // POST /api/workspaces/:id/voice-providers/:providerId/credential-probe —
+  // manual re-probe behind the row action.
+  async probeVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ voice_provider_id: string; probe: VoiceProvider["credential_probe"] }> {
+    return this.fetch<{
+      voice_provider_id: string;
+      probe: VoiceProvider["credential_probe"];
+    }>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credential-probe`,
+      { method: "POST" },
+    );
+  }
+
+  // PATCH /api/workspaces/:id — settings-bag writes. The bag is replaced
+  // wholesale server-side: callers merge the current bag and send it whole
+  // (never a partial voice-only patch — that would erase sibling keys).
+  async updateWorkspaceSettings(
+    workspaceId: string,
+    settings: Record<string, unknown>,
+  ): Promise<Workspace> {
+    return this.fetch<Workspace>(`/api/workspaces/${workspaceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ settings }),
+    });
+  }
+
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -807,187 +963,11 @@ class ApiClient {
   }
 
   // --- Voice runtime instances & profiles (RUYI-425 §4.3, mobile) ---
-  // Endpoint paths + wire shapes mirror packages/core/api/client.ts
-  // one-for-one (web parity); mobile keeps its own client so the
-  // X-Workspace-Slug header follows the workspace store. The plaintext API
-  // key travels once in the PUT body and is never returned — responses
-  // carry only the badge plus the connectivity-probe outcome.
-
-  // GET /api/workspaces/:id/runtime-profiles — the Type layer; the voice
-  // create form filters these by capabilities.realtime_voice.
-  async listRuntimeProfiles(
-    workspaceId: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<RuntimeProfile[]> {
-    const raw = await this.fetch<unknown>(
-      `/api/workspaces/${workspaceId}/runtime-profiles`,
-      { signal: opts?.signal },
-    );
-    const parsed = parseWithFallback(
-      raw,
-      RuntimeProfileListResponseSchema,
-      EMPTY_RUNTIME_PROFILE_LIST_RESPONSE,
-      { endpoint: "listRuntimeProfiles" },
-    );
-    return parsed.runtime_profiles ?? [];
-  }
-
-  // POST /api/workspaces/:id/runtime-profiles — the §4.3 no-profile escape
-  // hatch creates the workspace's default "Gemini Live" profile (voice
-  // families are API-enforced command-less: command_name: "" is exactly
-  // what the server requires for gemini_live).
-  async createRuntimeProfile(
-    workspaceId: string,
-    body: CreateRuntimeProfileRequest,
-  ): Promise<RuntimeProfile> {
-    return this.fetch<RuntimeProfile>(
-      `/api/workspaces/${workspaceId}/runtime-profiles`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    );
-  }
-
-  // POST /api/runtimes — manual registration of a voice instance (§4.3).
-  // Names may duplicate; the instance is born online/public with
-  // registration_source "manual"; the API key is NOT part of this call —
-  // store it right after via putRuntimeCredential, which also triggers the
-  // server-side connectivity probe.
-  async createManualRuntime(body: {
-    name: string;
-    profile_id: string;
-    model?: string;
-    advanced?: Record<string, unknown>;
-  }): Promise<RuntimeDevice> {
-    return this.fetchValidatedWith(
-      "/api/runtimes",
-      RuntimeSchema,
-      EMPTY_RUNTIME,
-      { method: "POST", body: JSON.stringify(body) },
-      { endpoint: "createManualRuntime" },
-    );
-  }
-
-  // PATCH /api/runtimes/:id — voice instance settings edits (§4.3):
-  // custom_name / model / advanced / disabled merge into instance metadata;
-  // visibility stays server-fixed to public for voice instances.
-  async updateRuntime(
-    runtimeId: string,
-    patch: {
-      visibility?: "private" | "public";
-      custom_name?: string;
-      apply_to_machine?: boolean;
-      model?: string;
-      advanced?: Record<string, unknown>;
-      disabled?: boolean;
-    },
-  ): Promise<RuntimeDevice> {
-    return this.fetchValidatedWith(
-      `/api/runtimes/${runtimeId}`,
-      RuntimeSchema,
-      EMPTY_RUNTIME,
-      { method: "PATCH", body: JSON.stringify(patch) },
-      { endpoint: "updateRuntime" },
-    );
-  }
-
-  // PUT /api/runtimes/:id/credentials/:key — stores/rotates the §4.5
-  // credential and runs the §4.3 probe. Deliberately NOT routed through
-  // parseWithFallback: the tri-state feedback branches on `probe.status`,
-  // and a schema drift must not silently mask the probe outcome.
-  async putRuntimeCredential(
-    runtimeId: string,
-    credentialKey: string,
-    value: string,
-  ): Promise<RuntimeCredentialPutResult> {
-    return this.fetch<RuntimeCredentialPutResult>(
-      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ value }),
-      },
-    );
-  }
-
-  // DELETE /api/runtimes/:id/credentials/:key — idempotent server-side
-  // (204 even when nothing was stored); badge falls back to not_configured.
-  async deleteRuntimeCredential(
-    runtimeId: string,
-    credentialKey: string,
-  ): Promise<void> {
-    await this.fetch<void>(
-      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
-      { method: "DELETE" },
-    );
-  }
-
-  // POST /api/agents/:id/voice-direct-session (RUYI-626) — the §4.4 rule-3
-  // gate plus the live_session row, then the provider hand-off (decrypted
-  // key, provider websocket URL, setup inputs). Deliberately NOT routed
-  // through parseWithFallback: the 409 gate rejection carries
-  // `VOICE_UNAVAILABLE:<reason>` in `body.code` and must surface as an
-  // ApiError the voice layer maps to its degrade copy.
-  async startVoiceDirectSession(
-    agentId: string,
-  ): Promise<VoiceDirectSessionHandoff> {
-    return this.fetch<VoiceDirectSessionHandoff>(
-      `/api/agents/${agentId}/voice-direct-session`,
-      { method: "POST" },
-    );
-  }
-
-  // POST /api/voice-sessions/:id/complete (RUYI-626) — the terminal
-  // write-back with the client-collected transcript and resumption handle.
-  // Idempotent server-side, so a client retry never double-writes.
-  async completeVoiceDirectSession(
-    sessionId: string,
-    record: VoiceSessionCompleteRequest,
-  ): Promise<void> {
-    await this.fetch<void>(`/api/voice-sessions/${sessionId}/complete`, {
-      method: "POST",
-      body: JSON.stringify(record),
-    });
-  }
-
-  // POST /api/runtimes/:id/credential-probe (RUYI-626) — the device-side
-  // connectivity verdict feeds the same credential_probe metadata badge the
-  // server-side probe writes; unreachable never gates a session start.
-  async reportCredentialProbe(
-    runtimeId: string,
-    probe: { status: "ok" | "invalid" | "unreachable"; http_status?: number },
-  ): Promise<void> {
-    await this.fetch<void>(`/api/runtimes/${runtimeId}/credential-probe`, {
-      method: "POST",
-      body: JSON.stringify(probe),
-    });
-  }
-
-  // DELETE /api/runtimes/:id — direct instance delete (RUYI-566). The
-  // server refuses with a structured 409
-  // (`runtime_profile_instance_delete_unsupported`) while a live runtime
-  // profile backs the instance; that channel is deleteRuntimeProfile below,
-  // whose cascade removes the instance and its credentials in one
-  // transaction.
-  async deleteRuntime(runtimeId: string): Promise<void> {
-    await this.fetch<void>(`/api/runtimes/${runtimeId}`, {
-      method: "DELETE",
-    });
-  }
-
-  // DELETE /api/workspaces/:id/runtime-profiles/:profileId — the supported
-  // delete channel for profile-backed (manual voice) instances: the server
-  // tears down bound instances, deletes their credential rows and the
-  // profile in one transaction (RUYI-540 QA-verified cascade, RUYI-566).
-  async deleteRuntimeProfile(
-    workspaceId: string,
-    profileId: string,
-  ): Promise<void> {
-    await this.fetch<void>(
-      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
-      { method: "DELETE" },
-    );
-  }
+  // The §4.3 instance-write surface (profile create/delete, manual
+  // instance registration, instance credentials/probe) was removed with
+  // the old voice-instance model in RUYI-748; the pool methods above own
+  // voice configuration now. Reads that still have callers (listRuntimes)
+  // stay.
 
   // Workspace-wide active agent tasks + each agent's most recent terminal —
   // feeds the workload dimension of presence (currently unused in the mobile
@@ -2256,6 +2236,40 @@ class ApiClient {
       ).pull_request;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * Workspace-scoped PR point lookup by bare number (RUYI-728) — mirrors
+   * packages/core/api/client.ts lookupPullRequestByNumber: a unique hit
+   * returns the PR; never-seen (404) AND cross-repo ambiguous (409) both
+   * read as `null`, so a body-text `MR !N` tap and the reference tail's row
+   * degrade silently instead of erroring.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    try {
+      const raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${encodeURIComponent(String(number))}`,
+        { signal: opts?.signal },
+      );
+      return parseWithFallback(
+        raw,
+        PullRequestLookupResponseSchema,
+        EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+      ).pull_request;
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.status === 404 || err.status === 409)
+      ) {
+        return null;
+      }
       throw err;
     }
   }

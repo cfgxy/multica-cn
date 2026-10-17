@@ -112,9 +112,14 @@ WHERE id IN (
 )
 RETURNING id, workspace_id, runtime_id, kind, lease_epoch;
 
--- name: DeleteWorkspaceOpsCommands :exec
+-- name: DeleteWorkspaceDaemonData :exec
 -- Workspace teardown (application-layer graph; no FK by design).
-DELETE FROM daemon_ops_command WHERE workspace_id = $1;
+WITH deleted_ops_commands AS (
+    DELETE FROM daemon_ops_command AS ops WHERE ops.workspace_id = $1 RETURNING 1
+), deleted_file_operations AS (
+    DELETE FROM daemon_file_operation AS operations WHERE operations.workspace_id = $1 RETURNING 1
+)
+DELETE FROM daemon_file_access_target AS targets WHERE targets.workspace_id = $1;
 
 -- name: UpsertDaemonServiceInventory :one
 INSERT INTO daemon_service_inventory (

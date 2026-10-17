@@ -1,9 +1,8 @@
 /**
  * Edit agent profile (`more/agents/[id]/edit-profile`, RUYI-346 A2 /
  * RUYI-418 B2) — formSheet per SHEET_OPTIONS, re-scoped in RUYI-624 to the
- * profile fields only: avatar / name / description plus the mobile-only
- * voice slot (RUYI-425 §4.2). Mirrors web's profile section PUT
- * (UpdateAgentRequest name/description/avatar).
+ * profile fields only: avatar / name / description. Mirrors web's profile
+ * section PUT (UpdateAgentRequest name/description/avatar).
  *
  * RUYI-624 split: instructions moved to the dedicated edit-instructions
  * window (same RUYI-541 pattern as squads) and the execution fields
@@ -18,12 +17,10 @@
  * the execution fields pinned to the saved Agent — only changed fields land
  * in the PUT, so the split editors can never clobber each other's fields.
  *
- * The voice patch is tri-state — omitted when untouched, "" to unbind, an
- * id to bind — and the pickers exclude each other's selection
- * (`agentSlotChoices`); the voice picker reads the saved text-runtime
- * binding for the exclusion, so a run-config edit the server hasn't echoed
- * back yet may briefly offer the just-taken runtime. Self-healing on the
- * next fetch, same as the pre-split form.
+ * The mobile-only legacy voice slot (RUYI-425 §4.2) was removed with the
+ * old-model voice UI (RUYI-748): the form no longer reads or writes
+ * `voice_runtime_id`, so existing bindings are preserved untouched until
+ * the voice_provider model's own surfaces take over.
  *
  * Access scope is intentionally absent — on web it lives in the separate
  * set-access dialog and is owner-only; mobile keeps that split (S5 screen).
@@ -36,7 +33,6 @@ import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
-import { agentSlotChoices, runtimeCredentialStatus } from "@multica/core/runtimes";
 import {
   AGENT_SESSION_COMPACT_PCT_DEFAULT,
   AGENT_SESSION_MAX_CONTEXT_TOKENS_DEFAULT,
@@ -46,9 +42,8 @@ import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { agentDetailOptions } from "@/data/queries/agents";
-import { runtimeListOptions } from "@/data/queries/runtimes";
+import { type AgentWithVoiceOverride } from "@/data/voice-providers";
 import { useUpdateAgent } from "@/data/mutations/agents";
-import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAvatarUploader } from "@/lib/avatar";
@@ -60,20 +55,15 @@ export default function EditAgentProfile() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const agentId = typeof id === "string" ? id : "";
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const me = useAuthStore((s) => s.user);
   const { t } = useT("agents");
   const update = useUpdateAgent(agentId);
   const { uploading, showAvatarSheet, modalProps } = useAvatarUploader();
 
   const { data: agent } = useQuery(agentDetailOptions(wsId, agentId));
-  const { data: runtimes, isLoading: runtimesLoading } = useQuery(
-    runtimeListOptions(wsId),
-  );
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
-  const [voiceRuntimeId, setVoiceRuntimeId] = useState("");
   const [seeded, setSeeded] = useState(false);
 
   useEffect(() => {
@@ -81,25 +71,8 @@ export default function EditAgentProfile() {
     setName(agent.name);
     setDescription(agent.description);
     setAvatarUrl(agent.avatar_url ?? "");
-    setVoiceRuntimeId(agent.voice_runtime_id ?? "");
     setSeeded(true);
   }, [agent, seeded]);
-
-  // Voice slot choices: realtime-voice-capable, minus the agent's saved text
-  // slot binding, plus the current voice binding even when offline.
-  const voiceChoices = (() => {
-    if (!agent) return [];
-    const usable = agentSlotChoices(runtimes, "realtime_voice", {
-      currentUserId: me?.id ?? null,
-      excludeRuntimeId: agent.runtime_id,
-      keepRuntimeId: voiceRuntimeId,
-    });
-    if (voiceRuntimeId && !usable.some((r) => r.id === voiceRuntimeId)) {
-      const current = (runtimes ?? []).find((r) => r.id === voiceRuntimeId);
-      if (current) return [current, ...usable];
-    }
-    return usable;
-  })();
 
   // The patch carries only fields whose value actually changed; the
   // execution fields are pinned to the saved Agent so buildProfilePatch
@@ -114,7 +87,6 @@ export default function EditAgentProfile() {
         avatarUrl,
         model: agent.model,
         runtimeId: agent.runtime_id,
-        voiceRuntimeId,
         thinking: agent.thinking_level ?? "",
         tier: agent.service_tier ?? "",
         concurrency: String(agent.max_concurrent_tasks || 1),
@@ -126,6 +98,14 @@ export default function EditAgentProfile() {
           agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT,
         ),
         subagents: allowsSubagents(agent.runtime_config),
+        // The voice triple isn't edited here (it lives in run-config);
+        // pin it to the saved Agent so the split editors never clobber
+        // each other's fields.
+        voiceProviderId: (agent as AgentWithVoiceOverride).voice_provider_id ?? "",
+        voiceModel: (agent as AgentWithVoiceOverride).voice_model ?? "",
+        voiceAdvanced: (agent as AgentWithVoiceOverride).voice_advanced
+          ? JSON.stringify((agent as AgentWithVoiceOverride).voice_advanced, null, 2)
+          : "",
       })
     : null;
   const dirty = !!patch && Object.keys(patch).length > 0;
@@ -221,118 +201,9 @@ export default function EditAgentProfile() {
           />
         </Field>
 
-        <Field label={t("create_dialog.voice_label", "Voice")}>
-          {runtimesLoading ? (
-            <Text className="text-sm text-muted-foreground py-1">
-              {t("create_dialog.runtime_loading", "Loading runtimes...")}
-            </Text>
-          ) : (
-            <View className="rounded-md border border-border overflow-hidden">
-              {/* 首项固定：不配置语音（提交空串解绑，§4.2） */}
-              <Pressable
-                onPress={() => setVoiceRuntimeId("")}
-                className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
-                  voiceChoices.length > 0 ? "border-b border-border" : ""
-                }`}
-                accessibilityRole="radio"
-                accessibilityState={{ selected: voiceRuntimeId === "" }}
-              >
-                <View
-                  className={`size-4 rounded-full border items-center justify-center ${
-                    voiceRuntimeId === "" ? "border-brand" : "border-muted-foreground"
-                  }`}
-                >
-                  {voiceRuntimeId === "" ? (
-                    <View className="size-2 rounded-full bg-brand" />
-                  ) : null}
-                </View>
-                <Text className="flex-1 text-sm text-foreground">
-                  {t("create_dialog.voice_none", "No voice")}
-                </Text>
-              </Pressable>
-              {voiceChoices.length === 0 ? (
-                <Text className="text-sm text-muted-foreground px-3 py-2.5">
-                  {t("create_dialog.voice_empty", "No voice-capable instance")}
-                </Text>
-              ) : (
-                voiceChoices.map((r, i) => {
-                  const selected = r.id === voiceRuntimeId;
-                  const badge = runtimeCredentialStatus(r);
-                  return (
-                    <Pressable
-                      key={r.id}
-                      onPress={() => setVoiceRuntimeId(r.id)}
-                      className={`flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary ${
-                        i > 0 ? "border-t border-border" : ""
-                      }`}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
-                    >
-                      <View
-                        className={`size-4 rounded-full border items-center justify-center ${
-                          selected ? "border-brand" : "border-muted-foreground"
-                        }`}
-                      >
-                        {selected ? (
-                          <View className="size-2 rounded-full bg-brand" />
-                        ) : null}
-                      </View>
-                      <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
-                        {r.custom_name || r.name}
-                      </Text>
-                      {r.status !== "online" ? (
-                        <Text className="text-xs text-muted-foreground">
-                          {t("availability.offline", "Offline")}
-                        </Text>
-                      ) : (
-                        <CredentialBadge status={badge} />
-                      )}
-                    </Pressable>
-                  );
-                })
-              )}
-            </View>
-          )}
-        </Field>
         <ActionSheetModal {...modalProps} />
       </ScrollView>
     </KeyboardAvoidingView>
-  );
-}
-
-// RUYI-425 §4.2 voice credential badge states. The agent form never edits
-// credentials — it only reflects the instance's stored key state.
-function CredentialBadge({
-  status,
-}: {
-  status: "not_configured" | "configured" | "invalid" | "unreachable";
-}) {
-  const { t } = useT("agents");
-  if (status === "configured") {
-    return (
-      <Text className="text-xs text-success">
-        {t("create_dialog.credential_configured", "Configured ✓")}
-      </Text>
-    );
-  }
-  if (status === "invalid") {
-    return (
-      <Text className="text-xs text-destructive">
-        {t("create_dialog.credential_invalid", "Key invalid")}
-      </Text>
-    );
-  }
-  if (status === "unreachable") {
-    return (
-      <Text className="text-xs text-warning">
-        {t("create_dialog.credential_unreachable", "Can't verify")}
-      </Text>
-    );
-  }
-  return (
-    <Text className="text-xs text-muted-foreground">
-      {t("create_dialog.credential_not_configured", "Not configured")}
-    </Text>
   );
 }
 

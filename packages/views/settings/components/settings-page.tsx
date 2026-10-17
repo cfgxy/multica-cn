@@ -23,6 +23,7 @@ import {
   Server,
   Store,
   MessageSquareText,
+  Mic,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
@@ -57,6 +58,7 @@ import { PluginsTab } from "./plugins-tab";
 import { McpTab } from "./mcp-tab";
 import { MarketplaceTab } from "./marketplace-tab";
 import { BillingTab } from "./billing-tab";
+import { VoiceTab } from "./voice-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -74,6 +76,7 @@ const ACCOUNT_TAB_ICONS = {
 
 const WORKSPACE_TAB_KEYS = [
   "general",
+  "voice",
   "repositories",
   "github",
   "integrations",
@@ -91,6 +94,7 @@ const WORKSPACE_TAB_KEYS = [
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
+  voice: "voice",
   repositories: "repositories",
   github: "github",
   integrations: "integrations",
@@ -108,6 +112,7 @@ const WORKSPACE_TAB_VALUES = {
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
+  voice: Mic,
   repositories: FolderGit2,
   github: GitHubMark,
   integrations: Plug,
@@ -295,6 +300,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           <TabsContent value="tokens"><TokensTab /></TabsContent>
           <TabsContent value="authorizations"><AuthorizationsTab /></TabsContent>
           <TabsContent value="workspace"><WorkspaceTab /></TabsContent>
+          <TabsContent value="voice"><VoiceTab /></TabsContent>
           <TabsContent value="repositories"><RepositoriesTab /></TabsContent>
           <TabsContent value="github"><GitHubTab /></TabsContent>
           <TabsContent value="integrations"><IntegrationsTab /></TabsContent>

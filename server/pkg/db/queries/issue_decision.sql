@@ -1,11 +1,11 @@
 -- name: CreateIssueDecision :one
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
-    question, options, multi_select, recommended_indices,
+    question, context, options, multi_select, recommended_indices,
     created_by_type, created_by_id, client_request_id
 ) VALUES (
     @id, @workspace_id, @issue_id, @source_comment_id,
-    @question, @options::jsonb, @multi_select, @recommended_indices::jsonb,
+    @question, @context::jsonb, @options::jsonb, @multi_select, @recommended_indices::jsonb,
     @created_by_type, @created_by_id, @client_request_id
 )
 RETURNING *;
@@ -26,6 +26,20 @@ WHERE workspace_id = $1 AND created_by_type = $2 AND created_by_id = $3
 -- name: ListIssueDecisionsForIssue :many
 SELECT * FROM issue_decisions
 WHERE issue_id = $1 AND workspace_id = $2
+ORDER BY created_at ASC, id ASC;
+
+-- name: ListIssueDecisionsByAnswerComments :many
+-- RUYI-719: typed claim-time answer context. Locates the question cards whose
+-- answer echo is one of the comments delivered with this claim (trigger +
+-- coalesced). Authorization cards never take the echo pointer (their terminal
+-- callback is a system comment) and are excluded explicitly by kind, so a
+-- future pointer fill can never leak approve/deny answers into this
+-- question-card surface. Deterministic order keeps a retried claim's payload
+-- byte-stable.
+SELECT * FROM issue_decisions
+WHERE workspace_id = $1 AND issue_id = $2
+  AND decision_kind = 'question'
+  AND answer_comment_id = ANY(@answer_comment_ids::uuid[])
 ORDER BY created_at ASC, id ASC;
 
 -- name: AnswerIssueDecision :one
