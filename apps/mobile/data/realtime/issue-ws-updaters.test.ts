@@ -257,7 +257,7 @@ describe("reconcileCreatedComment", () => {
     qc.clear();
   });
 
-  it("defers an ambiguous realtime event until each identical send response arrives", () => {
+  it("keeps an ambiguous realtime success while identical sends are pending", () => {
     const qc = new QueryClient();
     const key = issueKeys.timeline(wsId, issueId);
     qc.setQueryData<TimelineQueryData>(key, timelineData([
@@ -276,6 +276,77 @@ describe("reconcileCreatedComment", () => {
     expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
       "comment-a",
       "comment-b",
+    ]);
+    qc.clear();
+  });
+
+  it("reconciles an optimistic id even when the server normalizes its content", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-1", { content: "hello\u0000" }),
+    ]));
+
+    reconcileCreatedComment(
+      qc,
+      wsId,
+      issueId,
+      commentEntry("comment-1", { content: "hello" }),
+      "optimistic-1",
+    );
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries).toEqual([
+      commentEntry("comment-1", { content: "hello" }),
+    ]);
+    qc.clear();
+  });
+
+  it("matches a normalized realtime comment to its pending entry", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-1", { content: "hello\u0000" }),
+    ]));
+
+    reconcileCreatedComment(
+      qc,
+      wsId,
+      issueId,
+      commentEntry("comment-1", { content: "hello" }),
+    );
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries).toEqual([
+      commentEntry("comment-1", { content: "hello" }),
+    ]);
+    qc.clear();
+  });
+
+  it("does not reconcile comments from another author or reply thread", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-author"),
+      commentEntry("optimistic-reply", { parent_id: "parent-1" }),
+    ]));
+
+    reconcileCreatedComment(
+      qc,
+      wsId,
+      issueId,
+      commentEntry("comment-other-author", { actor_id: "member-2" }),
+    );
+    reconcileCreatedComment(
+      qc,
+      wsId,
+      issueId,
+      commentEntry("comment-other-parent", { parent_id: "parent-2" }),
+    );
+
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries.map(({ id }) => id)).toEqual([
+      "comment-other-author",
+      "comment-other-parent",
+      "optimistic-author",
+      "optimistic-reply",
     ]);
     qc.clear();
   });
