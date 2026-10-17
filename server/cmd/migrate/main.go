@@ -120,12 +120,11 @@ var issuePropertiesBigramOperatorClass = extensionOperatorClass{
 // concurrentIndexCleanups maps a migration version to the index (or, since the
 // RUYI-359 consolidation, indexes) its entry protects with an invalid-index
 // cleanup hook, so an interrupted build cannot be mistaken for success on
-// retry. The 9xx entries name consolidated lead migrations whose absorbed
+// retry. Earlier 9xx entries name consolidated lead migrations whose absorbed
 // index statements now run as plain CREATE INDEX inside the lead's implicit
 // transaction — a build there either lands valid or rolls back whole, so the
-// hook is a defensive no-op for them — but keeping every index registered
-// preserves the pre-consolidation protection surface and lets the tests
-// cross-check each name against the file that actually builds it.
+// hook is a defensive no-op for them. Post-consolidation concurrent builds
+// retain their own cleanup entries.
 //
 // The mapping is data rather than individual hand-written hook registrations so a
 // test can check each entry against the index its migration file actually
@@ -327,6 +326,8 @@ var concurrentIndexCleanups = map[string][]string{
 	"973_mcp_invocation_audit_invocation_id_index":              {"audit_event_mcp_invocation_idx"},
 	"973_mcp_invocation_audit_outbox_expiry_index":              {"mcp_invocation_audit_outbox_expiry_idx"},
 	"973_mcp_invocation_audit_outbox_id_index":                  {"mcp_invocation_audit_outbox_id_uidx"},
+	"975_file_access_target_id_index":                           {"idx_daemon_file_access_target_id"},
+	"975_file_operation_id_index":                               {"idx_daemon_file_operation_id"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

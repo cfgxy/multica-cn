@@ -202,6 +202,12 @@ type DaemonRegisterRequest struct {
 		CommandName string `json:"command_name"`
 		Reason      string `json:"reason"`
 	} `json:"failed_profiles"`
+	// OpsCaps (RUYI-645) lists daemon-probed read-only command capabilities
+	// ("systemd" | "launchd" | "docker"). Stored per runtime metadata as
+	// ops_caps; the ops submission gate evaluates the kind whitelist's
+	// OR-of-AND matrix against it. An old daemon sends nothing and stays
+	// unable to run ops commands — fail closed.
+	OpsCaps []string `json:"ops_caps"`
 }
 
 type daemonWorkspaceReposResponse struct {
@@ -470,6 +476,10 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			"cli_version":  req.CLIVersion,
 			"launched_by":  req.LaunchedBy,
 			"capabilities": requestClientCapabilities(r),
+			// RUYI-645: daemon-probed ops capabilities; an empty slice is
+			// stored as absent so the ops gate fails closed for daemons
+			// that predate the field.
+			"ops_caps": nonEmptyStrings(req.OpsCaps),
 		})
 
 		var registered db.AgentRuntime
@@ -1167,6 +1177,14 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	// RUYI-645: the claim in processHeartbeat already flipped these rows to
+	// claimed, so dropping the field here would blackhole the commands for
+	// HTTP-heartbeating daemons — they would never execute and every row
+	// would die in sweep timeout. The WS path returns the ack struct directly
+	// and was never affected.
+	if len(ack.PendingOpsCommands) > 0 {
+		resp["pending_ops_commands"] = ack.PendingOpsCommands
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1486,6 +1504,13 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 			slog.Warn("local skill import HasPending failed", "error", probeErr, "runtime_id", runtimeID)
 		}
 	}
+
+	// RUYI-645: claim whitelisted read-only ops commands for this runtime.
+	// The claim is a single SKIP LOCKED UPDATE against the ops ledger (no
+	// Redis probe needed), so it stays cheap on empty-queue ticks and is
+	// safe under concurrent server instances.
+	h.claimOpsCommands(ctx, rt, ack)
+	h.claimFileOperations(ctx, rt, ack)
 
 	return ack, m, nil
 }
