@@ -437,7 +437,12 @@ func TestListAuditEventsMCPInvocationFilters(t *testing.T) {
 		t.Fatalf("invocation filters must match both event rows using start time across finish boundary: status=%d ids=%v", code, eventIDs(page))
 	}
 
-	page, code = fetchWorkspaceAuditEvents(t, query+"&tool_name=other_tool")
+	negativeQuery, err := url.ParseQuery(query)
+	if err != nil {
+		t.Fatalf("parse invocation query: %v", err)
+	}
+	negativeQuery.Set("tool_name", "other_tool")
+	page, code = fetchWorkspaceAuditEvents(t, negativeQuery.Encode())
 	if code != http.StatusOK || len(page.Events) != 0 {
 		t.Fatalf("invocation filters must combine with AND: status=%d ids=%v", code, eventIDs(page))
 	}
@@ -460,24 +465,74 @@ func TestListAuditEventsMCPInvocationFiltersRespectVisibilityAndWorkspace(t *tes
 	memberID := dbfx.User(t, "audit filter member "+handlerFixtureSuffix, "audit-filter-member-"+handlerFixtureSuffix+"@example.test")
 	dbfx.Member(t, testWorkspaceID, memberID, "member")
 	base := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
-	invocationID := uuid.NewString()
-	startID := seedAuditEvent(t, base, "", "", testutil.Cols{
-		"domain": "mcp", "event_type": "mcp.invocation_started", "invocation_id": invocationID,
+	startSourceInvocationID := uuid.NewString()
+	startSourceID := seedAuditEvent(t, base, "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_started", "invocation_id": startSourceInvocationID,
 		"sensitive": true,
-		"details":   testutil.Raw(`'{"reported_client_name":"Hidden","tool_name":"read_file_chunk","target_type":"host","target_id":"secret-host"}'::jsonb`),
+		"details":   testutil.Raw(`'{"reported_client_name":"HiddenStart","tool_name":"read_file_chunk","target_type":"host","target_id":"secret-host"}'::jsonb`),
 	})
-	finishID := seedAuditEvent(t, base.Add(time.Second), "", "", testutil.Cols{
-		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": invocationID,
+	startSourceFinishID := seedAuditEvent(t, base.Add(time.Second), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": startSourceInvocationID,
+		"details": testutil.Raw(`'{"status":"success"}'::jsonb`),
+	})
+
+	finishSourceInvocationID := uuid.NewString()
+	finishSourceStartID := seedAuditEvent(t, base.Add(2*time.Second), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_started", "invocation_id": finishSourceInvocationID,
+		"details": testutil.Raw(`'{"tool_name":"read_file_chunk"}'::jsonb`),
+	})
+	finishSourceID := seedAuditEvent(t, base.Add(3*time.Second), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": finishSourceInvocationID,
 		"sensitive": true, "details": testutil.Raw(`'{"status":"success"}'::jsonb`),
 	})
-	query := "client_name=Hidden&tool_name=read_file_chunk&result_status=success&target_type=host&target_id=secret-host"
-	page, code := fetchWorkspaceAuditEventsAs(t, memberID, query)
-	if code != http.StatusOK || len(page.Events) != 0 {
-		t.Fatalf("member must not infer hidden invocation from filters: status=%d ids=%v", code, eventIDs(page))
-	}
-	page, code = fetchWorkspaceAuditEvents(t, query)
-	if code != http.StatusOK || len(page.Events) != 2 || !containsID(eventIDs(page), startID) || !containsID(eventIDs(page), finishID) {
-		t.Fatalf("owner should see matching sensitive invocation rows: status=%d ids=%v", code, eventIDs(page))
+
+	timeSourceInvocationID := uuid.NewString()
+	timeSourceStartID := seedAuditEvent(t, base.Add(time.Minute), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_started", "invocation_id": timeSourceInvocationID,
+		"sensitive": true,
+	})
+	timeSourceFinishID := seedAuditEvent(t, base.Add(time.Hour), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": timeSourceInvocationID,
+		"details": testutil.Raw(`'{"status":"success"}'::jsonb`),
+	})
+
+	for _, tc := range []struct {
+		name       string
+		query      string
+		visibleIDs []string
+	}{
+		{
+			name:       "sensitive start filter source",
+			query:      "client_name=HiddenStart",
+			visibleIDs: []string{startSourceID, startSourceFinishID},
+		},
+		{
+			name:       "sensitive finish result source",
+			query:      "result_status=success",
+			visibleIDs: []string{finishSourceStartID, finishSourceID},
+		},
+		{
+			name: "sensitive invocation time source",
+			query: "time_basis=invocation_start&since=" + url.QueryEscape(base.Add(30*time.Second).Format(time.RFC3339Nano)) +
+				"&until=" + url.QueryEscape(base.Add(90*time.Second).Format(time.RFC3339Nano)),
+			visibleIDs: []string{timeSourceStartID, timeSourceFinishID},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			page, code := fetchWorkspaceAuditEventsAs(t, memberID, tc.query)
+			if code != http.StatusOK || len(page.Events) != 0 {
+				t.Fatalf("member must not infer invocation from a hidden source: status=%d ids=%v", code, eventIDs(page))
+			}
+			page, code = fetchWorkspaceAuditEvents(t, tc.query)
+			if code != http.StatusOK || len(page.Events) != len(tc.visibleIDs) {
+				t.Fatalf("owner should see rows matched through sensitive source: status=%d ids=%v", code, eventIDs(page))
+			}
+			for _, id := range tc.visibleIDs {
+				if !containsID(eventIDs(page), id) {
+					t.Fatalf("owner result missing expected visible row %s: ids=%v", id, eventIDs(page))
+				}
+			}
+		})
 	}
 
 	foreignInvocation := uuid.NewString()
@@ -493,7 +548,7 @@ func TestListAuditEventsMCPInvocationFiltersRespectVisibilityAndWorkspace(t *tes
 		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": foreignInvocation,
 		"details": testutil.Raw(`'{"status":"success"}'::jsonb`),
 	})
-	page, code = fetchWorkspaceAuditEvents(t, "tool_name=read_file_chunk&result_status=success&target_type=host&target_id=host-7")
+	page, code := fetchWorkspaceAuditEvents(t, "tool_name=read_file_chunk&result_status=success&target_type=host&target_id=host-7")
 	if code != http.StatusOK || containsID(eventIDs(page), foreignEventID) {
 		t.Fatalf("invocation correlation must not cross workspace: status=%d ids=%v", code, eventIDs(page))
 	}
