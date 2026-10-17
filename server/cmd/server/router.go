@@ -2583,6 +2583,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// workspace-level search with issue_id pinned.
 					r.Get("/audit-events", h.ListIssueAuditEvents)
 					r.Get("/tasks/{taskId}", h.GetIssueTask)
+					r.Get("/tasks/{taskId}/activity", h.GetRunActivity)
 					r.Get("/usage", h.GetIssueUsage)
 					r.Post("/reactions", h.AddIssueReaction)
 					r.Delete("/reactions", h.RemoveIssueReaction)

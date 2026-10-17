@@ -3013,6 +3013,44 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "get_run_activity",
+    description:
+      "Read one issue run's bounded, sequenced Agent messages and platform timing. The first call establishes an activity baseline; only messages after a supplied after_seq count as new progress. Platform running is not evidence of progress. Worker stdout/stderr and process liveness are currently reported unavailable until the authenticated daemon proxy is available. Read-only; each retry run has its own cursor.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        run_id: { type: "string", description: "Run UUID from list_issue_runs." },
+        after_seq: { type: "integer", minimum: 0, description: "Return semantic messages with a higher sequence; omit for the initial page." },
+        semantic_limit: { type: "integer", minimum: 1, maximum: 100, description: "Semantic page size (default 50, maximum 100)." },
+        stream: { type: "string", enum: ["stdout", "stderr", "both"], description: "Worker stream selection (default both)." },
+        tail_bytes: { type: "integer", minimum: 1, maximum: 65536, description: "Maximum requested worker bytes per selected stream (default 16384)." },
+        worker_cursor: { type: "string", maxLength: 512, description: "Opaque worker cursor from a previous response." },
+      },
+      required: ["workspace", "issue", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const runId = requireString(args, "run_id");
+      const stream = optionalEnum(args, "stream", ["stdout", "stderr", "both"]);
+      if (args.stream !== undefined && stream === undefined) {
+        throw new ToolInputError("'stream' must be one of: stdout, stderr, both");
+      }
+      const afterSeq = optionalInt(args, "after_seq", { min: 0 });
+      const semanticLimit = optionalInt(args, "semantic_limit", { min: 1, max: 100 });
+      const tailBytes = optionalInt(args, "tail_bytes", { min: 1, max: 65536 });
+      return client.getIssueRunActivity(workspace, issueId, runId, {
+        after_seq: afterSeq,
+        semantic_limit: semanticLimit,
+        stream,
+        tail_bytes: tailBytes,
+        worker_cursor: optionalString(args, "worker_cursor"),
+      });
+    },
+  },
+  {
     name: "cancel_run",
     description:
       "Stop ONE specific run of an issue by run id. SIDE EFFECT: requests a real stop — for an in-flight run (running/dispatched/deferred/waiting_local_directory) the status moves to cancel_requested and the runtime interrupts the agent process tree, then confirms; the row only becomes 'cancelled' after that confirmation. A queued run (never started) is cancelled immediately. " +
