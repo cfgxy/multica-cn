@@ -41,6 +41,14 @@ done
   exit 2
 }
 codex_bin=$(command -v codex) || { echo 'codex CLI is required' >&2; exit 2; }
+codex_bin=$(readlink -f "$codex_bin")
+node_bin=""
+codex_package_root=""
+if head -n 1 "$codex_bin" | grep -Fq '/env node'; then
+  node_bin=$(command -v node) || { echo 'node runtime for Codex is required' >&2; exit 2; }
+  node_bin=$(readlink -f "$node_bin")
+  codex_package_root=$(dirname "$(dirname "$codex_bin")")
+fi
 command -v setsid >/dev/null || { echo 'setsid is required for process cleanup' >&2; exit 2; }
 bwrap_bin=$(command -v bwrap) || { echo 'bubblewrap is required for Codex sandboxing' >&2; exit 2; }
 codex_help=$("$codex_bin" exec --help 2>&1) || {
@@ -53,7 +61,10 @@ for required_flag in --ephemeral --ignore-user-config --ignore-rules --sandbox -
     exit 2
   }
 done
-if ! "$bwrap_bin" --unshare-all --die-with-parent --ro-bind / / --proc /proc --dev /dev -- /usr/bin/true; then
+if ! "$bwrap_bin" --unshare-user --unshare-uts --unshare-ipc --die-with-parent \
+  --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+  --dir /etc --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
+  --proc /proc --dev /dev -- /usr/bin/true; then
   echo 'bubblewrap namespace isolation is unavailable' >&2
   exit 2
 fi
@@ -63,6 +74,7 @@ timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 # Atomically reserve a directory so even concurrent calls cannot share artifacts.
 run_audit=$(mktemp -d "$audit_dir/${timestamp}-${issue_ref}-XXXXXX")
 draft="$run_audit/shadow-draft.md"
+: >"$draft"
 ledger="$audit_dir/ledger.jsonl"
 events="$run_audit/events.jsonl"
 stderr_log="$run_audit/stderr.log"
@@ -107,15 +119,91 @@ Snapshot:
 EOF
 cat "$snapshot" >>"$run_input"
 
+# The Codex process sees only its runtime, provider auth, snapshot and output.
+# Its network stays available for provider inference; Codex's read-only tool
+# sandbox remains responsible for denying model-invoked network access.
+bwrap_args=(
+  --unshare-user --unshare-uts --unshare-ipc --die-with-parent
+  --ro-bind /usr /usr
+  --symlink usr/lib /lib
+  --symlink usr/lib64 /lib64
+  --proc /proc --dev /dev --tmpfs /tmp
+  --dir /run --dir /etc --dir /etc/ssl
+  --ro-bind /etc/ld.so.cache /etc/ld.so.cache
+  --bind "$run_home" /run/codex-home
+  --ro-bind "$run_context" /run/issue-context
+  --bind "$draft" /run/shadow-draft.md
+  --ro-bind /etc/hosts /etc/hosts
+  --ro-bind /etc/ssl/certs /etc/ssl/certs
+)
+declare -a bwrap_dirs=(/run /etc /etc/ssl)
+add_bwrap_dir() {
+  local candidate=$1 existing
+  for existing in "${bwrap_dirs[@]}"; do
+    [[ $existing == "$candidate" ]] && return
+  done
+  bwrap_dirs+=("$candidate")
+  bwrap_args+=(--dir "$candidate")
+}
+if [[ -f /etc/resolv.conf ]]; then
+  resolv_conf=$(readlink -f /etc/resolv.conf)
+  resolver_parent=${resolv_conf%/*}
+  parent_chain=()
+  while [[ -n $resolver_parent && $resolver_parent != / && $resolver_parent != /etc ]]; do
+    parent_chain=("$resolver_parent" "${parent_chain[@]}")
+    resolver_parent=${resolver_parent%/*}
+  done
+  for dir in "${parent_chain[@]}"; do add_bwrap_dir "$dir"; done
+  if [[ $resolv_conf != /etc/resolv.conf ]]; then
+    bwrap_args+=(--ro-bind "$resolv_conf" "$resolv_conf")
+  fi
+  bwrap_args+=(--ro-bind "$resolv_conf" /etc/resolv.conf)
+fi
+if [[ $codex_bin != /usr/* ]]; then
+  codex_parent=${codex_bin%/*}
+  parent_chain=()
+  while [[ -n $codex_parent && $codex_parent != / && $codex_parent != /usr ]]; do
+    parent_chain=("$codex_parent" "${parent_chain[@]}")
+    codex_parent=${codex_parent%/*}
+  done
+  for dir in "${parent_chain[@]}"; do add_bwrap_dir "$dir"; done
+  bwrap_args+=(--ro-bind "$codex_bin" "$codex_bin")
+fi
+if [[ -n $node_bin && $node_bin != /usr/* ]]; then
+  node_parent=${node_bin%/*}
+  parent_chain=()
+  while [[ -n $node_parent && $node_parent != / && $node_parent != /usr ]]; do
+    parent_chain=("$node_parent" "${parent_chain[@]}")
+    node_parent=${node_parent%/*}
+  done
+  for dir in "${parent_chain[@]}"; do add_bwrap_dir "$dir"; done
+  bwrap_args+=(--ro-bind "$node_bin" "$node_bin")
+fi
+if [[ -n $codex_package_root && $codex_package_root != /usr/* ]]; then
+  package_parent=${codex_package_root%/*}
+  parent_chain=()
+  while [[ -n $package_parent && $package_parent != / && $package_parent != /usr ]]; do
+    parent_chain=("$package_parent" "${parent_chain[@]}")
+    package_parent=${package_parent%/*}
+  done
+  for dir in "${parent_chain[@]}"; do add_bwrap_dir "$dir"; done
+  bwrap_args+=(--ro-bind "$codex_package_root" "$codex_package_root")
+fi
+
+runtime_path=/usr/bin:/bin
+if [[ -n $node_bin ]]; then runtime_path="$(dirname "$node_bin"):$runtime_path"; fi
+
 set +e
 setsid env -i \
-  PATH="$PATH" \
-  HOME="$run_home" \
-  CODEX_HOME="$run_home" \
+  PATH="$runtime_path" \
+  HOME=/run/codex-home \
+  CODEX_HOME=/run/codex-home \
   LANG="${LANG:-C.UTF-8}" \
-  "$codex_bin" exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only \
-    --skip-git-repo-check --model deepseek-v4-flash --cd "$run_context" \
-    --output-last-message "$draft" --json <"$run_input" >"$events" 2>"$stderr_log" &
+  "$bwrap_bin" "${bwrap_args[@]}" --chdir /run/issue-context -- \
+    "$codex_bin" exec --ephemeral --ignore-user-config --ignore-rules --sandbox read-only \
+      --skip-git-repo-check --model deepseek-v4-flash --cd /run/issue-context \
+      --output-last-message /run/shadow-draft.md --json \
+      <"$run_input" >"$events" 2>"$stderr_log" &
 codex_pid=$!
 (
   sleep "$timeout_seconds" &
