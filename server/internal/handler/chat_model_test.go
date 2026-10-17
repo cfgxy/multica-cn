@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,6 +28,60 @@ func putTestModelCatalog(t *testing.T, runtimeID, modelID string) {
 	if err := testHandler.ModelCatalogCache.Put(context.Background(), runtimeID, []ModelEntry{{ID: modelID}}, nil, true); err != nil {
 		t.Fatalf("cache test model catalog: %v", err)
 	}
+}
+
+func TestListChatSessionsProjectsModelOverrideAndClear(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "ChatModelListProjection", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+	otherSessionID := createHandlerTestChatSession(t, agentID)
+	if _, err := testPool.Exec(ctx, `UPDATE chat_session SET model_override = 'session-model-b' WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("set session model override: %v", err)
+	}
+
+	assertListedOverride := func(status, want string) {
+		t.Helper()
+		req := newRequest(http.MethodGet, "/api/chat/sessions?status="+status, nil)
+		req = withChatTestWorkspaceCtx(t, req)
+		w := httptest.NewRecorder()
+		testHandler.ListChatSessions(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("ListChatSessions status=%q: expected 200, got %d: %s", status, w.Code, w.Body.String())
+		}
+		var sessions []ChatSessionResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+			t.Fatalf("decode session list status=%q: %v", status, err)
+		}
+		found := map[string]*string{}
+		for i := range sessions {
+			found[sessions[i].ID] = sessions[i].ModelOverride
+		}
+		got, exists := found[sessionID]
+		if !exists {
+			t.Fatalf("session %s missing from status=%q list", sessionID, status)
+		}
+		if want == "" {
+			if got != nil {
+				t.Fatalf("session override status=%q = %q, want null", status, *got)
+			}
+		} else if got == nil || *got != want {
+			t.Fatalf("session override status=%q = %v, want %q", status, got, want)
+		}
+		if other, exists := found[otherSessionID]; !exists || other != nil {
+			t.Fatalf("other session override status=%q = %v (present=%v), want null", status, other, exists)
+		}
+	}
+
+	assertListedOverride("", "session-model-b")
+	assertListedOverride("all", "session-model-b")
+	if _, err := testPool.Exec(ctx, `UPDATE chat_session SET model_override = NULL WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("clear session model override: %v", err)
+	}
+	assertListedOverride("", "")
+	assertListedOverride("all", "")
 }
 
 func waitForWaiterCountBlockedBy(t *testing.T, holderPID, want int, timeout time.Duration) bool {
