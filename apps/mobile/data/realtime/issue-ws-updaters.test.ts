@@ -280,6 +280,23 @@ describe("reconcileCreatedComment", () => {
     qc.clear();
   });
 
+  it("stages each server comment id only once while matching sends are ambiguous", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
+      commentEntry("optimistic-a"),
+      commentEntry("optimistic-b"),
+    ]));
+
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-a"));
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-a"));
+    reconcileCreatedComment(qc, wsId, issueId, commentEntry("comment-b"));
+
+    expect(qc.getQueryData<TimelineQueryData & { observedCreatedComments?: TimelineEntry[] }>(key)
+      ?.observedCreatedComments?.map(({ id }) => id)).toEqual(["comment-a", "comment-b"]);
+    qc.clear();
+  });
+
   it("reconciles an optimistic id even when the server normalizes its content", () => {
     const qc = new QueryClient();
     const key = issueKeys.timeline(wsId, issueId);
