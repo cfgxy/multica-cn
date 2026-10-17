@@ -503,17 +503,18 @@ func TestListAuditEventsMCPInvocationFiltersRespectVisibilityAndWorkspace(t *tes
 	}{
 		{
 			name:       "sensitive start filter source",
-			query:      "client_name=HiddenStart",
+			query:      "client_name=HiddenStart&invocation_id=" + startSourceInvocationID,
 			visibleIDs: []string{startSourceID, startSourceFinishID},
 		},
 		{
 			name:       "sensitive finish result source",
-			query:      "result_status=success",
+			query:      "result_status=success&invocation_id=" + finishSourceInvocationID,
 			visibleIDs: []string{finishSourceStartID, finishSourceID},
 		},
 		{
 			name: "sensitive invocation time source",
-			query: "time_basis=invocation_start&since=" + url.QueryEscape(base.Add(30*time.Second).Format(time.RFC3339Nano)) +
+			query: "time_basis=invocation_start&invocation_id=" + timeSourceInvocationID +
+				"&since=" + url.QueryEscape(base.Add(30*time.Second).Format(time.RFC3339Nano)) +
 				"&until=" + url.QueryEscape(base.Add(90*time.Second).Format(time.RFC3339Nano)),
 			visibleIDs: []string{timeSourceStartID, timeSourceFinishID},
 		},
