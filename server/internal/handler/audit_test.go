@@ -56,6 +56,38 @@ func fetchWorkspaceAuditEventsAs(t *testing.T, userID, query string) (auditEvent
 	return page, w.Code
 }
 
+func TestParseListAuditEventsInvocationFilters(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/?time_basis=invocation_start&since=2026-10-17T10%3A00%3A00.123456789Z&actor_type=member&client_name=Codex&tool_name=read_file_chunk&result_status=success&target_type=host&target_id=host-7", nil)
+	response := httptest.NewRecorder()
+	params, ok := parseListAuditEventsParams(response, request)
+	if !ok || response.Body.Len() != 0 {
+		t.Fatalf("valid invocation filters rejected: ok=%v status=%d body=%s", ok, response.Code, response.Body.String())
+	}
+	if !params.timeBasis.Valid || params.timeBasis.String != "invocation_start" || !params.since.Valid || !params.filterStart ||
+		params.clientName.String != "Codex" || params.toolName.String != "read_file_chunk" || params.resultStatus.String != "success" ||
+		params.targetType.String != "host" || params.targetID.String != "host-7" {
+		t.Fatalf("valid invocation filters parsed incorrectly: %+v", params)
+	}
+
+	legacyResponse := httptest.NewRecorder()
+	legacyParams, ok := parseListAuditEventsParams(legacyResponse, httptest.NewRequest(http.MethodGet, "/?since=2026-10-17T10%3A00%3A00Z", nil))
+	if !ok || legacyParams.filterStart || legacyParams.timeBasis.Valid {
+		t.Fatalf("legacy event-time request changed semantics: ok=%v params=%+v", ok, legacyParams)
+	}
+
+	for _, query := range []string{
+		"time_basis=event_time",
+		"result_status=maybe",
+		"target_type=host",
+	} {
+		response := httptest.NewRecorder()
+		_, ok := parseListAuditEventsParams(response, httptest.NewRequest(http.MethodGet, "/?"+query, nil))
+		if ok || response.Code != http.StatusBadRequest {
+			t.Errorf("invalid query %q: ok=%v status=%d", query, ok, response.Code)
+		}
+	}
+}
+
 func fetchIssueAuditEvents(t *testing.T, issueID, query string) (auditEventsPageWire, int) {
 	return fetchIssueAuditEventsAs(t, testUserID, issueID, query)
 }
@@ -373,5 +405,96 @@ func TestListAuditEventsFilterMatrixAndIssueEndpoint(t *testing.T) {
 	}
 	if containsID(ids, idOut) {
 		t.Fatalf("issue endpoint leaked row %s from another issue", idOut)
+	}
+}
+
+func TestListAuditEventsMCPInvocationFilters(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	base := time.Now().UTC().Add(-4 * time.Hour).Truncate(time.Second)
+	invocationID := uuid.NewString()
+	actorID := uuid.NewString()
+	startID := seedAuditEvent(t, base, "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_started", "invocation_id": invocationID,
+		"actor_type": "member", "actor_id": actorID,
+		"details": testutil.Raw(`'{"reported_client_name":"Codex","reported_client_version":"1.2","tool_name":"read_file_chunk","target_type":"host","target_id":"host-7"}'::jsonb`),
+	})
+	finishID := seedAuditEvent(t, base.Add(2*time.Hour), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": invocationID,
+		"actor_type": "member", "actor_id": actorID,
+		"details": testutil.Raw(`'{"status":"success"}'::jsonb`),
+	})
+
+	query := "time_basis=invocation_start" +
+		"&since=" + url.QueryEscape(base.Format(time.RFC3339Nano)) +
+		"&until=" + url.QueryEscape(base.Add(time.Minute).Format(time.RFC3339Nano)) +
+		"&actor_type=member&actor_id=" + actorID +
+		"&client_name=Codex&client_version=1.2&tool_name=read_file_chunk" +
+		"&result_status=success&target_type=host&target_id=host-7"
+	page, code := fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 2 || !containsID(eventIDs(page), startID) || !containsID(eventIDs(page), finishID) {
+		t.Fatalf("invocation filters must match both event rows using start time across finish boundary: status=%d ids=%v", code, eventIDs(page))
+	}
+
+	page, code = fetchWorkspaceAuditEvents(t, query+"&tool_name=other_tool")
+	if code != http.StatusOK || len(page.Events) != 0 {
+		t.Fatalf("invocation filters must combine with AND: status=%d ids=%v", code, eventIDs(page))
+	}
+
+	if _, code = fetchWorkspaceAuditEvents(t, "time_basis=event_time"); code != http.StatusBadRequest {
+		t.Fatalf("unsupported time_basis must be rejected: got %d", code)
+	}
+	if _, code = fetchWorkspaceAuditEvents(t, "result_status=maybe"); code != http.StatusBadRequest {
+		t.Fatalf("unknown result_status must be rejected: got %d", code)
+	}
+	if _, code = fetchWorkspaceAuditEvents(t, "target_type=host"); code != http.StatusBadRequest {
+		t.Fatalf("target_type without target_id must be rejected: got %d", code)
+	}
+}
+
+func TestListAuditEventsMCPInvocationFiltersRespectVisibilityAndWorkspace(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	memberID := dbfx.User(t, "audit filter member "+handlerFixtureSuffix, "audit-filter-member-"+handlerFixtureSuffix+"@example.test")
+	dbfx.Member(t, testWorkspaceID, memberID, "member")
+	base := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	invocationID := uuid.NewString()
+	startID := seedAuditEvent(t, base, "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_started", "invocation_id": invocationID,
+		"sensitive": true,
+		"details":   testutil.Raw(`'{"reported_client_name":"Hidden","tool_name":"read_file_chunk","target_type":"host","target_id":"secret-host"}'::jsonb`),
+	})
+	finishID := seedAuditEvent(t, base.Add(time.Second), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": invocationID,
+		"sensitive": true, "details": testutil.Raw(`'{"status":"success"}'::jsonb`),
+	})
+	query := "client_name=Hidden&tool_name=read_file_chunk&result_status=success&target_type=host&target_id=secret-host"
+	page, code := fetchWorkspaceAuditEventsAs(t, memberID, query)
+	if code != http.StatusOK || len(page.Events) != 0 {
+		t.Fatalf("member must not infer hidden invocation from filters: status=%d ids=%v", code, eventIDs(page))
+	}
+	page, code = fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 2 || !containsID(eventIDs(page), startID) || !containsID(eventIDs(page), finishID) {
+		t.Fatalf("owner should see matching sensitive invocation rows: status=%d ids=%v", code, eventIDs(page))
+	}
+
+	foreignInvocation := uuid.NewString()
+	foreignWorkspaceID := uuid.NewString()
+	foreignStartID := uuid.NewString()
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO audit_event (id, workspace_id, domain, event_type, occurred_at, actor_type, actor_id, details, invocation_id)
+		VALUES ($1, $2, 'mcp', 'mcp.invocation_started', $3, 'member', $4, '{"tool_name":"read_file_chunk","target_type":"host","target_id":"host-7"}', $5)
+	`, foreignStartID, foreignWorkspaceID, base, uuid.NewString(), foreignInvocation); err != nil {
+		t.Fatalf("seed foreign workspace invocation start: %v", err)
+	}
+	foreignEventID := seedAuditEvent(t, base.Add(2*time.Second), "", "", testutil.Cols{
+		"domain": "mcp", "event_type": "mcp.invocation_finished", "invocation_id": foreignInvocation,
+		"details": testutil.Raw(`'{"status":"success"}'::jsonb`),
+	})
+	page, code = fetchWorkspaceAuditEvents(t, "tool_name=read_file_chunk&result_status=success&target_type=host&target_id=host-7")
+	if code != http.StatusOK || containsID(eventIDs(page), foreignEventID) {
+		t.Fatalf("invocation correlation must not cross workspace: status=%d ids=%v", code, eventIDs(page))
 	}
 }

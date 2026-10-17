@@ -180,46 +180,104 @@ func (q *Queries) ListAllWorkspaceIDs(ctx context.Context) ([]pgtype.UUID, error
 }
 
 const listAuditEvents = `-- name: ListAuditEvents :many
-SELECT id, workspace_id, domain, event_type, occurred_at, actor_type, actor_id, trigger_kind, trigger_ref, issue_id, task_id, agent_id, runtime_id, reason, details, invocation_id, sensitive, expires_at FROM audit_event
-WHERE workspace_id = $1
-  AND ($3::timestamptz IS NULL OR occurred_at >= $3)
-  AND ($4::timestamptz IS NULL OR occurred_at <= $4)
-  AND ($5::text IS NULL OR domain = $5)
-  AND ($6::text IS NULL OR event_type = $6)
-  AND ($7::text IS NULL OR actor_type = $7)
-  AND ($8::uuid IS NULL OR actor_id = $8)
-  AND ($9::uuid IS NULL OR issue_id = $9)
-  AND ($10::uuid IS NULL OR task_id = $10)
-  AND ($11::uuid IS NULL OR agent_id = $11)
-  AND ($12::uuid IS NULL OR runtime_id = $12)
-  AND ($13::text IS NULL OR reason = $13)
-  AND ($14::boolean OR sensitive = false)
-  AND ($15::uuid IS NULL OR (domain = 'mcp' AND invocation_id = $15))
-  AND (domain <> 'mcp' OR expires_at IS NULL OR expires_at > now())
-  AND ($16::timestamptz IS NULL
-       OR (occurred_at, id) < ($16, $17::uuid))
-ORDER BY occurred_at DESC, id DESC
+SELECT audit_event.id, audit_event.workspace_id, audit_event.domain, audit_event.event_type, audit_event.occurred_at, audit_event.actor_type, audit_event.actor_id, audit_event.trigger_kind, audit_event.trigger_ref, audit_event.issue_id, audit_event.task_id, audit_event.agent_id, audit_event.runtime_id, audit_event.reason, audit_event.details, audit_event.invocation_id, audit_event.sensitive, audit_event.expires_at FROM audit_event AS audit_event
+WHERE audit_event.workspace_id = $1
+  AND (
+       ($3::text = 'invocation_start' AND audit_event.domain = 'mcp'
+        AND ($4::timestamptz IS NULL AND $5::timestamptz IS NULL
+             OR EXISTS (
+                 SELECT 1 FROM audit_event AS invocation_start
+                 WHERE invocation_start.workspace_id = audit_event.workspace_id
+                   AND invocation_start.invocation_id = audit_event.invocation_id
+                   AND invocation_start.domain = 'mcp'
+                   AND invocation_start.event_type = 'mcp.invocation_started'
+                   AND ($4::timestamptz IS NULL OR invocation_start.occurred_at >= $4)
+                   AND ($5::timestamptz IS NULL OR invocation_start.occurred_at <= $5)
+                   AND ($6::boolean OR invocation_start.sensitive = false)
+                   AND (invocation_start.expires_at IS NULL OR invocation_start.expires_at > now())
+             )))
+       OR (($3::text IS NULL OR $3::text <> 'invocation_start' OR audit_event.domain <> 'mcp')
+           AND ($4::timestamptz IS NULL OR audit_event.occurred_at >= $4)
+           AND ($5::timestamptz IS NULL OR audit_event.occurred_at <= $5))
+  )
+  AND ($7::text IS NULL OR audit_event.domain = $7)
+  AND ($8::text IS NULL OR audit_event.event_type = $8)
+  AND ($9::text IS NULL OR audit_event.actor_type = $9)
+  AND ($10::uuid IS NULL OR audit_event.actor_id = $10)
+  AND ($11::uuid IS NULL OR audit_event.issue_id = $11)
+  AND ($12::uuid IS NULL OR audit_event.task_id = $12)
+  AND ($13::uuid IS NULL OR audit_event.agent_id = $13)
+  AND ($14::uuid IS NULL OR audit_event.runtime_id = $14)
+  AND ($15::text IS NULL OR audit_event.reason = $15)
+  AND ($6::boolean OR audit_event.sensitive = false)
+  AND ($16::uuid IS NULL OR (audit_event.domain = 'mcp' AND audit_event.invocation_id = $16))
+  AND (NOT $17::boolean OR (
+       audit_event.domain = 'mcp'
+       AND audit_event.invocation_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM audit_event AS invocation_start
+           WHERE invocation_start.workspace_id = audit_event.workspace_id
+             AND invocation_start.invocation_id = audit_event.invocation_id
+             AND invocation_start.domain = 'mcp'
+             AND invocation_start.event_type = 'mcp.invocation_started'
+             AND ($6::boolean OR invocation_start.sensitive = false)
+             AND (invocation_start.expires_at IS NULL OR invocation_start.expires_at > now())
+             AND ($9::text IS NULL OR invocation_start.actor_type = $9)
+             AND ($10::uuid IS NULL OR invocation_start.actor_id = $10)
+             AND ($18::text IS NULL OR invocation_start.details->>'reported_client_name' = $18)
+             AND ($19::text IS NULL OR invocation_start.details->>'reported_client_version' = $19)
+             AND ($20::text IS NULL OR invocation_start.details->>'tool_name' = $20)
+             AND ($21::text IS NULL OR invocation_start.details->>'target_type' = $21)
+             AND ($22::text IS NULL OR invocation_start.details->>'target_id' = $22)
+       )))
+  AND ($23::text IS NULL AND $24::text IS NULL OR (
+       audit_event.domain = 'mcp'
+       AND audit_event.invocation_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM audit_event AS invocation_finish
+           WHERE invocation_finish.workspace_id = audit_event.workspace_id
+             AND invocation_finish.invocation_id = audit_event.invocation_id
+             AND invocation_finish.domain = 'mcp'
+             AND invocation_finish.event_type = 'mcp.invocation_finished'
+             AND ($6::boolean OR invocation_finish.sensitive = false)
+             AND (invocation_finish.expires_at IS NULL OR invocation_finish.expires_at > now())
+             AND ($23::text IS NULL OR invocation_finish.details->>'status' = $23)
+             AND ($24::text IS NULL OR invocation_finish.details->>'error_code' = $24)
+       )))
+  AND (audit_event.domain <> 'mcp' OR audit_event.expires_at IS NULL OR audit_event.expires_at > now())
+  AND ($25::timestamptz IS NULL
+       OR (audit_event.occurred_at, audit_event.id) < ($25, $26::uuid))
+ORDER BY audit_event.occurred_at DESC, audit_event.id DESC
 LIMIT $2
 `
 
 type ListAuditEventsParams struct {
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Limit              int32              `json:"limit"`
-	Since              pgtype.Timestamptz `json:"since"`
-	Until              pgtype.Timestamptz `json:"until"`
-	FilterDomain       pgtype.Text        `json:"filter_domain"`
-	FilterEventType    pgtype.Text        `json:"filter_event_type"`
-	FilterActorType    pgtype.Text        `json:"filter_actor_type"`
-	FilterActorID      pgtype.UUID        `json:"filter_actor_id"`
-	FilterIssueID      pgtype.UUID        `json:"filter_issue_id"`
-	FilterTaskID       pgtype.UUID        `json:"filter_task_id"`
-	FilterAgentID      pgtype.UUID        `json:"filter_agent_id"`
-	FilterRuntimeID    pgtype.UUID        `json:"filter_runtime_id"`
-	FilterReason       pgtype.Text        `json:"filter_reason"`
-	IncludeSensitive   bool               `json:"include_sensitive"`
-	FilterInvocationID pgtype.UUID        `json:"filter_invocation_id"`
-	CursorAt           pgtype.Timestamptz `json:"cursor_at"`
-	CursorID           pgtype.UUID        `json:"cursor_id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	Limit                 int32              `json:"limit"`
+	TimeBasis             pgtype.Text        `json:"time_basis"`
+	Since                 pgtype.Timestamptz `json:"since"`
+	Until                 pgtype.Timestamptz `json:"until"`
+	IncludeSensitive      bool               `json:"include_sensitive"`
+	FilterDomain          pgtype.Text        `json:"filter_domain"`
+	FilterEventType       pgtype.Text        `json:"filter_event_type"`
+	FilterActorType       pgtype.Text        `json:"filter_actor_type"`
+	FilterActorID         pgtype.UUID        `json:"filter_actor_id"`
+	FilterIssueID         pgtype.UUID        `json:"filter_issue_id"`
+	FilterTaskID          pgtype.UUID        `json:"filter_task_id"`
+	FilterAgentID         pgtype.UUID        `json:"filter_agent_id"`
+	FilterRuntimeID       pgtype.UUID        `json:"filter_runtime_id"`
+	FilterReason          pgtype.Text        `json:"filter_reason"`
+	FilterInvocationID    pgtype.UUID        `json:"filter_invocation_id"`
+	FilterInvocationStart bool               `json:"filter_invocation_start"`
+	FilterClientName      pgtype.Text        `json:"filter_client_name"`
+	FilterClientVersion   pgtype.Text        `json:"filter_client_version"`
+	FilterToolName        pgtype.Text        `json:"filter_tool_name"`
+	FilterTargetType      pgtype.Text        `json:"filter_target_type"`
+	FilterTargetID        pgtype.Text        `json:"filter_target_id"`
+	FilterResultStatus    pgtype.Text        `json:"filter_result_status"`
+	FilterResultCode      pgtype.Text        `json:"filter_result_code"`
+	CursorAt              pgtype.Timestamptz `json:"cursor_at"`
+	CursorID              pgtype.UUID        `json:"cursor_id"`
 }
 
 // Workspace-level audit search: time window + domain/event_type + actor +
@@ -231,8 +289,10 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 	rows, err := q.db.Query(ctx, listAuditEvents,
 		arg.WorkspaceID,
 		arg.Limit,
+		arg.TimeBasis,
 		arg.Since,
 		arg.Until,
+		arg.IncludeSensitive,
 		arg.FilterDomain,
 		arg.FilterEventType,
 		arg.FilterActorType,
@@ -242,8 +302,15 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		arg.FilterAgentID,
 		arg.FilterRuntimeID,
 		arg.FilterReason,
-		arg.IncludeSensitive,
 		arg.FilterInvocationID,
+		arg.FilterInvocationStart,
+		arg.FilterClientName,
+		arg.FilterClientVersion,
+		arg.FilterToolName,
+		arg.FilterTargetType,
+		arg.FilterTargetID,
+		arg.FilterResultStatus,
+		arg.FilterResultCode,
 		arg.CursorAt,
 		arg.CursorID,
 	)
