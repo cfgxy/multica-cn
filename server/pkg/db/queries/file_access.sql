@@ -17,7 +17,7 @@ SELECT * FROM daemon_file_access_target WHERE id = $1;
 SELECT * FROM daemon_file_access_target WHERE id = $1 AND runtime_id = $2;
 
 -- name: ListFileAccessTargetsByHost :many
-SELECT * FROM daemon_file_access_target WHERE id = $1 OR runtime_id::text = $1;
+SELECT * FROM daemon_file_access_target WHERE id = sqlc.arg('host') OR runtime_id::text = sqlc.arg('host');
 
 -- name: InsertFileOperation :one
 INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request)
