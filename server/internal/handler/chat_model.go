@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -52,7 +53,39 @@ func (h *Handler) SetChatSessionModel(w http.ResponseWriter, r *http.Request) {
 		modelOverride = pgtype.Text{String: model, Valid: true}
 	}
 
-	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start chat model update")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// Take the same first-statement lock as runtime rebinding and chat enqueue,
+	// then use only state re-read under it for authorization and model validation.
+	if _, err := qtx.LockChatSessionForRuntimeBind(r.Context(), session.ID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "chat session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to lock chat session")
+		return
+	}
+	currentSession, err := qtx.GetChatSession(r.Context(), session.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "chat session not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to reload chat session")
+		return
+	}
+	if currentSession.Status != "active" {
+		writeError(w, http.StatusConflict, "chat session is archived")
+		return
+	}
+	agent, err := qtx.GetAgent(r.Context(), currentSession.AgentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load chat agent")
 		return
@@ -61,7 +94,6 @@ func (h *Handler) SetChatSessionModel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "chat agent is archived")
 		return
 	}
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	if !h.canInvokeAgent(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
@@ -88,15 +120,19 @@ func (h *Handler) SetChatSessionModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	updated, err := h.Queries.UpdateChatSessionModelOverride(r.Context(), db.UpdateChatSessionModelOverrideParams{
-		ID: session.ID, WorkspaceID: session.WorkspaceID, ModelOverride: modelOverride,
+	updated, err := qtx.UpdateChatSessionModelOverride(r.Context(), db.UpdateChatSessionModelOverrideParams{
+		ID: currentSession.ID, WorkspaceID: currentSession.WorkspaceID, ModelOverride: modelOverride,
 	})
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "chat session not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to update chat model")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit chat model update")
 		return
 	}
 	modelValue := textToPtr(updated.ModelOverride)
