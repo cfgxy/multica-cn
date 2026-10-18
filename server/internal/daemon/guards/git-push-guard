@@ -45,15 +45,18 @@ log_action() { # $1=allow|deny $2=remote名 $3=目标 $4=分支
 in_list() { local x="$1"; shift; local e; for e in "$@"; do [ "$e" = "$x" ] && return 0; done; return 1; }
 
 parse_git_url() { # $1=url → P_HOST/P_OWNER/P_REPO；不可解析返回 1
-  local u="$1" rest path
+  local u="$1" rest path proto port
   u="${u%.git}"
   case "$u" in
     *://*)
+      proto="${u%%://*}"
       rest="${u#*://}"
       rest="${rest#*@}"
       P_HOST="${rest%%[:/]*}"
       rest="${rest#"$P_HOST"}"
+      port=""
       case "$rest" in :*) port="${rest%%/*}"; rest="${rest#"$port"}" ;; esac
+      if [ -n "$port" ] && { [ "$proto" != "ssh" ] || [ "$port" != ":22" ]; }; then return 1; fi
       rest="${rest#/}"
       path="$rest" ;;
     *@*:*)
