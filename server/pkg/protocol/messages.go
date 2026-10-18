@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	DaemonCapabilitySkillBundlesV1      = "skill-bundles-v1"
@@ -97,6 +100,29 @@ type RPCResponsePayload struct {
 	Status    int             `json:"status"`
 	Body      json.RawMessage `json:"body,omitempty"`
 	Error     string          `json:"error,omitempty"`
+}
+
+// WorkerEvidenceRequest is the fixed-purpose reverse RPC body. RunID is the
+// server-authorized task identity; no filesystem address or method is supplied.
+type WorkerEvidenceRequest struct {
+	RequestID string `json:"request_id"`
+	RunID     string `json:"run_id"`
+	RuntimeID string `json:"runtime_id"`
+	Stream    string `json:"stream"`
+	Cursor    string `json:"cursor,omitempty"`
+	TailBytes int    `json:"tail_bytes"`
+	TimeoutMs int    `json:"timeout_ms"`
+}
+
+type WorkerEvidenceResponse struct {
+	RequestID       string     `json:"request_id"`
+	Available       bool       `json:"available"`
+	Unavailable     string     `json:"unavailable,omitempty"`
+	StdoutTail      string     `json:"stdout_tail,omitempty"`
+	StderrTail      string     `json:"stderr_tail,omitempty"`
+	NextCursor      string     `json:"next_cursor,omitempty"`
+	ObservedAt      *time.Time `json:"observed_at,omitempty"`
+	ProcessLiveness string     `json:"process_liveness"`
 }
 
 // Message is the envelope for all WebSocket messages.

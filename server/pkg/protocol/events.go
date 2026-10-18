@@ -188,6 +188,9 @@ const (
 	// HTTP fallback) and any future daemon→server RPC.
 	EventDaemonRPCRequest  = "daemon:rpc_request"
 	EventDaemonRPCResponse = "daemon:rpc_response"
+	// Dedicated, correlated reverse request carrying only bounded worker evidence.
+	EventDaemonWorkerEvidenceRequest  = "daemon:worker_evidence_request"
+	EventDaemonWorkerEvidenceResponse = "daemon:worker_evidence_response"
 
 	// GitHub integration events
 	EventGitHubInstallationCreated = "github_installation:created"

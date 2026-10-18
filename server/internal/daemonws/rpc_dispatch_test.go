@@ -63,6 +63,47 @@ func sendRPCRequest(t *testing.T, conn *websocket.Conn, req protocol.RPCRequestP
 	return resp
 }
 
+func TestHubRequestsEvidenceFromOnlyRegisteredRuntimeAndCorrelatesReply(t *testing.T) {
+	hub := NewHub()
+	conn := dialRPCTestConn(t, hub, ClientIdentity{DaemonID: "daemon-a", RuntimeIDs: []string{"runtime-a"}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	type result struct {
+		evidence protocol.WorkerEvidenceResponse
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ev, err := hub.RequestWorkerEvidence(ctx, "runtime-a", protocol.WorkerEvidenceRequest{RunID: "run-a", RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 128})
+		done <- result{ev, err}
+	}()
+	var request protocol.Message
+	if err := conn.ReadJSON(&request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Type != protocol.EventDaemonWorkerEvidenceRequest {
+		t.Fatalf("request type=%q", request.Type)
+	}
+	var body protocol.WorkerEvidenceRequest
+	if err := json.Unmarshal(request.Payload, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.RunID != "run-a" || body.RuntimeID != "runtime-a" || body.TailBytes != 128 || body.TimeoutMs != 2500 || body.RequestID == "" {
+		t.Fatalf("request body=%+v", body)
+	}
+	responseBody, _ := json.Marshal(protocol.WorkerEvidenceResponse{RequestID: body.RequestID, Available: true, StdoutTail: "tail", ProcessLiveness: "alive"})
+	if err := conn.WriteJSON(protocol.Message{Type: protocol.EventDaemonWorkerEvidenceResponse, Payload: responseBody}); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || !got.evidence.Available || got.evidence.StdoutTail != "tail" {
+		t.Fatalf("evidence=%+v err=%v", got.evidence, got.err)
+	}
+	if _, err := hub.RequestWorkerEvidence(ctx, "unregistered", protocol.WorkerEvidenceRequest{RuntimeID: "unregistered"}); err == nil {
+		t.Fatal("unregistered runtime request was accepted")
+	}
+}
+
 // TestRPCDispatch_RoundTrip pins the generic WS request/response contract
 // (MUL-4257): a daemon:rpc_request is routed to the registered handler with the
 // connection's identity, and the daemon:rpc_response echoes the request id and
