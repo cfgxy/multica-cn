@@ -3015,7 +3015,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "get_run_activity",
     description:
-      "Read one issue run's bounded, sequenced Agent messages and platform timing. The first call establishes an activity baseline; only messages after a supplied after_seq count as new progress. Platform running is not evidence of progress. Worker stdout/stderr and process liveness are currently reported unavailable until the authenticated daemon proxy is available. Read-only; each retry run has its own cursor.",
+      "Read one issue run's bounded, sequenced Agent messages, platform timing, and worker evidence via its authenticated runtime daemon. The first call establishes an activity baseline; only messages after a supplied after_seq count as new progress. Platform running is not evidence of progress. Missing or unresponsive daemons return daemon_unreachable without server-side log access. Read-only; each retry run has its own cursor.",
     inputSchema: {
       type: "object",
       properties: {

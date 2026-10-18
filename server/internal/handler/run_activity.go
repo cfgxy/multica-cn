@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
@@ -72,7 +74,7 @@ type runActivityResponse struct {
 }
 
 // GetRunActivity exposes bounded semantic activity and the platform run state.
-// Worker evidence stays unavailable until the authenticated daemon proxy exists.
+// Worker evidence is fetched only through the authenticated runtime connection.
 func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -183,6 +185,40 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		page = page[:limit]
 	}
 	resp := buildRunActivityResponse(task, page, latestAt, latestErr == nil, afterSeq, hasCursor, hasMore)
+	if h.DaemonHub != nil && task.RuntimeID.Valid {
+		stream := normalizedActivityStream(r.URL.Query().Get("stream"))
+		proxyCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		evidence, proxyErr := h.DaemonHub.RequestWorkerEvidence(proxyCtx, uuid.UUID(task.RuntimeID.Bytes).String(), protocol.WorkerEvidenceRequest{
+			RunID: uuid.UUID(task.ID.Bytes).String(), RuntimeID: uuid.UUID(task.RuntimeID.Bytes).String(), Stream: stream,
+			Cursor: workerCursor, TailBytes: min(tailBytes, 8<<10),
+		})
+		cancel()
+		if proxyErr == nil {
+			if len(evidence.StdoutTail) > 8<<10 || len(evidence.StderrTail) > 8<<10 || len(evidence.NextCursor) > 512 {
+				proxyErr = fmt.Errorf("invalid evidence response")
+			}
+		}
+		if proxyErr == nil {
+			resp.WorkerEvidence.LogAvailable = evidence.Available
+			if evidence.Available {
+				resp.WorkerEvidence.UnavailableReason = ""
+				resp.ProgressAssessment.Basis = []string{"run_state", "worker_evidence_available"}
+				stdout, stderr := redact.Text(evidence.StdoutTail), redact.Text(evidence.StderrTail)
+				resp.WorkerEvidence.StdoutTail = &stdout
+				resp.WorkerEvidence.StderrTail = &stderr
+				resp.WorkerEvidence.NextCursor = &evidence.NextCursor
+				resp.WorkerEvidence.LastActivityAt = timestampToPtr(pgtype.Timestamptz{Time: valueOrZeroTime(evidence.ObservedAt), Valid: evidence.ObservedAt != nil})
+				if evidence.ProcessLiveness == "alive" || evidence.ProcessLiveness == "dead" {
+					resp.WorkerEvidence.ProcessLiveness = evidence.ProcessLiveness
+				} else {
+					resp.WorkerEvidence.ProcessLiveness = "unknown"
+				}
+			} else {
+				resp.WorkerEvidence.UnavailableReason = stableWorkerUnavailable(evidence.Unavailable)
+				resp.WorkerEvidence.ProcessLiveness = "unknown"
+			}
+		}
+	}
 	var encoded []byte
 	for {
 		var marshalErr error
@@ -217,6 +253,22 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(encoded)
+}
+
+func stableWorkerUnavailable(value string) string {
+	switch value {
+	case "evidence_unavailable":
+		return value
+	default:
+		return "daemon_unreachable"
+	}
+}
+
+func valueOrZeroTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return *value
 }
 
 func parseRunActivityAfterSeq(raw string) (int32, bool, error) {

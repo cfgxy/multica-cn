@@ -304,6 +304,26 @@ func (c *wsRPCClient) deliver(resp protocol.RPCResponsePayload) {
 	}
 }
 
+func (c *wsRPCClient) sendWorkerEvidenceResponse(body protocol.WorkerEvidenceResponse) {
+	if c == nil || body.RequestID == "" {
+		return
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	send := c.sendFrame
+	c.mu.Unlock()
+	if send == nil {
+		return
+	}
+	frame, err := json.Marshal(protocol.Message{Type: protocol.EventDaemonWorkerEvidenceResponse, Payload: raw})
+	if err == nil {
+		_, _ = send(frame)
+	}
+}
+
 // ClaimTasksWSFirst is the WS-first claim policy (MUL-4257): it issues the
 // tasks.claim RPC over the WS control connection when one is attached, and
 // falls back to the HTTP claim endpoint on transport failures that are known not
