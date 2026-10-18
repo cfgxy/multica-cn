@@ -96,12 +96,19 @@ func (g *RetentionGC) Run(ctx context.Context) (GCSummary, error) {
 				continue
 			}
 		}
+		if err := g.Mgr.recordEvidenceExpiry(man.TaskID, man.ConvergedAt.Add(retain)); err != nil {
+			log.Error("supervisor: retention expiry record failed", "run_id", id, "error", err)
+			continue
+		}
 		if err := g.Mgr.RemoveRun(id); err != nil {
 			log.Error("supervisor: retention removal failed", "run_id", id, "error", err)
 			continue
 		}
 		summary.Removed++
 		summary.RemovedRunIDs = append(summary.RemovedRunIDs, id)
+	}
+	if err := g.Mgr.pruneEvidenceExpiry(time.Now().UTC()); err != nil {
+		log.Warn("supervisor: retention expiry metadata cleanup failed", "error", err)
 	}
 	if summary.Removed > 0 {
 		log.Info("supervisor: retention GC removed converged runs",

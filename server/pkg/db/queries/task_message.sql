@@ -92,6 +92,31 @@ SELECT * FROM task_message
 WHERE task_id = $1 AND seq > $2
 ORDER BY seq ASC;
 
+-- name: ListTaskMessagesPage :many
+SELECT
+    id, task_id, seq,
+    left(type, 64) AS type,
+    left(tool, 256) AS tool,
+    left(content, 2048) AS content,
+    CASE WHEN input IS NULL OR octet_length(input::text) <= 2048 THEN input::jsonb ELSE NULL::jsonb END AS input,
+    left(output, 2048) AS output,
+    created_at, is_error,
+    (octet_length(type) > octet_length(left(type, 64))
+      OR coalesce(octet_length(tool) > octet_length(left(tool, 256)), false)
+      OR coalesce(octet_length(content) > octet_length(left(content, 2048)), false)
+      OR coalesce(octet_length(output) > octet_length(left(output, 2048)), false)
+      OR (input IS NOT NULL AND octet_length(input::text) > 2048)) AS truncated
+FROM task_message
+WHERE task_id = $1 AND seq > $2
+ORDER BY seq ASC
+LIMIT $3;
+
+-- name: GetLatestTaskMessage :one
+SELECT created_at FROM task_message
+WHERE task_id = $1
+ORDER BY seq DESC
+LIMIT 1;
+
 -- name: DeleteTaskMessages :exec
 DELETE FROM task_message
 WHERE task_id = $1;
