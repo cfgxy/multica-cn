@@ -65,7 +65,7 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
         )) : null}
         {models.isLoading ? <DropdownMenuItem disabled><Text>{t("mobile.model.loading", "Loading models…")}</Text></DropdownMenuItem> : null}
         {models.isError ? <DropdownMenuItem disabled><Text>{t("mobile.model.load_failed", "Could not load models")}</Text></DropdownMenuItem> : null}
-        {models.data?.supported === false ? <DropdownMenuItem disabled><Text>{t("mobile.model.unsupported", "This runtime does not support model selection")}</Text></DropdownMenuItem> : null}
+        {models.data?.supported === false ? <DropdownMenuItem disabled><Text>{t("mobile.model.unsupported", "Runtime does not support model selection")}</Text></DropdownMenuItem> : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
