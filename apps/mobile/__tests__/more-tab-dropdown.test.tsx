@@ -133,9 +133,9 @@ it("pushes the server management screen when the server row is tapped", async ()
 // RUYI-638 阶段3: the usage stats entry rides the same navItems convention
 // as the other dropdown rows — labelled "Analytics" (layout:nav.usage, the
 // key web's sidebar uses) and pushing /<slug>/more/stats.
-it("renders the analytics row after the voice runtimes row", async () => {
+it("renders the analytics row after the voice settings row", async () => {
   const labels = collectLabels((await renderDropdown()).toJSON());
-  const voiceIndex = labels.indexOf("Voice Runtimes");
+  const voiceIndex = labels.indexOf("Voice");
   const analyticsIndex = labels.indexOf("Analytics");
   expect(voiceIndex).toBeGreaterThanOrEqual(0);
   expect(analyticsIndex).toBeGreaterThan(voiceIndex);
@@ -145,4 +145,10 @@ it("pushes the stats screen when the analytics row is tapped", async () => {
   await renderDropdown();
   fireEvent.press(screen.getByLabelText("Analytics"));
   expect(mockPush).toHaveBeenCalledWith("/ruyi/more/stats");
+});
+
+it("opens the current voice settings screen from the voice menu item", async () => {
+  await renderDropdown();
+  fireEvent.press(screen.getByLabelText("Voice"));
+  expect(mockPush).toHaveBeenCalledWith("/ruyi/more/settings/voice");
 });
