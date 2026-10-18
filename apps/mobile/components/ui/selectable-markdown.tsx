@@ -30,6 +30,7 @@ export function SelectableMarkdown({
   attachments,
   selectable,
   compact,
+  renderReferenceTail,
 }: Props) {
   return (
     <Markdown
@@ -38,6 +39,7 @@ export function SelectableMarkdown({
       attachments={attachments}
       selectable={selectable}
       compact={compact}
+      renderReferenceTail={renderReferenceTail}
     />
   );
 }

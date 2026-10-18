@@ -223,6 +223,191 @@ func TestVCSWebhook_ReferenceOnlyExcludedAndNonBlocking(t *testing.T) {
 	}
 }
 
+func TestVCSWebhook_PullRequestEditUnlinksOnlyStaleSystemAssociation(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-unlink.test")
+	staleIssue := newVCSIssue(t, "VCS unlink stale issue")
+	manualIssue := newVCSIssue(t, "VCS unlink manual issue")
+	t.Cleanup(func() {
+		cleanupVCS(ctx, staleIssue.ID)
+		cleanupVCS(ctx, manualIssue.ID)
+	})
+
+	sendEvent := func(updatedAt, title, state, action, baseRef string, merged bool) {
+		t.Helper()
+		pullRequest := map[string]any{
+			"number": 77302, "html_url": "https://forgejo-unlink.test/acme/widget/pulls/77302",
+			"title": title, "body": "", "state": state, "merged": merged,
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": updatedAt,
+			"head": map[string]any{"ref": "feature/unlink", "sha": "unlink-head"},
+			"user": map[string]any{"username": "octo"},
+		}
+		if baseRef != "" {
+			pullRequest["base"] = map[string]any{"ref": baseRef}
+		}
+		raw, err := json.Marshal(map[string]any{
+			"action":       action,
+			"pull_request": pullRequest,
+			"repository":   map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+		})
+		if err != nil {
+			t.Fatalf("marshal VCS webhook: %v", err)
+		}
+		w := httptest.NewRecorder()
+		testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+			"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+		}, raw))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
+		}
+	}
+	send := func(updatedAt, title string) {
+		sendEvent(updatedAt, title, "open", "synchronize", "main", false)
+	}
+
+	send("2026-04-29T00:00:00Z", "Fix "+staleIssue.Identifier)
+	var prID pgtype.UUID
+	if err := testPool.QueryRow(ctx,
+		`SELECT id FROM vcs_pull_request WHERE workspace_id = $1 AND provider = 'forgejo' AND repo_name = 'widget' AND pr_number = 77302`,
+		testWorkspaceID).Scan(&prID); err != nil {
+		t.Fatalf("get mirrored VCS PR: %v", err)
+	}
+	var targetBranch string
+	if err := testPool.QueryRow(ctx, `SELECT target_branch FROM vcs_pull_request WHERE id = $1`, prID).Scan(&targetBranch); err != nil {
+		t.Fatalf("read target branch: %v", err)
+	}
+	if targetBranch != "main" {
+		t.Fatalf("target branch = %q, want main", targetBranch)
+	}
+	listReq := withURLParam(httptest.NewRequest(http.MethodGet, "/api/issues/"+staleIssue.ID+"/pull-requests", nil), "id", staleIssue.ID)
+	listReq.Header.Set("X-User-ID", testUserID)
+	listReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	listResp := httptest.NewRecorder()
+	testHandler.ListPullRequestsForIssue(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("ListPullRequestsForIssue: status %d (%s)", listResp.Code, listResp.Body.String())
+	}
+	var listed struct {
+		PullRequests []GitHubPullRequestResponse `json:"pull_requests"`
+	}
+	if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode pull request list: %v", err)
+	}
+	if len(listed.PullRequests) != 1 || listed.PullRequests[0].BaseBranch == nil || *listed.PullRequests[0].BaseBranch != "main" {
+		t.Fatalf("target branch missing from API response: %+v", listed.PullRequests)
+	}
+	sendEvent("2026-04-29T12:00:00Z", "Fix "+staleIssue.Identifier, "open", "synchronize", "", false)
+	if err := testPool.QueryRow(ctx, `SELECT target_branch FROM vcs_pull_request WHERE id = $1`, prID).Scan(&targetBranch); err != nil {
+		t.Fatalf("read target branch after missing base: %v", err)
+	}
+	if targetBranch != "main" {
+		t.Fatalf("missing base erased target branch: %q", targetBranch)
+	}
+	if err := testHandler.Queries.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{
+		IssueID: parseUUID(manualIssue.ID), PullRequestID: prID, LinkedByType: pgtype.Text{String: "user", Valid: true},
+	}); err != nil {
+		t.Fatalf("create user association: %v", err)
+	}
+
+	send("2026-04-30T00:00:00Z", "Fix "+manualIssue.Identifier)
+	staleRows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(staleIssue.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue stale issue: %v", err)
+	}
+	if len(staleRows) != 0 {
+		t.Fatalf("stale system association remained visible: %+v", staleRows)
+	}
+	manualRows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(manualIssue.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue manual issue: %v", err)
+	}
+	if len(manualRows) != 1 {
+		t.Fatalf("user-origin association was removed, got %d rows", len(manualRows))
+	}
+	var linkedByType string
+	if err := testPool.QueryRow(ctx, `SELECT linked_by_type FROM issue_vcs_pull_request WHERE issue_id = $1 AND pull_request_id = $2`, manualIssue.ID, prID).Scan(&linkedByType); err != nil {
+		t.Fatalf("read association source: %v", err)
+	}
+	if linkedByType != "user" {
+		t.Fatalf("association source changed to %q, want user", linkedByType)
+	}
+
+	sendEvent("2026-05-01T00:00:00Z", "Fix "+staleIssue.Identifier, "merged", "closed", "main", true)
+	sendEvent("2026-05-02T00:00:00Z", "Merged work", "merged", "edited", "main", true)
+	terminalRows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(staleIssue.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue after merged edit: %v", err)
+	}
+	if len(terminalRows) != 1 {
+		t.Fatalf("merged PR association was removed by edit, got %d rows", len(terminalRows))
+	}
+	var closeIntent bool
+	if err := testPool.QueryRow(ctx, `SELECT close_intent FROM issue_vcs_pull_request WHERE issue_id = $1 AND pull_request_id = $2`, staleIssue.ID, prID).Scan(&closeIntent); err != nil {
+		t.Fatalf("read retained close intent: %v", err)
+	}
+	if !closeIntent {
+		t.Fatal("merged PR edit cleared close intent")
+	}
+}
+
+func TestUnlinkVCSPullRequestFromIssueScopesLinkAndKeepsMirror(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-unlink-api.test")
+	issueA := newVCSIssue(t, "VCS explicit unlink A")
+	issueB := newVCSIssue(t, "VCS explicit unlink B")
+	t.Cleanup(func() {
+		cleanupVCS(ctx, issueA.ID)
+		cleanupVCS(ctx, issueB.ID)
+	})
+	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	pr, err := testHandler.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), ConnectionID: parseUUID(connID),
+		Provider: "forgejo", RepoOwner: "acme", RepoName: "explicit-unlink", PrNumber: 77303,
+		Title: "Shared VCS PR", State: "open", HtmlUrl: "https://forgejo.test/acme/explicit-unlink/pulls/77303",
+		PrCreatedAt: now, PrUpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create VCS PR mirror: %v", err)
+	}
+	for _, issueID := range []string{issueA.ID, issueB.ID} {
+		if err := testHandler.Queries.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{
+			IssueID: parseUUID(issueID), PullRequestID: pr.ID, LinkedByType: strToText("user"),
+		}); err != nil {
+			t.Fatalf("link VCS PR to issue %s: %v", issueID, err)
+		}
+	}
+	req := newRequest(http.MethodDelete, "/api/issues/"+issueA.ID+"/pull-requests/"+uuidToString(pr.ID), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", issueA.ID)
+	rctx.URLParams.Add("pullRequestId", uuidToString(pr.ID))
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rec := httptest.NewRecorder()
+	testHandler.UnlinkPullRequestFromIssue(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("unlink issue A: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rowsA, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issueA.ID))
+	if err != nil {
+		t.Fatalf("list VCS PRs for issue A: %v", err)
+	}
+	rowsB, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issueB.ID))
+	if err != nil {
+		t.Fatalf("list VCS PRs for issue B: %v", err)
+	}
+	if len(rowsA) != 0 || len(rowsB) != 1 || rowsB[0].ID != pr.ID {
+		t.Fatalf("VCS unlink crossed issue boundary: A=%+v B=%+v", rowsA, rowsB)
+	}
+	var mirrorExists bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM vcs_pull_request WHERE id = $1)`, pr.ID).Scan(&mirrorExists); err != nil {
+		t.Fatalf("check VCS PR mirror: %v", err)
+	}
+	if !mirrorExists {
+		t.Fatal("unlink removed the shared VCS PR mirror")
+	}
+}
+
 // The close gate must span providers: an issue with an OPEN GitHub PR and a
 // MERGED close-intent VCS PR must report open_count > 0, so neither webhook
 // auto-advances it out from under the still-open GitHub work (and vice versa).

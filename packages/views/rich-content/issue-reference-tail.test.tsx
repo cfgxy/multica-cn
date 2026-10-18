@@ -197,7 +197,8 @@ describe("IssueReferenceTail", () => {
     );
 
     const row = container.querySelector(".issue-reference-row")!;
-    expect(row.textContent).toContain("cfgxy/multica-cn#338");
+    expect(row.querySelector(".issue-reference-identifier")).toHaveTextContent("#338");
+    expect(row).toHaveAttribute("href", pr(338).html_url);
     expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(1);
   });
 
@@ -208,7 +209,8 @@ describe("IssueReferenceTail", () => {
     const rows = container.querySelectorAll(".issue-reference-row");
     expect(rows).toHaveLength(1);
     // The row shows the resolved PR's own identity, not the authored token.
-    expect(rows[0]!.textContent).toContain("cfgxy/multica-cn#468");
+    expect(rows[0]!.querySelector(".issue-reference-identifier")).toHaveTextContent("#468");
+    expect(rows[0]).toHaveAttribute("href", pr(468).html_url);
   });
 
   it("degrades an unresolved MR reference to a plain-text row (RUYI-728)", () => {

@@ -27,6 +27,7 @@ import {
   allowsSubagents,
   mergeSubagentAllowance,
 } from "@multica/core/agents/subagent-tools";
+import { parseVoiceAdvancedDraft } from "@multica/core/voice/chain";
 import type { Agent, UpdateAgentRequest } from "@multica/core/types";
 
 /** The editor's full draft state — one string per text/number field. */
@@ -43,6 +44,11 @@ export interface AgentProfileDraft {
   maxContext: string;
   compactPct: string;
   subagents: boolean;
+  /** Voice override triple (RUYI-749 D1): "" = inherit (unbound). */
+  voiceProviderId: string;
+  voiceModel: string;
+  /** Raw JSON text of the advanced object; "" = none. */
+  voiceAdvanced: string;
 }
 
 /**
@@ -128,5 +134,57 @@ export function buildProfilePatch(
       draft.subagents,
     );
   }
+  appendVoiceOverridePatch(next, agent, draft);
   return next;
+}
+
+/**
+ * Voice override triple (RUYI-749 D1). The server PATCH is level-wise
+ * atomic, and the builder mirrors it exactly:
+ *   - provider change binds/unbinds as ONE unit: a bind carries the
+ *     non-empty model/advanced drafts in the same request (an omitted level
+ *     resets server-side), a clear sends `voice_provider_id: ""` alone —
+ *     the server 400s any model/advanced riding along;
+ *   - same provider, edits go through the refine path (model "" clears the
+ *     model; an emptied advanced draft clears a stored value with an
+ *     explicit `{}` because an absent/null field means "preserve");
+ *   - an invalid advanced JSON draft omits the field — revert, never clamp;
+ *   - with no provider bound anywhere, stray model/advanced draft edits are
+ *     dropped: the UI disables those fields, and sending them would 400.
+ */
+function appendVoiceOverridePatch(
+  next: UpdateAgentRequest,
+  agent: Agent,
+  draft: AgentProfileDraft,
+): void {
+  const savedProviderId = agent.voice_provider_id ?? null;
+  const savedModel = agent.voice_model ?? "";
+  const savedAdvanced = agent.voice_advanced ?? null;
+  const draftProviderId = draft.voiceProviderId === "" ? null : draft.voiceProviderId;
+
+  if (draftProviderId !== savedProviderId) {
+    if (draftProviderId === null) {
+      next.voice_provider_id = "";
+      return;
+    }
+    next.voice_provider_id = draftProviderId;
+    const model = draft.voiceModel.trim();
+    if (model) next.voice_model = model;
+    const advanced = parseVoiceAdvancedDraft(draft.voiceAdvanced);
+    if (advanced && advanced !== "invalid") next.voice_advanced = advanced;
+    return;
+  }
+  if (draftProviderId === null) return;
+
+  const model = draft.voiceModel.trim();
+  if (model !== savedModel) next.voice_model = model;
+
+  const advanced = parseVoiceAdvancedDraft(draft.voiceAdvanced);
+  if (advanced === "invalid") return;
+  const storedJson = JSON.stringify(savedAdvanced);
+  const draftJson = JSON.stringify(advanced ?? null);
+  if (draftJson === storedJson) return;
+  // An emptied draft over a stored value must send an explicit empty object:
+  // omission/null on the wire means "keep what is stored".
+  next.voice_advanced = advanced ?? {};
 }

@@ -114,6 +114,31 @@ describe("preprocessMobileMarkdown — 评论锚点 chip", () => {
  * 共用，两端不可能漂移。
  */
 describe("preprocessMobileMarkdown — 引用链接化（RUYI-728）", () => {
+  it("仅把当前 workspace prefix 的裸 Issue 编号链接到应用内路由", () => {
+    expect(preprocessMobileMarkdown("RUYI-355 和 AC-1", { workspacePrefix: "RUYI" })).toBe(
+      "[RUYI-355](mention://issue/RUYI-355) 和 AC-1",
+    );
+  });
+
+  it("裸 Issue 编号保留代码、已有链接与路径内容", () => {
+    const input = "`RUYI-355` [RUYI-355](https://example.test) /x/RUYI-355";
+    expect(preprocessMobileMarkdown(input, { workspacePrefix: "RUYI" })).toBe(input);
+  });
+
+  it.each([null, undefined])(
+    "前缀未解析时保留裸 Issue 标识符（workspacePrefix=%s）",
+    (workspacePrefix) => {
+      const input = "RUYI-1 and AC-2";
+      expect(preprocessMobileMarkdown(input, { workspacePrefix })).toBe(input);
+    },
+  );
+
+  it("正文 PR #N 改写为 pull-request 动作链接", () => {
+    expect(preprocessMobileMarkdown("见 PR #412。")).toBe(
+      "见 [PR #412](mention://pull-request/412)。",
+    );
+  });
+
   it("issue mention 链接保持为链接（不再降级为纯文本）", () => {
     const link = `[MUL-7](mention://issue/MUL-7)`;
     expect(preprocessMobileMarkdown(`见 ${link}。`)).toBe(`见 ${link}。`);

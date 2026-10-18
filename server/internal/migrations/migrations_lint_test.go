@@ -2,6 +2,7 @@ package migrations
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -52,6 +53,64 @@ var legacyDuplicateMigrationStems = map[string][]string{
 	"128": {"128_agent_task_queue_runtime_mcp_overlay", "128_autopilot_collaborator", "128_comment_routing_escalation"},
 }
 
+// concurrentMigrationPrefixGroups permits a post-consolidation issue to use
+// one numeric prefix for its base migration and independently-built indexes.
+// The complete stem set is intentional: partial or unrelated collisions stay
+// rejected by the uniqueness lint below.
+var concurrentMigrationPrefixGroups = map[string]struct {
+	issue             string
+	stems             []string
+	concurrentIndexes []string
+}{
+	"973": {
+		issue: "RUYI-788",
+		stems: []string{
+			"973_mcp_invocation_audit",
+			"973_mcp_invocation_audit_audit_event_expiry_index",
+			"973_mcp_invocation_audit_invocation_id_index",
+			"973_mcp_invocation_audit_outbox_expiry_index",
+			"973_mcp_invocation_audit_outbox_id_index",
+		},
+		concurrentIndexes: []string{
+			"973_mcp_invocation_audit_audit_event_expiry_index",
+			"973_mcp_invocation_audit_invocation_id_index",
+			"973_mcp_invocation_audit_outbox_expiry_index",
+			"973_mcp_invocation_audit_outbox_id_index",
+		},
+	},
+	"975": {
+		issue: "RUYI-789",
+		stems: []string{
+			"975_daemon_file_access",
+			"975_file_access_target_id_index",
+			"975_file_operation_id_index",
+		},
+		concurrentIndexes: []string{
+			"975_file_access_target_id_index",
+			"975_file_operation_id_index",
+		},
+	},
+	"977": {
+		issue: "RUYI-793",
+		stems: []string{
+			"977_mcp_file_access",
+			"977_mcp_file_access_binding_index",
+			"977_mcp_file_access_operation_invocation_index",
+			"977_mcp_pre_auth_rejection_expiry_index",
+			"977_mcp_pre_auth_rejection_invocation_index",
+		},
+		concurrentIndexes: []string{
+			"977_mcp_file_access_binding_index",
+			"977_mcp_file_access_operation_invocation_index",
+			"977_mcp_pre_auth_rejection_expiry_index",
+			"977_mcp_pre_auth_rejection_invocation_index",
+		},
+	},
+}
+
+var concurrentIndexUpPattern = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b[^;]*;?\s*$`)
+var concurrentIndexDownPattern = regexp.MustCompile(`(?is)^\s*DROP\s+INDEX\s+CONCURRENTLY\b[^;]*;?\s*$`)
+
 var migrationPrefixPattern = regexp.MustCompile(`^(\d+)_`)
 
 func TestMigrationFilesHaveMatchingDirections(t *testing.T) {
@@ -92,10 +151,112 @@ func TestMigrationNumericPrefixesStayUniqueAfterLegacySet(t *testing.T) {
 			continue
 		}
 
+		if group, isApprovedGroup := concurrentMigrationPrefixGroups[prefix]; isApprovedGroup {
+			if !matchesRegisteredMigrationPrefixGroup(prefix, stems, concurrentMigrationPrefixGroups) {
+				expected := append([]string(nil), group.stems...)
+				sort.Strings(expected)
+				t.Errorf("approved migration prefix %s for %s must exactly match its registered stems: got %v, want %v", prefix, group.issue, stems, expected)
+			}
+			continue
+		}
+
 		if len(stems) > 1 {
 			t.Errorf("migration prefix %s is reused by %v; use the next unique prefix instead", prefix, stems)
 		}
 	}
+}
+
+func TestConcurrentMigrationPrefixGroupsRequireExactStemSet(t *testing.T) {
+	for prefix, group := range concurrentMigrationPrefixGroups {
+		t.Run(prefix, func(t *testing.T) {
+			if !matchesRegisteredMigrationPrefixGroup(prefix, group.stems, concurrentMigrationPrefixGroups) {
+				t.Fatal("registered stems should match the complete group")
+			}
+			if matchesRegisteredMigrationPrefixGroup("unregistered", group.stems, concurrentMigrationPrefixGroups) {
+				t.Fatal("unregistered prefix must not be accepted")
+			}
+			if matchesRegisteredMigrationPrefixGroup(prefix, group.stems[:len(group.stems)-1], concurrentMigrationPrefixGroups) {
+				t.Fatal("incomplete registered prefix group must not be accepted")
+			}
+			extraStem := append(append([]string(nil), group.stems...), prefix+"_unregistered_migration")
+			if matchesRegisteredMigrationPrefixGroup(prefix, extraStem, concurrentMigrationPrefixGroups) {
+				t.Fatal("registered prefix group must reject an additional stem")
+			}
+		})
+	}
+}
+
+func TestConcurrentMigrationPrefixGroupsUseSingleStatementIndexes(t *testing.T) {
+	for prefix, group := range concurrentMigrationPrefixGroups {
+		if group.issue == "" {
+			t.Errorf("approved migration prefix %s must name its issue", prefix)
+		}
+		prefixNumber, err := strconv.Atoi(prefix)
+		if err != nil || prefixNumber < 900 || prefixNumber > 999 {
+			t.Errorf("approved migration prefix %s must be in the post-consolidation 9xx range", prefix)
+		}
+
+		registeredStems := append([]string(nil), group.concurrentIndexes...)
+		baseStems := make([]string, 0, 1)
+		for _, stem := range group.stems {
+			if !containsMigrationStem(group.concurrentIndexes, stem) {
+				baseStems = append(baseStems, stem)
+			}
+		}
+		registeredStems = append(registeredStems, baseStems...)
+		if len(baseStems) != 1 || !matchesRegisteredMigrationPrefixGroup(prefix, registeredStems, concurrentMigrationPrefixGroups) {
+			t.Errorf("approved migration prefix %s must register exactly one base migration and all its concurrent index stems", prefix)
+		}
+
+		for _, stem := range group.concurrentIndexes {
+			if !strings.HasPrefix(stem, prefix+"_") {
+				t.Errorf("concurrent index stem %s does not use registered prefix %s", stem, prefix)
+				continue
+			}
+			for _, direction := range []struct {
+				suffix  string
+				pattern *regexp.Regexp
+			}{
+				{suffix: ".up.sql", pattern: concurrentIndexUpPattern},
+				{suffix: ".down.sql", pattern: concurrentIndexDownPattern},
+			} {
+				path := filepath.Join(realMigrationsDir(t), stem+direction.suffix)
+				content, err := os.ReadFile(path)
+				if err != nil {
+					t.Errorf("read registered migration %s: %v", path, err)
+					continue
+				}
+				if !direction.pattern.Match(content) {
+					t.Errorf("registered concurrent index migration %s must contain exactly one concurrent index statement", path)
+				}
+			}
+		}
+	}
+}
+
+func containsMigrationStem(stems []string, candidate string) bool {
+	for _, stem := range stems {
+		if stem == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesRegisteredMigrationPrefixGroup(prefix string, stems []string, groups map[string]struct {
+	issue             string
+	stems             []string
+	concurrentIndexes []string
+}) bool {
+	group, ok := groups[prefix]
+	if !ok {
+		return false
+	}
+	got := append([]string(nil), stems...)
+	want := append([]string(nil), group.stems...)
+	sort.Strings(got)
+	sort.Strings(want)
+	return reflect.DeepEqual(got, want)
 }
 
 func TestNewMigrationPrefixesStartAfterLegacyRange(t *testing.T) {

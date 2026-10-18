@@ -149,7 +149,33 @@ a.issue-reference-row.issue-reference-row:focus-visible {
   color: var(--muted-foreground);
 }
 
-/* Owner point ①: full titles, wrap at two lines — no more ellipsis. */
+.issue-reference-pr-leading {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.625rem;
+}
+
+.issue-reference-pr-content {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.issue-reference-pr-project {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(35%, 12rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-foreground);
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  white-space: nowrap;
+}
+
 .issue-reference-title {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -158,6 +184,15 @@ a.issue-reference-row.issue-reference-row:focus-visible {
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.issue-reference-pr-content > .issue-reference-title {
+  flex: 1 1 0;
+  min-width: 0;
+  display: block;
+  -webkit-line-clamp: unset;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .issue-reference-degraded {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { configStore } from "../config";
+import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
 import type {
   RuntimeBackpressureSettings,
   RuntimeBackpressureEvent,
@@ -86,6 +87,9 @@ import type {
   PromptTargetState,
   PromptVersion,
   PromptQualityDashboard,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
   SelfEvolutionOverview,
   SelfEvolutionConfigValidation,
   SelfEvolutionModelConfig,
@@ -152,6 +156,9 @@ import type {
   RuntimeLocalSkillListRequest,
   CreateRuntimeLocalSkillImportRequest,
   RuntimeLocalSkillImportRequest,
+  CreateRuntimeOpsCommandRequest,
+  RuntimeOpsCommand,
+  RuntimeOpsInventory,
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
@@ -302,9 +309,11 @@ import type {
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
+  VoiceProvider,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
+  AdminFileReadPolicy,
   AdminUserList,
   AdminWorkspaceList,
   ImpersonationResponse,
@@ -337,6 +346,7 @@ import {
 } from "../issues/timeline-query";
 import { parseWithFallback } from "./schema";
 import {
+  AdminFileReadPolicySchema,
   AgentTaskListSchema,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -447,6 +457,7 @@ import {
   AdminWorkspaceListSchema,
   ImpersonationResponseSchema,
   EMPTY_ADMIN_USER_LIST,
+  EMPTY_ADMIN_FILE_READ_POLICY,
   EMPTY_ADMIN_WORKSPACE_LIST,
   EMPTY_IMPERSONATION_RESPONSE,
   AdminMCPStatusSchema,
@@ -622,6 +633,12 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
+  ClauseGovernanceOverviewSchema,
+  EMPTY_CLAUSE_GOVERNANCE_OVERVIEW,
+  ClauseGovernanceDetailSchema,
+  EMPTY_CLAUSE_GOVERNANCE_DETAIL,
+  ClauseGovernanceReconciliationSchema,
+  EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION,
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionModelConfigSchema,
@@ -640,6 +657,8 @@ import {
   PromptQuizBankImportResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
   MarketplaceListingSchema,
   MarketplaceListingListSchema,
   ShareLinkSchema,
@@ -1086,6 +1105,33 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/admin/users${qs ? `?${qs}` : ""}`);
     return parseWithFallback(raw, AdminUserListSchema, EMPTY_ADMIN_USER_LIST, {
       endpoint: "GET /api/admin/users",
+    });
+  }
+
+  async adminGetFileReadPolicy(): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy");
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "GET /api/admin/file-read-policy",
+    });
+  }
+
+  async adminUpdateFileReadPolicy(policy: AdminFileReadPolicy): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy", {
+      method: "PUT",
+      body: JSON.stringify(policy),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "PUT /api/admin/file-read-policy",
+    });
+  }
+
+  async adminRestoreFileReadPolicy(version: number): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy/restore-defaults", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "POST /api/admin/file-read-policy/restore-defaults",
     });
   }
 
@@ -3295,6 +3341,31 @@ export class ApiClient {
     return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import/${requestId}`);
   }
 
+  async getRuntimeOpsInventory(runtimeId: string): Promise<RuntimeOpsInventory> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/inventory`);
+  }
+
+  async submitRuntimeOpsCommand(
+    runtimeId: string,
+    data: CreateRuntimeOpsCommandRequest,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRuntimeOpsCommands(runtimeId: string): Promise<RuntimeOpsCommand[]> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands?limit=50`);
+  }
+
+  async getRuntimeOpsCommand(
+    runtimeId: string,
+    commandId: string,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands/${commandId}`);
+  }
+
   async listAgentTasks(agentId: string): Promise<AgentTask[]> {
     return this.fetch(`/api/agents/${agentId}/tasks`);
   }
@@ -3580,6 +3651,88 @@ export class ApiClient {
       method: "PATCH",
       body: JSON.stringify(data),
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Voice provider pool (RUYI-693 D2). Reads are member-visible; writes are
+  // workspace-admin state, enforced server-side. No plaintext key ever
+  // round-trips: it enters through putVoiceProviderCredential (which probes
+  // on save) and is only ever read back as the coarse credential_status
+  // badge plus the last probe verdict.
+  // -------------------------------------------------------------------------
+
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
+
+  async createVoiceProvider(
+    workspaceId: string,
+    data: { display_name: string; provider_type: string },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+  }
+
+  async updateVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+    data: { display_name?: string; enabled?: boolean },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "PATCH", body: JSON.stringify(data) },
+    );
+  }
+
+  /** Delete unbinds rather than blocks: the server clears referencing agent
+   *  overrides and the workspace settings' voice refs in one transaction. */
+  async deleteVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ id: string; cleared_agents: number }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/voice-providers/${providerId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Stores/rotates the key and runs the server-side connectivity probe
+   *  (保存即探针); the response is the refreshed pool row. */
+  async putVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "PUT", body: JSON.stringify({ value }) },
+    );
+  }
+
+  async deleteVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Re-runs the server-side probe and records the outcome on the badge. */
+  async probeVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ voice_provider_id: string; probe: { status: string; http_status?: number; checked_at: string } }> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credential-probe`,
+      { method: "POST" },
+    );
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
@@ -3877,6 +4030,37 @@ export class ApiClient {
     });
   }
 
+  async getClauseGovernanceOverview(days: number): Promise<ClauseGovernanceOverview> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/governance/clauses?${query.toString()}`);
+    return parseWithFallback(raw, ClauseGovernanceOverviewSchema, EMPTY_CLAUSE_GOVERNANCE_OVERVIEW, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceDetail(clauseId: string, days: number): Promise<ClauseGovernanceDetail> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceDetailSchema, EMPTY_CLAUSE_GOVERNANCE_DETAIL, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses/{clauseId}",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceReconciliation(days: number): Promise<ClauseGovernanceReconciliation> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/reconciliation?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceReconciliationSchema, EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION, {
+      endpoint: "GET /api/prompt-legislation/governance/reconciliation",
+      redactContent: true,
+    });
+  }
+
   /**
    * The workspace-level self-evolution overview (RUYI-284): one read-only
    * aggregate across the six data planes the tabs serve. Member-visible on the
@@ -3997,6 +4181,27 @@ export class ApiClient {
       EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
       { endpoint: "GET /api/prompt-governance/{scope}/{id}/versions" },
     );
+  }
+
+  async listAuditEvents(workspaceId: string, params: ListAuditEventsParams = {}): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const key of [
+      "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
+      "tool_name", "result_status", "result_error_code", "target_type", "target_id",
+    ] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined && params.cursor_id !== undefined) {
+      query.set("cursor", params.cursor);
+      query.set("cursor_id", params.cursor_id);
+    }
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`);
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "GET /api/workspaces/{id}/audit-events",
+    });
   }
 
   /**
@@ -5304,6 +5509,19 @@ export class ApiClient {
     });
   }
 
+  async setChatSessionModel(
+    id: string,
+    modelOverride: string | null,
+  ): Promise<ChatSession> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "PATCH /api/chat/sessions/:id/model",
+    });
+  }
+
   async setChatSessionPinned(id: string, pinned: boolean): Promise<ChatSession> {
     return this.fetch(`/api/chat/sessions/${id}/pin`, {
       method: "PATCH",
@@ -6462,6 +6680,12 @@ export class ApiClient {
     );
   }
 
+  async unlinkIssuePullRequest(issueId: string, pullRequestId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/pull-requests/${pullRequestId}`, {
+      method: "DELETE",
+    });
+  }
+
   /**
    * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
    * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never
@@ -6473,12 +6697,14 @@ export class ApiClient {
     owner: string,
     repo: string,
     number: number,
+    options?: { signal?: AbortSignal },
   ): Promise<GitHubPullRequest | null> {
     const params = new URLSearchParams({ owner, repo, number: String(number) });
     let raw: unknown;
     try {
       raw = await this.fetch<unknown>(
         `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: options?.signal },
       );
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
@@ -6503,11 +6729,13 @@ export class ApiClient {
   async lookupPullRequestByNumber(
     workspaceId: string,
     number: number,
+    options?: { signal?: AbortSignal },
   ): Promise<GitHubPullRequest | null> {
     let raw: unknown;
     try {
       raw = await this.fetch<unknown>(
         `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${number}`,
+        { signal: options?.signal },
       );
     } catch (err) {
       if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
