@@ -9,6 +9,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -501,6 +502,23 @@ func TestAdminListWorkspaces_ReturnsOwnerAndCounts(t *testing.T) {
 	got := body.Workspaces[0]
 	if got.ID != ws || got.OwnerID == nil || *got.OwnerID != admin || got.MemberCount != 2 {
 		t.Fatalf("unexpected workspace row: %+v", got)
+	}
+}
+
+func TestAdminListAuditLogs_ReturnsNewestRowsAndPagination(t *testing.T) {
+	admin := insertAdminTestUser(t, "admin-audit-list@test.local", "Audit List Admin", true)
+	testHandler.writeAdminAudit(context.Background(), admin, "audit.test", AuditTargetTypeUser, pgtype.UUID{}, pgtype.UUID{}, adminReason("review access"), map[string]any{"source": "test"})
+
+	req := newRequest("GET", "/api/admin/audit?limit=1&offset=0", nil)
+	req.Header.Set("X-User-ID", admin)
+	resp := testutil.Call(t, testHandler.AdminListAuditLogs, req).Want(http.StatusOK)
+	var body AdminAuditLogListResponse
+	resp.JSON(&body)
+	if body.Limit != 1 || body.Offset != 0 || body.Total < 1 || len(body.Events) != 1 {
+		t.Fatalf("unexpected audit page: %+v", body)
+	}
+	if got := body.Events[0]; got.ActorID != admin || got.ActorEmail == "" || got.Action == "" || got.Reason == nil || *got.Reason != "review access" || len(got.Metadata) == 0 {
+		t.Fatalf("audit event missing expected actor/action/reason/metadata: %+v", got)
 	}
 }
 
