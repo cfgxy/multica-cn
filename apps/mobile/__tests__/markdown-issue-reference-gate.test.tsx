@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import React from "react";
-import { fireEvent, render, waitFor, within } from "@testing-library/react-native";
+import { render, waitFor, within } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
@@ -26,20 +26,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
  */
 
 jest.mock("react-native-enriched-markdown", () => ({
-  EnrichedMarkdownText: ({
-    markdown,
-    onLinkPress,
-  }: {
-    markdown: string;
-    onLinkPress?: (event: { url: string }) => void;
-  }) => {
+  EnrichedMarkdownText: ({ markdown }: { markdown: string }) => {
     const { createElement } = jest.requireActual("react");
     const { Text: RNText } = jest.requireActual("react-native");
-    return createElement(
-      RNText,
-      { onPress: () => onLinkPress?.({ url: "mention://merge-request/123" }) },
-      markdown,
-    );
+    return createElement(RNText, null, markdown);
   },
 }));
 jest.mock("expo-router", () => ({ router: { push: jest.fn() } }));
@@ -77,7 +67,10 @@ jest.mock("@/lib/markdown/split-markdown", () => ({
   splitMarkdown: (content: string) => [{ type: "prose", content }],
 }));
 
-import { Markdown } from "@/lib/markdown/markdown";
+import {
+  IssueReferenceTailVisibilityContext,
+  Markdown,
+} from "@/lib/markdown/markdown";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { api } from "@/data/api";
@@ -125,14 +118,54 @@ async function renderWithClient(ui: React.ReactElement) {
 describe("mobile markdown issue-reference gate (RUYI-705 rework)", () => {
   beforeEach(resetStore);
 
-  it("does not look up merge requests without a workspace id", async () => {
-    jest.spyOn(api, "listWorkspaces").mockResolvedValue([]);
-    const lookup = jest.spyOn(api, "lookupPullRequestByNumber");
-    const utils = await renderWithClient(<Markdown content="MR-TEST" />);
+  it("mounts and unmounts the reference tail with its visibility range", async () => {
+    useWorkspaceStore.setState({
+      currentWorkspaceId: "ws-1",
+      currentWorkspaceSlug: "e2er",
+      currentWorkspaceServerId: "srv-1",
+    });
+    jest.spyOn(api, "listWorkspaces").mockResolvedValue([RAW_WORKSPACE]);
+    const getIssue = jest
+      .spyOn(api, "getIssue")
+      .mockResolvedValue(REAL_ISSUE);
+    const content = "See E2ER-9";
+    const client = makeClient();
+    client.setQueryData(["workspaces"], [RAW_WORKSPACE] as never);
 
-    fireEvent.press(utils.getByText("MR-TEST"));
+    const utils = await render(
+      <QueryClientProvider client={client}>
+        <IssueReferenceTailVisibilityContext.Provider value={false}>
+          <Markdown content={content} />
+        </IssueReferenceTailVisibilityContext.Provider>
+      </QueryClientProvider>,
+    );
 
-    expect(lookup).not.toHaveBeenCalled();
+    expect(utils.queryByLabelText("Referenced issues")).toBeNull();
+    expect(getIssue).not.toHaveBeenCalled();
+
+    await utils.rerender(
+      <QueryClientProvider client={client}>
+        <IssueReferenceTailVisibilityContext.Provider value>
+          <Markdown content={content} />
+        </IssueReferenceTailVisibilityContext.Provider>
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(getIssue).toHaveBeenCalledWith("E2ER-9", expect.anything()),
+    );
+    await waitFor(() =>
+      expect(utils.getByLabelText("Referenced issues")).toBeTruthy(),
+    );
+
+    await utils.rerender(
+      <QueryClientProvider client={client}>
+        <IssueReferenceTailVisibilityContext.Provider value={false}>
+          <Markdown content={content} />
+        </IssueReferenceTailVisibilityContext.Provider>
+      </QueryClientProvider>,
+    );
+    expect(utils.queryByLabelText("Referenced issues")).toBeNull();
+    getIssue.mockRestore();
   });
 
   it("gates bare identifiers while the id mirror lags but the route slug is known", async () => {

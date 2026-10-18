@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -131,7 +132,7 @@ func (s *AutopilotService) DispatchAutopilot(
 	// dropped.
 	// webhookDeliveryID is invalid here — durable webhook deliveries admit through
 	// AdmitAutopilotWebhookDelivery instead of this entry point.
-	run, _, err := s.dispatchAutopilot(ctx, autopilot, triggerID, source, payload, pgtype.Timestamptz{}, pgtype.UUID{}, pgtype.UUID{}, source+":"+newAutopilotIdempotencyKey())
+	run, _, err := s.dispatchAutopilot(ctx, autopilot, triggerID, source, payload, pgtype.Timestamptz{}, pgtype.UUID{}, pgtype.UUID{}, source+":"+newAutopilotIdempotencyKey(), pgtype.UUID{})
 	return run, err
 }
 
@@ -166,7 +167,10 @@ func (s *AutopilotService) DispatchAutopilotManualWithKey(
 	// so it returns the typed reason code decided at the admission source. No
 	// webhook delivery on the manual path.
 	key := "manual:" + util.UUIDToString(autopilot.ID) + ":" + idempotencyKey
-	return s.dispatchAutopilot(ctx, autopilot, triggerID, "manual", payload, pgtype.Timestamptz{}, pgtype.UUID{}, actorUserID, key)
+	return s.dispatchAutopilot(ctx, autopilot, triggerID, "manual", payload, pgtype.Timestamptz{}, pgtype.UUID{}, actorUserID, key, pgtype.UUID{
+		Bytes: uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)),
+		Valid: true,
+	})
 }
 
 // AdmitAutopilotWebhookDelivery creates or reuses the idempotent run for a
@@ -506,7 +510,7 @@ func (s *AutopilotService) DispatchAutopilotForPlan(
 	// (trigger_owner, MUL-6951), and has no human surface for a per-run reason
 	// code, so it is dropped. No webhook delivery on the scheduled-plan path.
 	key := "schedule:" + util.UUIDToString(triggerID) + ":" + plannedAt.UTC().Format(time.RFC3339Nano)
-	run, _, err := s.dispatchAutopilot(ctx, autopilot, triggerID, source, payload, plannedTS, pgtype.UUID{}, pgtype.UUID{}, key)
+	run, _, err := s.dispatchAutopilot(ctx, autopilot, triggerID, source, payload, plannedTS, pgtype.UUID{}, pgtype.UUID{}, key, pgtype.UUID{})
 	return run, err
 }
 
@@ -560,6 +564,7 @@ func (s *AutopilotService) dispatchAutopilot(
 	webhookDeliveryID pgtype.UUID,
 	actorUserID pgtype.UUID,
 	idempotencyKey string,
+	runID pgtype.UUID,
 ) (*db.AutopilotRun, dispatch.ReasonCode, error) {
 	if reason, code, skip := s.shouldSkipDispatch(ctx, autopilot, actorUserID, triggerID); skip {
 		run, err := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason)
@@ -591,9 +596,12 @@ func (s *AutopilotService) dispatchAutopilot(
 	if autopilot.ExecutionMode == "run_only" {
 		initialStatus = "running"
 	}
+	if !runID.Valid {
+		runID = dbid.NewV7()
+	}
 
 	run, reused, err := s.createAutopilotRunWithQuota(ctx, autopilot.WorkspaceID, source, idempotencyKey, db.CreateAutopilotRunParams{
-		ID:                dbid.NewV7(),
+		ID:                runID,
 		AutopilotID:       autopilot.ID,
 		TriggerID:         triggerID,
 		Source:            source,

@@ -1,4 +1,5 @@
 export type { Issue, IssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, SourceContextAuthorState, IssueSourceContext } from "./issue";
+export type { AuditEvent, AuditEventsPage, ListAuditEventsParams } from "./audit";
 export type {
   IssueStatusCategory,
   IssueStatusEntry,
@@ -100,6 +101,12 @@ export type {
   CreateRuntimeLocalSkillImportRequest,
   RuntimeLocalSkillImportRequest,
   RuntimeLocalSkillsResult,
+  RuntimeOpsCommand,
+  RuntimeOpsCommandResult,
+  RuntimeOpsCommandStatus,
+  RuntimeOpsInventory,
+  RuntimeOpsService,
+  CreateRuntimeOpsCommandRequest,
   RuntimeLocalSkillImportResult,
   IssueUsageSummary,
   MikaBootstrapResponse,
@@ -119,6 +126,21 @@ export type {
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, CANCEL_UNCONFIRMED_AFTER_MS } from "./agent";
 export type { PromptProposal, PromptProposalDraftRequest, PromptProposalCarrierScope, PromptProposalChangeKind, LegislationGateFinding, PromptProposalMergeRef, LegislationDiffLine, PromptProposalPreview, PromptProposalBatchOutcome, RetrospectiveConfig, RetrospectiveRun, RetrospectiveConfigPatch, RetrospectiveRunDetail } from "./legislation";
+export type {
+  ClauseGovernanceTotals,
+  ClauseGovernanceClause,
+  ClauseGovernanceMigration,
+  ClauseGovernanceOverview,
+  ClauseGovernanceVersion,
+  ClauseGovernanceConditions,
+  ClauseGovernanceBinding,
+  ClauseGovernanceQualityDay,
+  ClauseGovernanceDetail,
+  ClauseLayerSetViolation,
+  ClauseDriftEntry,
+  ClauseDriftCarrier,
+  ClauseGovernanceReconciliation,
+} from "./clause-governance";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type {
   VoiceProvider,
@@ -249,6 +271,8 @@ export type {
   BatchDecisionAnswerStatus,
   BatchIssueDecisionAnswer,
   DecisionAnswerSource,
+  DecisionContext,
+  DecisionContextFact,
   DecisionInboxCounts,
   DecisionOption,
   DecisionRequest,

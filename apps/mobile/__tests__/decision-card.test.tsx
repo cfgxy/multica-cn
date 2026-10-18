@@ -135,6 +135,24 @@ beforeEach(() => {
 });
 
 describe("DecisionCard", () => {
+  it("renders native decision context only on question cards", async () => {
+    await renderCard(card({
+      context: {
+        why_now: "The release window closes Friday.",
+        facts: [{ statement: "The build passed.", evidence: ["CI run 12"] }],
+        impact: "A delay moves launch one week.",
+        recommendation_reason: "Monday leaves rollback time.",
+        unknowns: ["External review timing"],
+      },
+    }));
+
+    const context = screen.getByTestId("decision-context");
+    expect(context).toBeTruthy();
+    expect(context.props.children).toBeTruthy();
+    expect(screen.getByText("The release window closes Friday.")).toBeTruthy();
+    expect(screen.getByText(/The build passed\.\s+CI run 12/)).toBeTruthy();
+  });
+
   // RUYI-588: the single card renders its own index letter per row — the
   // same letter language as the batch bar (RUYI-471) — so cards whose labels
   // no longer embed an "A：" prefix still show A/B/C/D.

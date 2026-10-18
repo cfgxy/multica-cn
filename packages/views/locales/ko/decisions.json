@@ -82,5 +82,15 @@
     "detail_error": "단계 세부 정보를 불러오지 못했습니다",
     "answer_failed": "승인 작업에 실패했습니다",
     "cancel_failed": "철회에 실패했습니다"
+  },
+  "detail": {
+    "read_only": "읽기 전용 결정 세부 정보",
+    "no_context": "추가 배경이 제공되지 않았습니다.",
+    "options": "선택지",
+    "recommended": "추천",
+    "selected": "선택됨",
+    "single_select": "하나의 선택지를 고르세요",
+    "multi_select": "하나 이상 선택할 수 있습니다",
+    "open_task": "태스크에서 답변하기"
   }
 }

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS mcp_file_access_instance_binding_uidx;

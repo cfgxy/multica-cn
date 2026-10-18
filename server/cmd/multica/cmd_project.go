@@ -150,6 +150,7 @@ func init() {
 	// the default checkout ref.
 	projectResourceAddCmd.Flags().String("type", "github_repo", "Resource type (e.g. github_repo, local_directory — see docs)")
 	projectResourceAddCmd.Flags().String("url", "", "Shortcut: the repo URL (only used when --type github_repo)")
+	projectResourceAddCmd.Flags().String("upstream", "", "Shortcut: confirmed fork upstream GitHub URL (github_repo)")
 	projectResourceAddCmd.Flags().String("default-branch-hint", "", "Shortcut: optional default branch hint (only used when --type github_repo)")
 	projectResourceAddCmd.Flags().String("local-path", "", "Shortcut: absolute path to the working directory (only used when --type local_directory)")
 	projectResourceAddCmd.Flags().String("daemon-id", "", "Shortcut: id of the daemon that owns the local path (only used when --type local_directory)")
@@ -162,6 +163,7 @@ func init() {
 	// project resource update — mirrors `add` flags, but every field is
 	// optional so the caller can edit one thing at a time.
 	projectResourceUpdateCmd.Flags().String("url", "", "Shortcut: new repo URL (github_repo)")
+	projectResourceUpdateCmd.Flags().String("upstream", "", "Shortcut: confirmed fork upstream GitHub URL (github_repo)")
 	projectResourceUpdateCmd.Flags().String("default-branch-hint", "", "Shortcut: new default branch hint (github_repo)")
 	projectResourceUpdateCmd.Flags().String("local-path", "", "Shortcut: new absolute local path (local_directory)")
 	projectResourceUpdateCmd.Flags().String("daemon-id", "", "Shortcut: new daemon id (local_directory)")
@@ -799,9 +801,10 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 	switch resourceType {
 	case "github_repo":
 		urlSet := cmd.Flags().Changed("url")
+		upstreamSet := cmd.Flags().Changed("upstream")
 		hintSet := cmd.Flags().Changed("default-branch-hint")
 		refSet := cmd.Flags().Changed("ref")
-		if !urlSet && !hintSet && !refSet {
+		if !urlSet && !upstreamSet && !hintSet && !refSet {
 			return nil, false, nil
 		}
 		ref := map[string]any{}
@@ -810,6 +813,9 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 		if existingRef != nil {
 			if u, ok := existingRef["url"].(string); ok && strings.TrimSpace(u) != "" {
 				ref["url"] = strings.TrimSpace(u)
+			}
+			if upstream, ok := existingRef["upstream"].(string); ok && strings.TrimSpace(upstream) != "" {
+				ref["upstream"] = strings.TrimSpace(upstream)
 			}
 			if h, ok := existingRef["default_branch_hint"].(string); ok && strings.TrimSpace(h) != "" {
 				ref["default_branch_hint"] = strings.TrimSpace(h)
@@ -825,6 +831,13 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 				return nil, false, fmt.Errorf("--url cannot be empty")
 			}
 			ref["url"] = urlVal
+		}
+		if upstreamSet {
+			upstream := strings.TrimSpace(mustString(cmd, "upstream"))
+			if upstream == "" {
+				return nil, false, fmt.Errorf("--upstream cannot be empty; omit it until confirmed")
+			}
+			ref["upstream"] = upstream
 		}
 		if hintSet {
 			hint := strings.TrimSpace(mustString(cmd, "default-branch-hint"))

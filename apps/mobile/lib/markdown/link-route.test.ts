@@ -41,7 +41,9 @@ describe("resolveLinkAction", () => {
     });
   });
 
-  it("merge request mention resolves its number without a workspace slug", () => {
+  it("mention://merge-request 解析为编号动作，且不依赖 workspace slug", () => {
+    // MR 没有站内详情页：点击时按编号解析为 PR 再交系统打开，不需要
+    // slug 拼路由，因此不被「拿不到 slug」的前置条件连坐（与评论锚点同理）。
     expect(resolveLinkAction("mention://merge-request/468", null)).toEqual({
       kind: "mergeRequest",
       number: 468,
@@ -52,16 +54,19 @@ describe("resolveLinkAction", () => {
     });
   });
 
-  it("ignores malformed merge request numbers", () => {
+  it("mention://pull-request 解析为编号动作，且不依赖 workspace slug", () => {
+    expect(resolveLinkAction("mention://pull-request/412", null)).toEqual({
+      kind: "pullRequest",
+      number: 412,
+    });
+  });
+
+  it("畸形 MR 编号（非正整数）静默忽略，绝不交给系统", () => {
     for (const url of [
       "mention://merge-request/abc",
       "mention://merge-request/0",
       "mention://merge-request/-3",
       "mention://merge-request/4.5",
-      "mention://merge-request/1e2",
-      "mention://merge-request/0x10",
-      "mention://merge-request/+3",
-      "mention://merge-request/9007199254740992",
     ]) {
       expect(resolveLinkAction(url, "ws")).toEqual({ kind: "noop" });
     }

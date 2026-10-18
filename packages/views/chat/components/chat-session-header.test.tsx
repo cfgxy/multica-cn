@@ -29,6 +29,22 @@ vi.mock("../../navigation", () => ({
   AppLink: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
 }));
 
+vi.mock("./chat-session-model-selector", () => ({
+  ChatSessionModelSelector: ({
+    session: currentSession,
+    agentModel,
+    disabled,
+  }: {
+    session: ChatSession;
+    agentModel: string | null;
+    disabled: boolean;
+  }) => (
+    <button type="button" data-testid="session-model-selector" disabled={disabled}>
+      {currentSession.model_override ?? agentModel}
+    </button>
+  ),
+}));
+
 import { ChatSessionHeader } from "./chat-session-header";
 
 const TEST_RESOURCES = { en: { chat: enChat } };
@@ -178,5 +194,16 @@ describe("ChatSessionHeader rename keyboard behavior", () => {
     expect(updateMutate).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox", { name: RENAME_LABEL })).not.toBeInTheDocument();
     expect(screen.getByText("Original title")).toBeInTheDocument();
+  });
+});
+
+describe("ChatSessionHeader model selector", () => {
+  it("keeps model selection out of the session header", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={null} />
+      </I18nProvider>,
+    );
+    expect(screen.queryByTestId("session-model-selector")).not.toBeInTheDocument();
   });
 });

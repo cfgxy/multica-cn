@@ -202,6 +202,12 @@ type DaemonRegisterRequest struct {
 		CommandName string `json:"command_name"`
 		Reason      string `json:"reason"`
 	} `json:"failed_profiles"`
+	// OpsCaps (RUYI-645) lists daemon-probed read-only command capabilities
+	// ("systemd" | "launchd" | "docker"). Stored per runtime metadata as
+	// ops_caps; the ops submission gate evaluates the kind whitelist's
+	// OR-of-AND matrix against it. An old daemon sends nothing and stays
+	// unable to run ops commands — fail closed.
+	OpsCaps []string `json:"ops_caps"`
 }
 
 type daemonWorkspaceReposResponse struct {
@@ -470,6 +476,10 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			"cli_version":  req.CLIVersion,
 			"launched_by":  req.LaunchedBy,
 			"capabilities": requestClientCapabilities(r),
+			// RUYI-645: daemon-probed ops capabilities; an empty slice is
+			// stored as absent so the ops gate fails closed for daemons
+			// that predate the field.
+			"ops_caps": nonEmptyStrings(req.OpsCaps),
 		})
 
 		var registered db.AgentRuntime
@@ -831,15 +841,16 @@ func (h *Handler) mergeLegacyRuntime(ctx context.Context, newRuntimeID, oldRunti
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
-	// Fence, in the same order every task write uses: workspace row first, then the
-	// owner rows. Without the FOR UPDATE on the runtimes, a concurrent enqueue
-	// against the OLD runtime slipped through after the task scan — writers hold
-	// only FOR KEY SHARE on the workspace, and so did this merge, and two KEY SHARE
-	// locks do not conflict — and DeleteAgentRuntime below then removed that
-	// brand-new task through ON DELETE CASCADE.
+	// Keep the task-owner fence first. Its workspace FOR KEY SHARE is compatible
+	// with enqueue, and lets workspace teardown finish before this transaction
+	// takes chat-session locks. Then lock sessions before runtimes: a send may need
+	// a runtime FK lock after its session lock while inserting the task.
 	runtimeIDs := []pgtype.UUID{oldRuntimeID, newRuntimeID}
 	if err := qtx.LockWorkspaceForRuntimeMerge(ctx, runtimeIDs); err != nil {
 		return fmt.Errorf("lock workspace: %w", err)
+	}
+	if _, err := qtx.LockChatSessionsForRuntimeBind(ctx, oldRuntimeID); err != nil {
+		return fmt.Errorf("lock legacy runtime chat sessions: %w", err)
 	}
 	locked, err := qtx.LockRuntimesForMerge(ctx, runtimeIDs)
 	if err != nil {
@@ -1169,6 +1180,17 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	// RUYI-645: the claim in processHeartbeat already flipped these rows to
+	// claimed, so dropping the field here would blackhole the commands for
+	// HTTP-heartbeating daemons — they would never execute and every row
+	// would die in sweep timeout. The WS path returns the ack struct directly
+	// and was never affected.
+	if len(ack.PendingOpsCommands) > 0 {
+		resp["pending_ops_commands"] = ack.PendingOpsCommands
+	}
+	if len(ack.PendingFileOperations) > 0 {
+		resp["pending_file_operations"] = ack.PendingFileOperations
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1484,6 +1506,13 @@ func (h *Handler) processHeartbeat(ctx context.Context, rt db.AgentRuntime, supp
 			slog.Warn("local skill import HasPending failed", "error", probeErr, "runtime_id", runtimeID)
 		}
 	}
+
+	// RUYI-645: claim whitelisted read-only ops commands for this runtime.
+	// The claim is a single SKIP LOCKED UPDATE against the ops ledger (no
+	// Redis probe needed), so it stays cheap on empty-queue ticks and is
+	// safe under concurrent server instances.
+	h.claimOpsCommands(ctx, rt, ack)
+	h.claimFileOperations(ctx, rt, ack)
 
 	return ack, m, nil
 }
@@ -2394,6 +2423,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// kept verbatim, the clause region is rebuilt from the task_kind-
 	// filtered effective set.
 	agentInstructions := filterClauses(promptVersionScopeAgent, agent.ID, agent.Instructions)
+	model := agent.Model.String
+	if task.ChatModelSnapshot.Valid {
+		model = task.ChatModelSnapshot.String
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                      uuidToString(agent.ID),
 		Name:                    agent.Name,
@@ -2401,7 +2434,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		CustomEnv:               customEnv,
 		CustomArgs:              customArgs,
 		McpConfig:               mcpConfig,
-		Model:                   agent.Model.String,
+		Model:                   model,
 		ThinkingLevel:           agent.ThinkingLevel.String,
 		ServiceTier:             agent.ServiceTier.String,
 		RuntimeConfig:           runtimeConfig,

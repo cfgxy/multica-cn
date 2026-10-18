@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -39,6 +40,7 @@ const (
 	AuditDomainAgent   = "agent"
 	AuditDomainRuntime = "runtime"
 	AuditDomainOps     = "ops"
+	AuditDomainMCP     = "mcp"
 )
 
 // Actor types (superset of the activity_log vocabulary).
@@ -72,6 +74,7 @@ const (
 	AuditRuntimeOfflineDetected    = "runtime.offline_detected"
 	AuditRuntimeGC                 = "runtime.gc"
 	AuditRuntimeReconnectExhausted = "runtime.reconnect_exhausted"
+	AuditRuntimeFileAccessDenied   = "runtime.file_access_denied"
 
 	// Agent domain: agent-scoped operational and security events.
 	AuditAgentRunsCancelled           = "agent.runs_cancelled"
@@ -115,6 +118,15 @@ const (
 	// RUYI-355 P2-3: ops.server_started only reaches workspaces that exist
 	// at boot; the creation event anchors workspaces born mid-flight.
 	AuditOpsWorkspaceCreated = "ops.workspace_created"
+
+	// RUYI-645: read-only ops command channel. submitted carries
+	// operator/kind/args (never the result content); finalized carries
+	// kind/status/exit_code/duration/lease_epoch, also without output
+	// content — journalctl-style output stays in daemon_ops_command.result
+	// behind the operator API, never in the audit trail.
+	AuditOpsCommandSubmitted = "ops.command_submitted"
+	AuditOpsCommandFinalized = "ops.command_finalized"
+
 	// Workspace-level scheduling freeze lifecycle (RUYI-608): no single
 	// agent dimension to anchor, so the workspace is the object.
 	AuditOpsSchedulingPaused  = "ops.scheduling_paused"
@@ -125,7 +137,12 @@ const (
 	// daemon_id and the full old→new cards.
 	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
 	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
+
+	AuditMCPInvocationStarted  = "mcp.invocation_started"
+	AuditMCPInvocationFinished = "mcp.invocation_finished"
 )
+
+const mcpInvocationAuditRetention = 7 * 24 * time.Hour
 
 // Structured cancel/failure reasons. Cancel-class events (run.cancelled) MUST
 // carry one of these; failure-class events (run.failed, run.cancel_requested)
@@ -157,7 +174,7 @@ const (
 
 var auditDomains = map[string]bool{
 	AuditDomainIssue: true, AuditDomainRun: true, AuditDomainAgent: true,
-	AuditDomainRuntime: true, AuditDomainOps: true,
+	AuditDomainRuntime: true, AuditDomainOps: true, AuditDomainMCP: true,
 }
 
 var auditActorTypes = map[string]bool{
@@ -168,21 +185,24 @@ var auditActorTypes = map[string]bool{
 // constructors below so required fields start populated; AppendAuditEvents
 // validates before writing regardless.
 type Event struct {
-	ID          pgtype.UUID
-	WorkspaceID pgtype.UUID
-	Domain      string
-	EventType   string
-	OccurredAt  time.Time
-	ActorType   string
-	ActorID     pgtype.UUID // invalid only for system actors
-	TriggerKind *string
-	TriggerRef  *string
-	IssueID     pgtype.UUID
-	TaskID      pgtype.UUID
-	AgentID     pgtype.UUID
-	RuntimeID   pgtype.UUID
-	Reason      *string
-	Details     []byte // JSONB; empty becomes '{}'
+	ID           pgtype.UUID
+	WorkspaceID  pgtype.UUID
+	Domain       string
+	EventType    string
+	OccurredAt   time.Time
+	ActorType    string
+	ActorID      pgtype.UUID // invalid only for system actors
+	TriggerKind  *string
+	TriggerRef   *string
+	IssueID      pgtype.UUID
+	TaskID       pgtype.UUID
+	AgentID      pgtype.UUID
+	RuntimeID    pgtype.UUID
+	Reason       *string
+	Details      []byte // JSONB; empty becomes '{}'
+	InvocationID pgtype.UUID
+	Sensitive    bool
+	ExpiresAt    pgtype.Timestamptz
 }
 
 // Validate enforces the write contract. Rules mirror the audit_event column
@@ -226,6 +246,14 @@ func (e Event) Validate() error {
 	if e.Domain == AuditDomainAgent && !e.AgentID.Valid {
 		return fmt.Errorf("audit event %s: agent_id is required", e.EventType)
 	}
+	if e.Domain == AuditDomainMCP {
+		if !e.InvocationID.Valid || !e.ExpiresAt.Valid {
+			return fmt.Errorf("audit event %s: invocation_id and expires_at are required", e.EventType)
+		}
+		if e.EventType != AuditMCPInvocationStarted && e.EventType != AuditMCPInvocationFinished {
+			return fmt.Errorf("audit event %s: unsupported MCP audit event", e.EventType)
+		}
+	}
 	switch e.EventType {
 	case AuditRunCancelled, AuditRunFailed, AuditRunCancelRequested:
 		if e.Reason == nil || *e.Reason == "" {
@@ -247,6 +275,9 @@ func AppendAuditEvents(ctx context.Context, q *db.Queries, events ...Event) erro
 	params := make([]db.CreateAuditEventsParams, 0, len(events))
 	for i := range events {
 		e := events[i]
+		if !e.ID.Valid {
+			e.ID = dbid.NewV7()
+		}
 		if err := e.Validate(); err != nil {
 			return err
 		}
@@ -255,27 +286,168 @@ func AppendAuditEvents(ctx context.Context, q *db.Queries, events ...Event) erro
 			details = []byte("{}")
 		}
 		params = append(params, db.CreateAuditEventsParams{
-			ID:          e.ID,
-			WorkspaceID: e.WorkspaceID,
-			Domain:      e.Domain,
-			EventType:   e.EventType,
-			OccurredAt:  pgtype.Timestamptz{Time: e.OccurredAt, Valid: true},
-			ActorType:   e.ActorType,
-			ActorID:     e.ActorID,
-			TriggerKind: textPtr(e.TriggerKind),
-			TriggerRef:  textPtr(e.TriggerRef),
-			IssueID:     e.IssueID,
-			TaskID:      e.TaskID,
-			AgentID:     e.AgentID,
-			RuntimeID:   e.RuntimeID,
-			Reason:      textPtr(e.Reason),
-			Details:     details,
+			ID:           e.ID,
+			WorkspaceID:  e.WorkspaceID,
+			Domain:       e.Domain,
+			EventType:    e.EventType,
+			OccurredAt:   pgtype.Timestamptz{Time: e.OccurredAt, Valid: true},
+			ActorType:    e.ActorType,
+			ActorID:      e.ActorID,
+			TriggerKind:  textPtr(e.TriggerKind),
+			TriggerRef:   textPtr(e.TriggerRef),
+			IssueID:      e.IssueID,
+			TaskID:       e.TaskID,
+			AgentID:      e.AgentID,
+			RuntimeID:    e.RuntimeID,
+			Reason:       textPtr(e.Reason),
+			Details:      details,
+			InvocationID: e.InvocationID,
+			Sensitive:    e.Sensitive,
+			ExpiresAt:    e.ExpiresAt,
 		})
 	}
 	if _, err := q.CreateAuditEvents(ctx, params); err != nil {
 		return fmt.Errorf("audit event batch insert: %w", err)
 	}
 	return nil
+}
+
+// MCPInvocationAuditContext contains only server-resolved invocation identity.
+// Arguments and response bodies are deliberately absent from this type.
+type MCPInvocationAuditContext struct {
+	InvocationID pgtype.UUID
+	WorkspaceID  pgtype.UUID
+	ActorType    string
+	ActorID      pgtype.UUID
+	IssueID      pgtype.UUID
+	TaskID       pgtype.UUID
+	AgentID      pgtype.UUID
+}
+
+func MCPInvocationAuditEvent(ctx MCPInvocationAuditContext, eventType string, details any, sensitive bool) Event {
+	actorType, actorID := AuditActorFor(ctx.ActorType, ctx.ActorID)
+	invocationID := uuid.UUID(ctx.InvocationID.Bytes)
+	eventID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(invocationID.String()+":"+eventType))
+	return Event{
+		ID:           pgtype.UUID{Bytes: eventID, Valid: true},
+		WorkspaceID:  ctx.WorkspaceID,
+		Domain:       AuditDomainMCP,
+		EventType:    eventType,
+		OccurredAt:   time.Now().UTC(),
+		ActorType:    actorType,
+		ActorID:      actorID,
+		IssueID:      ctx.IssueID,
+		TaskID:       ctx.TaskID,
+		AgentID:      ctx.AgentID,
+		InvocationID: ctx.InvocationID,
+		TriggerKind:  auditStringPtr("mcp_invocation"),
+		TriggerRef:   auditStringPtr(invocationID.String()),
+		Details:      JSONDetails(details),
+		Sensitive:    sensitive,
+		ExpiresAt:    pgtype.Timestamptz{Time: time.Now().UTC().Add(mcpInvocationAuditRetention), Valid: true},
+	}
+}
+
+// AppendMCPInvocationAuditEvent is idempotent by the deterministic event id.
+func AppendMCPInvocationAuditEvent(ctx context.Context, q *db.Queries, event Event) (bool, error) {
+	if q == nil {
+		return false, errors.New("MCP audit queries are unavailable")
+	}
+	if err := event.Validate(); err != nil {
+		return false, err
+	}
+	inserted, err := q.CreateMCPInvocationAuditEvent(ctx, mcpInvocationAuditParams(event))
+	if err != nil {
+		return false, fmt.Errorf("persist MCP invocation audit: %w", err)
+	}
+	return inserted == 1, nil
+}
+
+// FinishMCPInvocationAudit keeps a failed finish write in a durable, bounded
+// retry queue. It returns the resulting visibility state without exposing SQL
+// errors or any invocation payload.
+func FinishMCPInvocationAudit(ctx context.Context, q *db.Queries, event Event) string {
+	if q == nil {
+		slog.Error("MCP invocation finish audit could not be persisted", "invocation_id", uuid.UUID(event.InvocationID.Bytes).String(), "error_code", "audit_and_outbox_write_failed")
+		return "unrecorded"
+	}
+	if _, err := AppendMCPInvocationAuditEvent(ctx, q, event); err == nil {
+		return "recorded"
+	}
+	if err := q.QueueMCPInvocationAuditEvent(ctx, mcpInvocationAuditOutboxParams(event)); err == nil {
+		slog.Error("MCP invocation finish audit queued for retry", "invocation_id", uuid.UUID(event.InvocationID.Bytes).String(), "error_code", "audit_event_write_failed")
+		return "queued"
+	}
+	slog.Error("MCP invocation finish audit could not be persisted", "invocation_id", uuid.UUID(event.InvocationID.Bytes).String(), "error_code", "audit_and_outbox_write_failed")
+	return "unrecorded"
+}
+
+func DrainMCPInvocationAuditOutbox(ctx context.Context, q *db.Queries, limit int32) {
+	if q == nil {
+		return
+	}
+	rows, err := q.ListMCPInvocationAuditOutbox(ctx, limit)
+	if err != nil {
+		slog.Warn("MCP invocation audit outbox read failed", "error_code", "outbox_read_failed")
+		return
+	}
+	for _, row := range rows {
+		event := Event{
+			ID: row.ID, WorkspaceID: row.WorkspaceID, Domain: AuditDomainMCP,
+			EventType: row.EventType, OccurredAt: row.OccurredAt.Time, ActorType: row.ActorType,
+			ActorID: row.ActorID, IssueID: row.IssueID, TaskID: row.TaskID, AgentID: row.AgentID,
+			RuntimeID: row.RuntimeID, Reason: validTextPtr(row.Reason), Details: row.Details,
+			InvocationID: row.InvocationID, Sensitive: row.Sensitive, ExpiresAt: row.ExpiresAt,
+			TriggerKind: auditStringPtr("mcp_invocation"),
+			TriggerRef:  auditStringPtr(uuid.UUID(row.InvocationID.Bytes).String()),
+		}
+		if _, err := AppendMCPInvocationAuditEvent(ctx, q, event); err != nil {
+			_ = q.MarkMCPInvocationAuditOutboxAttempt(ctx, db.MarkMCPInvocationAuditOutboxAttemptParams{
+				ID: row.ID, LastErrorCode: pgtype.Text{String: "audit_event_write_failed", Valid: true},
+			})
+			continue
+		}
+		if err := q.DeleteMCPInvocationAuditOutbox(ctx, row.ID); err != nil {
+			slog.Warn("MCP invocation audit outbox cleanup failed", "event_id", uuid.UUID(row.ID.Bytes).String(), "error_code", "outbox_delete_failed")
+		}
+	}
+}
+
+func auditStringPtr(value string) *string { return &value }
+
+func validTextPtr(value pgtype.Text) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func mcpInvocationAuditParams(event Event) db.CreateMCPInvocationAuditEventParams {
+	details := event.Details
+	if len(details) == 0 {
+		details = []byte("{}")
+	}
+	return db.CreateMCPInvocationAuditEventParams{
+		ID: event.ID, WorkspaceID: event.WorkspaceID, EventType: event.EventType,
+		OccurredAt: pgtype.Timestamptz{Time: event.OccurredAt, Valid: true},
+		ActorType:  event.ActorType, ActorID: event.ActorID, InvocationID: event.InvocationID,
+		IssueID: event.IssueID, TaskID: event.TaskID, AgentID: event.AgentID, RuntimeID: event.RuntimeID,
+		Reason: textPtr(event.Reason), Details: details, Sensitive: event.Sensitive, ExpiresAt: event.ExpiresAt,
+	}
+}
+
+func mcpInvocationAuditOutboxParams(event Event) db.QueueMCPInvocationAuditEventParams {
+	details := event.Details
+	if len(details) == 0 {
+		details = []byte("{}")
+	}
+	return db.QueueMCPInvocationAuditEventParams{
+		ID: event.ID, WorkspaceID: event.WorkspaceID, EventType: event.EventType,
+		OccurredAt: pgtype.Timestamptz{Time: event.OccurredAt, Valid: true},
+		ActorType:  event.ActorType, ActorID: event.ActorID, InvocationID: event.InvocationID,
+		IssueID: event.IssueID, TaskID: event.TaskID, AgentID: event.AgentID, RuntimeID: event.RuntimeID,
+		Reason: textPtr(event.Reason), Details: details, Sensitive: event.Sensitive, ExpiresAt: event.ExpiresAt,
+	}
 }
 
 // TryAppendAuditEvents is the best-effort variant for paths OUTSIDE a business

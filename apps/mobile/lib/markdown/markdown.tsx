@@ -41,14 +41,10 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { useCallback, useEffect, useMemo } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
-import {
-  dedupeIssueReferences,
-  extractIssueReferences,
-} from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
@@ -66,6 +62,12 @@ import { MarkdownImage } from "./markdown-image";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { TableBlock } from "./table-block";
 import { resolveLinkAction } from "./link-route";
+
+// Log-gate shape only — cheap over-match is harmless (the extractor does the
+// real, skip-rule-aware scan); this just avoids logging for plain content.
+const BARE_IDENTIFIER_SHAPE = /[A-Z][A-Z0-9]*-\d/;
+
+export const IssueReferenceTailVisibilityContext = createContext(true);
 
 interface Props {
   content: string;
@@ -121,23 +123,17 @@ interface Props {
    * case.
    */
   compact?: boolean;
+  renderReferenceTail?: boolean;
 }
 
-export function Markdown({
+export const Markdown = memo(function Markdown({
   content,
   attachments,
   selectable = true,
   compact = false,
+  renderReferenceTail = true,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const workspacePrefix = useWorkspaceIssuePrefix();
-  useEffect(() => {
-    console.info(
-      "[markdown] issue-reference gate",
-      JSON.stringify({ slug: wsSlug, workspacePrefix }),
-    );
-  }, [wsSlug, workspacePrefix]);
   // 评论锚点的落地方（RUYI-108）。issue 时间线挂 provider；其余渲染场景
   // 拿到的是 no-op 实现，点击安静无事发生。
   const commentAnchor = useCommentAnchor();
@@ -157,25 +153,71 @@ export function Markdown({
     [baseStyle, compact],
   );
 
+  // RUYI-635 tail aggregation, carried forward under the RUYI-728 body
+  // contract. Scanned from the RAW content, not the preprocessed text: the
+  // autolink pass turns bare `MR !N` / `owner/repo#N` tokens into links, and
+  // the extractor shares its skip rules (code, links, URLs) with that pass,
+  // so the tail collects exactly the tokens the body linkifies, from the
+  // same source. Raw-dedup keeps first occurrences; cross-form collapse by
+  // resolved id happens in IssueReferenceList.
+  //
+  // Bare identifiers are gated on the current workspace's `issue_prefix`
+  // (RUYI-705): acceptance-criteria numbering like `AC-1` is not a reference,
+  // and without the gate each fake row also fired a resolution query. The
+  // prefix resolves slug-first (the route identity the API layer already
+  // trusts) with the id mirror as fallback — see lib/workspace-prefix.ts for
+  // why the first cut's id-only lookup broke on device. An unknown prefix
+  // (list still loading, both mirrors empty) falls through and the resolver's
+  // exact match stays the backstop.
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const workspacePrefix = useWorkspaceIssuePrefix();
   const segments = useMemo(() => {
-    const processed = preprocessMobileMarkdown(content);
+    const processed = preprocessMobileMarkdown(content, { workspacePrefix });
     return splitMarkdown(processed);
-  }, [content]);
-
-  // RUYI-635 tail aggregation. Scanned from the RAW content, not the
-  // preprocessed text: the demote pass has already stripped the mention links
-  // by the time splitting runs, and the extractor shares its skip rules
-  // (code, links, URLs) with web's pipeline, so both ends collect exactly the
-  // same tokens from the same source. Raw-dedup keeps first occurrences;
-  // cross-form collapse by resolved issue id happens in IssueReferenceList.
-  const issueReferences = useMemo(
-    () =>
-      dedupeIssueReferences(
-        extractIssueReferences(content, { workspacePrefix }),
-      ),
-    [content, workspacePrefix],
+  }, [content, workspacePrefix]);
+  const linkIntent = useRef({
+    content,
+    wsId,
+    wsSlug,
+    generation: 0,
+    latest: 0,
+    pending: new Map<string, { intent: number }>(),
+  });
+  if (
+    linkIntent.current.content !== content ||
+    linkIntent.current.wsId !== wsId ||
+    linkIntent.current.wsSlug !== wsSlug
+  ) {
+    linkIntent.current = {
+      content,
+      wsId,
+      wsSlug,
+      generation: linkIntent.current.generation + 1,
+      latest: linkIntent.current.latest + 1,
+      pending: new Map<string, { intent: number }>(),
+    };
+  }
+  useEffect(
+    () => () => {
+      linkIntent.current.generation += 1;
+      linkIntent.current.pending.clear();
+    },
+    [],
   );
-
+  if (__DEV__ && BARE_IDENTIFIER_SHAPE.test(content)) {
+    // Diagnostics for the gate QA could not observe from the outside (the
+    // 2026-10-11 FAIL report's black-box boundary): any identifier-bearing
+    // content logs exactly what the gate saw, once per content change.
+    // Release builds dead-code-eliminate the whole branch with __DEV__.
+    console.info(
+      "[markdown-ref-gate]",
+      JSON.stringify({
+        workspacePrefix,
+        slug: wsSlug,
+        id: wsId,
+      }),
+    );
+  }
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
   // unit-tested — `link-route.ts`); this callback only performs the effect.
   // Splitting them out became necessary with RUYI-72: the table row-detail
@@ -185,6 +227,39 @@ export function Markdown({
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
       const action = resolveLinkAction(url, wsSlug ?? null);
+      if (action.kind === "pullRequest" || action.kind === "mergeRequest") {
+        const state = linkIntent.current;
+        const key = `${wsId ?? ""}:${action.kind}:${action.number}`;
+        const pendingIntent = state.pending.get(key);
+        if (pendingIntent) {
+          pendingIntent.intent = ++state.latest;
+          return;
+        }
+
+        const generation = state.generation;
+        const currentIntent = { intent: ++state.latest };
+        state.pending.set(key, currentIntent);
+        const lookup = api.lookupPullRequestByNumber(wsId ?? "", action.number);
+        void lookup
+          .then(async (pr) => {
+            if (
+              !pr ||
+              linkIntent.current !== state ||
+              state.generation !== generation ||
+              state.latest !== currentIntent.intent ||
+              state.pending.get(key) !== currentIntent
+            ) {
+              return;
+            }
+            await openExternalUrl(pr.html_url, Linking);
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (state.pending.get(key) === currentIntent) state.pending.delete(key);
+          });
+        return;
+      }
+      linkIntent.current.latest += 1;
       switch (action.kind) {
         case "route":
           router.push(action.path);
@@ -201,15 +276,6 @@ export function Markdown({
             resolveUrl: resolveAttachmentUrl,
             fallbackUrl: action.fallbackUrl,
           });
-          return;
-        case "mergeRequest":
-          if (!wsId) return;
-          void api
-            .lookupPullRequestByNumber(wsId, action.number)
-            .then((pr) => {
-              if (pr) void openExternalUrl(pr.html_url, Linking);
-            })
-            .catch(() => {});
           return;
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
@@ -285,9 +351,12 @@ export function Markdown({
             );
         }
         })}
-        {issueReferences.length > 0 && (
-          <IssueReferenceList references={issueReferences} />
-        )}
+        {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
       </View>
   );
+});
+
+function IssueReferenceTail({ content }: { content: string }) {
+  const visible = useContext(IssueReferenceTailVisibilityContext);
+  return visible ? <IssueReferenceList content={content} /> : null;
 }

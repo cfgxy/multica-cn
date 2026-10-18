@@ -240,6 +240,17 @@ describe("applyChatSessionUpdatedToCache", () => {
     expect(row.project_id).toBeNull();
   });
 
+  it("propagates model selection and explicit clearing from another client", () => {
+    const qc = createQueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [makeSession({ model_override: null })]);
+
+    applyChatSessionUpdatedToCache(qc, WS_ID, { chat_session_id: "s1", model_override: "model-a" });
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))![0]!.model_override).toBe("model-a");
+
+    applyChatSessionUpdatedToCache(qc, WS_ID, { chat_session_id: "s1", model_override: null });
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))![0]!.model_override).toBeNull();
+  });
+
   // MUL-4360 cross-tab: chatSessionsOptions is staleTime: Infinity, so a stale
   // cache in another tab never self-heals. When an archive event lands there,
   // the row's unread must be forced to 0 to match the archive mutation and the

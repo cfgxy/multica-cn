@@ -114,6 +114,9 @@ Returns `{"pull_requests": [...]}`. Each element exposes:
   means the feature is enabled and the snapshot matches the PR's current head.
   Only then does `checks_rollup == null` mean "no checks"; false means the
   snapshot feature is disabled, has not fetched yet, or only has an old head.
+- `review_decision` — the current-head GitHub review decision: `approved`,
+  `changes_requested`, or `review_required`; null/unknown must not be guessed
+  from one review event. Review webhooks only request an authoritative refresh.
 - `checks_conclusion` — coarse CI compatibility status: `passed`, `failed`,
   `pending`, or `null`. GitHub derives it from the current API snapshot;
   Forgejo/Gitea/GitLab derive it from webhook commit statuses. Backed by the

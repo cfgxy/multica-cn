@@ -122,6 +122,10 @@ export const pendingChatTaskOptions = (sessionId: string | null) =>
     queryFn: ({ signal }) => api.getPendingChatTask(sessionId!, { signal }),
     enabled: !!sessionId,
     staleTime: Infinity,
+    // The server can queue follow-ups while this screen is unmounted. Always
+    // reconcile that snapshot when it remounts; websocket events still keep
+    // the active view fresh between mounts.
+    refetchOnMount: "always",
   });
 
 export const taskMessagesOptions = (taskId: string | null | undefined) =>

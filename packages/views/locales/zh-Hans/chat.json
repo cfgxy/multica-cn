@@ -30,20 +30,30 @@
     "change_project_context": "更改项目上下文",
     "remove_project_context": "移除项目上下文",
     "no_projects": "还没有项目",
-    "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级"
+    "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级",
+    "project_context_failed": "无法更新项目上下文"
   },
   "queue": {
     "title_other": "{{count}} 条排队消息",
+    "title_single": "{{number}} 条排队消息",
+    "title_multiple": "{{number}} 条排队消息",
     "clear": "全部清空",
-    "steer": "引导",
+    "clear_confirm_title": "清空排队消息？",
+    "clear_confirm_body": "仅清空排队中的消息，当前任务会继续运行。",
+    "steer": "立即发送",
     "steer_unavailable": "当前回复开始后才能引导",
     "steer_no_permission": "你已没有运行该智能体的权限",
     "steer_unavailable_toast": "暂时无法引导，正在刷新队列。",
+    "more_actions": "排队消息 {{position}} 的更多操作",
     "edit": "编辑排队消息",
     "remove": "移除排队消息",
     "more": "更多队列操作",
+    "more_actions": "第 {{position}} 条排队消息的更多操作",
     "fallback": "排队消息",
     "action_failed_toast": "无法更新排队消息"
+  },
+  "composer": {
+    "quick_replies_title": "快捷回复"
   },
   "message_list": {
     "show_details": "查看详情",
@@ -246,6 +256,20 @@
     "unarchive": "取消归档"
   },
   "mobile": {
+    "model": {
+      "agent_default": "智能体默认模型",
+      "current": "当前模型：{{model}}",
+      "runtime_default": "运行时默认模型",
+      "save_failed_title": "模型未更改",
+      "loading": "正在加载模型…",
+      "load_failed": "无法加载模型",
+      "unsupported": "此运行时不支持模型选择",
+      "unavailable": "模型或会话已不可用",
+      "save_failed": "无法保存模型选择",
+      "save_failed_title": "模型未变更",
+      "current": "当前模型：{{model}}",
+      "runtime_default": "运行时默认模型"
+    },
     "send_blocked": {
       "no_permission_title": "无权运行此 Agent",
       "no_permission_message": "你已不再拥有运行此 Agent 的权限，消息未发送。请向其所有者申请访问权限。",
@@ -257,13 +281,21 @@
       "placeholder": "发消息…",
       "agent_working": "Agent 处理中…",
       "unavailable": "聊天不可用",
-      "stop_agent": "停止 Agent"
+      "stop_agent": "停止 Agent",
+      "stop_failed_title": "无法停止 Agent",
+      "stop_failed": "请重试。当前消息已保留。",
+      "quick_replies_title": "快捷回复"
     },
     "send_failure": {
       "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
       "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",
       "budget_reached": "该运行时的本期费用预算已用尽，消息未发送。预算周期重置后可再次发送。",
       "generic": "消息发送失败，请重试。"
+    },
+    "queue": {
+      "action_failed_title": "队列已变化",
+      "stale": "这条排队消息已变化，队列已刷新。",
+      "action_failed": "无法更新队列，请重试。"
     },
     "disabled_reason": {
       "no_agent": "未选择 Agent",

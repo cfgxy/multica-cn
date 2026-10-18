@@ -66,6 +66,7 @@ type PullRequestEvent struct {
 	Body            string
 	State           string // open | closed | merged | draft
 	HTMLURL         string
+	TargetBranch    string
 	Branch          string
 	HeadSHA         string
 	AuthorLogin     string

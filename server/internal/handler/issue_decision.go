@@ -33,6 +33,9 @@ const (
 	decisionMaxOptions        = 4
 	decisionMaxQuestionLen    = 500
 	decisionMaxOptionLabelLen = 200
+	decisionMaxContextTextLen = 4000
+	decisionMaxContextItems   = 20
+	decisionMaxContextBytes   = 64 * 1024
 	// RUYI-514: caller-supplied idempotency keys are opaque strings; 255
 	// chars is the same ceiling cloud_billing puts on Idempotency-Key.
 	decisionMaxClientRequestIDLen = 255
@@ -42,11 +45,25 @@ type DecisionOption struct {
 	Label string `json:"label"`
 }
 
+type DecisionContextFact struct {
+	Statement string   `json:"statement"`
+	Evidence  []string `json:"evidence,omitempty"`
+}
+
+type DecisionContext struct {
+	WhyNow               string                `json:"why_now,omitempty"`
+	Facts                []DecisionContextFact `json:"facts,omitempty"`
+	Impact               string                `json:"impact,omitempty"`
+	RecommendationReason string                `json:"recommendation_reason,omitempty"`
+	Unknowns             []string              `json:"unknowns,omitempty"`
+}
+
 type IssueDecisionResponse struct {
 	ID                 string                  `json:"id"`
 	IssueID            string                  `json:"issue_id"`
 	SourceCommentID    *string                 `json:"source_comment_id"`
 	Question           string                  `json:"question"`
+	Context            *DecisionContext        `json:"context,omitempty"`
 	Options            []DecisionOption        `json:"options"`
 	MultiSelect        bool                    `json:"multi_select"`
 	RecommendedIndices []int                   `json:"recommended_indices"`
@@ -86,11 +103,12 @@ type IssueDecisionResponse struct {
 }
 
 type CreateIssueDecisionRequest struct {
-	Question           string   `json:"question"`
-	Options            []string `json:"options"`
-	MultiSelect        bool     `json:"multi_select"`
-	RecommendedIndices []int    `json:"recommended_indices"`
-	SourceCommentID    *string  `json:"source_comment_id"`
+	Question           string           `json:"question"`
+	Context            *DecisionContext `json:"context,omitempty"`
+	Options            []string         `json:"options"`
+	MultiSelect        bool             `json:"multi_select"`
+	RecommendedIndices []int            `json:"recommended_indices"`
+	SourceCommentID    *string          `json:"source_comment_id"`
 	// ClientRequestID is the optional idempotency key. Absent/empty keeps
 	// the legacy behavior: every call creates a new card. There is
 	// deliberately no question-text dedup (RUYI-514 验收 5) — legitimate
@@ -143,6 +161,63 @@ func validateDecisionInput(question string, labels []string, recommended []int) 
 		return nil, nil, err
 	}
 	return options, recs, nil
+}
+
+func validateDecisionContext(value *DecisionContext) (*DecisionContext, error) {
+	if value == nil {
+		return nil, nil
+	}
+	cleanText := func(field, text string) (string, error) {
+		text = strings.TrimSpace(sanitizeNullBytes(text))
+		if len([]rune(text)) > decisionMaxContextTextLen {
+			return "", errDecisionValidation{fmt.Sprintf("context %s must be at most %d characters", field, decisionMaxContextTextLen)}
+		}
+		return text, nil
+	}
+	var err error
+	if value.WhyNow, err = cleanText("why_now", value.WhyNow); err != nil {
+		return nil, err
+	}
+	if value.Impact, err = cleanText("impact", value.Impact); err != nil {
+		return nil, err
+	}
+	if value.RecommendationReason, err = cleanText("recommendation_reason", value.RecommendationReason); err != nil {
+		return nil, err
+	}
+	if len(value.Facts) > decisionMaxContextItems || len(value.Unknowns) > decisionMaxContextItems {
+		return nil, errDecisionValidation{fmt.Sprintf("context facts and unknowns must contain at most %d items", decisionMaxContextItems)}
+	}
+	for i := range value.Facts {
+		value.Facts[i].Statement, err = cleanText(fmt.Sprintf("facts[%d].statement", i), value.Facts[i].Statement)
+		if err != nil {
+			return nil, err
+		}
+		if value.Facts[i].Statement == "" {
+			return nil, errDecisionValidation{fmt.Sprintf("context facts[%d].statement is required", i)}
+		}
+		if len(value.Facts[i].Evidence) > decisionMaxContextItems {
+			return nil, errDecisionValidation{fmt.Sprintf("context facts[%d].evidence must contain at most %d items", i, decisionMaxContextItems)}
+		}
+		for j, evidence := range value.Facts[i].Evidence {
+			value.Facts[i].Evidence[j], err = cleanText(fmt.Sprintf("facts[%d].evidence[%d]", i, j), evidence)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	for i := range value.Unknowns {
+		value.Unknowns[i], err = cleanText(fmt.Sprintf("unknowns[%d]", i), value.Unknowns[i])
+		if err != nil {
+			return nil, err
+		}
+		if value.Unknowns[i] == "" {
+			return nil, errDecisionValidation{fmt.Sprintf("context unknowns[%d] is required", i)}
+		}
+	}
+	if value.WhyNow == "" && len(value.Facts) == 0 && value.Impact == "" && value.RecommendationReason == "" && len(value.Unknowns) == 0 {
+		return nil, nil
+	}
+	return value, nil
 }
 
 // validateDecisionAnswer checks the picked indices against the card's option
@@ -234,6 +309,12 @@ func decisionToResponse(d db.IssueDecision) IssueDecisionResponse {
 		v := uuidToString(d.SourceCommentID)
 		resp.SourceCommentID = &v
 	}
+	if len(d.Context) > 0 && string(d.Context) != "null" {
+		var context DecisionContext
+		if err := json.Unmarshal(d.Context, &context); err == nil {
+			resp.Context = &context
+		}
+	}
 	if d.AnsweredByType.Valid {
 		v := d.AnsweredByType.String
 		resp.AnsweredByType = &v
@@ -320,6 +401,11 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	decisionContext, err := validateDecisionContext(req.Context)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var sourceCommentID pgtype.UUID
 	if req.SourceCommentID != nil && *req.SourceCommentID != "" {
@@ -356,6 +442,18 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to encode recommendations")
 		return
 	}
+	var contextJSON []byte
+	if decisionContext != nil {
+		contextJSON, err = json.Marshal(decisionContext)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode context")
+			return
+		}
+		if len(contextJSON) > decisionMaxContextBytes {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("context must be at most %d bytes", decisionMaxContextBytes))
+			return
+		}
+	}
 
 	created, err := h.Queries.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
 		ID:                 dbid.NewV7(),
@@ -366,6 +464,7 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		Options:            optionsJSON,
 		MultiSelect:        req.MultiSelect,
 		RecommendedIndices: recommendedJSON,
+		Context:            contextJSON,
 		CreatedByType:      authorType,
 		CreatedByID:        parseUUID(authorID),
 		ClientRequestID:    keyParam,

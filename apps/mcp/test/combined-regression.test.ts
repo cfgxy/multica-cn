@@ -457,6 +457,7 @@ class FakeRestBackend {
       token: "mul_test",
       fetchImpl: this.fetchImpl(onRequestBody),
       logger: silentLogger(),
+      auditServiceCredential: "test-audit-credential",
     });
   }
 
@@ -474,7 +475,11 @@ class FakeRestBackend {
       const relation = path.match(/^\/api\/issues\/([^/]+)\/relations\/([^/]+)\/([^/]+)$/);
 
       let response: Response;
-      if (method === "PUT" && putIssue) {
+      if (method === "GET" && path === "/api/workspaces") {
+        response = json([{ id: "w-1", slug: WS }]);
+      } else if (method === "POST" && (path === "/api/mcp/audit-start" || path === "/api/mcp/audit-finish")) {
+        response = json({ status: "recorded" }, path.endsWith("start") ? 201 : 200);
+      } else if (method === "PUT" && putIssue) {
         this.putBodies.push(body);
         onRequestBody?.(body);
         response = this.updateIssue(decodeURIComponent(putIssue[1]!), body);

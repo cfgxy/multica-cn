@@ -57,6 +57,38 @@ beforeEach(() => {
 });
 
 describe("DecisionCard", () => {
+  it("renders structured context on question cards", () => {
+    renderCard(card({
+      context: {
+        why_now: "The release window closes Friday.",
+        facts: [{ statement: "The build passed.", evidence: ["CI run 12"] }],
+        impact: "A delay moves launch one week.",
+        recommendation_reason: "Monday leaves rollback time.",
+        unknowns: ["External review timing"],
+      },
+    }));
+
+    const context = screen.getByTestId("decision-context");
+    expect(context.textContent).toContain("The release window closes Friday.");
+    expect(context.textContent).toContain("The build passed.");
+    expect(context.textContent).toContain("CI run 12");
+    expect(context.textContent).toContain("Monday leaves rollback time.");
+  });
+
+  it("keeps legacy question cards compact", () => {
+    renderCard(card());
+    expect(screen.queryByTestId("decision-context")).toBeNull();
+  });
+
+  it("does not render question context on authorization cards", () => {
+    renderCard(card({
+      decision_kind: "authorization",
+      context: { why_now: "Must stay outside authorization cards." },
+      options: [{ label: "Approve" }, { label: "Deny" }],
+    }));
+    expect(screen.queryByTestId("decision-context")).toBeNull();
+  });
+
   it("renders question, options and the recommended badge in open state", () => {
     renderCard(card());
     expect(screen.getByTestId("decision-card")).toHaveAttribute("data-status", "open");

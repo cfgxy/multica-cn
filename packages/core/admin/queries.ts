@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
-import type { AdminUserList, AdminWorkspaceList } from "./types";
+import type { AdminFileReadPolicy, AdminUserList, AdminWorkspaceList } from "./types";
 
 // Admin data is instance-level, not workspace-scoped — the keys are
 // deliberately free of wsId so navigation between workspaces never
@@ -11,6 +11,7 @@ export const adminKeys = {
     [...adminKeys.all(), "users", params ?? {}] as const,
   workspaces: (params?: { query?: string; limit?: number; offset?: number }) =>
     [...adminKeys.all(), "workspaces", params ?? {}] as const,
+  fileReadPolicy: () => [...adminKeys.all(), "file-read-policy"] as const,
 };
 
 export function adminUsersOptions(
@@ -20,6 +21,14 @@ export function adminUsersOptions(
     queryKey: adminKeys.users(params),
     queryFn: () => api.adminListUsers(params),
     placeholderData: (prev: AdminUserList | undefined) => prev,
+  });
+}
+
+export function adminFileReadPolicyOptions() {
+  return queryOptions({
+    queryKey: adminKeys.fileReadPolicy(),
+    queryFn: () => api.adminGetFileReadPolicy(),
+    placeholderData: (prev: AdminFileReadPolicy | undefined) => prev,
   });
 }
 

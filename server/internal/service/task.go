@@ -2531,6 +2531,15 @@ func (s *TaskService) SendDirectChatMessage(
 			return fmt.Errorf("check direct chat queue position: %w", err)
 		}
 		out.Queued = queued
+		modelSnapshot := carrier.Model
+		if currentSession.ModelOverride.Valid {
+			modelSnapshot = currentSession.ModelOverride
+		}
+		// A valid empty snapshot means the runtime default was selected at
+		// enqueue time; it must not fall through to a later Agent model change.
+		if !modelSnapshot.Valid {
+			modelSnapshot = pgtype.Text{String: "", Valid: true}
+		}
 
 		task, err := qtx.CreateChatTask(ctx, db.CreateChatTaskParams{
 			ID:                   dbid.NewV7(),
@@ -2538,6 +2547,7 @@ func (s *TaskService) SendDirectChatMessage(
 			RuntimeID:            carrier.RuntimeID,
 			Priority:             2, // medium priority for chat; matches EnqueueChatTask
 			ChatSessionID:        session.ID,
+			ChatModelSnapshot:    modelSnapshot,
 			InitiatorUserID:      initiatorUserID,
 			OriginatorUserID:     attr.UserID,
 			AccountableUserID:    attr.AccountableUserID,

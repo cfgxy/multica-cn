@@ -1379,6 +1379,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceRuntimesAndProjects(ctx, requester.WorkspaceID) },
 		},
 		{
+			// Daemon command/file evidence is workspace-scoped and has no FKs;
+			// service inventory is daemon-keyed and intentionally survives.
+			name: "delete daemon operational data",
+			run:  func() error { return qtx.DeleteWorkspaceDaemonData(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete administration data",
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
 		},

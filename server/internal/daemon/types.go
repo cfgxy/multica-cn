@@ -38,6 +38,7 @@ type Runtime struct {
 // RepoData holds repository information from the workspace.
 type RepoData struct {
 	URL         string `json:"url"`
+	Upstream    string `json:"upstream,omitempty"`
 	Description string `json:"description,omitempty"`
 	Ref         string `json:"ref,omitempty"`
 }
