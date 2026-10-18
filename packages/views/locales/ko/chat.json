@@ -44,6 +44,7 @@
     "steer_unavailable": "현재 답변이 시작되면 지시할 수 있습니다",
     "steer_no_permission": "이 에이전트를 실행할 권한이 없습니다",
     "steer_unavailable_toast": "현재는 지시할 수 없습니다. 대기열을 새로 고치는 중입니다.",
+    "more_actions": "대기 중인 메시지 {{position}}의 추가 작업",
     "edit": "대기 중인 메시지 편집",
     "remove": "대기열에서 삭제",
     "more": "추가 대기열 작업",
@@ -257,6 +258,9 @@
   "mobile": {
     "model": {
       "agent_default": "에이전트 기본 모델",
+      "current": "현재 모델: {{model}}",
+      "runtime_default": "런타임 기본값",
+      "save_failed_title": "모델이 변경되지 않았습니다",
       "loading": "모델을 불러오는 중…",
       "load_failed": "모델을 불러올 수 없습니다",
       "unsupported": "이 런타임은 모델 선택을 지원하지 않습니다",
