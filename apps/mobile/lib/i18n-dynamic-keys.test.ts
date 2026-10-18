@@ -448,6 +448,9 @@ const PREFIX_VALUES: Record<string, string[]> = {
   // RUYI-530: 决策中心 TAB 标签按状态枚举拼接（全部 + 三个状态页签），
   // 枚举同取自 lib/decision-inbox-display 的 DECISION_TAB_ORDER。
   "decisions:mobile.tabs": [...DECISION_TAB_ORDER],
+  // RUYI-690: 挂起中心状态筛选 pill 按四窗口枚举拼接（同 web
+  // SuspensionCenterPage 的 STATUS_FILTERS）。
+  "suspensions:filter": ["active", "resumed", "cancelled", "all"],
   // RUYI-630: 授权请求行状态 pill 按请求状态枚举拼接（组件内
   // STATUS_LABEL_KEYS，七个状态与 core 的 DecisionRequestStatus 一致）。
   "decisions:requests": [

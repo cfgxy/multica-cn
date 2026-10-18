@@ -59,6 +59,9 @@ import type {
   IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
+  IssueSuspension,
+  IssueSuspensionMutation,
+  WorkspaceSuspensionList,
   IssueLabelsResponse,
   IssuePriority,
   Label,
@@ -177,6 +180,9 @@ import {
   IssueDecisionSchema,
   IssueDecisionsListSchema,
   WorkspaceDecisionInboxSchema,
+  IssueSuspensionsListSchema,
+  IssueSuspensionMutationSchema,
+  WorkspaceSuspensionsSchema,
 } from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
@@ -2083,6 +2089,80 @@ class ApiClient {
     });
     if (!inbox) throw new Error("Invalid decision inbox response");
     return inbox;
+  }
+
+  // Issue suspension (RUYI-690). Mirrors packages/core/api/client.ts —
+  // mobile-owned fetch wrapper, shared zod schemas, same endpoint and
+  // query-string contracts. Suspend is desktop/web-authored; mobile reads
+  // the aggregation and releases (resume/cancel) from the detail banner.
+  async listWorkspaceSuspensions(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<WorkspaceSuspensionList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/suspensions${query}`,
+    );
+    const list = parseWithFallback(raw, WorkspaceSuspensionsSchema, null, {
+      endpoint: "GET /api/workspaces/:id/suspensions",
+    });
+    if (!list) throw new Error("Invalid workspace suspensions response");
+    return list;
+  }
+
+  async listIssueSuspensions(
+    issueId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<IssueSuspension[]> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/suspensions${query}`,
+    );
+    const parsed = parseWithFallback(
+      raw,
+      IssueSuspensionsListSchema,
+      { suspensions: [] },
+      { endpoint: "GET /api/issues/:id/suspensions" },
+    );
+    return parsed.suspensions;
+  }
+
+  async resumeIssueSuspension(
+    issueId: string,
+    suspensionId: string,
+    note?: string,
+  ): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/suspensions/${suspensionId}/resume`,
+      { method: "POST", body: JSON.stringify(note ? { note } : {}) },
+    );
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/resume",
+    });
+    if (!result) throw new Error("Invalid suspension resume response");
+    return result as IssueSuspensionMutation;
+  }
+
+  async cancelIssueSuspension(
+    issueId: string,
+    suspensionId: string,
+    note?: string,
+  ): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/suspensions/${suspensionId}/cancel`,
+      { method: "POST", body: JSON.stringify(note ? { note } : {}) },
+    );
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/cancel",
+    });
+    if (!result) throw new Error("Invalid suspension cancel response");
+    return result as IssueSuspensionMutation;
   }
 
   // --- Agent authorization requests (RUYI-630) ---
