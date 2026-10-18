@@ -238,7 +238,7 @@ func (h *Handler) deployModelConfigState() modelConfigResolved {
 }
 
 func (h *Handler) writeConfigUnavailable(w http.ResponseWriter) {
-	writeError(w, http.StatusServiceUnavailable, "自进化模块配置未启用：需要设置 MULTICA_SELF_EVOLUTION_SECRET_KEY 并重启服务")
+	writeError(w, http.StatusServiceUnavailable, "自演化模块配置未启用：需要设置 MULTICA_SELF_EVOLUTION_SECRET_KEY 并重启服务")
 }
 
 // PerplexityGeneratorFor adapts the resolver to the D3 scorer's per-workspace
