@@ -234,7 +234,10 @@ func (e Event) Validate() error {
 	case !e.ActorID.Valid && e.ActorType != AuditActorSystem:
 		return fmt.Errorf("audit event %s: actor_id is required for actor_type %q", e.EventType, e.ActorType)
 	}
-	if e.Domain == AuditDomainRun && !e.TaskID.Valid {
+	// A not-found activity read has no resolved task identity by design; its
+	// issue-scoped audit still records the rejection without leaking the input.
+	if e.Domain == AuditDomainRun && !e.TaskID.Valid &&
+		!(e.EventType == "run.activity_read" && e.IssueID.Valid) {
 		return fmt.Errorf("audit event %s: task_id is required", e.EventType)
 	}
 	if e.Domain == AuditDomainRuntime && !e.RuntimeID.Valid {

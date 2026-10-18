@@ -20,12 +20,14 @@ package supervisor
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -211,6 +213,62 @@ func (m *Manager) ReadManifest(runID string) (*Manifest, error) {
 		return nil, err
 	}
 	return &man, nil
+}
+
+type evidenceExpiry struct {
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+const evidenceExpiryMetadataRetention = 30 * 24 * time.Hour
+
+func (m *Manager) evidenceExpiryPath(taskID string) string {
+	sum := sha256.Sum256([]byte(taskID))
+	return filepath.Join(m.root, ".evidence-expiry-"+hex.EncodeToString(sum[:])+".json")
+}
+
+func (m *Manager) recordEvidenceExpiry(taskID string, expiresAt time.Time) error {
+	if taskID == "" || expiresAt.IsZero() {
+		return errors.New("supervisor: invalid evidence expiry")
+	}
+	return writeJSONFile(m.evidenceExpiryPath(taskID), &evidenceExpiry{ExpiresAt: expiresAt.UTC()}, 0o600)
+}
+
+func (m *Manager) readEvidenceExpiry(taskID string) (time.Time, error) {
+	var expiry evidenceExpiry
+	if taskID == "" {
+		return time.Time{}, os.ErrNotExist
+	}
+	if err := readJSONFile(m.evidenceExpiryPath(taskID), &expiry); err != nil {
+		return time.Time{}, err
+	}
+	if expiry.ExpiresAt.IsZero() {
+		return time.Time{}, errors.New("supervisor: invalid evidence expiry record")
+	}
+	return expiry.ExpiresAt, nil
+}
+
+func (m *Manager) pruneEvidenceExpiry(now time.Time) error {
+	entries, err := os.ReadDir(m.root)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, ".evidence-expiry-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(m.root, name)
+		var expiry evidenceExpiry
+		if err := readJSONFile(path, &expiry); err != nil || expiry.ExpiresAt.IsZero() {
+			continue
+		}
+		if !now.Before(expiry.ExpiresAt.Add(evidenceExpiryMetadataRetention)) {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // WriteSpec stores the launcher brief 0600. The path is handed to the launcher

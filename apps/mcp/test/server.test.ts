@@ -119,6 +119,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "get_issue_relations",
       "get_project",
       "get_run",
+      "get_run_activity",
       "get_runtime",
       "get_runtime_models",
       "get_squad",

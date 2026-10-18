@@ -71,6 +71,7 @@ const PURE_READ_TOOLS = [
   "get_issue_relations",
   "list_issue_runs",
   "get_run",
+  "get_run_activity",
   // Execution-config reads.
   "list_daemon_instances",
   "get_daemon_instance",
@@ -112,7 +113,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(85);
+    expect(names).toHaveLength(TOOL_DEFINITIONS.length);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -133,7 +134,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(85);
+      expect(tools).toHaveLength(TOOL_DEFINITIONS.length);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -146,7 +147,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(85);
+      expect(Object.keys(hint)).toHaveLength(TOOL_DEFINITIONS.length);
     } finally {
       await cleanup();
     }

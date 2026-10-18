@@ -1,0 +1,197 @@
+package supervisor
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+type evidenceCursor struct {
+	Daemon string    `json:"d"`
+	Run    string    `json:"r"`
+	Stream string    `json:"s"`
+	Out    int64     `json:"o"`
+	Err    int64     `json:"e"`
+	At     time.Time `json:"t"`
+	MAC    string    `json:"m"`
+}
+
+const evidenceCursorTTL = 24 * time.Hour
+
+func (s *Supervisor) signEvidenceCursor(cur evidenceCursor) (string, bool) {
+	cur.MAC = ""
+	raw, err := json.Marshal(cur)
+	if err != nil || s.evidenceCursorKey == ([32]byte{}) {
+		return "", false
+	}
+	mac := hmac.New(sha256.New, s.evidenceCursorKey[:])
+	_, _ = mac.Write(raw)
+	cur.MAC = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	encoded, err := json.Marshal(cur)
+	if err != nil {
+		return "", false
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), true
+}
+
+func (s *Supervisor) verifyEvidenceCursor(token, run, stream string, now time.Time) (evidenceCursor, string) {
+	var cur evidenceCursor
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || json.Unmarshal(raw, &cur) != nil || cur.Out < 0 || cur.Err < 0 || cur.At.IsZero() {
+		return cur, "expired"
+	}
+	wantMAC := cur.MAC
+	cur.MAC = ""
+	unsigned, err := json.Marshal(cur)
+	if err != nil || wantMAC == "" || s.evidenceCursorKey == ([32]byte{}) {
+		return cur, "expired"
+	}
+	mac := hmac.New(sha256.New, s.evidenceCursorKey[:])
+	_, _ = mac.Write(unsigned)
+	sig, err := base64.RawURLEncoding.DecodeString(wantMAC)
+	if err != nil || !hmac.Equal(sig, mac.Sum(nil)) || cur.Daemon != s.daemonID || cur.Run != run || cur.Stream != stream {
+		return cur, "expired"
+	}
+	if now.Sub(cur.At) > evidenceCursorTTL || cur.At.After(now.Add(time.Minute)) {
+		return cur, "expired"
+	}
+	return cur, ""
+}
+
+// WorkerEvidence resolves task identity through this daemon's owned manifests;
+// callers never provide a path or a supervisor run directory.
+func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvidenceRequest) protocol.WorkerEvidenceResponse {
+	out := protocol.WorkerEvidenceResponse{ProcessLiveness: "unknown"}
+	if s == nil || s.mgr == nil || req.RunID == "" || req.TailBytes < 1 || req.TailBytes > 64<<10 || (req.Stream != "stdout" && req.Stream != "stderr" && req.Stream != "both") {
+		out.Unavailable = "not_found"
+		return out
+	}
+	ids, err := s.mgr.ListRunIDs()
+	if err != nil {
+		out.Unavailable = "daemon_unreachable"
+		return out
+	}
+	var man *Manifest
+	for _, id := range ids {
+		candidate, e := s.mgr.ReadManifest(id)
+		if e == nil && candidate.TaskID == req.RunID && candidate.DaemonID == s.daemonID {
+			man = candidate
+			break
+		}
+	}
+	if man == nil {
+		if evidenceExpired(s.mgr, req.RunID, nil) {
+			out.Unavailable = "expired"
+			return out
+		}
+		out.Unavailable = "not_supervised"
+		return out
+	}
+	cur := evidenceCursor{}
+	if req.Cursor != "" {
+		var reason string
+		cur, reason = s.verifyEvidenceCursor(req.Cursor, req.RunID, req.Stream, time.Now().UTC())
+		if reason != "" {
+			out.Unavailable = reason
+			return out
+		}
+	}
+	read := func(path string, offset int64) (string, int64, time.Time, error) {
+		dir := s.mgr.Dir(man.RunID)
+		clean := filepath.Clean(path)
+		rel, e := filepath.Rel(dir, clean)
+		if e != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return "", offset, time.Time{}, errors.New("invalid log")
+		}
+		f, e := os.Open(clean)
+		if e != nil {
+			return "", offset, time.Time{}, e
+		}
+		defer f.Close()
+		info, e := f.Stat()
+		if e != nil {
+			return "", offset, time.Time{}, e
+		}
+		if req.Cursor == "" && info.Size() > int64(req.TailBytes) {
+			offset = info.Size() - int64(req.TailBytes)
+		}
+		if offset > info.Size() {
+			offset = info.Size()
+		}
+		if _, e = f.Seek(offset, io.SeekStart); e != nil {
+			return "", offset, time.Time{}, e
+		}
+		b, e := io.ReadAll(io.LimitReader(f, int64(req.TailBytes)))
+		if e != nil {
+			return "", offset, time.Time{}, e
+		}
+		return string(b), offset + int64(len(b)), info.ModTime().UTC(), nil
+	}
+	var observed time.Time
+	if req.Stream == "stdout" || req.Stream == "both" {
+		out.StdoutTail, cur.Out, observed, err = read(stdoutLogPath(s.mgr.Dir(man.RunID)), cur.Out)
+		if err != nil {
+			out.Unavailable = evidenceMissingCategory(s.mgr, man)
+			return out
+		}
+	}
+	if req.Stream == "stderr" || req.Stream == "both" {
+		var at time.Time
+		out.StderrTail, cur.Err, at, err = read(stderrLogPath(s.mgr.Dir(man.RunID)), cur.Err)
+		if err != nil {
+			out.Unavailable = evidenceMissingCategory(s.mgr, man)
+			return out
+		}
+		if at.After(observed) {
+			observed = at
+		}
+	}
+	if !observed.IsZero() {
+		out.ObservedAt = &observed
+	}
+	cur.Daemon, cur.Run, cur.Stream = s.daemonID, req.RunID, req.Stream
+	if cur.At.IsZero() {
+		cur.At = time.Now().UTC()
+	}
+	var ok bool
+	out.NextCursor, ok = s.signEvidenceCursor(cur)
+	if !ok {
+		out.Unavailable = "not_found"
+		return out
+	}
+	if man.State == StateExited {
+		out.ProcessLiveness = "exited"
+	} else if man.State == StateRunning {
+		if active, e := s.unitActive(ctx, man.Unit); e == nil && active {
+			out.ProcessLiveness = "alive"
+		} else if e == nil {
+			out.ProcessLiveness = "exited"
+		}
+	}
+	out.Available = true
+	return out
+}
+
+func evidenceMissingCategory(mgr *Manager, man *Manifest) string {
+	if evidenceExpired(mgr, man.TaskID, man.ConvergedAt) {
+		return "expired"
+	}
+	return "not_found"
+}
+
+func evidenceExpired(mgr *Manager, taskID string, convergedAt *time.Time) bool {
+	if expiresAt, err := mgr.readEvidenceExpiry(taskID); err == nil && !time.Now().UTC().Before(expiresAt) {
+		return true
+	}
+	return convergedAt != nil && time.Since(*convergedAt) >= DefaultRetention
+}

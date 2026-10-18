@@ -16,6 +16,16 @@ INSERT INTO audit_event (
     $14, $15, $16, $17, $18
 );
 
+-- name: CountRecentRunActivityReads :one
+SELECT count(*)::int8
+FROM audit_event
+WHERE domain = 'run'
+  AND event_type = 'run.activity_read'
+  AND actor_id = sqlc.arg('actor_id')
+  AND task_id = sqlc.arg('task_id')
+  AND details->>'result' = 'success'
+  AND occurred_at > now() - interval '10 seconds';
+
 -- name: CreateMCPInvocationAuditEvent :execrows
 INSERT INTO audit_event (
     id, workspace_id, domain, event_type, occurred_at,

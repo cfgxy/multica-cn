@@ -73,6 +73,20 @@ func TestValidateAcceptsMinimalEventPerDomain(t *testing.T) {
 	}
 }
 
+func TestRunActivityNotFoundAuditMayOmitTaskIdentity(t *testing.T) {
+	e := auditTestEvent()
+	e.EventType = "run.activity_read"
+	e.TaskID = pgtype.UUID{}
+	e.IssueID = pgtype.UUID{Bytes: [16]byte{3}, Valid: true}
+	if err := e.Validate(); err != nil {
+		t.Fatalf("issue-scoped unresolved-run audit rejected: %v", err)
+	}
+	e.IssueID = pgtype.UUID{}
+	if err := e.Validate(); err == nil || !strings.Contains(err.Error(), "task_id is required") {
+		t.Fatalf("unscoped run audit must remain rejected, got %v", err)
+	}
+}
+
 func TestMCPInvocationAuditEventHasStablePhaseIdentity(t *testing.T) {
 	invocationID := uuid.New()
 	ctx := MCPInvocationAuditContext{

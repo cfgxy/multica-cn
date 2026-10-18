@@ -417,6 +417,46 @@ export interface RunDetail {
   descendants: RunLineageEntry[];
 }
 
+export interface RunActivity {
+  run_state: {
+    status: string;
+    created_at: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    elapsed_ms: number | null;
+    wait_reason: string | null;
+  };
+  semantic_activity: {
+    messages: Array<{
+      seq: number;
+      type: string;
+      tool?: string;
+      content?: string;
+      input?: Record<string, unknown>;
+      output?: string;
+      created_at: string | null;
+      is_error?: boolean;
+      truncated: boolean;
+    }>;
+    next_after_seq: number;
+    has_more: boolean;
+    last_activity_at: string | null;
+  };
+  worker_evidence: {
+    log_available: boolean;
+    unavailable_reason: "" | "not_supervised" | "expired" | "not_found" | "daemon_unreachable";
+    stdout_tail: string | null;
+    stderr_tail: string | null;
+    next_cursor: string | null;
+    last_activity_at: string | null;
+    process_liveness: "alive" | "exited" | "unknown";
+  };
+  progress_assessment: {
+    status: "advancing" | "waiting" | "no_recent_evidence" | "finished" | "unknown";
+    basis: string[];
+  };
+}
+
 // Server cancel-matrix answer: code ∈ cancelled | cancel_requested |
 // already_cancelling | already_cancelled | not_cancellable (409).
 export interface CancelRunResult {
