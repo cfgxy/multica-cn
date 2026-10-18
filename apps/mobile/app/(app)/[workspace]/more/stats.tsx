@@ -67,7 +67,7 @@ import {
   type Dim,
 } from "@multica/core/dashboard";
 import { aggregateByWeek, formatTokens } from "@multica/core/runtimes/usage";
-import { formatShortDate, todayIso } from "@multica/core/runtimes/date-utils";
+import { formatDateRange, formatShortDate, todayIso } from "@multica/core/runtimes/date-utils";
 import type { TFunction } from "i18next";
 import type {
   Agent,
@@ -559,7 +559,7 @@ export default function StatsScreen() {
         <RNText className="flex-1 text-center text-xs text-muted-foreground" numberOfLines={1}>
           {statWindow.start === statWindow.end
             ? formatShortDate(statWindow.start)
-            : `${formatShortDate(statWindow.start)} – ${formatShortDate(statWindow.end)}`}
+            : formatDateRange(statWindow.start, statWindow.end)}
         </RNText>
         <Pressable
           onPress={() => setOffset((o) => Math.max(0, o - 1))}

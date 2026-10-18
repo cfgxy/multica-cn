@@ -29,7 +29,7 @@ import {
   toDateOnly,
 } from "@multica/core/issues/date";
 import { ProjectIcon } from "../../projects/components/project-icon";
-import { formatShortDate } from "../../runtimes/utils";
+import { formatDateRange } from "../../runtimes/utils";
 import { useT } from "../../i18n";
 import { windowLength } from "../window";
 import {
@@ -92,7 +92,7 @@ export function WindowFilter({
   // The trigger states its position in dates at every window — including the
   // current one, where a bare length label ("30d") left the reader guessing
   // which days the KPIs actually cover. The length still lives on the tiles.
-  const label = `${formatShortDate(window.start)} – ${formatShortDate(window.end)}`;
+  const label = formatDateRange(window.start, window.end);
 
   return (
     <div

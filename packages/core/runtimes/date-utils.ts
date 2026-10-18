@@ -53,6 +53,32 @@ export function formatShortDate(iso: string): string {
   });
 }
 
+/**
+ * Human-readable inclusive date window. Month/day labels are compact within
+ * a calendar year, but both years stay visible when the window crosses New
+ * Year so a previous period can never appear to run backwards.
+ */
+export function formatDateRange(start: string, end: string): string {
+  const startYear = start.slice(0, 4);
+  const endYear = end.slice(0, 4);
+  if (startYear === endYear) {
+    return `${formatShortDate(start)} – ${formatShortDate(end)}`;
+  }
+
+  const formatWithYear = (iso: string) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    const dt = new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+    return dt.toLocaleString("en", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  };
+
+  return `${formatWithYear(start)} – ${formatWithYear(end)}`;
+}
+
 // Inclusive-exclusive day distance between two YYYY-MM-DD strings. Used by
 // the weekly folds to report how many days a partial week covers. Was
 // duplicated as a private helper in both views/runtimes/utils.ts and
