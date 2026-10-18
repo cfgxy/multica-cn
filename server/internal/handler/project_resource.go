@@ -138,7 +138,7 @@ func githubRepoIdentity(raw string) (string, error) {
 	var host, path string
 	if strings.Contains(value, "://") {
 		u, err := url.Parse(value)
-		if err != nil || u.RawQuery != "" || u.Fragment != "" || u.Port() != "" {
+		if err != nil || u.RawQuery != "" || u.Fragment != "" || (u.Port() != "" && (u.Scheme != "ssh" || u.Port() != "22")) {
 			return "", errors.New("expected an http(s) or SSH GitHub URL")
 		}
 		switch u.Scheme {
