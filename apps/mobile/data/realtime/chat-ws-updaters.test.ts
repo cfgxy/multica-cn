@@ -302,7 +302,7 @@ describe("pending task queue events", () => {
     });
   });
 
-  it("does not replace an active head with a sparse follow-up queued event", () => {
+  it("keeps an active head and immediately exposes a sparse queued follow-up", () => {
     const qc = new QueryClient();
     const active: ChatPendingTask = {
       task_id: "task-active",
@@ -320,7 +320,10 @@ describe("pending task queue events", () => {
       status: "queued",
     });
 
-    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(active);
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toMatchObject({
+      task_id: "task-active",
+      queued_tasks: [{ task_id: "task-follow-up", status: "queued" }],
+    });
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: chatKeys.pendingTask(SESSION),
     });

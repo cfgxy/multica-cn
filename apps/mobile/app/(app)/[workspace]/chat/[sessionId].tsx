@@ -822,7 +822,7 @@ export default function ChatDetailScreen() {
           skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
           projectId={projectId}
           onProjectChange={handleProjectChange}
-          modelRuntimeId={activeSession && currentAgent ? currentAgent.runtime_id ?? null : null}
+          modelRuntimeId={activeSessionId && currentAgent ? currentAgent.runtime_id ?? null : null}
           modelOverride={activeSession?.model_override ?? null}
           agentModel={currentAgent?.model ?? null}
           modelDisabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
