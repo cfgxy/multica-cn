@@ -7,6 +7,7 @@ import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
@@ -87,23 +88,26 @@ export function ChatAddMenu({
         <DropdownMenuContent
           align="start"
           side="top"
-          sideOffset={0}
+          sideOffset={8}
           anchor={anchor}
-          className="w-[var(--anchor-width)] rounded-b-none border border-b-0 border-surface-border bg-surface ring-0 origin-bottom data-[side=top]:slide-in-from-bottom-0 data-open:zoom-in-100 motion-reduce:animate-none motion-reduce:transition-none"
+          className="w-[var(--anchor-width)] rounded-lg border border-surface-border bg-surface-raised p-2 ring-1 ring-surface-border origin-bottom data-[side=top]:slide-in-from-bottom-0 data-open:zoom-in-100 motion-reduce:animate-none motion-reduce:transition-none"
         >
-          {model && <ChatSessionModelSubmenu {...model} />}
-          {model && (onSelectFile || onSelectProject) && <DropdownMenuSeparator />}
+          <DropdownMenuGroup className="grid grid-cols-4 gap-1">
+            {model && <ChatSessionModelSubmenu {...model} />}
           {onSelectFile && (
-            <DropdownMenuItem onClick={() => inputRef.current?.click()}>
-              <ImageIcon />
-              {t(($) => $.input.upload_file)}
+            <DropdownMenuItem
+              onClick={() => inputRef.current?.click()}
+              className="h-16 flex-col justify-center gap-1 rounded-md px-1 py-2 text-caption text-muted-foreground focus:bg-accent focus:text-accent-foreground"
+            >
+              <ImageIcon className="size-5" />
+              <span className="max-w-full truncate">{t(($) => $.input.upload_file)}</span>
             </DropdownMenuItem>
           )}
           {onSelectProject && (
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <FolderKanban />
-                {t(($) => $.input.project_context)}
+              <DropdownMenuSubTrigger className="h-16 flex-col justify-center gap-1 rounded-md px-1 py-2 text-caption text-muted-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground [&>svg:last-child]:hidden">
+                <FolderKanban className="size-5" />
+                <span className="max-w-full truncate">{t(($) => $.input.project_context)}</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="max-h-72 min-w-52 overflow-y-auto">
                 {projects.map((project) => (
@@ -139,6 +143,7 @@ export function ChatAddMenu({
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           )}
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
       {onSelectFile && (
