@@ -137,6 +137,7 @@ type AdminAuditLogListResponse struct {
 const (
 	adminListDefaultLimit = 50
 	adminListMaxLimit     = 200
+	adminListMaxOffset    = 1<<31 - 1
 )
 
 // parseAdminListParams reads the shared ?query=&limit=&offset= pagination
@@ -151,8 +152,12 @@ func parseAdminListParams(r *http.Request) (query string, limit, offset int32) {
 		limit = int32(min(v, adminListMaxLimit)) //nolint:gosec // clamped to adminListMaxLimit above
 	}
 
-	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v > 0 {
-		offset = int32(v) //nolint:gosec // negatives rejected; overflow inputs fail Atoi
+	if v, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64); err == nil && v > 0 {
+		if v > adminListMaxOffset {
+			offset = adminListMaxOffset
+		} else {
+			offset = int32(v)
+		}
 	}
 	return query, limit, offset
 }
