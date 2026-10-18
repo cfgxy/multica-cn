@@ -12,6 +12,7 @@ const base: InputShapeInput = {
   allowStop: true,
   allowSubmitWhileRunning: false,
   hasDraft: false,
+  busy: false,
   dictationOpen: false,
   voice: "available",
 };
@@ -72,7 +73,7 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
     ).toBe("send");
   });
 
-  it("发送中 → 空草稿为停止；队列可用且有草稿时仅显示发送", () => {
+  it("停止操作优先于草稿发送；不支持停止时仍可提交队列", () => {
     expect(resolveInputShape({ ...base, sending: true }).rightSlot).toBe(
       "stop",
     );
@@ -81,7 +82,7 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       sending: true,
       allowSubmitWhileRunning: true,
       hasDraft: true,
-    })).toMatchObject({ rightSlot: "send" });
+    })).toMatchObject({ rightSlot: "stop" });
     expect(resolveInputShape({
       ...base,
       sending: true,
@@ -92,6 +93,18 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       resolveInputShape({ ...base, sending: true, allowStop: false })
         .rightSlot,
     ).toBe("voice");
+    expect(resolveInputShape({
+      ...base,
+      sending: true,
+      allowStop: false,
+      allowSubmitWhileRunning: true,
+      hasDraft: true,
+    }).rightSlot).toBe("send");
+  });
+
+  it("上传或提交中隐藏语音入口", () => {
+    expect(resolveInputShape({ ...base, busy: true }).rightSlot).toBe("muted-send");
+    expect(resolveInputShape({ ...base, busy: true, hasDraft: true }).rightSlot).toBe("send");
   });
 
   it("disabled → pill（R1 语义），优先于一切", () => {
