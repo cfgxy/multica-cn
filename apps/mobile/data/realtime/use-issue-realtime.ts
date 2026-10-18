@@ -36,6 +36,7 @@ import type {
   TaskQueuedPayload,
 } from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
+import { githubKeys } from "@/data/queries/github";
 import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
@@ -92,6 +93,19 @@ export function useIssueRealtime(
         qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
       };
 
+      const invalidateIssuePullRequests = () => {
+        qc.invalidateQueries({ queryKey: githubKeys.pullRequests(issueId) });
+      };
+
+      const eventReferencesIssue = (payload: unknown) => {
+        if (!payload || typeof payload !== "object") return false;
+        const event = payload as { issue_id?: unknown; linked_issue_ids?: unknown };
+        return (
+          event.issue_id === issueId ||
+          (Array.isArray(event.linked_issue_ids) && event.linked_issue_ids.includes(issueId))
+        );
+      };
+
       // Shared cross-event handler for the 6 task:* subscriptions below.
       // All task events DO carry `issue_id` server-side, but `task:progress`
       // has no formal payload interface yet (WSEventPayloadMap entry is
@@ -128,6 +142,19 @@ export function useIssueRealtime(
           qc.invalidateQueries({
             queryKey: issueKeys.attachments(wsId, issueId),
           });
+        }),
+
+        // PR updates fan out to the workspace with linked_issue_ids. Link and
+        // unlink events use issue_id, so only the open detail that owns the PR
+        // summary invalidates its cached list.
+        ws.on("pull_request:linked", (payload) => {
+          if (eventReferencesIssue(payload)) invalidateIssuePullRequests();
+        }),
+        ws.on("pull_request:updated", (payload) => {
+          if (eventReferencesIssue(payload)) invalidateIssuePullRequests();
+        }),
+        ws.on("pull_request:unlinked", (payload) => {
+          if (eventReferencesIssue(payload)) invalidateIssuePullRequests();
         }),
 
         // ----- Comments / activity -----
@@ -243,6 +270,7 @@ export function useIssueRealtime(
         // ----- Reconnect -----
         ws.onReconnect(() => {
           invalidateIssueAfterReconnect(qc, wsId, issueId);
+          invalidateIssuePullRequests();
           // Decisions live on core's per-issue keys (no wsId segment), so
           // the invalidate above doesn't reach them — events missed while
           // disconnected (e.g. a card created by a run) need their own pull.

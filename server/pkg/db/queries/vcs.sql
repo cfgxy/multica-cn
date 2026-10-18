@@ -74,12 +74,12 @@ RETURNING *;
 -- — the webhook needs pr.id to link the issue even on a stale redelivery.
 INSERT INTO vcs_pull_request (
     workspace_id, connection_id, provider, repo_owner, repo_name, pr_number,
-    title, state, html_url, branch, author_login, author_avatar_url,
+    title, state, html_url, target_branch, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     additions, deletions, changed_files, head_sha
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
+    $7, $8, $9, sqlc.narg('target_branch'), sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $10, $11,
     $12, $13, $14, $15
 )
@@ -89,6 +89,7 @@ ON CONFLICT (connection_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     title             = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.title             ELSE vcs_pull_request.title             END,
     state             = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.state             ELSE vcs_pull_request.state             END,
     html_url          = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.html_url          ELSE vcs_pull_request.html_url          END,
+    target_branch     = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN COALESCE(EXCLUDED.target_branch, vcs_pull_request.target_branch) ELSE vcs_pull_request.target_branch END,
     branch            = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.branch            ELSE vcs_pull_request.branch            END,
     author_login      = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.author_login      ELSE vcs_pull_request.author_login      END,
     author_avatar_url = CASE WHEN EXCLUDED.pr_updated_at >= vcs_pull_request.pr_updated_at THEN EXCLUDED.author_avatar_url ELSE vcs_pull_request.author_avatar_url END,
@@ -213,3 +214,15 @@ ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
         WHEN sqlc.arg('preserve_close_intent') THEN issue_vcs_pull_request.reference_only
         ELSE EXCLUDED.reference_only
     END;
+
+-- name: ListSystemIssueIDsForVCSPullRequest :many
+SELECT issue_id FROM issue_vcs_pull_request
+WHERE pull_request_id = $1 AND linked_by_type = 'system';
+
+-- name: ListIssueIDsForVCSPullRequest :many
+SELECT issue_id FROM issue_vcs_pull_request
+WHERE pull_request_id = $1;
+
+-- name: UnlinkIssueFromVCSPullRequest :exec
+DELETE FROM issue_vcs_pull_request
+WHERE issue_id = $1 AND pull_request_id = $2 AND linked_by_type = 'system';
