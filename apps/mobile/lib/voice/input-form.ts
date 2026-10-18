@@ -43,6 +43,8 @@ export interface InputShapeInput {
   allowSubmitWhileRunning: boolean;
   /** text.trim() 非空。 */
   hasDraft: boolean;
+  /** Composer is busy with an attachment upload or a local submission. */
+  busy: boolean;
   /** 听写长条已展开。 */
   dictationOpen: boolean;
   voice: VoiceGateVerdict;
@@ -64,10 +66,10 @@ export function resolveInputShape(input: InputShapeInput): InputShape {
   // 比多显示一瞬 Stop 更糟；听写条自身不提供发送路径（松开即发送）。
   if (input.dictationOpen && !input.disabled) return DICTATION;
   if (input.disabled) return PILL;
-  if (input.sending && input.allowStop && (!input.allowSubmitWhileRunning || !input.hasDraft)) {
+  if (input.sending && input.allowStop) {
     return { dictation: false, pill: false, rightSlot: "stop" };
   }
-  if (!input.hasDraft && input.voice === "available") {
+  if (!input.busy && !input.hasDraft && input.voice === "available") {
     return { dictation: false, pill: false, rightSlot: "voice" };
   }
   return {
