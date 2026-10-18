@@ -442,6 +442,7 @@ export function ChatInputBar({
     allowStop,
     allowSubmitWhileRunning,
     hasDraft: value.trim().length > 0,
+    busy: uploading || submitting || stopPending,
     dictationOpen,
     voice,
   });
@@ -634,24 +635,26 @@ function RightSlot({
         {dictationReady ? (
           <Pressable
             onPress={onOpenDictation}
-            hitSlop={6}
+            hitSlop={4}
             accessibilityRole="button"
             disabled={disabled}
-            accessibilityLabel={tVoice("dictation.open", "Dictation")}
+            accessibilityLabel={tVoice("dictation.open", "听写转文字")}
+            accessibilityHint={tVoice("dictation.open_hint", "开始听写转文字")}
             className="h-9 w-9 items-center justify-center rounded-full active:opacity-70"
           >
-            <Ionicons name="mic-outline" size={22} color={theme.mutedForeground} />
+            <Ionicons name="document-text-outline" size={22} color={theme.mutedForeground} />
           </Pressable>
         ) : null}
         <Pressable
           onPress={onOpenVoice}
-          hitSlop={6}
+          hitSlop={4}
           accessibilityRole="button"
           disabled={disabled}
-          accessibilityLabel={tVoice("button.start", "Start voice conversation")}
+          accessibilityLabel={tVoice("button.start", "实时语音对话")}
+          accessibilityHint={tVoice("button.start_hint", "开始实时语音对话")}
           className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
         >
-          <Ionicons name="mic" size={18} color={theme.primaryForeground} />
+          <Ionicons name="headset-outline" size={20} color={theme.primaryForeground} />
         </Pressable>
       </View>
     );
