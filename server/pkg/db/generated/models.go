@@ -884,6 +884,7 @@ type DaemonFileOperation struct {
 	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
 	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
 	InvocationID pgtype.UUID        `json:"invocation_id"`
+	RequesterID  pgtype.UUID        `json:"requester_id"`
 }
 
 type DaemonOpsCommand struct {

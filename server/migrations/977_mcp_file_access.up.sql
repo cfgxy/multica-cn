@@ -1,6 +1,10 @@
 -- RUYI-793: idempotent so an already-applied 977 can be safely re-run by the
 -- controlled upgrade procedure after removing only this version from the ledger.
 ALTER TABLE daemon_file_operation ADD COLUMN IF NOT EXISTS invocation_id UUID;
+-- Bind new operations to the member authorized at submission time. Older
+-- pending rows deliberately remain unclaimable because no actor can be
+-- re-authorized after an ACL change.
+ALTER TABLE daemon_file_operation ADD COLUMN IF NOT EXISTS requester_id UUID;
 
 CREATE TABLE IF NOT EXISTS mcp_file_access_instance_binding (
     instance_id TEXT NOT NULL,
