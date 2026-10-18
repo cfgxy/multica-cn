@@ -179,17 +179,30 @@ export function InstructionsTab({
     onDirtyChange?.(isDirty);
   }, [isDirty, onDirtyChange]);
 
+  const save = async () => {
+    await onSave({
+      instructions: value,
+      ...(conversationStartersSupported
+        ? { conversation_starters: conversationStarters }
+        : {}),
+    });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave({
-        instructions: value,
-        ...(conversationStartersSupported
-          ? { conversation_starters: conversationStarters }
-          : {}),
-      });
+      await save();
     } catch {
       // toast handled by parent
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleExpandedSave = async () => {
+    setSaving(true);
+    try {
+      await save();
     } finally {
       setSaving(false);
     }
@@ -256,7 +269,7 @@ export function InstructionsTab({
           id={`agent-system-prompt-${agent.id}`}
           value={value}
           onChange={setValue}
-          onSave={() => handleSave()}
+          onSave={handleExpandedSave}
           ariaLabel={
             hasSystemLayer
               ? t(($) => $.tab_body.instructions.workspace_notes_label)
