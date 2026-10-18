@@ -290,12 +290,6 @@
       "stop_failed": "Try again. The current message was kept.",
       "quick_replies_title": "Quick replies"
     },
-    "queue": {
-      "action_failed_title": "Queue changed",
-      "stale": "This queued message changed. The queue has been refreshed.",
-      "action_failed": "Could not update the queue. Try again."
-    },
-    },
     "send_failure": {
       "no_permission": "You no longer have permission to run this agent, so the message was not sent.",
       "runtime_required": "Bind a runtime to this agent before sending a message.",
