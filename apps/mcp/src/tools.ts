@@ -1069,6 +1069,38 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "get_autopilot",
+    description: "Read one Autopilot configuration and status. This read is scoped by workspace membership and the server's Autopilot visibility rules.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." } }, required: ["workspace", "autopilot_id"] },
+    async handler(args, client) { return client.getAutopilot(requireString(args, "workspace"), requireString(args, "autopilot_id")); },
+  },
+  {
+    name: "list_autopilot_runs",
+    description: "Read recent execution records for one Autopilot, including linked Issue/task, status and failure reason.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, limit: { type: "integer", description: "Page size (1-100).", minimum: 1, maximum: 100 }, offset: { type: "integer", description: "Rows to skip.", minimum: 0 } }, required: ["workspace", "autopilot_id"] },
+    async handler(args, client) { return client.listAutopilotRuns(requireString(args, "workspace"), requireString(args, "autopilot_id"), optionalInt(args, "limit", { min: 1, max: 100 }) ?? 20, optionalInt(args, "offset", { min: 0 }) ?? 0); },
+  },
+  {
+    name: "get_autopilot_run",
+    description: "Read one Autopilot execution record, including its result and trigger payload.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, run_id: { type: "string", description: "Run UUID." } }, required: ["workspace", "autopilot_id", "run_id"] },
+    async handler(args, client) { return client.getAutopilotRun(requireString(args, "workspace"), requireString(args, "autopilot_id"), requireString(args, "run_id")); },
+  },
+  {
+    name: "trigger_autopilot",
+    description: "Immediately execute an active Autopilot through its native dispatch. mode=current uses current config; mode=replay reuses a run's historical payload under current config and caller permissions. Requires an explicit idempotency_key.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, mode: { type: "string", enum: ["current", "replay"], description: "Execution semantics." }, source_run_id: { type: "string", description: "Required for replay; source run must belong to this Autopilot." }, idempotency_key: { type: "string", description: "Stable key for retrying the same request.", maxLength: 200 }, params: { type: "object", description: "Optional current parameter overrides." } }, required: ["workspace", "autopilot_id", "mode", "idempotency_key"] },
+    async handler(args, client) {
+      const mode = requireString(args, "mode");
+      if (mode !== "current" && mode !== "replay") throw new ToolInputError("'mode' must be current or replay");
+      const sourceRunId = optionalString(args, "source_run_id");
+      if ((mode === "replay") !== (sourceRunId !== undefined)) throw new ToolInputError("source_run_id is required only for replay mode");
+      const params = args.params;
+      if (params !== undefined && (typeof params !== "object" || params === null || Array.isArray(params))) throw new ToolInputError("'params' must be an object");
+      return client.triggerAutopilot(requireString(args, "workspace"), requireString(args, "autopilot_id"), { mode, source_run_id: sourceRunId, params }, requireString(args, "idempotency_key"));
+    },
+  },
+  {
     name: "list_files",
     description: "List entries in a path on the explicitly registered local or remote file target for this workspace.",
     inputSchema: {
