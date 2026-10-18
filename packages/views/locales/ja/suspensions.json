@@ -1,0 +1,24 @@
+{
+  "page": {
+    "breadcrumb": "保留センター",
+    "empty_title": "保留中のタスクはありません",
+    "empty_description": "外部条件を待機するために保留されたタスクはここに集約され、再開まで見失われません。",
+    "load_failed": "保留リストの読み込みに失敗しました"
+  },
+  "filter": {
+    "label": "状態",
+    "active": "保留中",
+    "resumed": "再開済み",
+    "cancelled": "取消済み",
+    "all": "すべて"
+  },
+  "row": {
+    "waiting_on": "待機対象",
+    "condition": "再開条件",
+    "reason": "理由",
+    "resume": "再開",
+    "cancel": "待機を取消",
+    "resume_done": "再開済み",
+    "lifecycle": "ライフサイクル"
+  }
+}

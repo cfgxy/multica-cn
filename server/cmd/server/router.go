@@ -1928,6 +1928,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// this middleware. Read-only; answering stays on the
 					// issue-scoped endpoints.
 					r.Get("/decision-inbox", h.ListWorkspaceDecisionInbox)
+					// RUYI-690: the workspace suspension aggregate — every
+					// issue waiting (or its suspension history), one row per
+					// suspension, membership-scoped by this middleware.
+					r.Get("/suspensions", h.ListWorkspaceIssueSuspensions)
 					// RUYI-630: the sensitive-operation authorization carrier.
 					// Reads are member-visible; the answer route additionally
 					// sits behind RequireHumanActor — machine credentials
@@ -2564,6 +2568,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/decisions/answer-batch", h.AnswerIssueDecisionsBatch)
 					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
 					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
+
+					// Suspensions (RUYI-690): the orthogonal "waiting"
+					// dimension. Suspend/list on the issue; resume/cancel on
+					// one suspension row (CAS-guarded in the handler).
+					r.Post("/suspensions", h.SuspendIssue)
+					r.Get("/suspensions", h.ListIssueSuspensions)
+					r.Post("/suspensions/{suspensionId}/resume", h.ResumeIssueSuspension)
+					r.Post("/suspensions/{suspensionId}/cancel", h.CancelIssueSuspension)
 					r.Get("/timeline", h.ListTimeline)
 					r.Get("/subscribers", h.ListIssueSubscribers)
 					r.Post("/subscribe", h.SubscribeToIssue)

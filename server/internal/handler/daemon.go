@@ -4524,7 +4524,9 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 	// was in flight stops waking agents the moment the run completes. The
 	// delegated-failure branch below is untouched: it keeps its own
 	// source-issue policy (loadDelegatedFailureRecoveryTarget).
-	commentsAdmitted := commentTriggersAdmitted(ctx, h.Queries, issue)
+	// RUYI-690: an issue suspended while its run was in flight stops waking
+	// agents the moment the run completes, same as the status gate.
+	commentsAdmitted := commentTriggersAdmitted(ctx, h.Queries, issue) && !issue.SuspendedAt.Valid
 	scheduled := 0
 	for i := range comments {
 		c := comments[i]

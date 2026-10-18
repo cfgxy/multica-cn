@@ -8,7 +8,7 @@
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.run_suppressed, i.run_suppressed_at
+       i.revision, i.run_suppressed, i.run_suppressed_at, i.suspended_at
 FROM issue i
 WHERE i.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
@@ -359,6 +359,14 @@ LIMIT 1;
 WITH target AS (
     SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2
 ),
+cleared_issue_suspensions AS (
+    -- RUYI-690: issue_suspension has no FK to issue (house rule), so the
+    -- issue's suspension history would outlive the row it describes. Route
+    -- through the same workspace-checked target as the issue delete — the
+    -- bare-issue_id leak shape the vcs_pr_links sweep below guards against
+    -- applies identically here.
+    DELETE FROM issue_suspension WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_vcs_pr_links AS (
     DELETE FROM issue_vcs_pull_request WHERE issue_id IN (SELECT target.id FROM target)
 )
@@ -370,7 +378,7 @@ DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.run_suppressed, i.run_suppressed_at
+       i.revision, i.run_suppressed, i.run_suppressed_at, i.suspended_at
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.

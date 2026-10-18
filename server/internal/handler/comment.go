@@ -1766,6 +1766,12 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 	if !commentTriggersAdmitted(r.Context(), h.Queries, issue) {
 		triggers = nil
 		blocked = commentStatusBlockedOutcomes(targets)
+	} else if issue.SuspendedAt.Valid {
+		// RUYI-690: the preview must not promise a run the submit path
+		// refuses while the issue is suspended — same projection, suspension
+		// reason.
+		triggers = nil
+		blocked = commentSuspensionBlockedOutcomes(targets)
 	}
 	resp := CommentTriggerPreviewResponse{
 		Agents:          make([]CommentTriggerAgentResponse, 0, len(triggers)),
@@ -2106,6 +2112,14 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	if !commentTriggersAdmitted(ctx, h.Queries, issue) {
 		return commentStatusBlockedOutcomes(targets)
 	}
+	// RUYI-690: the suspension gate — same posture as the status gate (the
+	// comment is already saved; blocking here is a partial success), distinct
+	// reason code so the composer points at the hold. Nothing runs, merges,
+	// or plans while the issue waits. Checked on the read-side snapshot
+	// (issue.suspended_at), so no extra query.
+	if issue.SuspendedAt.Valid {
+		return commentSuspensionBlockedOutcomes(targets)
+	}
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
 	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 	return commentTriggerOutcomes(targets, enqueued)
@@ -2152,6 +2166,26 @@ func commentStatusBlockedOutcomes(targets []commentMentionTarget) []CommentTrigg
 			TargetID:   t.TargetID,
 			Status:     DispatchBlocked,
 			ReasonCode: ReasonIssueStatusNotDispatchable,
+		})
+	}
+	return outcomes
+}
+
+// commentSuspensionBlockedOutcomes projects EVERY explicit mention target as
+// blocked under the suspension gate (RUYI-690) — same shape as
+// commentStatusBlockedOutcomes, distinct reason: the status here is
+// dispatchable; the hold is the suspension, and the fix is releasing it.
+func commentSuspensionBlockedOutcomes(targets []commentMentionTarget) []CommentTriggerOutcome {
+	if len(targets) == 0 {
+		return nil
+	}
+	outcomes := make([]CommentTriggerOutcome, 0, len(targets))
+	for _, t := range targets {
+		outcomes = append(outcomes, CommentTriggerOutcome{
+			TargetType: t.TargetType,
+			TargetID:   t.TargetID,
+			Status:     DispatchBlocked,
+			ReasonCode: ReasonIssueSuspended,
 		})
 	}
 	return outcomes
@@ -3753,6 +3787,13 @@ func (h *Handler) retriggerCancelledTaskSurvivors(ctx context.Context, issue db.
 	if !commentTriggersAdmitted(ctx, h.Queries, issue) {
 		slog.Info("retrigger cancelled comment batch skipped: issue status does not admit comment runs",
 			"issue_id", uuidToString(issue.ID), "status", issue.Status, "cancelled_tasks", len(cancelled))
+		return
+	}
+	// RUYI-690: same refusal while the issue is suspended — the hold keeps
+	// cancelled-batch replay from resurrecting triggers too.
+	if issue.SuspendedAt.Valid {
+		slog.Info("retrigger cancelled comment batch skipped: issue is suspended",
+			"issue_id", uuidToString(issue.ID), "cancelled_tasks", len(cancelled))
 		return
 	}
 	targetsByComment := make(map[string]map[string]pgtype.UUID)

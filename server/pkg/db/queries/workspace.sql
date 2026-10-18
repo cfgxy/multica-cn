@@ -265,5 +265,12 @@ cleared_scheduling_pauses AS (
     -- freeze row for a deleted workspace would be inert (no agents left to
     -- gate) but permanently unattributable litter; sweep both levels here.
     DELETE FROM scheduling_pause WHERE workspace_id = $1
+),
+cleared_issue_suspensions AS (
+    -- RUYI-690: issue_suspension carries no FK (house rule) and outlives the
+    -- issues it describes unless swept. A surviving row would be inert (no
+    -- issue left to badge or resume) but permanently unattributable audit
+    -- litter; sweep the whole workspace's suspension history here.
+    DELETE FROM issue_suspension WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;

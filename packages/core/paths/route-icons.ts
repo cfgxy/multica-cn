@@ -34,6 +34,7 @@ export type RouteIconName =
   | "Server"
   | "BookOpenText"
   | "Gavel"
+  | "CirclePause"
   | "Settings"
   | "Shield"
   | "File"
@@ -49,6 +50,7 @@ export type RouteIconName =
 export type NavLabelKey =
   | "inbox"
   | "decisions"
+  | "suspensions"
   | "chat"
   | "my_issues"
   | "issues"
@@ -67,6 +69,7 @@ export type NavLabelKey =
 export type WorkspacePageKey =
   | "inbox"
   | "decisions"
+  | "suspensions"
   | "chat"
   | "myIssues"
   | "issues"
@@ -99,6 +102,12 @@ export const WORKSPACE_PAGES: Record<WorkspacePageKey, WorkspacePage> = {
   // RUYI-494: the Decision Center sits with the collection surfaces, next to
   // the issues it aggregates.
   decisions: { segment: "decisions", icon: "Gavel", navKey: "decisions" },
+  // RUYI-690: suspension center, next to the decisions center it mirrors.
+  suspensions: {
+    segment: "suspensions",
+    icon: "CirclePause",
+    navKey: "suspensions",
+  },
   chat: { segment: "chat", icon: "MessageSquare", navKey: "chat" },
   myIssues: { segment: "my-issues", icon: "CircleUser", navKey: "my_issues" },
   issues: { segment: "issues", icon: "ListTodo", navKey: "issues" },

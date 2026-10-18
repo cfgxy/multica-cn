@@ -8159,6 +8159,9 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"revision":          issue.Revision,
 		"run_suppressed":    issue.RunSuppressed,
 		"run_suppressed_at": util.TimestampToNanoPtr(issue.RunSuppressedAt),
+		// Mirrors handler.IssueResponse.SuspendedAt (RUYI-690): the read-side
+		// "waiting" snapshot; the suspension table owns the audit trail.
+		"suspended_at": util.TimestampToNanoPtr(issue.SuspendedAt),
 		"metadata":          util.JSONObjectOrEmpty(issue.Metadata),
 		"properties":        util.JSONObjectOrEmpty(issue.Properties),
 	}
