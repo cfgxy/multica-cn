@@ -545,7 +545,9 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
 	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 {
-		t.Fatalf("claimed operation missing from HTTP response: %+v", response.Pending)
+		var operationStatus string
+		dbfx.QueryRow(t, `SELECT status FROM daemon_file_operation WHERE id = $1`, operationID).Scan(&operationStatus)
+		t.Fatalf("claimed operation missing from HTTP response: %+v (operation status: %s)", response.Pending, operationStatus)
 	}
 }
 
