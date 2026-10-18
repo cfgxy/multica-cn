@@ -96,6 +96,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Restore Electron build cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: desktop-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Configure Electron cache paths
+        shell: bash
+        run: |
+          echo "ELECTRON_CACHE=$GITHUB_WORKSPACE/.cache/electron" >> "$GITHUB_ENV"
+          echo "ELECTRON_BUILDER_CACHE=$GITHUB_WORKSPACE/.cache/electron-builder" >> "$GITHUB_ENV"
+
       # --publish never：dev 通道由下一步统一发 GitHub Release，不走
       # electron-builder 的 publisher（避免与正式 Release 混写）。
       - name: Package Desktop installers (win)
