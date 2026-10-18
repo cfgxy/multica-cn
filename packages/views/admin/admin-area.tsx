@@ -8,6 +8,7 @@ import { AdminUsersPage } from "./admin-users-page";
 import { AdminWorkspacesPage } from "./admin-workspaces-page";
 import { AdminMCPServerPage } from "./admin-mcp-server-page";
 import { AdminOAuthClientsPage } from "./admin-oauth-clients-page";
+import { AdminFileReadPolicyPage } from "./admin-file-read-policy-page";
 
 /**
  * Top-level /admin shell shared by web and desktop. Guarded here AND by
@@ -17,7 +18,7 @@ import { AdminOAuthClientsPage } from "./admin-oauth-clients-page";
 export function AdminArea() {
   const { t } = useTranslation("admin");
   const user = useAuthStore((s) => s.user);
-  const [tab, setTab] = useState<"users" | "workspaces" | "mcp" | "oauth">("users");
+  const [tab, setTab] = useState<"users" | "workspaces" | "mcp" | "oauth" | "file_read_policy">("users");
 
   if (user === null) return null;
   // Explicit boolean check per API-compat rules.
@@ -38,7 +39,7 @@ export function AdminArea() {
       <Tabs
         value={tab}
         onValueChange={(v) => {
-          if (v === "users" || v === "workspaces" || v === "mcp" || v === "oauth") setTab(v);
+          if (v === "users" || v === "workspaces" || v === "mcp" || v === "oauth" || v === "file_read_policy") setTab(v);
         }}
         className="flex min-h-0 flex-1 flex-col"
       >
@@ -47,6 +48,7 @@ export function AdminArea() {
           <TabsTrigger value="workspaces">{t(($) => $.tabs.workspaces)}</TabsTrigger>
           <TabsTrigger value="mcp">{t(($) => $.tabs.mcp)}</TabsTrigger>
           <TabsTrigger value="oauth">{t(($) => $.tabs.oauth)}</TabsTrigger>
+          <TabsTrigger value="file_read_policy">{t(($) => $.tabs.file_read_policy)}</TabsTrigger>
         </TabsList>
         <TabsContent value="users" className="min-h-0 flex-1 overflow-hidden">
           <AdminUsersPage />
@@ -54,11 +56,14 @@ export function AdminArea() {
         <TabsContent value="workspaces" className="min-h-0 flex-1 overflow-hidden">
           <AdminWorkspacesPage />
         </TabsContent>
-        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto">
+        <TabsContent value="mcp" className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <AdminMCPServerPage />
         </TabsContent>
         <TabsContent value="oauth" className="min-h-0 flex-1 overflow-y-auto">
           <AdminOAuthClientsPage />
+        </TabsContent>
+        <TabsContent value="file_read_policy" className="min-h-0 flex-1 overflow-y-auto">
+          <AdminFileReadPolicyPage />
         </TabsContent>
       </Tabs>
     </div>

@@ -59,6 +59,18 @@ KILL_GRACE=2
 manifest_field() { sed -n "s/^$1=//p" "$MANIFEST" 2>/dev/null | head -1; }
 
 budget_mb() { # $1 = component
+  if [ "$1" = desktop ] && [ "$SLOT" = dev2 ]; then
+    local override
+    local issue
+    override="$(manifest_field DESKTOP_MEMORY_MB)"
+    issue="$(manifest_field ISSUE)"
+    if [ "$issue" = RUYI-773 ] && [ -n "$override" ]; then
+      case "$override" in
+        256|4096) printf '%s' "$override"; return 0 ;;
+        *) printf 'invalid dev2 desktop budget override: %s; using canonical limit\n' "$override" >&2 ;;
+      esac
+    fi
+  fi
   node -e '
     const fs = require("fs");
     const facts = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));

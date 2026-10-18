@@ -24,8 +24,10 @@
 import { useCallback } from "react";
 import * as Haptics from "expo-haptics";
 import { ChatInputBar } from "@/components/chat/chat-input-bar";
+import type { Attachment } from "@multica/core/types";
 import type { SharedFile } from "@/lib/share-payload";
 import type { VoiceAvailability } from "@/data/voice-providers";
+import type { Href } from "expo-router";
 
 const IS_IOS = process.env.EXPO_OS === "ios";
 
@@ -44,6 +46,9 @@ interface Props {
   sending: boolean;
   /** Queued tasks remain busy, but do not expose Stop without draft restore. */
   allowStop?: boolean;
+  allowSubmitWhileRunning?: boolean;
+  hasQueuedMessages?: boolean;
+  stopPending?: boolean;
   /** Hard-disable typing + send（no agent / revoked / archived / runtime
    *  missing——R1 灰 pill 语义不变）。 */
   disabled?: boolean;
@@ -58,6 +63,16 @@ interface Props {
   voiceGate: VoiceAvailability | null;
   /** 发起全屏语音会话（🔵）。 */
   onOpenVoice: () => void;
+  skillPickerPath?: Href;
+  projectId?: string | null;
+  onProjectChange?: (projectId: string | null) => void;
+  modelRuntimeId?: string | null;
+  modelOverride?: string | null;
+  agentModel?: string | null;
+  modelDisabled?: boolean;
+  onModelSelect?: (model: string | null) => Promise<void>;
+  restoredAttachments?: Attachment[];
+  onRestoredAttachmentsConsumed?: () => void;
 }
 
 export function ChatComposer({
@@ -67,12 +82,25 @@ export function ChatComposer({
   onStop,
   sending,
   allowStop = true,
+  allowSubmitWhileRunning = false,
+  hasQueuedMessages = false,
+  stopPending = false,
   disabled = false,
   disabledReason,
   incomingSharedFiles,
   onIncomingSharedFilesConsumed,
   voiceGate,
   onOpenVoice,
+  skillPickerPath,
+  projectId,
+  onProjectChange,
+  modelRuntimeId,
+  modelOverride,
+  agentModel,
+  modelDisabled,
+  onModelSelect,
+  restoredAttachments,
+  onRestoredAttachmentsConsumed,
 }: Props) {
   const handleStop = useCallback(() => {
     if (IS_IOS) {
@@ -89,12 +117,25 @@ export function ChatComposer({
       onStop={handleStop}
       sending={sending}
       allowStop={allowStop}
+      allowSubmitWhileRunning={allowSubmitWhileRunning}
+      hasQueuedMessages={hasQueuedMessages}
+      stopPending={stopPending}
       disabled={disabled}
       disabledReason={disabledReason}
       incomingSharedFiles={incomingSharedFiles}
       onIncomingSharedFilesConsumed={onIncomingSharedFilesConsumed}
       voiceGate={voiceGate}
       onOpenVoice={onOpenVoice}
+      skillPickerPath={skillPickerPath}
+      projectId={projectId}
+      onProjectChange={onProjectChange}
+      modelRuntimeId={modelRuntimeId}
+      modelOverride={modelOverride}
+      agentModel={agentModel}
+      modelDisabled={modelDisabled}
+      onModelSelect={onModelSelect}
+      restoredAttachments={restoredAttachments}
+      onRestoredAttachmentsConsumed={onRestoredAttachmentsConsumed}
     />
   );
 }

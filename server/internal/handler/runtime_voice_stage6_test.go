@@ -5,8 +5,10 @@ package handler
 // Provider 全程 in-process stub，仅使用 fake key——不触真实 Gemini 端点。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,6 +172,73 @@ func TestVoiceGateway_DisableMidSessionGracefulTermination(t *testing.T) {
 	}
 
 	expectVoiceUnavailable(t, "instance_disabled_after_termination", startVoiceSession(t, agentID), "instance_disabled")
+}
+
+// §4.5 禁用 × D2 池会话（RUYI-717）：池会话把 voice_provider id 记进
+// live_session.runtime_instance_id，禁用轮询必须盯池实体的 enabled 开关。
+// 旧行为拿该 id 查 agent_runtime 永久 no rows——管理员禁用关不掉进行中的
+// 会话，且每个轮询周期刷一条 "voice disable poll failed"。provider 全程
+// in-process stub，仅使用 fake key。
+func TestVoiceGateway_PoolDisableMidSessionGracefulTermination(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	box := credentialTestBox(t)
+	stubProbeTarget(t, http.StatusOK)
+	providerID := seedVoiceProvider(t, "Pool Disable Mid Session", nil)
+	giveProviderCredential(t, box, providerID, voiceTestAPIKey)
+	agentID := dbfx.Agent(t, "Pool Disable Mid Session Agent", handlerTestRuntimeID(t),
+		testutil.Cols{"voice_provider_id": providerID})
+	newStubVoiceProvider(t)
+	srv := voiceGatewayServer(t)
+
+	previous := testHandler.VoiceDisablePollInterval
+	testHandler.VoiceDisablePollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { testHandler.VoiceDisablePollInterval = previous })
+
+	// The poll must run clean against the pool entity for the whole session
+	// lifetime: capture warnings and assert this entity's id never lands in a
+	// poll failure. Scoped by id — parallel tests in the package share the
+	// process-wide sink, but none of them log this fresh provider id.
+	var warnSink bytes.Buffer
+	previousLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&warnSink, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previousLog) })
+
+	conn := dialVoiceSession(t, srv, agentID)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, first, err := conn.ReadMessage(); err != nil || !strings.Contains(string(first), "setupComplete") {
+		t.Fatalf("expected setupComplete, got %v (%v)", first, err)
+	}
+	// A few poll ticks against the live pool session before the operator
+	// toggle — the buggy agent_runtime lookup logged a failure on each one.
+	time.Sleep(120 * time.Millisecond)
+
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE voice_provider SET enabled = false WHERE id = $1::uuid`, providerID,
+	); err != nil {
+		t.Fatalf("disable pool provider: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, err := conn.ReadMessage()
+	if err == nil {
+		t.Fatalf("expected the relay to close after the disable")
+	}
+	if cls, ok := err.(*websocket.CloseError); !ok || cls.Code != websocket.CloseNormalClosure {
+		t.Fatalf("expected a normal close frame (1000), got %v", err)
+	}
+
+	var status string
+	waitFor(t, 5*time.Second, func() bool {
+		scanErr := testPool.QueryRow(context.Background(),
+			`SELECT status::text FROM live_session WHERE agent_id = $1`, agentID).Scan(&status)
+		return scanErr == nil && status == "ended"
+	})
+
+	if warnLog := warnSink.String(); strings.Contains(warnLog, providerID) {
+		t.Fatalf("disable poll logged a failure for the pool entity: %s", warnLog)
+	}
 }
 
 // §4.5 失效→恢复：探针把凭据打成 credential_invalid 后新会话被拒（阶段 3

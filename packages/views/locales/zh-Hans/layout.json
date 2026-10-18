@@ -5,16 +5,18 @@
     "my_issues": "我的任务",
     "issues": "任务",
     "decisions": "决策中心",
+    "suspensions": "挂起中心",
     "projects": "项目",
     "autopilots": "自动化",
     "agents": "智能体",
     "squads": "小队",
-    "voice_runtimes": "语音运行时",
     "usage": "统计",
     "self_evolution": "自进化",
     "runtimes": "运行时",
+    "voice_runtimes": "语音运行时",
     "skills": "Skills",
     "settings": "设置",
+    "audit": "MCP 审计",
     "admin": "管理"
   },
   "tab": {
@@ -68,6 +70,9 @@
       "dismiss": "关闭"
     }
   },
+  "audit_view": {
+    "title": "MCP 审计", "description": "已记录 MCP 调用，包括拒绝和失败的请求。", "since": "起始时间", "since_placeholder": "起始时间（RFC3339）", "tool": "工具", "actor": "调用者", "actor_id": "调用者 ID", "result": "结果", "all_results": "全部结果", "result_success": "成功", "result_failure": "失败", "result_refused": "拒绝", "target": "目标", "target_type": "目标类型", "target_id": "目标 ID", "all_targets": "全部目标", "target_workspace": "工作区", "target_issue": "任务", "target_host": "主机", "apply": "应用", "loading": "正在加载审计事件...", "load_failed": "无法加载审计事件。", "empty": "没有符合这些筛选条件的审计事件。", "time": "时间", "reason": "原因", "started": "已开始"
+  },
   "mobile": {
     "agents": {
       "coming_soon": "智能体功能即将上线。"
@@ -79,6 +84,17 @@
       "type_project": "项目",
       "unavailable_a11y": "{{type}}不可用，点按取消固定",
       "unavailable": "{{type}}不可用 —— 点按取消固定"
+    },
+    "audit": {
+      "title": "MCP 审计",
+      "all": "全部",
+      "apply_filters": "应用筛选",
+      "load_failed": "无法加载审计事件。",
+      "empty": "没有符合此筛选条件的审计事件。",
+      "tool": "工具",
+      "actor_id": "调用者 ID",
+      "host_target_id": "主机目标 ID",
+      "since": "起始时间（RFC3339）"
     }
   }
 }

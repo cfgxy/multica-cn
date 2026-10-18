@@ -207,3 +207,29 @@ func TestRetentionGCThenReconcile(t *testing.T) {
 		t.Fatalf("reconcile after GC: %v", err)
 	}
 }
+
+func TestRetentionGCPrunesOnlyExpiredEvidenceMetadata(t *testing.T) {
+	mgr := retentionTestManager(t)
+	oldTask := "11111111-1111-4111-8111-111111111111"
+	newTask := "22222222-2222-4222-8222-222222222222"
+	oldPath := mgr.evidenceExpiryPath(oldTask)
+	newPath := mgr.evidenceExpiryPath(newTask)
+	now := time.Now().UTC()
+	if err := mgr.recordEvidenceExpiry(oldTask, now.Add(-evidenceExpiryMetadataRetention-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.recordEvidenceExpiry(newTask, now.Add(-evidenceExpiryMetadataRetention+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	gc := &RetentionGC{Mgr: mgr}
+	if _, err := gc.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expired metadata still exists (stat error %v)", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("metadata within classification window was removed: %v", err)
+	}
+}

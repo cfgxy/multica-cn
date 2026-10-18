@@ -33,8 +33,13 @@ grep -q '^autoinstall:' "$ud" && ok || fail "autoinstall section missing"
 grep -q '^  version: 1' "$ud" && ok || fail "autoinstall version missing"
 grep -q '^  shutdown: poweroff' "$ud" && ok || fail "shutdown: poweroff missing (install VM must power off for finalize)"
 
-# --- 2. identity: slotadmin + acceptance pubkey ------------------------------
-grep -q 'username: slotadmin' "$ud" && ok || fail "slotadmin user missing"
+# --- 2. identity: pool-contract user rpmadmin + acceptance pubkey ------------
+# hyperv.guest_user defaults to rpmadmin (pool config, docs/06 §8.3) with no
+# per-template override — RUYI-727: the slotadmin rename baked images no pool
+# credential could reach (new-create publickey denial 2/2). The seed identity
+# user MUST stay on the pool contract.
+grep -q 'username: rpmadmin' "$ud" && ok || fail "rpmadmin identity user missing"
+if grep -q 'slotadmin' "$ud"; then fail "stale slotadmin user still present in seed"; else ok; fi
 grep -q 'hostname: multica-slot-base' "$ud" && ok || fail "hostname missing"
 grep -q 'slot-acceptance-test' "$ud" && ok || fail "acceptance pubkey not embedded"
 
@@ -52,8 +57,15 @@ for bad in build-essential gcc make dkms linux-headers; do
 done
 
 # --- 6. sudoers + fstrim ------------------------------------------------------
-grep -q "slotadmin ALL=(ALL) NOPASSWD:ALL" "$ud" && ok || fail "NOPASSWD sudoers missing"
+grep -q "rpmadmin ALL=(ALL) NOPASSWD:ALL" "$ud" && ok || fail "NOPASSWD sudoers missing"
 grep -q 'systemctl enable fstrim.timer' "$ud" && ok || fail "fstrim.timer enable missing"
+
+# --- 6b. agent runtime home is pipeline-native (RUYI-727) ---------------------
+# The delivered 2026.10.12 image carries /home/agent only via a manual
+# differential-VM patch (陆小发 06:49 窗口申报); a re-bake from seed must
+# reproduce it or the AGENT_HOME 出厂检查 regresses.
+grep -q 'useradd -m -d /home/agent -s /bin/bash agent' "$ud" && ok || fail "agent user creation missing"
+grep -q 'chmod 750 /home/agent' "$ud" && ok || fail "agent home mode 750 missing"
 
 # --- 7. guest scripts embedded byte-identical (base64 late-commands) ---------
 for g in guard-scan.sh artifact-install.sh slot-inventory.sh; do
@@ -72,6 +84,16 @@ jq -e '.versions.node_major == 22' "$sm" >/dev/null && ok || fail "manifest node
 jq -e '.versions.postgres_major == 16' "$sm" >/dev/null && ok || fail "manifest postgres_major"
 jq -e --arg iso "${UBUNTU_ISO_SHA256:-97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8}" \
   '.versions.iso_sha256 == $iso' "$sm" >/dev/null && ok || fail "manifest iso sha256"
+
+# --- 9b. seed manifest: identity block anchors the authorized key ------------
+# Fingerprint-grade reconciliation anchor (RUYI-727): a bake can be checked
+# against the production pool key without ever reading the image or touching
+# private material.
+jq -e '.identity.user == "rpmadmin"' "$sm" >/dev/null && ok || fail "manifest identity.user"
+want_pksha="$(printf '%s' 'AAAAC3NzaC1lZDI1NTE1AAAAIT3stK3yTESTPUBLICKEYMATERIAL000000000' | sha256sum | awk '{print $1}')"
+jq -e --arg h "$want_pksha" '.identity.pubkey_sha256 == $h' "$sm" >/dev/null && ok || fail "manifest identity.pubkey_sha256"
+jq -e '.identity.pubkey_fingerprint == null or (.identity.pubkey_fingerprint | startswith("SHA256:"))' "$sm" >/dev/null \
+  && ok || fail "manifest identity.pubkey_fingerprint"
 for g in guard-scan.sh artifact-install.sh slot-inventory.sh; do
   want="$(sha256sum "$here/guest/$g" | awk '{print $1}')"
   jq -e --arg n "$g" --arg h "$want" '.guest_scripts[] | select(.name == $n) | .sha256 == $h' "$sm" >/dev/null \

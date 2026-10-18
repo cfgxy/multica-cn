@@ -19,10 +19,15 @@ dkms/linux-headers，`build-seed.test.sh` 负断言钉死）。
   逻辑上限（`New-VHD -Differencing` 不接受 `-SizeBytes`，上限必须覆盖最大模板
   disk_gb——RUYI-679 实测语义）。
 
-与 P0 版本的差异：用户 `slotadmin`（原 rpmadmin，rpm 项目专用）；新增
+与 P0 版本的差异：身份用户钉在池契约值 `rpmadmin`（hyperv `guest_user` 为
+provider 级配置、默认 rpmadmin 且无 per-template 覆盖——RUYI-727 修正：曾改用
+`slotadmin`，烘焙出的镜像没有池可登录用户，新建租约 publickey 全拒）；新增
 PostgreSQL/node/jq/unzip/git 等运行时与调试工具；guest 脚本以 base64
-late-commands 内嵌到 `/usr/local/lib/multica/`；密钥仍为 acceptance 公钥 +
-一次性控制台救援密码（渲染时生成，只落 `$6$` 哈希与本地 600 权限文件）。
+late-commands 内嵌到 `/usr/local/lib/multica/`；seed 追建 `agent` 运行时用户与
+`/home/agent`（750），重烘焙幂等复现交付态（2026.10.12 交付版该项靠差分 VM
+手工补齐，不入 seed 无法重建）；seed-manifest 锚定 `identity` 块（用户 + 授权
+公钥指纹级哈希）作出厂对账锚点；密钥仍为 acceptance 公钥 + 一次性控制台救援
+密码（渲染时生成，只落 `$6$` 哈希与本地 600 权限文件）。
 
 ## 流程
 
@@ -49,10 +54,28 @@ late-commands 内嵌到 `/usr/local/lib/multica/`；密钥仍为 acceptance 公�
   -BaseDir I:\resource-pool\base -ImageVersion 2026.10.11
 ```
 
+## 出厂对账（⑥，RUYI-727 起必做；缺此闸门曾放行不可引导镜像）
+
+finalize 后、接线生产前，对交付镜像执行两道机械断言（任一失败即拒绝交付）：
+
+1. **指纹级**：manifest `identity.pubkey_sha256` 与生产池公钥体哈希一致——
+
+   ```bash
+   awk 'NR==1{print $2}' <生产 acceptance.pub> | tr -d '\n' | sha256sum
+   ```
+
+   与 `multica-slot-base@<version>.manifest.json` 的
+   `seed.identity.pubkey_sha256` 逐字比对。
+2. **引导级**：差分 VM 引导交付镜像后，宿主机用 acceptance 私钥做
+   `ssh -o BatchMode=yes -i <acceptance 私钥> rpmadmin@<vm-ip> true`，必须
+   exit 0。注意须在可读私钥的交互会话执行（计划任务上下文会因 ACL 拒读私钥，
+   RUYI-680 窗口实测）；验证 VM 用后即毁。
+
 ## 版本化与产物
 
 - **镜像名**：`multica-slot-base@<version>.vhdx` + 同名 `.manifest.json`
   （schema v1：versions{ubuntu/iso sha256/node_major/postgres_major}、
+  identity{user/pubkey_sha256/pubkey_fingerprint}、
   guest_scripts[{name,sha256}]、output{size/sha256/read_only}）。
 - **升版 = 新文件**：finalize 遇同名 base 直接 throw——只读 base 永不原地覆盖；
   池侧模板 `tpl-multica-dev/qa` 的 `image_ref` 按版本引用（池仓段交付）。

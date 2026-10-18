@@ -388,6 +388,25 @@ func (c Config) backpressureThresholds() backpressureThresholds {
 	}
 }
 
+// backpressureCard renders the boot config as its wire card: version 0
+// (not DB-managed) and the "env" source, until a saved settings row replaces
+// or shadows it over the heartbeat ack (RUYI-618 workspace cards,
+// RUYI-729 host cards).
+func (c Config) backpressureCard() protocol.DaemonBackpressureConfig {
+	return protocol.DaemonBackpressureConfig{
+		Enabled:               true,
+		MemHighPct:            c.BackpressureMemHighPct,
+		MemRecoveryPct:        c.BackpressureMemRecoveryPct,
+		SwapHighPct:           c.BackpressureSwapHighPct,
+		SwapRecoveryPct:       c.BackpressureSwapRecoveryPct,
+		PSIHighPct:            c.BackpressurePSIHighPct,
+		PSIRecoveryPct:        c.BackpressurePSIRecoveryPct,
+		SampleIntervalSeconds: int(c.BackpressureSampleInterval / time.Second),
+		WindowSize:            c.BackpressureWindowSize,
+		Source:                protocol.BackpressureSourceEnv,
+	}
+}
+
 // validateBackpressureThresholds adapts the in-memory threshold pair to the
 // wire-config validation in protocol — the single rulebook the settings API,
 // the heartbeat delivery, and this boot path all enforce. Intervals are
@@ -407,18 +426,40 @@ func validateBackpressureThresholds(th backpressureThresholds, sampleInterval ti
 	return cfg.Validate()
 }
 
-// backpressureRuntime is the gate's active configuration: master switch,
-// sampling cadence, and the window-smoothed machine built from the
-// thresholds. Swapped atomically whenever a heartbeat ack delivers
-// workspace settings (RUYI-618) — the watcher re-reads it every cycle, so a
-// settings save reaches a running daemon without a restart. The machine is
-// rebuilt on each apply, restarting the smoothing window on the new
-// parameters (while it refills, the mean of the samples so far applies, so
-// the gate stays responsive).
+// backpressureRuntime is one gate's active configuration: the wire card it
+// was built from (echoed back inside reports so the UI and the event
+// history show the rule actually in force — RUYI-729), the master switch,
+// the sampling cadence, and the window-smoothed machine built from the
+// thresholds. Swapped atomically whenever a heartbeat ack delivers settings
+// (workspace cards, RUYI-618; the daemon-host override card, RUYI-729) —
+// the watcher re-reads it every cycle, so a settings save reaches a running
+// daemon without a restart. The machine is rebuilt on each apply, carrying
+// the previous window over so the new thresholds judge the same history the
+// old ones did (while a fresh window refills, the mean of the samples so
+// far applies, so the gate stays responsive).
 type backpressureRuntime struct {
+	config   protocol.DaemonBackpressureConfig
 	enabled  bool
 	interval time.Duration
 	machine  *backpressureMachine
+}
+
+// newBackpressureRuntime builds the container from a wire card. The card is
+// the single source: thresholds and cadence are read back out of it so the
+// runtime can never drift from what it reports. The machine is built even
+// for a disabled card — enabled=false just stops the watcher from advancing
+// it (the slot is released instead), so re-enabling is a pure flag flip.
+func newBackpressureRuntime(card protocol.DaemonBackpressureConfig, th backpressureThresholds) *backpressureRuntime {
+	rt := &backpressureRuntime{
+		config:   card,
+		enabled:  card.Enabled,
+		interval: time.Duration(card.SampleIntervalSeconds) * time.Second,
+		machine:  newBackpressureMachine(th, card.WindowSize),
+	}
+	if rt.interval <= 0 {
+		rt.interval = DefaultBackpressureSampleInterval
+	}
+	return rt
 }
 
 // backpressureWorkspaceState is one workspace's applied card plus its gate's
@@ -471,10 +512,17 @@ func (d *Daemon) bootFallbackActive(entries map[string]*backpressureWorkspaceSta
 }
 
 // backpressureObservationForWorkspace snapshots the latest gate evaluation
-// for one workspace: its applied card's observation, or the boot-default
-// observation while the workspace has no card of its own. nil = this
-// workspace's gate has never observed (or is disabled) — fail open.
+// for one workspace. Precedence: the daemon-host override observation while
+// a host card is in force (RUYI-729 — a starving machine must pause all its
+// workspaces regardless of their own cards, and a host card with
+// Enabled=false fails the whole machine open), then the workspace's applied
+// card's observation, then the boot-default observation while the workspace
+// has no card of its own. nil = this workspace's gate has never observed
+// (or is disabled) — fail open.
 func (d *Daemon) backpressureObservationForWorkspace(workspaceID string) *backpressureObservation {
+	if d.bpHostRuntime.Load() != nil {
+		return d.bpHostState.Load()
+	}
 	if e := d.backpressureWorkspaceEntries()[workspaceID]; e != nil {
 		return e.state.Load()
 	}
@@ -559,7 +607,11 @@ func (d *Daemon) anyBackpressureBlocked(runtimeIDs []string) bool {
 
 // backpressureReportForWorkspace snapshots one workspace's gate state for
 // upstream reporting. nil when that gate has never run (or is disabled) —
-// the report key is omitted from payloads in that case.
+// the report key is omitted from payloads in that case. The config card
+// actually in force rides along (RUYI-729) with per-condition readings, so
+// the server's event history and the UI can show exactly which rule was
+// live: the host override card while it shadows, else the workspace's
+// applied card, else the boot card — matching the observation precedence.
 func (d *Daemon) backpressureReportForWorkspace(workspaceID string) *protocol.DaemonBackpressureReport {
 	st := d.backpressureObservationForWorkspace(workspaceID)
 	if st == nil {
@@ -567,6 +619,19 @@ func (d *Daemon) backpressureReportForWorkspace(workspaceID string) *protocol.Da
 	}
 	rep := st.DaemonBackpressureReport
 	rep.DeferredClaims = d.bpDeferred.Load()
+	var cfg *protocol.DaemonBackpressureConfig
+	if rt := d.bpHostRuntime.Load(); rt != nil {
+		cfg = &rt.config
+	} else if e := d.backpressureEntryFor(workspaceID); e != nil {
+		cfg = &e.runtime.config
+	} else if boot := d.bpRuntime.Load(); boot != nil {
+		cfg = &boot.config
+	}
+	if cfg != nil {
+		c := *cfg
+		rep.Config = &c
+		rep.Conditions = conditionReadings(&c, &st.DaemonBackpressureReport)
+	}
 	return &rep
 }
 
@@ -603,9 +668,9 @@ func (d *Daemon) backpressureReportForClaim(runtimeIDs []string) *protocol.Daemo
 
 // backpressureSampleInterval is the cadence the watcher currently runs at:
 // the fastest cadence any enabled gate source demands (each workspace's
-// applied card plus the boot default), else the code default. The minimum
-// keeps every workspace's card honest — a 1s workspace is not slowed down
-// by a 60s neighbor.
+// applied card, the boot default, and the daemon-host override card
+// (RUYI-729)), else the code default. The minimum keeps every card honest —
+// a 1s workspace is not slowed down by a 60s neighbor.
 func (d *Daemon) backpressureSampleInterval() time.Duration {
 	fastest := time.Duration(0)
 	consider := func(rt *backpressureRuntime) {
@@ -614,6 +679,9 @@ func (d *Daemon) backpressureSampleInterval() time.Duration {
 		}
 	}
 	consider(d.bpRuntime.Load())
+	if host := d.bpHostRuntime.Load(); host != nil {
+		consider(host)
+	}
 	for _, e := range d.backpressureWorkspaceEntries() {
 		consider(e.runtime)
 	}
@@ -667,14 +735,54 @@ func (d *Daemon) runBackpressureWatcher(ctx context.Context) {
 // procfs mount cannot flood the log at the sampling cadence.
 const backpressureWarnInterval = time.Minute
 
+// backpressureSamplerFailed throttles sampler-failure warnings so a broken
+// procfs mount cannot flood the log at the sampling cadence, and reports
+// whether the tick must hold the previous gate state (it must — an
+// unreadable /proc must neither trip nor clear a gate on a guess).
+func (d *Daemon) backpressureSamplerFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if last := d.bpLastWarn.Load(); last == 0 || time.Since(time.Unix(0, last)) > backpressureWarnInterval {
+		if d.bpLastWarn.CompareAndSwap(last, time.Now().UnixNano()) {
+			d.logger.Warn("backpressure sampler failed; holding previous gate state",
+				"error", err)
+		}
+	}
+	return true
+}
+
 // backpressureTick samples host memory once and folds the sample into every
 // enabled gate source: each workspace's applied card advances its own
 // machine and observation (F1), and the boot-default slot advances only
 // while some watched workspace still lacks a card of its own (the
-// pre-first-ack window; see bootFallbackActive). One failed sample holds
-// every previous state — an unreadable /proc must neither trip nor clear a
-// gate on a guess.
+// pre-first-ack window; see bootFallbackActive). While a daemon-host
+// override card is in force (RUYI-729) the host slot is the only one
+// evaluated — it speaks for every workspace on this machine — and the
+// shadowed boot and workspace latches are released every tick so stale
+// shadows can never resume governing after the override lifts (they
+// re-latch from their carried windows on the first tick after removal).
+// One failed sample holds every previous state — an unreadable /proc must
+// neither trip nor clear a gate on a guess.
 func (d *Daemon) backpressureTick() {
+	if host := d.bpHostRuntime.Load(); host != nil {
+		if host.enabled {
+			sample, err := d.bpSource.sample()
+			if d.backpressureSamplerFailed(err) {
+				return
+			}
+			d.advanceBackpressureGate(&d.bpHostState, host.machine, sample, "scope", "daemon-host")
+		} else {
+			// Host-level disable: fail the whole machine open.
+			d.releaseBackpressureSlot(&d.bpHostState, "scope", "daemon-host")
+		}
+		d.releaseBackpressureSlot(&d.bpState, "scope", "boot-default")
+		for wsID, e := range d.backpressureWorkspaceEntries() {
+			d.releaseBackpressureSlot(&e.state, "workspace_id", wsID)
+		}
+		return
+	}
+
 	boot := d.bpRuntime.Load()
 	entries := d.backpressureWorkspaceEntries()
 	bootActive := boot != nil && boot.enabled && d.bootFallbackActive(entries)
@@ -703,13 +811,7 @@ func (d *Daemon) backpressureTick() {
 	}
 
 	sample, err := d.bpSource.sample()
-	if err != nil {
-		if last := d.bpLastWarn.Load(); last == 0 || time.Since(time.Unix(0, last)) > backpressureWarnInterval {
-			if d.bpLastWarn.CompareAndSwap(last, time.Now().UnixNano()) {
-				d.logger.Warn("backpressure sampler failed; holding previous gate state",
-					"error", err)
-			}
-		}
+	if d.backpressureSamplerFailed(err) {
 		return
 	}
 
@@ -815,34 +917,37 @@ func (d *Daemon) applyBackpressureConfig(workspaceID, runtimeID string, cfg *pro
 		d.logger.Warn("ignoring invalid workspace backpressure config", "workspace_id", workspaceID, "runtime_id", runtimeID, "error", err)
 		return
 	}
-	rt := &backpressureRuntime{
-		enabled:  cfg.Enabled,
-		interval: time.Duration(cfg.SampleIntervalSeconds) * time.Second,
-		machine: newBackpressureMachine(backpressureThresholds{
-			MemHighPct:      cfg.MemHighPct,
-			MemRecoveryPct:  cfg.MemRecoveryPct,
-			SwapHighPct:     cfg.SwapHighPct,
-			SwapRecoveryPct: cfg.SwapRecoveryPct,
-			PSIHighPct:      cfg.PSIHighPct,
-			PSIRecoveryPct:  cfg.PSIRecoveryPct,
-		}, cfg.WindowSize),
-	}
+	rt := newBackpressureRuntime(*cfg, backpressureThresholds{
+		MemHighPct:      cfg.MemHighPct,
+		MemRecoveryPct:  cfg.MemRecoveryPct,
+		SwapHighPct:     cfg.SwapHighPct,
+		SwapRecoveryPct: cfg.SwapRecoveryPct,
+		PSIHighPct:      cfg.PSIHighPct,
+		PSIRecoveryPct:  cfg.PSIRecoveryPct,
+	})
 
 	d.bpApplyMu.Lock()
 	entries := d.backpressureWorkspaceEntries()
-	if prev := entries[workspaceID]; prev != nil && prev.runtime.enabled == rt.enabled &&
-		prev.runtime.interval == rt.interval && prev.runtime.machine.thresholds == rt.machine.thresholds &&
-		prev.runtime.machine.windowSize == rt.machine.windowSize {
+	if prev := entries[workspaceID]; prev != nil && prev.runtime.config == rt.config {
 		d.bpApplyMu.Unlock()
 		return
 	}
 	// Copy-on-write swap: readers (claim filter, reports) never take the
 	// apply lock. The previous observation carries over so a latched episode
 	// survives a threshold change until the next tick re-evaluates it on the
-	// new machine — same shape as the pre-F1 single-gate apply.
+	// new machine — same shape as the pre-F1 single-gate apply. The previous
+	// machine's smoothing window carries over too, so the new thresholds
+	// judge the same history the old ones did instead of starting from an
+	// empty window (RUYI-729).
 	entry := &backpressureWorkspaceState{runtime: rt}
 	if prev := entries[workspaceID]; prev != nil {
 		entry.state.Store(prev.state.Load())
+		if prev.runtime.machine != nil && rt.machine != nil {
+			rt.machine.window = append(rt.machine.window, prev.runtime.machine.window...)
+			if len(rt.machine.window) > rt.machine.windowSize {
+				rt.machine.window = rt.machine.window[len(rt.machine.window)-rt.machine.windowSize:]
+			}
+		}
 	}
 	next := make(map[string]*backpressureWorkspaceState, len(entries)+1)
 	for k, v := range entries {
@@ -897,4 +1002,140 @@ func (d *Daemon) dropBackpressureWorkspace(workspaceID string) {
 	d.bpWorkspaces.Store(&next)
 	d.bpApplyMu.Unlock()
 	d.releaseBackpressureSlot(&cur.state, "workspace_id", workspaceID)
+}
+
+// applyBackpressureHostConfig hot-applies the daemon-host override card
+// carried on a heartbeat ack (RUYI-729). While in force it shadows the
+// boot default and every workspace card on this machine (see
+// backpressureObservationForWorkspace); a changed card rebuilds the host
+// machine while keeping the smoothing window's samples, so the next
+// evaluation blends history under the new lines. Invalid configs are
+// ignored loudly and the previously in-force card stays authoritative —
+// fail-closed on config, fail-open on scheduling. Identical repeat
+// deliveries are dropped silently so the per-beat delivery cannot churn the
+// log. Disabling releases the host episode immediately and fails the
+// override open until a re-enable.
+func (d *Daemon) applyBackpressureHostConfig(runtimeID string, card *protocol.DaemonBackpressureConfig) {
+	if card == nil {
+		return
+	}
+	if err := card.Validate(); err != nil {
+		d.logger.Warn("ignoring invalid daemon backpressure config", "runtime_id", runtimeID, "error", err)
+		return
+	}
+	if card.Source == protocol.BackpressureSourceDB {
+		d.bpDBManaged.Store(true)
+	}
+	rt := newBackpressureRuntime(*card, backpressureThresholds{
+		MemHighPct:      card.MemHighPct,
+		MemRecoveryPct:  card.MemRecoveryPct,
+		SwapHighPct:     card.SwapHighPct,
+		SwapRecoveryPct: card.SwapRecoveryPct,
+		PSIHighPct:      card.PSIHighPct,
+		PSIRecoveryPct:  card.PSIRecoveryPct,
+	})
+
+	d.bpApplyMu.Lock()
+	prev := d.bpHostRuntime.Load()
+	if prev != nil && prev.config == rt.config {
+		d.bpApplyMu.Unlock()
+		return
+	}
+	if prev != nil && prev.machine != nil && rt.machine != nil {
+		rt.machine.window = append(rt.machine.window, prev.machine.window...)
+		if len(rt.machine.window) > rt.machine.windowSize {
+			rt.machine.window = rt.machine.window[len(rt.machine.window)-rt.machine.windowSize:]
+		}
+	}
+	d.bpHostRuntime.Store(rt)
+	// Same wake-once-per-swap discipline as the workspace apply: the watcher
+	// re-evaluates on the new card right away instead of waiting out the old
+	// interval.
+	nextCh := make(chan struct{})
+	if prevCh := d.bpReload.Swap(&nextCh); prevCh != nil {
+		close(*prevCh)
+	}
+	d.bpApplyMu.Unlock()
+
+	if !card.Enabled {
+		d.releaseBackpressureSlot(&d.bpHostState, "scope", "daemon-host")
+		d.logger.Info("daemon backpressure settings applied — gate disabled",
+			"runtime_id", runtimeID)
+		return
+	}
+	d.logger.Info("daemon backpressure settings applied",
+		"runtime_id", runtimeID,
+		"config_version", card.ConfigVersion,
+		"mem_high_pct", card.MemHighPct, "mem_recovery_pct", card.MemRecoveryPct,
+		"swap_high_pct", card.SwapHighPct, "swap_recovery_pct", card.SwapRecoveryPct,
+		"psi_high_pct", card.PSIHighPct, "psi_recovery_pct", card.PSIRecoveryPct,
+		"sample_interval_seconds", card.SampleIntervalSeconds, "window_size", card.WindowSize)
+}
+
+// applyBackpressureHostConfigFallback converges the host override away when
+// a heartbeat ack stops carrying a daemon card. For a daemon that once
+// carried a saved card that nil means the owner deleted the settings row —
+// keeping the last override forever was the D1 defect (RUYI-729 rework):
+// the workspace cards (re-delivered every beat) and the boot default govern
+// again without a restart, on the very next tick. A daemon that never
+// received a saved card keeps its boot config; "no card" there is just the
+// unconfigured state, not a reset signal. Repeat calls converge on the
+// CAS in here, so beating here costs one atomic read.
+func (d *Daemon) applyBackpressureHostConfigFallback(runtimeID string) {
+	if !d.bpDBManaged.CompareAndSwap(true, false) {
+		return
+	}
+	d.bpApplyMu.Lock()
+	if prev := d.bpHostRuntime.Swap(nil); prev != nil {
+		d.logger.Info("daemon backpressure settings removed — workspace card governs again",
+			"runtime_id", runtimeID, "prev_config_version", prev.config.ConfigVersion)
+	}
+	d.bpApplyMu.Unlock()
+	// The shadowed slots stopped evaluating while the override was in
+	// force, so their latches are stale by definition; fail them open and
+	// let the next tick (woken immediately below) re-latch them from their
+	// carried windows.
+	d.releaseBackpressureSlot(&d.bpState, "scope", "boot-default")
+	for wsID, e := range d.backpressureWorkspaceEntries() {
+		d.releaseBackpressureSlot(&e.state, "workspace_id", wsID)
+	}
+	nextCh := make(chan struct{})
+	if prevCh := d.bpReload.Swap(&nextCh); prevCh != nil {
+		close(*prevCh)
+	}
+}
+
+// conditionReadings renders the report's smoothed values against the card's
+// high watermarks — the full current-vs-threshold triple for every
+// condition, including the ones not tripping, so "how close are we to the
+// line" is answerable without knowing the config's semantics.
+func conditionReadings(card *protocol.DaemonBackpressureConfig, rep *protocol.DaemonBackpressureReport) []protocol.DaemonBackpressureCondition {
+	th := backpressureThresholds{
+		MemHighPct:      card.MemHighPct,
+		MemRecoveryPct:  card.MemRecoveryPct,
+		SwapHighPct:     card.SwapHighPct,
+		SwapRecoveryPct: card.SwapRecoveryPct,
+		PSIHighPct:      card.PSIHighPct,
+		PSIRecoveryPct:  card.PSIRecoveryPct,
+	}
+	return []protocol.DaemonBackpressureCondition{
+		{
+			Condition: "mem",
+			Value:     rep.MemAvailablePct,
+			Threshold: card.MemHighPct,
+			Triggered: th.memLow(rep.MemAvailablePct),
+		},
+		{
+			Condition: "swap",
+			Value:     rep.SwapUsedPct,
+			Threshold: card.SwapHighPct,
+			Triggered: th.swapHigh(rep.SwapUsedPct),
+		},
+		{
+			Condition: "psi",
+			Value:     rep.PSIMemorySomeAvg10,
+			Threshold: card.PSIHighPct,
+			Triggered: th.psiHigh(rep.PSIMemorySomeAvg10, rep.PSIReadOK),
+		},
+	}
 }

@@ -43,3 +43,23 @@ export function useAdminAddWorkspaceMember() {
     },
   });
 }
+
+export function useAdminUpdateFileReadPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (policy: import("./types").AdminFileReadPolicy) => api.adminUpdateFileReadPolicy(policy),
+    onSuccess: (policy) => {
+      qc.setQueryData(adminKeys.fileReadPolicy(), policy);
+    },
+  });
+}
+
+export function useAdminRestoreFileReadPolicy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (version: number) => api.adminRestoreFileReadPolicy(version),
+    onSuccess: (policy) => {
+      qc.setQueryData(adminKeys.fileReadPolicy(), policy);
+    },
+  });
+}

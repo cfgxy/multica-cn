@@ -59,12 +59,50 @@ function makeClient(
 }
 
 describe("MulticaClient", () => {
+  it("uses the native Autopilot routes and forwards an idempotency key", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { id: "run-1" }, calls));
+    await client.getAutopilot("ws", "ap-1");
+    await client.listAutopilotRuns("ws", "ap-1", { limit: 10, offset: 20, source: "scheduled" });
+    await client.getAutopilotRun("ws", "ap-1", "run-1");
+    await client.triggerAutopilot("ws", "ap-1", { mode: "current" }, "stable-key");
+    expect(calls.map((call) => call.url.pathname)).toEqual([
+      "/api/autopilots/ap-1",
+      "/api/autopilots/ap-1/runs",
+      "/api/autopilots/ap-1/runs/run-1",
+      "/api/autopilots/ap-1/trigger",
+    ]);
+    expect(calls[1]?.url.searchParams.get("limit")).toBe("10");
+    expect(calls[1]?.url.searchParams.get("source")).toBe("scheduled");
+    expect((calls[3]?.init.headers as Record<string, string>)["Idempotency-Key"]).toBe("stable-key");
+  });
+
   it("sends the PAT as a bearer token", async () => {
     const calls: CapturedCall[] = [];
     const client = makeClient(makeFetch(200, [], calls));
     await client.listWorkspaces();
     const headers = calls[0]?.init.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("requests bounded run activity for the selected issue and run", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { progress_assessment: { status: "unknown", basis: [] } }, calls));
+    await client.getIssueRunActivity("workspace-1", "VOI-1", "run/1", {
+      after_seq: 7,
+      semantic_limit: 20,
+      stream: "stderr",
+      tail_bytes: 1024,
+      worker_cursor: "opaque cursor",
+    });
+    const url = calls[0]?.url;
+    expect(url?.pathname).toBe("/api/issues/VOI-1/tasks/run%2F1/activity");
+    expect(calls[0]?.init.headers).toMatchObject({ "X-Workspace-Slug": "workspace-1" });
+    expect(url?.searchParams.get("after_seq")).toBe("7");
+    expect(url?.searchParams.get("semantic_limit")).toBe("20");
+    expect(url?.searchParams.get("stream")).toBe("stderr");
+    expect(url?.searchParams.get("tail_bytes")).toBe("1024");
+    expect(url?.searchParams.get("worker_cursor")).toBe("opaque cursor");
   });
 
   it("routes slug workspaces through X-Workspace-Slug", async () => {
@@ -512,4 +550,17 @@ describe("project resource client methods", () => {
     expect(profile.entries).toHaveLength(1);
     expect(profile.entry_count).toBe(1);
   });
+});
+
+it("sends file audit instance identity only in headers when finishing an invocation", async () => {
+  const calls: CapturedCall[] = [];
+  const client = new MulticaClient({
+    serverUrl: "http://localhost:3000", token: TOKEN,
+    auditServiceCredential: "audit-test", mcpInstanceId: "instance-test",
+    fileAccessInstanceCredential: "instance-test-credential",
+    fetchImpl: makeFetch(200, { status: "recorded" }, calls), logger: silentLogger(),
+  });
+  expect(await client.finishMcpInvocationAudit({ invocation_id: "invocation-test", instance_id: "instance-test", operation_id: "operation-test", status: "success", duration_ms: 3 })).toBe("recorded");
+  expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ invocation_id: "invocation-test", operation_id: "operation-test", status: "success", duration_ms: 3 });
+  expect((calls[0]?.init.headers as Record<string, string>)["X-Multica-MCP-Instance-ID"]).toBe("instance-test");
 });
