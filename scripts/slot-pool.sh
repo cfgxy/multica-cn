@@ -314,10 +314,18 @@ _guard_prehook() {
     printf 'verdict: blocked (fail-closed: guard stdout has no verdict line)\n'
     return 1
   fi
-  if [ "$verdict" = "disabled" ]; then
-    printf 'verdict: disabled\n'
-    return 0
-  fi
+  case "$verdict" in
+    pass|evidence) ;;
+    blocked)
+      printf 'verdict: blocked (fail-closed: guard exit_code=0 with blocked verdict)\n'
+      return 1 ;;
+    disabled)
+      printf 'verdict: blocked (fail-closed: unexpected disabled verdict)\n'
+      return 1 ;;
+    *)
+      printf 'verdict: blocked (fail-closed: unknown guard verdict)\n'
+      return 1 ;;
+  esac
   local archived
   archived="$(_archive_guard_evidence "$exec_id")" || return 1
   printf '%s\n' "$archived"
