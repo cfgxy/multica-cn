@@ -63,6 +63,7 @@ export type NavLabelKey =
   | "runtimes"
   | "skills"
   | "settings"
+  | "audit"
   | "admin";
 
 /** Stable identifier for each workspace navigation page. */
@@ -82,6 +83,7 @@ export type WorkspacePageKey =
   | "runtimes"
   | "skills"
   | "settings"
+  | "audit"
   | "admin";
 
 export interface WorkspacePage {
@@ -125,6 +127,7 @@ export const WORKSPACE_PAGES: Record<WorkspacePageKey, WorkspacePage> = {
   runtimes: { segment: "runtimes", icon: "Monitor", navKey: "runtimes" },
   skills: { segment: "skills", icon: "BookOpenText", navKey: "skills" },
   settings: { segment: "settings", icon: "Settings", navKey: "settings" },
+  audit: { segment: "audit", icon: "Shield", navKey: "audit" },
   // RUYI-47: instance-level admin area. The registry entry gives the tab
   // bar and search an icon/page mapping; the sidebar entry itself stays
   // gated on the super-admin flag.
