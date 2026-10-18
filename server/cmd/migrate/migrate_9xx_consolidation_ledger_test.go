@@ -160,6 +160,8 @@ var postConsolidationStems = []string{
 	"975_daemon_file_access",          // RUYI-789
 	"975_file_access_target_id_index", // RUYI-789
 	"975_file_operation_id_index",     // RUYI-789
+	"976_pull_request_base_branch",    // RUYI-773
+	"978_github_pr_review_decision",   // RUYI-773
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
