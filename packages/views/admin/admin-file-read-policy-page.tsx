@@ -73,14 +73,20 @@ export function AdminFileReadPolicyPage() {
               <Input
                 aria-label={t(($) => $.file_read_policy.pattern)}
                 value={rule.pattern}
-                onChange={(event) => setRules((current) => current.map((item, i) =>
-                  i === index ? { ...item, pattern: event.currentTarget.value } : item))}
+                onChange={(event) => {
+                  const pattern = event.currentTarget.value;
+                  setRules((current) => current.map((item, i) =>
+                    i === index ? { ...item, pattern } : item));
+                }}
               />
               <Input
                 aria-label={t(($) => $.file_read_policy.description_label)}
                 value={rule.description}
-                onChange={(event) => setRules((current) => current.map((item, i) =>
-                  i === index ? { ...item, description: event.currentTarget.value } : item))}
+                onChange={(event) => {
+                  const description = event.currentTarget.value;
+                  setRules((current) => current.map((item, i) =>
+                    i === index ? { ...item, description } : item));
+                }}
               />
               <Button
                 type="button"
@@ -98,13 +104,19 @@ export function AdminFileReadPolicyPage() {
             aria-label={t(($) => $.file_read_policy.pattern)}
             placeholder={t(($) => $.file_read_policy.pattern_placeholder)}
             value={newRule.pattern}
-            onChange={(event) => setNewRule((current) => ({ ...current, pattern: event.currentTarget.value }))}
+            onChange={(event) => {
+              const pattern = event.currentTarget.value;
+              setNewRule((current) => ({ ...current, pattern }));
+            }}
           />
           <Input
             aria-label={t(($) => $.file_read_policy.description_label)}
             placeholder={t(($) => $.file_read_policy.description_placeholder)}
             value={newRule.description}
-            onChange={(event) => setNewRule((current) => ({ ...current, description: event.currentTarget.value }))}
+            onChange={(event) => {
+              const description = event.currentTarget.value;
+              setNewRule((current) => ({ ...current, description }));
+            }}
           />
           <Button type="submit" variant="outline">{t(($) => $.file_read_policy.add)}</Button>
         </form>
