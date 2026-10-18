@@ -538,20 +538,6 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	targetID := "heartbeat-files-" + uuid.NewString()
 	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
 	operationID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
-	var claimable int
-	dbfx.QueryRow(t, `
-		SELECT count(*) FROM daemon_file_operation AS candidate
-		JOIN daemon_file_access_target AS target ON target.id = candidate.target_id
-			AND target.runtime_id = candidate.runtime_id AND target.workspace_id = candidate.workspace_id
-		WHERE candidate.id = $1 AND candidate.status = 'pending'
-			AND target.enabled = TRUE AND target.roots <> '[]'::jsonb
-			AND candidate.requester_id IS NOT NULL
-			AND target.workspace_acl ? candidate.workspace_id::text
-			AND (target.member_acl = '[]'::jsonb OR target.member_acl ? candidate.requester_id::text)
-	`, operationID).Scan(&claimable)
-	if claimable != 1 {
-		t.Fatalf("fixture file operation is not claimable: count=%d", claimable)
-	}
 	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
 	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
 	var response struct {
@@ -562,9 +548,7 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
 	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 {
-		var operationStatus string
-		dbfx.QueryRow(t, `SELECT status FROM daemon_file_operation WHERE id = $1`, operationID).Scan(&operationStatus)
-		t.Fatalf("claimed operation missing from HTTP response: %+v (operation status: %s)", response.Pending, operationStatus)
+		t.Fatalf("claimed operation missing from HTTP response: %+v", response.Pending)
 	}
 }
 
