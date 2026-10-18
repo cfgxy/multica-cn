@@ -44,6 +44,7 @@
     "steer_unavailable": "現在の返信が開始されると指示できます",
     "steer_no_permission": "このエージェントを実行する権限がありません",
     "steer_unavailable_toast": "現在は指示できません。キューを更新しています。",
+    "more_actions": "キュー内メッセージ {{position}} のその他の操作",
     "edit": "キュー内のメッセージを編集",
     "remove": "キューから削除",
     "more": "その他のキュー操作",
@@ -257,6 +258,9 @@
   "mobile": {
     "model": {
       "agent_default": "エージェントの既定モデル",
+      "current": "現在のモデル: {{model}}",
+      "runtime_default": "ランタイムの既定",
+      "save_failed_title": "モデルは変更されませんでした",
       "loading": "モデルを読み込み中…",
       "load_failed": "モデルを読み込めませんでした",
       "unsupported": "このランタイムはモデル選択に対応していません",
@@ -281,6 +285,12 @@
       "stop_failed_title": "エージェントを停止できませんでした",
       "stop_failed": "もう一度お試しください。現在のメッセージは保持されました。",
       "quick_replies_title": "クイック返信"
+    },
+    "queue": {
+      "action_failed_title": "キューが変更されました",
+      "stale": "このキュー内メッセージは変更されました。キューを更新しました。",
+      "action_failed": "キューを更新できませんでした。もう一度お試しください。"
+    },
     },
     "send_failure": {
       "no_permission": "このエージェントを実行する権限がなくなったため、メッセージは送信されませんでした。",

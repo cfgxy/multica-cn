@@ -14,6 +14,7 @@
     "runtimes": "ランタイム",
     "skills": "スキル",
     "settings": "設定",
+    "audit": "MCP 監査",
     "admin": "管理"
   },
   "tab": {
@@ -78,6 +79,17 @@
       "type_project": "プロジェクト",
       "unavailable_a11y": "利用できない{{type}}。タップしてピン留めを解除",
       "unavailable": "利用できない{{type}} — タップしてピン留めを解除"
+    },
+    "audit": {
+      "title": "MCP 監査",
+      "all": "すべて",
+      "apply_filters": "フィルターを適用",
+      "load_failed": "監査イベントを読み込めません。",
+      "empty": "このフィルターに一致する監査イベントはありません。",
+      "tool": "ツール",
+      "actor_id": "呼び出し元 ID",
+      "host_target_id": "ホスト対象 ID",
+      "since": "開始時刻（RFC3339）"
     }
   }
 }

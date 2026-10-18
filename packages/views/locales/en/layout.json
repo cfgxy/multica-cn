@@ -14,6 +14,7 @@
     "runtimes": "Runtimes",
     "skills": "Skills",
     "settings": "Settings",
+    "audit": "MCP audit",
 
     "admin": "Admin"
   },
@@ -79,6 +80,17 @@
       "type_project": "project",
       "unavailable_a11y": "Unavailable {{type}}, tap to unpin",
       "unavailable": "Unavailable {{type}} — tap to unpin"
+    },
+    "audit": {
+      "title": "MCP audit",
+      "all": "All",
+      "apply_filters": "Apply filters",
+      "load_failed": "Unable to load audit events.",
+      "empty": "No audit events match this filter.",
+      "tool": "Tool",
+      "actor_id": "Actor ID",
+      "host_target_id": "Host target ID",
+      "since": "Since (RFC3339)"
     }
   }
 }

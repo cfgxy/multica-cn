@@ -14,6 +14,7 @@
     "runtimes": "런타임",
     "skills": "스킬",
     "settings": "설정",
+    "audit": "MCP 감사",
     "admin": "관리"
   },
   "tab": {
@@ -78,6 +79,17 @@
       "type_project": "프로젝트",
       "unavailable_a11y": "사용할 수 없는 {{type}}, 탭하여 고정 해제",
       "unavailable": "사용할 수 없는 {{type}} — 탭하여 고정 해제"
+    },
+    "audit": {
+      "title": "MCP 감사",
+      "all": "전체",
+      "apply_filters": "필터 적용",
+      "load_failed": "감사 이벤트를 불러올 수 없습니다.",
+      "empty": "현재 필터와 일치하는 감사 이벤트가 없습니다.",
+      "tool": "도구",
+      "actor_id": "호출자 ID",
+      "host_target_id": "호스트 대상 ID",
+      "since": "시작 시간(RFC3339)"
     }
   }
 }
