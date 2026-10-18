@@ -1249,6 +1249,7 @@
     "cancel_failed": "Failed to cancel card",
     "batch_title": "Batch answer",
     "batch_submit": "Submit all",
+    "batch_submit": "Submit all",
     "auth_title": "Authorization request",
     "auth_state_approved": "Approved",
     "auth_state_denied": "Denied",
@@ -1264,5 +1265,38 @@
     "context_impact": "Impact",
     "context_recommendation": "Recommendation rationale",
     "context_unknowns": "Unknowns"
+  },
+  "suspension": {
+    "badge": "Suspended",
+    "tooltip": "Waiting on an external condition — comment triggers hold until resumed",
+    "banner": {
+      "active_title": "Suspended",
+      "waiting_on": "Waiting on",
+      "condition": "Resume condition",
+      "reason_label": "Reason",
+      "resume": "Resume",
+      "cancel": "Stop waiting",
+      "blocked_hint": "Blocked freezes this issue inside the lifecycle. If the work itself is done and only a dependency is outstanding, suspending keeps the lifecycle status, makes the wait visible, and can auto-resume when the target completes.",
+      "convert": "Suspend instead",
+      "dialog_title": "Suspend issue",
+      "reason_placeholder": "e.g. waiting on RUYI-668",
+      "waiting_type_label": "Waiting on",
+      "type_external": "External condition",
+      "type_manual": "Manual judgment",
+      "type_issue": "An issue",
+      "type_decision": "A decision card",
+      "target_issue": "Target issue",
+      "target_decision": "Target decision card",
+      "pick_issue": "Pick an issue…",
+      "pick_decision": "Pick a decision card…",
+      "no_open_cards": "No open decision cards in this workspace",
+      "condition_label": "Resume condition",
+      "condition_placeholder": "e.g. resume when RUYI-668 is done",
+      "condition_required_hint": "required for external / manual waits",
+      "cancel_dialog": "Cancel",
+      "submit": "Suspend",
+      "toast_success": "Issue suspended",
+      "toast_failed": "Failed to suspend issue"
+    }
   }
 }

@@ -1,0 +1,24 @@
+{
+  "page": {
+    "breadcrumb": "挂起中心",
+    "empty_title": "暂无挂起任务",
+    "empty_description": "被挂起（等待外部条件）的任务会聚合在这里，让暂停的工作保持可见，直到恢复。",
+    "load_failed": "挂起列表加载失败"
+  },
+  "filter": {
+    "label": "状态",
+    "active": "挂起中",
+    "resumed": "已恢复",
+    "cancelled": "已取消",
+    "all": "全部"
+  },
+  "row": {
+    "waiting_on": "等待对象",
+    "condition": "恢复条件",
+    "reason": "原因",
+    "resume": "恢复",
+    "cancel": "取消等待",
+    "resume_done": "已恢复",
+    "lifecycle": "生命周期"
+  }
+}

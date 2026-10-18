@@ -80,6 +80,8 @@ function workspaceScoped(slug: string) {
     inbox: () => `${ws}/inbox`,
     // Decision Center (RUYI-494): workspace-wide decision-card aggregation.
     decisions: () => `${ws}/decisions`,
+    // Suspension center (RUYI-690): workspace-wide issue-suspension view.
+    suspensions: () => `${ws}/suspensions`,
     chat: () => `${ws}/chat`,
     chatWithAgent: (agentId: string) =>
       `${ws}/chat?agent=${encode(agentId)}`,

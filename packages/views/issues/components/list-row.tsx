@@ -25,6 +25,7 @@ import { LabelChip } from "../../labels/label-chip";
 import { CustomStatusChip } from "./custom-status-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { SuppressedBadge } from "./suppressed-badge";
+import { SuspensionBadge } from "./suspension-badge";
 import { useIssueSurfaceSelection } from "../surface/selection-context";
 import { useLocale } from "../../i18n";
 
@@ -118,6 +119,7 @@ function ListRowContent({
               SuppressedBadge and the activity indicator are mutually
               exclusive with the indicator winning. */}
           <SuppressedBadge issue={issue} />
+          <SuspensionBadge issue={issue} />
           <IssueAgentActivityIndicator issueId={issue.id} />
 
           <span className="flex min-w-0 flex-1 items-center gap-1.5">

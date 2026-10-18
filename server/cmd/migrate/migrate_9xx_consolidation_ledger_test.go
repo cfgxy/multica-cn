@@ -143,6 +143,7 @@ var postConsolidationStems = []string{
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
 	"943_daemon_ops_command_channel",                 // RUYI-645 (938, 940 reserved by in-flight issues)
+	"960_issue_suspension",                           // RUYI-690
 	"961_voice_provider_config",                      // RUYI-693
 	"962_task_local_directory_scope",                 // RUYI-669 (task-level local_directory subdirectory scope declarations)
 	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
