@@ -1116,9 +1116,14 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
-	// Revalidate under the runtime row lock. Agent/task inserts take a
+	// Lock chat sessions before runtime and agent rows, matching model writes,
+	// sends and the shared teardown. Agent/task inserts take a
 	// KEY SHARE lock through their runtime FK, so no active agent can appear
 	// after this check and then be silently unbound by the teardown.
+	if _, err := qtx.LockChatSessionsForRuntimeBind(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime chat sessions")
+		return
+	}
 	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return
@@ -1346,12 +1351,17 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
-	// Lock the runtime row first. PostgreSQL's FK validation on
+	// Lock chat sessions before runtime and agent rows, matching model writes,
+	// sends and the shared teardown. PostgreSQL's FK validation on
 	// agent.runtime_id requires FOR KEY SHARE on the parent runtime row,
 	// which conflicts with FOR UPDATE — so any concurrent INSERT or
 	// UPDATE that would point a new/moved agent at this runtime now
 	// blocks until our tx finishes. This is the "兜底" lock that keeps
 	// new actives from appearing between our snapshot and our unbind.
+	if _, err := qtx.LockChatSessionsForRuntimeBind(r.Context(), rt.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock runtime chat sessions")
+		return
+	}
 	if _, err := qtx.LockAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
 		return

@@ -197,7 +197,8 @@ export interface RunCallStepView extends RunStepViewBase {
 }
 
 export interface RunMessageStepView extends RunStepViewBase {
-  kind: "text" | "thinking" | "error";
+  /** Mirrors TraceMessageStep.kind; watchdog rows use the same message view. */
+  kind: "text" | "thinking" | "error" | "watchdog";
   /** Full content, clamped + redacted. */
   body: ClampedBody;
 }

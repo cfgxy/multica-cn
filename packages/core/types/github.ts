@@ -31,14 +31,15 @@ export type GitHubPullRequestMergeStateStatus =
   | "has_hooks"
   | "unknown";
 
-/** GitHub's overall CI rollup verdict (`statusCheckRollup.state`). `null`/absent
- * means NO checks have been reported yet — it must never render as passed. */
+/** GitHub's overall CI rollup verdict (`statusCheckRollup.state`). Preserve
+ * unknown strings so callers can show an unknown state instead of guessing. */
 export type GitHubPullRequestChecksRollup =
   | "success"
   | "failure"
   | "pending"
   | "error"
-  | "expected";
+  | "expected"
+  | (string & {});
 
 export interface GitHubInstallation {
   id: string;
@@ -69,6 +70,8 @@ export interface GitHubPullRequest {
   state: GitHubPullRequestState;
   html_url: string;
   branch: string | null;
+  /** Target/base branch. Optional for compatibility with older backends. */
+  base_branch?: string | null;
   author_login: string | null;
   author_avatar_url: string | null;
   merged_at: string | null;
@@ -81,6 +84,8 @@ export interface GitHubPullRequest {
   /** GitHub's `mergeStateStatus` from the snapshot. Source of the "Ready to
    * merge" claim (only when `clean`); older backends omit it. */
   merge_state_status?: GitHubPullRequestMergeStateStatus | null;
+  /** GitHub's reviewDecision for the current-head API snapshot. */
+  review_decision?: string | null;
   /** GitHub's overall CI rollup verdict from the snapshot. `null` means no
    * checks only when `snapshot_available === true`; absence alone is not a
    * positive or "no checks" verdict. */

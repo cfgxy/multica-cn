@@ -25,5 +25,17 @@
       "credential_missing": "이 에이전트의 음성 자격 증명이 아직 설정되지 않았습니다. 워크스페이스 관리자가 설정을 완료해야 합니다.",
       "credential_invalid": "이 에이전트의 음성 자격 증명이 잘못되었거나 만료되었습니다. 워크스페이스 관리자가 갱신해야 합니다."
     }
+  },
+  "dictation": {
+    "open": "받아쓰기",
+    "close": "받아쓰기 닫기",
+    "hold_to_talk": "길게 눌러 말하기",
+    "release_to_cancel": "놓아서 취소",
+    "release_to_transcribe": "놓으면 변환 시작",
+    "transcribing": "변환 중…",
+    "transcribe_failed": "변환에 실패했습니다. 다시 시도해 주세요",
+    "not_recognized": "음성이 인식되지 않았습니다",
+    "listening": "듣고 있어요…",
+    "stop_agent": "에이전트 중지"
   }
 }

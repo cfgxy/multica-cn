@@ -151,6 +151,46 @@ func TestProjectResourceLifecycle(t *testing.T) {
 	}
 }
 
+func TestValidateGithubRepoUpstreamConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ref       map[string]any
+		wantError bool
+		wantValue string
+	}{
+		{name: "absent remains unconfirmed", ref: map[string]any{"url": "https://github.com/cfgxy/fork"}},
+		{name: "valid URL normalizes", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "https://GitHub.com/Source/Parent.git"}, wantValue: "source/parent"},
+		{name: "empty rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": ""}, wantError: true},
+		{name: "non GitHub rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "https://gitlab.com/source/parent"}, wantError: true},
+		{name: "same canonical rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "git@github.com:cfgxy/fork.git"}, wantError: true},
+		{name: "path suffix rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "https://github.com/source/parent/tree/main"}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := validateGithubRepoRef(raw)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected invalid upstream to be rejected")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var normalized map[string]any
+			if err := json.Unmarshal(got, &normalized); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantValue != "" && normalized["upstream"] != tc.wantValue {
+				t.Fatalf("normalized upstream=%v, want %q", normalized["upstream"], tc.wantValue)
+			}
+		})
+	}
+}
+
 // TestProjectResourceAcceptsSSHRepoURLs covers GitHub issue #2484: SSH and
 // scp-like git URLs must be accepted alongside https URLs, because workspace
 // repos configured with an SSH remote previously got rejected when attached
@@ -175,18 +215,24 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 	}()
 
 	cases := []struct {
-		name string
-		url  string
+		name     string
+		url      string
+		upstream string
 	}{
-		{"scp-like", "git@github.com:multica-ai/multica.git"},
-		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git"},
+		{"scp-like", "git@github.com:multica-ai/multica.git", ""},
+		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git", ""},
+		{"ssh-scheme-port-22", "ssh://git@github.com:22/multica-ai/multica.git", "ssh://git@github.com:22/source/parent.git"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			resourceRef := map[string]any{"url": tc.url}
+			if tc.upstream != "" {
+				resourceRef["upstream"] = tc.upstream
+			}
 			w := httptest.NewRecorder()
 			req := newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
 				"resource_type": "github_repo",
-				"resource_ref":  map[string]any{"url": tc.url},
+				"resource_ref":  resourceRef,
 			})
 			req = withURLParam(req, "id", project.ID)
 			testHandler.CreateProjectResource(w, req)
@@ -198,7 +244,8 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 				t.Fatalf("decode: %v", err)
 			}
 			var ref struct {
-				URL string `json:"url"`
+				URL      string  `json:"url"`
+				Upstream *string `json:"upstream"`
 			}
 			if err := json.Unmarshal(created.ResourceRef, &ref); err != nil {
 				t.Fatalf("decode resource_ref: %v", err)
@@ -206,7 +253,39 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 			if ref.URL != tc.url {
 				t.Errorf("ref.url = %q, want %q", ref.URL, tc.url)
 			}
+			if tc.upstream != "" && (ref.Upstream == nil || *ref.Upstream != "source/parent") {
+				t.Errorf("ref.upstream = %v, want normalized %q", ref.Upstream, "source/parent")
+			}
 		})
+	}
+}
+
+func TestValidateGithubRepoRefNormalizesSSHSchemeCanonicalAndUpstream(t *testing.T) {
+	ref, err := validateGithubRepoRef(json.RawMessage(`{"url":"ssh://git@github.com:22/Owner/Project.git","upstream":"ssh://git@github.com:22/Source/Parent.git"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got githubRepoRef
+	if err := json.Unmarshal(ref, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "ssh://git@github.com:22/Owner/Project.git" {
+		t.Errorf("canonical URL = %q, want original URL preserved", got.URL)
+	}
+	if got.Upstream == nil || *got.Upstream != "source/parent" {
+		t.Errorf("normalized upstream = %v, want %q", got.Upstream, "source/parent")
+	}
+}
+
+func TestValidateGithubRepoRefRejectsUnsupportedIdentityPorts(t *testing.T) {
+	for _, raw := range []string{
+		`{"url":"ssh://git@github.com:2222/Owner/Project.git","upstream":"https://github.com/Source/Parent"}`,
+		`{"url":"https://github.com:443/Owner/Project","upstream":"https://github.com/Source/Parent"}`,
+		`{"url":"ssh://git@github.com/Owner/Project.git","upstream":"ssh://git@github.com:2222/Source/Parent.git"}`,
+	} {
+		if _, err := validateGithubRepoRef(json.RawMessage(raw)); err == nil {
+			t.Errorf("validateGithubRepoRef(%s) accepted unsupported port", raw)
+		}
 	}
 }
 
@@ -1341,6 +1420,7 @@ func TestValidateLocalDirectoryRefExecutionMode(t *testing.T) {
 		{"absent means in_place", "", ""},
 		{"explicit in_place", "in_place", "in_place"},
 		{"worktree", "worktree", "worktree"},
+		{"snapshot", "snapshot", "snapshot"},
 		{"surrounding whitespace is trimmed", "  worktree  ", "worktree"},
 	}
 	for _, tc := range accepted {
@@ -1367,7 +1447,7 @@ func TestValidateLocalDirectoryRefExecutionMode(t *testing.T) {
 		})
 	}
 
-	rejected := []string{"snapshot", "WORKTREE", "in-place", "true"}
+	rejected := []string{"WORKTREE", "in-place", "true"}
 	for _, mode := range rejected {
 		t.Run("rejects "+mode, func(t *testing.T) {
 			raw, err := json.Marshal(map[string]any{
@@ -1505,6 +1585,53 @@ func TestCreateProjectGatesWorktreeLocalDirectory(t *testing.T) {
 	lreq := newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListProjects(lw, lreq)
 	if strings.Contains(lw.Body.String(), "Bundled worktree resource") {
+		t.Fatal("rejected create left a project behind")
+	}
+}
+
+// Snapshot mode rides the same bundled-create gate, but its capability is
+// host-probed (userns+overlay startup probe), not version-floored: the
+// rejection must carry the shared error code and NO min_version to upgrade to.
+func TestCreateProjectGatesSnapshotLocalDirectory(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Bundled snapshot resource",
+		"resources": []map[string]any{
+			{
+				"resource_type": "local_directory",
+				"resource_ref": map[string]any{
+					"local_path":     "/Users/dev/work/game-client",
+					"daemon_id":      "daemon-with-no-runtime-row",
+					"execution_mode": "snapshot",
+				},
+			},
+		},
+	})
+	testHandler.CreateProject(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("CreateProject with un-runnable snapshot resource: expected 422, got %d: %s",
+			w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["code"] != "daemon_version_unsupported" {
+		t.Fatalf("expected the shared gate's error code, got %#v", resp["code"])
+	}
+	if _, has := resp["min_version"]; has {
+		t.Error("snapshot capability is host-probed: no min_version should be offered")
+	}
+
+	// The gate runs before the transaction opens, so the rejection must not
+	// leave a half-created project behind.
+	lw := httptest.NewRecorder()
+	lreq := newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
+	testHandler.ListProjects(lw, lreq)
+	if strings.Contains(lw.Body.String(), "Bundled snapshot resource") {
 		t.Fatal("rejected create left a project behind")
 	}
 }

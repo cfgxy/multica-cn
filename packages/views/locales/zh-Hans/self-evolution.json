@@ -31,6 +31,11 @@
     },
     "proposals": {
       "title": "提案池动态",
+      "intro": "提案由每日总复盘自动分析入池，也可人工起草。",
+      "counts": "{{total}} 条提案 · {{pending}} 条待 Owner 审批",
+      "lastAuto": "最近自动提案（每日总复盘）：{{date}}",
+      "noneAuto": "尚无自动提案。",
+      "empty": "提案池为空。配置每日总复盘后，提案将随每日分析自动入池。",
       "pendingModel": "提案指标将随新提案模型（RUYI-305）落地后接入。"
     },
     "knowledge": {
@@ -381,8 +386,10 @@
   },
   "legislation": {
     "title": "Prompt 立法提案",
-    "description": "针对四个 Prompt 载体的条款级草案。提交后进入 Owner 审批；批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
+    "description": "提案由每日总复盘自动分析入池，也可人工起草。条款级草案针对四个 Prompt 载体：提交后进入 Owner 审批，批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
     "filterAll": "全部",
+    "sourceFilterLabel": "按来源筛选",
+    "sourceFilterAll": "全部来源",
     "runFilterLabel": "运行批次",
     "runFilterAll": "全部运行",
     "status": {
@@ -432,6 +439,11 @@
     "evidenceAdd": "添加证据锚",
     "evidenceIssue": "Issue 编号",
     "evidenceQuote": "引文",
+    "sourceIssuesLabel": "来源 Issue",
+    "problemLabel": "要解决的问题",
+    "expectedEffectLabel": "预期效果",
+    "expectedGainLabel": "预期提升",
+    "valueScoreLabel": "价值分",
     "cancel": "取消",
     "saveDraft": "保存草稿",
     "submit": "提交审批",
@@ -468,6 +480,7 @@
     "ownerOnly": "仅 Owner",
     "empty": "这里还没有提案。",
     "emptyHint": "从真实执行证据起草一条，或让每日总复盘来提案。",
+    "emptyConfig": "配置每日总复盘",
     "error": "写入失败。请检查输入后重试。",
     "batchPartial": "批量中有提案未生效——请查看逐条结果。",
     "jevAdvisoryLabel": "本地模型预警",
@@ -515,6 +528,24 @@
     "agentArchivedHint": "该智能体已归档；请改选其他智能体，否则运行会失败。",
     "agentTriggerBlocked": "未配置可用的执行智能体：请先在上方配置中选择一个智能体再运行。",
     "emptyDescription": "定时或手动触发后，这里会显示每次运行的记录。",
+    "viewDetail": "详情",
+    "detailTitle": "运行详情",
+    "triggerLabel": "触发方式",
+    "triggerSource": {
+      "schedule": "定时",
+      "manual": "手动"
+    },
+    "windowLabel": "回看窗口",
+    "startedAt": "开始时间",
+    "finishedAt": "结束时间",
+    "duration": "耗时",
+    "durationRunning": "运行中…",
+    "statsLabel": "统计",
+    "failureLabel": "失败原因",
+    "scannedIssues": "扫描的 Issue",
+    "analyzedIssues": "已分析的 Issue",
+    "noIssues": "无",
+    "viewLog": "查看运行日志",
     "run_errors": {
       "agent_not_configured": "未配置执行智能体：请在上方配置中选择一个智能体，保存后重试。",
       "agent_missing": "配置的执行智能体不存在：请在上方配置中重新选择并保存。",
@@ -640,6 +671,132 @@
     "secretBlocked": "未保存：提示词疑似包含凭据。",
     "findingLine": "第 {{line}} 行"
   },
+  "clauseGovernance": {
+    "title": "条款治理",
+    "description": "从立法到注入的条款资产全链只读视图",
+    "window": "统计窗口",
+    "d7": "近 7 天",
+    "d30": "近 30 天",
+    "d90": "近 90 天",
+    "d365": "近 365 天",
+    "refresh": "刷新",
+    "banner": {
+      "dynamicOffTitle": "全局降级开关已开启",
+      "dynamicOffBody": "所有运行均以快照注入模式运行（等价静态注入）",
+      "healthyTitle": "动态注入正常",
+      "healthyBody": "窗口内降级注入 {{degraded}}/{{total}} 次",
+      "findingsTitle": "发现 {{count}} 项对账或漂移问题",
+      "findingsBody": "详见下方「对账与漂移」区块"
+    },
+    "metrics": {
+      "injections": "注入次数",
+      "runs": "覆盖运行",
+      "runsUnit": "{{count}} 次运行",
+      "clauseTokens": "条款 token",
+      "clauseTokensNote": "条款渲染注入估算",
+      "degraded": "降级注入",
+      "migration": "迁移覆盖"
+    },
+    "scope": { "workspace": "工作区", "project": "项目", "squad": "小队", "agent": "智能体" },
+    "recon": {
+      "title": "对账与漂移",
+      "healthy": "对账通过",
+      "findings": "{{count}} 项发现",
+      "scanned": "已扫描 {{count}} 个载体",
+      "violationsTitle": "层集合违规",
+      "violationsEmpty": "窗口内无层集合违规",
+      "colTime": "时间",
+      "colTask": "任务",
+      "colClause": "条款",
+      "colVersion": "版本",
+      "colScope": "作用域",
+      "colInjection": "注入方式",
+      "truncated": "仅显示前 100 条",
+      "degradedFlag": "降级快照",
+      "driftTitle": "载体漂移",
+      "driftEmpty": "载体标记与资产库一致（已扫描 {{count}} 个载体）"
+    },
+    "driftKind": { "stale_rev": "版本滞后", "orphan_marker": "孤儿标记", "missing_segment": "缺失渲染段" },
+    "driftDesc": {
+      "staleRev": "快照版本 {{marker}} → 资产版本 {{expected}}",
+      "orphanMarker": "载体存在标记，资产库无此生效条款",
+      "missingSegment": "生效条款缺少渲染段（期望版本 {{expected}}）"
+    },
+    "rollback": {
+      "title": "回滚建议",
+      "empty": "无待处理回滚建议",
+      "rollbackTo": "回滚至 V{{version}}",
+      "viewProposal": "查看提案"
+    },
+    "list": {
+      "title": "条款列表",
+      "filter_all": "全部",
+      "filter_active": "生效中",
+      "filter_deprecated": "已停用",
+      "filter_revoked": "已废止",
+      "colStatus": "状态",
+      "colClause": "条款",
+      "colVersion": "当前版本",
+      "colScope": "绑定作用域",
+      "colInjections": "注入",
+      "colRuns": "运行",
+      "colTokens": "Token",
+      "colAction": "操作",
+      "unbound": "未绑定",
+      "tokensPending": "待计量",
+      "tokensPendingHint": "该条款窗口内尚无计量数据",
+      "emptyTitle": "尚无条款资产",
+      "emptyBody": "通过立法提案创建第一批条款",
+      "emptyCta": "前往立法提案",
+      "openDetail": "查看详情",
+      "noFilterResults": "没有符合此筛选条件的条款"
+    },
+    "detail": {
+      "back": "返回条款治理",
+      "versions": "版本",
+      "bindings": "绑定",
+      "proposals": "提案溯源",
+      "quality": "质量与注入",
+      "latest": "最新",
+      "notFound": "条款不存在或已被删除"
+    },
+    "version": { "sha": "内容指纹", "showContent": "展开正文", "hideContent": "收起正文", "compare": "对比版本" },
+    "compare": {
+      "title": "版本对比 V{{a}} ↔ V{{b}}",
+      "sampleInsufficient": "样本不足，不出百分比结论",
+      "attributableRuns": "可归因运行",
+      "windowRuns": "窗口内可归因运行 {{count}} 次"
+    },
+    "binding": {
+      "scope": "作用域",
+      "status": "状态",
+      "conditions": "生效条件",
+      "conditionsAll": "全适用",
+      "sinceVersion": "自 V{{version}} 起",
+      "createdAt": "生效时间",
+      "empty": "暂无绑定记录"
+    },
+    "bindingStatus": { "active": "生效中", "superseded": "已更替", "withdrawn": "已撤回" },
+    "proposals": {
+      "empty": "暂无关联提案",
+      "gates": { "layer": "层级", "retention": "保留", "cost": "成本", "conflict": "冲突", "dedup": "去重" }
+    },
+    "quality": {
+      "chartTitle": "注入与质量趋势",
+      "chartAria": "近 {{days}} 天完成运行与可归因失败趋势；下表提供完整数据",
+      "colDay": "日期",
+      "colVersion": "版本",
+      "colFinishedRuns": "完成运行",
+      "colFailed": "可归因失败",
+      "colExcluded": "排除失败",
+      "colTokens": "注入 token",
+      "colMedianRun": "运行 token 中位数",
+      "unmeasured": "未计量",
+      "emptyWindow": "窗口内无注入数据"
+    },
+    "status": { "active": "生效中", "deprecated": "已停用", "revoked": "已废止" },
+    "error": { "title": "加载失败", "retry": "重试" }
+  },
   "nav": {
     "label": "自进化分区",
     "overview": "总览",
@@ -650,6 +807,7 @@
     "knowledge": "知识库",
     "skills": "技能演进",
     "quality": "质量度量",
+    "clauseGovernance": "条款治理",
     "quiz": "题库测验",
     "proposals": "立法提案",
     "versions": "版本",
@@ -690,6 +848,16 @@
     "modelError": {
       "title": "模型服务校验失败",
       "action": "查看配置"
+    },
+    "retrospectiveOff": {
+      "title": "每日总复盘未启用",
+      "description": "提案闭环不会自动运转，提案池只能人工起草",
+      "action": "去配置"
+    },
+    "retrospectiveNoAgent": {
+      "title": "每日总复盘未选执行智能体",
+      "description": "已启用但没有执行者，运行不会发生",
+      "action": "去配置"
     },
     "discoveries": {
       "title": "有 {{count}} 条技能发现待导入",

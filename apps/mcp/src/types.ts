@@ -182,6 +182,11 @@ export interface CommentInfo {
    * audit trail; there is no per-edit content history beyond this.
    */
   revision?: number;
+  /**
+   * Summary-mode listings only: the server clipped this body to ~200
+   * characters; absent on full reads.
+   */
+  content_truncated?: boolean;
   /** roots_only listings only: orientation stats for the thread under this root. */
   reply_count?: number;
   last_activity_at?: string;
@@ -533,6 +538,11 @@ export interface ExecutionProfileInfo {
   revision: number;
 }
 
+export interface ExecutionProfileListResponse {
+  execution_profiles: ExecutionProfileInfo[];
+  active_execution_profile_id: string | null;
+}
+
 export interface CreateExecutionProfileBody {
   name: string;
   description?: string;
@@ -796,6 +806,13 @@ export interface DecisionCardInfo {
   issue_id: string;
   source_comment_id?: string | null;
   question: string;
+  context?: {
+    why_now?: string;
+    facts?: Array<{ statement: string; evidence?: string[] }>;
+    impact?: string;
+    recommendation_reason?: string;
+    unknowns?: string[];
+  } | null;
   /** Option labels in display order; the letter for label[i] is A+i. */
   options: string[];
   multi_select: boolean;
@@ -847,4 +864,31 @@ export interface DecisionInboxItemInfo extends DecisionCardInfo {
 export interface DecisionInboxResult {
   items: DecisionInboxItemInfo[];
   counts: { open: number; answered: number; cancelled: number };
+}
+
+/** The existing inbox API projection, including issue-less system notices. */
+export interface InboxItemInfo {
+  id: string;
+  workspace_id: string;
+  recipient_type: "member" | "agent";
+  recipient_id: string;
+  type: string;
+  severity: string;
+  issue_id: string | null;
+  title: string;
+  body: string | null;
+  read: boolean;
+  archived: boolean;
+  created_at: string;
+  issue_status: string | null;
+  issue_priority: string | null;
+  issue_identifier: string | null;
+  actor_type: string | null;
+  actor_id: string | null;
+  details: unknown;
+}
+
+export interface InboxWorkspaceUnreadInfo {
+  workspace_id: string;
+  count: number;
 }

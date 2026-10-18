@@ -61,7 +61,8 @@ COPY packages/ packages/
 # Re-link after source overlay (fixes any symlinks overwritten by COPY).
 # Same store-dir as the deps stage, otherwise pnpm sees a store mismatch and
 # asks to rebuild node_modules (which aborts without a TTY).
-RUN pnpm config set store-dir /pnpm-store --global && \
+RUN --mount=type=cache,target=/pnpm-store \
+    pnpm config set store-dir /pnpm-store --global && \
     pnpm install --frozen-lockfile --offline
 
 ARG NEXT_PUBLIC_APP_VERSION=dev
@@ -69,7 +70,9 @@ ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 ENV STANDALONE=true
 
 # Build the web app (standalone output for minimal runtime)
-RUN pnpm --filter @multica/web build
+RUN --mount=type=cache,target=/pnpm-store \
+    --mount=type=cache,target=/app/.next/cache,uid=1001,gid=1001 \
+    pnpm --filter @multica/web build
 
 # --- Runtime ---
 FROM node:22-alpine AS runner
@@ -84,7 +87,7 @@ RUN apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0"
 ENV NODE_ENV=production
 ENV REMOTE_API_URL=http://backend:8080
 
-RUN addgroup --system --gid 1001 nodejs && \
+RUN addgroup --system --gid 1001 nodejs &&\
     adduser --system --uid 1001 nextjs
 
 # Copy standalone output (includes traced node_modules)

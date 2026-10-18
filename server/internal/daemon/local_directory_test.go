@@ -888,7 +888,7 @@ func TestAcquireLocalDirectoryLockRejectsUnknownExecutionMode(t *testing.T) {
 	raw, err := json.Marshal(localDirectoryRef{
 		LocalPath:     tmp,
 		DaemonID:      daemonID,
-		ExecutionMode: "snapshot", // a mode only a future daemon implements
+		ExecutionMode: "teleport", // a mode only a future daemon implements
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -908,7 +908,7 @@ func TestAcquireLocalDirectoryLockRejectsUnknownExecutionMode(t *testing.T) {
 	if modeErr == nil {
 		t.Fatal("ValidateExecutionMode accepted an unknown mode")
 	}
-	if !strings.Contains(modeErr.Error(), "snapshot") {
+	if !strings.Contains(modeErr.Error(), "teleport") {
 		t.Errorf("error should name the unsupported mode, got: %v", modeErr)
 	}
 

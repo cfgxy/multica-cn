@@ -26,6 +26,7 @@ import { RenameMachineDialog } from "./rename-machine-dialog";
 import { RuntimeProfilesDialog } from "./runtime-profiles-dialog";
 import { pendingRuntimesForProfiles } from "./pending-runtime";
 import { MachineCliSection } from "./machine-cli-section";
+import { MachineOpsSection } from "./machine-ops-section";
 import { HealthIcon, useHealthLabel } from "./shared";
 import { useT, useTimeAgo } from "../../i18n";
 
@@ -341,6 +342,11 @@ export function RuntimeDetailPage({
                   ? t(($) => $.page.bootstrapping.hint)
                   : t(($) => $.machine.no_runtimes_hint)}
               </p>
+            </div>
+          )}
+          {isAdmin && machine.mode === "local" && !!machine.daemonId && (
+            <div className="mt-4">
+              <MachineOpsSection machine={machine} />
             </div>
           )}
         </div>

@@ -10,6 +10,7 @@
  */
 import { queryOptions } from "@tanstack/react-query";
 import { decisionInboxKeys } from "@multica/core/issues/decisions";
+import { decisionRequestKeys } from "@multica/core/issues/decision-requests";
 import { issueKeys } from "@multica/core/issues/queries";
 import { api } from "@/data/api";
 
@@ -31,6 +32,17 @@ export function workspaceDecisionInboxOptions(wsId: string | null) {
     queryFn: async () => {
       if (!wsId) return { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
       return api.listWorkspaceDecisionInbox(wsId);
+    },
+    enabled: !!wsId,
+  });
+}
+
+export function workspaceDecisionRequestsOptions(wsId: string | null) {
+  return queryOptions({
+    queryKey: decisionRequestKeys.workspace(wsId),
+    queryFn: async () => {
+      if (!wsId) return { items: [], counts: { pending: 0, closed: 0, executed: 0 } };
+      return api.listDecisionRequests(wsId);
     },
     enabled: !!wsId,
   });

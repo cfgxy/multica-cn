@@ -75,6 +75,7 @@ type GitHubPullRequestResponse struct {
 	Title           string  `json:"title"`
 	State           string  `json:"state"`
 	HtmlURL         string  `json:"html_url"`
+	BaseBranch      *string `json:"base_branch"`
 	Branch          *string `json:"branch"`
 	AuthorLogin     *string `json:"author_login"`
 	AuthorAvatarURL *string `json:"author_avatar_url"`
@@ -99,6 +100,9 @@ type GitHubPullRequestResponse struct {
 	// "dirty" | "blocked" | "behind" | "unstable" | "draft" | "has_hooks" |
 	// "unknown" | null. "Ready to merge" is derived ONLY from "clean".
 	MergeStateStatus *string `json:"merge_state_status"`
+	// ReviewDecision comes from GitHub's authoritative current-head snapshot.
+	// Nil means a current value is unavailable.
+	ReviewDecision *string `json:"review_decision"`
 	// SnapshotAvailable distinguishes a current API snapshot from both
 	// "feature disabled / not fetched yet" and "a current snapshot whose
 	// statusCheckRollup is null". Only the last case may render "no checks".
@@ -190,7 +194,7 @@ func githubPullRequestToResponse(p db.GithubPullRequest, snapshotEnabled bool) G
 	snapshotAvailable := currentGitHubSnapshotAvailable(
 		snapshotEnabled, p.HeadSha, p.SnapshotHeadSha, p.SnapshotFetchedAt,
 	)
-	return GitHubPullRequestResponse{
+	resp := GitHubPullRequestResponse{
 		ID:                uuidToString(p.ID),
 		Provider:          "github",
 		WorkspaceID:       uuidToString(p.WorkspaceID),
@@ -200,6 +204,7 @@ func githubPullRequestToResponse(p db.GithubPullRequest, snapshotEnabled bool) G
 		Title:             p.Title,
 		State:             p.State,
 		HtmlURL:           p.HtmlUrl,
+		BaseBranch:        textToPtr(p.TargetBranch),
 		Branch:            textToPtr(p.Branch),
 		AuthorLogin:       textToPtr(p.AuthorLogin),
 		AuthorAvatarURL:   textToPtr(p.AuthorAvatarUrl),
@@ -218,6 +223,10 @@ func githubPullRequestToResponse(p db.GithubPullRequest, snapshotEnabled bool) G
 		Deletions:        p.Deletions,
 		ChangedFiles:     p.ChangedFiles,
 	}
+	if snapshotAvailable {
+		resp.ReviewDecision = lowerTextPtr(p.ReviewDecision)
+	}
+	return resp
 }
 
 // prSnapshotStaleThreshold is how old an open PR's last successful fetch may be
@@ -248,6 +257,7 @@ func issuePullRequestRowToResponse(p db.ListPullRequestsByIssueRow, snapshotEnab
 		Title:             p.Title,
 		State:             p.State,
 		HtmlURL:           p.HtmlUrl,
+		BaseBranch:        textToPtr(p.TargetBranch),
 		Branch:            textToPtr(p.Branch),
 		AuthorLogin:       textToPtr(p.AuthorLogin),
 		AuthorAvatarURL:   textToPtr(p.AuthorAvatarUrl),
@@ -266,6 +276,7 @@ func issuePullRequestRowToResponse(p db.ListPullRequestsByIssueRow, snapshotEnab
 	if snapshotAvailable {
 		resp.Mergeable = lowerTextPtr(p.ApiMergeable)
 		resp.MergeStateStatus = lowerTextPtr(p.ApiMergeStateStatus)
+		resp.ReviewDecision = lowerTextPtr(p.ReviewDecision)
 		resp.ChecksRollup = lowerTextPtr(p.ChecksRollupState)
 		resp.ChecksConclusion = rollupToConclusion(p.ChecksRollupState, p.ChecksFailed, p.ChecksRunning, p.ChecksPassed)
 		resp.ChecksTotal = p.ChecksTotal
@@ -1004,6 +1015,37 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"pull_requests": out})
 }
 
+// UnlinkPullRequestFromIssue removes only the association between the scoped
+// issue and a PR mirrored in the same workspace; the shared PR record remains.
+func (h *Handler) UnlinkPullRequestFromIssue(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	prID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "pullRequestId"), "pull request id")
+	if !ok {
+		return
+	}
+	deleted, err := h.Queries.UnlinkIssuePullRequest(r.Context(), db.UnlinkIssuePullRequestParams{
+		IssueID: issue.ID, PullRequestID: prID, WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unlink pull request")
+		return
+	}
+	if deleted == 0 {
+		writeError(w, http.StatusNotFound, "pull request link not found")
+		return
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+	h.publish(protocol.EventPullRequestUnlinked, workspaceID, actorType, actorID, map[string]any{
+		"issue_id":        uuidToString(issue.ID),
+		"pull_request_id": uuidToString(prID),
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // broadcastPRSnapshotApplied is the ghsnapshot pipeline's onApplied callback:
 // once an API snapshot is written to a PR row, re-broadcast the PR so every
 // open issue detail page re-queries its PR list and picks up the fresh CI /
@@ -1024,6 +1066,85 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	h.publish(protocol.EventPullRequestUpdated, uuidToString(pr.WorkspaceID), "system", "", map[string]any{
 		"pull_request":     githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
 		"linked_issue_ids": linked,
+	})
+}
+
+// ── Lookup a PR by owner/repo/number ────────────────────────────────────────
+
+// LookupPullRequestByRef backs the reference tail's PR rows (RUYI-635 增量,
+// Owner point ②): prose that TEXT-references `owner/repo#N` needs that PR's
+// title, state and canonical URL so the tail row can render a state icon and
+// a link. Read-only and DB-only — GetGitHubPullRequest reads the
+// webhook/refresh-maintained github_pull_request snapshot; a PR the platform
+// has never seen 404s and the client degrades the reference to plain text
+// (the same miss-reads-as-typed contract the issue tail follows).
+func (h *Handler) LookupPullRequestByRef(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	owner := strings.TrimSpace(q.Get("owner"))
+	repo := strings.TrimSpace(q.Get("repo"))
+	number, err := strconv.ParseInt(strings.TrimSpace(q.Get("number")), 10, 32)
+	if owner == "" || repo == "" || err != nil || number <= 0 {
+		writeError(w, http.StatusBadRequest, "owner, repo and a positive number are required")
+		return
+	}
+	pr, err := h.Queries.GetGitHubPullRequest(r.Context(), db.GetGitHubPullRequestParams{
+		WorkspaceID: wsUUID,
+		RepoOwner:   owner,
+		RepoName:    repo,
+		PrNumber:    int32(number),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "pull request not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to look up pull request")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pull_request": githubPullRequestToResponse(pr, h.PRRefresh.Enabled()),
+	})
+}
+
+// LookupPullRequestByNumber backs `MR !N` body links and tail rows (RUYI-728):
+// prose that TEXT-references a merge request without naming a repo resolves
+// against the workspace's PR snapshot by number alone. The number-only form is
+// only meaningful when exactly one snapshot row carries it, so the contract
+// is: exactly one row → 200, none → 404, several → 409 — the client treats
+// every miss as plain text, so an ambiguous number must never guess. Read-only
+// and DB-only, the same snapshot discipline as LookupPullRequestByRef.
+func (h *Handler) LookupPullRequestByNumber(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	number, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("number")), 10, 32)
+	if err != nil || number <= 0 {
+		writeError(w, http.StatusBadRequest, "a positive number is required")
+		return
+	}
+	prs, err := h.Queries.GetGitHubPullRequestsByNumber(r.Context(), db.GetGitHubPullRequestsByNumberParams{
+		WorkspaceID: wsUUID,
+		PrNumber:    int32(number),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to look up pull request")
+		return
+	}
+	if len(prs) == 0 {
+		writeError(w, http.StatusNotFound, "pull request not found")
+		return
+	}
+	if len(prs) > 1 {
+		writeError(w, http.StatusConflict, "pull request number is ambiguous across repositories")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pull_request": githubPullRequestToResponse(prs[0], h.PRRefresh.Enabled()),
 	})
 }
 
@@ -1081,6 +1202,8 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		h.handleInstallationEvent(ctx, body)
 	case "pull_request":
 		h.handlePullRequestEvent(ctx, body)
+	case "pull_request_review":
+		h.triggerPRRefreshFromReviewEvent(ctx, body)
 	case "check_suite", "check_run", "status":
 		// CI events are pure triggers under Plan C (MUL-5265): their payload is
 		// never read for display. Each just asks the API pipeline to re-fetch
@@ -1238,6 +1361,9 @@ type ghPullRequestPayload struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
 		User struct {
 			Login     string `json:"login"`
 			AvatarURL string `json:"avatar_url"`
@@ -1460,6 +1586,59 @@ type ghCIEventPayload struct {
 	} `json:"check_run"`
 }
 
+type ghReviewEventPayload struct {
+	Action       string `json:"action"`
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
+	Repository struct {
+		Name  string `json:"name"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+	} `json:"repository"`
+	PullRequest struct {
+		Number int32 `json:"number"`
+	} `json:"pull_request"`
+}
+
+// triggerPRRefreshFromReviewEvent treats review webhooks only as doorbells:
+// GitHub's reviewDecision is derived from the full PR review state, so a single
+// review payload must never be used to infer the current decision.
+func (h *Handler) triggerPRRefreshFromReviewEvent(ctx context.Context, body []byte) {
+	if !h.PRRefresh.Enabled() {
+		return
+	}
+	target, ok := parseGitHubReviewRefreshTarget(body)
+	if !ok {
+		return
+	}
+	h.PRRefresh.Enqueue(target.installationID, target.owner, target.repo, target.number)
+}
+
+type githubPRRefreshTarget struct {
+	installationID int64
+	owner          string
+	repo           string
+	number         int32
+}
+
+func parseGitHubReviewRefreshTarget(body []byte) (githubPRRefreshTarget, bool) {
+	var p ghReviewEventPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return githubPRRefreshTarget{}, false
+	}
+	switch p.Action {
+	case "submitted", "edited", "dismissed":
+	default:
+		return githubPRRefreshTarget{}, false
+	}
+	if p.Installation.ID == 0 || p.Repository.Name == "" || p.Repository.Owner.Login == "" || p.PullRequest.Number <= 0 {
+		return githubPRRefreshTarget{}, false
+	}
+	return githubPRRefreshTarget{p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number}, true
+}
+
 // triggerPRRefreshFromCIEvent enqueues an API refresh for the PR(s) a
 // check_suite / check_run / status webhook concerns. check_suite/check_run
 // carry the PR numbers directly; status events carry only a commit SHA, so we
@@ -1544,6 +1723,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		Title:               p.PullRequest.Title,
 		State:               state,
 		HtmlUrl:             p.PullRequest.HTMLURL,
+		TargetBranch:        ptrToText(strPtrOrNil(p.PullRequest.Base.Ref)),
 		Branch:              ptrToText(strPtrOrNil(p.PullRequest.Head.Ref)),
 		AuthorLogin:         ptrToText(strPtrOrNil(p.PullRequest.User.Login)),
 		AuthorAvatarUrl:     ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
@@ -1611,6 +1791,16 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		// the merge-time close decision.
 		preserveCloseIntent := p.Action != "closed" && (state == "merged" || state == "closed")
 		prefix := h.getIssuePrefix(ctx, wsID)
+		previousIssueIDs, err := h.Queries.ListIssueIDsForPullRequest(ctx, pr.ID)
+		if err != nil {
+			slog.Warn("github: list linked issues for refresh failed", "err", err)
+		}
+		linkedIssueIDs = append(linkedIssueIDs, uuidsToStrings(previousIssueIDs)...)
+		systemIssueIDs, err := h.Queries.ListSystemIssueIDsForPullRequest(ctx, pr.ID)
+		if err != nil {
+			slog.Warn("github: list system-linked issues failed", "err", err)
+		}
+		currentlyReferenced := make(map[string]struct{}, len(idents))
 		// reevalIssues collects each issue whose link row we just touched so
 		// we can re-run the auto-advance gate against the persisted aggregate
 		// after every link upsert in this event. Driving the gate off
@@ -1626,6 +1816,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			if !ok {
 				continue
 			}
+			issueID := uuidToString(issue.ID)
+			currentlyReferenced[issueID] = struct{}{}
 			_, declared := closingIdents[id]
 			if declared && !closePolicy.permits(id, workspaceID) {
 				// The delivery-wide scan did not prove this workspace is the one
@@ -1650,8 +1842,21 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				slog.Warn("github: link failed", "err", err)
 				continue
 			}
-			linkedIssueIDs = append(linkedIssueIDs, uuidToString(issue.ID))
+			linkedIssueIDs = append(linkedIssueIDs, issueID)
 			reevalIssues = append(reevalIssues, issue)
+		}
+		if state != "merged" && state != "closed" {
+			for _, issueID := range systemIssueIDs {
+				issueIDString := uuidToString(issueID)
+				if _, stillReferenced := currentlyReferenced[issueIDString]; stillReferenced {
+					continue
+				}
+				if err := h.Queries.UnlinkIssueFromPullRequest(ctx, db.UnlinkIssueFromPullRequestParams{
+					IssueID: issueID, PullRequestID: pr.ID,
+				}); err != nil {
+					slog.Warn("github: unlink stale system association failed", "err", err, "issue_id", issueIDString)
+				}
+			}
 		}
 
 		// A terminal PR event (`merged` or `closed`) may be the moment the
@@ -1688,6 +1893,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 			}
 		}
 	}
+
+	linkedIssueIDs = sortedUniqueStrings(linkedIssueIDs)
 
 	// Broadcast PR change to the workspace so any open issue detail page
 	// re-queries its PR list.

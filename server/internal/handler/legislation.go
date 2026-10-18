@@ -11,16 +11,13 @@ package handler
 //
 // Approve runs the gate synchronously (owner decision + system execution in
 // one transaction): the sandbox-synthesized full carrier text is validated
-// by the legislation engine (E4), a pass enacts the row and rebuilds the
-// structure baseline from the synthesized text, a fail parks the row in
-// gate_failed with the engine report stored. `approved` is persisted only
-// between those two steps, so a mid-flight crash leaves an audited row that
-// POST /{id}/enact — owner-only — re-gates and enacts.
-//
-// E5 boundary: the enacted write into the carrier's effective content and
-// the prompt_version snapshot binding are RUYI-285 scope. E2/E4 enact
-// everything EXCEPT that write — enacted_version stays NULL, the business
-// column is untouched.
+// by the legislation engine (E4), a pass writes the clause assets
+// (clause/clause_version/clause_binding — RUYI-751 / ADR 007), re-renders
+// the affected business columns through the prompt_version ledger and
+// enacts the row; a fail parks the row in gate_failed with the engine
+// report stored. `approved` is persisted only between those two steps, so a
+// mid-flight crash leaves an audited row that POST /{id}/enact —
+// owner-only — re-gates and enacts.
 //
 // Injection defence (dry-run patch 8): approve requires
 // confirm_diff_previewed=true, and /preview returns the full-carrier line
@@ -34,6 +31,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -53,33 +52,47 @@ import (
 // gate answers and the engine report ride through as raw JSON — the client
 // renders them verbatim.
 type PromptProposalResponse struct {
-	ID                  string          `json:"id"`
-	WorkspaceID         string          `json:"workspace_id"`
-	CarrierScope        string          `json:"carrier_scope"`
-	CarrierScopeID      string          `json:"carrier_scope_id"`
-	TargetSection       string          `json:"target_section"`
-	ChangeKind          string          `json:"change_kind"`
-	ClauseName          string          `json:"clause_name"`
-	ClauseText          string          `json:"clause_text"`
-	GateAnswerLayer     string          `json:"gate_answer_layer"`
-	GateAnswerRetention string          `json:"gate_answer_retention"`
-	GateAnswerCost      string          `json:"gate_answer_cost"`
-	GateAnswerConflict  string          `json:"gate_answer_conflict"`
-	GateAnswerDedup     string          `json:"gate_answer_dedup"`
-	EvidenceAnchors     json.RawMessage `json:"evidence_anchors"`
-	Status              string          `json:"status"`
-	GateErrors          json.RawMessage `json:"gate_errors"`
-	GateWarnings        json.RawMessage `json:"gate_warnings"`
-	JevAdvisory         json.RawMessage `json:"jev_advisory,omitempty"`
-	EnactedVersion      *int32          `json:"enacted_version,omitempty"`
-	RollbackReason      string          `json:"rollback_reason"`
-	MergedFrom          json.RawMessage `json:"merged_from"`
-	Source              string          `json:"source"`
-	CreatedByType       string          `json:"created_by_type"`
-	CreatedByID         string          `json:"created_by_id,omitempty"`
-	AuditLog            json.RawMessage `json:"audit_log"`
-	CreatedAt           string          `json:"created_at"`
-	UpdatedAt           string          `json:"updated_at"`
+	ID                  string `json:"id"`
+	WorkspaceID         string `json:"workspace_id"`
+	CarrierScope        string `json:"carrier_scope"`
+	CarrierScopeID      string `json:"carrier_scope_id"`
+	TargetSection       string `json:"target_section"`
+	ChangeKind          string `json:"change_kind"`
+	ClauseName          string `json:"clause_name"`
+	ClauseText          string `json:"clause_text"`
+	GateAnswerLayer     string `json:"gate_answer_layer"`
+	GateAnswerRetention string `json:"gate_answer_retention"`
+	GateAnswerCost      string `json:"gate_answer_cost"`
+	GateAnswerConflict  string `json:"gate_answer_conflict"`
+	GateAnswerDedup     string `json:"gate_answer_dedup"`
+	// Decision-context fields (RUYI-723 B): absent (omitempty) when NULL —
+	// legacy rows and manual proposals predate them and the client renders "—".
+	Problem         *string         `json:"problem,omitempty"`
+	ExpectedEffect  *string         `json:"expected_effect,omitempty"`
+	ExpectedGain    *string         `json:"expected_gain,omitempty"`
+	ValueScore      *int32          `json:"value_score,omitempty"`
+	EvidenceAnchors json.RawMessage `json:"evidence_anchors"`
+	Status          string          `json:"status"`
+	GateErrors      json.RawMessage `json:"gate_errors"`
+	GateWarnings    json.RawMessage `json:"gate_warnings"`
+	JevAdvisory     json.RawMessage `json:"jev_advisory,omitempty"`
+	EnactedVersion  *int32          `json:"enacted_version,omitempty"`
+	RollbackReason  string          `json:"rollback_reason"`
+	MergedFrom      json.RawMessage `json:"merged_from"`
+	Source          string          `json:"source"`
+	CreatedByType   string          `json:"created_by_type"`
+	CreatedByID     string          `json:"created_by_id,omitempty"`
+	AuditLog        json.RawMessage `json:"audit_log"`
+	CreatedAt       string          `json:"created_at"`
+	UpdatedAt       string          `json:"updated_at"`
+	// RUYI-751: the clause reference key and move destination (move_clause),
+	// plus the draft's effectiveness conditions. clause_id is empty on
+	// unresolvable legacy name-only rows.
+	ClauseID       string          `json:"clause_id,omitempty"`
+	MoveToScope    string          `json:"move_to_scope,omitempty"`
+	MoveToScopeID  string          `json:"move_to_scope_id,omitempty"`
+	Conditions     json.RawMessage `json:"conditions,omitempty"`
+	RollbackOfVer  *int32          `json:"rollback_of_version,omitempty"`
 }
 
 func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
@@ -112,6 +125,32 @@ func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
 	if p.EnactedVersion.Valid {
 		v := p.EnactedVersion.Int32
 		resp.EnactedVersion = &v
+	}
+	if p.Problem.Valid {
+		v := p.Problem.String
+		resp.Problem = &v
+	}
+	if p.ExpectedEffect.Valid {
+		v := p.ExpectedEffect.String
+		resp.ExpectedEffect = &v
+	}
+	if p.ExpectedGain.Valid {
+		v := p.ExpectedGain.String
+		resp.ExpectedGain = &v
+	}
+	if p.ValueScore.Valid {
+		v := p.ValueScore.Int32
+		resp.ValueScore = &v
+	}
+	resp.ClauseID = uuidToString(p.ClauseID)
+	resp.MoveToScope = p.MoveToScope.String
+	resp.MoveToScopeID = uuidToString(p.MoveToScopeID)
+	if len(p.Conditions) > 0 {
+		resp.Conditions = json.RawMessage(p.Conditions)
+	}
+	if p.RollbackOfVersion.Valid {
+		v := p.RollbackOfVersion.Int32
+		resp.RollbackOfVer = &v
 	}
 	if p.CreatedAt.Valid {
 		resp.CreatedAt = p.CreatedAt.Time.UTC().Format(httpTimeFormat)
@@ -164,12 +203,12 @@ func writeGateReport(w http.ResponseWriter, res legislation.Result) {
 // ── Validation ──────────────────────────────────────────────────────────────
 
 func validChangeKind(k string) bool {
-	return k == "add_clause" || k == "revise_clause" || k == "remove_clause"
+	return k == "add_clause" || k == "revise_clause" || k == "remove_clause" || k == "move_clause" || k == "migrate_clause"
 }
 
 // validateLegislationProposal checks the write-path invariants the DB CHECKs
-// cannot express: remove needs no text, add/revise need text, and the clause
-// name is bounded.
+// cannot express: remove needs no text, add/revise/migrate need text, move
+// needs a destination, and the clause name is bounded.
 func validateLegislationProposal(changeKind, clauseName, clauseText string) string {
 	if !validChangeKind(changeKind) {
 		return "unknown change_kind"
@@ -178,7 +217,7 @@ func validateLegislationProposal(changeKind, clauseName, clauseText string) stri
 	if name == 0 || name > 60 {
 		return "clause_name must be 1–60 characters"
 	}
-	if changeKind != "remove_clause" && len([]rune(clauseText)) == 0 {
+	if changeKind != "remove_clause" && changeKind != "move_clause" && len([]rune(clauseText)) == 0 {
 		return "clause_text must not be empty"
 	}
 	if len(clauseText) > 100_000 {
@@ -259,38 +298,94 @@ func mustJSON(v any) []byte {
 
 // runGateAndEnactTx is the approve/enact shared core, called with an open
 // transaction after the row has been moved into `approved`. It locks the
-// carrier row (serialize per carrier — the enact queue), synthesizes,
-// gates, and lands the row on enacted (baseline rebuilt) or gate_failed
-// (report stored), all inside the caller's transaction. The response for a
-// gate failure is written by the caller from the returned result.
+// carrier row(s) (serialize per carrier — the enact queue; a move_clause
+// locks source and destination in a deterministic (scope, id) order so two
+// opposite moves cannot deadlock — ADR 007 §2), synthesizes, gates, writes
+// the clause assets, re-renders the affected business columns through the
+// governance version funnel, and lands the row on enacted (baseline rebuilt)
+// or gate_failed (report stored), all inside the caller's transaction. The
+// response for a gate failure is written by the caller from the returned
+// result.
 func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, auditBase []byte) (bool, legislation.Result) {
-	scope := promptVersionScope(p.CarrierScope)
-	current, err := lockScopeEntityResult(ctx, qtx, scope, workspaceID, p.CarrierScopeID)
-	if err != nil {
-		return false, errorResult(errors.New("carrier not found in this workspace"))
+	// Carrier references this enactment touches: plain proposals touch one,
+	// a move touches source and destination. Locked in a deterministic order.
+	refs := []carrierRef{{scope: p.CarrierScope, id: p.CarrierScopeID}}
+	isMove := p.ChangeKind == "move_clause"
+	if isMove {
+		if !p.MoveToScope.Valid || !p.MoveToScopeID.Valid {
+			return false, errorResult(errors.New("move_clause 提案缺少目标载体"))
+		}
+		refs = append(refs, carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID})
+		sort.Slice(refs, func(i, j int) bool {
+			if refs[i].scope != refs[j].scope {
+				return refs[i].scope < refs[j].scope
+			}
+			return bytes.Compare(refs[i].id.Bytes[:], refs[j].id.Bytes[:]) < 0
+		})
 	}
-	baseline, err := ensureBaselineTx(ctx, qtx, workspaceID, scope, p.CarrierScopeID, current)
-	if err != nil {
-		return false, errorResult(fmt.Errorf("结构基线读取失败: %w", err))
+
+	// Lock every touched carrier and snapshot its current text; lock order is
+	// the sorted order above, so the second lock of a move never runs before
+	// the first across all concurrent enactors.
+	texts := make(map[carrierRef]string, len(refs))
+	baselines := make(map[carrierRef]*legislation.Baseline, len(refs))
+	for _, ref := range refs {
+		current, err := lockScopeEntityResult(ctx, qtx, promptVersionScope(ref.scope), workspaceID, ref.id)
+		if err != nil {
+			return false, errorResult(errors.New("carrier not found in this workspace"))
+		}
+		baseline, err := ensureBaselineTx(ctx, qtx, workspaceID, promptVersionScope(ref.scope), ref.id, current)
+		if err != nil {
+			return false, errorResult(fmt.Errorf("结构基线读取失败: %w", err))
+		}
+		texts[ref] = current
+		baselines[ref] = baseline
 	}
 
 	input := proposalInputFromRow(p)
 	var res legislation.Result
-	synth, synthErr := legislation.Synthesize(current, input)
-	if synthErr != nil {
-		res = errorResult(synthErr)
+	// synth holds the synthesized text per carrier whenever synthesis
+	// succeeded — including carriers the gate then rejects, because the
+	// advisory layer below still judges that text. The re-render only runs
+	// after res.OK(), so extra entries here never reach the asset write.
+	synth := make(map[carrierRef]string, len(refs))
+
+	if isMove {
+		srcRef := carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}
+		dstRef := carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID}
+		srcNext, dstNext, synthErr := legislation.SynthesizeMove(texts[srcRef], texts[dstRef], input,
+			legislation.MoveTarget{Scope: p.MoveToScope.String})
+		if synthErr != nil {
+			res = errorResult(synthErr)
+		} else {
+			synth[srcRef], synth[dstRef] = srcNext, dstNext
+			resSrc := safeRunGate(texts[srcRef], srcNext, baselines[srcRef], input)
+			resDst := safeRunGate(texts[dstRef], dstNext, baselines[dstRef], input)
+			res = mergeGateResults(resSrc, resDst)
+		}
 	} else {
-		res = safeRunGate(current, synth, baseline, input)
+		ref := refs[0]
+		synthText, synthErr := legislation.Synthesize(texts[ref], input)
+		if synthErr != nil {
+			res = errorResult(synthErr)
+		} else {
+			synth[ref] = synthText
+			res = safeRunGate(texts[ref], synthText, baselines[ref], input)
+		}
 	}
 
 	// Gate-stage soft judgment (RUYI-347): once the carrier synthesized, the
 	// full text is judged and the gate-stage report overwrites the
-	// submit-stage one (stage disambiguates). A synthesis failure or a
-	// disabled layer keeps the previous verdict in place. Either way the
+	// submit-stage one (stage disambiguates) — on gate_failed rows too, so
+	// the owner reads the advisory next to the rejection. A synthesis failure
+	// or a disabled layer keeps the previous verdict in place. Either way the
 	// E1–E4 verdict above is untouched — this layer reports, never blocks.
+	// The judged text is the source carrier's synthesized result.
 	advisory := p.JevAdvisory
-	if client := h.jevAdvisory(); client.Enabled() && synthErr == nil {
-		advisory = client.Assess(ctx, "gate", synth).JSON()
+	if srcText, synthed := synth[carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}]; synthed {
+		if client := h.jevAdvisory(); client.Enabled() {
+			advisory = client.Assess(ctx, "gate", srcText).JSON()
+		}
 	}
 
 	if !res.OK() {
@@ -306,26 +401,41 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, res
 	}
 
-	sections, clauses := legislation.ExtractStructure(synth)
-	if _, err := qtx.UpsertPromptStructureBaseline(ctx, db.UpsertPromptStructureBaselineParams{
-		WorkspaceID:    workspaceID,
-		CarrierScope:   string(scope),
-		CarrierScopeID: p.CarrierScopeID,
-		Sections:       mustJSON(sections),
-		Clauses:        mustJSON(clauses),
-		ContentSha256:  sha256Hex(synth),
-	}); err != nil {
-		slog.Error("baseline rebuild failed", append(logger.RequestAttrs(r), "error", err)...)
-		return false, errorResult(fmt.Errorf("结构基线重建失败: %w", err))
+	// Asset write first (the re-render reads the asset library for the full
+	// effective set, so the new state must be visible to it), then the
+	// re-render funnels every affected business column through the same
+	// version ledger as any other effective-content write (ADR 007 §8).
+	outcome, err := h.enactClauseAssetsTx(ctx, qtx, workspaceID, p, p.CreatedByType, uuidToString(p.CreatedByID))
+	if err != nil {
+		slog.Error("clause asset write failed", append(logger.RequestAttrs(r), "error", err)...)
+		return false, errorResult(err)
+	}
+	affected := outcome.carrierRefs(p)
+	if err := h.rerenderAffectedCarriersTx(ctx, qtx, workspaceID, affected, synth, p.CreatedByType, uuidToString(p.CreatedByID)); err != nil {
+		slog.Error("clause re-render failed", append(logger.RequestAttrs(r), "error", err)...)
+		return false, errorResult(err)
+	}
+	var enactedVersion pgtype.Int4
+	if outcome.Version > 0 {
+		enactedVersion = pgtype.Int4{Int32: outcome.Version, Valid: true}
 	}
 	if _, err := qtx.EnactPromptProposal(ctx, db.EnactPromptProposalParams{
 		ID: p.ID, WorkspaceID: workspaceID, Audit: auditBase, Warnings: mustJSON(res.Warnings),
-		JevAdvisory: advisory,
+		JevAdvisory: advisory, ClauseID: outcome.ClauseID, EnactedVersion: enactedVersion,
 	}); err != nil {
 		slog.Error("enact persist failed", append(logger.RequestAttrs(r), "error", err)...)
 		return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
 	}
 	return true, res
+}
+
+// mergeGateResults combines the two gate verdicts of a move_clause: both
+// carriers must pass for the move to enact. Line numbers are prefixed with
+// the carrier so the report stays actionable.
+func mergeGateResults(a, b legislation.Result) legislation.Result {
+	errs := append(append([]legislation.Finding{}, a.Errors...), b.Errors...)
+	warns := append(append([]legislation.Finding{}, a.Warnings...), b.Warnings...)
+	return legislation.Result{Errors: errs, Warnings: warns}
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -358,6 +468,10 @@ type PromptProposalRequest struct {
 	ChangeKind          string              `json:"change_kind"`
 	ClauseName          string              `json:"clause_name"`
 	ClauseText          string              `json:"clause_text"`
+	ClauseID            string              `json:"clause_id"`
+	MoveToScope         string              `json:"move_to_scope"`
+	MoveToScopeID       string              `json:"move_to_scope_id"`
+	Conditions          json.RawMessage     `json:"conditions"`
 	GateAnswerLayer     string              `json:"gate_answer_layer"`
 	GateAnswerRetention string              `json:"gate_answer_retention"`
 	GateAnswerCost      string              `json:"gate_answer_cost"`
@@ -373,7 +487,55 @@ func (req PromptProposalRequest) validate() string {
 	if _, err := util.ParseUUID(req.CarrierScopeID); err != nil {
 		return "invalid carrier_scope_id"
 	}
-	return validateLegislationProposal(req.ChangeKind, req.ClauseName, req.ClauseText)
+	if msg := validateLegislationProposal(req.ChangeKind, req.ClauseName, req.ClauseText); msg != "" {
+		return msg
+	}
+	if req.ClauseID != "" {
+		if _, err := util.ParseUUID(req.ClauseID); err != nil {
+			return "invalid clause_id"
+		}
+	}
+	if req.ChangeKind == "move_clause" {
+		if !legislation.ValidScope(req.MoveToScope) {
+			return "move_clause requires a valid move_to_scope"
+		}
+		if _, err := util.ParseUUID(req.MoveToScopeID); err != nil {
+			return "move_clause requires a valid move_to_scope_id"
+		}
+		if req.MoveToScope == req.CarrierScope && req.MoveToScopeID == req.CarrierScopeID {
+			return "move_clause destination must differ from the source carrier"
+		}
+	} else if req.MoveToScope != "" || req.MoveToScopeID != "" {
+		return "move_to_scope/move_to_scope_id are only valid on move_clause"
+	}
+	if msg := validateClauseConditions(req.Conditions); msg != "" {
+		return msg
+	}
+	return ""
+}
+
+// resolveRequestClauseID resolves the request's clause reference to the
+// canonical UUID at creation time (ADR 007 §8 — new drafts carry the id;
+// clause_name becomes display-only). An explicit clause_id wins; otherwise
+// the display title resolves when it maps to exactly one clause asset.
+// Unresolvable names are accepted (legacy name-only proposals must keep
+// working); resolution is retried fail-closed at enact.
+func (h *Handler) resolveRequestClauseID(ctx context.Context, workspaceID pgtype.UUID, req PromptProposalRequest) pgtype.UUID {
+	if req.ClauseID != "" {
+		return parseUUID(req.ClauseID)
+	}
+	if req.ChangeKind == "add_clause" {
+		return pgtype.UUID{}
+	}
+	name := strings.Join(strings.Fields(req.ClauseName), " ")
+	if name == "" {
+		return pgtype.UUID{}
+	}
+	rows, err := h.Queries.ListClausesByTitle(ctx, db.ListClausesByTitleParams{WorkspaceID: workspaceID, Title: name})
+	if err != nil || len(rows) != 1 {
+		return pgtype.UUID{}
+	}
+	return rows[0].ID
 }
 
 // CreatePromptProposal — POST /api/prompt-legislation/proposals
@@ -410,6 +572,10 @@ func (h *Handler) CreatePromptProposal(w http.ResponseWriter, r *http.Request) {
 		ChangeKind:          req.ChangeKind,
 		ClauseName:          req.ClauseName,
 		ClauseText:          req.ClauseText,
+		ClauseID:            h.resolveRequestClauseID(r.Context(), workspaceID, req),
+		MoveToScope:         pgtype.Text{String: req.MoveToScope, Valid: req.MoveToScope != ""},
+		MoveToScopeID:       parseNullableUUID(req.MoveToScopeID),
+		Conditions:          conditionsJSON(req.Conditions),
 		GateAnswerLayer:     req.GateAnswerLayer,
 		GateAnswerRetention: req.GateAnswerRetention,
 		GateAnswerCost:      req.GateAnswerCost,
@@ -461,6 +627,10 @@ func (h *Handler) UpdatePromptProposal(w http.ResponseWriter, r *http.Request) {
 		ChangeKind:          req.ChangeKind,
 		ClauseName:          req.ClauseName,
 		ClauseText:          req.ClauseText,
+		ClauseID:            h.resolveRequestClauseID(r.Context(), workspaceID, req),
+		MoveToScope:         pgtype.Text{String: req.MoveToScope, Valid: req.MoveToScope != ""},
+		MoveToScopeID:       parseNullableUUID(req.MoveToScopeID),
+		Conditions:          conditionsJSON(req.Conditions),
 		GateAnswerLayer:     req.GateAnswerLayer,
 		GateAnswerRetention: req.GateAnswerRetention,
 		GateAnswerCost:      req.GateAnswerCost,
@@ -1110,6 +1280,14 @@ func retrospectiveRunToResponse(run db.RetrospectiveRun) map[string]any {
 	}
 	if run.FinishedAt.Valid {
 		resp["finished_at"] = run.FinishedAt.Time.UTC().Format(httpTimeFormat)
+	}
+	// RUYI-663: the platform task enqueued for this run, so the UI can offer
+	// the run's execution transcript. Null when no task exists — runs that
+	// failed before enqueue, and rows written before the column (935).
+	if run.TaskID.Valid {
+		resp["task_id"] = uuidToString(run.TaskID)
+	} else {
+		resp["task_id"] = nil
 	}
 	return resp
 }

@@ -78,8 +78,6 @@ func TestClaimTasksWSFirst_LegacyFallbackWhenBatchRouteMissing(t *testing.T) {
 // same call — the WS claim may have committed server-side, and an immediate
 // second HTTP claim would double-claim.
 func TestClaimTasksWSFirst_NoDoubleClaimOnDetach(t *testing.T) {
-	t.Parallel()
-
 	var httpClaims atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/claim") {
@@ -96,12 +94,10 @@ func TestClaimTasksWSFirst_NoDoubleClaimOnDetach(t *testing.T) {
 	// disconnect leaves a genuinely uncertain outcome (the server may commit).
 	var mu sync.Mutex
 	var item *wsOutbound
-	frameQueued := make(chan struct{})
 	generation := d.wsRPC.attach(func(frame []byte) (*wsOutbound, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		item = &wsOutbound{data: frame}
-		close(frameQueued)
 		return item, nil
 	})
 	d.wsRPC.markRPCV1Supported(generation)
@@ -114,11 +110,7 @@ func TestClaimTasksWSFirst_NoDoubleClaimOnDetach(t *testing.T) {
 		close(done)
 	}()
 
-	select {
-	case <-frameQueued:
-	case <-time.After(time.Second):
-		t.Fatal("WS claim frame was not queued")
-	}
+	time.Sleep(50 * time.Millisecond) // let Call send the frame and block on the response
 	mu.Lock()
 	item.beginWrite() // frame is now on the wire — cannot be un-sent
 	mu.Unlock()

@@ -34,7 +34,11 @@ name: multica
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: ghcr.io/cfgxy/multica-postgres-pgbigm:pg17
+    # pg_bigm needs shared_preload_libraries set before server start. The image
+    # bakes it into postgresql.conf.sample (fresh init only); upgraded data
+    # directories never re-read the sample, so pin it on the command line.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_bigm"]
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       PGTZ: ${TZ:-Asia/Shanghai}
@@ -197,6 +201,15 @@ services:
       # fails closed with 503 (no plaintext fallback). Generate with:
       # openssl rand -base64 32
       MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY: ${MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY:-}
+      # Gemini voice gateway. These are deployment-level transport settings;
+      # workspace provider API keys remain encrypted database credentials.
+      # Empty base URLs use Gemini's public endpoints. The dedicated proxy is
+      # optional and supports socks5:// or HTTP(S) CONNECT.
+      MULTICA_GEMINI_PROBE_BASE_URL: ${MULTICA_GEMINI_PROBE_BASE_URL:-}
+      MULTICA_GEMINI_WS_BASE_URL: ${MULTICA_GEMINI_WS_BASE_URL:-}
+      MULTICA_GEMINI_ASR_BASE_URL: ${MULTICA_GEMINI_ASR_BASE_URL:-}
+      MULTICA_GEMINI_PROXY_URL: ${MULTICA_GEMINI_PROXY_URL:-}
+      MULTICA_VOICE_PROBE_REFRESH: ${MULTICA_VOICE_PROBE_REFRESH:-}
       # WeCom smart-bot integration. MULTICA_WECOM_SECRET_KEY is the
       # opt-in: unset = integration disabled. It encrypts each installation's
       # smart-bot secret at rest. The server needs it to unseal a bot's

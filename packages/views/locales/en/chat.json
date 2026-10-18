@@ -31,21 +31,31 @@
     "change_project_context": "Change project context",
     "remove_project_context": "Remove project context",
     "no_projects": "No projects yet",
-    "project_context_unsupported": "Project description won't apply — this agent's daemon needs an upgrade"
+    "project_context_unsupported": "Project description won't apply — this agent's daemon needs an upgrade",
+    "project_context_failed": "Could not update project context"
   },
   "queue": {
     "title_one": "{{count}} queued message",
     "title_other": "{{count}} queued messages",
+    "title_single": "{{number}} queued message",
+    "title_multiple": "{{number}} queued messages",
     "clear": "Clear all",
-    "steer": "Steer",
+    "clear_confirm_title": "Clear queued messages?",
+    "clear_confirm_body": "This removes queued messages only. The current task will keep running.",
+    "steer": "Send now",
     "steer_unavailable": "Steer is available after the current reply starts",
     "steer_no_permission": "You no longer have permission to run this agent",
     "steer_unavailable_toast": "Steer is unavailable. Refreshing the queue.",
+    "more_actions": "More actions for queued message {{position}}",
     "edit": "Edit queued message",
     "remove": "Remove queued message",
     "more": "More queue actions",
+    "more_actions": "More actions for queued message {{position}}",
     "fallback": "Queued message",
     "action_failed_toast": "Couldn't update the queued message"
+  },
+  "composer": {
+    "quick_replies_title": "Quick replies"
   },
   "message_list": {
     "show_details": "Show details",
@@ -250,6 +260,20 @@
     "delete": "Delete chat"
   },
   "mobile": {
+    "model": {
+      "agent_default": "Agent default",
+      "current": "Current model: {{model}}",
+      "runtime_default": "Runtime default",
+      "save_failed_title": "Model not changed",
+      "loading": "Loading models…",
+      "load_failed": "Could not load models",
+      "unsupported": "Runtime does not support model selection",
+      "unavailable": "Model or session is no longer available",
+      "save_failed": "Could not save model selection",
+      "save_failed_title": "Model not changed",
+      "current": "Current model: {{model}}",
+      "runtime_default": "Runtime default"
+    },
     "send_blocked": {
       "no_permission_title": "No permission to run this agent",
       "no_permission_message": "You no longer have permission to run this agent, so the message was not sent. Ask its owner for access.",
@@ -261,13 +285,21 @@
       "placeholder": "Message…",
       "agent_working": "Agent is working…",
       "unavailable": "Chat unavailable",
-      "stop_agent": "Stop agent"
+      "stop_agent": "Stop agent",
+      "stop_failed_title": "Could not stop agent",
+      "stop_failed": "Try again. The current message was kept.",
+      "quick_replies_title": "Quick replies"
     },
     "send_failure": {
       "no_permission": "You no longer have permission to run this agent, so the message was not sent.",
       "runtime_required": "Bind a runtime to this agent before sending a message.",
       "budget_reached": "The runtime's cost budget is spent for this period, so the message was not sent. It can be sent again once the budget period resets.",
       "generic": "Your message could not be sent. Please try again."
+    },
+    "queue": {
+      "action_failed_title": "Queue changed",
+      "stale": "This queued message changed. The queue has been refreshed.",
+      "action_failed": "Could not update the queue. Try again."
     },
     "disabled_reason": {
       "no_agent": "No agent selected",
@@ -342,6 +374,17 @@
     },
     "timeline": {
       "truncated": "…(truncated)"
+    },
+    "plus": {
+      "open": "Add",
+      "title": "Add to message",
+      "camera": "Camera",
+      "image": "Photos",
+      "files": "Files",
+      "mention": "Mention",
+      "skill": "Skill",
+      "quick_replies": "Quick replies",
+      "close": "Close"
     }
   }
 }

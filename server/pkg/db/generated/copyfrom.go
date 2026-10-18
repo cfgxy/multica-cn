@@ -44,6 +44,9 @@ func (r iteratorForCreateAuditEvents) Values() ([]interface{}, error) {
 		r.rows[0].RuntimeID,
 		r.rows[0].Reason,
 		r.rows[0].Details,
+		r.rows[0].InvocationID,
+		r.rows[0].Sensitive,
+		r.rows[0].ExpiresAt,
 	}, nil
 }
 
@@ -56,5 +59,5 @@ func (r iteratorForCreateAuditEvents) Err() error {
 // through server/internal/service/audit.go, which owns required-field
 // validation (never add an INSERT here from a call site).
 func (q *Queries) CreateAuditEvents(ctx context.Context, arg []CreateAuditEventsParams) (int64, error) {
-	return q.db.CopyFrom(ctx, []string{"audit_event"}, []string{"id", "workspace_id", "domain", "event_type", "occurred_at", "actor_type", "actor_id", "trigger_kind", "trigger_ref", "issue_id", "task_id", "agent_id", "runtime_id", "reason", "details"}, &iteratorForCreateAuditEvents{rows: arg})
+	return q.db.CopyFrom(ctx, []string{"audit_event"}, []string{"id", "workspace_id", "domain", "event_type", "occurred_at", "actor_type", "actor_id", "trigger_kind", "trigger_ref", "issue_id", "task_id", "agent_id", "runtime_id", "reason", "details", "invocation_id", "sensitive", "expires_at"}, &iteratorForCreateAuditEvents{rows: arg})
 }
