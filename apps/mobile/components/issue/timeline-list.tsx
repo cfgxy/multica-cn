@@ -128,6 +128,7 @@ import { issuePullRequestsOptions } from "@/data/queries/github";
 import { DecisionCard } from "./decision-card";
 import { DecisionBatchBar } from "./decision-batch-bar";
 import { PullRequestCard } from "./pull-request-card";
+import { pendingPullRequests } from "@multica/core/github/pending-pull-requests";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -1254,6 +1255,11 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
+        ListFooterComponent={
+          <PendingPullRequestFooter
+            pullRequests={pendingPullRequests(pullRequestsData?.pull_requests ?? [])}
+          />
+        }
         contentContainerStyle={{ paddingBottom: 16 }}
       />
       </Pressable>
@@ -1299,6 +1305,37 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
  */
 function RowSeparator() {
   return <View style={{ height: 12 }} />;
+}
+
+function PendingPullRequestFooter({
+  pullRequests,
+}: {
+  pullRequests: ReturnType<typeof pendingPullRequests>;
+}) {
+  const { t } = useT("issues");
+
+  if (pullRequests.length === 0) return null;
+
+  return (
+    <View
+      className="mt-4 border-t border-border/60 pt-4"
+      testID="pending-pull-requests-section"
+    >
+      <Text className="mb-2 px-4 text-xs font-medium text-muted-foreground">
+        {t("detail.section_pending_pull_requests", "Pending merge PRs")}
+      </Text>
+      <View className="gap-3">
+        {pullRequests.map((pr) => (
+          <PullRequestCard
+            key={`${pr.provider ?? "github"}:${pr.id}`}
+            pr={pr}
+            showTargetBranch
+            showMergeRisk
+          />
+        ))}
+      </View>
+    </View>
+  );
 }
 
 /**

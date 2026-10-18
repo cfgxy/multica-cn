@@ -13,7 +13,21 @@ jest.spyOn(Alert, "alert").mockImplementation(
 );
 
 jest.mock("@/lib/use-t", () => ({
-  useT: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }),
+  useT: () => ({
+    t: (key: string, options?: string | Record<string, unknown>) => {
+      if (typeof options === "string") return options;
+      const templates: Record<string, string> = {
+        "detail.pull_request_checks_failed_count": "{{failed}}/{{total}} failed",
+        "detail.pull_request_checks_failed_named": "{{failed}}/{{total}} failed · {{names}}",
+        "detail.pull_request_checks_running": "{{passed}}/{{total}} · {{running}} running",
+        "detail.pull_request_checks_all_passed": "All checks passed ({{total}}/{{total}})",
+        "detail.pull_request_checks_unknown": "Checks status unknown",
+      };
+      return (templates[key] ?? key).replace(/\{\{(\w+)\}\}/g, (_match, name: string) =>
+        String(options?.[name] ?? ""),
+      );
+    },
+  }),
 }));
 
 jest.mock("@/lib/use-color-scheme", () => ({
@@ -76,6 +90,7 @@ function pr(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
     state: "open",
     html_url: "https://github.com/cfgxy/multica-cn/pull/313",
     branch: "agent/x",
+    base_branch: null,
     author_login: "gu-guyu",
     author_avatar_url: null,
     merged_at: null,
@@ -170,5 +185,126 @@ describe("PullRequestCard (RUYI-634)", () => {
     expect(
       collectClassNames(toJSON() as JsonNode).some((c) => c.includes("opacity-80")),
     ).toBe(true);
+  });
+
+  it("shows the target branch for the bottom summary and never substitutes the source branch", async () => {
+    await render(<PullRequestCard pr={pr({ branch: "agent/source" })} showTargetBranch />);
+
+    expect(screen.getByText("Target branch: Unknown")).toBeTruthy();
+    expect(screen.queryByText("agent/source")).toBeNull();
+  });
+
+  it("shows a known target branch for the bottom summary", async () => {
+    await render(<PullRequestCard pr={pr({ base_branch: "main" })} showTargetBranch />);
+
+    expect(screen.getByText("Target branch: main")).toBeTruthy();
+  });
+
+  it("shows the failed check count on the pending-PR summary when enabled", async () => {
+    await render(
+      <PullRequestCard
+        pr={pr({
+          checks_conclusion: "failed",
+          checks_failed: 1,
+          checks_total: 1,
+          snapshot_available: true,
+        })}
+        showTargetBranch
+        showMergeRisk
+      />,
+    );
+
+    expect(screen.getByTestId("pull-request-checks-status").props.children).toBe("1/1 failed");
+  });
+
+  it("does not change the existing timeline card unless risk details are enabled", async () => {
+    await render(
+      <PullRequestCard
+        pr={pr({
+          checks_conclusion: "failed",
+          checks_failed: 1,
+          checks_total: 1,
+          snapshot_available: true,
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId("pull-request-checks-status")).toBeNull();
+  });
+
+  it("does not claim a checks result when the snapshot is unavailable", async () => {
+    await render(
+      <PullRequestCard
+        pr={pr({
+          checks_conclusion: "failed",
+          checks_failed: 1,
+          checks_total: 1,
+          snapshot_available: false,
+        })}
+        showMergeRisk
+      />,
+    );
+
+    expect(screen.queryByTestId("pull-request-checks-status")).toBeNull();
+  });
+
+  it("keeps missing checks data unknown instead of reporting no checks", async () => {
+    await render(<PullRequestCard pr={pr()} showMergeRisk />);
+
+    expect(screen.queryByTestId("pull-request-checks-status")).toBeNull();
+  });
+
+  it("does not report no checks or passed for an unrecognized rollup", async () => {
+    await render(
+      <PullRequestCard
+        pr={pr({
+          checks_rollup: "mystery",
+          checks_conclusion: null,
+          snapshot_available: true,
+          checks_total: 0,
+          checks_failed: 0,
+        })}
+        showMergeRisk
+      />,
+    );
+
+    expect(screen.getByTestId("pull-request-checks-status").props.children).toBe(
+      "Checks status unknown",
+    );
+    expect(screen.queryByText("No checks yet")).toBeNull();
+  });
+
+  it("reports a failed conclusion without inventing missing counts", async () => {
+    await render(
+      <PullRequestCard
+        pr={pr({ checks_conclusion: "failed", snapshot_available: true })}
+        showMergeRisk
+      />,
+    );
+
+    expect(screen.getByTestId("pull-request-checks-status").props.children).toBe(
+      "Checks failed",
+    );
+  });
+
+  it("shows the current review decision in the pending-PR card", async () => {
+    await render(
+      <PullRequestCard
+        pr={pr({ review_decision: "CHANGES_REQUESTED", snapshot_available: true })}
+        showMergeRisk
+      />,
+    );
+
+    expect(screen.getByTestId("pull-request-review-decision").props.children).toBe(
+      "Changes requested",
+    );
+  });
+
+  it.each([null, "NEW_VALUE"])("keeps review state unknown for %s", async (reviewDecision) => {
+    await render(
+      <PullRequestCard pr={pr({ review_decision: reviewDecision, snapshot_available: true })} showMergeRisk />,
+    );
+
+    expect(screen.getByTestId("pull-request-review-decision").props.children).toBe("Review status unknown");
   });
 });

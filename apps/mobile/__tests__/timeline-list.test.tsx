@@ -1,9 +1,9 @@
 // @ts-nocheck
 
 import React, { useSyncExternalStore } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, within } from "@testing-library/react-native";
 import { Platform, Pressable, Text, View } from "react-native";
-import type { Issue, IssueDecision, TimelineEntry } from "@multica/core/types";
+import type { GitHubPullRequest, Issue, IssueDecision, TimelineEntry } from "@multica/core/types";
 import type { TimelineSortMode } from "@multica/core/issues/timeline-sort";
 
 const mockReact = React;
@@ -86,6 +86,7 @@ jest.mock("@shopify/flash-list", () => {
             renderItem({ item, index }),
           ),
         ),
+        props.ListFooterComponent as React.ReactNode,
       );
     }),
   };
@@ -139,7 +140,7 @@ const mockDecisionsData: { data: IssueDecision[] } = { data: [] };
 
 // Same seam for linked pull requests (RUYI-634); keyed apart from the
 // decisions bag by the github query key segment.
-const mockPullRequestsData: { data: { pull_requests: unknown[] } } = {
+const mockPullRequestsData: { data: { pull_requests: GitHubPullRequest[] } } = {
   data: { pull_requests: [] },
 };
 
@@ -310,6 +311,7 @@ describe("TimelineList sorting and truncation", () => {
     mockCommentFocusState.expandRoot.mockClear();
     mockCommentFocusState.resetIssue.mockClear();
     mockCommentFocusState.setStatus.mockClear();
+    mockPullRequestsData.data.pull_requests = [];
   });
 
   it("renders the recent-comment order, sorting controls, and truncation hint", async () => {
@@ -325,6 +327,38 @@ describe("TimelineList sorting and truncation", () => {
       "timeline-row-root-b",
       "timeline-row-root-a",
     ]);
+  });
+
+  it("appends a deduplicated open/draft summary after timeline rows", async () => {
+    const base = {
+      workspace_id: "ws-1",
+      repo_owner: "cfgxy",
+      repo_name: "multica-cn",
+      html_url: "https://example.test/pr",
+      branch: "feature",
+      author_login: null,
+      author_avatar_url: null,
+      merged_at: null,
+      closed_at: null,
+      pr_created_at: "2026-01-01T00:00:00Z",
+      pr_updated_at: "2026-01-01T00:00:00Z",
+    };
+    mockPullRequestsData.data.pull_requests = [
+      { ...base, id: "open", number: 1, title: "Open PR", state: "open" },
+      { ...base, id: "open-duplicate", number: 1, title: "Duplicate PR", state: "open" },
+      { ...base, id: "draft", number: 2, title: "Draft PR", state: "draft", provider: "gitlab" },
+      { ...base, id: "merged", number: 3, title: "Merged PR", state: "merged" },
+    ] as GitHubPullRequest[];
+
+    await renderTimeline([comment("root", "2026-09-05T09:00:00Z")]);
+
+    expect(screen.getByTestId("pending-pull-requests-section")).toBeTruthy();
+    expect(screen.getByText("Pending merge PRs")).toBeTruthy();
+    const summary = within(screen.getByTestId("pending-pull-requests-section"));
+    expect(summary.getByText("pull-request-card:open")).toBeTruthy();
+    expect(summary.getByText("pull-request-card:draft")).toBeTruthy();
+    expect(summary.queryByText("pull-request-card:open-duplicate")).toBeNull();
+    expect(summary.queryByText("pull-request-card:merged")).toBeNull();
   });
 
   it("switches the visible thread order to creation time", async () => {
@@ -585,7 +619,7 @@ describe("pull request cards in the timeline (RUYI-634)", () => {
       "timeline-row-decision-batch-bar",
     ]);
     expect(screen.getByText("pull-request-card:pr-old")).toBeTruthy();
-    expect(screen.getByText("pull-request-card:pr-new")).toBeTruthy();
+    expect(screen.getAllByText("pull-request-card:pr-new")).toHaveLength(2);
   });
 
   it("renders no PR card when the issue has no linked pull requests", async () => {

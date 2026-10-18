@@ -6626,6 +6626,12 @@ export class ApiClient {
     );
   }
 
+  async unlinkIssuePullRequest(issueId: string, pullRequestId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/pull-requests/${pullRequestId}`, {
+      method: "DELETE",
+    });
+  }
+
   /**
    * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
    * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never

@@ -35,7 +35,7 @@ func graphqlServer(t *testing.T, queryFn func(vars map[string]any) string) *http
 
 func graphqlSnapshotPage(head string, hasNext bool, endCursor string) string {
 	return fmt.Sprintf(`{"repository":{"pullRequest":{
-		"headRefOid":%q,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
+		"headRefOid":%q,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED",
 		"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING","contexts":{
 			"pageInfo":{"hasNextPage":%t,"endCursor":%q},"nodes":[]
 		}}}}]}}}}`, head, hasNext, endCursor)
@@ -49,7 +49,7 @@ func TestFetchPRSnapshotPaginatesContexts(t *testing.T) {
 		if cursor == "" {
 			// Page 1: two contexts, more to come.
 			return `{"repository":{"pullRequest":{
-				"headRefOid":"sha1","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
+				"headRefOid":"sha1","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"CHANGES_REQUESTED",
 				"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{
 					"pageInfo":{"hasNextPage":true,"endCursor":"CUR2"},
 					"nodes":[
@@ -59,7 +59,7 @@ func TestFetchPRSnapshotPaginatesContexts(t *testing.T) {
 		}
 		// Page 2 (cursor==CUR2): one more context, plus a legacy StatusContext.
 		return `{"repository":{"pullRequest":{
-			"headRefOid":"sha1","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN",
+			"headRefOid":"sha1","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"CHANGES_REQUESTED",
 			"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE","contexts":{
 				"pageInfo":{"hasNextPage":false,"endCursor":""},
 				"nodes":[
@@ -76,6 +76,9 @@ func TestFetchPRSnapshotPaginatesContexts(t *testing.T) {
 	}
 	if snap.HeadSHA != "sha1" || snap.Mergeable != "MERGEABLE" || snap.MergeStateStatus != "CLEAN" {
 		t.Fatalf("head/merge = %+v", snap)
+	}
+	if snap.ReviewDecision != "CHANGES_REQUESTED" {
+		t.Fatalf("review decision = %q, want CHANGES_REQUESTED", snap.ReviewDecision)
 	}
 	if !snap.HasChecks || snap.RollupState != "FAILURE" {
 		t.Fatalf("rollup = %q hasChecks=%v", snap.RollupState, snap.HasChecks)

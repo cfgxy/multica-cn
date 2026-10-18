@@ -106,6 +106,7 @@ import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
 import { PullRequestList } from "./pull-request-list";
+import { PendingPullRequestSection } from "./pending-pull-request-section";
 import { issuePullRequestsOptions, useGitHubSettings } from "@multica/core/github";
 import { useConfigStore } from "@multica/core/config";
 import { shouldShowPullRequestSection } from "./pull-request-visibility";
@@ -3719,6 +3720,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 </div>
               )
             )}
+
+            <PendingPullRequestSection issueId={id} />
 
           </div>
 
