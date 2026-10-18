@@ -46,6 +46,7 @@
     "steer_unavailable": "Steer is available after the current reply starts",
     "steer_no_permission": "You no longer have permission to run this agent",
     "steer_unavailable_toast": "Steer is unavailable. Refreshing the queue.",
+    "more_actions": "More actions for queued message {{position}}",
     "edit": "Edit queued message",
     "remove": "Remove queued message",
     "more": "More queue actions",
@@ -261,6 +262,9 @@
   "mobile": {
     "model": {
       "agent_default": "Agent default",
+      "current": "Current model: {{model}}",
+      "runtime_default": "Runtime default",
+      "save_failed_title": "Model not changed",
       "loading": "Loading models…",
       "load_failed": "Could not load models",
       "unsupported": "Runtime does not support model selection",
@@ -285,6 +289,12 @@
       "stop_failed_title": "Could not stop agent",
       "stop_failed": "Try again. The current message was kept.",
       "quick_replies_title": "Quick replies"
+    },
+    "queue": {
+      "action_failed_title": "Queue changed",
+      "stale": "This queued message changed. The queue has been refreshed.",
+      "action_failed": "Could not update the queue. Try again."
+    },
     },
     "send_failure": {
       "no_permission": "You no longer have permission to run this agent, so the message was not sent.",

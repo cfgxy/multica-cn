@@ -14,6 +14,7 @@
     "runtimes": "运行时",
     "skills": "Skills",
     "settings": "设置",
+    "audit": "MCP 审计",
     "admin": "管理"
   },
   "tab": {
@@ -78,6 +79,17 @@
       "type_project": "项目",
       "unavailable_a11y": "{{type}}不可用，点按取消固定",
       "unavailable": "{{type}}不可用 —— 点按取消固定"
+    },
+    "audit": {
+      "title": "MCP 审计",
+      "all": "全部",
+      "apply_filters": "应用筛选",
+      "load_failed": "无法加载审计事件。",
+      "empty": "没有符合此筛选条件的审计事件。",
+      "tool": "工具",
+      "actor_id": "调用者 ID",
+      "host_target_id": "主机目标 ID",
+      "since": "起始时间（RFC3339）"
     }
   }
 }
