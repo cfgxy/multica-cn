@@ -2,8 +2,6 @@
 
 import { memo, useMemo } from "react";
 import type { IssueDecisionStatus, WorkspaceDecisionInboxItem } from "@multica/core/types";
-import { DECISION_ANCHOR_PREFIX, useWorkspacePaths } from "@multica/core/paths";
-import { AppLink } from "../../navigation";
 import { useT, useTimeAgo } from "../../i18n";
 import {
   DECISION_STATUS_CONFIG,
@@ -22,6 +20,7 @@ export const DECISION_COL_WIDTH = 280;
 
 interface DecisionBoardViewProps {
   items: WorkspaceDecisionInboxItem[];
+  onSelect: (item: WorkspaceDecisionInboxItem) => void;
   /** Workspace-wide totals, same source as the list section headers. */
   counts: Record<IssueDecisionStatus, number>;
   visibleStatuses: IssueDecisionStatus[];
@@ -29,6 +28,7 @@ interface DecisionBoardViewProps {
 
 export const DecisionBoardView = memo(function DecisionBoardView({
   items,
+  onSelect,
   counts,
   visibleStatuses,
 }: DecisionBoardViewProps) {
@@ -54,6 +54,7 @@ export const DecisionBoardView = memo(function DecisionBoardView({
             status={status}
             items={byStatus.get(status) ?? []}
             count={counts[status]}
+            onSelect={onSelect}
           />
         ),
       )}
@@ -65,10 +66,12 @@ const DecisionBoardColumn = memo(function DecisionBoardColumn({
   status,
   items,
   count,
+  onSelect,
 }: {
   status: IssueDecisionStatus;
   items: WorkspaceDecisionInboxItem[];
   count: number;
+  onSelect: (item: WorkspaceDecisionInboxItem) => void;
 }) {
   const { t } = useT("decisions");
   const cfg = DECISION_STATUS_CONFIG[status];
@@ -99,7 +102,7 @@ const DecisionBoardColumn = memo(function DecisionBoardColumn({
         ) : (
           <div className="flex flex-col gap-2">
             {items.map((item) => (
-              <DecisionBoardCard key={item.id} item={item} />
+              <DecisionBoardCard key={item.id} item={item} onSelect={onSelect} />
             ))}
           </div>
         )}
@@ -110,20 +113,20 @@ const DecisionBoardColumn = memo(function DecisionBoardColumn({
 
 const DecisionBoardCard = memo(function DecisionBoardCard({
   item,
+  onSelect,
 }: {
   item: WorkspaceDecisionInboxItem;
+  onSelect: (item: WorkspaceDecisionInboxItem) => void;
 }) {
   const { t } = useT("decisions");
   const timeAgo = useTimeAgo();
-  const p = useWorkspacePaths();
-
   return (
-    <AppLink
-      href={`${p.issueDetail(item.issue_id)}#${DECISION_ANCHOR_PREFIX}${item.id}`}
+    <button
+      type="button"
+      onClick={() => onSelect(item)}
       data-testid="decision-board-card"
       data-status={item.status}
-      newTabTitle={item.issue_identifier || `#${item.issue_number}`}
-      className="block rounded-lg border-[0.5px] border-surface-border bg-surface py-3 px-2.5 shadow-[var(--surface-shadow)] transition-colors hover:border-foreground/15 hover:bg-surface-hover"
+      className="block w-full rounded-lg border-[0.5px] border-surface-border bg-surface py-3 px-2.5 text-left shadow-[var(--surface-shadow)] transition-colors hover:border-foreground/15 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <p className="text-caption text-muted-foreground truncate">
@@ -144,6 +147,6 @@ const DecisionBoardCard = memo(function DecisionBoardCard({
           <DecisionRecommendedBadge label={t(($) => $.badge.recommended)} />
         </div>
       )}
-    </AppLink>
+    </button>
   );
 });

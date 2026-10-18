@@ -137,6 +137,11 @@ const (
 	// self-describing); nothing routes on it.
 	EventIssueStatusChanged = "issue_status:changed"
 
+	// RUYI-690: suspension dimension flips. Carries the refreshed issue
+	// snapshot (suspended_at) because the suspension writes deliberately do
+	// not bump the issue revision.
+	EventIssueSuspensionUpdated = "issue_suspension:updated"
+
 	// Workspace quick-reply catalog (RUYI-435). Same shape as the issue
 	// status catalog event: one event for every write (settings tab or MCP
 	// tool), no row payload — clients re-read the whole list.
@@ -188,6 +193,9 @@ const (
 	// HTTP fallback) and any future daemon→server RPC.
 	EventDaemonRPCRequest  = "daemon:rpc_request"
 	EventDaemonRPCResponse = "daemon:rpc_response"
+	// Dedicated, correlated reverse request carrying only bounded worker evidence.
+	EventDaemonWorkerEvidenceRequest  = "daemon:worker_evidence_request"
+	EventDaemonWorkerEvidenceResponse = "daemon:worker_evidence_response"
 
 	// GitHub integration events
 	EventGitHubInstallationCreated = "github_installation:created"

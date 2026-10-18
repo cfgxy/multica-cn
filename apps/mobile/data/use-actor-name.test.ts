@@ -19,6 +19,12 @@ const { mockUseQuery, mockUseT } = vi.hoisted(() => ({
   mockUseT: vi.fn(),
 }));
 
+// This lane exercises name normalization without a React renderer.
+vi.mock("react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react")>()),
+  useCallback: <T>(callback: T) => callback,
+}));
+
 vi.mock("@tanstack/react-query", () => ({ useQuery: mockUseQuery }));
 vi.mock("@/data/workspace-store", () => ({
   useWorkspaceStore: (sel: (s: unknown) => unknown) =>

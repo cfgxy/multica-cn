@@ -221,7 +221,7 @@ describe("MR and PR text references linkify in the body", () => {
 });
 
 describe("tail aggregation block", () => {
-  it("lists resolved references as direct-link rows after the content (desktop)", () => {
+  it("lists resolved references as navigable rows after the content", () => {
     const mul7 = {
       id: UUID,
       identifier: "MUL-7",
@@ -238,8 +238,8 @@ describe("tail aggregation block", () => {
 
     const footer = container.querySelector("[data-issue-reference-footer]")!;
     expect(footer).not.toBeNull();
-    // Same issue via mention + bare identifier → ONE row; at desktop width
-    // (RUYI-724) the resolved row is a direct link.
+    // Same issue via mention + bare identifier → ONE row. RUYI-731: rows are
+    // the navigation surface — a resolved row is an in-app anchor.
     expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
     expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     const row = footer.querySelector(".issue-reference-row")!;
@@ -257,9 +257,8 @@ describe("tail aggregation block", () => {
     // the resolved row is a direct link, same as the owner/repo#N form.
     expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
     expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
-    expect(footer.querySelector(".issue-reference-row")!.textContent).toContain(
-      "cfgxy/multica-cn#468",
-    );
+    expect(footer.querySelector(".issue-reference-identifier")).toHaveTextContent("#468");
+    expect(footer.querySelector("a.issue-reference-row")).toHaveAttribute("href", prFixture(468).html_url);
   });
 
   it("renders no tail block when there are no references", () => {

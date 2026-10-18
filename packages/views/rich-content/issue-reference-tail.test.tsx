@@ -1,12 +1,13 @@
 /**
- * IssueReferenceTail (RUYI-635 + 增量) — the content-to-footer block shared by
- * RichContent and the issue body's ContentEditor host. The fixtures drive it
- * from raw markdown the way both hosts do, pinning: extraction from prose
- * (mention links + bare identifiers + `owner/repo#N` text references), raw
- * dedup + cross-form collapse, the no-references negative case, the code-span
- * skip contract, and the anti-mistouch invariant that the rendered block
- * contains no inline anchors at all. Resolution is stubbed at the hook seam;
- * row rendering policy is exercised for real in
+ * IssueReferenceTail (RUYI-635 + RUYI-731) — the content-to-footer block
+ * shared by RichContent and the issue body's ContentEditor host. The fixtures
+ * drive it from raw markdown the way both hosts do, pinning: extraction from
+ * prose (mention links + bare identifiers + `owner/repo#N` text references),
+ * raw dedup + cross-form collapse, the no-references negative case, the
+ * code-span skip contract, the RUYI-731 self-filter under the issue-detail
+ * render context (the description surface of the two hosts), and the flat
+ * tail where every resolved row is a navigable anchor. Resolution is stubbed
+ * at the hook seam; row rendering policy is exercised for real in
  * issue-reference-footer.test.tsx.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,9 @@ import { readFileSync } from "node:fs";
 import { render } from "@testing-library/react";
 import { NavigationProvider } from "../navigation/context";
 import type { NavigationAdapter } from "../navigation/types";
+import {
+  CurrentIssueRenderContextProvider,
+} from "../issues/current-issue-render-context";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
 import type { IssueReferenceResolution } from "../issues/hooks/use-issue-reference-resolutions";
 
@@ -113,7 +117,7 @@ function pr(number: number, state = "open"): GitHubPullRequest {
   } as unknown as GitHubPullRequest;
 }
 
-function renderTail(content: string) {
+function renderTail(content: string, currentIssueId?: string) {
   const adapter: NavigationAdapter = {
     push: vi.fn(),
     replace: vi.fn(),
@@ -123,9 +127,18 @@ function renderTail(content: string) {
     hash: "",
     getShareableUrl: (p) => `https://app.multica.ai${p}`,
   };
+  const tail = <IssueReferenceTail content={content} />;
   return render(
     <NavigationProvider value={adapter}>
-      <IssueReferenceTail content={content} />
+      {currentIssueId ? (
+        <CurrentIssueRenderContextProvider
+          value={{ id: currentIssueId, identifier: "QA-2" }}
+        >
+          {tail}
+        </CurrentIssueRenderContextProvider>
+      ) : (
+        tail
+      )}
     </NavigationProvider>,
   );
 }
@@ -144,12 +157,25 @@ describe("IssueReferenceTail", () => {
       `重复引用 [QA-2](mention://issue/${UUID}) 与 [QA-2](mention://issue/${UUID})、QA-2。`,
     );
 
-    // Desktop width (RUYI-724): the resolved row renders as a direct link;
-    // the row count is the dedup contract here.
+    // RUYI-731: rows are the navigation surface — a resolved issue row is an
+    // in-app anchor; the row count is the contract here.
     expect(container.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
     const rows = container.querySelectorAll(".issue-reference-row");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.textContent).toContain("QA-2");
+  });
+
+  it("drops a self-reference under the issue-detail render context (description surface)", () => {
+    resolutions = { [`mention:${UUID}`]: issue(UUID, "QA-2", "引用目标") };
+    const { container } = renderTail(
+      `自引 [QA-2](mention://issue/${UUID})。`,
+      UUID,
+    );
+
+    // The host context knows the rendered issue is QA-2 itself: the block
+    // disappears entirely. Removing the filter makes the row render and this
+    // assertion fail.
+    expect(container.querySelector("[data-issue-reference-footer]")).toBeNull();
   });
 
   it("renders nothing for content without references", () => {
@@ -171,7 +197,8 @@ describe("IssueReferenceTail", () => {
     );
 
     const row = container.querySelector(".issue-reference-row")!;
-    expect(row.textContent).toContain("cfgxy/multica-cn#338");
+    expect(row.querySelector(".issue-reference-identifier")).toHaveTextContent("#338");
+    expect(row).toHaveAttribute("href", pr(338).html_url);
     expect(container.querySelectorAll(".issue-reference-row")).toHaveLength(1);
   });
 
@@ -182,7 +209,8 @@ describe("IssueReferenceTail", () => {
     const rows = container.querySelectorAll(".issue-reference-row");
     expect(rows).toHaveLength(1);
     // The row shows the resolved PR's own identity, not the authored token.
-    expect(rows[0]!.textContent).toContain("cfgxy/multica-cn#468");
+    expect(rows[0]!.querySelector(".issue-reference-identifier")).toHaveTextContent("#468");
+    expect(rows[0]).toHaveAttribute("href", pr(468).html_url);
   });
 
   it("degrades an unresolved MR reference to a plain-text row (RUYI-728)", () => {

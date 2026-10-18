@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS mcp_invocation_audit_outbox_id_uidx;

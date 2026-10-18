@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { IssueDecisionSchema } from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -51,9 +52,12 @@ import {
   EMPTY_USER,
   AdminUserListSchema,
   AdminWorkspaceListSchema,
+  IssueSuspensionsListSchema,
+  AdminFileReadPolicySchema,
   ImpersonationResponseSchema,
   EMPTY_ADMIN_USER_LIST,
   EMPTY_ADMIN_WORKSPACE_LIST,
+  EMPTY_ADMIN_FILE_READ_POLICY,
   EMPTY_IMPERSONATION_RESPONSE,
   InboxItemListSchema,
   InboxUnreadSummarySchema,
@@ -99,7 +103,6 @@ describe("skill list response", () => {
     expect(parseWithFallback([{ id: 8, name: "bad" }], SkillSummaryListSchema, [], { endpoint: "listSkills" })).toEqual([]);
   });
 });
-
 describe("ListGitLabRepositoriesResponseSchema", () => {
   it("accepts a paginated minimal GitLab projection", () => {
     const value = { repositories: [{ id: 3, full_name: "team/sub/app", clone_url: "git@git.test:team/sub/app.git", archived: false, private: true, description: null }], next_page: 2 };
@@ -168,6 +171,12 @@ describe("ChatSessionSchema", () => {
       route_revision: 3,
     });
     expect(parsed.is_current_channel_route).toBe(false);
+  });
+
+  it("parses the nullable session-only model override", () => {
+    expect(ChatSessionSchema.parse({ ...baseSession, model_override: "model-a" }).model_override).toBe("model-a");
+    expect(ChatSessionSchema.parse({ ...baseSession, model_override: null }).model_override).toBeNull();
+    expect(() => ChatSessionSchema.parse({ ...baseSession, model_override: 7 })).toThrow();
   });
 
   it("degrades malformed session metadata without dropping the Chat", () => {
@@ -2317,6 +2326,22 @@ describe("Admin schemas (RUYI-47)", () => {
     expect(parsed).toEqual(EMPTY_ADMIN_WORKSPACE_LIST);
   });
 
+  it("parses file read rules defensively and falls back on malformed policy data", () => {
+    expect(AdminFileReadPolicySchema.parse({
+      version: 3,
+      rules: [{ id: "ssh", pattern: "**/.ssh/**", enabled: true }],
+    })).toEqual({
+      version: 3,
+      rules: [{ id: "ssh", pattern: "**/.ssh/**", description: "", enabled: true, builtin: false }],
+    });
+    expect(parseWithFallback(
+      { version: "latest", rules: "invalid" },
+      AdminFileReadPolicySchema,
+      EMPTY_ADMIN_FILE_READ_POLICY,
+      { endpoint: "GET /api/admin/file-read-policy" },
+    )).toEqual(EMPTY_ADMIN_FILE_READ_POLICY);
+  });
+
   it("ImpersonationResponseSchema falls back on a malformed stop response", () => {
     const parsed = parseWithFallback(
       { token: 42 },
@@ -2475,5 +2500,70 @@ describe("prompt quiz schemas (RUYI-185)", () => {
     expect(parsed).toEqual(EMPTY_PROMPT_QUIZ_BASELINE);
     expect(parsed.measured).toBe(false);
     expect(parsed.comparison).toBeUndefined();
+  });
+});
+describe("IssueSuspensionsListSchema", () => {
+  const row = {
+    id: "susp-1",
+    workspace_id: "ws-1",
+    issue_id: "issue-1",
+    status: "active",
+    reason: "waiting for CI",
+    waiting_on_type: "external",
+    waiting_on_summary: "ci run 42",
+    resume_condition: "ci green",
+    suspended_by_type: "agent",
+    suspended_by_id: "agent-1",
+    suspended_at: "2026-10-14T00:00:00Z",
+    resume_note: "",
+    cancel_note: "",
+  };
+
+  it("parses the server wrapped shape {suspensions: [...]}", () => {
+    const result = IssueSuspensionsListSchema.safeParse({ suspensions: [row] });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.suspensions).toEqual([row]);
+  });
+
+  it("rejects the legacy bare-array shape", () => {
+    expect(IssueSuspensionsListSchema.safeParse([row]).success).toBe(false);
+  });
+});
+
+describe("IssueDecisionSchema context compatibility", () => {
+  const legacy = {
+    id: "d-1",
+    issue_id: "i-1",
+    question: "Choose?",
+    options: [{ label: "A" }, { label: "B" }],
+    multi_select: false,
+    recommended_indices: [],
+    status: "open",
+    selected_indices: [],
+    created_by_type: "agent",
+    created_by_id: "a-1",
+    created_at: "2026-10-16T00:00:00Z",
+    updated_at: "2026-10-16T00:00:00Z",
+  };
+
+  it("accepts legacy cards without context and structured context", () => {
+    expect(IssueDecisionSchema.safeParse(legacy).success).toBe(true);
+    expect(IssueDecisionSchema.safeParse({
+      ...legacy,
+      context: {
+        why_now: "Now",
+        facts: [{ statement: "Known", evidence: ["CI 123"] }],
+        impact: "Impact",
+        recommendation_reason: "Reason",
+        unknowns: ["Unknown"],
+      },
+    }).success).toBe(true);
+  });
+
+  it("rejects malformed structured context at the response boundary", () => {
+    expect(IssueDecisionSchema.safeParse({
+      ...legacy,
+      context: { facts: [{ evidence: ["missing statement"] }] },
+    }).success).toBe(false);
   });
 });

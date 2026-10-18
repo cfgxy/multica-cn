@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	DaemonCapabilitySkillBundlesV1      = "skill-bundles-v1"
@@ -20,6 +23,18 @@ const (
 	// unblocked, which let exactly such a daemon through (MUL-5707). A daemon
 	// that implements the mode says so; one that does not, cannot.
 	DaemonCapabilityLocalWorktreeV1 = "local-worktree-v1"
+	// DaemonCapabilityLocalSnapshotV1 advertises snapshot mode for
+	// local_directory resources (execution_mode=snapshot, RUYI-669): the
+	// daemon probed user-namespace + kernel-overlayfs mounts at startup and
+	// can materialize per-task copy-on-write views.
+	//
+	// Same capability-not-version rationale as local-worktree-v1, with a
+	// stricter failure mode: a daemon that json-skips execution_mode would
+	// run a snapshot task IN PLACE — writing into the user's directory that
+	// snapshot mode exists to keep pristine. Probe-gated rather than
+	// build-gated because userns availability is a property of the HOST
+	// (kernel, AppArmor/sysctl policy), not of the binary.
+	DaemonCapabilityLocalSnapshotV1 = "local-snapshot-v1"
 	// DaemonCapabilitySourceContextQuickCreateV1 advertises support for the
 	// two-section quick-create prompt that keeps a new instruction separate
 	// from immutable historical source context.
@@ -39,6 +54,7 @@ const (
 	// every server-side reader of this bit must fail closed through
 	// runtimeHasCapability.
 	DaemonCapabilityWorkerSupervisorV1 = "worker-supervisor-v1"
+	DaemonCapabilityFileReadPolicyV1   = "file-read-policy-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
@@ -86,6 +102,29 @@ type RPCResponsePayload struct {
 	Error     string          `json:"error,omitempty"`
 }
 
+// WorkerEvidenceRequest is the fixed-purpose reverse RPC body. RunID is the
+// server-authorized task identity; no filesystem address or method is supplied.
+type WorkerEvidenceRequest struct {
+	RequestID string `json:"request_id"`
+	RunID     string `json:"run_id"`
+	RuntimeID string `json:"runtime_id"`
+	Stream    string `json:"stream"`
+	Cursor    string `json:"cursor,omitempty"`
+	TailBytes int    `json:"tail_bytes"`
+	TimeoutMs int    `json:"timeout_ms"`
+}
+
+type WorkerEvidenceResponse struct {
+	RequestID       string     `json:"request_id"`
+	Available       bool       `json:"available"`
+	Unavailable     string     `json:"unavailable,omitempty"`
+	StdoutTail      string     `json:"stdout_tail,omitempty"`
+	StderrTail      string     `json:"stderr_tail,omitempty"`
+	NextCursor      string     `json:"next_cursor,omitempty"`
+	ObservedAt      *time.Time `json:"observed_at,omitempty"`
+	ProcessLiveness string     `json:"process_liveness"`
+}
+
 // Message is the envelope for all WebSocket messages.
 type Message struct {
 	Type    string          `json:"type"`
@@ -129,6 +168,12 @@ const (
 	PendingWorkKindModelList        = "model_list"
 	PendingWorkKindLocalSkills      = "local_skills"
 	PendingWorkKindLocalSkillImport = "local_skill_import"
+	// PendingWorkKindOpsCommand (RUYI-645): a whitelisted read-only ops
+	// command was submitted for this runtime. Same advisory semantics — the
+	// claim itself happens inside the heartbeat ack, so a dropped hint only
+	// costs the normal heartbeat delay.
+	PendingWorkKindOpsCommand = "ops_command"
+	PendingWorkKindFileAccess = "file_access"
 )
 
 // PendingWorkPayload is sent from server to daemon as a wakeup hint when a
@@ -344,6 +389,9 @@ type ChatSessionUpdatedPayload struct {
 	// ProjectID is set only by the project-context update path. The double
 	// pointer distinguishes an omitted field from an explicit JSON null.
 	ProjectID **string `json:"project_id,omitempty"`
+	// ModelOverride is set by the session-model path. A pointer to a pointer
+	// distinguishes an omitted field from an explicit null that clears it.
+	ModelOverride **string `json:"model_override,omitempty"`
 	// Pinned is set only by the pin/unpin path; nil on a plain rename so a
 	// receiver leaves the existing pin state untouched.
 	Pinned *bool `json:"pinned,omitempty"`
@@ -385,6 +433,18 @@ type DaemonBackpressureReport struct {
 	// active in the current episode — a diagnostic for how long new work
 	// has been waiting, not a task count.
 	DeferredClaims int64 `json:"deferred_claims"`
+	// Config is the gate configuration currently in force on the daemon
+	// (RUYI-729 stage 1): the DB-delivered settings card, or the daemon's
+	// boot config when no row was ever saved. Optional — absent on daemons
+	// predating this field, which servers and UIs must degrade for
+	// gracefully. The event history snapshots this card so past episodes
+	// stay interpretable after the settings change.
+	Config *DaemonBackpressureConfig `json:"config,omitempty"`
+	// Conditions lists every gate condition's reading at report time:
+	// smoothed value, the high watermark it is judged against, and whether
+	// it is past the line. Nil when Config is absent (old daemons); the
+	// "+"-joined Reason remains the authoritative trigger summary.
+	Conditions []DaemonBackpressureCondition `json:"conditions,omitempty"`
 }
 
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket
@@ -418,6 +478,14 @@ type DaemonHeartbeatAckPayload struct {
 	PendingModelList        *DaemonHeartbeatPendingModelList        `json:"pending_model_list,omitempty"`
 	PendingLocalSkills      *DaemonHeartbeatPendingLocalSkills      `json:"pending_local_skills,omitempty"`
 	PendingLocalSkillImport *DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_import,omitempty"`
+	// DaemonBackpressureConfig (RUYI-729) carries the daemon host's saved
+	// gate settings on every ack; the daemon hot-applies a changed card
+	// within one beat. Nil when the host never saved a settings row — the
+	// daemon then keeps its boot (env/code-default) configuration. When
+	// present it OVERRIDES the workspace card (BackpressureConfig below) on
+	// this host's gates; when the field disappears from a later ack the
+	// daemon drops the override and the workspace card governs again.
+	DaemonBackpressureConfig *DaemonBackpressureConfig `json:"daemon_backpressure_config,omitempty"`
 	// PendingLocalSkillImports carries multiple import requests in a single
 	// heartbeat so the daemon can process them concurrently. Old daemons
 	// that don't know this field silently ignore it (standard JSON behavior)
@@ -429,6 +497,46 @@ type DaemonHeartbeatAckPayload struct {
 	// within one heartbeat, no restart. Daemons that predate the field
 	// ignore it (standard JSON behavior).
 	BackpressureConfig *DaemonBackpressureConfig `json:"backpressure_config,omitempty"`
+	// PendingOpsCommands (RUYI-645) carries whitelisted read-only ops
+	// commands atomically claimed for this runtime. Same backwards-compat
+	// shape as PendingLocalSkillImports: daemons built before the field
+	// silently ignore it, and a claimed-but-undeliverable command simply
+	// times out on the server side (never re-dispatched).
+	PendingOpsCommands []DaemonOpsCommandDispatch `json:"pending_ops_commands,omitempty"`
+	// PendingFileOperations contains typed read-only file requests. It is a
+	// separate channel from ops commands so it can never reach an argv runner.
+	PendingFileOperations []DaemonFileOperationDispatch `json:"pending_file_operations,omitempty"`
+}
+
+type DaemonFileOperationDispatch struct {
+	OperationID     string          `json:"operation_id"`
+	TargetID        string          `json:"target_id"`
+	Kind            string          `json:"kind"`
+	Path            string          `json:"path"`
+	Offset          int64           `json:"offset,omitempty"`
+	Length          int64           `json:"length,omitempty"`
+	Limit           int             `json:"limit,omitempty"`
+	Cursor          string          `json:"cursor,omitempty"`
+	ExpectedSize    *int64          `json:"expected_size,omitempty"`
+	ExpectedModTime string          `json:"expected_mtime,omitempty"`
+	LeaseEpoch      int64           `json:"lease_epoch"`
+	Roots           []string        `json:"roots,omitempty"`
+	Policy          json.RawMessage `json:"policy"`
+	PolicyVersion   int64           `json:"policy_version"`
+}
+
+// DaemonOpsCommandDispatch is one claimed read-only ops command handed to a
+// daemon inside a heartbeat ack. Args is the raw JSON object exactly as the
+// server validated it; the daemon re-validates against the shared opskind
+// registry before executing (second line of defense). LeaseEpoch must be
+// echoed on the result POST — the server accepts receipts only for the
+// current generation of the command row.
+type DaemonOpsCommandDispatch struct {
+	CommandID  string          `json:"command_id"`
+	Kind       string          `json:"kind"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	TimeoutS   int             `json:"timeout_s"`
+	LeaseEpoch int64           `json:"lease_epoch"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no

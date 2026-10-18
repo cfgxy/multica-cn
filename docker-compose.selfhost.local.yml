@@ -45,6 +45,14 @@ services:
       # variable also switches the realtime relay on in its default sharded
       # mode — a self-consistent path for a single replica.
       REDIS_URL: ${REDIS_URL:-}
+      MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY: ${MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY:-}
+      # Self-evolution module config (RUYI-551): deployment key sealing the
+      # per-workspace model service override; unset = saves fail closed (503).
+      MULTICA_SELF_EVOLUTION_SECRET_KEY: ${MULTICA_SELF_EVOLUTION_SECRET_KEY:-}
+      # Langfuse trace export (deployment-level, instance 192.168.2.34:3100);
+      # both keys set = quality dashboard reports the export as configured.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
 
   frontend:
     environment:

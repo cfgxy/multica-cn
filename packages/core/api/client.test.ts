@@ -73,6 +73,32 @@ describe("ApiClient agent conversation-starter compatibility", () => {
   });
 });
 
+describe("ApiClient chat session model selection", () => {
+  it("writes the override to the session endpoint and parses the durable result", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "session-1",
+      workspace_id: "workspace-1",
+      agent_id: "agent-1",
+      creator_id: "user-1",
+      title: "Chat",
+      status: "active",
+      has_unread: false,
+      model_override: "model-a",
+      created_at: "2026-10-17T00:00:00Z",
+      updated_at: "2026-10-17T00:00:00Z",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    const session = await client.setChatSessionModel("session-1", "model-a");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/chat/sessions/session-1/model");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ model_override: "model-a" });
+    expect(session.model_override).toBe("model-a");
+  });
+});
+
 describe("ApiClient edit guards", () => {
   it("does not accept malformed comment write responses as successful saves", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response("{}", {
@@ -167,6 +193,45 @@ describe("ApiClient edit guards", () => {
   });
 });
 
+describe("ApiClient audit events", () => {
+  it("preserves invocation filters and paired full precision cursors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ events: [], next_cursor: null, next_cursor_id: null }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    await client.listAuditEvents("ws/1", {
+      time_basis: "invocation_start",
+      since: "2026-10-17T10:00:00.123456789Z",
+      actor_type: "member",
+      client_name: "Codex",
+      tool_name: "read_file_chunk",
+      result_status: "success",
+      target_type: "host",
+      target_id: "host-7",
+      limit: 20,
+      cursor: "2026-10-17T09:00:00.123456789Z",
+      cursor_id: "event-1",
+    });
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/api/workspaces/ws%2F1/audit-events");
+    expect(url.searchParams.get("since")).toBe("2026-10-17T10:00:00.123456789Z");
+    expect(url.searchParams.get("cursor")).toBe("2026-10-17T09:00:00.123456789Z");
+    expect(url.searchParams.get("cursor_id")).toBe("event-1");
+    expect(url.searchParams.get("result_status")).toBe("success");
+  });
+
+  it("drops a malformed audit page to the empty fallback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ events: [{ id: 7 }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })));
+    await expect(new ApiClient("https://api.example.test").listAuditEvents("ws-1"))
+      .resolves.toEqual({ events: [], next_cursor: null, next_cursor_id: null });
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",
@@ -209,6 +274,33 @@ describe("ApiClient pull-request response schema", () => {
     });
   });
 
+  it("accepts review_decision from new backends and keeps it optional for old ones", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ pull_requests: [
+        { ...validPR, review_decision: "changes_requested" },
+        { ...validPR, id: "pr-old" },
+      ] }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+
+    const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
+    expect(result.pull_requests).toHaveLength(2);
+    expect(result.pull_requests[0]?.review_decision).toBe("changes_requested");
+    expect(result.pull_requests[1]?.review_decision).toBeUndefined();
+  });
+
+  it("unlinks a pull request through the issue-scoped endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test").unlinkIssuePullRequest("issue-1", "pr-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/issues/issue-1/pull-requests/pr-1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
   it("falls back safely when failed_check_names is malformed", async () => {
     vi.stubGlobal(
       "fetch",
@@ -223,6 +315,19 @@ describe("ApiClient pull-request response schema", () => {
           },
         ),
       ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listIssuePullRequests("issue-1"),
+    ).resolves.toEqual({ pull_requests: [] });
+  });
+
+  it("rejects malformed review_decision without breaking response parsing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        pull_requests: [{ ...validPR, review_decision: 12 }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } })),
     );
 
     await expect(
@@ -2856,5 +2961,52 @@ describe("ApiClient prompt governance versions (RUYI-285)", () => {
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
+  });
+});
+
+describe("ApiClient listIssueSuspensions", () => {
+  const row = {
+    id: "susp-1",
+    workspace_id: "ws-1",
+    issue_id: "issue-1",
+    status: "active",
+    reason: "waiting for CI",
+    waiting_on_type: "external",
+    waiting_on_summary: "ci run 42",
+    resume_condition: "ci green",
+    suspended_by_type: "agent",
+    suspended_by_id: "agent-1",
+    suspended_at: "2026-10-14T00:00:00Z",
+    resume_note: "",
+    cancel_note: "",
+  };
+
+  it("unwraps the wrapped {suspensions} payload and returns the rows", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ suspensions: [row] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([row]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/issues/issue-1/suspensions",
+    );
+  });
+
+  it("degrades the legacy bare-array payload to an empty list", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([row]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([]);
   });
 });

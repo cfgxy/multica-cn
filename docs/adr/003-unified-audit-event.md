@@ -29,3 +29,11 @@ Phase 1 覆盖矩阵：run 全生命周期（queued/dispatched/started/waiting_l
 append-only 无外键是有意的：审计行必须比被描述的业务行活得久，workspace 删除清理由应用层显式处理（沿仓内「禁数据库外键」红线）。双写期 `activity_log` 仍是时间线事实源，audit 镜像行丢失只留 WARN 不阻塞业务（env 两处除外，其 fail-closed 语义与既有行为一致）。事件词表开放不锁枚举：新事件类型无需迁移，但必须走 audit.go 契约。回退路径：停用写入点即停止增长；表与索引可整体 drop，不影响任何业务读路径；926 迁移可 down 干净回滚。
 
 验证以 `server/internal/service/audit_test.go` 契约单测、`go build ./...` + `go vet` 全绿、sqlc 生成物零 diff、迁移 up/down/up 冒烟为准；实机多端渲染与查询联调由 QA 阶段完成。
+
+## MCP 调用查询契约
+
+工作区审计查询仍返回事件行，并继续按 `occurred_at DESC, id DESC` 使用配对游标分页。`since`/`until` 未指定 `time_basis` 时保留事件时间语义；`time_basis=invocation_start` 时，仅 MCP 事件的时间窗改按同一 workspace、同一 `invocation_id` 的 `mcp.invocation_started.occurred_at` 判断，完成事件时间不再二次截断。非 MCP 行仍按事件时间筛选。没有 start 的旧事件仅在要求 start 来源的条件下不匹配，不影响无条件历史查询。
+
+调用筛选参数为 `client_name`/`client_version`、`tool_name`、`result_status`/`result_error_code`、`target_type`/`target_id`。客户端值映射到 start 事件 details 的 `reported_client_name`/`reported_client_version`，是 MCP peer 自报信息，不是认证身份；空值和历史缺失保持未知。名称与版本精确匹配，不用封闭客户端枚举。工具名和目标来自 start；结果来自 finish 的 `status`/`error_code`。目标类型限 `workspace`、`issue`、`host`，目标 ID 为字符串精确匹配。缺失 finish 或字段不推断为成功、失败或其他值。
+
+多个条件按同一 workspace 和 `invocation_id` 做 AND。关联 start/finish 先应用与当前列表相同的敏感事件可见性及保留期条件，避免普通成员通过过滤或游标探测隐藏调用。调用参数均为可选；旧请求和事件时间默认语义不变。回退时客户端停止发送新增调用筛选参数即可，不删除已有审计 details，也不需要数据库回滚。

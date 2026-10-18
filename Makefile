@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
+.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev desktop-build android-build mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-render mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
@@ -451,11 +451,14 @@ daemon-uninstall: ## Remove daemon systemd units (default + all @profile instanc
 mcp-build: ## Build @multica/mcp from this checkout only (tsc -> dist/), without touching any client config
 	pnpm --filter @multica/mcp build
 
-mcp-install: mcp-build ## Register @multica/mcp with every detected client (Claude Code/Codex/Kimi/ZCode/Cursor/OpenCode). Uses this checkout's absolute dist path, so re-run after moving/removing the checkout.
-	node "$(CURDIR)/apps/mcp/dist/install-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
+MCP_AUDIT_CREDENTIAL_FILE ?= $(HOME)/.config/multica/mcp-audit-credential
+export MCP_AUDIT_CREDENTIAL_FILE
 
-mcp-update: mcp-build ## Rebuild and refresh only clients already registered with multica (fixes a stale dist path after moving/rebuilding the checkout); never registers a newly-detected client
-	node "$(CURDIR)/apps/mcp/dist/update-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
+mcp-install: mcp-build ## Register @multica/mcp with every detected client; credential is read from a user-only file, never copied into client config
+	node "$(CURDIR)/apps/mcp/dist/install-cli.js" "$(CURDIR)/apps/mcp/dist/index.js" "$(MCP_AUDIT_CREDENTIAL_FILE)"
+
+mcp-update: mcp-build ## Rebuild and refresh only clients already registered with multica; credential is read from a user-only file, never copied into client config
+	node "$(CURDIR)/apps/mcp/dist/update-cli.js" "$(CURDIR)/apps/mcp/dist/index.js" "$(MCP_AUDIT_CREDENTIAL_FILE)"
 
 mcp-status: mcp-build ## Read-only: show which clients are registered, the dist path each points at, and whether that path is stale
 	node "$(CURDIR)/apps/mcp/dist/status-cli.js"
@@ -468,9 +471,8 @@ mcp-uninstall: mcp-build ## Remove the multica entry from every detected client'
 # 这里是把 http transport 常驻托管为 systemd 服务，供远程 connector（ChatGPT
 # 等）连接。两者互不影响，可同时存在。
 #
-# 无状态设计：每个 POST /mcp 自带 Authorization: Bearer <PAT>，服务端不持久化
-# 任何凭据；因此本组 target 不做「profile 未认证」前置检查（对照 daemon-install），
-# 单元文件与日志也绝不写入 token——凭据只走调用方的请求头。
+# 每个 POST /mcp 自带 Authorization: Bearer <PAT>；统一 MCP 审计凭据从受限文件
+# 通过 systemd LoadCredential 注入，单元与日志不包含凭据内容。
 #
 # 单实例，非 @ 模板：一台机器一般只需要一个 MCP http 端点（多端口场景可用
 # MCP_HTTP_PORT/MCP_HTTP_HOST 覆盖后重装），跟 daemon 的多 profile 并存不是
@@ -483,21 +485,34 @@ MCP_MEMORY_MAX ?= 768M
 
 MCP_HTTP_UNIT_DIR := $(HOME)/.config/systemd/user
 MCP_HTTP_UNIT := $(MCP_HTTP_UNIT_DIR)/multica-mcp-http.service
-
-mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport as a systemd --user service (zero sudo): make mcp-http-install [MCP_HTTP_PORT=8080] [MCP_HTTP_HOST=127.0.0.1]
-	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
-	case "$(MCP_HTTP_HOST)" in \
-		127.0.0.1|localhost|::1) ;; \
-		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
-	esac; \
-	mkdir -p "$(MCP_HTTP_UNIT_DIR)"; \
-	sed -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
+MCP_HTTP_UNIT_RENDER = sed -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
 	    -e 's|@PORT@|$(MCP_HTTP_PORT)|g' \
 	    -e 's|@HOST@|$(MCP_HTTP_HOST)|g' \
 	    -e 's|@CPU_QUOTA@|$(MCP_CPU_QUOTA)|g' \
 	    -e 's|@MEMORY_HIGH@|$(MCP_MEMORY_HIGH)|g' \
 	    -e 's|@MEMORY_MAX@|$(MCP_MEMORY_MAX)|g' \
-	    deploy/multica-mcp-http.service.template > "$(MCP_HTTP_UNIT)"; \
+	    deploy/multica-mcp-http.service.template | \
+	    perl -pe 's/\@AUDIT_CREDENTIAL_FILE\@/$$ENV{MCP_AUDIT_CREDENTIAL_FILE}/g'
+
+mcp-http-render: ## Render the MCP HTTP unit to stdout without installing it
+	@$(MCP_HTTP_UNIT_RENDER)
+
+mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport with a systemd credential file (zero sudo): make mcp-http-install [MCP_AUDIT_CREDENTIAL_FILE=/path/to/credential]
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	if [ ! -f "$(MCP_AUDIT_CREDENTIAL_FILE)" ] || [ ! -r "$(MCP_AUDIT_CREDENTIAL_FILE)" ]; then \
+		echo "ERROR: MCP audit credential file is missing or unreadable: $(MCP_AUDIT_CREDENTIAL_FILE) (create it with mode 600)" >&2; exit 1; \
+	fi; \
+	case "$(MCP_AUDIT_CREDENTIAL_FILE)" in /*) ;; *) echo "ERROR: MCP_AUDIT_CREDENTIAL_FILE must be an absolute path" >&2; exit 1 ;; esac; \
+	mode=$$(stat -c '%a' "$(MCP_AUDIT_CREDENTIAL_FILE)"); \
+	if [ "$$mode" != "600" ] && [ "$$mode" != "400" ]; then \
+		echo "ERROR: MCP audit credential file must have mode 600 or 400: $(MCP_AUDIT_CREDENTIAL_FILE)" >&2; exit 1; \
+	fi; \
+	case "$(MCP_HTTP_HOST)" in \
+		127.0.0.1|localhost|::1) ;; \
+		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
+	esac; \
+	mkdir -p "$(MCP_HTTP_UNIT_DIR)"; \
+	$(MCP_HTTP_UNIT_RENDER) > "$(MCP_HTTP_UNIT)"; \
 	systemctl --user daemon-reload; \
 	systemctl --user enable --now multica-mcp-http.service; \
 	if [ "$$(loginctl show-user $$(id -un) -p Linger --value 2>/dev/null)" != "yes" ]; then \
@@ -601,11 +616,19 @@ web-release: ## Serve the prebuilt Next.js production bundle for the current env
 desktop-dev: ## Run only the Electron desktop app for the current env file
 	pnpm dev:desktop
 
+desktop-build: ## Compile the Electron desktop app and its bundled CLI
+	pnpm --filter @multica/desktop build
+
+APP_ENV ?= production
+android-build: ## Prebuild and compile the Android release APK (APP_ENV=production|staging)
+	cd apps/mobile && pnpm exec dotenv -e .env.$(APP_ENV) -- cross-env APP_ENV=$(APP_ENV) expo prebuild -p android
+	cd apps/mobile/android && EXPO_NO_BUNDLE_SPLITTING=1 ./gradlew assembleRelease --build-cache --parallel --no-daemon
+
 # Dev-slot MCP Node (RUYI-428): behind the web /api/mcp rewrite. --server-url
 # overrides the env file's daemon-shaped ws://.../ws MULTICA_SERVER_URL with
 # the REST origin; MULTICA_MCP_PORT (slot env) picks the listener port.
 mcp-dev: ## Run only the MCP HTTP server for the current env file
-	node apps/mcp/dist/index.js --transport http --host 127.0.0.1 --server-url http://localhost:$(PORT)
+	node apps/mcp/dist/index.js --transport http --host 127.0.0.1 --server-url http://localhost:$(PORT) --audit-credential-file "$${MCP_AUDIT_CREDENTIAL_FILE:?}" --file-access-instance-id "$${MULTICA_MCP_INSTANCE_ID:?}" --file-access-credential-file "$${MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE:?}"
 
 # ---------- One-click commands ----------
 ##@ One-click

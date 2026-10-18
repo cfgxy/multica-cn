@@ -377,6 +377,7 @@ func (m *Manager) applySnapshot(ctx context.Context, prID pgtype.UUID, snap *PRS
 	n, err := q.UpdateGitHubPRSnapshot(ctx, db.UpdateGitHubPRSnapshotParams{
 		ApiMergeable:        textOrNull(snap.Mergeable),
 		ApiMergeStateStatus: textOrNull(snap.MergeStateStatus),
+		ReviewDecision:      textOrNull(snap.ReviewDecision),
 		ChecksRollupState:   rollup,
 		HeadSha:             snap.HeadSHA,
 		FetchedAt:           tsFromTime(m.now()),

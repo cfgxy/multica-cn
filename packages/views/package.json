@@ -23,6 +23,7 @@
     "./modals/create-issue": "./modals/create-issue.tsx",
     "./my-issues": "./my-issues/index.ts",
     "./decisions": "./decisions/index.ts",
+    "./suspensions": "./suspensions/index.ts",
     "./skills": "./skills/index.ts",
     "./agents": "./agents/index.ts",
     "./members": "./members/index.ts",
@@ -56,6 +57,7 @@
     "./platform": "./platform/index.ts",
     "./i18n": "./i18n/index.ts",
     "./attachments": "./attachments/index.ts",
+    "./audit": "./audit/index.ts",
     "./locales": "./locales/index.ts",
     "./locales/*": "./locales/*"
   },
