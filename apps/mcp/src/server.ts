@@ -24,21 +24,13 @@ import { findTool, TOOL_DEFINITIONS } from "./tools.js";
 export const SERVER_NAME = "multica-mcp";
 export const SERVER_VERSION = "0.1.0";
 
-const AUDITED_INBOX_TOOLS = new Set([
-  "list_inbox",
-  "list_archived_inbox",
-  "get_inbox_unread_count",
-  "get_inbox_unread_summary",
-  "mark_all_inbox_read",
-  "archive_all_inbox",
-  "archive_all_read_inbox",
-  "archive_completed_inbox",
-  "mark_inbox_item_read",
-  "mark_inbox_item_unread",
-  "archive_inbox_item",
-  "unarchive_inbox_item",
-]);
 const AUDITED_FILE_TOOLS = new Set(["list_files", "get_file_metadata", "read_file_chunk"]);
+// All actionable MCP tools carry an explicit workspace. `list_workspaces` is
+// intentionally the exception: it discovers the workspace needed to create a
+// workspace-scoped audit row, and exposes no workspace data itself.
+const AUDITED_WORKSPACE_TOOLS = new Set(
+  TOOL_DEFINITIONS.map((tool) => tool.name).filter((name) => name !== "list_workspaces"),
+);
 
 const SERVER_INSTRUCTIONS =
   "Tools for working with Multica (AI-native issue tracking) on behalf of the " +
@@ -76,11 +68,18 @@ export function createMcpServer(
     }
     try {
       const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+      const missingRequired = tool.inputSchema.required.find((name) => {
+        const value = args[name];
+        return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+      });
+      if (missingRequired !== undefined) {
+        throw new ToolInputError(`'${missingRequired}' is required`);
+      }
       if (AUDITED_FILE_TOOLS.has(tool.name) && (typeof args["workspace"] !== "string" || args["workspace"].trim().length === 0)) {
         await recordPreAuth(client, randomUUID(), "missing_workspace", tool.name as FileToolName);
         throw new ToolInputError("'workspace' is required and must be a non-empty string");
       }
-      if (AUDITED_INBOX_TOOLS.has(tool.name) || AUDITED_FILE_TOOLS.has(tool.name)) {
+      if (AUDITED_WORKSPACE_TOOLS.has(tool.name)) {
         const workspace = args["workspace"];
         if (typeof workspace !== "string" || workspace.trim().length === 0) {
           throw new Error("'workspace' is required and must be a non-empty string");

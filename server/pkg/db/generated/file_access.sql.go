@@ -21,7 +21,8 @@ WHERE id IN (
       AND target.enabled = TRUE AND target.roots <> '[]'::jsonb
       AND candidate.requester_id IS NOT NULL
       AND target.workspace_acl ? candidate.workspace_id::text
-      AND (target.member_acl = '[]'::jsonb OR target.member_acl ? candidate.requester_id::text)
+      AND (COALESCE(NULLIF(target.member_acl, 'null'::jsonb), '[]'::jsonb) = '[]'::jsonb
+           OR target.member_acl ? candidate.requester_id::text)
     ORDER BY candidate.created_at, candidate.id LIMIT $2 FOR UPDATE SKIP LOCKED
 ) RETURNING id, target_id, kind, request, lease_epoch
 `
