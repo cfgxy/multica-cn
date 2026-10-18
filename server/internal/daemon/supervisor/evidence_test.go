@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,5 +126,58 @@ func TestWorkerEvidenceUsesOwnedManifestAndOpaqueBoundedCursor(t *testing.T) {
 	}
 	if bad := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, Stream: "/tmp/x", TailBytes: 999999}); bad.Available {
 		t.Fatalf("invalid request accepted: %+v", bad)
+	}
+}
+
+func TestWorkerEvidenceClassifiesRetentionExpiry(t *testing.T) {
+	mgr := retentionTestManager(t)
+	const taskID, runID = "44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444-1"
+	convergedAt := time.Now().UTC().Add(-25 * time.Hour)
+	manifest := &Manifest{
+		RunID: runID, TaskID: taskID, DaemonID: "daemon-a", State: StateExited,
+		Unit: UnitName(runID), ConvergedAt: &convergedAt,
+		Exit: &ExitRecord{Code: 0, At: convergedAt, Source: ExitSourceLauncher},
+	}
+	if err := mgr.WriteManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stdoutLogPath(mgr.Dir(runID)), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	gc := &RetentionGC{Mgr: mgr, Retain: 24 * time.Hour}
+	if summary, err := gc.Run(context.Background()); err != nil || summary.Removed != 1 {
+		t.Fatalf("retention GC = (%+v, %v), want one removal", summary, err)
+	}
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{1}}
+	resp := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, Stream: "stdout", TailBytes: 8})
+	if resp.Available || resp.Unavailable != "expired" {
+		t.Fatalf("post-GC evidence = %+v, want expired", resp)
+	}
+	marker, err := os.ReadFile(mgr.evidenceExpiryPath(taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(marker), taskID) {
+		t.Fatalf("expiry metadata unexpectedly contains task identity: %s", marker)
+	}
+}
+
+func TestWorkerEvidenceClassifiesMissingExpiredLog(t *testing.T) {
+	mgr := retentionTestManager(t)
+	const taskID, runID = "55555555-5555-4555-8555-555555555555", "55555555-5555-4555-8555-555555555555-1"
+	convergedAt := time.Now().UTC().Add(-25 * time.Hour)
+	manifest := &Manifest{
+		RunID: runID, TaskID: taskID, DaemonID: "daemon-a", State: StateExited,
+		ConvergedAt: &convergedAt,
+		Exit:        &ExitRecord{Code: 0, At: convergedAt, Source: ExitSourceLauncher},
+	}
+	if err := mgr.WriteManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{1}}
+	resp := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, Stream: "stdout", TailBytes: 8})
+	if resp.Available || resp.Unavailable != "expired" {
+		t.Fatalf("missing expired log = %+v, want expired", resp)
 	}
 }
