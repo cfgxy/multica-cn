@@ -250,6 +250,23 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 	}
 }
 
+func TestValidateGithubRepoRefNormalizesSSHSchemeCanonicalAndUpstream(t *testing.T) {
+	ref, err := validateGithubRepoRef(json.RawMessage(`{"url":"ssh://git@github.com/Owner/Project.git","upstream":"ssh://git@github.com/Source/Parent.git"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got githubRepoRef
+	if err := json.Unmarshal(ref, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "ssh://git@github.com/Owner/Project.git" {
+		t.Errorf("canonical URL = %q, want original URL preserved", got.URL)
+	}
+	if got.Upstream == nil || *got.Upstream != "source/parent" {
+		t.Errorf("normalized upstream = %v, want %q", got.Upstream, "source/parent")
+	}
+}
+
 func TestIsValidGitRepoURL(t *testing.T) {
 	good := []string{
 		"https://github.com/multica-ai/multica",
