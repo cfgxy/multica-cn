@@ -32,12 +32,9 @@ import ReactMarkdown, {
   type Options as ReactMarkdownOptions,
 } from "react-markdown";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
-import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
 import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
-import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
 import {
@@ -67,7 +64,6 @@ import {
   isPullRequestResolution,
   useIssueReferenceResolutions,
 } from "../issues/hooks/use-issue-reference-resolutions";
-import { IssueReferenceTail } from "./issue-reference-footer";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -81,7 +77,13 @@ import { highlightToHtml } from "../editor/utils/highlight-markdown";
 import { AttachmentDownloadProvider } from "../editor/attachment-download-context";
 import { Attachment as AttachmentRenderer } from "../editor/attachment";
 import { computeClosedFenceOffsets } from "./streaming-fence";
+import { LazyIssueReferenceTail } from "./lazy-issue-reference-tail";
 import { remarkRepairCjkStrongTrailingWhitespace } from "./cjk-emphasis";
+import { remarkGfmWithSharedExtensions } from "./shared-gfm-extensions";
+import {
+  rehypeKatexWhenNeeded,
+  rehypeRawWhenNeeded,
+} from "./rehype-raw-gate";
 import {
   CodeBlockShell,
   RichFenceBlock,
@@ -600,15 +602,15 @@ const COMPONENTS: Partial<Components> = {
 const REMARK_PLUGINS = [
   [remarkMath, { singleDollarTextMath: false }],
   remarkBreaks,
-  [remarkGfm, { singleTilde: false }],
+  remarkGfmWithSharedExtensions,
   remarkCjkFriendly,
   remarkRepairCjkStrongTrailingWhitespace,
 ] satisfies NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
 
 const REHYPE_PLUGINS = [
-  rehypeRaw,
+  rehypeRawWhenNeeded,
   [rehypeSanitize, markdownSanitizeSchema],
-  rehypeKatex,
+  rehypeKatexWhenNeeded,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
 // ---------------------------------------------------------------------------
@@ -715,7 +717,7 @@ export const RichContent = memo(function RichContent({
         )}
       >
         {markdown}
-        <IssueReferenceTail content={content} />
+        <LazyIssueReferenceTail content={content} />
         <LinkHoverCard {...hover} />
       </div>
     </AttachmentDownloadProvider>
