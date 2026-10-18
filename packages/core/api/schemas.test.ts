@@ -52,9 +52,11 @@ import {
   EMPTY_USER,
   AdminUserListSchema,
   AdminWorkspaceListSchema,
+  AdminFileReadPolicySchema,
   ImpersonationResponseSchema,
   EMPTY_ADMIN_USER_LIST,
   EMPTY_ADMIN_WORKSPACE_LIST,
+  EMPTY_ADMIN_FILE_READ_POLICY,
   EMPTY_IMPERSONATION_RESPONSE,
   InboxItemListSchema,
   InboxUnreadSummarySchema,
@@ -2321,6 +2323,22 @@ describe("Admin schemas (RUYI-47)", () => {
       { endpoint: "GET /api/admin/workspaces" },
     );
     expect(parsed).toEqual(EMPTY_ADMIN_WORKSPACE_LIST);
+  });
+
+  it("parses file read rules defensively and falls back on malformed policy data", () => {
+    expect(AdminFileReadPolicySchema.parse({
+      version: 3,
+      rules: [{ id: "ssh", pattern: "**/.ssh/**", enabled: true }],
+    })).toEqual({
+      version: 3,
+      rules: [{ id: "ssh", pattern: "**/.ssh/**", description: "", enabled: true, builtin: false }],
+    });
+    expect(parseWithFallback(
+      { version: "latest", rules: "invalid" },
+      AdminFileReadPolicySchema,
+      EMPTY_ADMIN_FILE_READ_POLICY,
+      { endpoint: "GET /api/admin/file-read-policy" },
+    )).toEqual(EMPTY_ADMIN_FILE_READ_POLICY);
   });
 
   it("ImpersonationResponseSchema falls back on a malformed stop response", () => {

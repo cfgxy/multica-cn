@@ -1581,6 +1581,14 @@ type McpFileAccessInstanceBinding struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type McpFileReadPolicy struct {
+	Singleton bool               `json:"singleton"`
+	Version   int64              `json:"version"`
+	Rules     []byte             `json:"rules"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type McpInvocationAuditOutbox struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

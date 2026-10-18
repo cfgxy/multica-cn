@@ -1,5 +1,16 @@
 -- Typed file operation registry and heartbeat claim storage.
 
+-- name: GetMCPFileReadPolicy :one
+SELECT version, rules, updated_by, updated_at
+FROM mcp_file_read_policy WHERE singleton = TRUE;
+
+-- name: UpdateMCPFileReadPolicy :one
+UPDATE mcp_file_read_policy
+SET version = version + 1, rules = sqlc.arg('rules')::jsonb,
+    updated_by = sqlc.arg('updated_by'), updated_at = now()
+WHERE singleton = TRUE AND version = sqlc.arg('expected_version')
+RETURNING version, rules, updated_by, updated_at;
+
 -- name: UpsertFileAccessTarget :one
 INSERT INTO daemon_file_access_target (id, workspace_id, runtime_id, enabled, roots, workspace_acl, member_acl, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, now())
@@ -69,6 +80,12 @@ WHERE (status = 'pending' AND created_at < now() - interval '2 minutes')
 -- name: FinalizeFileOperation :one
 UPDATE daemon_file_operation SET status = $3, result = $4, error_class = $5, finished_at = now()
 WHERE id = $1 AND runtime_id = $2 AND status = 'claimed' AND lease_epoch = $6
+RETURNING *;
+
+-- name: FinalizeFileOperationForPolicy :one
+UPDATE daemon_file_operation SET status = $3, result = $4, error_class = $5, finished_at = now()
+WHERE id = $1 AND runtime_id = $2 AND status = 'claimed' AND lease_epoch = $6
+  AND EXISTS (SELECT 1 FROM mcp_file_read_policy WHERE singleton = TRUE AND version = sqlc.arg('policy_version'))
 RETURNING *;
 
 -- name: ListFileOperations :many

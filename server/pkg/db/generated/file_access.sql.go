@@ -129,6 +129,53 @@ func (q *Queries) FinalizeFileOperation(ctx context.Context, arg FinalizeFileOpe
 	return i, err
 }
 
+const finalizeFileOperationForPolicy = `-- name: FinalizeFileOperationForPolicy :one
+UPDATE daemon_file_operation SET status = $3, result = $4, error_class = $5, finished_at = now()
+WHERE id = $1 AND runtime_id = $2 AND status = 'claimed' AND lease_epoch = $6
+  AND EXISTS (SELECT 1 FROM mcp_file_read_policy WHERE singleton = TRUE AND version = $7)
+RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
+`
+
+type FinalizeFileOperationForPolicyParams struct {
+	ID            pgtype.UUID `json:"id"`
+	RuntimeID     pgtype.UUID `json:"runtime_id"`
+	Status        string      `json:"status"`
+	Result        []byte      `json:"result"`
+	ErrorClass    pgtype.Text `json:"error_class"`
+	LeaseEpoch    int64       `json:"lease_epoch"`
+	PolicyVersion int64       `json:"policy_version"`
+}
+
+func (q *Queries) FinalizeFileOperationForPolicy(ctx context.Context, arg FinalizeFileOperationForPolicyParams) (DaemonFileOperation, error) {
+	row := q.db.QueryRow(ctx, finalizeFileOperationForPolicy,
+		arg.ID,
+		arg.RuntimeID,
+		arg.Status,
+		arg.Result,
+		arg.ErrorClass,
+		arg.LeaseEpoch,
+		arg.PolicyVersion,
+	)
+	var i DaemonFileOperation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.RuntimeID,
+		&i.TargetID,
+		&i.Kind,
+		&i.Request,
+		&i.Status,
+		&i.LeaseEpoch,
+		&i.Result,
+		&i.ErrorClass,
+		&i.CreatedAt,
+		&i.ClaimedAt,
+		&i.FinishedAt,
+		&i.InvocationID,
+	)
+	return i, err
+}
+
 const getFileAccessTarget = `-- name: GetFileAccessTarget :one
 SELECT id, workspace_id, runtime_id, enabled, roots, workspace_acl, member_acl, created_at, updated_at FROM daemon_file_access_target WHERE id = $1
 `
@@ -289,6 +336,32 @@ func (q *Queries) GetMCPFileAccessInstanceBindingTarget(ctx context.Context, arg
 	return i, err
 }
 
+const getMCPFileReadPolicy = `-- name: GetMCPFileReadPolicy :one
+
+SELECT version, rules, updated_by, updated_at
+FROM mcp_file_read_policy WHERE singleton = TRUE
+`
+
+type GetMCPFileReadPolicyRow struct {
+	Version   int64              `json:"version"`
+	Rules     []byte             `json:"rules"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Typed file operation registry and heartbeat claim storage.
+func (q *Queries) GetMCPFileReadPolicy(ctx context.Context) (GetMCPFileReadPolicyRow, error) {
+	row := q.db.QueryRow(ctx, getMCPFileReadPolicy)
+	var i GetMCPFileReadPolicyRow
+	err := row.Scan(
+		&i.Version,
+		&i.Rules,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertFileOperation = `-- name: InsertFileOperation :one
 INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, invocation_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
@@ -414,8 +487,40 @@ func (q *Queries) ListFileOperations(ctx context.Context, arg ListFileOperations
 	return items, nil
 }
 
-const upsertFileAccessTarget = `-- name: UpsertFileAccessTarget :one
+const updateMCPFileReadPolicy = `-- name: UpdateMCPFileReadPolicy :one
+UPDATE mcp_file_read_policy
+SET version = version + 1, rules = $1::jsonb,
+    updated_by = $2, updated_at = now()
+WHERE singleton = TRUE AND version = $3
+RETURNING version, rules, updated_by, updated_at
+`
 
+type UpdateMCPFileReadPolicyParams struct {
+	Rules           []byte      `json:"rules"`
+	UpdatedBy       pgtype.UUID `json:"updated_by"`
+	ExpectedVersion int64       `json:"expected_version"`
+}
+
+type UpdateMCPFileReadPolicyRow struct {
+	Version   int64              `json:"version"`
+	Rules     []byte             `json:"rules"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpdateMCPFileReadPolicy(ctx context.Context, arg UpdateMCPFileReadPolicyParams) (UpdateMCPFileReadPolicyRow, error) {
+	row := q.db.QueryRow(ctx, updateMCPFileReadPolicy, arg.Rules, arg.UpdatedBy, arg.ExpectedVersion)
+	var i UpdateMCPFileReadPolicyRow
+	err := row.Scan(
+		&i.Version,
+		&i.Rules,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const upsertFileAccessTarget = `-- name: UpsertFileAccessTarget :one
 INSERT INTO daemon_file_access_target (id, workspace_id, runtime_id, enabled, roots, workspace_acl, member_acl, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 ON CONFLICT (id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, runtime_id = EXCLUDED.runtime_id,
@@ -436,7 +541,6 @@ type UpsertFileAccessTargetParams struct {
 	MemberAcl    []byte      `json:"member_acl"`
 }
 
-// Typed file operation registry and heartbeat claim storage.
 func (q *Queries) UpsertFileAccessTarget(ctx context.Context, arg UpsertFileAccessTargetParams) (DaemonFileAccessTarget, error) {
 	row := q.db.QueryRow(ctx, upsertFileAccessTarget,
 		arg.ID,
