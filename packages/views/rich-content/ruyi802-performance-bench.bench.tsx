@@ -73,6 +73,9 @@ vi.mock("./issue-reference-footer", async (importOriginal) => {
   return await importOriginal<typeof import("./issue-reference-footer")>();
 });
 vi.mock("./lazy-issue-reference-tail", async (importOriginal) => {
+  if (process.env.RUYI802_OMIT_REFERENCE_TAIL === "1") {
+    return { LazyIssueReferenceTail: () => null };
+  }
   if (process.env.RUYI802_EAGER_REFERENCE_TAIL !== "1") {
     return await importOriginal<typeof import("./lazy-issue-reference-tail")>();
   }
