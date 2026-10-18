@@ -110,6 +110,7 @@ export function MoreTabDropdownAnchor({
     // usage 入口对全部工作区成员可见（views app-sidebar 静态 nav 数组），
     // 权限面由服务端六个 dashboard rollup 接口一致裁决（A2 parity）。
     { label: i18n.t("layout:nav.usage", "Analytics"), icon: "chart.bar", androidIcon: "stats-chart-outline", path: "/more/stats" },
+    { label: i18n.t("layout:nav.audit", "MCP audit"), icon: "checkmark.shield", androidIcon: "shield-checkmark-outline", path: "/more/audit" },
   ];
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);

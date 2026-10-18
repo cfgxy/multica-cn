@@ -712,6 +712,88 @@ slot_credential_key() {
   SLOT_KEY_SEED="$password" node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.env.SLOT_KEY_SEED, "utf8").digest("base64"))'
 }
 
+slot_mcp_credential() {
+  local password="$1" purpose="$2"
+  [ -n "$password" ] && [ -n "$purpose" ] || return 1
+  SLOT_MCP_CREDENTIAL_SEED="${purpose}:${password}" node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.env.SLOT_MCP_CREDENTIAL_SEED, "utf8").digest("base64"))'
+}
+
+slot_mcp_instance_id() { printf 'slot-%s-file-access' "$SLOT"; }
+slot_mcp_audit_credential_file() { printf '%s/mcp-audit-credential' "$SLOT_DIR"; }
+slot_mcp_file_access_credential_file() { printf '%s/mcp-file-access-credential' "$SLOT_DIR"; }
+
+ensure_slot_secret_file() {
+  local path="$1" expected="$2" replace="${3:-false}"
+  if [ -e "$path" ]; then
+    [ -f "$path" ] || die "MCP credential path is not a regular file: $path"
+    [ "$(stat -c '%a' "$path")" = 600 ] || die "MCP credential file must have mode 600: $path"
+    if [ "$(cat "$path")" = "$expected" ]; then
+      return 0
+    fi
+    [ "$replace" = true ] || die "MCP credential file does not match the slot-derived value: $path"
+  fi
+  (umask 077 && printf '%s' "$expected" > "$path")
+  chmod 600 "$path"
+}
+
+ensure_slot_env_secret() {
+  local key="$1" expected="$2" appended_name="$3" current
+  current="$(env -i bash -c 'set -a; . "$1"; printenv "$2"' _ "$SLOT_ENV_FILE" "$key" 2>/dev/null || true)"
+  if [ -n "$current" ]; then
+    [ "$current" = "$expected" ] || die "slot env field $key does not match its slot-derived value"
+    return 0
+  fi
+  printf '%s=%q\n' "$key" "$expected" >> "$SLOT_ENV_FILE"
+  if [ -n "$appended_name" ]; then
+    MCP_ENV_APPENDED="${MCP_ENV_APPENDED:+$MCP_ENV_APPENDED }$appended_name"
+  fi
+}
+
+ensure_slot_env_raw_secret() {
+  local key="$1" expected="$2" appended_name="$3" current temp
+  current="$(env_file_field "$key" || true)"
+  if [ "$current" = "$expected" ]; then
+    return 0
+  fi
+  if [ -n "$current" ]; then
+    # Older slot files wrote JSON through printf %q. That is valid when sourced
+    # by a shell but Make exports the backslashes literally, so the API rejects
+    # the value as JSON. Rewrite only that known legacy representation.
+    [ "$(env -i bash -c 'set -a; . "$1"; printenv "$2"' _ "$SLOT_ENV_FILE" "$key" 2>/dev/null || true)" = "$expected" ] \
+      || die "slot env field $key does not match its slot-derived value"
+    temp="$(mktemp "$SLOT_DIR/.env.XXXXXX")"
+    RAW_SECRET_KEY="$key" RAW_SECRET_VALUE="$expected" awk '
+      index($0, ENVIRON["RAW_SECRET_KEY"] "=") == 1 {
+        print ENVIRON["RAW_SECRET_KEY"] "=" ENVIRON["RAW_SECRET_VALUE"]
+        next
+      }
+      { print }
+    ' "$SLOT_ENV_FILE" > "$temp"
+    chmod 600 "$temp"
+    mv "$temp" "$SLOT_ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$expected" >> "$SLOT_ENV_FILE"
+    MCP_ENV_APPENDED="${MCP_ENV_APPENDED:+$MCP_ENV_APPENDED }$appended_name"
+  fi
+}
+
+ensure_slot_mcp_credentials() {
+  local password="$1" replace_files="${2:-false}" audit_credential instance_credential instance_id bindings
+  [ -n "$password" ] || die "cannot derive MCP credentials without the slot database password"
+  audit_credential="$(slot_mcp_credential "$password" audit)"
+  instance_credential="$(slot_mcp_credential "$password" file-access)"
+  instance_id="$(slot_mcp_instance_id)"
+  bindings=$(printf '{"%s":"%s"}' "$instance_id" "$instance_credential")
+
+  ensure_slot_env_secret MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL "$audit_credential" MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL
+  ensure_slot_env_raw_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS "$bindings" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS
+  ensure_slot_env_secret MULTICA_MCP_INSTANCE_ID "$instance_id" MULTICA_MCP_INSTANCE_ID
+  ensure_slot_env_secret MCP_AUDIT_CREDENTIAL_FILE "$(slot_mcp_audit_credential_file)" MCP_AUDIT_CREDENTIAL_FILE
+  ensure_slot_env_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE "$(slot_mcp_file_access_credential_file)" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE
+  ensure_slot_secret_file "$(slot_mcp_audit_credential_file)" "$audit_credential" "$replace_files"
+  ensure_slot_secret_file "$(slot_mcp_file_access_credential_file)" "$instance_credential" "$replace_files"
+}
+
 generate_slot_env() {
   local password="$1"
   {
@@ -735,6 +817,11 @@ generate_slot_env() {
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
     printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
+    printf 'MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=%q\n' "$(slot_mcp_credential "$password" audit)"
+    printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=%s\n' "$(printf '{"%s":"%s"}' "$(slot_mcp_instance_id)" "$(slot_mcp_credential "$password" file-access)")"
+    printf 'MULTICA_MCP_INSTANCE_ID=%q\n' "$(slot_mcp_instance_id)"
+    printf 'MCP_AUDIT_CREDENTIAL_FILE=%q\n' "$(slot_mcp_audit_credential_file)"
+    printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=%q\n' "$(slot_mcp_file_access_credential_file)"
     # E2E fixture dependency (RUYI-632): e2e/agent-mcp.spec.ts asserts the
     # creator-only MCP Apps tab, which the composio_mcp_apps flag gates off by
     # default. Slots exist to run the E2E/dev surface, so the flag ships on.
@@ -746,6 +833,8 @@ generate_slot_env() {
     printf 'MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=%s\n' "$(slot_credential_key "$password")"
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
+  MCP_ENV_APPENDED=""
+  ensure_slot_mcp_credentials "$password" true
 }
 
 # `use` and `up` both funnel through here. A missing env file is generated
@@ -754,7 +843,7 @@ generate_slot_env() {
 # so the stored POSTGRES_PASSWORD, the one the shared instance's slot role was
 # provisioned with, survives the upgrade untouched.
 ensure_slot_env() {
-  local password="$1" appended=""
+  local password="$1" appended="" stored_password=""
   if [ ! -f "$SLOT_ENV_FILE" ]; then
     generate_slot_env "$password"
     ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
@@ -784,7 +873,13 @@ ensure_slot_env() {
       warn "slot env $SLOT_ENV_FILE has no POSTGRES_PASSWORD to derive MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY from; credential writes will fail-closed until the env is repaired"
     fi
   fi
-  [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
+  if stored_password="$(env_file_field POSTGRES_PASSWORD)" && [ -n "$stored_password" ]; then
+    password="$stored_password"
+  fi
+  MCP_ENV_APPENDED=""
+  ensure_slot_mcp_credentials "$password"
+  appended="${appended:+$appended }${MCP_ENV_APPENDED:-}"
+  [ -z "${appended// }" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
 
 # Materialize the slot env as the worktree's .env.worktree (RUYI-632): the

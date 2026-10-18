@@ -794,6 +794,7 @@ describe("combined serial path: update → assign → relations → comments", (
       // Only the assign step ever carried run-trigger keys.
       const triggeringWrites = backend.requestLog.filter(
         (entry) => {
+          if (entry.path.startsWith("/api/mcp/audit-")) return false;
           const body = entry.body ?? {};
           return body.assignee_type !== undefined || body.status !== undefined;
         },
@@ -1188,6 +1189,7 @@ class FakeRestBackend {
       token: "mul_test",
       fetchImpl: this.fetchImpl(),
       logger: silentLogger(),
+      auditServiceCredential: "test-audit-credential",
     });
   }
 
@@ -1221,7 +1223,11 @@ class FakeRestBackend {
       const listComments = path.match(/^\/api\/issues\/([^/]+)\/comments$/);
 
       let response: Response;
-      if (method === "PUT" && putIssue) {
+      if (method === "GET" && path === "/api/workspaces") {
+        response = json([{ id: "w-1", slug: WS }]);
+      } else if (method === "POST" && (path === "/api/mcp/audit-start" || path === "/api/mcp/audit-finish")) {
+        response = json({ status: "recorded" }, path.endsWith("start") ? 201 : 200);
+      } else if (method === "PUT" && putIssue) {
         response = this.updateIssue(decodeURIComponent(putIssue[1]!), body ?? {});
       } else if (method === "GET" && getIssue) {
         const issue = this.issues.get(decodeURIComponent(getIssue[1]!));

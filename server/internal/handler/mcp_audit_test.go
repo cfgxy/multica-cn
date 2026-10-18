@@ -159,6 +159,16 @@ func TestMCPAuditInvocationStartFinishAreBoundToActorAndIdempotent(t *testing.T)
 	if status, response := callMCPAudit(t, testHandler.FinishMCPInvocationAudit, testUserID, finish, mcpAuditTestCredential); status != http.StatusOK || response.Status != "recorded" {
 		t.Fatalf("finish audit: status=%d response=%+v", status, response)
 	}
+	var finishDetails map[string]any
+	if err := testPool.QueryRow(t.Context(), `
+		SELECT details FROM audit_event WHERE invocation_id = $1 AND event_type = 'mcp.invocation_finished'
+	`, pgtype.UUID{Bytes: id, Valid: true}).Scan(&finishDetails); err != nil {
+		t.Fatal(err)
+	}
+	if finishDetails["tool_name"] != "read_file" || finishDetails["status"] != "failure" || finishDetails["result_status"] != "failure" ||
+		finishDetails["target_type"] != "host" || finishDetails["target_id"] != "local" {
+		t.Fatalf("finish details do not retain the invocation display metadata: %#v", finishDetails)
+	}
 	if status, response := callMCPAudit(t, testHandler.FinishMCPInvocationAudit, testUserID, finish, mcpAuditTestCredential); status != http.StatusOK || response.Status != "recorded" {
 		t.Fatalf("duplicate finish must be idempotent: status=%d response=%+v", status, response)
 	}
