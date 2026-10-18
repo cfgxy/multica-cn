@@ -27,6 +27,7 @@ const TaskContextMarkerManagedBy = "multica-daemon-task"
 const maxTaskContextMarkerBytes = 1 << 20
 
 type taskContextMarkerFile struct {
+<<<<<<< HEAD
 	ManagedBy        string                  `json:"managed_by"`
 	TaskID           string                  `json:"task_id,omitempty"`
 	AgentID          string                  `json:"agent_id,omitempty"`
@@ -45,6 +46,13 @@ type preparedReanchorMarker struct {
 	Target           string `json:"target"`
 	BranchTip        string `json:"branch_tip"`
 	LocalStateRecord string `json:"local_state_record"`
+=======
+	ManagedBy     string `json:"managed_by"`
+	AgentID       string `json:"agent_id,omitempty"`
+	IssueID       string `json:"issue_id,omitempty"`
+	ChatSessionID string `json:"chat_session_id,omitempty"`
+	AutopilotID   string `json:"autopilot_id,omitempty"`
+>>>>>>> 12dba07a0 (feat(daemon): 实现执行环境归档回收与复用)
 }
 
 // EnsureWorkspacesRootMarker writes a persistent daemon-task marker at
@@ -337,6 +345,7 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 		AgentID:       ctx.AgentID,
 		IssueID:       ctx.IssueID,
 		ChatSessionID: ctx.ChatSessionID,
+<<<<<<< HEAD
 		Branch:        ctx.ManagedBranch,
 		BaseCommit:    ctx.BaseCommit,
 	}
@@ -368,6 +377,9 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 		if payload.BaseCommit == "" {
 			payload.BaseCommit = old.BaseCommit
 		}
+=======
+		AutopilotID:   ctx.AutopilotID,
+>>>>>>> 12dba07a0 (feat(daemon): 实现执行环境归档回收与复用)
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

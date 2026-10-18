@@ -239,7 +239,6 @@ func marshalPreparationRequest(request preparationRequest) ([]byte, error) {
 func decodePreparationRequest(in io.Reader) (preparationRequest, error) {
 	var request preparationRequest
 	decoder := json.NewDecoder(in)
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		return preparationRequest{}, err
 	}
