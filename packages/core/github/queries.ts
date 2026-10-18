@@ -57,7 +57,8 @@ export const pullRequestLookupOptions = (
 ) =>
   queryOptions({
     queryKey: githubKeys.pullRequestLookup(wsId, owner, repo, number),
-    queryFn: () => api.lookupPullRequest(wsId, owner, repo, number),
+    queryFn: ({ signal }) =>
+      api.lookupPullRequest(wsId, owner, repo, number, { signal }),
     enabled: !!wsId && Number.isInteger(number) && number > 0,
   });
 
@@ -71,6 +72,7 @@ export const pullRequestLookupOptions = (
 export const pullRequestLookupByNumberOptions = (wsId: string, number: number) =>
   queryOptions({
     queryKey: githubKeys.pullRequestLookupByNumber(wsId, number),
-    queryFn: () => api.lookupPullRequestByNumber(wsId, number),
+    queryFn: ({ signal }) =>
+      api.lookupPullRequestByNumber(wsId, number, { signal }),
     enabled: !!wsId && Number.isInteger(number) && number > 0,
   });

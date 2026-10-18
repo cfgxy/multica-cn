@@ -436,7 +436,7 @@ export function projectGanttIssuesOptions(
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
-    queryFn: () => api.getIssue(id),
+    queryFn: ({ signal }) => api.getIssue(id, { signal }),
   });
 }
 
