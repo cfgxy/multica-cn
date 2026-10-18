@@ -161,6 +161,48 @@ func TestCodexGuardShimsDelegateWithoutRecursion(t *testing.T) {
 	}
 }
 
+func TestCodexGitShimUsesTaskMaterializedGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX Codex command guard shims are not supported on Windows")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	guardBin := filepath.Join(root, "codex-home", codexGuardBinDir)
+	nativeBin := filepath.Join(root, "native-bin")
+	taskGuard := filepath.Join(root, "task-policy", "git-push-guard")
+	if err := os.MkdirAll(nativeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(taskGuard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(nativeBin, "git"), "#!/bin/sh\nprintf 'native git\\n'\n")
+	writeExecutable(t, filepath.Join(nativeBin, "gh"), "#!/bin/sh\nprintf 'native gh\\n'\n")
+	writeExecutable(t, taskGuard, "#!/bin/sh\nprintf 'task guard args=%s\\n' \"$*\"\n")
+	env, err := installCodexCommandGuards([]string{
+		"HOME=" + home,
+		"PATH=" + nativeBin + string(os.PathListSeparator) + "/usr/bin:/bin",
+		"MULTICA_GIT_PUSH_GUARD=" + taskGuard,
+	}, guardBin, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimPath := filepath.Join(filepath.Dir(envValue(env, "BASH_ENV")), "git")
+	shim, err := os.ReadFile(shimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shim), "'"+taskGuard+"'") {
+		t.Fatalf("git shim does not pin task guard path: %s", shim)
+	}
+	cmd := exec.Command(shimPath, "push", "origin", "feature/task")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "task guard args=push origin feature/task") {
+		t.Fatalf("task guard delegation output=%q error=%v", out, err)
+	}
+}
+
 func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Codex command guard shims are not supported on Windows")
