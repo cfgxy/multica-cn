@@ -340,7 +340,7 @@ function runStatusDotClass(status: string | null | undefined): string {
   }
 }
 
-function LastRunCell({ autopilot }: { autopilot: Autopilot }) {
+export function LastRunCell({ autopilot }: { autopilot: Autopilot }) {
   const { t } = useT("autopilots");
   const timeAgo = useTimeAgo();
   if (!autopilot.last_run_at) {

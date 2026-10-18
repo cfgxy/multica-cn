@@ -466,6 +466,26 @@ func TestLegislationOwnerPermissions(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("owner approve: expected 200, got %d: %s", code, body)
 	}
+	var audit []struct {
+		Action string `json:"action"`
+	}
+	var auditJSON []byte
+	dbfx.QueryRow(t, `SELECT audit_log FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, id).Scan(&auditJSON)
+	if err := json.Unmarshal(auditJSON, &audit); err != nil {
+		t.Fatalf("decode approved proposal audit: %v", err)
+	}
+	approvedCount, enactedCount := 0, 0
+	for _, entry := range audit {
+		if entry.Action == "approved" {
+			approvedCount++
+		}
+		if entry.Action == "enacted" {
+			enactedCount++
+		}
+	}
+	if approvedCount != 1 || enactedCount != 1 {
+		t.Fatalf("single approve should append one approved and one enacted audit entry, got approved=%d enacted=%d audit=%s", approvedCount, enactedCount, auditJSON)
+	}
 }
 
 // TestLegislationDraftOwnership: a member can edit and submit only their own
@@ -584,6 +604,26 @@ func TestLegislationBatchApprove(t *testing.T) {
 	}
 	if got := proposalStatus(t, wsID, badID); got != "gate_failed" {
 		t.Fatalf("weak proposal: %q, want gate_failed", got)
+	}
+	var failedAuditJSON []byte
+	dbfx.QueryRow(t, `SELECT audit_log FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, badID).Scan(&failedAuditJSON)
+	var failedAudit []struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(failedAuditJSON, &failedAudit); err != nil {
+		t.Fatalf("decode gate-failed proposal audit: %v", err)
+	}
+	approvedCount, gateFailedCount := 0, 0
+	for _, entry := range failedAudit {
+		if entry.Action == "approved" {
+			approvedCount++
+		}
+		if entry.Action == "gate_failed" {
+			gateFailedCount++
+		}
+	}
+	if approvedCount != 1 || gateFailedCount != 1 {
+		t.Fatalf("single gate-failed approval should append one approved and one gate_failed audit entry, got approved=%d gate_failed=%d audit=%s", approvedCount, gateFailedCount, failedAuditJSON)
 	}
 }
 
