@@ -4280,7 +4280,7 @@ export class ApiClient {
   async listAuditEvents(workspaceId: string, params: ListAuditEventsParams = {}): Promise<AuditEventsPage> {
     const query = new URLSearchParams();
     for (const key of [
-      "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
+      "domain", "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
       "tool_name", "result_status", "result_error_code", "target_type", "target_id",
     ] as const) {
       const value = params[key];
