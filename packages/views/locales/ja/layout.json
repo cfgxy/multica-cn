@@ -9,12 +9,13 @@
     "autopilots": "オートパイロット",
     "agents": "エージェント",
     "squads": "スクワッド",
-    "voice_runtimes": "音声ランタイム",
     "usage": "分析",
     "self_evolution": "自己進化",
     "runtimes": "ランタイム",
+    "voice_runtimes": "音声ランタイム",
     "skills": "スキル",
     "settings": "設定",
+    "audit": "MCP 監査",
     "admin": "管理"
   },
   "tab": {
@@ -68,6 +69,9 @@
       "dismiss": "閉じる"
     }
   },
+  "audit_view": {
+    "title": "MCP 監査", "description": "拒否および失敗したリクエストを含む MCP 呼び出しを記録します。", "since": "開始時刻", "since_placeholder": "開始時刻（RFC3339）", "tool": "ツール", "actor": "呼び出し元", "actor_id": "呼び出し元 ID", "result": "結果", "all_results": "すべての結果", "result_success": "成功", "result_failure": "失敗", "result_refused": "拒否", "target": "対象", "target_type": "対象タイプ", "target_id": "対象 ID", "all_targets": "すべての対象", "target_workspace": "ワークスペース", "target_issue": "タスク", "target_host": "ホスト", "apply": "適用", "loading": "監査イベントを読み込み中...", "load_failed": "監査イベントを読み込めません。", "empty": "このフィルターに一致する監査イベントはありません。", "time": "時刻", "reason": "理由", "started": "開始済み"
+  },
   "mobile": {
     "agents": {
       "coming_soon": "エージェント機能は近日公開予定です。"
@@ -79,6 +83,17 @@
       "type_project": "プロジェクト",
       "unavailable_a11y": "利用できない{{type}}。タップしてピン留めを解除",
       "unavailable": "利用できない{{type}} — タップしてピン留めを解除"
+    },
+    "audit": {
+      "title": "MCP 監査",
+      "all": "すべて",
+      "apply_filters": "フィルターを適用",
+      "load_failed": "監査イベントを読み込めません。",
+      "empty": "このフィルターに一致する監査イベントはありません。",
+      "tool": "ツール",
+      "actor_id": "呼び出し元 ID",
+      "host_target_id": "ホスト対象 ID",
+      "since": "開始時刻（RFC3339）"
     }
   }
 }

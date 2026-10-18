@@ -212,6 +212,14 @@ VALUES ($1, 'head-a', 0, 'backend', 'completed', 'success', false)
 		"metadata":     testutil.Raw("'{}'::jsonb"),
 		"owner_id":     testUserID,
 	})
+	fileTargetID := "workspace-delete-file-target-" + wsID
+	dbfx.Insert(t, "daemon_file_access_target", testutil.Cols{
+		"id": fileTargetID, "workspace_id": wsID, "runtime_id": runtimeID,
+	})
+	dbfx.Insert(t, "daemon_file_operation", testutil.Cols{
+		"id": testutil.Raw("gen_random_uuid()"), "workspace_id": wsID, "runtime_id": runtimeID,
+		"target_id": fileTargetID, "kind": "file_list", "request": testutil.Raw("'{}'::jsonb"),
+	})
 
 	agentID := dbfx.Insert(t, "agent", testutil.Cols{
 		"workspace_id":   wsID,
@@ -305,6 +313,8 @@ VALUES ($1, $2, gen_random_uuid(), gen_random_uuid(), 's3://workspace-delete/sou
 `, sourceContextObjectKey, wsID)
 
 	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM daemon_file_operation WHERE workspace_id = $1`, wsID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM daemon_file_access_target WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly_dirty WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage_hourly WHERE workspace_id = $1`, wsID)
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, runtimeProfileID)
@@ -321,6 +331,11 @@ VALUES ($1, $2, gen_random_uuid(), gen_random_uuid(), 's3://workspace-delete/sou
 	dbfx.QueryRow(t, `SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, wsID).Scan(&exists)
 	if exists {
 		t.Fatal("workspace still exists after owner DELETE")
+	}
+	for _, table := range []string{"daemon_file_operation", "daemon_file_access_target"} {
+		if count := dbfx.Count(t, `SELECT count(*) FROM `+table+` WHERE workspace_id = $1`, wsID); count != 0 {
+			t.Errorf("workspace teardown left %d rows in %s", count, table)
+		}
 	}
 
 	var pendingCount int

@@ -5,11 +5,12 @@ import type {
   GitHubPullRequestMergeStateStatus,
 } from "../types";
 
-// The PR sidebar row surfaces TWO independent facts, each tri-state and each
-// sourced from the GitHub API snapshot:
+// The PR sidebar row surfaces three independent facts sourced from the
+// GitHub API snapshot:
 //
-//   1. CI status      — derived from `checks_rollup` (primary) + counts.
-//   2. Mergeability   — derived from `mergeable` + `merge_state_status`.
+//   1. CI status       — derived from `checks_rollup` (primary) + counts.
+//   2. Mergeability    — derived from `mergeable` + `merge_state_status`.
+//   3. Review decision — the authoritative `reviewDecision` aggregate.
 //
 // The two are intentionally decoupled: a PR can have failing checks AND a merge
 // conflict, and both must show. Neither element is derived from the other, and
@@ -30,6 +31,7 @@ export type PullRequestChecksStatus =
   | { kind: "failed"; failed: number; total: number; names: string[] }
   | { kind: "pending"; passed: number; total: number; running: number }
   | { kind: "passed"; total: number }
+  | { kind: "unknown" }
   | { kind: "none" }
   | { kind: "unavailable" };
 
@@ -50,9 +52,11 @@ export interface PullRequestChecksInput {
 //   1. rollup failure/error OR any failed count → failed
 //   2. rollup pending/expected                  → pending
 //   3. rollup success                           → passed
-//   4. legacy provider conclusion               → matching coarse state
-//   5. current snapshot + null rollup            → none ("no checks yet")
-//   6. otherwise                                 → unavailable
+//   4. legacy provider failure                   → failed
+//   5. unknown rollup                            → unknown
+//   6. legacy provider pending/passed            → matching coarse state
+//   7. current snapshot + null rollup            → none ("no checks yet")
+//   8. otherwise                                 → unavailable
 //
 // Failure trusts the count as well as the rollup so a known legacy failure is
 // surfaced even if its coarse conclusion lags. An explicit false availability
@@ -83,6 +87,9 @@ export function deriveChecksStatus(input: PullRequestChecksInput): PullRequestCh
   // snapshot with a current "no checks" verdict.
   if (input.checks_conclusion === "failed") {
     return { kind: "failed", failed, total, names };
+  }
+  if (rollup !== null) {
+    return { kind: "unknown" };
   }
   if (input.checks_conclusion === "pending") {
     return { kind: "pending", passed, total, running };
@@ -138,6 +145,104 @@ export function deriveMergeStatus(input: PullRequestMergeInput): PullRequestMerg
   if (mergeState === "unstable") return { kind: "unstable" };
   if (mergeState === "has_hooks") return { kind: "has_hooks" };
   return { kind: "none" };
+}
+
+export type PullRequestReviewDecision =
+  | "approved"
+  | "changes_requested"
+  | "review_required"
+  | "unknown";
+
+export function deriveReviewDecision(
+  reviewDecision: string | null | undefined,
+  snapshotAvailable: boolean | undefined,
+): PullRequestReviewDecision | null {
+  if (snapshotAvailable !== true) return null;
+  if (reviewDecision === undefined) return null;
+  switch (reviewDecision?.toLowerCase()) {
+    case "approved":
+      return "approved";
+    case "changes_requested":
+      return "changes_requested";
+    case "review_required":
+      return "review_required";
+    default:
+      return "unknown";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// State → display spec (RUYI-635 增量)
+// ---------------------------------------------------------------------------
+
+// The five-way state vocabulary the reference tail and PR rows render:
+// GitHub's four `GitHubPullRequestState` values plus an `unknown` bucket for
+// any other server string (API Response Compatibility — never silently drop a
+// category; renderers fall back to a neutral glyph + the raw string).
+export type PullRequestVisualState =
+  | "open"
+  | "draft"
+  | "merged"
+  | "closed"
+  | "unknown";
+
+// Semantic color tokens, NOT hex: each renderer resolves the token against its
+// own palette (web CSS vars, mobile THEME). `violet` is the merged-state
+// identity both ends unified on (#7c3aed light reference); `neutral` renders
+// without a state color.
+export type PullRequestStateColorToken =
+  | "success"
+  | "muted"
+  | "violet"
+  | "destructive"
+  | "neutral";
+
+export interface PullRequestStateVisualSpec {
+  state: PullRequestVisualState;
+  colorToken: PullRequestStateColorToken;
+  /** Draft rows render at reduced opacity (web `opacity-80` parity). */
+  dimmed: boolean;
+}
+
+const PULL_REQUEST_STATE_VISUALS: Record<
+  Exclude<PullRequestVisualState, "unknown">,
+  PullRequestStateVisualSpec
+> = {
+  open: { state: "open", colorToken: "success", dimmed: false },
+  draft: { state: "draft", colorToken: "muted", dimmed: true },
+  merged: { state: "merged", colorToken: "violet", dimmed: false },
+  closed: { state: "closed", colorToken: "destructive", dimmed: false },
+};
+
+const PULL_REQUEST_STATE_UNKNOWN: PullRequestStateVisualSpec = {
+  state: "unknown",
+  colorToken: "neutral",
+  dimmed: false,
+};
+
+/**
+ * The ONE state → icon/color derivation behind every PR row that shows a
+ * state: the reference tail (web + mobile, RUYI-635 增量), the web sidebar
+ * list, and the mobile PR card/modal rows. Extracted from three parallel
+ * switch statements that had started to drift (mobile merged was info blue
+ * while web was violet). Renderers map `state` to their own glyph set and
+ * `colorToken` to their own palette — this function owns only the semantics.
+ */
+export function derivePullRequestStateVisual(
+  state: string | null | undefined,
+): PullRequestStateVisualSpec {
+  switch (state) {
+    case "open":
+      return PULL_REQUEST_STATE_VISUALS.open;
+    case "draft":
+      return PULL_REQUEST_STATE_VISUALS.draft;
+    case "merged":
+      return PULL_REQUEST_STATE_VISUALS.merged;
+    case "closed":
+      return PULL_REQUEST_STATE_VISUALS.closed;
+    default:
+      return PULL_REQUEST_STATE_UNKNOWN;
+  }
 }
 
 // ---------------------------------------------------------------------------

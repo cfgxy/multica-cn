@@ -146,14 +146,18 @@ func lastVoiceProbeInvalid(rt db.AgentRuntime) bool {
 	return false
 }
 
-// resolveVoiceSessionTarget is the §4.4 rule-3 initiation recheck: binding
-// gates validated these same facts when the agent was saved, but a voice
-// instance's health is a living property (disabled flag, offline status,
-// rotated/invalidated credential), so every session start re-derives it.
-// Rejection order puts operator intent (disabled) ahead of transient state
-// (status) and static Type-layer facts (capability) ahead of credentials.
-// The returned credential is the decrypted API key for the provider hop only.
-func (h *Handler) resolveVoiceSessionTarget(ctx context.Context, agentRow db.Agent) (db.AgentRuntime, string, *voiceGateRejection, error) {
+// resolveLegacyVoiceRuntimeTarget is the binding-model §4.4 rule-3 initiation
+// recheck, kept verbatim as the RUYI-693 compat bridge: agents still bound to
+// an un-migrated runtime instance (anything that is not a manual voice
+// instance) resolve exactly like they did before the voice_provider chain
+// existed. Binding gates validated these same facts when the agent was
+// saved, but a voice instance's health is a living property (disabled flag,
+// offline status, rotated/invalidated credential), so every session start
+// re-derives it. Rejection order puts operator intent (disabled) ahead of
+// transient state (status) and static Type-layer facts (capability) ahead of
+// credentials. The returned credential is the decrypted API key for the
+// provider hop only.
+func (h *Handler) resolveLegacyVoiceRuntimeTarget(ctx context.Context, agentRow db.Agent) (db.AgentRuntime, string, *voiceGateRejection, error) {
 	if !agentRow.VoiceRuntimeID.Valid {
 		return db.AgentRuntime{}, "", &voiceGateRejection{"no_voice_runtime", "this agent has no voice runtime bound"}, nil
 	}
@@ -192,7 +196,7 @@ func (h *Handler) resolveVoiceSessionTarget(ctx context.Context, agentRow db.Age
 	if h.RuntimeCredentialBox == nil {
 		// Same fail-closed contract as the credential PUT: without the
 		// encryption key the server must not fall back to plaintext hops.
-		return db.AgentRuntime{}, "", nil, fmt.Errorf("runtime credential encryption is not configured")
+		return db.AgentRuntime{}, "", nil, errVoiceCredentialEncryptionMissing
 	}
 	plaintext, err := h.RuntimeCredentialBox.Open(credential.SecretEncrypted)
 	if err != nil {
@@ -222,15 +226,23 @@ type voiceTranscriptEntry struct {
 // liveSessionSnapshot freezes the §4.5 配置变更版本一致性 contract: the
 // parameters this session runs under, hash-pinned, so write-back audits can
 // answer "which context version spoke".
-func liveSessionSnapshot(agentRow db.Agent, rt db.AgentRuntime, model string) []byte {
+func liveSessionSnapshot(agentRow db.Agent, target *voiceTarget, model string) []byte {
 	digest := sha256.Sum256([]byte(agentRow.Instructions))
-	snapshot, _ := json.Marshal(map[string]any{
+	snapshot := map[string]any{
 		"model":               model,
 		"instructions_sha256": hex.EncodeToString(digest[:]),
-		"voice_runtime_id":    uuidToString(rt.ID),
-		"protocol_family":     rt.Provider,
-	})
-	return snapshot
+		"protocol_family":     target.protocolFamily(),
+		// RUYI-693: which chain level produced this configuration, so
+		// write-back audits can answer "which config layer spoke".
+		"config_source": target.configSource,
+	}
+	if target.provider != nil {
+		snapshot["voice_provider_id"] = uuidToString(target.provider.ID)
+	} else {
+		snapshot["voice_runtime_id"] = uuidToString(target.runtime.ID)
+	}
+	encoded, _ := json.Marshal(snapshot)
+	return encoded
 }
 
 // composeVoiceSetupFrame builds the BidiGenerateContent setup the gateway
@@ -279,6 +291,25 @@ func isClientSetupFrame(data []byte) bool {
 	}
 	_, ok := frame["setup"]
 	return ok
+}
+
+// isClientAuthFrame reports whether a client frame is the realtime first
+// frame auth envelope ({"type":"auth","payload":{...}}, the RUYI-429 shape).
+// The relay swallows it: identity is resolved on the gateway plane — from
+// the upgrade request on the header path, from the consumed first frame on
+// the first-frame path — so an envelope that still reaches the pump is a
+// dual-channel client (cookie jar + auth frame, e.g. mobile) or a redundant
+// re-auth. Neither is provider traffic: forwarding once killed the session
+// (Google closes on unknown message types) and would leak the session token
+// upstream besides.
+func isClientAuthFrame(data []byte) bool {
+	var frame struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil {
+		return false
+	}
+	return frame.Type == "auth"
 }
 
 // liveServerFrame is the subset of provider→gateway frames the write-back
@@ -333,17 +364,47 @@ func (h *Handler) voiceDisablePollInterval() time.Duration {
 	return 3 * time.Second
 }
 
-// watchVoiceInstanceDisabled polls the voice instance's disabled flag while
+// voiceDisablePollCheck builds the mid-session disable predicate for the
+// session's resolved entity. Pool sessions record the voice_provider id in
+// runtime_instance_id, so the poll reads that row's enabled toggle — the
+// same flag the start gate rejects on (RUYI-717: looking the id up in
+// agent_runtime never matches a row there). Legacy bridge sessions keep
+// watching the runtime instance's metadata.disabled flag, unchanged.
+func (h *Handler) voiceDisablePollCheck(target *voiceTarget) func(ctx context.Context) (bool, error) {
+	if target.provider != nil {
+		return func(ctx context.Context) (bool, error) {
+			vp, err := h.Queries.GetVoiceProvider(ctx, target.provider.ID)
+			if err != nil {
+				return false, err
+			}
+			return !vp.Enabled, nil
+		}
+	}
+	return func(ctx context.Context) (bool, error) {
+		rt, err := h.getAgentRuntime(ctx, obsmetrics.RuntimeLookupSourceVoiceGateway, target.runtime.ID)
+		if err != nil {
+			return false, err
+		}
+		return runtimeMetadataFlag(rt, "disabled"), nil
+	}
+}
+
+// watchVoiceInstanceDisabled polls the session entity's disabled state while
 // the relay is in flight. The moment the operator's toggle lands, both sides
 // get a normal-close frame (1000) and the pumps unblock — teardown flows
 // through the relay's single endLiveSession defer, so the write-back
 // completes exactly as on any other disconnect. Poll errors are logged and
 // retried next tick: a transient DB blip must not kill a live conversation.
 // WriteControl is safe concurrently with the pump writes (gorilla contract).
+// idLogKey names the logged id after the entity it actually holds — pool
+// sessions carry a voice_provider id, legacy ones an agent_runtime row id —
+// so a warn never mislabels a provider id as "instance_id" (RUYI-717).
 func watchVoiceInstanceDisabled(
 	ctx context.Context,
 	h *Handler,
+	idLogKey string,
 	instanceID pgtype.UUID,
+	checkDisabled func(ctx context.Context) (bool, error),
 	providerConn, clientConn *websocket.Conn,
 	stop <-chan struct{},
 	interval time.Duration,
@@ -357,14 +418,14 @@ func watchVoiceInstanceDisabled(
 		case <-stop:
 			return
 		case <-ticker.C:
-			rt, err := h.getAgentRuntime(ctx, obsmetrics.RuntimeLookupSourceVoiceGateway, instanceID)
+			disabled, err := checkDisabled(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
-					slog.Warn("voice disable poll failed", "instance_id", uuidToString(instanceID), "error", err)
+					slog.Warn("voice disable poll failed", idLogKey, uuidToString(instanceID), "error", err)
 				}
 				continue
 			}
-			if !runtimeMetadataFlag(rt, "disabled") {
+			if !disabled {
 				continue
 			}
 			for _, conn := range []*websocket.Conn{clientConn, providerConn} {
@@ -372,7 +433,7 @@ func watchVoiceInstanceDisabled(
 				if err := conn.WriteControl(websocket.CloseMessage,
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "voice instance disabled"),
 					deadline); err != nil {
-					slog.Warn("voice disable close frame failed", "instance_id", uuidToString(instanceID), "error", err)
+					slog.Warn("voice disable close frame failed", idLogKey, uuidToString(instanceID), "error", err)
 				}
 				conn.SetReadDeadline(time.Now())
 			}
@@ -410,12 +471,14 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // voiceSessionPlan carries everything the relay needs once the §4.4 gate
-// chain has passed and the live session row exists. rt rides along so a
-// provider dial failure can record the connectivity badge on the instance
-// (RUYI-692 D1 ③: start 拨号失败即时置态).
+// chain has passed and the live session row exists. The resolved target
+// rides along so a provider dial failure can record the connectivity badge
+// on the entity the session actually runs under — the pool provider for
+// chain sessions, the runtime instance for legacy ones (RUYI-692 D1 ③:
+// start 拨号失败即时置态, extended to the D2 pool in RUYI-693).
 type voiceSessionPlan struct {
 	session      db.LiveSession
-	rt           db.AgentRuntime
+	target       *voiceTarget
 	apiKey       string
 	instructions string
 	model        string
@@ -467,7 +530,7 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 		return nil, &voiceHandshakeError{status: http.StatusNotFound, detail: "agent not found"}
 	}
 
-	rt, apiKey, rejection, serverErr := h.resolveVoiceSessionTarget(ctx, agentRow)
+	target, rejection, serverErr := h.resolveVoiceTarget(ctx, agentRow)
 	if serverErr != nil {
 		slog.Error("voice session gate failed", "agent_id", uuidToString(agentUUID), "error", serverErr)
 		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
@@ -475,33 +538,29 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 	if rejection != nil {
 		return nil, &voiceHandshakeError{status: http.StatusConflict, code: "VOICE_UNAVAILABLE:" + rejection.reason, detail: rejection.detail}
 	}
-	if !canUseRuntimeForAgent(member, rt) {
+	// The visibility/ownership check only applies to legacy runtime targets:
+	// a voice_provider pool entry is workspace-level shared state by design
+	// (the pool is managed in workspace settings), so any member who may use
+	// the agent may use its resolved provider.
+	if target.runtime != nil && !canUseRuntimeForAgent(member, *target.runtime) {
 		return nil, &voiceHandshakeError{status: http.StatusForbidden, detail: "you cannot use this agent's voice runtime"}
 	}
 
-	model := runtimeMetadataString(rt, "model")
-	if model == "" {
-		model = defaultVoiceModel
-	}
-	var advanced map[string]json.RawMessage
-	if raw, ok := runtimeMetadataBag(rt.Metadata)["advanced"]; ok {
-		json.Unmarshal(raw, &advanced)
-	}
-
+	model := target.model
 	session, err := h.Queries.CreateLiveSession(ctx, db.CreateLiveSessionParams{
 		WorkspaceID:       agentRow.WorkspaceID,
 		AgentID:           agentRow.ID,
-		RuntimeInstanceID: rt.ID,
+		RuntimeInstanceID: target.sessionEntityID(),
 		UserID:            parseUUID(userID),
 		Model:             model,
-		ContextSnapshot:   liveSessionSnapshot(agentRow, rt, model),
+		ContextSnapshot:   liveSessionSnapshot(agentRow, target, model),
 		Mode:              voiceSessionModeGateway,
 	})
 	if err != nil {
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
 		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
 	}
-	return &voiceSessionPlan{session: session, rt: rt, apiKey: apiKey, instructions: agentRow.Instructions, model: model, advanced: advanced}, nil
+	return &voiceSessionPlan{session: session, target: target, apiKey: target.apiKey, instructions: agentRow.Instructions, model: model, advanced: target.advanced}, nil
 }
 
 // voiceRequestUserID resolves the caller identity from the request's bearer
@@ -644,7 +703,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 	providerConn, resp, err := h.dialVoiceProvider(r.Context(), h.voiceProviderWSBaseURL(), plan.apiKey)
 	if err != nil {
 		slog.Warn("voice provider dial failed", "session_id", uuidToString(plan.session.ID), "error", err)
-		h.recordDialFailureBadge(r.Context(), plan.rt, resp)
+		h.recordDialFailureBadge(r.Context(), plan.target, resp)
 		writeVoiceWSError(conn, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
@@ -652,12 +711,12 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
 		providerConn.Close()
-		h.recordDialFailureBadge(r.Context(), plan.rt, nil)
+		h.recordDialFailureBadge(r.Context(), plan.target, nil)
 		writeVoiceWSError(conn, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, providerConn, conn)
+	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, conn)
 }
 
 // dialVoiceProvider opens the provider relay hop. The key rides the
@@ -702,9 +761,18 @@ func classifyProviderDialFailure(resp *http.Response) CredentialProbeResult {
 
 // recordDialFailureBadge writes the dial outcome onto the instance's
 // credential_probe badge (start 拨号失败即时置态, RUYI-692 D1 ③). Best-effort:
-// the start's own error path must not depend on the badge write.
-func (h *Handler) recordDialFailureBadge(ctx context.Context, rt db.AgentRuntime, resp *http.Response) {
-	h.recordCredentialProbeOutcome(ctx, rt.ID, rt.Metadata, classifyProviderDialFailure(resp))
+// the start's own error path must not depend on the badge write. The badge
+// lands on the entity the session resolves under — the pool provider for
+// chain sessions (RUYI-693: a 401/403 dial verdict then feeds the
+// credential_invalid gate on the next start), the runtime instance for
+// legacy ones (D1 semantics verbatim).
+func (h *Handler) recordDialFailureBadge(ctx context.Context, target *voiceTarget, resp *http.Response) {
+	probe := classifyProviderDialFailure(resp)
+	if target.provider != nil {
+		h.recordVoiceProviderProbeOutcome(ctx, target.provider.ID, target.provider.Metadata, probe)
+		return
+	}
+	h.recordCredentialProbeOutcome(ctx, target.runtime.ID, target.runtime.Metadata, probe)
 }
 
 // relayVoiceSession pumps frames both ways until either side disconnects,
@@ -722,7 +790,7 @@ func (h *Handler) relayVoiceSession(
 	providerConn, resp, err := h.dialVoiceProvider(r.Context(), h.voiceProviderWSBaseURL(), plan.apiKey)
 	if err != nil {
 		slog.Warn("voice provider dial failed", "session_id", uuidToString(plan.session.ID), "error", err)
-		h.recordDialFailureBadge(r.Context(), plan.rt, resp)
+		h.recordDialFailureBadge(r.Context(), plan.target, resp)
 		writeErrorCode(w, http.StatusBadGateway, "VOICE_PROVIDER_UNREACHABLE", "could not reach the voice provider")
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
@@ -731,7 +799,7 @@ func (h *Handler) relayVoiceSession(
 
 	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
-		h.recordDialFailureBadge(r.Context(), plan.rt, nil)
+		h.recordDialFailureBadge(r.Context(), plan.target, nil)
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
@@ -742,15 +810,18 @@ func (h *Handler) relayVoiceSession(
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, providerConn, clientConn)
+	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, clientConn)
 }
 
 // relayVoiceSessionConn is the pump shared by both start paths; it owns two
 // already-live connections (the provider hop and the upgraded client) and
-// every teardown flows through the single endLiveSession defer.
+// every teardown flows through the single endLiveSession defer. The resolved
+// target rides along so the disable poll watches the entity the session
+// actually runs under.
 func (h *Handler) relayVoiceSessionConn(
 	r *http.Request,
 	session db.LiveSession,
+	target *voiceTarget,
 	providerConn, clientConn *websocket.Conn,
 ) {
 	defer providerConn.Close()
@@ -761,11 +832,16 @@ func (h *Handler) relayVoiceSessionConn(
 	// through the single endLiveSession defer below — the write-back
 	// completes exactly as on any other disconnect. stopWatch is closed by
 	// defer before the connection closes run (LIFO), never leaking the
-	// goroutine past the handler.
+	// goroutine past the handler. The watcher's log key follows the entity
+	// the session runs under (provider id vs runtime row id).
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
-	go watchVoiceInstanceDisabled(r.Context(), h, session.RuntimeInstanceID,
-		providerConn, clientConn, stopWatch, h.voiceDisablePollInterval())
+	idLogKey := "instance_id"
+	if target.provider != nil {
+		idLogKey = "provider_id"
+	}
+	go watchVoiceInstanceDisabled(r.Context(), h, idLogKey, session.RuntimeInstanceID,
+		h.voiceDisablePollCheck(target), providerConn, clientConn, stopWatch, h.voiceDisablePollInterval())
 
 	var transcript []voiceTranscriptEntry
 	// Tool interactions feed the facts write-back (stage 4); both pumps parse
@@ -825,6 +901,11 @@ func (h *Handler) relayVoiceSessionConn(
 				return
 			}
 			if isClientSetupFrame(data) {
+				continue
+			}
+			if isClientAuthFrame(data) {
+				slog.Debug("voice: swallowed client auth envelope at the relay",
+					"session_id", uuidToString(session.ID))
 				continue
 			}
 			var toolFrame liveClientToolFrame

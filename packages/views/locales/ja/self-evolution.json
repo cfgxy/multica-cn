@@ -31,6 +31,11 @@
     },
     "proposals": {
       "title": "提案プール",
+      "intro": "提案は日次ふりかえりの自動分析でプールに入り、手動での起草も可能です。",
+      "counts": "提案 {{total}} 件 · オーナー承認待ち {{pending}} 件",
+      "lastAuto": "最新の自動提案（日次ふりかえり）：{{date}}",
+      "noneAuto": "自動提案はまだありません。",
+      "empty": "プールは空です。日次ふりかえりを設定すると、毎日の分析で提案が自動的にプールに入ります。",
       "pendingModel": "提案メトリクスは新しい提案モデル（RUYI-305）の提供後に接続されます。"
     },
     "knowledge": {
@@ -381,8 +386,10 @@
   },
   "legislation": {
     "title": "プロンプト 立法提案",
-    "description": "4 つのプロンプトキャリアに対する条項レベルの草案。送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
+    "description": "提案は日次ふりかえりの自動分析でプールに入り、手動での起草も可能です。4 つのプロンプトキャリアに対する条項レベルの草案：送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
     "filterAll": "すべて",
+    "sourceFilterLabel": "ソースで絞り込む",
+    "sourceFilterAll": "すべてのソース",
     "runFilterLabel": "実行バッチ",
     "runFilterAll": "すべての実行",
     "status": {
@@ -427,6 +434,11 @@
     "evidenceAdd": "エビデンスアンカーを追加",
     "evidenceIssue": "Issue ID",
     "evidenceQuote": "引用",
+    "sourceIssuesLabel": "ソース Issue",
+    "problemLabel": "解決する問題",
+    "expectedEffectLabel": "期待する効果",
+    "expectedGainLabel": "期待する向上",
+    "valueScoreLabel": "価値スコア",
     "cancel": "キャンセル",
     "saveDraft": "下書き保存",
     "submit": "承認に送信",
@@ -468,6 +480,7 @@
     },
     "empty": "提案はまだありません。",
     "emptyHint": "実際の実行エビデンスから起草するか、日次ふりかえりに任せてください。",
+    "emptyConfig": "日次ふりかえりを設定",
     "error": "書き込みに失敗しました。入力を確認して再試行してください。",
     "batchPartial": "一括処理で発効しなかった提案があります——各結果を確認してください。",
     "jevAdvisoryLabel": "ローカルモデル警告",
@@ -515,6 +528,24 @@
     "agentArchivedHint": "このエージェントはアーカイブ済みです。ランが失敗するため、他のエージェントを選択してください。",
     "agentTriggerBlocked": "実行可能なエージェントが未設定です：上の設定でエージェントを選択してから実行してください。",
     "emptyDescription": "定時または手動の実行後に、ここにランの記録が表示されます。",
+    "viewDetail": "詳細",
+    "detailTitle": "ランの詳細",
+    "triggerLabel": "トリガー",
+    "triggerSource": {
+      "schedule": "定時",
+      "manual": "手動"
+    },
+    "windowLabel": "参照ウィンドウ",
+    "startedAt": "開始時刻",
+    "finishedAt": "終了時刻",
+    "duration": "所要時間",
+    "durationRunning": "実行中…",
+    "statsLabel": "統計",
+    "failureLabel": "失敗理由",
+    "scannedIssues": "スキャンした Issue",
+    "analyzedIssues": "分析した Issue",
+    "noIssues": "なし",
+    "viewLog": "実行ログを見る",
     "run_errors": {
       "agent_not_configured": "実行エージェントが設定されていません：上の設定でエージェントを選択し、保存してから再実行してください。",
       "agent_missing": "設定された実行エージェントが見つかりません：上の設定で別のエージェントを選び直し、保存してください。",
@@ -640,6 +671,26 @@
     "secretBlocked": "未保存：プロンプトに認証情報が含まれている可能性があります。",
     "findingLine": "{{line}} 行目"
   },
+  "clauseGovernance": {
+    "title": "条項ガバナンス", "description": "立法から注入までの条項資産を読み取り専用で表示", "window": "集計期間", "d7": "過去 7 日", "d30": "過去 30 日", "d90": "過去 90 日", "d365": "過去 365 日", "refresh": "更新",
+    "banner": { "dynamicOffTitle": "グローバル縮退スイッチが有効です", "dynamicOffBody": "すべての実行でスナップショット注入（静的注入相当）を使用しています", "healthyTitle": "動的注入は正常です", "healthyBody": "{{total}} 回中 {{degraded}} 回が縮退経路で注入されました", "findingsTitle": "照合またはドリフトの検出 {{count}} 件", "findingsBody": "下の「照合とドリフト」セクションを確認してください" },
+    "metrics": { "injections": "注入回数", "runs": "対象実行数", "runsUnit": "{{count}} 回の実行", "clauseTokens": "条項トークン", "clauseTokensNote": "注入された条項のレンダリングから推定", "degraded": "縮退注入", "migration": "移行カバー率" },
+    "scope": { "workspace": "ワークスペース", "project": "プロジェクト", "squad": "チーム", "agent": "エージェント" },
+    "recon": { "title": "照合とドリフト", "healthy": "すべての検査に合格", "findings": "検出 {{count}} 件", "scanned": "スキャン済みキャリア {{count}} 件", "violationsTitle": "レイヤー集合の違反", "violationsEmpty": "期間内にレイヤー集合の違反はありません", "colTime": "時刻", "colTask": "タスク", "colClause": "条項", "colVersion": "バージョン", "colScope": "スコープ", "colInjection": "注入方式", "truncated": "先頭 100 件のみ表示", "degradedFlag": "縮退スナップショット", "driftTitle": "キャリアのドリフト", "driftEmpty": "キャリアのマーカーと資産ライブラリは一致しています（{{count}} 件をスキャン）" },
+    "driftKind": { "stale_rev": "リビジョン遅延", "orphan_marker": "孤立マーカー", "missing_segment": "レンダリング区間の欠落" },
+    "driftDesc": { "staleRev": "スナップショット rev {{marker}} → 資産 rev {{expected}}", "orphanMarker": "マーカーはありますが、有効なバインド済み条項がありません", "missingSegment": "有効な条項にレンダリング区間がありません（期待 rev {{expected}}）" },
+    "rollback": { "title": "ロールバック提案", "empty": "処理待ちのロールバック提案はありません", "rollbackTo": "V{{version}} に戻す", "viewProposal": "提案を表示" },
+    "list": { "title": "条項一覧", "filter_all": "すべて", "filter_active": "有効", "filter_deprecated": "停止済み", "filter_revoked": "廃止", "colStatus": "状態", "colClause": "条項", "colVersion": "現在のバージョン", "colScope": "バインドスコープ", "colInjections": "注入", "colRuns": "実行", "colTokens": "トークン", "colAction": "操作", "unbound": "未バインド", "tokensPending": "計測待ち", "tokensPendingHint": "選択期間にこの条項の計測データはありません", "emptyTitle": "条項資産はまだありません", "emptyBody": "立法提案から最初の条項を作成してください", "emptyCta": "提案へ", "openDetail": "詳細を表示", "noFilterResults": "条件に一致する条項はありません" },
+    "detail": { "back": "条項ガバナンスに戻る", "versions": "バージョン", "bindings": "バインド", "proposals": "提案の追跡", "quality": "品質と注入", "latest": "最新", "notFound": "条項が見つからないか削除されています" },
+    "version": { "sha": "コンテンツ指紋", "showContent": "本文を展開", "hideContent": "本文を折りたたむ", "compare": "バージョン比較" },
+    "compare": { "title": "V{{a}} ↔ V{{b}} を比較", "sampleInsufficient": "サンプル不足のため、割合による結論は表示しません", "attributableRuns": "帰属可能な実行", "windowRuns": "期間内の帰属可能な実行 {{count}} 件" },
+    "binding": { "scope": "スコープ", "status": "状態", "conditions": "適用条件", "conditionsAll": "すべてのタスク種別", "sinceVersion": "V{{version}} 以降", "createdAt": "有効化日時", "empty": "バインド履歴はありません" },
+    "bindingStatus": { "active": "有効", "superseded": "置換済み", "withdrawn": "撤回済み" },
+    "proposals": { "empty": "関連する提案はありません", "gates": { "layer": "レイヤー", "retention": "保持", "cost": "コスト", "conflict": "競合", "dedup": "重複排除" } },
+    "quality": { "chartTitle": "注入と品質の推移", "chartAria": "過去 {{days}} 日間の完了実行と帰属可能な失敗。下の表に全データを表示", "colDay": "日付", "colVersion": "バージョン", "colFinishedRuns": "完了実行", "colFailed": "帰属可能な失敗", "colExcluded": "除外された失敗", "colTokens": "注入トークン", "colMedianRun": "実行トークン中央値", "unmeasured": "未計測", "emptyWindow": "期間内に注入データはありません" },
+    "status": { "active": "有効", "deprecated": "停止済み", "revoked": "廃止" },
+    "error": { "title": "読み込みに失敗しました", "retry": "再試行" }
+  },
   "nav": {
     "label": "自己進化セクション",
     "overview": "概要",
@@ -650,6 +701,7 @@
     "knowledge": "ナレッジ",
     "skills": "スキル進化",
     "quality": "品質",
+    "clauseGovernance": "条項ガバナンス",
     "quiz": "クイズ",
     "proposals": "提案",
     "versions": "バージョン",
@@ -690,6 +742,16 @@
     "modelError": {
       "title": "モデルサービスの検証に失敗",
       "action": "設定を確認"
+    },
+    "retrospectiveOff": {
+      "title": "日次ふりかえりが有効ではありません",
+      "description": "提案ループは自動では回らず、プールは手動の起草だけで伸びます",
+      "action": "設定する"
+    },
+    "retrospectiveNoAgent": {
+      "title": "日次ふりかえりに実行エージェントが未選択",
+      "description": "有効でも実行者がいなければ実行は始まりません",
+      "action": "設定する"
     },
     "discoveries": {
       "title": "インポート待ちのスキル発見が {{count}} 件",

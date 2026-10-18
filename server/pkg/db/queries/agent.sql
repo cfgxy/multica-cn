@@ -60,7 +60,8 @@ INSERT INTO agent (
     service_tier, conversation_starters,
     composio_toolkit_allowlist, permission_mode,
     session_max_context_tokens, session_compact_pct, resource_weight,
-    voice_runtime_id
+    voice_runtime_id,
+    voice_provider_id, voice_model, voice_advanced
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
@@ -80,7 +81,13 @@ INSERT INTO agent (
     -- RUYI-425: the optional voice slot. NULL unless the request binds a
     -- voice runtime; the handler validates capability and workspace scope
     -- before the request reaches here.
-    sqlc.narg('voice_runtime_id')
+    sqlc.narg('voice_runtime_id'),
+    -- RUYI-693: the optional voice override triple. NULL voice_provider_id =
+    -- no override (resolution falls through to the workspace default); the
+    -- handler validates pool membership and workspace scope first.
+    sqlc.narg('voice_provider_id'),
+    sqlc.narg('voice_model'),
+    sqlc.narg('voice_advanced')::jsonb
 )
 RETURNING *;
 
@@ -155,6 +162,15 @@ UPDATE agent SET
     -- request = keep the current binding; an explicit unbind routes through
     -- ClearAgentVoiceRuntime below (COALESCE can't restore NULL).
     voice_runtime_id = COALESCE(sqlc.narg('voice_runtime_id'), voice_runtime_id),
+    -- RUYI-693: the voice override triple preserves field-wise, but an
+    -- override SET (voice_provider_id present) replaces the whole triple and
+    -- an explicit clear routes through ClearAgentVoiceProvider — the triple
+    -- is level-wise atomic, so a provider id never pairs with a stale model
+    -- from another level. The handler enforces that pairing before this
+    -- COALESCE ever sees a partial triple.
+    voice_provider_id = COALESCE(sqlc.narg('voice_provider_id'), voice_provider_id),
+    voice_model = COALESCE(sqlc.narg('voice_model'), voice_model),
+    voice_advanced = COALESCE(sqlc.narg('voice_advanced')::jsonb, voice_advanced),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
@@ -246,6 +262,16 @@ RETURNING *;
 -- the voice runtime" here — same two-query pattern as thinking_level and
 -- composio_toolkit_allowlist.
 UPDATE agent SET voice_runtime_id = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: ClearAgentVoiceProviderOverride :one
+-- Explicit NULL-clear of the agent's D2 voice override triple (RUYI-693).
+-- The override is level-wise atomic (provider_id + model + advanced move as
+-- one unit), so unbinding drops the whole triple — no half-override survives.
+UPDATE agent SET
+    voice_provider_id = NULL, voice_model = NULL, voice_advanced = NULL,
+    updated_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -552,10 +578,14 @@ WHERE id = @id
 -- The requester who opened the quick-create modal is a direct_human originator
 -- and accountable; attribution provenance is stamped so this path is not a
 -- NULL-source enqueue bypass (MUL-4302 §2).
+-- local_directory_scope (RUYI-669): optional task-level declaration of which
+-- snapshot-mode resources and subdirectories the task claims; NULL means
+-- undeclared (primary-resource fallback, lock-free whole-root snapshot).
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, context, originator_user_id,
     accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
+    local_directory_scope,
     id
 )
 SELECT
@@ -567,6 +597,7 @@ SELECT
     sqlc.narg(originator_source),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
+    sqlc.narg(local_directory_scope),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;
@@ -2773,28 +2804,6 @@ SET status = 'queued'
 WHERE id IN (SELECT id FROM due WHERE issue_id IS NULL OR rn = 1)
 RETURNING *;
 
--- name: ListDueDeferredTasksForBudgetGate :many
--- The due set the deferred-fallback promoters are about to promote, read just
--- before them so the runtime cost budget gate (RUYI-665) can veto rows whose
--- agent's runtime budget is spent. Mirrors the status / fire_at / online
--- fence of the promoters' due CTE, but deliberately omits the occupant and
--- rn fences: the budget verdict is per agent, and a row that would lose its
--- slot race anyway still names its agent — dropping it here could hide the
--- only due row of a blocked agent. Cheap by construction: deferred rows are
--- rare and the verdict is computed once per distinct agent, not per row.
-SELECT t.id, t.runtime_id, t.agent_id
-FROM agent_task_queue t
-WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
-  AND t.status = 'deferred'
-  AND t.fire_at <= now()
-  AND EXISTS (
-    SELECT 1 FROM agent_runtime r
-    WHERE r.id = t.runtime_id
-      AND r.status = 'online'
-      AND COALESCE(r.last_seen_at, r.updated_at) >=
-          now() - make_interval(secs => @runtime_stale_secs::double precision)
-  );
-
 -- name: CancelDeferredEscalationsForTask :many
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
@@ -3415,3 +3424,25 @@ WHERE issue_id = $1 AND agent_id = $2 AND status IN ('completed', 'failed', 'can
   AND completed_at IS NOT NULL
 ORDER BY completed_at DESC
 LIMIT 1;
+
+-- name: ListDueDeferredTasksForBudgetGate :many
+-- The due set the deferred-fallback promoters are about to promote, read just
+-- before them so the runtime cost budget gate (RUYI-665) can veto rows whose
+-- agent's runtime budget is spent. Mirrors the status / fire_at / online
+-- fence of the promoters' due CTE, but deliberately omits the occupant and
+-- rn fences: the budget verdict is per agent, and a row that would lose its
+-- slot race anyway still names its agent — dropping it here could hide the
+-- only due row of a blocked agent. Cheap by construction: deferred rows are
+-- rare and the verdict is computed once per distinct agent, not per row.
+SELECT t.id, t.runtime_id, t.agent_id
+FROM agent_task_queue t
+WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
+  AND t.status = 'deferred'
+  AND t.fire_at <= now()
+  AND EXISTS (
+    SELECT 1 FROM agent_runtime r
+    WHERE r.id = t.runtime_id
+      AND r.status = 'online'
+      AND COALESCE(r.last_seen_at, r.updated_at) >=
+          now() - make_interval(secs => @runtime_stale_secs::double precision)
+  );

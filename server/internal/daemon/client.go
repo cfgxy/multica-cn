@@ -115,6 +115,11 @@ type Client struct {
 	// at daemon startup once the supervisor's systemd probe has answered.
 	workerSupervision atomic.Bool
 
+	// snapshotSupport advertises the local-snapshot capability (RUYI-669)
+	// the same way: set once at startup from the userns-overlay probe's
+	// verdict, before the first register can carry it.
+	snapshotSupport atomic.Bool
+
 	workspaceMu                    sync.Mutex
 	workspaceETag                  string
 	workspaceCache                 []WorkspaceInfo
@@ -184,7 +189,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 	if c.os != "" {
 		req.Header.Set("X-Client-OS", c.os)
 	}
-	req.Header.Set("X-Client-Capabilities", daemonClientCapabilities(c.workerSupervision.Load()))
+	req.Header.Set("X-Client-Capabilities", daemonClientCapabilities(c.workerSupervision.Load(), c.snapshotSupport.Load()))
 }
 
 // daemonClientCapabilities is the X-Client-Capabilities value the daemon
@@ -192,7 +197,7 @@ func (c *Client) setIdentityHeaders(req *http.Request) {
 // claim built over WS gets the same capability gating (skill refs,
 // coalesced-comments) as the HTTP path. rpc-v1 advertises WS request/response
 // support (MUL-4257).
-func daemonClientCapabilities(workerSupervision bool) string {
+func daemonClientCapabilities(workerSupervision, snapshotSupport bool) string {
 	caps := []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
@@ -202,6 +207,10 @@ func daemonClientCapabilities(workerSupervision bool) string {
 		protocol.DaemonCapabilityLocalWorktreeV1,
 		protocol.DaemonCapabilitySourceContextQuickCreateV1,
 		protocol.DaemonCapabilityRPCV1,
+		protocol.DaemonCapabilityFileReadPolicyV1,
+	}
+	if snapshotSupport {
+		caps = append(caps, protocol.DaemonCapabilityLocalSnapshotV1)
 	}
 	if workerSupervision {
 		caps = append(caps, protocol.DaemonCapabilityWorkerSupervisorV1)
@@ -213,6 +222,11 @@ func daemonClientCapabilities(workerSupervision bool) string {
 // (RUYI-349). The daemon calls it right after setupSupervisor, before the
 // first re-register can carry it.
 func (c *Client) SetWorkerSupervision(on bool) { c.workerSupervision.Store(on) }
+
+// SetSnapshotSupport flips the local-snapshot capability advertisement
+// (RUYI-669), decided by the startup userns-overlay probe. Same timing rule
+// as SetWorkerSupervision: before the first register.
+func (c *Client) SetSnapshotSupport(on bool) { c.snapshotSupport.Store(on) }
 
 // SetToken sets the auth token for authenticated requests.
 func (c *Client) SetToken(token string) {
@@ -707,6 +721,23 @@ func (c *Client) ReportLocalSkillListResult(ctx context.Context, runtimeID, requ
 // ReportLocalSkillImportResult sends a runtime-local-skill bundle back to the server.
 func (c *Client) ReportLocalSkillImportResult(ctx context.Context, runtimeID, requestID string, result map[string]any) error {
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/local-skills/import/%s/result", runtimeID, requestID), result, nil)
+}
+
+// ReportOpsCommandResult delivers one ops command's terminal receipt. The
+// receipt echoes the lease epoch the claim handed out; a mismatched epoch is
+// rejected server-side (RUYI-645).
+func (c *Client) ReportOpsCommandResult(ctx context.Context, runtimeID, commandID string, receipt opsCommandReceipt) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/ops-commands/%s/result", runtimeID, commandID), receipt, nil)
+}
+
+func (c *Client) ReportFileOperationResult(ctx context.Context, runtimeID, operationID string, receipt map[string]any) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/file-operations/%s/result", runtimeID, operationID), receipt, nil)
+}
+
+// ReportInventory posts this machine's service inventory (and ops caps
+// context lives in the register payload). Machine-scoped: keyed by daemon_id.
+func (c *Client) ReportInventory(ctx context.Context, report map[string]any) error {
+	return c.postJSON(ctx, "/api/daemon/inventory", report, nil)
 }
 
 // WorkspaceInfo holds minimal workspace metadata returned by the API.

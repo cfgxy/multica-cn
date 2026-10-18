@@ -198,6 +198,18 @@
     "prop_speed": "속도",
     "prop_visibility": "공개 범위",
     "prop_concurrency": "동시 실행",
+    "section_voice": "음성",
+    "section_voice_hint": "이 에이전트의 워크스페이스 기본 음성을 재정의합니다. 바인딩하지 않으면 기본값을 상속합니다.",
+    "prop_voice_provider": "음성 공급자",
+    "voice_inherit_option": "워크스페이스 기본값 상속",
+    "voice_no_providers_hint": "아직 사용 가능한 공급자가 없습니다. 워크스페이스 음성 설정에서 API 키가 유효한 Gemini 공급자를 먼저 추가하세요.",
+    "prop_voice_model": "음성 모델",
+    "voice_model_placeholder_default": "워크스페이스 기본 모델 상속",
+    "prop_voice_advanced": "고급 매개변수 (JSON)",
+    "voice_advanced_placeholder": "예: {\"temperature\": 0.5}",
+    "voice_advanced_invalid": "고급 매개변수는 유효한 JSON 객체여야 합니다",
+    "voice_reset_action": "워크스페이스 기본값으로 초기화",
+    "voice_save_failed_toast": "음성 재정의 업데이트에 실패했습니다",
     "prop_subagents": "하위 에이전트 도구",
     "prop_subagents_hint": "끔(기본값) 상태에서는 런타임이 Agent/Task 도구를 강제로 거부하여 이 에이전트가 하위 에이전트에 작업을 위임할 수 없습니다. 필요한 에이전트만 켜세요.",
     "prop_subagents_toggle_aria": "하위 에이전트 도구 허용",
@@ -373,13 +385,6 @@
       "select_image_toast": "이미지 파일을 선택하세요.",
       "upload_failed_toast": "아바타 업로드 실패"
     },
-    "voice_label": "음성",
-    "voice_none": "음성 없음",
-    "voice_empty": "음성 지원 인스턴스가 없습니다",
-    "credential_configured": "구성됨 ✓",
-    "credential_invalid": "키 무효",
-    "credential_unreachable": "검증 불가",
-    "credential_not_configured": "미구성",
     "runtime_credentials_help": "모델 인증은 선택한 런타임의 OS 사용자 설정을 사용합니다. CLI를 설치해도 API 키는 자동으로 설정되지 않습니다.",
     "runtime_select": "런타임 선택"
   },
@@ -692,7 +697,8 @@
       "cancel_failed_toast": "작업을 취소하지 못했습니다",
       "started_prefix": "{{when}} 시작됨",
       "dispatched_prefix": "{{when}} 디스패치됨",
-      "queued_prefix": "{{when}} 대기 시작"
+      "queued_prefix": "{{when}} 대기 시작",
+      "queued_backpressure": "런타임 복구 대기 중"
     }
   },
   "char_counter": {

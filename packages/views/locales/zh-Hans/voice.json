@@ -25,5 +25,17 @@
       "credential_missing": "该智能体的语音凭据尚未配置完成，请联系工作区管理员补全。",
       "credential_invalid": "该智能体的语音凭据无效或已过期，请联系工作区管理员更新。"
     }
+  },
+  "dictation": {
+    "open": "听写",
+    "close": "关闭听写",
+    "hold_to_talk": "按住 说话",
+    "release_to_cancel": "松开取消",
+    "release_to_transcribe": "松开后转写",
+    "transcribing": "转写中…",
+    "transcribe_failed": "转写失败，请重试",
+    "not_recognized": "未识别到语音",
+    "listening": "正在聆听…",
+    "stop_agent": "停止 Agent"
   }
 }

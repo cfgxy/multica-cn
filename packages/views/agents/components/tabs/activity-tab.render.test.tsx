@@ -39,10 +39,15 @@ vi.mock("@multica/core/paths", () => ({
 const agentTasksRef = vi.hoisted(() => ({
   current: () => new Promise<unknown>(() => {}),
 }));
+// Queued/running rows ride the snapshot query, not the recent-tasks query —
+// the backpressure-hold tests below seed this one.
+const snapshotRef = vi.hoisted(() => ({
+  current: () => new Promise<unknown>(() => {}),
+}));
 vi.mock("@multica/core/agents", () => ({
   agentTaskSnapshotOptions: () => ({
     queryKey: ["snapshot"],
-    queryFn: () => Promise.resolve([]),
+    queryFn: () => snapshotRef.current(),
   }),
   agentTasksOptions: () => ({
     queryKey: ["agent-tasks"],
@@ -91,6 +96,7 @@ function renderTab() {
 
 beforeEach(() => {
   agentTasksRef.current = () => new Promise<unknown>(() => {});
+  snapshotRef.current = () => new Promise<unknown>(() => {});
 });
 
 describe("ActivityTab Recent work loading state", () => {
@@ -172,5 +178,39 @@ describe("ActivityTab daily-retrospective runs (RUYI-673)", () => {
     renderTab();
     expect(await screen.findByText("Quick create")).toBeInTheDocument();
     expect(screen.queryByText(/Daily retrospective/)).not.toBeInTheDocument();
+  });
+});
+
+// A task held by the agent's host backpressure gate (RUYI-729): queued with
+// the server-stamped queued_reason. The row must name the hold instead of
+// sitting as a bare "Queued".
+const backpressuredTask = {
+  id: "task-bp-1",
+  agent_id: "agent-1",
+  issue_id: "",
+  status: "queued",
+  created_at: "2026-10-11T00:00:00Z",
+  queued_reason: "runtime_backpressure",
+} as unknown as AgentTask;
+
+describe("ActivityTab runtime backpressure hold (RUYI-729)", () => {
+  it("names the hold on a queued row stamped with the backpressure reason", async () => {
+    snapshotRef.current = () => Promise.resolve([backpressuredTask]);
+    renderTab();
+    expect(
+      await screen.findByText("Waiting for runtime recovery"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps an unstamped queued row on the plain Queued label", async () => {
+    snapshotRef.current = () =>
+      Promise.resolve([
+        { ...backpressuredTask, id: "task-q-2", queued_reason: "" },
+      ]);
+    renderTab();
+    expect(await screen.findByText("Queued")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for runtime recovery"),
+    ).not.toBeInTheDocument();
   });
 });

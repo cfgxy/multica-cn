@@ -1,5 +1,6 @@
 import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+import type { DashboardUsageTrafficDim } from "../types";
 
 /**
  * An explicit, inclusive calendar-day window in the viewer's timezone,
@@ -63,6 +64,12 @@ export const dashboardKeys = {
       projectId,
       tz,
     ] as const,
+  // Live Prometheus-backed panels: `window` is a short relative window
+  // ("1h"…"7d"), not the calendar-day DashboardWindow the rollups use.
+  usageResources: (wsId: string, window: string) =>
+    [...dashboardKeys.all(wsId), "usage-resources", window] as const,
+  usageTraffic: (wsId: string, window: string, by: DashboardUsageTrafficDim) =>
+    [...dashboardKeys.all(wsId), "usage-traffic", window, by] as const,
 };
 
 // The server materializes these rollups on a 5-minute cadence, so a mounted
@@ -246,5 +253,46 @@ export function dashboardFailuresByAgentOptions(
       isSameDashboardScope(previousQuery?.queryKey, queryKey)
         ? keepPreviousData(previousData)
         : undefined,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Live metric panels (system resources / model traffic). These are NOT
+// rollups: the server proxies the queries to Prometheus, which scrapes the
+// server's /metrics every 15s. A 5-minute poll would throw away 19 of every
+// 20 samples, so these ride a 60s cadence instead — still 4x coarser than
+// the scrape, so most polls re-read a cached response rather than fresh
+// points.
+// ---------------------------------------------------------------------------
+
+const METRICS_STALE_TIME = 60 * 1000;
+const METRICS_REFETCH_INTERVAL = 60 * 1000;
+
+export const USAGE_METRIC_WINDOWS = ["1h", "6h", "24h", "7d"] as const;
+export type UsageMetricWindow = (typeof USAGE_METRIC_WINDOWS)[number];
+
+export function dashboardUsageResourcesOptions(wsId: string, window: UsageMetricWindow) {
+  const queryKey = dashboardKeys.usageResources(wsId, window);
+  return queryOptions({
+    queryKey,
+    queryFn: () => api.getDashboardUsageResources({ window }),
+    enabled: !!wsId,
+    staleTime: METRICS_STALE_TIME,
+    refetchInterval: METRICS_REFETCH_INTERVAL,
+  });
+}
+
+export function dashboardUsageTrafficOptions(
+  wsId: string,
+  window: UsageMetricWindow,
+  by: DashboardUsageTrafficDim,
+) {
+  const queryKey = dashboardKeys.usageTraffic(wsId, window, by);
+  return queryOptions({
+    queryKey,
+    queryFn: () => api.getDashboardUsageTraffic({ window, by }),
+    enabled: !!wsId,
+    staleTime: METRICS_STALE_TIME,
+    refetchInterval: METRICS_REFETCH_INTERVAL,
   });
 }

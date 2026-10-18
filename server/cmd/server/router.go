@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +40,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/promquery"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
@@ -86,6 +88,9 @@ var corsAllowedHeaders = []string{
 	"X-Client-Capabilities",
 	// Sent by the host page when it relays a plugin surface's Action API call.
 	"X-Multica-Plugin-Installation",
+	"X-Multica-MCP-Service-Credential",
+	"X-Multica-MCP-Instance-ID",
+	"X-Multica-MCP-Instance-Credential",
 }
 
 // corsExposedHeaders lists response headers browser clients are allowed to read.
@@ -137,6 +142,33 @@ func allowedOrigins() []string {
 		return defaultOrigins
 	}
 	return origins
+}
+
+func parseMCPFileAccessInstanceCredentials(raw string) map[string]string {
+	credentials := make(map[string]string)
+	if strings.TrimSpace(raw) == "" {
+		return credentials
+	}
+	var configured map[string]string
+	if err := json.Unmarshal([]byte(raw), &configured); err != nil {
+		slog.Error("invalid MCP file access instance credential configuration")
+		return credentials
+	}
+	for instanceID, credential := range configured {
+		validID := instanceID != "" && len(instanceID) <= 64
+		for _, ch := range instanceID {
+			if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
+				validID = false
+				break
+			}
+		}
+		if !validID || strings.TrimSpace(credential) == "" || len(credential) > 512 {
+			slog.Error("invalid MCP file access instance credential entry")
+			return map[string]string{}
+		}
+		credentials[instanceID] = credential
+	}
+	return credentials
 }
 
 // appURLFromEnv resolves the user-facing web app URL. It prefers
@@ -292,6 +324,11 @@ type RouterOptions struct {
 	// any test that happened to have the variable set. nil means unset, which
 	// is what tests and NewRouter get.
 	LLMMaxRetries *llm.RetryOverride
+
+	// Prometheus backs the usage page's system-resource and model-traffic
+	// panels. nil (or an empty URL) keeps both proxy endpoints reporting
+	// configured=false.
+	Prometheus *promquery.Client
 }
 
 func buildChannelSupervisor(
@@ -456,19 +493,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	origins := allowedOrigins()
 
 	signupConfig := handler.Config{
-		AllowSignup:                   os.Getenv("ALLOW_SIGNUP") != "false",
-		AllowedEmails:                 splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
-		AllowedEmailDomains:           splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
-		SuperAdminEmails:              splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
-		DisableWorkspaceCreation:      os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
-		VCSIntegrationEnabled:         os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
-		PublicURL:                     strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
-		AppURL:                        appURLFromEnv(),
-		SelfTriggerSuppressionEnabled: envBool("MULTICA_SELF_TRIGGER_SUPPRESSION_ENABLED", true),
-		TrustedProxies:                parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
-		CloudURL:                      strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
-		CloudTimeout:                  35 * time.Second,
-		AttachmentDownloadMode:        os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
+		AllowSignup:                      os.Getenv("ALLOW_SIGNUP") != "false",
+		AllowedEmails:                    splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
+		AllowedEmailDomains:              splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		SuperAdminEmails:                 splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
+		DisableWorkspaceCreation:         os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		VCSIntegrationEnabled:            os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
+		PublicURL:                        strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		AppURL:                           appURLFromEnv(),
+		SelfTriggerSuppressionEnabled:    envBool("MULTICA_SELF_TRIGGER_SUPPRESSION_ENABLED", true),
+		TrustedProxies:                   parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		CloudURL:                         strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
+		CloudTimeout:                     35 * time.Second,
+		AttachmentDownloadMode:           os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
+		MCPAuditServiceCredential:        strings.TrimSpace(os.Getenv("MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL")),
+		MCPFileAccessInstanceCredentials: parseMCPFileAccessInstanceCredentials(os.Getenv("MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS")),
 		// 0 defers to handler.New, which fills in
 		// defaultAttachmentDownloadURLTTL — one owner for the default so this
 		// wiring cannot drift from it (RUYI-103).
@@ -1331,6 +1370,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.VoiceProviderWSBaseURL = v
 	}
 
+	// One-shot dictation transcription provider origin (RUYI-710).
+	// MULTICA_GEMINI_ASR_BASE_URL lets air-gapped deployments and tests aim
+	// the generateContent hop at a stub; empty env keeps the public default.
+	h.VoiceASRBaseURL = handler.DefaultVoiceASRBaseURL
+	if v := strings.TrimSpace(os.Getenv("MULTICA_GEMINI_ASR_BASE_URL")); v != "" {
+		h.VoiceASRBaseURL = v
+	}
+
 	// Voice provider egress proxy (RUYI-692 D1 ①): MULTICA_GEMINI_PROXY_URL
 	// names the per-connection proxy the Gemini Live dial and the credential
 	// probe use — `socks5://` preferred, `http(s)://` accepted. The value may
@@ -1389,6 +1436,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
+	}
+	if opts.Prometheus != nil {
+		h.Prometheus = opts.Prometheus
 	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
@@ -1487,7 +1537,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Use(chimw.Recoverer)
 	r.Use(h.PluginSurfaceHostBoundary)
 	r.Use(middleware.ContentSecurityPolicy)
-
 	// Share allowed origins with WebSocket origin checker.
 	realtime.SetAllowedOrigins(origins)
 
@@ -1504,6 +1553,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowCredentials: true,
 		MaxAge:           300,
 	}))
+	r.With(middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_MCP_PREAUTH", 60), time.Minute, middleware.ParseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")))).Post("/api/mcp/pre-auth-rejections", h.RecordMCPPreAuthRejection)
 
 	// Health / readiness checks
 	r.Get("/health", health.liveHandler)
@@ -1701,6 +1751,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/models/{requestId}/result", h.ReportModelListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/{requestId}/result", h.ReportLocalSkillListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/import/{requestId}/result", h.ReportLocalSkillImportResult)
+		// RUYI-645: read-only ops channel — command receipts (lease-epoch
+		// checked) and the machine service inventory report.
+		r.Post("/runtimes/{runtimeId}/ops-commands/{commandId}/result", h.ReportOpsCommandResult)
+		r.Post("/runtimes/{runtimeId}/file-operations/{operationId}/result", h.ReportFileOperationResult)
+		r.Post("/inventory", h.ReportDaemonInventory)
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
@@ -1819,6 +1874,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.With(handler.RequireHumanActor).Get("/api/computers", h.Computers)
 		r.With(handler.RequireHumanActor).Post("/api/computers", h.Computers)
 		r.Get("/api/me", h.GetMe)
+		r.Post("/api/mcp/audit-start", h.StartMCPInvocationAudit)
+		r.Post("/api/mcp/audit-finish", h.FinishMCPInvocationAudit)
 		r.Patch("/api/me", h.UpdateMe)
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)
@@ -1890,6 +1947,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// never carry the secret hash (plaintext appears exactly once,
 			// in the create and rotate responses).
 			r.Get("/oauth/clients", h.AdminListOAuthClients)
+			r.Get("/mcp/pre-auth-rejections", h.ListMCPPreAuthRejections)
 			r.Post("/oauth/clients", h.AdminCreateOAuthClient)
 			r.Get("/oauth/clients/{id}", h.AdminGetOAuthClient)
 			r.Patch("/oauth/clients/{id}", h.AdminUpdateOAuthClient)
@@ -1899,6 +1957,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/oauth/grants", h.AdminListOAuthGrants)
 			r.Delete("/oauth/grants/{id}", h.AdminRevokeOAuthGrant)
 			r.Get("/mcp/status", h.AdminMCPServerStatus)
+			r.Get("/file-read-policy", h.AdminGetFileReadPolicy)
+			r.Put("/file-read-policy", h.AdminUpdateFileReadPolicy)
+			r.Post("/file-read-policy/restore-defaults", h.AdminRestoreFileReadPolicy)
 		})
 
 		r.Route("/api/workspaces", func(r chi.Router) {
@@ -1915,6 +1976,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// this middleware. Read-only; answering stays on the
 					// issue-scoped endpoints.
 					r.Get("/decision-inbox", h.ListWorkspaceDecisionInbox)
+					// RUYI-630: the sensitive-operation authorization carrier.
+					// Reads are member-visible; the answer route additionally
+					// sits behind RequireHumanActor.
+					r.Route("/decision-requests", func(r chi.Router) {
+						r.Post("/", h.CreateDecisionRequest)
+						r.Get("/", h.ListDecisionRequests)
+						r.Route("/{requestId}", func(r chi.Router) {
+							r.Get("/", h.GetDecisionRequest)
+							r.With(handler.RequireHumanActor).Post("/answer", h.AnswerDecisionRequest)
+							r.Post("/cancel", h.CancelDecisionRequest)
+						})
+					})
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -1922,6 +1995,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
+					// PR text-reference lookup for the reference tail
+					// (RUYI-635 增量): member-visible, read-only, DB snapshot.
+					r.Get("/pull-requests/lookup", h.LookupPullRequestByRef)
+					// Number-only `MR !N` lookup for body links + tail rows
+					// (RUYI-728): same visibility and snapshot discipline.
+					r.Get("/pull-requests/lookup-by-number", h.LookupPullRequestByNumber)
 					// VCS connections (Forgejo / Gitea / GitLab) — member-visible
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
@@ -2048,6 +2127,30 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
+				// Voice provider pool (RUYI-693): the listing is
+				// member-visible — the pool feeds the availability gate
+				// and the agent override picker, which render for every
+				// member — while pool writes are workspace-admin state,
+				// the same split as the workspace settings themselves.
+				r.Route("/voice-providers", func(r chi.Router) {
+					r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Get("/", h.ListVoiceProviders)
+					r.Group(func(r chi.Router) {
+						r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+						r.Post("/", h.CreateVoiceProvider)
+						r.Route("/{providerId}", func(r chi.Router) {
+							r.Patch("/", h.UpdateVoiceProvider)
+							r.Delete("/", h.DeleteVoiceProvider)
+							r.Put("/credentials/{credentialKey}", h.PutVoiceProviderCredential)
+							r.Delete("/credentials/{credentialKey}", h.DeleteVoiceProviderCredential)
+							r.Post("/credential-probe", h.RunVoiceProviderProbe)
+						})
+					})
+				})
+				// One-shot dictation transcription (RUYI-710): any workspace
+				// member may dictate — the same membership the settings
+				// page itself renders under. The ASR provider key rides
+				// only the server→provider hop; nothing is persisted.
+				r.With(middleware.RequireWorkspaceMemberFromURL(queries, "id")).Post("/voice-transcriptions", h.CreateVoiceTranscription)
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
@@ -2342,6 +2445,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// accepts a member route. Approval requires the full-carrier diff to
 		// have been previewed first (confirm_diff_previewed), the injection
 		// defence for a channel that writes into every agent's context.
+		// Clause governance views (RUYI-751, ADR 007 §9): reads over the
+		// clause asset library — overview, per-clause detail, and the
+		// standing reconciliation checks (层集合 ⊆ invariant, degraded
+		// share, marker-vs-asset drift). Member-visible like the quality
+		// dashboard; writes stay in the proposal pool routes above.
+		r.Route("/api/prompt-legislation/governance", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/clauses", h.ListClauseGovernance)
+			r.Get("/clauses/{clauseId}", h.GetClauseGovernanceDetail)
+			r.Get("/reconciliation", h.GetClauseReconciliation)
+		})
+
 		r.Route("/api/prompt-legislation/proposals", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Group(func(r chi.Router) {
@@ -2420,9 +2536,29 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// Workspace-level host backpressure settings (RUYI-618): the
+		// watermarks pause task claiming on every daemon host in the
+		// workspace, so reads are member-visible but saves are owner-only.
+		// Delivered to daemons on heartbeat acks (see processHeartbeat).
+		r.Route("/api/workspace/backpressure-settings", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspaceBackpressureSettings)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Put("/", h.PutWorkspaceBackpressureSettings)
+			})
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Route("/api/file-access", func(r chi.Router) {
+				r.Post("/list", h.ListMCPFiles)
+				r.Post("/metadata", h.GetMCPFileMetadata)
+				r.Post("/read", h.ReadMCPFileChunk)
+				r.Get("/operations/{operationId}", h.GetMCPFileOperation)
+			})
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
@@ -2499,6 +2635,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/metadata", h.ListIssueMetadata)
 					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
 					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
+					r.Delete("/pull-requests/{pullRequestId}", h.UnlinkPullRequestFromIssue)
 					r.Put("/properties/{propertyId}", h.SetIssueProperty)
 					r.Delete("/properties/{propertyId}", h.DeleteIssueProperty)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
@@ -2843,6 +2980,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 				r.Get("/failures/daily", h.GetDashboardFailuresDaily)
 				r.Get("/failures/by-agent", h.GetDashboardFailuresByAgent)
+				// Observability panels (RUYI-618): Prometheus-proxied
+				// system-resource and model-traffic series for the usage
+				// page. Both report configured=false when PROMETHEUS_URL
+				// is unset — the browser never talks to Prometheus.
+				r.Get("/usage/resources", h.GetDashboardUsageResources)
+				r.Get("/usage/traffic", h.GetDashboardUsageTraffic)
 			})
 
 			// (RUYI-626's POST /api/voice-sessions/{id}/complete was retired
@@ -2857,6 +3000,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					// Daemon host backpressure settings + trigger history
+					// (RUYI-729 stage 1): reads member-visible, saves
+					// owner/admin-only, delivery over the heartbeat ack.
+					r.Get("/backpressure-settings", h.GetRuntimeBackpressureSettings)
+					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
+					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
+					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)
@@ -2869,6 +3019,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/local-skills/{requestId}", h.GetLocalSkillListRequest)
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
+					// RUYI-645: read-only node-ops surface (workspace
+					// owner/admin only — enforced in the handler gate).
+					r.Get("/ops/inventory", h.GetRuntimeOpsInventory)
+					r.Post("/ops/commands", h.SubmitRuntimeOpsCommand)
+					r.Get("/ops/commands", h.ListRuntimeOpsCommands)
+					r.Get("/ops/commands/{commandId}", h.GetRuntimeOpsCommand)
+					// Typed file operations have a separate daemon channel and never enter argv execution.
+					r.Put("/file-access-target", h.PutRuntimeFileAccessTarget)
+					r.Put("/file-access-instance-bindings/{instanceId}", h.PutMCPFileAccessInstanceBinding)
+					r.Post("/files/list", h.ListRuntimeFiles)
+					r.Post("/files/metadata", h.GetRuntimeFileMetadata)
+					r.Post("/files/read", h.ReadRuntimeFileChunk)
+					r.Get("/files/operations/{operationId}", h.GetRuntimeFileOperation)
 					r.Delete("/", h.DeleteAgentRuntime)
 					// Confirmed variant of DELETE: unbind every agent bound to
 					// this runtime (they keep their configuration and chats and
@@ -2946,6 +3109,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{sessionId}", func(r chi.Router) {
 					r.Get("/", h.GetChatSession)
 					r.Patch("/", h.UpdateChatSession)
+					r.Patch("/model", h.SetChatSessionModel)
 					r.Patch("/pin", h.SetChatSessionPinned)
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Delete("/", h.DeleteChatSession)

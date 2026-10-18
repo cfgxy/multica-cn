@@ -37,55 +37,164 @@
 }
 
 /*
- * Issue reference tail aggregation (RUYI-635).
+ * Issue reference tail aggregation (RUYI-635 + 增量, RUYI-731 flatten,
+ * RUYI-730 visual rebuild).
  *
- * RichContent renders issue mentions as plain body text and lists every
- * reference here instead: one deduplicated row per issue under a hairline
- * divider. The block is part of the content flow (not a chrome overlay), so
+ * RichContent renders issue/PR mentions as plain body text and lists every
+ * reference here instead: a card — header 「引用 · N」 plus EVERY reference
+ * as one row. RUYI-731 flattens the RUYI-724 interaction fork away: no
+ * preview budget, no fold line, no popover — rows are the only interactive
+ * elements and the navigation surface (issue rows in-app links, PR rows
+ * external ones, degraded rows plain text), so the card container itself
+ * never implies clickability. The block is part of the content flow, so
  * the compact density's `> :last-child` margin trim keeps it flush in chat
- * bubbles with no extra rule.
+ * bubbles.
+ *
+ * The rules below deliberately carry NO `.rich-text-editor` ancestor: the
+ * issue body mounts the tail as a sibling of <ContentEditor>
+ * (issue-detail.tsx), outside the editor scope, which left that surface
+ * totally unstyled (RUYI-730 QA probe). Keep these selectors self-contained
+ * — the block must style the same wherever a host mounts it.
+ *
+ * RUYI-730 rebuilds the visuals on the native sub-issues block's language
+ * (issue-detail.tsx). Token mapping, official class → CSS value:
+ *   rounded-lg         → var(--radius) — tokens.css also defines --radius-lg
+ *                        (= --radius), but that file never reaches the web
+ *                        bundle, so the card must reference --radius directly
+ *                        (QA probe: --radius-lg fell back to 0px)
+ *   border             → 1px solid var(--border)
+ *   bg-card/30         → color-mix(in oklab, var(--card) 30%, transparent)
+ *   divide-border/60   → color-mix(in oklab, var(--border) 60%, transparent)
+ *   px-3 py-2 / gap-2.5→ 0.75rem 0.5rem / 0.625rem
+ *   hover:bg-accent/50 → color-mix(in oklab, var(--accent) 50%, transparent)
+ * Row type scale follows SubIssueRow: identifier `text-micro` tabular, title
+ * `text-body` (still clamped at two lines, Owner point ①). Rows are direct
+ * links, so their hover/focus ride the same `bg-accent/50` token as
+ * SubIssueRow rows.
  */
-.rich-text-editor .issue-reference-footer {
+.issue-reference-footer {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 0.25rem;
+  align-items: stretch;
+  width: 100%;
   margin-top: 0.75rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--border);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--card) 30%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  outline: none;
+  transition: background-color 150ms;
 }
 
-.rich-text-editor .issue-reference-row {
-  display: inline-flex;
+/* divide-y divide-border/60: separators between header and rows. */
+.issue-reference-footer > * + * {
+  border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+.issue-reference-header {
+  display: flex;
   align-items: center;
   gap: 0.375rem;
-  min-width: 0;
-  max-width: 100%;
-  font-size: var(--text-label);
-  line-height: 1.25rem;
-  color: var(--foreground);
-  text-decoration: none;
-  text-align: left;
-}
-
-.rich-text-editor a.issue-reference-row:hover .issue-reference-title,
-.rich-text-editor a.issue-reference-row:focus-visible .issue-reference-title {
-  text-decoration: underline;
-}
-
-.rich-text-editor .issue-reference-identifier {
-  flex-shrink: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
   font-weight: 500;
   color: var(--muted-foreground);
 }
 
-.rich-text-editor .issue-reference-title {
+.issue-reference-row {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
   min-width: 0;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  color: var(--foreground);
+  text-align: left;
+  text-decoration: none;
+}
+
+/* Direct rows (RUYI-731 flatten): neutralize the prose <a> treatment — the
+   row reads as body content and picks up a hover pill, so it navigates in
+   one click without turning the block into a wall of blue links. The class
+   is doubled to out-rank `.rich-text-editor a` (prose.css) wherever the
+   block renders inside the editor scope, independent of bundle order. */
+a.issue-reference-row.issue-reference-row {
+  color: var(--foreground);
+  text-decoration: none;
+  cursor: pointer;
+  outline: none;
+}
+
+a.issue-reference-row.issue-reference-row:hover {
+  background: color-mix(in oklab, var(--accent) 50%, transparent);
+}
+
+/* Rows sit inside the overflow-hidden card, so outer box-shadows would clip:
+   focus rings use the inset form. */
+a.issue-reference-row.issue-reference-row:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
+
+.issue-reference-identifier {
+  flex-shrink: 0;
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted-foreground);
+}
+
+.issue-reference-pr-leading {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.625rem;
+}
+
+.issue-reference-pr-content {
+  display: flex;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.issue-reference-pr-project {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(35%, 12rem);
   overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted-foreground);
+  font-size: var(--text-micro);
+  line-height: var(--text-micro--line-height);
+  white-space: nowrap;
+}
+
+.issue-reference-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.issue-reference-pr-content > .issue-reference-title {
+  flex: 1 1 0;
+  min-width: 0;
+  display: block;
+  -webkit-line-clamp: unset;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.rich-text-editor .issue-reference-degraded {
+.issue-reference-degraded {
   color: var(--muted-foreground);
 }

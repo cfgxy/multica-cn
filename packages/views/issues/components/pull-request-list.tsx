@@ -19,9 +19,12 @@ import {
   issuePullRequestsOptions,
   deriveChecksStatus,
   deriveMergeStatus,
+  deriveReviewDecision,
+  derivePullRequestStateVisual,
   shouldShowPullRequestStats,
   type PullRequestChecksStatus,
   type PullRequestMergeStatus,
+  type PullRequestVisualState,
 } from "@multica/core/github";
 import type { GitHubPullRequest, GitHubPullRequestState } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -34,14 +37,20 @@ type IssuesT = ReturnType<typeof useT<"issues">>["t"];
 // collapse the rest once the section reaches 4 rows.
 const PR_LIMIT_BEFORE_COLLAPSE = 4;
 
+// Icon + color per visual state — WHICH state and dimmed-or-not come from
+// `derivePullRequestStateVisual` in core (RUYI-635 增量: one derivation shared
+// with the reference tail and mobile; this map is only this list's palette).
+// `open` rides the --success token (was hardcoded emerald-600); unknown keeps
+// a neutral fallback glyph instead of an ad-hoc `??` at the call site.
 const STATE_ICON: Record<
-  GitHubPullRequestState,
+  PullRequestVisualState,
   { icon: React.ComponentType<{ className?: string }>; className: string }
 > = {
-  open: { icon: GitPullRequestArrow, className: "text-emerald-600 dark:text-emerald-400" },
+  open: { icon: GitPullRequestArrow, className: "text-success" },
   draft: { icon: GitPullRequestDraft, className: "text-muted-foreground" },
   merged: { icon: GitMerge, className: "text-violet-600 dark:text-violet-400" },
   closed: { icon: GitPullRequestClosed, className: "text-rose-600 dark:text-rose-400" },
+  unknown: { icon: GitPullRequest, className: "text-muted-foreground" },
 };
 
 export function PullRequestList({ issueId, showGitHub = true }: { issueId: string; showGitHub?: boolean }) {
@@ -94,11 +103,17 @@ export function PullRequestList({ issueId, showGitHub = true }: { issueId: strin
   );
 }
 
-function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
+export function PullRequestRow({
+  pr,
+  showTargetBranch = false,
+}: {
+  pr: GitHubPullRequest;
+  showTargetBranch?: boolean;
+}) {
   const { t } = useT("issues");
-  const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
+  const visual = derivePullRequestStateVisual(pr.state);
+  const cfg = STATE_ICON[visual.state];
   const StateIcon = cfg.icon;
-  const isDraft = pr.state === "draft";
   const stateLabel = getStateLabel(pr.state, t);
 
   return (
@@ -109,7 +124,7 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
       rel="noreferrer noopener"
       className={cn(
         "flex items-start gap-2 rounded-md px-2 py-1.5 -mx-2 hover:bg-accent/50 transition-colors group",
-        isDraft ? "opacity-80" : null,
+        visual.dimmed ? "opacity-80" : null,
       )}
     >
       <StateIcon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
@@ -121,6 +136,11 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
           {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
           {pr.author_login ? ` · @${pr.author_login}` : null}
         </p>
+        {showTargetBranch ? (
+          <p className="text-micro text-muted-foreground truncate">
+            {t(($) => $.detail.pull_request_target_branch_label)}: {pr.base_branch || t(($) => $.detail.pull_request_target_branch_unknown)}
+          </p>
+        ) : null}
         <PullRequestRowDetails pr={pr} />
       </div>
     </a>
@@ -143,6 +163,9 @@ function PullRequestRowDetails({ pr }: { pr: GitHubPullRequest }) {
   const isTerminal = pr.state === "merged" || pr.state === "closed";
   const checksBadge = isTerminal ? null : getChecksBadge(deriveChecksStatus(pr), t);
   const mergeBadge = isTerminal ? null : getMergeBadge(deriveMergeStatus(pr), t);
+  const reviewBadge = isTerminal
+    ? null
+    : getReviewBadge(deriveReviewDecision(pr.review_decision, pr.snapshot_available), t);
 
   // A stale snapshot (GitHub outage / revoked key) greys out both elements and
   // annotates them with the snapshot age instead of hiding the last-known data.
@@ -153,15 +176,50 @@ function PullRequestRowDetails({ pr }: { pr: GitHubPullRequest }) {
       : t(($) => $.detail.pull_request_snapshot_stale_unknown)
     : undefined;
 
-  if (!showStats && !checksBadge && !mergeBadge) return null;
+  if (!showStats && !checksBadge && !mergeBadge && !reviewBadge) return null;
 
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-muted-foreground">
       {showStats ? <PullRequestStats pr={pr} /> : null}
       {checksBadge ? <PullRequestBadge badge={checksBadge} stale={stale} title={staleTitle} /> : null}
       {mergeBadge ? <PullRequestBadge badge={mergeBadge} stale={stale} title={staleTitle} /> : null}
+      {reviewBadge ? <PullRequestBadge badge={reviewBadge} stale={stale} title={staleTitle} /> : null}
     </div>
   );
+}
+
+function getReviewBadge(
+  decision: ReturnType<typeof deriveReviewDecision>,
+  t: IssuesT,
+): PullRequestBadgeConfig | null {
+  switch (decision) {
+    case "approved":
+      return {
+        icon: CheckCircle2,
+        className: "text-emerald-600 dark:text-emerald-400",
+        label: t(($) => $.detail.pull_request_review_approved),
+      };
+    case "changes_requested":
+      return {
+        icon: XCircle,
+        className: "text-rose-600 dark:text-rose-400",
+        label: t(($) => $.detail.pull_request_review_changes_requested),
+      };
+    case "review_required":
+      return {
+        icon: CircleDashed,
+        className: "text-amber-600 dark:text-amber-400",
+        label: t(($) => $.detail.pull_request_review_required),
+      };
+    case "unknown":
+      return {
+        icon: Circle,
+        className: "text-muted-foreground",
+        label: t(($) => $.detail.pull_request_review_unknown),
+      };
+    default:
+      return null;
+  }
 }
 
 function PullRequestStats({ pr }: { pr: GitHubPullRequest }) {
@@ -224,23 +282,35 @@ function getChecksBadge(
       return {
         icon: CircleDashed,
         className: "text-amber-600 dark:text-amber-400",
-        label: t(($) => $.detail.pull_request_checks_running, {
-          passed: status.passed,
-          total: status.total,
-          running: status.running,
-        }),
+        label:
+          status.total > 0
+            ? t(($) => $.detail.pull_request_checks_running, {
+                passed: status.passed,
+                total: status.total,
+                running: status.running,
+              })
+            : t(($) => $.detail.pull_request_checks_pending),
       };
     case "passed":
       return {
         icon: CheckCircle2,
         className: "text-emerald-600 dark:text-emerald-400",
-        label: t(($) => $.detail.pull_request_checks_all_passed, { total: status.total }),
+        label:
+          status.total > 0
+            ? t(($) => $.detail.pull_request_checks_all_passed, { total: status.total })
+            : t(($) => $.detail.pull_request_checks_passed),
       };
     case "none":
       return {
         icon: Circle,
         className: "text-muted-foreground",
         label: t(($) => $.detail.pull_request_checks_none),
+      };
+    case "unknown":
+      return {
+        icon: Circle,
+        className: "text-muted-foreground",
+        label: t(($) => $.detail.pull_request_checks_unknown),
       };
     case "unavailable":
       return null;
@@ -252,6 +322,15 @@ function checksFailedLabel(
   t: IssuesT,
 ): string {
   const shown = status.names.slice(0, 2);
+  if (status.total <= 0) {
+    if (shown.length === 0) return t(($) => $.detail.pull_request_checks_failed_unknown);
+    const names = [...shown];
+    const remaining = status.names.length - shown.length;
+    if (remaining > 0) names.push(t(($) => $.detail.pull_request_checks_more, { count: remaining }));
+    return t(($) => $.detail.pull_request_checks_failed_named_unknown_count, {
+      names: names.join(", "),
+    });
+  }
   if (shown.length === 0) {
     return t(($) => $.detail.pull_request_checks_failed_count, {
       failed: status.failed,

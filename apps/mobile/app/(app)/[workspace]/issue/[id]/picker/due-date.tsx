@@ -8,9 +8,9 @@
  * header per the formSheet config), and on submit we fire the mutation +
  * router.back().
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { useRef } from "react";
 import { Pressable, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
@@ -61,10 +61,9 @@ function DueDateHeader({
   onClear: () => void;
 }) {
   const { t } = useT("issues");
-  // 顶部让出系统状态栏（RUYI-563）。
-  const insets = useSafeAreaInsets();
+  // 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。
   return (
-    <View className="flex-row items-center justify-between px-4 pb-2" style={{ paddingTop: insets.top + 16 }}>
+    <SheetHeader className="flex-row items-center justify-between px-4 pb-2" gap={16}>
       <Text className="text-base font-semibold text-foreground">
         {t("detail.prop_due_date", "Due date")}
       </Text>
@@ -90,6 +89,6 @@ function DueDateHeader({
           </Text>
         </Pressable>
       </View>
-    </View>
+    </SheetHeader>
   );
 }

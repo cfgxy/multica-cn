@@ -1,5 +1,7 @@
 "use client";
 
+import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
+import { IssueReferenceLayoutProvider } from "../../rich-content/issue-reference-layout";
 import {
   issueBehavesAs,
   issueBehavesAsAny,
@@ -105,6 +107,7 @@ import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
 import { PullRequestList } from "./pull-request-list";
+import { PendingPullRequestSection } from "./pending-pull-request-section";
 import { issuePullRequestsOptions, useGitHubSettings } from "@multica/core/github";
 import { useConfigStore } from "@multica/core/config";
 import { shouldShowPullRequestSection } from "./pull-request-visibility";
@@ -2976,6 +2979,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // ImageSequenceProvider. Wraps the whole column so the description
     // editor's images and the timeline's images share one sequence.
     <CurrentIssueRenderContextProvider value={currentIssueRenderContext}>
+    <IssueReferenceLayoutProvider key={`${wsId}:${id}`}>
+    <RichContentScrollRootProvider scrollRoot={scrollContainerEl}>
     <ImageSequenceProvider items={imageSequence}>
     <div className="relative flex h-full min-w-0 flex-1 flex-col">
         {/* In-page find bar — floats over the top-right of the content column
@@ -3712,6 +3717,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               )
             )}
 
+            <PendingPullRequestSection issueId={id} />
+
           </div>
 
           {/* Bottom comment input — no avatar, full width. Direct child of
@@ -3772,6 +3779,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         )}
       </div>
     </ImageSequenceProvider>
+    </RichContentScrollRootProvider>
+    </IssueReferenceLayoutProvider>
     </CurrentIssueRenderContextProvider>
   );
 

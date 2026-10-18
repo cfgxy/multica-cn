@@ -377,6 +377,13 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
+        <Stack.Screen
+          name="issue/[id]/relations"
+          options={{
+            title: i18n.t("issues:detail.section_relations", "Relations"),
+            presentation: "modal",
+          }}
+        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"
@@ -499,6 +506,7 @@ export default function WorkspaceLayout() {
           name="more/projects"
           options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
+        <Stack.Screen name="more/audit" options={{ title: i18n.t("layout:nav.audit", "MCP audit"), headerBackTitle: "Back" }} />
         {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
         <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
         <Stack.Screen
@@ -550,24 +558,6 @@ export default function WorkspaceLayout() {
           name="more/agents/[id]/env"
           options={SHEET_OPTIONS}
         />
-        {/* RUYI-425 §4.3: voice runtime instances — list from the More
-            dropdown, modal create form, settings page (its in-page
-            Stack.Screen overrides the title with the instance name). */}
-        <Stack.Screen
-          name="more/runtimes"
-          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
-        />
-        <Stack.Screen
-          name="more/runtimes/new"
-          options={{
-            presentation: "modal",
-            headerShown: false,
-          }}
-        />
-        <Stack.Screen
-          name="more/runtimes/[id]"
-          options={{ title: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), headerBackTitle: "Back" }}
-        />
         {/* RUYI-418 B2/B3：agent 设置/能力子屏（formSheet，body 自绘 header）。 */}
         <Stack.Screen
           name="more/agents/[id]/access"
@@ -596,6 +586,12 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/squads"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
+        />
+        {/* RUYI-638 阶段3: workspace usage 统计屏（web /usage 语义，
+            More 下拉入口进入；数据层镜像 core dashboard 查询语义）。 */}
+        <Stack.Screen
+          name="more/stats"
+          options={{ title: i18n.t("layout:nav.usage", "Analytics"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/squads/[id]"
@@ -638,6 +634,10 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/settings/notifications"
           options={{ title: i18n.t("settings:page.tabs.notifications", "Notifications"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
+        />
+        <Stack.Screen
+          name="more/settings/voice"
+          options={{ title: i18n.t("settings:page.tabs.voice", "Voice"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
         />
         <Stack.Screen
           name="new-issue"

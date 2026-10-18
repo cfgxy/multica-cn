@@ -1,6 +1,5 @@
 "use client";
 
-import { AppLink } from "../../navigation";
 import { useT, useTimeAgo } from "../../i18n";
 import type { WorkspaceDecisionInboxItem } from "@multica/core/types";
 import { DecisionRecommendedBadge } from "./decision-recommended-badge";
@@ -16,16 +15,17 @@ import { DecisionRecommendedBadge } from "./decision-recommended-badge";
  * Hover treatment follows the issues list rows (RUYI-547) so the two surfaces
  * read as one product.
  */
-export function DecisionInboxRow({ item, href }: { item: WorkspaceDecisionInboxItem; href: string }) {
+export function DecisionInboxRow({ item, onSelect }: { item: WorkspaceDecisionInboxItem; onSelect: (item: WorkspaceDecisionInboxItem) => void }) {
   const { t } = useT("decisions");
   const timeAgo = useTimeAgo();
 
   return (
-    <AppLink
-      href={href}
+    <button
+      type="button"
+      onClick={() => onSelect(item)}
       data-testid="decision-inbox-row"
       data-status={item.status}
-      className="flex flex-col gap-1 rounded-lg px-3 py-2 hover:bg-surface-hover"
+      className="flex w-full flex-col gap-1 rounded-lg px-3 py-2 text-left hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
     >
       <span className="flex min-w-0 items-center gap-2">
         <span
@@ -45,6 +45,6 @@ export function DecisionInboxRow({ item, href }: { item: WorkspaceDecisionInboxI
           {timeAgo(item.created_at)}
         </span>
       </span>
-    </AppLink>
+    </button>
   );
 }

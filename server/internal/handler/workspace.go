@@ -1278,6 +1278,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceSelfEvolutionData(ctx, requester.WorkspaceID) },
 		},
 		{
+			// Clause asset rows (RUYI-751) are FK-less by project rule; the
+			// family sweeps through the clause set. The proposal→clause
+			// reference is a plain UUID, and both sweeps run in this same
+			// transaction.
+			name: "delete clause assets",
+			run:  func() error { return qtx.DeleteWorkspaceClauseAssets(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete autopilot runs",
 			run:  func() error { return qtx.DeleteWorkspaceAutopilotRuns(ctx, requester.WorkspaceID) },
 		},
@@ -1369,6 +1377,12 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete runtimes and projects",
 			run:  func() error { return qtx.DeleteWorkspaceRuntimesAndProjects(ctx, requester.WorkspaceID) },
+		},
+		{
+			// Daemon command/file evidence is workspace-scoped and has no FKs;
+			// service inventory is daemon-keyed and intentionally survives.
+			name: "delete daemon operational data",
+			run:  func() error { return qtx.DeleteWorkspaceDaemonData(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete administration data",

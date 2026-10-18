@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -71,11 +72,77 @@ func TestRecordBackpressure_NilAndInvalidNoop(t *testing.T) {
 		"device_info": "backpressure noop fixture",
 	})
 
-	testHandler.recordBackpressure(ctx, pgtype.UUID{}, bpReport(true, 9.9, 85, 3))
-	testHandler.recordBackpressure(ctx, mustParseUUID(t, runtimeID), nil)
+	testHandler.recordBackpressure(ctx, db.AgentRuntime{}, bpReport(true, 9.9, 85, 3))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), nil)
 
 	if _, present := readStoredBackpressure(t, ctx, runtimeID); present {
 		t.Fatal("nil/invalid inputs must not write a backpressure report")
+	}
+}
+
+// D2 rework evidence (RUYI-729): a genuine recovery (active→inactive report
+// on a live heartbeat, no restart) must land a cleared row in
+// daemon_backpressure_event through the transition detector. The QA round
+// never saw a cleared row only because the D1 defect kept the daemon
+// reporting active:true forever — the transition never happened. This test
+// pins the recovery half of the chain so the D1 fix's end-to-end behavior
+// (fallback → inactive report → cleared row) has a checked seam.
+func TestRecordBackpressure_RecoveryTransitionWritesClearedEventRow(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := dbfx.Runtime(t, "BP cleared rt", testutil.Cols{
+		"device_info": "backpressure cleared fixture",
+	})
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM daemon_backpressure_event WHERE runtime_id = $1`,
+			mustParseUUID(t, runtimeID))
+	})
+	eventRows := func() []string {
+		t.Helper()
+		rows, err := testPool.Query(ctx,
+			`SELECT event_type FROM daemon_backpressure_event WHERE runtime_id = $1 ORDER BY occurred_at`,
+			mustParseUUID(t, runtimeID))
+		if err != nil {
+			t.Fatalf("query event rows: %v", err)
+		}
+		defer rows.Close()
+		var types []string
+		for rows.Next() {
+			var et string
+			if err := rows.Scan(&et); err != nil {
+				t.Fatalf("scan event_type: %v", err)
+			}
+			types = append(types, et)
+		}
+		return types
+	}
+
+	// Hold starts (deferred claims climbing), then a genuine recovery on the
+	// same live runtime: exactly one entered row and one cleared row.
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.1, 83, 36))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 30.2, 55, 93))
+
+	types := eventRows()
+	if len(types) != 2 || types[0] != "entered" || types[1] != "cleared" {
+		t.Fatalf("event rows = %v, want [entered cleared]", types)
+	}
+	var deferred int64
+	if err := testPool.QueryRow(ctx,
+		`SELECT deferred_claims FROM daemon_backpressure_event WHERE runtime_id = $1 AND event_type = 'cleared'`,
+		mustParseUUID(t, runtimeID),
+	).Scan(&deferred); err != nil {
+		t.Fatalf("read cleared row: %v", err)
+	}
+	if deferred != 93 {
+		t.Fatalf("cleared deferred_claims = %d, want 93", deferred)
+	}
+
+	// A same-state follow-up report is watermark drift only — no new rows.
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 29.7, 54, 93))
+	if got := eventRows(); len(got) != 2 {
+		t.Fatalf("event rows after drift = %v, want unchanged [entered cleared]", got)
 	}
 }
 
@@ -87,10 +154,8 @@ func TestRecordBackpressure_PersistDedupeAndDrift(t *testing.T) {
 	runtimeID := dbfx.Runtime(t, "BP persist rt", testutil.Cols{
 		"device_info": "backpressure persist fixture",
 	})
-	rtUUID := mustParseUUID(t, runtimeID)
-
 	// First report lands in metadata with the watermarks intact.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.4, 82, 5))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.4, 82, 5))
 	stored, present := readStoredBackpressure(t, ctx, runtimeID)
 	if !present {
 		t.Fatal("first report was not persisted")
@@ -104,13 +169,13 @@ func TestRecordBackpressure_PersistDedupeAndDrift(t *testing.T) {
 
 	// An identical report must dedupe to a no-op (recorded_at unchanged).
 	firstAt := storedRecordedAt(t, ctx, runtimeID)
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.4, 82, 5))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.4, 82, 5))
 	if got := storedRecordedAt(t, ctx, runtimeID); got != firstAt {
 		t.Fatalf("unchanged report rewrote the row: recorded_at %q -> %q", firstAt, got)
 	}
 
 	// A watermark drift (state unchanged) must still refresh the stored report.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 7.9, 84, 9))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 7.9, 84, 9))
 	stored, _ = readStoredBackpressure(t, ctx, runtimeID)
 	if stored.MemAvailablePct != 7.9 || stored.SwapUsedPct != 84 || stored.DeferredClaims != 9 {
 		t.Fatalf("drifted report was not refreshed: %+v", stored)
@@ -125,24 +190,22 @@ func TestRecordBackpressure_TransitionAuditLogs(t *testing.T) {
 	runtimeID := dbfx.Runtime(t, "BP audit rt", testutil.Cols{
 		"device_info": "backpressure audit fixture",
 	})
-	rtUUID := mustParseUUID(t, runtimeID)
-
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	// First report, inactive: a write but no transition — no audit line.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(false, 40, 30, 0))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 40, 30, 0))
 
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.1, 83, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.1, 83, 12))
 	entered := logs.String()
 	if !containsField(entered, "daemon backpressure ENTERED", runtimeID) {
 		t.Fatalf("missing ENTERED audit log, got: %s", entered)
 	}
 
 	logs.Reset()
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(false, 30.2, 55, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 30.2, 55, 12))
 	cleared := logs.String()
 	if !containsField(cleared, "daemon backpressure CLEARED", runtimeID) {
 		t.Fatalf("missing CLEARED audit log, got: %s", cleared)
@@ -153,7 +216,7 @@ func TestRecordBackpressure_TransitionAuditLogs(t *testing.T) {
 
 	// Same-state follow-up (watermark drift only) must not log a transition.
 	logs.Reset()
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(false, 29.7, 54, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(false, 29.7, 54, 12))
 	if logs.Len() != 0 {
 		t.Fatalf("watermark drift logged a transition: %s", logs.String())
 	}
@@ -167,8 +230,6 @@ func TestRecordBackpressure_FirstReportNoPriorKey_EntersAudit(t *testing.T) {
 	runtimeID := dbfx.Runtime(t, "BP first-enter rt", testutil.Cols{
 		"device_info": "backpressure first-enter fixture",
 	})
-	rtUUID := mustParseUUID(t, runtimeID)
-
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -178,7 +239,7 @@ func TestRecordBackpressure_FirstReportNoPriorKey_EntersAudit(t *testing.T) {
 	// (fresh registration or a post-restart re-registered row): the write
 	// must land AND the ENTERED transition must be audited. A NULL previous
 	// report means wasActive=false, not a storage failure.
-	testHandler.recordBackpressure(ctx, rtUUID, bpReport(true, 8.1, 83, 12))
+	testHandler.recordBackpressure(ctx, bpRuntimeRow(t, ctx, runtimeID), bpReport(true, 8.1, 83, 12))
 
 	if _, present := readStoredBackpressure(t, ctx, runtimeID); !present {
 		t.Fatal("first report was not persisted")
@@ -265,6 +326,21 @@ func TestClaimTasksByRuntime_BackpressurePersisted(t *testing.T) {
 	if !stored.Active || stored.Reason != "swap" || stored.SwapUsedPct != 91.3 {
 		t.Fatalf("stored claim report mismatch: %+v", stored)
 	}
+}
+
+// bpRuntimeRow loads the fixture runtime row: recordBackpressure (RUYI-729)
+// reads ID, workspace_id and daemon_id off it, so tests feed it the real row
+// instead of a bare uuid.
+func bpRuntimeRow(t *testing.T, ctx context.Context, runtimeID string) db.AgentRuntime {
+	t.Helper()
+	var rt db.AgentRuntime
+	if err := testPool.QueryRow(ctx,
+		`SELECT id, workspace_id, daemon_id FROM agent_runtime WHERE id = $1`,
+		mustParseUUID(t, runtimeID),
+	).Scan(&rt.ID, &rt.WorkspaceID, &rt.DaemonID); err != nil {
+		t.Fatalf("load runtime row %s: %v", runtimeID, err)
+	}
+	return rt
 }
 
 func mustParseUUID(t *testing.T, id string) pgtype.UUID {

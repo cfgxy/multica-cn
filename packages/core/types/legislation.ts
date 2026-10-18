@@ -65,13 +65,23 @@ export interface PromptProposal {
   gate_answer_cost: string;
   gate_answer_conflict: string;
   gate_answer_dedup: string;
-  evidence_anchors: { issue_id?: string; quote?: string }[];
+  /** Evidence anchors as written by the retrospective (issue_id / ref / note);
+   *  manual proposals may carry their own shape-free entries. */
+  evidence_anchors: { issue_id?: string; ref?: string; note?: string }[];
+  /** Decision context (RUYI-723 B) — retrospective drafts only; absent on
+   *  legacy rows and manual proposals, the UI renders "—". */
+  problem?: string;
+  expected_effect?: string;
+  expected_gain?: string;
+  /** 1–5 integer reference score; absent when the agent did not rate. */
+  value_score?: number;
   status: string;
   gate_errors: LegislationGateFinding[];
   gate_warnings: LegislationGateFinding[];
   /** Warn-only local-engine advisory; null = layer off / unchecked. */
   jev_advisory?: PromptJevAdvisory | null;
   enacted_version?: number;
+  rollback_of_version?: number;
   rollback_reason: string;
   merged_from: PromptProposalMergeRef[];
   source: string;
@@ -158,4 +168,11 @@ export interface RetrospectiveRun {
   /** Raw server JSONB passthrough (issue_ids membership, etc.). */
   detail?: RetrospectiveRunDetail | null;
   created_at: string;
+  /** Terminal time; null/absent while the run is still going. */
+  finished_at?: string | null;
+  /**
+   * Platform task enqueued for this run (RUYI-663) — the transcript anchor.
+   * Null for runs that failed before enqueue and rows predating the column.
+   */
+  task_id?: string | null;
 }

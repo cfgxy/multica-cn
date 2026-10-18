@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,10 +11,9 @@ import (
 
 // TestDetectBuiltinRuntimes_ProbesRunConcurrently proves the registration
 // version probes fan out instead of running serially (MUL-5119). Each stubbed
-// `--version` probe blocks until a second probe is in flight alongside it, and
-// records the peak number of in-flight probes. The parallel path overlaps them
-// and releases every probe at once; a serial loop never exceeds 1 and pays the
-// full block for each probe.
+// `--version` probe blocks briefly and records the peak number of in-flight
+// probes; a serial loop would never exceed 1 and would take N×block, while the
+// parallel path overlaps them and finishes in roughly one block.
 func TestDetectBuiltinRuntimes_ProbesRunConcurrently(t *testing.T) {
 	origDetect := detectAgentVersion
 	origCheck := checkAgentMinVersion
@@ -24,10 +22,8 @@ func TestDetectBuiltinRuntimes_ProbesRunConcurrently(t *testing.T) {
 		checkAgentMinVersion = origCheck
 	})
 
-	const probeBlock = 500 * time.Millisecond
+	const probeBlock = 100 * time.Millisecond
 	var inFlight, maxInFlight int32
-	overlapped := make(chan struct{})
-	var overlapOnce sync.Once
 	detectAgentVersion = func(_ context.Context, _ agent.Command) (string, error) {
 		cur := atomic.AddInt32(&inFlight, 1)
 		for {
@@ -36,13 +32,7 @@ func TestDetectBuiltinRuntimes_ProbesRunConcurrently(t *testing.T) {
 				break
 			}
 		}
-		if cur >= 2 {
-			overlapOnce.Do(func() { close(overlapped) })
-		}
-		select {
-		case <-overlapped:
-		case <-time.After(probeBlock):
-		}
+		time.Sleep(probeBlock)
 		atomic.AddInt32(&inFlight, -1)
 		return "9.9.9", nil
 	}
