@@ -1087,6 +1087,31 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     async handler(args, client) { return client.getAutopilotRun(requireString(args, "workspace"), requireString(args, "autopilot_id"), requireString(args, "run_id")); },
   },
   {
+    name: "get_autopilot_run_diagnostics",
+    description:
+      "Read one native Autopilot run and its linked task audit trail. The run record is authoritative for Autopilot status; issue runs and comments are not used to infer completion. Returns audit events only when a linked task_id exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        autopilot_id: { type: "string", description: "Autopilot UUID." },
+        run_id: { type: "string", description: "Native Autopilot run UUID." },
+        audit_limit: { type: "integer", description: "Maximum linked audit events (1-200).", minimum: 1, maximum: 200 },
+      },
+      required: ["workspace", "autopilot_id", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const autopilotId = requireString(args, "autopilot_id");
+      const run = await client.getAutopilotRun(workspace, autopilotId, requireString(args, "run_id"));
+      const taskId = typeof run.task_id === "string" ? run.task_id : undefined;
+      const audit = taskId
+        ? await client.listAuditEvents(workspace, { domain: "run", task_id: taskId, limit: optionalInt(args, "audit_limit", { min: 1, max: 200 }) ?? 50 })
+        : { events: [], next_cursor: null, next_cursor_id: null };
+      return { run, task_id: taskId ?? null, task_audit: audit };
+    },
+  },
+  {
     name: "trigger_autopilot",
     description: "Immediately execute an active Autopilot through its native dispatch. mode=current uses current config; mode=replay reuses a run's historical payload under current config and caller permissions. Requires an explicit idempotency_key.",
     inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, mode: { type: "string", enum: ["current", "replay"], description: "Execution semantics." }, source_run_id: { type: "string", description: "Required for replay; source run must belong to this Autopilot." }, idempotency_key: { type: "string", description: "Stable key for retrying the same request.", maxLength: 200 }, params: { type: "object", description: "Optional current parameter overrides." } }, required: ["workspace", "autopilot_id", "mode", "idempotency_key"] },

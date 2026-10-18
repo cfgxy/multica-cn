@@ -22,6 +22,14 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
       calls.push({ method: "getProject", args: [id] });
       return projectFixture();
     },
+    getAutopilotRun: async (_ws: string, autopilotId: string, runId: string) => {
+      calls.push({ method: "getAutopilotRun", args: [autopilotId, runId] });
+      return { id: runId, autopilot_id: autopilotId, status: "completed", task_id: "task-9" };
+    },
+    listAuditEvents: async (_ws: string, params: Record<string, unknown>) => {
+      calls.push({ method: "listAuditEvents", args: [params] });
+      return { events: [{ id: "audit-1" }], next_cursor: null, next_cursor_id: null };
+    },
     createProject: async (_ws: string, body: Record<string, unknown>) => {
       calls.push({ method: "createProject", args: [body] });
       return { ...projectFixture(), ...body, revision: 1 };
@@ -145,6 +153,7 @@ describe("tool surface", () => {
         "get_agent_runtime_config",
         "get_autopilot",
         "get_autopilot_run",
+        "get_autopilot_run_diagnostics",
         "get_comment",
         "get_daemon_instance",
         "get_decision",
@@ -231,6 +240,32 @@ describe("tool surface", () => {
     // The mutating comment tools declare their destructive/run side effects.
     expect(findTool("edit_comment")?.description).toMatch(/WARNING \(run side effects\)/);
     expect(findTool("delete_comment")?.description).toMatch(/SIDE EFFECTS/i);
+  });
+});
+
+describe("get_autopilot_run_diagnostics handler", () => {
+  it("reads the native run first and scopes audit lookup to its linked task", async () => {
+    const client = fakeClient();
+    const result = await findTool("get_autopilot_run_diagnostics")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-9" },
+      client,
+    ) as Record<string, unknown>;
+    expect(result.run).toMatchObject({ id: "run-9", status: "completed", task_id: "task-9" });
+    expect(result.task_audit).toMatchObject({ events: [{ id: "audit-1" }] });
+    const calls = callsOf(client);
+    expect(calls.map((call) => call.method)).toEqual(["getAutopilotRun", "listAuditEvents"]);
+    expect(calls[1]?.args[0]).toMatchObject({ domain: "run", task_id: "task-9" });
+  });
+
+  it("does not search an unrelated audit trail when the run has no task", async () => {
+    const client = fakeClient({ getAutopilotRun: async () => ({ id: "run-no-task", status: "skipped" }) });
+    const result = await findTool("get_autopilot_run_diagnostics")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-no-task" },
+      client,
+    ) as Record<string, unknown>;
+    expect(result.task_id).toBeNull();
+    expect(result.task_audit).toMatchObject({ events: [] });
+    expect(callsOf(client)).toEqual([]);
   });
 });
 

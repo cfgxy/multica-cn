@@ -79,6 +79,7 @@ export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   get_autopilot: read("读取 Autopilot 配置与状态"),
   list_autopilot_runs: read("读取 Autopilot 执行历史"),
   get_autopilot_run: read("读取 Autopilot 执行详情"),
+  get_autopilot_run_diagnostics: read("读取 Autopilot 执行与关联审计诊断"),
   trigger_autopilot: external("立即触发 Autopilot 原生执行并消耗额度"),
   create_project: write("新增项目"),
   update_project: destructive("覆盖项目元数据"),
