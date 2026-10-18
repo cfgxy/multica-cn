@@ -56,7 +56,7 @@ Use `trigger` only when the user explicitly asks for a manual run. Use `trigger-
 For "why didn't it run":
 
 1. `multica autopilot get <id> --output json` — status, mode, assignee, triggers.
-2. `multica autopilot runs <id> --output json` — run status and failure reason.
+2. `multica autopilot runs <id> --output json` — run status and failure reason. For API/MCP consumers, the native run history also supports status/source/time filters and pagination; read a single run for its linked task lifecycle when present.
 3. If assigned to a squad, inspect the squad: `multica squad get <squad-id> --output json`; execution goes to the leader.
 4. Inspect the target agent/runtime: `multica agent get <agent-id> --output json` and `multica runtime list --output json`.
 5. For webhooks, inspect delivery status: `queued` means the worker has not completed dispatch; `failed` carries the worker error. A provider retry with the same `X-GitHub-Delivery` / `Idempotency-Key` reuses the original delivery.
