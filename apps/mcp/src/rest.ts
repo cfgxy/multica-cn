@@ -256,10 +256,11 @@ export class MulticaClient {
     instance_id?: string;
     error_code?: "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal";
   }): Promise<"recorded" | "queued" | "unrecorded"> {
+    const { instance_id: instanceId, ...body } = input;
     const response = await this.request<{ status: "recorded" | "queued" | "unrecorded" }>("POST", "/api/mcp/audit-finish", {
-      body: input,
+      body,
       auditService: true,
-      fileAccessInstance: input.instance_id !== undefined,
+      fileAccessInstance: instanceId !== undefined,
     });
     return response.status;
   }
