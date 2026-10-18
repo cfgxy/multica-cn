@@ -407,6 +407,63 @@ if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] && grep -qi 'fail-closed' <<<
    && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
   fail "verdict parse fail-closed: rc=$rc out=$out"; fi
 
+# --- 20a. exit_code=0 with blocked verdict: fail-closed, refuse release -------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6a","state":"succeeded","exit_code":0,"log_tail":"verdict: blocked"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs list_artifacts)" ] \
+   && grep -qi 'fail-closed' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "exit 0 blocked fail-closed: rc=$rc out=$out"; fi
+
+# --- 20b. unknown non-empty verdict: fail-closed, refuse release --------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6b","state":"succeeded","exit_code":0,"log_tail":"verdict: suspicious"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs list_artifacts)" ] \
+   && grep -qi 'unknown guard verdict' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "unknown verdict fail-closed: rc=$rc out=$out"; fi
+
+# --- 20c. guest disabled is not the local kill-switch: fail-closed ------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6c","state":"succeeded","exit_code":0,"log_tail":"verdict: disabled"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs list_artifacts)" ] \
+   && grep -qi 'unexpected disabled' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "unexpected disabled fail-closed: rc=$rc out=$out"; fi
+
+# --- 20d. exit_code=1 with pass verdict is inconsistent and still blocked -----
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6d","state":"failed","exit_code":1,"log_tail":"verdict: pass"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "exit 1 pass mismatch fail-closed: rc=$rc out=$out"; fi
+
+# --- 20e. handoff with unknown verdict: retain manifest and lease ------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6e","state":"succeeded","exit_code":0,"log_tail":"verdict: suspicious"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to qa --template tpl-test-qa 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs acquire_lease)" ] \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "handoff unknown verdict fail-closed: rc=$rc out=$out"; fi
+
 # --- 21. no evidence artifact: fail-closed, refuse release ---------------------
 reset_log
 new_lease pdev1
