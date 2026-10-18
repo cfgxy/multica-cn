@@ -161,6 +161,133 @@ func TestCodexGuardShimsDelegateWithoutRecursion(t *testing.T) {
 	}
 }
 
+func TestCodexGitShimUsesTaskMaterializedGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX Codex command guard shims are not supported on Windows")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	guardBin := filepath.Join(root, "codex-home", codexGuardBinDir)
+	nativeBin := filepath.Join(root, "native-bin")
+	taskGuard := filepath.Join(root, "task-policy", "git-push-guard")
+	taskGHGuard := filepath.Join(root, "task-policy", "gh-pr-guard")
+	if err := os.MkdirAll(nativeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(taskGuard), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(nativeBin, "git"), "#!/bin/sh\nprintf 'native git\\n'\n")
+	writeExecutable(t, filepath.Join(nativeBin, "gh"), "#!/bin/sh\nprintf 'native gh\\n'\n")
+	writeExecutable(t, taskGuard, "#!/bin/sh\nprintf 'task guard args=%s\\n' \"$*\"\n")
+	writeExecutable(t, taskGHGuard, "#!/bin/sh\nprintf 'task gh guard args=%s\\n' \"$*\"\n")
+	env, err := installCodexCommandGuards([]string{
+		"HOME=" + home,
+		"PATH=" + nativeBin + string(os.PathListSeparator) + "/usr/bin:/bin",
+		"MULTICA_GIT_PUSH_GUARD=" + taskGuard,
+		"MULTICA_GH_PR_GUARD=" + taskGHGuard,
+	}, guardBin, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimPath := filepath.Join(filepath.Dir(envValue(env, "BASH_ENV")), "git")
+	shim, err := os.ReadFile(shimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shim), "'"+taskGuard+"'") {
+		t.Fatalf("git shim does not pin task guard path: %s", shim)
+	}
+	cmd := exec.Command(shimPath, "push", "origin", "feature/task")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "task guard args=push origin feature/task") {
+		t.Fatalf("task guard delegation output=%q error=%v", out, err)
+	}
+	ghCmd := exec.Command(filepath.Join(filepath.Dir(envValue(env, "BASH_ENV")), "gh"), "pr", "create")
+	ghOut, ghErr := ghCmd.CombinedOutput()
+	if ghErr != nil || !strings.Contains(string(ghOut), "task gh guard args=pr create") {
+		t.Fatalf("task gh guard delegation output=%q error=%v", ghOut, ghErr)
+	}
+}
+
+func TestCodexGHShimRunsTaskMaterializedRUYI401Guard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX Codex command guard shims are not supported on Windows")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	nativeBin := filepath.Join(root, "native-bin")
+	guardBin := filepath.Join(root, "codex-home", codexGuardBinDir)
+	if err := os.MkdirAll(nativeBin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(nativeBin, "gh"), "#!/bin/sh\nprintf 'real-gh %s\\n' \"$*\"\n")
+	guard, err := filepath.Abs(filepath.Join("..", "..", "internal", "daemon", "guards", "gh-pr-guard"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(root, "canonical-repos.conf")
+	if err := os.WriteFile(conf, []byte("cfgxy/fork upstream=upstream-owner/source\ncfgxy/multica-cn\ncfgxy/sub2api\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env, err := installCodexCommandGuards([]string{
+		"HOME=" + home,
+		"PATH=" + nativeBin + string(os.PathListSeparator) + "/usr/bin:/bin",
+		"MULTICA_GH_PR_GUARD=" + guard,
+		"GH_GUARD_CONF=" + conf,
+		"GH_GUARD_DRYRUN=1",
+	}, guardBin, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(target, ghRepo string) (string, error) {
+		cmd := exec.Command("/bin/bash", "-c", `gh pr create --repo "$TARGET_REPO" --title smoke`)
+		for _, entry := range env {
+			if strings.HasPrefix(entry, "GH_REPO=") || strings.HasPrefix(entry, "TARGET_REPO=") {
+				continue
+			}
+			cmd.Env = append(cmd.Env, entry)
+		}
+		cmd.Env = append(cmd.Env, "TARGET_REPO="+target, "GH_REPO="+ghRepo)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run("cfgxy/fork", "cfgxy/fork"); err != nil || !strings.Contains(out, "ALLOW") {
+		t.Fatalf("canonical GH_REPO output=%q error=%v", out, err)
+	}
+	for _, canonical := range []string{"cfgxy/multica-cn", "cfgxy/sub2api"} {
+		out, err := run(canonical, canonical)
+		if err != nil || !strings.Contains(out, "ALLOW") {
+			t.Fatalf("canonical regression %q output=%q error=%v", canonical, out, err)
+		}
+	}
+	for _, bad := range []string{"upstream-owner/source", "someone/else"} {
+		out, err := run("cfgxy/fork", bad)
+		if err == nil || !strings.Contains(out, "gh-guard:") {
+			t.Fatalf("misleading GH_REPO=%q for canonical target output=%q error=%v", bad, out, err)
+		}
+	}
+	if out, err := run("upstream-owner/source", "upstream-owner/source"); err == nil || !strings.Contains(out, "upstream") {
+		t.Fatalf("confirmed upstream output=%q error=%v", out, err)
+	}
+	if out, err := run("someone/else", "someone/else"); err == nil || !strings.Contains(out, "未登记 canonical") {
+		t.Fatalf("non-canonical target output=%q error=%v", out, err)
+	}
+	missingEnv := append([]string(nil), env...)
+	for i, entry := range missingEnv {
+		if strings.HasPrefix(entry, "GH_GUARD_CONF=") {
+			missingEnv[i] = "GH_GUARD_CONF=" + filepath.Join(root, "missing.conf")
+		}
+	}
+	cmd := exec.Command("/bin/bash", "-c", "gh pr create --repo cfgxy/fork")
+	cmd.Env = append(missingEnv, "GH_REPO=")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "登记文件不存在") {
+		t.Fatalf("missing config output=%q error=%v", out, err)
+	}
+}
+
 func TestCodexGuardShimsFailClosedWhenGuardIsMissing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Codex command guard shims are not supported on Windows")

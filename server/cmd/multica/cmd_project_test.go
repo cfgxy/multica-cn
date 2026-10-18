@@ -32,6 +32,7 @@ func TestValidateProjectStatus(t *testing.T) {
 func newProjectResourceUpdateTestCmd() *cobra.Command {
 	c := &cobra.Command{Use: "update"}
 	c.Flags().String("url", "", "")
+	c.Flags().String("upstream", "", "")
 	c.Flags().String("default-branch-hint", "", "")
 	c.Flags().String("local-path", "", "")
 	c.Flags().String("daemon-id", "", "")
@@ -50,6 +51,25 @@ func newProjectResourceUpdateTestCmd() *cobra.Command {
 // must rebuild the full github_repo payload by merging the existing `url` —
 // otherwise the server sees `{default_branch_hint: "x"}` and 400s.
 func TestBuildResourceRefFromFlagsGithubMergesHint(t *testing.T) {
+	t.Run("upstream-only edit preserves and updates confirmed upstream", func(t *testing.T) {
+		cmd := newProjectResourceUpdateTestCmd()
+		_ = cmd.Flags().Set("upstream", "https://github.com/Source/Parent.git")
+		existing := map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "old/parent"}
+		ref, has, err := buildResourceRefFromFlags(cmd, "github_repo", existing)
+		if err != nil || !has {
+			t.Fatalf("upstream edit ref=%v has=%v err=%v", ref, has, err)
+		}
+		if ref["url"] != existing["url"] || ref["upstream"] != "https://github.com/Source/Parent.git" {
+			t.Fatalf("upstream edit lost or failed to replace fields: %#v", ref)
+		}
+	})
+	t.Run("empty upstream rejected", func(t *testing.T) {
+		cmd := newProjectResourceUpdateTestCmd()
+		_ = cmd.Flags().Set("upstream", "")
+		if _, _, err := buildResourceRefFromFlags(cmd, "github_repo", map[string]any{"url": "https://github.com/cfgxy/fork"}); err == nil {
+			t.Fatal("empty upstream should be rejected")
+		}
+	})
 	t.Run("hint-only edit preserves existing url", func(t *testing.T) {
 		cmd := newProjectResourceUpdateTestCmd()
 		_ = cmd.Flags().Set("default-branch-hint", "main")
