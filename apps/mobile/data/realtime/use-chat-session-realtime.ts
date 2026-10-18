@@ -31,9 +31,9 @@ import {
   appendTaskMessage,
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
-  invalidatePendingTask,
   promotePendingTaskToRunning,
   seedPendingTaskFromQueued,
+  settlePendingChatTask,
 } from "./chat-ws-updaters";
 
 export function useChatSessionRealtime(
@@ -84,18 +84,18 @@ export function useChatSessionRealtime(
         }),
         ws.on("task:cancelled", (payload) => {
           if (!isMine(payload)) return;
-          invalidatePendingTask(qc, sessionId);
+          settlePendingChatTask(qc, sessionId, payload.task_id);
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         }),
         ws.on("task:completed", (payload) => {
           if (!isMine(payload)) return;
-          invalidatePendingTask(qc, sessionId);
+          settlePendingChatTask(qc, sessionId, payload.task_id);
         }),
         ws.on("task:failed", (payload) => {
           if (!isMine(payload)) return;
           // FailTask persists a destructive assistant message — surface it
           // and recover any queued successor from the authoritative endpoint.
-          invalidatePendingTask(qc, sessionId);
+          settlePendingChatTask(qc, sessionId, payload.task_id);
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         }),
         ws.on("chat:session_deleted", (payload) => {

@@ -24,6 +24,7 @@
  * user keeps the "this thread is resolved" signal even while reading.
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -31,6 +32,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { Pressable, View } from "react-native";
 import Animated, {
@@ -42,7 +44,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
-import type { Reaction, TimelineEntry } from "@multica/core/types";
+import type { Attachment, Reaction, TimelineEntry } from "@multica/core/types";
 import {
   COMMENT_HIGHLIGHT_FADE_MS,
   COMMENT_HIGHLIGHT_TOTAL_MS,
@@ -54,10 +56,20 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { SelectableMarkdown } from "@/components/ui/selectable-markdown";
+import { IssueReferenceTailVisibilityContext } from "@/lib/markdown/markdown";
+import {
+  hasPotentialIssueReference,
+  getIssueCommentBodyHeight,
+  setIssueCommentBodyHeight,
+  useIssueCommentBodyVisible,
+  useIssueReferenceTailVisible,
+} from "@/lib/issue-reference-visibility";
 import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
 import { TaskRetryStrip } from "@/components/issue/task-retry-strip";
 import {
   discardFailedComment,
+  type CreateCommentVars,
+  type ToggleCommentReactionVars,
   useCreateComment,
   useToggleCommentReaction,
 } from "@/data/mutations/issues";
@@ -109,9 +121,11 @@ interface Props {
    *  publish. Optional — the just-published auto-expand is a nicety, not
    *  required for correctness. */
   onCommentPublished?: (commentId: string) => void;
+  /** Unique visibility-store scope for this mounted timeline. */
+  referenceTailVisibilityScope?: string;
 }
 
-export function CommentCard({
+export const CommentCard = memo(function CommentCard({
   entry,
   replies = [],
   issueId,
@@ -119,6 +133,7 @@ export function CommentCard({
   highlightedCommentId,
   forceExpanded = false,
   onCommentPublished,
+  referenceTailVisibilityScope,
 }: Props) {
   // Resolved threads default to a single-line bar; tap expands in place for
   // the current session. Unmount (scroll out of viewport) resets — same
@@ -333,38 +348,27 @@ export function CommentCard({
               }}
             />
           )}
-          <CommentBody
+          <ExpandedCommentBodies
             entry={entry}
+            replies={replies}
             threadLastComment={lastComment}
             issueId={issueId}
             issueIdentifier={issueIdentifier}
+            highlightedCommentId={highlightedCommentId}
+            activeCommentId={pressedEntryId ?? selectingId}
             onPressChange={handlePressChange}
             onCommentPublished={onCommentPublished}
+            onMeasureReply={measureReply}
+            referenceTailVisibilityScope={referenceTailVisibilityScope}
           />
-          {replies.map((reply) => (
-            <View
-              key={reply.id}
-              className="border-t border-border/60 pt-3"
-              onLayout={(e) => measureReply(reply.id, e.nativeEvent.layout)}
-            >
-              <CommentBody
-                entry={reply}
-                issueId={issueId}
-                issueIdentifier={issueIdentifier}
-                onPressChange={handlePressChange}
-                onCommentPublished={onCommentPublished}
-              />
-              <ReplyHighlightOverlay
-                active={highlightedCommentId === reply.id}
-              />
-            </View>
-          ))}
         </View>
-        <RootHighlightOverlay active={highlightedCommentId === entry.id} />
+        {highlightedCommentId === entry.id ? (
+          <RootHighlightOverlay active />
+        ) : null}
       </View>
     </View>
   );
-}
+});
 
 /**
  * Compact "thread is resolved" bar — substitutes the full card when a
@@ -714,20 +718,187 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
   );
 }
 
-function CommentBody({
+function ExpandedCommentBodies({
+  entry,
+  replies,
+  threadLastComment,
+  issueId,
+  issueIdentifier,
+  highlightedCommentId,
+  activeCommentId,
+  onPressChange,
+  onCommentPublished,
+  onMeasureReply,
+  referenceTailVisibilityScope,
+}: {
+  entry: TimelineEntry;
+  replies: TimelineEntry[];
+  threadLastComment?: TimelineEntry;
+  issueId: string;
+  issueIdentifier: string | undefined;
+  highlightedCommentId?: string | null;
+  activeCommentId?: string | null;
+  onPressChange?: (entryId: string, pressed: boolean) => void;
+  onCommentPublished?: (commentId: string) => void;
+  onMeasureReply: (
+    replyId: string,
+    layout: { y: number; height: number },
+  ) => void;
+  referenceTailVisibilityScope?: string;
+}) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  // One expanded thread shares the same attachment and actor metadata.
+  const { data: attachments } = useQuery(
+    issueAttachmentsOptions(wsId, issueId),
+  );
+  const { getName } = useActorLookup();
+  const userId = useAuthStore((s) => s.user?.id);
+  const createComment = useCreateComment(issueId);
+  const toggleCommentReaction = useToggleCommentReaction(issueId);
+  const retryFailedComment = useCallback(
+    (vars: CreateCommentVars) => {
+      void createComment
+        .mutateAsync(vars)
+        .then((created) => {
+          if (created?.id) onCommentPublished?.(created.id);
+        })
+        .catch(() => {});
+    },
+    [createComment.mutateAsync, onCommentPublished],
+  );
+
+  return (
+    <>
+      <CommentBody
+        entry={entry}
+        threadLastComment={threadLastComment}
+        issueId={issueId}
+        issueIdentifier={issueIdentifier}
+        attachments={attachments}
+        getName={getName}
+        userId={userId}
+        wsId={wsId}
+        toggleCommentReaction={toggleCommentReaction.mutate}
+        retryFailedComment={retryFailedComment}
+        onPressChange={onPressChange}
+        referenceTailVisibilityScope={referenceTailVisibilityScope}
+      />
+      {replies.map((reply) => (
+        <ReplyBodySlot
+          key={reply.id}
+          commentId={reply.id}
+          referenceTailVisibilityScope={referenceTailVisibilityScope}
+          windowBody={hasPotentialIssueReference(reply.content ?? "")}
+          forceVisible={
+            highlightedCommentId === reply.id || activeCommentId === reply.id
+          }
+          onMeasureReply={onMeasureReply}
+        >
+          <CommentBody
+            entry={reply}
+            issueId={issueId}
+            issueIdentifier={issueIdentifier}
+            attachments={attachments}
+            getName={getName}
+            userId={userId}
+            wsId={wsId}
+            toggleCommentReaction={toggleCommentReaction.mutate}
+            retryFailedComment={retryFailedComment}
+            onPressChange={onPressChange}
+            referenceTailVisibilityScope={referenceTailVisibilityScope}
+          />
+          {highlightedCommentId === reply.id ? (
+            <ReplyHighlightOverlay active />
+          ) : null}
+        </ReplyBodySlot>
+      ))}
+    </>
+  );
+}
+
+function ReplyBodySlot({
+  commentId,
+  referenceTailVisibilityScope,
+  windowBody,
+  forceVisible,
+  onMeasureReply,
+  children,
+}: {
+  commentId: string;
+  referenceTailVisibilityScope?: string;
+  windowBody: boolean;
+  forceVisible: boolean;
+  onMeasureReply: (
+    replyId: string,
+    layout: { y: number; height: number },
+  ) => void;
+  children: ReactNode;
+}) {
+  const visible = useIssueCommentBodyVisible(
+    referenceTailVisibilityScope,
+    commentId,
+  );
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(() =>
+    referenceTailVisibilityScope
+      ? getIssueCommentBodyHeight(referenceTailVisibilityScope, commentId)
+      : null,
+  );
+  const handleBodyLayout = useCallback(
+    (event: { nativeEvent: { layout: { height: number } } }) => {
+      const height = event.nativeEvent.layout.height;
+      if (height <= 0) return;
+      if (referenceTailVisibilityScope) {
+        setIssueCommentBodyHeight(
+          referenceTailVisibilityScope,
+          commentId,
+          height,
+        );
+      }
+      setMeasuredHeight((current) => (current === height ? current : height));
+    },
+    [commentId, referenceTailVisibilityScope],
+  );
+
+  return (
+    <View
+      className="border-t border-border/60 pt-3"
+      onLayout={(e) => onMeasureReply(commentId, e.nativeEvent.layout)}
+    >
+      {!windowBody || visible || forceVisible || measuredHeight === null ? (
+        <View onLayout={handleBodyLayout}>{children}</View>
+      ) : (
+        <View style={{ height: measuredHeight }} />
+      )}
+    </View>
+  );
+}
+
+const CommentBody = memo(function CommentBody({
   entry,
   threadLastComment,
   issueId,
   issueIdentifier,
+  attachments,
+  getName,
+  userId,
+  wsId,
+  toggleCommentReaction,
+  retryFailedComment,
   onPressChange,
-  onCommentPublished,
+  referenceTailVisibilityScope,
 }: {
   entry: TimelineEntry;
   threadLastComment?: TimelineEntry;
   issueId: string;
   issueIdentifier: string | undefined;
+  attachments: Attachment[] | undefined;
+  getName: ReturnType<typeof useActorLookup>["getName"];
+  userId: string | undefined;
+  wsId: string | null;
+  toggleCommentReaction: (vars: ToggleCommentReactionVars) => void;
+  retryFailedComment: (vars: CreateCommentVars) => void;
   onPressChange?: (entryId: string, pressed: boolean) => void;
-  onCommentPublished?: (commentId: string) => void;
+  referenceTailVisibilityScope?: string;
 }) {
   // When this comment is the active selection target, drop the long-press
   // wrapper AND make the markdown selectable — so the next long-press
@@ -737,23 +908,14 @@ function CommentBody({
   const isSelecting = useCommentSelectStore(
     (s) => s.selectingId === entry.id,
   );
-  const { getName } = useActorLookup();
   const { t } = useT("issues");
-  const userId = useAuthStore((s) => s.user?.id);
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const toggle = useToggleCommentReaction(issueId);
   const qc = useQueryClient();
-  const createComment = useCreateComment(issueId);
   // Failed-comment state for THIS entry — undefined when the entry is a
   // normal server-backed comment OR an in-flight optimistic. Only set when
   // the matching `useCreateComment` mutation errored and the entry was
   // intentionally left in the cache to surface inline retry.
   const failed = useFailedCommentsStore((s) => s.failed[entry.id]);
-  // Same query as IssueDescription — TanStack dedupes so this fires once
-  // per issue regardless of how many comments need to resolve attachments.
-  const { data: attachments } = useQuery(
-    issueAttachmentsOptions(wsId, issueId),
-  );
+  const hasReferenceCandidate = hasPotentialIssueReference(entry.content ?? "");
 
   const name =
     entry.actor_name ||
@@ -785,9 +947,9 @@ function CommentBody({
           r.actor_type === "member" &&
           r.actor_id === userId,
       );
-      toggle.mutate({ commentId: entry.id, emoji, existing });
+      toggleCommentReaction({ commentId: entry.id, emoji, existing });
     },
-    [reactions, userId, toggle, entry.id],
+    [reactions, userId, toggleCommentReaction, entry.id],
   );
 
   const handleRetry = useCallback(() => {
@@ -796,27 +958,18 @@ function CommentBody({
     // mutation's own optimistic insert lands on a clean slate instead of
     // creating a duplicate row. The new attempt mints a fresh optimistic id.
     discardFailedComment(qc, wsId, issueId, entry.id);
-    createComment.mutate(
-      {
-        content: failed.content,
-        parentId: failed.parentId,
-        attachmentIds: failed.attachmentIds,
-      },
-      // RUYI-28: a successful Retry must expand the owning root exactly
-      // like a composer publish — same precise channel, no last-row
-      // guessing. `onPublished` is the composer's existing plumbing; the
-      // server id arrives only on success (guarded the same way the
-      // composer's mutateAsync path guards `created?.id`).
-      { onSuccess: (created) => created?.id && onCommentPublished?.(created.id) },
-    );
+    retryFailedComment({
+      content: failed.content,
+      parentId: failed.parentId,
+      attachmentIds: failed.attachmentIds,
+    });
   }, [
     failed,
     qc,
     wsId,
     issueId,
     entry.id,
-    createComment,
-    onCommentPublished,
+    retryFailedComment,
   ]);
 
   const handleDiscard = useCallback(() => {
@@ -881,11 +1034,26 @@ function CommentBody({
         </Text>
       ) : null}
       {entry.content ? (
-        <SelectableMarkdown
-          content={entry.content}
-          attachments={attachments}
-          selectable={isSelecting}
-        />
+        hasReferenceCandidate && referenceTailVisibilityScope ? (
+          <ReferenceTailVisibilityProvider
+            scope={referenceTailVisibilityScope}
+            commentId={entry.id}
+          >
+            <SelectableMarkdown
+              content={entry.content}
+              attachments={attachments}
+              selectable={isSelecting}
+              renderReferenceTail
+            />
+          </ReferenceTailVisibilityProvider>
+        ) : (
+          <SelectableMarkdown
+            content={entry.content}
+            attachments={attachments}
+            selectable={isSelecting}
+            renderReferenceTail={hasReferenceCandidate}
+          />
+        )
       ) : null}
       <CommentAttachmentList
         attachments={entry.attachments}
@@ -932,6 +1100,23 @@ function CommentBody({
         />
       ) : null}
     </Fragment>
+  );
+});
+
+function ReferenceTailVisibilityProvider({
+  scope,
+  commentId,
+  children,
+}: {
+  scope: string;
+  commentId: string;
+  children: ReactNode;
+}) {
+  const visible = useIssueReferenceTailVisible(scope, commentId);
+  return (
+    <IssueReferenceTailVisibilityContext.Provider value={visible}>
+      {children}
+    </IssueReferenceTailVisibilityContext.Provider>
   );
 }
 

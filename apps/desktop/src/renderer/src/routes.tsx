@@ -27,6 +27,8 @@ import {
   SkillsEvolutionPage,
   SkillEvolutionDetailPage,
   QualityPage,
+  ClauseGovernancePage,
+  ClauseGovernanceDetailPage,
   QuizPage,
   ProposalsPage,
   VersionsPage,
@@ -268,6 +270,8 @@ export const appRoutes: RouteObject[] = [
             element: <SelfEvolutionSkillDetailRoute />,
           },
           { path: "self-evolution/quality", element: <QualityPage /> },
+          { path: "self-evolution/clause-governance", element: <ClauseGovernancePage /> },
+          { path: "self-evolution/clause-governance/:clauseId", element: <ClauseGovernanceDetailRoute /> },
           { path: "self-evolution/quiz", element: <QuizPage /> },
           { path: "self-evolution/proposals", element: <ProposalsPage /> },
           { path: "self-evolution/versions", element: <VersionsPage /> },
@@ -307,4 +311,10 @@ function SelfEvolutionSkillDetailRoute() {
   const { id } = useParams<{ id: string }>();
   if (!id) return null;
   return <SkillEvolutionDetailPage skillId={id} />;
+}
+
+function ClauseGovernanceDetailRoute() {
+  const { clauseId } = useParams<{ clauseId: string }>();
+  if (!clauseId) return null;
+  return <ClauseGovernanceDetailPage clauseId={clauseId} />;
 }

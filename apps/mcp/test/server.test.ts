@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Logger } from "../src/log.js";
 import { MulticaClient } from "../src/rest.js";
 import { createMcpServer, SERVER_NAME } from "../src/server.js";
+import { TOOL_RISK_MATRIX } from "../src/tool-risk.js";
 
 const TOKEN = `mul_${"a1b2c3d4e5".repeat(4)}`;
 
@@ -19,12 +20,13 @@ interface Fixture {
 }
 
 async function connectServer(
-  backendHandler: (pathname: string) => unknown | Promise<unknown>,
+  backendHandler: (pathname: string, input?: RequestInfo | URL, init?: RequestInit) => unknown | Promise<unknown>,
   backendStatus = 200,
+  mcpInstanceId?: string,
 ): Promise<Fixture> {
-  const fetchImpl = (async (input: RequestInfo | URL) => {
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const pathname = new URL(String(input)).pathname;
-    const body = await backendHandler(pathname);
+    const body = await backendHandler(pathname, input, init);
     return new Response(JSON.stringify(body), {
       status: backendStatus,
       headers: { "Content-Type": "application/json" },
@@ -35,6 +37,8 @@ async function connectServer(
     token: TOKEN,
     fetchImpl,
     logger: silentLogger(),
+    auditServiceCredential: "private-audit-credential",
+    ...(mcpInstanceId ? { mcpInstanceId, fileAccessInstanceCredential: "private-instance-credential" } : {}),
   });
   const server = createMcpServer(restClient);
   const mcpClient = new Client({ name: "vitest", version: "0.0.0" });
@@ -76,6 +80,10 @@ describe("createMcpServer (via in-memory client)", () => {
       "answer_decisions",
       "apply_execution_profile",
       "archive_agent",
+      "archive_all_inbox",
+      "archive_all_read_inbox",
+      "archive_completed_inbox",
+      "archive_inbox_item",
       "archive_squad",
       "assign_issue",
       "bulk_update_agent_runtime_config",
@@ -101,6 +109,9 @@ describe("createMcpServer (via in-memory client)", () => {
       "get_decision",
       "get_execution_profile",
       "get_execution_topology",
+      "get_file_metadata",
+      "get_inbox_unread_count",
+      "get_inbox_unread_summary",
       "get_issue",
       "get_issue_relations",
       "get_project",
@@ -109,10 +120,13 @@ describe("createMcpServer (via in-memory client)", () => {
       "get_runtime_models",
       "get_squad",
       "list_agents",
+      "list_archived_inbox",
       "list_comments",
       "list_daemon_instances",
       "list_decisions",
       "list_execution_profiles",
+      "list_files",
+      "list_inbox",
       "list_issue_runs",
       "list_issues",
       "list_project_resources",
@@ -123,11 +137,16 @@ describe("createMcpServer (via in-memory client)", () => {
       "list_squads",
       "list_workspaces",
       "manage_issue_relations",
+      "mark_all_inbox_read",
+      "mark_inbox_item_read",
+      "mark_inbox_item_unread",
       "progress_digest",
+      "read_file_chunk",
       "restore_agent",
       "retry_run",
       "search_audit_events",
       "search_issues",
+      "unarchive_inbox_item",
       "update_agent",
       "update_agent_runtime_config",
       "update_execution_profile",
@@ -143,6 +162,33 @@ describe("createMcpServer (via in-memory client)", () => {
     }
   });
 
+  it("exposes exhaustive, explicit risk annotations over the MCP protocol", async () => {
+    const { client, cleanup } = await connectServer(async () => []);
+    fixtures.push(cleanup);
+    const { tools } = await client.listTools();
+    const names = tools.map((tool) => tool.name).sort();
+    expect(names).toEqual(Object.keys(TOOL_RISK_MATRIX).sort());
+
+    for (const tool of tools) {
+      expect(tool.annotations, tool.name).toEqual(TOOL_RISK_MATRIX[tool.name]?.annotations);
+      expect(tool.annotations, tool.name).toMatchObject({
+        readOnlyHint: expect.any(Boolean),
+        destructiveHint: expect.any(Boolean),
+        idempotentHint: expect.any(Boolean),
+        openWorldHint: expect.any(Boolean),
+      });
+    }
+    expect(tools.find((tool) => tool.name === "list_quick_replies")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.find((tool) => tool.name === "get_runtime_models")?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    });
+    expect(tools.find((tool) => tool.name === "add_comment")?.annotations?.openWorldHint).toBe(true);
+    expect(tools.find((tool) => tool.name === "answer_decisions")?.annotations?.openWorldHint).toBe(true);
+  });
+
   it("tools/call returns pretty JSON text for successful calls", async () => {
     const { client, cleanup } = await connectServer(async () => [
       { id: "w1", slug: "ws", name: "WS" },
@@ -154,6 +200,88 @@ describe("createMcpServer (via in-memory client)", () => {
     const parsed = JSON.parse(text) as { total: number; workspaces: Array<{ slug: string }> };
     expect(parsed.total).toBe(1);
     expect(parsed.workspaces[0]?.slug).toBe("ws");
+  });
+
+  it("audits inbox calls through the existing endpoints without recording inbox content", async () => {
+    const calls: Array<{ path: string; body: string; headers: Record<string, string> }> = [];
+    const item = {
+      id: "0b7f4c1e-1111-4222-8333-abcdefabcdef",
+      issue_id: null,
+      type: "autopilot_paused",
+      body: "private notification body",
+    };
+    const fixture = await connectServer(async (pathname, _input, init) => {
+      calls.push({
+        path: pathname,
+        body: String(init?.body ?? ""),
+        headers: init?.headers as Record<string, string>,
+      });
+      if (pathname === "/api/inbox") return [item];
+      return { status: "recorded" };
+    });
+    fixtures.push(fixture.cleanup);
+
+    const result = await fixture.client.callTool({
+      name: "list_inbox",
+      arguments: { workspace: "0b7f4c1e-1111-4222-8333-abcdefabcdef" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/mcp/audit-start",
+      "/api/inbox",
+      "/api/mcp/audit-finish",
+    ]);
+    const auditBodies = `${calls[0]?.body}\n${calls[2]?.body}`;
+    expect(auditBodies).toContain("list_inbox");
+    expect(JSON.parse(calls[0]?.body ?? "{}")).toMatchObject({
+      reported_client_name: "vitest",
+      reported_client_version: "0.0.0",
+    });
+    expect(auditBodies).not.toContain("private notification body");
+    expect(auditBodies).not.toContain(TOKEN);
+    expect(calls[0]?.headers["X-Multica-MCP-Service-Credential"]).toBe("private-audit-credential");
+    expect(calls[1]?.headers["X-Multica-MCP-Service-Credential"]).toBeUndefined();
+  });
+
+  it("does not perform an inbox operation when audit start fails", async () => {
+    const paths: string[] = [];
+    const fixture = await connectServer(async (pathname) => {
+      paths.push(pathname);
+      return { error: "audit unavailable" };
+    }, 503);
+    fixtures.push(fixture.cleanup);
+
+    const result = await fixture.client.callTool({
+      name: "list_inbox",
+      arguments: { workspace: "0b7f4c1e-1111-4222-8333-abcdefabcdef" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(paths).toEqual(["/api/mcp/audit-start"]);
+  });
+
+  it("classifies rejected file operations as refusals and exposes queued finish audit", async () => {
+    const calls: Array<{ path: string; body: string }> = [];
+    const fixture = await connectServer(async (pathname, _input, init) => {
+      calls.push({ path: pathname, body: String(init?.body ?? "") });
+      if (pathname === "/api/file-access/metadata") return { operation_id: "op-1", status: "pending" };
+      if (pathname === "/api/file-access/operations/op-1") {
+        return { operation_id: "op-1", kind: "metadata", status: "rejected", result: null, error: "permission_denied" };
+      }
+      if (pathname === "/api/mcp/audit-finish") return { status: "queued" };
+      return { status: "recorded" };
+    }, 200, "mcp-test-instance");
+    fixtures.push(fixture.cleanup);
+
+    const result = await fixture.client.callTool({
+      name: "get_file_metadata",
+      arguments: { workspace: "0b7f4c1e-1111-4222-8333-abcdefabcdef", path: "/srv/data/a.txt" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain("audit_status: queued");
+    const finish = JSON.parse(calls.find((call) => call.path === "/api/mcp/audit-finish")?.body ?? "{}");
+    expect(finish, JSON.stringify(calls)).toMatchObject({ status: "refused", error_code: "permission_denied", operation_id: "op-1" });
   });
 
   it("tools/call maps backend errors to isError results without leaking the token", async () => {
