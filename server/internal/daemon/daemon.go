@@ -2204,7 +2204,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Node ops channel (RUYI-645): periodic service inventory collector.
 	go d.opsInventoryLoop(ctx)
 	go d.gcLoop(ctx)
-	go d.environmentRecycleLoop(ctx)
+	if d.cfg.EnvironmentRecycleEnabled {
+		go d.environmentRecycleLoop(ctx)
+	}
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
 
