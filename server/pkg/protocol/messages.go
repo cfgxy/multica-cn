@@ -51,6 +51,7 @@ const (
 	// every server-side reader of this bit must fail closed through
 	// runtimeHasCapability.
 	DaemonCapabilityWorkerSupervisorV1 = "worker-supervisor-v1"
+	DaemonCapabilityFileReadPolicyV1   = "file-read-policy-v1"
 
 	// AppCapabilityChatDraftRestoreV1 is advertised (X-Client-Capabilities) by
 	// app clients that understand the durable draft-restore recovery path:
@@ -482,18 +483,20 @@ type DaemonHeartbeatAckPayload struct {
 }
 
 type DaemonFileOperationDispatch struct {
-	OperationID     string   `json:"operation_id"`
-	TargetID        string   `json:"target_id"`
-	Kind            string   `json:"kind"`
-	Path            string   `json:"path"`
-	Offset          int64    `json:"offset,omitempty"`
-	Length          int64    `json:"length,omitempty"`
-	Limit           int      `json:"limit,omitempty"`
-	Cursor          string   `json:"cursor,omitempty"`
-	ExpectedSize    *int64   `json:"expected_size,omitempty"`
-	ExpectedModTime string   `json:"expected_mtime,omitempty"`
-	LeaseEpoch      int64    `json:"lease_epoch"`
-	Roots           []string `json:"roots,omitempty"`
+	OperationID     string          `json:"operation_id"`
+	TargetID        string          `json:"target_id"`
+	Kind            string          `json:"kind"`
+	Path            string          `json:"path"`
+	Offset          int64           `json:"offset,omitempty"`
+	Length          int64           `json:"length,omitempty"`
+	Limit           int             `json:"limit,omitempty"`
+	Cursor          string          `json:"cursor,omitempty"`
+	ExpectedSize    *int64          `json:"expected_size,omitempty"`
+	ExpectedModTime string          `json:"expected_mtime,omitempty"`
+	LeaseEpoch      int64           `json:"lease_epoch"`
+	Roots           []string        `json:"roots,omitempty"`
+	Policy          json.RawMessage `json:"policy"`
+	PolicyVersion   int64           `json:"policy_version"`
 }
 
 // DaemonOpsCommandDispatch is one claimed read-only ops command handed to a

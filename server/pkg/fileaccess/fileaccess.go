@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -42,6 +43,48 @@ var (
 type Root struct {
 	ID   string `json:"id"`
 	Path string `json:"path"`
+}
+
+type DenyRule struct {
+	ID          string `json:"id"`
+	Pattern     string `json:"pattern"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+	Builtin     bool   `json:"builtin"`
+}
+
+type DenyPolicy struct {
+	Version int64      `json:"version"`
+	Rules   []DenyRule `json:"rules"`
+}
+
+func DefaultDenyPolicy() DenyPolicy {
+	patterns := []struct{ id, pattern, description string }{
+		{"ssh", "**/.ssh/**", "SSH keys and configuration"},
+		{"gnupg", "**/.gnupg/**", "GPG keys and configuration"},
+		{"aws-credentials", "**/.aws/credentials", "AWS credentials"},
+		{"azure-credentials", "**/.azure/**", "Azure credentials"},
+		{"gcloud-credentials", "**/.config/gcloud/**", "Google Cloud credentials"},
+		{"kube-config", "**/.kube/config", "Kubernetes credentials"},
+		{"docker-config", "**/.docker/config.json", "Docker registry credentials"},
+		{"env-files", "**/.env*", "Environment configuration files"},
+		{"netrc", "**/.netrc", "Network login credentials"},
+		{"git-credentials", "**/.git-credentials", "Git credentials"},
+		{"credential-files", "**/*credential*", "Credential files"},
+		{"secret-files", "**/*secret*", "Secret files"},
+		{"token-files", "**/*token*", "Token files"},
+		{"npmrc", "**/.npmrc", "Package registry credentials"},
+		{"pypirc", "**/.pypirc", "Python package registry credentials"},
+		{"private-key-pem", "**/*.pem", "Private keys and certificate bundles"},
+		{"private-key-key", "**/*.key", "Private keys"},
+		{"ssh-private-key-names", "**/id_*", "SSH private keys"},
+		{"ai-client-auth", "**/.config/*/auth.json", "AI client authentication"},
+	}
+	rules := make([]DenyRule, 0, len(patterns))
+	for _, item := range patterns {
+		rules = append(rules, DenyRule{ID: item.id, Pattern: item.pattern, Description: item.description, Enabled: true, Builtin: true})
+	}
+	return DenyPolicy{Version: 1, Rules: rules}
 }
 
 // Target is an explicit registration. An empty ACL is deny-all.
@@ -100,6 +143,21 @@ type ReadResult struct {
 }
 
 func NormalizePath(path string) (string, error) {
+	return NormalizePathWithPolicy(path, DefaultDenyPolicy())
+}
+
+func NormalizePathWithPolicy(path string, policy DenyPolicy) (string, error) {
+	clean, err := NormalizePathUnfiltered(path)
+	if err != nil {
+		return "", err
+	}
+	if policy.Denies(clean) {
+		return "", ErrorSensitivePathDenied
+	}
+	return clean, nil
+}
+
+func NormalizePathUnfiltered(path string) (string, error) {
 	if path == "" || !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') {
 		return "", ErrorPathNotAllowed
 	}
@@ -109,30 +167,56 @@ func NormalizePath(path string) (string, error) {
 		}
 	}
 	clean := filepath.Clean(path)
-	if sensitivePath(clean) {
-		return "", ErrorSensitivePathDenied
-	}
 	return clean, nil
 }
 
-func sensitivePath(path string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-		name := strings.ToLower(part)
-		if name == ".ssh" || name == ".gnupg" || name == ".aws" || name == ".kube" ||
-			name == ".env" || strings.HasPrefix(name, ".env.") ||
-			name == "id_rsa" || name == "id_ed25519" || strings.HasSuffix(name, ".pem") ||
-			strings.Contains(name, "credential") || strings.Contains(name, "secret") || strings.Contains(name, "token") {
+func (p DenyPolicy) Denies(candidate string) bool {
+	for _, rule := range p.Rules {
+		if rule.Enabled && MatchDenyPattern(rule.Pattern, candidate) {
 			return true
 		}
 	}
 	return false
 }
 
+func MatchDenyPattern(pattern, candidate string) bool {
+	pattern = strings.ToLower(filepath.ToSlash(pattern))
+	candidate = strings.ToLower(filepath.ToSlash(candidate))
+	patternParts := strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	candidateParts := strings.Split(strings.TrimPrefix(candidate, "/"), "/")
+	return matchPathParts(patternParts, candidateParts)
+}
+
+func matchPathParts(pattern, candidate []string) bool {
+	matchedPrefix := make([]bool, len(candidate)+1)
+	matchedPrefix[0] = true
+	for _, partPattern := range pattern {
+		next := make([]bool, len(candidate)+1)
+		if partPattern == "**" {
+			next[0] = matchedPrefix[0]
+			for i := 1; i <= len(candidate); i++ {
+				next[i] = matchedPrefix[i] || next[i-1]
+			}
+		} else {
+			for i := 1; i <= len(candidate); i++ {
+				matched, err := path.Match(partPattern, candidate[i-1])
+				next[i] = matchedPrefix[i-1] && err == nil && matched
+			}
+		}
+		matchedPrefix = next
+	}
+	return matchedPrefix[len(candidate)]
+}
+
 // ResolveRootPath validates lexical and resolved containment before a caller
 // opens a path with OpenBeneath. OpenBeneath repeats containment at the kernel
 // boundary to close the check/open race.
 func ResolveRootPath(roots []string, requested string) (string, error) {
-	path, err := NormalizePath(requested)
+	return ResolveRootPathWithPolicy(roots, requested, DefaultDenyPolicy())
+}
+
+func ResolveRootPathWithPolicy(roots []string, requested string, policy DenyPolicy) (string, error) {
+	path, err := NormalizePathWithPolicy(requested, policy)
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +244,7 @@ func ResolveRootPath(roots []string, requested string) (string, error) {
 		if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(os.PathSeparator)) || filepath.IsAbs(resolvedRel) {
 			return "", ErrorSymlinkEscapeDenied
 		}
-		if sensitivePath(resolved) {
+		if policy.Denies(resolved) {
 			return "", ErrorSensitivePathDenied
 		}
 		return resolved, nil
@@ -169,10 +253,28 @@ func ResolveRootPath(roots []string, requested string) (string, error) {
 }
 
 func ValidateRequest(req Request) error {
+	return ValidateRequestWithPolicy(req, DefaultDenyPolicy())
+}
+
+func ValidateRequestStructure(req Request) error {
+	return validateRequest(req, nil)
+}
+
+func ValidateRequestWithPolicy(req Request, policy DenyPolicy) error {
+	return validateRequest(req, &policy)
+}
+
+func validateRequest(req Request, policy *DenyPolicy) error {
 	if req.TargetID == "" {
 		return ErrorHostNotRegistered
 	}
-	if _, err := NormalizePath(req.Path); err != nil {
+	var err error
+	if policy == nil {
+		_, err = NormalizePathUnfiltered(req.Path)
+	} else {
+		_, err = NormalizePathWithPolicy(req.Path, *policy)
+	}
+	if err != nil {
 		return err
 	}
 	switch req.Kind {
@@ -187,6 +289,34 @@ func ValidateRequest(req Request) error {
 		}
 	default:
 		return fmt.Errorf("%w: unsupported operation", ErrorPermissionDenied)
+	}
+	return nil
+}
+
+func ValidateDenyPolicy(policy DenyPolicy) error {
+	if policy.Version < 1 || len(policy.Rules) > 256 {
+		return ErrorRangeInvalid
+	}
+	seen := make(map[string]struct{}, len(policy.Rules))
+	for _, rule := range policy.Rules {
+		if rule.ID == "" || len(rule.ID) > 64 || len(rule.Pattern) > 512 || len(rule.Description) > 256 ||
+			strings.ContainsAny(rule.ID, "/\\\x00") || !filepath.IsAbs(rule.Pattern) && !strings.HasPrefix(rule.Pattern, "**/") {
+			return ErrorRangeInvalid
+		}
+		if _, exists := seen[rule.ID]; exists {
+			return ErrorRangeInvalid
+		}
+		seen[rule.ID] = struct{}{}
+		for _, part := range strings.Split(filepath.ToSlash(rule.Pattern), "/") {
+			if part == ".." || strings.ContainsRune(part, '\x00') {
+				return ErrorRangeInvalid
+			}
+			if part != "**" {
+				if _, err := path.Match(part, "sample"); err != nil {
+					return ErrorRangeInvalid
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -224,7 +354,11 @@ func ResolveTargetIDByHost(host string, targets []Target) (string, error) {
 }
 
 func PathWithinRoots(roots []string, path string) bool {
-	clean, err := NormalizePath(path)
+	return PathWithinRootsWithPolicy(roots, path, DefaultDenyPolicy())
+}
+
+func PathWithinRootsWithPolicy(roots []string, path string, policy DenyPolicy) bool {
+	clean, err := NormalizePathWithPolicy(path, policy)
 	if err != nil {
 		return false
 	}

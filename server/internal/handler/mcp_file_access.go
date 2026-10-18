@@ -138,21 +138,34 @@ func (h *Handler) submitMCPFileOperation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	req.TargetID = target.ID
-	if err := fileaccess.ValidateRequest(req); err != nil {
+	if err := fileaccess.ValidateRequestStructure(req); err != nil {
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
-	canonical, err := fileaccess.NormalizePath(req.Path)
+	policy, err := h.loadMCPFileReadPolicy(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "file read policy unavailable")
+		return
+	}
+	if err := fileaccess.ValidateRequestWithPolicy(req, policy); err != nil {
+		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
+		return
+	}
+	canonical, err := fileaccess.NormalizePathWithPolicy(req.Path, policy)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
-	if !fileaccess.PathWithinRoots(roots, canonical) {
+	if !fileaccess.PathWithinRootsWithPolicy(roots, canonical, policy) {
 		writeError(w, http.StatusForbidden, fileaccess.ErrorPathNotAllowed.Error())
 		return
 	}
 	if rt.Status != "online" {
 		writeError(w, http.StatusConflict, fileaccess.ErrorTargetUnreachable.Error())
+		return
+	}
+	if !runtimeHasCapability(rt.Metadata, protocol.DaemonCapabilityFileReadPolicyV1) {
+		writeError(w, http.StatusConflict, "daemon_upgrade_required")
 		return
 	}
 	req.Path = canonical

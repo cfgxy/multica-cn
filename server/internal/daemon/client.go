@@ -207,6 +207,7 @@ func daemonClientCapabilities(workerSupervision, snapshotSupport bool) string {
 		protocol.DaemonCapabilityLocalWorktreeV1,
 		protocol.DaemonCapabilitySourceContextQuickCreateV1,
 		protocol.DaemonCapabilityRPCV1,
+		protocol.DaemonCapabilityFileReadPolicyV1,
 	}
 	if snapshotSupport {
 		caps = append(caps, protocol.DaemonCapabilityLocalSnapshotV1)

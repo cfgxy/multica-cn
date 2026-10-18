@@ -313,6 +313,7 @@ import type {
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
+  AdminFileReadPolicy,
   AdminUserList,
   AdminWorkspaceList,
   ImpersonationResponse,
@@ -345,6 +346,7 @@ import {
 } from "../issues/timeline-query";
 import { parseWithFallback } from "./schema";
 import {
+  AdminFileReadPolicySchema,
   AgentTaskListSchema,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -455,6 +457,7 @@ import {
   AdminWorkspaceListSchema,
   ImpersonationResponseSchema,
   EMPTY_ADMIN_USER_LIST,
+  EMPTY_ADMIN_FILE_READ_POLICY,
   EMPTY_ADMIN_WORKSPACE_LIST,
   EMPTY_IMPERSONATION_RESPONSE,
   AdminMCPStatusSchema,
@@ -1102,6 +1105,33 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/admin/users${qs ? `?${qs}` : ""}`);
     return parseWithFallback(raw, AdminUserListSchema, EMPTY_ADMIN_USER_LIST, {
       endpoint: "GET /api/admin/users",
+    });
+  }
+
+  async adminGetFileReadPolicy(): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy");
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "GET /api/admin/file-read-policy",
+    });
+  }
+
+  async adminUpdateFileReadPolicy(policy: AdminFileReadPolicy): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy", {
+      method: "PUT",
+      body: JSON.stringify(policy),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "PUT /api/admin/file-read-policy",
+    });
+  }
+
+  async adminRestoreFileReadPolicy(version: number): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy/restore-defaults", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "POST /api/admin/file-read-policy/restore-defaults",
     });
   }
 
