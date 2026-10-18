@@ -118,6 +118,8 @@ WITH deleted_ops_commands AS (
     DELETE FROM daemon_ops_command AS ops WHERE ops.workspace_id = $1 RETURNING 1
 ), deleted_file_operations AS (
     DELETE FROM daemon_file_operation AS operations WHERE operations.workspace_id = $1 RETURNING 1
+), deleted_file_access_bindings AS (
+    DELETE FROM mcp_file_access_instance_binding AS bindings WHERE bindings.workspace_id = $1 RETURNING 1
 )
 DELETE FROM daemon_file_access_target AS targets WHERE targets.workspace_id = $1;
 

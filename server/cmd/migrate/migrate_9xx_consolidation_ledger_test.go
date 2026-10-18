@@ -162,6 +162,11 @@ var postConsolidationStems = []string{
 	"975_file_operation_id_index",     // RUYI-789
 	"976_pull_request_base_branch",    // RUYI-773
 	"978_github_pr_review_decision",   // RUYI-773
+	"977_mcp_file_access",             // RUYI-793
+	"977_mcp_file_access_binding_index",
+	"977_mcp_file_access_operation_invocation_index",
+	"977_mcp_pre_auth_rejection_expiry_index",
+	"977_mcp_pre_auth_rejection_invocation_index",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

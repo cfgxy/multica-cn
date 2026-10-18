@@ -88,6 +88,9 @@ const PURE_READ_TOOLS = [
   "get_decision",
   // Project resource binding read.
   "list_project_resources",
+  "list_files",
+  "get_file_metadata",
+  "read_file_chunk",
 ] as const;
 
 const CAS_TOOLS = [
@@ -105,7 +108,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(77);
+    expect(names).toHaveLength(80);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -126,7 +129,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(77);
+      expect(tools).toHaveLength(80);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -139,7 +142,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(77);
+      expect(Object.keys(hint)).toHaveLength(80);
     } finally {
       await cleanup();
     }

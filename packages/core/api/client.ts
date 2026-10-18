@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { configStore } from "../config";
+import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
 import type {
   RuntimeBackpressureSettings,
   RuntimeBackpressureEvent,
@@ -653,6 +654,8 @@ import {
   PromptQuizBankImportResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
   MarketplaceListingSchema,
   MarketplaceListingListSchema,
   ShareLinkSchema,
@@ -4148,6 +4151,27 @@ export class ApiClient {
       EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
       { endpoint: "GET /api/prompt-governance/{scope}/{id}/versions" },
     );
+  }
+
+  async listAuditEvents(workspaceId: string, params: ListAuditEventsParams = {}): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const key of [
+      "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
+      "tool_name", "result_status", "result_error_code", "target_type", "target_id",
+    ] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined && params.cursor_id !== undefined) {
+      query.set("cursor", params.cursor);
+      query.set("cursor_id", params.cursor_id);
+    }
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`);
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "GET /api/workspaces/{id}/audit-events",
+    });
   }
 
   /**

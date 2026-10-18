@@ -138,6 +138,39 @@ import type {
 } from "../types/prompt-version";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+import type { AuditEventsPage } from "../types/audit";
+
+export const AuditEventSchema = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  domain: z.string().default(""),
+  event_type: z.string().default(""),
+  occurred_at: z.string().nullable().default(null),
+  actor_type: z.string().default(""),
+  actor_id: z.string().nullable().default(null),
+  trigger_kind: z.string().nullable().default(null),
+  trigger_ref: z.string().nullable().default(null),
+  issue_id: z.string().nullable().default(null),
+  task_id: z.string().nullable().default(null),
+  agent_id: z.string().nullable().default(null),
+  runtime_id: z.string().nullable().default(null),
+  reason: z.string().nullable().default(null),
+  invocation_id: z.string().optional(),
+  sensitive: z.boolean().default(false),
+  details: z.record(z.string(), z.unknown()).default({}),
+}).loose();
+
+export const AuditEventsPageSchema = z.object({
+  events: z.array(AuditEventSchema).default([]),
+  next_cursor: z.string().nullable().default(null),
+  next_cursor_id: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_AUDIT_EVENTS_PAGE: AuditEventsPage = {
+  events: [],
+  next_cursor: null,
+  next_cursor_id: null,
+};
 
 export const PluginConfigFieldSchema = z.object({
   key: z.string(),

@@ -1186,6 +1186,9 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingOpsCommands) > 0 {
 		resp["pending_ops_commands"] = ack.PendingOpsCommands
 	}
+	if len(ack.PendingFileOperations) > 0 {
+		resp["pending_file_operations"] = ack.PendingFileOperations
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
