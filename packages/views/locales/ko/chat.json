@@ -30,7 +30,8 @@
     "change_project_context": "프로젝트 컨텍스트 변경",
     "remove_project_context": "프로젝트 컨텍스트 제거",
     "no_projects": "아직 프로젝트가 없습니다",
-    "project_context_unsupported": "프로젝트 설명이 적용되지 않습니다 — 이 에이전트의 데몬 업그레이드가 필요합니다"
+    "project_context_unsupported": "프로젝트 설명이 적용되지 않습니다 — 이 에이전트의 데몬 업그레이드가 필요합니다",
+    "project_context_failed": "프로젝트 컨텍스트를 업데이트하지 못했습니다"
   },
   "queue": {
     "title_other": "대기 중인 메시지 {{count}}개",
@@ -39,15 +40,19 @@
     "clear": "모두 지우기",
     "clear_confirm_title": "대기 중인 메시지를 모두 지울까요?",
     "clear_confirm_body": "대기 중인 메시지만 삭제됩니다. 현재 작업은 계속 실행됩니다.",
-    "steer": "지시",
+    "steer": "지금 전송",
     "steer_unavailable": "현재 답변이 시작되면 지시할 수 있습니다",
     "steer_no_permission": "이 에이전트를 실행할 권한이 없습니다",
     "steer_unavailable_toast": "현재는 지시할 수 없습니다. 대기열을 새로 고치는 중입니다.",
     "edit": "대기 중인 메시지 편집",
     "remove": "대기열에서 삭제",
     "more": "추가 대기열 작업",
+    "more_actions": "대기 중인 메시지 {{position}}의 추가 작업",
     "fallback": "대기 중인 메시지",
     "action_failed_toast": "대기 중인 메시지를 업데이트하지 못했습니다"
+  },
+  "composer": {
+    "quick_replies_title": "빠른 답장"
   },
   "message_list": {
     "show_details": "세부 정보 보기",
@@ -256,7 +261,10 @@
       "load_failed": "모델을 불러올 수 없습니다",
       "unsupported": "이 런타임은 모델 선택을 지원하지 않습니다",
       "unavailable": "모델 또는 세션을 사용할 수 없습니다",
-      "save_failed": "모델 선택을 저장할 수 없습니다"
+      "save_failed": "모델 선택을 저장할 수 없습니다",
+      "save_failed_title": "모델이 변경되지 않았습니다",
+      "current": "현재 모델: {{model}}",
+      "runtime_default": "런타임 기본값"
     },
     "send_blocked": {
       "no_permission_title": "이 에이전트를 실행할 권한이 없습니다",
@@ -269,12 +277,20 @@
       "placeholder": "메시지…",
       "agent_working": "에이전트 작업 중…",
       "unavailable": "채팅을 사용할 수 없음",
-      "stop_agent": "에이전트 중지"
+      "stop_agent": "에이전트 중지",
+      "stop_failed_title": "에이전트를 중지하지 못했습니다",
+      "stop_failed": "다시 시도하세요. 현재 메시지는 유지되었습니다.",
+      "quick_replies_title": "빠른 답장"
     },
     "send_failure": {
       "no_permission": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다.",
       "runtime_required": "메시지를 보내기 전에 이 에이전트에 런타임을 바인딩하세요.",
       "generic": "메시지를 보내지 못했습니다. 다시 시도하세요."
+    },
+    "queue": {
+      "action_failed_title": "대기열이 변경되었습니다",
+      "stale": "이 대기 메시지가 변경되었습니다. 대기열을 새로고침했습니다.",
+      "action_failed": "대기열을 업데이트하지 못했습니다. 다시 시도해 주세요."
     },
     "disabled_reason": {
       "no_agent": "선택된 에이전트 없음",

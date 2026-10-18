@@ -573,8 +573,8 @@ export default function ChatDetailScreen() {
       Alert.alert(
         t("mobile.model.save_failed_title", "Model not changed"),
         error instanceof ApiError && error.status === 409
-          ? t("mobile.model.unavailable", "This model or session is no longer available. Your previous selection is unchanged.")
-          : t("mobile.model.save_failed", "Could not save this model. Your previous selection is unchanged."),
+          ? t("mobile.model.unavailable", "Model or session is no longer available")
+          : t("mobile.model.save_failed", "Could not save model selection"),
       );
     } finally {
       savingSessionModelRef.current = false;
