@@ -25,6 +25,8 @@ type TaskDiskUsage struct {
 	TaskShort         string `json:"task_short"`
 	Path              string `json:"path"`
 	Kind              string `json:"kind"`
+	AgentID           string `json:"agent_id,omitempty"`
+	AgentName         string `json:"agent_name,omitempty"`
 	ParentID          string `json:"parent_id,omitempty"`
 	ParentStatus      string `json:"parent_status"`
 	AgeSeconds        int64  `json:"age_seconds"`

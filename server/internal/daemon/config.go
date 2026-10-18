@@ -137,53 +137,57 @@ var DefaultGCArtifactPatterns = []string{"node_modules", ".next", ".turbo"}
 
 // Config holds all daemon configuration.
 type Config struct {
-	ServerBaseURL                  string
-	DaemonID                       string
-	LegacyDaemonIDs                []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
-	DeviceName                     string
-	RuntimeName                    string
-	CLIVersion                     string                // multica CLI version (e.g. "0.1.13")
-	LaunchedBy                     string                // "desktop" when spawned by the Electron app, empty for standalone
-	Profile                        string                // profile name (empty = default)
-	Agents                         map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw, deerflow, zcode (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
-	WorkspacesRoot                 string                // base path for execution envs (default: ~/multica_workspaces)
-	KeepEnvAfterTask               bool                  // preserve env after task for debugging
-	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
-	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
-	BackpressureEnabled            bool                  // pause new task claims when host memory crosses the high watermark (default: true)
-	BackpressureMemHighPct         float64               // MemAvailable% below which new claims pause (default: 15 — initial safety parameter, see Default consts)
-	BackpressureMemRecoveryPct     float64               // MemAvailable% above which claiming resumes (default: 25)
-	BackpressureSwapHighPct        float64               // SwapUsed% above which new claims pause; <=0 disables the swap condition (default: 80)
-	BackpressureSwapRecoveryPct    float64               // SwapUsed% below which claiming resumes (default: 60)
-	BackpressurePSIHighPct         float64               // PSI memory "some" avg10% above which new claims pause; <=0 disables the PSI condition (default: 50)
-	BackpressurePSIRecoveryPct     float64               // PSI some avg10% below which claiming resumes (default: 20)
-	BackpressureSampleInterval     time.Duration         // /proc sampling cadence for the watermark gate (default: 5s)
-	BackpressureWindowSize         int                   // smoothing window in samples before thresholds are evaluated on the mean (default: 6)
-	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
-	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
-	GCTTL                          time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
-	GCCompletedTaskTTL             time.Duration         // fully clean inactive issue-task envs completed at least this long ago, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
-	GCOrphanTTL                    time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
-	GCArtifactTTL                  time.Duration         // once a task has been completed for at least this long, drop regenerable artifacts: pattern-matched build outputs when the parent record keeps the directory (an open issue), and the exact daemon-managed Codex cache for every task kind (default: 12h, set 0 to disable both)
-	GCArtifactPatterns             []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
-	GCRepoTTL                      time.Duration         // evict a cached bare repo under .repos once no task has created a worktree from it for this long, it has no worktrees left, and it is no longer attached to any watched workspace (default: 30d, set 0 to disable)
-	GCRepoMaintenanceEnabled       bool                  // run reflog expiry and git gc after stale agent refs are removed (default: true; disable independently as an operational kill switch)
-	GCGuardEnabled                 bool                  // scan every recycle path for unpushed commits before deleting and write recycle evidence (default: true; disabling is the operational kill switch that restores pre-guard behaviour)
-	GCGuardEvidenceTTL             time.Duration         // how long recycle-evidence files are kept before the guard's sweeper removes them (default: 30d; nothing else deletes evidence)
-	GCCodexSessionTTL              time.Duration         // reclaim a per-issue Codex session store (~/.codex/multica-sessions/<agent>/<issue>) untouched for at least this long, so a done/abandoned issue's conversation history does not accumulate forever (default: 14d, set 0 to disable)
-	GCHermesMemoryTTL              time.Duration         // reclaim a per-agent Hermes memory store (<profile dir>/hermes-state/<agent>/<profile>) untouched for at least this long, so a deleted agent's memory does not sit on disk forever (default: 90d, set 0 to disable)
-	GCHermesSessionTTL             time.Duration         // reclaim a per-conversation Hermes session store (<profile dir>/hermes-sessions/<agent>/<profile>/<conversation>) untouched for at least this long, so a done or abandoned conversation's transcript does not accumulate forever (default: 14d, set 0 to disable)
-	GCTaskTempLegacyTTL            time.Duration         // reclaim a per-task temp dir (<temp base>/multica-task-*) that carries no execution lock — i.e. left by a daemon predating the lock — once nothing inside it has been touched for this long. Dirs that DO carry the lock are reclaimed on liveness, never on age, so this knob does not apply to them. Neither does it reclaim a dir holding no task content — an old empty leftover, or a shell left by a daemon that died between creating the dir and publishing its lock — because holding no content is exactly what a dir currently being published looks like (default: 0, disabled — see DefaultGCTaskTempLegacyTTL)
-	AutoUpdateEnabled              bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
-	AutoUpdateCheckInterval        time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
-	AutoReloadEnabled              bool                  // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
+	ServerBaseURL               string
+	DaemonID                    string
+	LegacyDaemonIDs             []string // historical daemon_ids this machine may have registered under; reported at register time so the server can merge old runtime rows
+	DeviceName                  string
+	RuntimeName                 string
+	CLIVersion                  string                // multica CLI version (e.g. "0.1.13")
+	LaunchedBy                  string                // "desktop" when spawned by the Electron app, empty for standalone
+	Profile                     string                // profile name (empty = default)
+	Agents                      map[string]AgentEntry // keyed by provider: claude, codebuddy, codex, copilot, opencode, codearts, deveco, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro, antigravity, qoder, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, dim, zeroclaw, deerflow, zcode (plus built-in runtime identities from agent.BuiltinRuntimes, e.g. omp)
+	WorkspacesRoot              string                // base path for execution envs (default: ~/multica_workspaces)
+	KeepEnvAfterTask            bool                  // preserve env after task for debugging
+	HealthPort                  int                   // local HTTP port for health checks (default: 19514)
+	MaxConcurrentTasks          int                   // max tasks running in parallel (default: 20)
+	BackpressureEnabled         bool                  // pause new task claims when host memory crosses the high watermark (default: true)
+	BackpressureMemHighPct      float64               // MemAvailable% below which new claims pause (default: 15 — initial safety parameter, see Default consts)
+	BackpressureMemRecoveryPct  float64               // MemAvailable% above which claiming resumes (default: 25)
+	BackpressureSwapHighPct     float64               // SwapUsed% above which new claims pause; <=0 disables the swap condition (default: 80)
+	BackpressureSwapRecoveryPct float64               // SwapUsed% below which claiming resumes (default: 60)
+	BackpressurePSIHighPct      float64               // PSI memory "some" avg10% above which new claims pause; <=0 disables the PSI condition (default: 50)
+	BackpressurePSIRecoveryPct  float64               // PSI some avg10% below which claiming resumes (default: 20)
+	BackpressureSampleInterval  time.Duration         // /proc sampling cadence for the watermark gate (default: 5s)
+	BackpressureWindowSize      int                   // smoothing window in samples before thresholds are evaluated on the mean (default: 6)
+	GCEnabled                   bool                  // enable periodic workspace garbage collection (default: true)
+	EnvironmentRecycleEnabled   bool                  // enable daemon environment lifecycle policy and automatic recycling
+	EnvironmentArchiveEnabled   bool                  // preserve and archive idle environments before reclamation
+	EnvironmentArchiveTTL       time.Duration         // minimum idle terminal-run retention before automatic archival
+	EnvironmentRecycleInterval  time.Duration         // parent-lifecycle scan interval
+	GCInterval                  time.Duration         // how often the GC loop runs (default: 2h)
+	GCTTL                       time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
+	GCCompletedTaskTTL          time.Duration         // fully clean inactive issue-task envs completed at least this long ago, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
+	GCOrphanTTL                 time.Duration         // clean orphan dirs with no meta, or dirs whose issue gc-check returns 404, once they exceed this age (default: 72h). The 404 path uses the same TTL — a scoped-down token can't instantly wipe live workspaces.
+	GCArtifactTTL               time.Duration         // once a task has been completed for at least this long, drop regenerable artifacts: pattern-matched build outputs when the parent record keeps the directory (an open issue), and the exact daemon-managed Codex cache for every task kind (default: 12h, set 0 to disable both)
+	GCArtifactPatterns          []string              // basename patterns whose subtrees are removed during artifact cleanup (default: node_modules, .next, .turbo)
+	GCRepoTTL                   time.Duration         // evict a cached bare repo under .repos once no task has created a worktree from it for this long, it has no worktrees left, and it is no longer attached to any watched workspace (default: 30d, set 0 to disable)
+	GCRepoMaintenanceEnabled    bool                  // run reflog expiry and git gc after stale agent refs are removed (default: true; disable independently as an operational kill switch)
+	GCGuardEnabled              bool                  // scan every recycle path for unpushed commits before deleting and write recycle evidence (default: true; disabling is the operational kill switch that restores pre-guard behaviour)
+	GCGuardEvidenceTTL          time.Duration         // how long recycle-evidence files are kept before the guard's sweeper removes them (default: 30d; nothing else deletes evidence)
+	GCCodexSessionTTL           time.Duration         // reclaim a per-issue Codex session store (~/.codex/multica-sessions/<agent>/<issue>) untouched for at least this long, so a done/abandoned issue's conversation history does not accumulate forever (default: 14d, set 0 to disable)
+	GCHermesMemoryTTL           time.Duration         // reclaim a per-agent Hermes memory store (<profile dir>/hermes-state/<agent>/<profile>) untouched for at least this long, so a deleted agent's memory does not sit on disk forever (default: 90d, set 0 to disable)
+	GCHermesSessionTTL          time.Duration         // reclaim a per-conversation Hermes session store (<profile dir>/hermes-sessions/<agent>/<profile>/<conversation>) untouched for at least this long, so a done or abandoned conversation's transcript does not accumulate forever (default: 14d, set 0 to disable)
+	GCTaskTempLegacyTTL         time.Duration         // reclaim a per-task temp dir (<temp base>/multica-task-*) that carries no execution lock — i.e. left by a daemon predating the lock — once nothing inside it has been touched for this long. Dirs that DO carry the lock are reclaimed on liveness, never on age, so this knob does not apply to them. Neither does it reclaim a dir holding no task content — an old empty leftover, or a shell left by a daemon that died between creating the dir and publishing its lock — because holding no content is exactly what a dir currently being published looks like (default: 0, disabled — see DefaultGCTaskTempLegacyTTL)
+	AutoUpdateEnabled           bool                  // periodically check for a newer CLI release and self-update when idle (default: true on Multica Cloud, false on self-host)
+	AutoUpdateCheckInterval     time.Duration         // how often the auto-update loop polls for a new release (default: 6h)
+	AutoReloadEnabled           bool                  // restart when the multica binary on disk no longer matches the running version (default: true for CLI-launched daemons)
 	// PipeCrashSelfHealEnabled is the single kill switch for the Claude
 	// pipe-crash self-heal (RUYI-659): when a resumed run's CLI crashes
 	// before producing any session, the daemon retries in-turn with a fresh
 	// session (retiring the old pointer) instead of failing the task for a
 	// human to retry. Disabling restores pre-RUYI-659 behaviour exactly: the
 	// crash carries no rejection signal, the task fails, a human retries.
-	PipeCrashSelfHealEnabled bool
+	PipeCrashSelfHealEnabled       bool
 	PollInterval                   time.Duration
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
@@ -663,6 +667,20 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	environmentArchiveTTL, err := durationFromEnv("MULTICA_ENVIRONMENT_ARCHIVE_TTL", 24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	if environmentArchiveTTL < 0 {
+		return Config{}, fmt.Errorf("MULTICA_ENVIRONMENT_ARCHIVE_TTL must not be negative")
+	}
+	environmentRecycleInterval, err := durationFromEnv("MULTICA_ENVIRONMENT_RECYCLE_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	if environmentRecycleInterval <= 0 {
+		return Config{}, fmt.Errorf("MULTICA_ENVIRONMENT_RECYCLE_INTERVAL must be positive")
+	}
 	gcOrphanTTL, err := durationFromEnv("MULTICA_GC_ORPHAN_TTL", DefaultGCOrphanTTL)
 	if err != nil {
 		return Config{}, err
@@ -747,9 +765,13 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		WorkspacesRoot:                  workspacesRoot,
 		KeepEnvAfterTask:                keepEnv,
 		GCEnabled:                       gcEnabled,
+		EnvironmentRecycleEnabled:       boolFromEnv("MULTICA_ENVIRONMENT_RECYCLE_ENABLED", true),
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,
 		GCCompletedTaskTTL:              gcCompletedTaskTTL,
+		EnvironmentArchiveEnabled:       boolFromEnv("MULTICA_ENVIRONMENT_ARCHIVE_ENABLED", true),
+		EnvironmentArchiveTTL:           environmentArchiveTTL,
+		EnvironmentRecycleInterval:      environmentRecycleInterval,
 		GCOrphanTTL:                     gcOrphanTTL,
 		GCArtifactTTL:                   gcArtifactTTL,
 		GCArtifactPatterns:              gcArtifactPatterns,
