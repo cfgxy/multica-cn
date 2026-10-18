@@ -104,6 +104,8 @@ import type {
   WorkspaceSubscriptionSummary,
   DecisionRequest,
   DecisionRequestsList,
+  AuditEventsPage,
+  ListAuditEventsParams,
 } from "@multica/core/types";
 import {
   EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
@@ -163,6 +165,8 @@ import {
   DashboardRunTimeDailyListSchema,
   DashboardFailureDailyListSchema,
   DashboardFailureByAgentListSchema,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
 } from "@multica/core/api/schemas";
 import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
@@ -978,6 +982,26 @@ class ApiClient {
     });
     return parseWithFallback(raw, RuntimeListSchema, EMPTY_RUNTIME_LIST, {
       endpoint: "listRuntimes",
+    });
+  }
+
+  async listAuditEvents(
+    workspaceId: string,
+    params: ListAuditEventsParams = {},
+    opts?: { signal?: AbortSignal },
+  ): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) query.set(key, String(value));
+    }
+    const queryString = query.toString();
+    const suffix = queryString === "" ? "" : `?${queryString}`;
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "listAuditEvents",
     });
   }
 

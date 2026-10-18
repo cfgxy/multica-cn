@@ -51,6 +51,7 @@ import { InboxPage } from "@multica/views/inbox";
 import { ChatPage } from "@multica/views/chat";
 import { SettingsPage } from "@multica/views/settings";
 import { AdminArea } from "@multica/views/admin";
+import { AuditEventsPage } from "@multica/views/audit";
 import { useT } from "@multica/views/i18n";
 import { Download, Server } from "lucide-react";
 import { DaemonSettingsTab } from "./components/daemon-settings-tab";
@@ -247,6 +248,7 @@ export const appRoutes: RouteObject[] = [
             handle: { title: "Squad" },
           },
           { path: "inbox", element: <InboxPage />, handle: { title: "Inbox" } },
+          { path: "audit", element: <AuditEventsPage />, handle: { title: "MCP audit" } },
           { path: "chat", element: <ChatPage />, handle: { title: "Chat" } },
           {
             path: "attachments/:id/preview",

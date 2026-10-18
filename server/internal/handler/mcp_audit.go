@@ -269,7 +269,17 @@ func (h *Handler) FinishMCPInvocationAudit(w http.ResponseWriter, r *http.Reques
 	if _, ok := h.requireWorkspaceMember(w, r, uuidToString(start.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
-	details := map[string]any{"status": input.Status, "duration_ms": input.DurationMS}
+	details := map[string]any{
+		"tool_name":     toolName,
+		"status":        input.Status,
+		"result_status": input.Status,
+		"duration_ms":   input.DurationMS,
+	}
+	for _, key := range []string{"target_type", "target_id"} {
+		if value, ok := startDetails[key].(string); ok && value != "" {
+			details[key] = value
+		}
+	}
 	if fileInvocation {
 		details["instance_id"] = instanceID
 		if operationID.Valid {
