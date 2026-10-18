@@ -15,6 +15,7 @@ import {
   promotePendingTaskToRunning,
   seedAcceptedPendingTask,
   seedPendingTaskFromQueued,
+  settlePendingChatTask,
 } from "./chat-ws-updaters";
 import { chatKeys } from "@/data/queries/chat";
 
@@ -148,6 +149,46 @@ describe("applyChatDoneToCache", () => {
 });
 
 describe("pending task queue events", () => {
+  it("settles the terminal task immediately and promotes its queued successor", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
+      task_id: "task-1",
+      status: "running",
+      queued_tasks: [{
+        task_id: "task-2",
+        status: "queued",
+        created_at: "2026-07-09T00:00:01Z",
+      }],
+    });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    settlePendingChatTask(qc, SESSION, "task-1");
+
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toEqual({
+      task_id: "task-2",
+      status: "queued",
+      created_at: "2026-07-09T00:00:01Z",
+      queued_tasks: [],
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.pendingTask(SESSION),
+    });
+  });
+
+  it("does not clear a newer active task when a late terminal event arrives", () => {
+    const qc = new QueryClient();
+    const newerTask: ChatPendingTask = {
+      task_id: "task-2",
+      status: "running",
+      queued_tasks: [],
+    };
+    qc.setQueryData(chatKeys.pendingTask(SESSION), newerTask);
+
+    settlePendingChatTask(qc, SESSION, "task-1");
+
+    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(newerTask);
+  });
+
   it("keeps an idle accepted send out of the follow-up queue", () => {
     const qc = new QueryClient();
 
