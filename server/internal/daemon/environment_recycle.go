@@ -20,7 +20,7 @@ import (
 // An active chat remains resumable; archived chats and completed automation runs
 // release their working environments without deleting their saved history.
 func (d *Daemon) automaticArchiveEligible(ctx context.Context, path string, meta *execenv.GCMeta) (bool, string) {
-	if !d.cfg.EnvironmentArchiveEnabled || !d.cfg.GCEnabled || d.cfg.KeepEnvAfterTask {
+	if !d.cfg.EnvironmentRecycleEnabled || !d.cfg.EnvironmentArchiveEnabled || !d.cfg.GCEnabled || d.cfg.KeepEnvAfterTask {
 		return false, "disabled"
 	}
 	if d.isActiveEnvRoot(path) {
@@ -163,7 +163,7 @@ func (d *Daemon) scheduleAutomaticEnvironmentRecycle(ctx context.Context, path s
 // Parent events can occur after the task worker has exited. A separate bounded
 // scan catches archived chats and completed automations without waiting for GC.
 func (d *Daemon) environmentRecycleLoop(ctx context.Context) {
-	if !d.cfg.GCEnabled || !d.cfg.EnvironmentArchiveEnabled || d.cfg.KeepEnvAfterTask {
+	if !d.cfg.EnvironmentRecycleEnabled || !d.cfg.GCEnabled || !d.cfg.EnvironmentArchiveEnabled || d.cfg.KeepEnvAfterTask {
 		return
 	}
 	interval := d.cfg.EnvironmentRecycleInterval
