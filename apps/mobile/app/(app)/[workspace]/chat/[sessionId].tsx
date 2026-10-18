@@ -61,6 +61,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionArchived,
   useSetChatSessionPinned,
+  useUpdateChatSession,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
@@ -118,6 +119,7 @@ export default function ChatDetailScreen() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     params.agentId ?? null,
   );
+  const [newSessionProjectId, setNewSessionProjectId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [savingSessionModel, setSavingSessionModel] = useState(false);
   const savingSessionModelRef = useRef(false);
@@ -177,6 +179,9 @@ export default function ChatDetailScreen() {
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+  const projectId = activeSessionId
+    ? activeSession?.project_id ?? null
+    : newSessionProjectId;
 
   // Active agent: explicit selection wins; otherwise inherit from the
   // active session; otherwise pick the first available agent.
@@ -264,6 +269,7 @@ export default function ChatDetailScreen() {
 
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
+  const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
   const setSessionPinned = useSetChatSessionPinned();
   const setSessionArchived = useSetChatSessionArchived();
@@ -282,6 +288,7 @@ export default function ChatDetailScreen() {
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
             title: titleSeed.slice(0, 50),
+            project_id: newSessionProjectId,
           });
           return session.id;
         } finally {
@@ -291,8 +298,20 @@ export default function ChatDetailScreen() {
       sessionPromiseRef.current = promise;
       return promise;
     },
-    [activeSessionId, currentAgent, createSession],
+    [activeSessionId, currentAgent, createSession, newSessionProjectId],
   );
+
+  const handleProjectChange = useCallback(async (nextProjectId: string | null) => {
+    if (!activeSessionId) {
+      setNewSessionProjectId(nextProjectId);
+      return;
+    }
+    try {
+      await updateSession.mutateAsync({ sessionId: activeSessionId, projectId: nextProjectId });
+    } catch {
+      Alert.alert(t("input.project_context_failed", "Could not update project context"));
+    }
+  }, [activeSessionId, t, updateSession]);
 
   const handleSend = useCallback(
     async (
@@ -810,6 +829,9 @@ export default function ChatDetailScreen() {
           onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
           voiceGate={runtimeBound && currentAgent !== null ? voiceGate : null}
           onOpenVoice={() => setVoiceOpen(true)}
+          skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
+          projectId={projectId}
+          onProjectChange={handleProjectChange}
           restoredAttachments={restoredAttachments}
           onRestoredAttachmentsConsumed={() => setRestoredAttachments([])}
         />

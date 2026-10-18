@@ -45,6 +45,7 @@ const mockSeenMessageOptionIds = [];
 const mockMarkReadMutate = jest.fn();
 const mockDeleteMutate = jest.fn();
 const mockCreateMutateAsync = jest.fn();
+const mockUpdateSessionMutateAsync = jest.fn();
 const mockInvalidateQueries = jest.fn();
 const mockModelSelectHandler = { current: null as null | ((model: string | null) => Promise<void>) };
 const mockModelDisabledState = { current: false };
@@ -154,8 +155,13 @@ jest.mock("@/data/queries/members", () => ({
   memberListOptions: (wsId) => ({ queryKey: ["members", wsId], queryFn: jest.fn() }),
 }));
 
+jest.mock("@/data/queries/projects", () => ({
+  projectListOptions: (wsId) => ({ queryKey: ["projects", wsId, "list"], queryFn: jest.fn() }),
+}));
+
 jest.mock("@/data/mutations/chat", () => ({
   useCreateChatSession: () => ({ mutateAsync: mockCreateMutateAsync }),
+  useUpdateChatSession: () => ({ mutateAsync: mockUpdateSessionMutateAsync }),
   useDeleteChatSession: () => ({ mutate: mockDeleteMutate }),
   useMarkChatSessionRead: () => ({ mutate: mockMarkReadMutate }),
   useSetChatSessionArchived: () => ({ mutate: jest.fn() }),
@@ -542,6 +548,19 @@ describe("ChatDetailScreen (RUYI-496)", () => {
     expect(mockSeenMessageOptionIds).toContain(null);
     expect(mockCreateMutateAsync).not.toHaveBeenCalled();
     expect(screen.getByTestId("chat-composer")).toBeTruthy();
+  });
+
+  it("wires the skill picker and project context into a new-chat composer", async () => {
+    mockRoute.sessionId = "new";
+    await render(<ChatDetailScreen />);
+    expect(mockComposerProps.current.skillPickerPath).toEqual({
+      pathname: "/[workspace]/skill-picker",
+      params: { workspace: "acme" },
+    });
+    await act(async () => {
+      await mockComposerProps.current.onProjectChange("project-1");
+    });
+    expect(mockComposerProps.current.projectId).toBe("project-1");
   });
 
   it("RUYI-418 link: a pending agent request selects that agent in new chat", async () => {
