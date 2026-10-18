@@ -355,8 +355,15 @@ export class MulticaClient {
     return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}`, { workspace });
   }
 
-  async listAutopilotRuns(workspace: string, autopilotId: string, limit = 20, offset = 0): Promise<Record<string, unknown>> {
-    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}/runs`, { workspace, query: { limit, offset } });
+  async listAutopilotRuns(
+    workspace: string,
+    autopilotId: string,
+    params: { limit?: number; offset?: number; status?: string; source?: string; triggered_after?: string; triggered_before?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}/runs`, {
+      workspace,
+      query: params,
+    });
   }
 
   async getAutopilotRun(workspace: string, autopilotId: string, runId: string): Promise<Record<string, unknown>> {
