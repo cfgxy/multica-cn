@@ -8506,6 +8506,20 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if provider == "codex" {
+		cacheRoot, cacheErr := os.UserCacheDir()
+		if cacheErr != nil {
+			return TaskResult{}, fmt.Errorf("prepare task git push guard: resolve cache directory: %w", cacheErr)
+		}
+		guardPath, policyPath, guardErr := prepareTaskGitPushGuard(cacheRoot, task.ID, task.Repos)
+		if guardErr != nil {
+			return TaskResult{}, guardErr
+		}
+		// These platform-owned settings take precedence over per-agent custom env.
+		agentEnv["MULTICA_GIT_PUSH_GUARD"] = guardPath
+		agentEnv["PUSH_GUARD_CONF"] = policyPath
+		agentEnv["GH_GUARD_CONF"] = policyPath
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
