@@ -44,9 +44,11 @@ export function buildAuditParams(draft: AuditFilterDraft): ListAuditEventsParams
   const resultErrorCode = enumValue("resultErrorCode", draft.resultErrorCode, ["invalid_input", "not_found", "permission_denied", "unavailable", "timeout", "internal"]);
   if (resultErrorCode) params.result_error_code = resultErrorCode;
   const targetType = enumValue("targetType", draft.targetType, ["workspace", "issue", "host"]);
-  if (targetType && value(draft.targetID)) {
+  const targetID = value(draft.targetID);
+  if (Boolean(targetType) !== Boolean(targetID)) throw new RangeError("Audit target type and ID must be provided together");
+  if (targetType && targetID) {
     params.target_type = targetType;
-    params.target_id = value(draft.targetID);
+    params.target_id = targetID;
   }
   return params;
 }
