@@ -28,6 +28,7 @@ import { memberListOptions } from "@/data/queries/members";
 import { useUpdateSquad } from "@/data/mutations/squads";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { Markdown } from "@/lib/markdown";
 import { useT } from "@/lib/use-t";
 
 export default function SquadInstructionsEditor() {
@@ -36,6 +37,7 @@ export default function SquadInstructionsEditor() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const me = useAuthStore((s) => s.user);
   const { t } = useT("squads");
+  const { t: tCommon } = useT();
   const navigation = useNavigation();
 
   const { data: squad } = useQuery(squadDetailOptions(wsId, squadId));
@@ -44,6 +46,7 @@ export default function SquadInstructionsEditor() {
 
   const [instructions, setInstructions] = useState("");
   const [seeded, setSeeded] = useState(false);
+  const [mode, setMode] = useState<"edit" | "preview">("edit");
 
   // Seed once the payload lands (squad detail page's seed-once pattern:
   // never fight a refetch mid-edit).
@@ -132,19 +135,59 @@ export default function SquadInstructionsEditor() {
         keyboardShouldPersistTaps="handled"
       >
         {canManage ? (
-          <AutosizeTextArea
-            value={instructions}
-            onChangeText={setInstructions}
-            placeholder={t(
-              "instructions_tab.placeholder",
-              "e.g. Always start by writing a failing test. Prefer small, atomic commits.",
+          <>
+            <View className="mb-4 flex-row rounded-md bg-secondary p-1">
+              {(["edit", "preview"] as const).map((nextMode) => {
+                const selected = mode === nextMode;
+                const label = nextMode === "edit" ? "Edit" : "Preview";
+                return (
+                  <Pressable
+                    key={nextMode}
+                    onPress={() => setMode(nextMode)}
+                    disabled={updateSquad.isPending}
+                    accessibilityRole="tab"
+                    accessibilityLabel={tCommon(
+                      `long_text_editor.${nextMode}`,
+                      label,
+                    )}
+                    accessibilityState={{ selected }}
+                    className={`flex-1 items-center rounded px-3 py-2 ${
+                      selected ? "bg-background" : ""
+                    }`}
+                  >
+                    <Text
+                      className={`text-sm ${
+                        selected
+                          ? "font-semibold text-foreground"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {tCommon(`long_text_editor.${nextMode}`, label)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {mode === "edit" ? (
+              <AutosizeTextArea
+                value={instructions}
+                onChangeText={setInstructions}
+                placeholder={t(
+                  "instructions_tab.placeholder",
+                  "e.g. Always start by writing a failing test. Prefer small, atomic commits.",
+                )}
+                placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+                minHeight={320}
+                maxHeight={640}
+                className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
+                editable={!updateSquad.isPending}
+              />
+            ) : (
+              <View className="min-h-[320px] rounded-md border border-border bg-background p-3">
+                <Markdown content={instructions} />
+              </View>
             )}
-            placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-            minHeight={320}
-            maxHeight={640}
-            className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
-            editable={!updateSquad.isPending}
-          />
+          </>
         ) : squad ? (
           <Text selectable className="text-sm leading-5 text-foreground">
             {squad.instructions}

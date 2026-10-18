@@ -78,8 +78,8 @@ import {
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { useT } from "../../i18n";
+import { LongTextEditor } from "../../common/long-text-editor";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
-import { Textarea } from "@multica/ui/components/ui/textarea";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 
 // ---------------------------------------------------------------------------
@@ -516,23 +516,30 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${instructionsOpen ? "rotate-90" : ""}`} />
         </button>
         {instructionsOpen && (project.instructions || instructionsEditing) && <div className="pl-2">
-          <Textarea
-            name="project-instructions"
-            autoComplete="off"
-            aria-label={t(($) => $.detail.section_instructions)}
+          <LongTextEditor
             value={instructionsDraft}
-            onChange={(e) => setInstructionsDraft(e.target.value)}
+            onChange={setInstructionsDraft}
             onBlur={saveInstructionsDraft}
-            rows={4}
-            className="resize-none"
+            onSave={async () => {
+              // Over the cap the save is a no-op that must keep the dialog
+              // open — throwing signals the LongTextEditor footer to stay.
+              if (instructionsLength(instructionsDraft) > MAX_PROJECT_INSTRUCTIONS) {
+                throw new Error("project instructions over limit");
+              }
+              saveInstructionsDraft();
+            }}
+            ariaLabel={t(($) => $.detail.section_instructions)}
+            dialogTitle={t(($) => $.detail.section_instructions)}
             placeholder={t(($) => $.detail.instructions_placeholder)}
+            hint={
+              <>
+                <p className={cn(instructionsOverLimit && "text-destructive")}>
+                  {t(($) => $.detail.instructions_count, { length: instructionsLength(instructionsDraft) })}
+                </p>
+                <p>{t(($) => $.detail.instructions_hint)}</p>
+              </>
+            }
           />
-          <p className={cn("mt-1 px-2 text-caption", instructionsOverLimit ? "text-destructive" : "text-muted-foreground")}>
-            {t(($) => $.detail.instructions_count, { length: instructionsLength(instructionsDraft) })}
-          </p>
-          <p className="px-2 text-caption text-muted-foreground">
-            {t(($) => $.detail.instructions_hint)}
-          </p>
         </div>}
         {!project.instructions && !instructionsEditing && (
           <button

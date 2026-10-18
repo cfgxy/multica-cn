@@ -405,15 +405,15 @@ describe("两份 failure 表的关系", () => {
 
 /**
  * 组件文件的 ns 读不到：`useT("chat")` 把 ns 绑在 hook 上，模板串里只剩
- * 后半段。这里从源码正则读回该文件的 `useT("<ns>")` 补上映射。lib/ 下走
- * `i18n.t("ns:…")`，ns 就在串里，不走这条路径。
+ * 后半段。这里从源码正则读回动态调用对应的 `useT` 绑定；省略 namespace
+ * 时按 `useT` 约定使用 `common`。lib/ 下走 `i18n.t("ns:…")`，ns 就在串里。
  *
  * 早先这是一张手写映射表。手写表会漂移：文件把 useT("issues") 改成别的
  * ns，表还停在旧值，前缀锁就会拿错 ns 去解析——解析得到的节点可能碰巧
  * 存在，于是整支防线静默失效。从源码读回则不存在这个偏差源。
  *
- * 一个文件出现多个 useT 时不猜：返回 null 让调用侧记成「ns 不可判定」并
- * 报红，由人显式处理，而不是取第一个赌它对。
+ * 文件级解析只作为未识别绑定的兜底；能识别的 t / tAlias 优先使用各自绑定，
+ * 避免同一文件中 common 与业务 namespace 的动态 key 串用。
  */
 function nsOfFile(src: string): string | null {
   const nss = [...src.matchAll(/useT\(\s*["']([^"']+)["']\s*\)/g)].map(
@@ -423,8 +423,26 @@ function nsOfFile(src: string): string | null {
   return uniq.length === 1 ? uniq[0]! : null;
 }
 
+function nsOfTranslator(src: string, translator: string): string | null {
+  const bindings: string[] = [];
+  for (const match of src.matchAll(
+    /const\s*\{([^}]*)\}\s*=\s*useT\(\s*(?:["']([^"']+)["'])?\s*\)/gs,
+  )) {
+    const properties = match[1]!;
+    const binding = [
+      ...properties.matchAll(/(?:^|,)\s*t(?:\s*:\s*(\w+))?\s*(?=,|$)/gm),
+    ].map((property) => property[1] ?? "t");
+    if (binding.includes(translator)) {
+      bindings.push(match[2] ?? "common");
+    }
+  }
+  const unique = [...new Set(bindings)];
+  return unique.length === 1 ? unique[0]! : null;
+}
+
 /** 前缀 → 该前缀下源码会拼出的枚举值（资源节点必须是它的超集）。 */
 const PREFIX_VALUES: Record<string, string[]> = {
+  "common:long_text_editor": ["edit", "preview"],
   "chat:mobile.failure_reason": [...FAILURE_REASONS, "fallback"],
   "issues:mobile.run_failure": FAILURE_REASONS,
   "issues:mobile.run_status": TASK_STATUSES as string[],
@@ -488,26 +506,25 @@ function collectPrefixes(): { file: string; full: string }[] {
       // （`t(\n  \`前缀.${v}\`,\n  en,\n)`），紧贴形态的正则会整条漏采。
       //
       // 函数名放宽到 `t` 与 `t<大写开头>` 两种：一个文件同时用两个 ns 时
-      // 必须重命名解构（`const { t: tIssues } = useT("issues")`），此形态
-      // 出现在 new-issue.tsx / issue/[id]/edit.tsx / project/new.tsx /
-      // project/[id]/edit.tsx / project/[id]/add-resource.tsx 五个文件。
-      // 旧正则的 `\bt\(` 采不到 `tIssues(`，这五个文件的动态前缀无论拼错
-      // 成什么都不会报红——前缀锁在它们身上等于不存在。
-      //
-      // 注意 `t[A-Z]\w*` 只是形态匹配，不保证该别名真的绑到某个 ns：这些
-      // 文件有多个 useT，nsOfFile 会返回 null，于是相对前缀落到
-      // 「<ns 不可判定>」并被「每个源码前缀的 ns 都能确定」那条挡住——要求
-      // 人在这类文件里显式写绝对 key（`\`issues:xxx.${v}\``）。这是刻意的：
-      // 猜别名到 ns 的映射正是本文件开头批判的「手写表会漂移」。
-      for (const m of src.matchAll(/(?:i18n\.)?\bt(?:[A-Z]\w*)?\(\s*`([^`]*?)\$\{/g)) {
-        const head = m[1]!;
+      // 函数名放宽到 `t` 与 `t<大写开头>` 两种；多 namespace 文件通常把
+      // 解构别名命名为 `tIssues`。旧正则的 `\bt\(` 采不到这类调用，让其
+      // 动态前缀完全漏检。nsOfTranslator 从调用名反查 useT 解构绑定，避免
+      // 把同一文件中默认 common 翻译器误判成唯一显式业务 namespace。
+      for (const m of src.matchAll(
+        /(?:(i18n\.)?\b(t(?:[A-Z]\w*)?))\(\s*`([^`]*?)\$\{/g,
+      )) {
+        const head = m[3]!;
         // 只处理「前缀 + 尾点 + ${枚举}」这一种形态；句中插值（`{{name}}`
         // 之类走的是 options，不会进这个分支）不是 key 拼接，跳过。
         if (!head.endsWith(".")) continue;
         const body = head.slice(0, -1);
         const full = body.includes(":")
           ? body
-          : `${fileNs ?? "<ns 不可判定>"}:${body}`;
+          : `${
+              (m[1] ? fileNs : nsOfTranslator(src, m[2]!)) ??
+              fileNs ??
+              "<ns 不可判定>"
+            }:${body}`;
         hits.push({ file: rel, full });
       }
     }
@@ -590,6 +607,17 @@ describe("动态 key 的前缀锁", () => {
       (f) => !(f in PREFIX_VALUES),
     );
     expect(unregistered).toEqual([]);
+  });
+});
+
+describe("动态 key 的翻译器 namespace 解析", () => {
+  it("为别名读取各自 useT 绑定的 namespace，未指定时使用 common", () => {
+    const source = `
+      const { t } = useT("agents");
+      const { t: tCommon } = useT();
+    `;
+    expect(nsOfTranslator(source, "t")).toBe("agents");
+    expect(nsOfTranslator(source, "tCommon")).toBe("common");
   });
 });
 
