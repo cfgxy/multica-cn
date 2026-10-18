@@ -328,6 +328,10 @@ var concurrentIndexCleanups = map[string][]string{
 	"973_mcp_invocation_audit_outbox_id_index":                  {"mcp_invocation_audit_outbox_id_uidx"},
 	"975_file_access_target_id_index":                           {"idx_daemon_file_access_target_id"},
 	"975_file_operation_id_index":                               {"idx_daemon_file_operation_id"},
+	"977_mcp_file_access_binding_index":                         {"mcp_file_access_instance_binding_uidx"},
+	"977_mcp_file_access_operation_invocation_index":            {"mcp_file_access_operation_invocation_uidx"},
+	"977_mcp_pre_auth_rejection_expiry_index":                   {"mcp_pre_auth_rejection_expiry_idx"},
+	"977_mcp_pre_auth_rejection_invocation_index":               {"mcp_pre_auth_rejection_invocation_uidx"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

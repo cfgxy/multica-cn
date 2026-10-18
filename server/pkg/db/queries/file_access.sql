@@ -20,8 +20,34 @@ SELECT * FROM daemon_file_access_target WHERE id = $1 AND runtime_id = $2;
 SELECT * FROM daemon_file_access_target WHERE id = sqlc.arg('host') OR runtime_id::text = sqlc.arg('host');
 
 -- name: InsertFileOperation :one
-INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING *;
+INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, invocation_id)
+VALUES ($1, $2, $3, $4, $5, $6, sqlc.narg('invocation_id')) RETURNING *;
+
+-- name: UpsertMCPFileAccessInstanceBinding :one
+INSERT INTO mcp_file_access_instance_binding (instance_id, workspace_id, target_id, enabled, updated_by, updated_at)
+SELECT sqlc.arg('instance_id'), target.workspace_id, target.id, sqlc.arg('enabled'), sqlc.arg('updated_by'), now()
+FROM daemon_file_access_target AS target
+WHERE target.id = sqlc.arg('target_id') AND target.workspace_id = sqlc.arg('workspace_id')
+ON CONFLICT (instance_id, workspace_id) DO UPDATE SET
+    target_id = EXCLUDED.target_id, enabled = EXCLUDED.enabled,
+    updated_by = EXCLUDED.updated_by, updated_at = now()
+RETURNING *;
+
+-- name: GetMCPFileAccessInstanceBinding :one
+SELECT * FROM mcp_file_access_instance_binding
+WHERE instance_id = sqlc.arg('instance_id') AND workspace_id = sqlc.arg('workspace_id');
+
+-- name: GetMCPFileAccessInstanceBindingTarget :one
+SELECT target.* FROM mcp_file_access_instance_binding AS binding
+JOIN daemon_file_access_target AS target ON target.id = binding.target_id
+    AND target.workspace_id = binding.workspace_id
+WHERE binding.instance_id = sqlc.arg('instance_id')
+  AND binding.workspace_id = sqlc.arg('workspace_id')
+  AND binding.enabled = TRUE;
+
+-- name: GetFileOperationForInvocation :one
+SELECT * FROM daemon_file_operation
+WHERE id = sqlc.arg('id') AND invocation_id = sqlc.arg('invocation_id');
 
 -- name: ClaimFileOperations :many
 UPDATE daemon_file_operation SET status = 'claimed', lease_epoch = lease_epoch + 1, claimed_at = now()
