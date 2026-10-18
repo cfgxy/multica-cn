@@ -127,6 +127,8 @@ describe("issue reference tail visibility", () => {
       "[issue](mention://issue/00000000-0000-0000-0000-000000000009)",
       "See cfgxy/multica-cn#338",
       "See MR !468",
+      "See PR #412",
+      "See PR#412",
     ]) {
       expect(hasPotentialIssueReference(content)).toBe(true);
     }

@@ -8,7 +8,7 @@ const visibleBodiesByScope = new Map<string, ReadonlySet<string>>();
 const bodyListenersByScope = new Map<string, Map<string, Set<Listener>>>();
 const bodyHeightsByScope = new Map<string, Map<string, number>>();
 const POTENTIAL_REFERENCE_SHAPE =
-  /[A-Z][A-Z0-9]*-\d|\]\(mention:\/\/issue\/|[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*#\d|(?<![A-Za-z0-9])MR ?!\d/;
+  /[A-Z][A-Z0-9]*-\d|\]\(mention:\/\/issue\/|[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*#\d|(?<![A-Za-z0-9])(?:MR ?!|PR ?#)\d/;
 
 export function hasPotentialIssueReference(content: string): boolean {
   return POTENTIAL_REFERENCE_SHAPE.test(content);
