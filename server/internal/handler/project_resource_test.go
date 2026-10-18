@@ -225,10 +225,14 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			resourceRef := map[string]any{"url": tc.url}
+			if tc.upstream != "" {
+				resourceRef["upstream"] = tc.upstream
+			}
 			w := httptest.NewRecorder()
 			req := newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
 				"resource_type": "github_repo",
-				"resource_ref":  map[string]any{"url": tc.url, "upstream": tc.upstream},
+				"resource_ref":  resourceRef,
 			})
 			req = withURLParam(req, "id", project.ID)
 			testHandler.CreateProjectResource(w, req)
