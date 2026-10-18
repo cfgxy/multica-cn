@@ -56,7 +56,7 @@ func TestHandleWorkerEvidenceRPCChecksRuntimeAndSupervisorOwnership(t *testing.T
 	if err := json.Unmarshal(msg.Payload, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.RequestID != "request-a" || !got.Available || got.StdoutTail != "owned output" || got.ProcessLiveness != "dead" {
+	if got.RequestID != "request-a" || !got.Available || got.StdoutTail != "owned output" || got.ProcessLiveness != "exited" {
 		t.Fatalf("response=%+v", got)
 	}
 	d.handleWorkerEvidenceRPC(protocol.WorkerEvidenceRequest{RequestID: "request-b", RunID: taskID, RuntimeID: "runtime-other", Stream: "stdout", TailBytes: 128, TimeoutMs: 2500})
@@ -76,7 +76,7 @@ func TestHandleWorkerEvidenceRPCChecksRuntimeAndSupervisorOwnership(t *testing.T
 	if err := json.Unmarshal(msg.Payload, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.RequestID != "request-c" || got.Available || got.Unavailable != "daemon_unreachable" {
+	if got.RequestID != "request-c" || got.Available || got.Unavailable != "not_supervised" {
 		t.Fatalf("foreign run response=%+v", got)
 	}
 }
