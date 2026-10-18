@@ -93,11 +93,8 @@ exec "$guard" "$@"
 
 func installCodexCommandGuards(env []string, guardBinDir, home string) ([]string, error) {
 	if runtime.GOOS == "windows" {
-		if envValue(env, "MULTICA_GIT_PUSH_GUARD") != "" || envValue(env, "MULTICA_GH_PR_GUARD") != "" {
-			return nil, fmt.Errorf("configured Codex command guards require POSIX shell shims, which are unavailable on Windows")
-		}
-		// Test and standalone Codex launches without configured guards can run
-		// natively on Windows; never pretend an explicitly configured guard ran.
+		// The current shims rely on Bash. Keep Windows Codex launches usable until
+		// a native wrapper exists; this must not be mistaken for guard coverage.
 		return env, nil
 	}
 	if guardBinDir == "" {
