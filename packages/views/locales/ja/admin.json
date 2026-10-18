@@ -6,7 +6,8 @@
     "users": "ユーザー",
     "workspaces": "ワークスペース",
     "mcp": "MCPサーバー",
-    "oauth": "OAuthクライアント"
+    "oauth": "OAuthクライアント",
+    "file_read_policy": "ファイル読み取り保護"
   },
   "search_placeholder": "検索…",
   "total": "合計 {{count}} 件",
@@ -81,6 +82,23 @@
     "tools_title": "MCP ツール（{{count}}）",
     "col_tool": "ツール",
     "col_description": "説明"
+  },
+  "file_read_policy": {
+    "title": "ファイル読み取り保護",
+    "description": "管理対象のファイルツールでアクセスする機密パスを保護します。シェルコマンドや他のホストプロセスは対象外です。",
+    "rules_title": "読み取り拒否パス",
+    "enabled": "有効",
+    "pattern": "パスパターン",
+    "description_label": "説明",
+    "pattern_placeholder": "**/.config/example/auth.json",
+    "description_placeholder": "パスに含まれる情報",
+    "add": "ルールを追加",
+    "remove": "削除",
+    "save": "変更を保存",
+    "restore_defaults": "既定値に戻す",
+    "save_confirm": "一部のパスの保護が弱まる可能性があります。ルールを適用しますか？",
+    "restore_confirm": "現在のルールをすべて既定値に置き換えますか？",
+    "save_failed": "保存できませんでした。更新してから再試行してください。"
   },
   "oauth": {
     "clients_hint": "登録済みクライアントは外部 MCP サービスに接続できます。平文の client_secret は作成・ローテート時に一度だけ表示されます。",

@@ -6,7 +6,8 @@
     "users": "用户",
     "workspaces": "空间",
     "mcp": "MCP 服务器",
-    "oauth": "OAuth 客户端"
+    "oauth": "OAuth 客户端",
+    "file_read_policy": "文件读取安全"
   },
   "search_placeholder": "搜索…",
   "total": "共 {{count}} 条",
@@ -81,6 +82,23 @@
     "tools_title": "MCP 工具（{{count}}）",
     "col_tool": "工具",
     "col_description": "描述"
+  },
+  "file_read_policy": {
+    "title": "文件读取安全",
+    "description": "规则保护受控文件工具访问的敏感路径，不限制 Shell 命令或其他主机进程。",
+    "rules_title": "禁读路径",
+    "enabled": "启用",
+    "pattern": "路径模式",
+    "description_label": "说明",
+    "pattern_placeholder": "**/.config/example/auth.json",
+    "description_placeholder": "说明路径包含的内容",
+    "add": "添加规则",
+    "remove": "移除",
+    "save": "保存更改",
+    "restore_defaults": "恢复默认",
+    "save_confirm": "保存可能降低部分路径的保护。确认应用这些规则更改？",
+    "restore_confirm": "用预置默认规则替换当前全部规则？",
+    "save_failed": "保存失败。请刷新策略后重试。"
   },
   "oauth": {
     "clients_hint": "注册后可接入 Multica 对外 MCP 服务。明文 client_secret 仅在创建与轮换时显示一次。",
