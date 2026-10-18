@@ -15,25 +15,37 @@ export interface AuditFilterDraft {
   targetID: string;
 }
 
+export function auditDateToISOString(date: Date): string {
+  if (!Number.isFinite(date.getTime())) throw new RangeError("Invalid audit date");
+  return date.toISOString();
+}
+
 export function buildAuditParams(draft: AuditFilterDraft): ListAuditEventsParams {
   const value = (input: string) => input.trim();
+  const enumValue = <T extends string>(field: string, input: string, choices: readonly T[]): T | undefined => {
+    const normalized = value(input);
+    if (!normalized) return undefined;
+    if (!choices.includes(normalized as T)) throw new RangeError(`Invalid audit filter: ${field}`);
+    return normalized as T;
+  };
   const params: ListAuditEventsParams = { limit: 50 };
   if (value(draft.since)) params.since = value(draft.since);
   if (value(draft.until)) params.until = value(draft.until);
   if (value(draft.actorID)) params.actor_id = value(draft.actorID);
-  if (value(draft.actorType)) params.actor_type = value(draft.actorType);
+  const actorType = enumValue("actorType", draft.actorType, ["member", "agent", "system", "daemon"]);
+  if (actorType) params.actor_type = actorType;
   if (value(draft.clientName)) params.client_name = value(draft.clientName);
   if (value(draft.clientVersion)) params.client_version = value(draft.clientVersion);
   if (value(draft.toolName)) params.tool_name = value(draft.toolName);
-  if (draft.timeBasis.trim() === "invocation_start") params.time_basis = "invocation_start";
-  if (["success", "failure", "refused"].includes(draft.resultStatus)) {
-    params.result_status = draft.resultStatus as ListAuditEventsParams["result_status"];
-  }
-  if (["invalid_input", "not_found", "permission_denied", "unavailable", "timeout", "internal"].includes(draft.resultErrorCode)) {
-    params.result_error_code = draft.resultErrorCode as ListAuditEventsParams["result_error_code"];
-  }
-  if (["workspace", "issue", "host"].includes(draft.targetType) && value(draft.targetID)) {
-    params.target_type = draft.targetType as ListAuditEventsParams["target_type"];
+  const timeBasis = enumValue("timeBasis", draft.timeBasis, ["invocation_start"]);
+  if (timeBasis) params.time_basis = timeBasis;
+  const resultStatus = enumValue("resultStatus", draft.resultStatus, ["success", "failure", "refused"]);
+  if (resultStatus) params.result_status = resultStatus;
+  const resultErrorCode = enumValue("resultErrorCode", draft.resultErrorCode, ["invalid_input", "not_found", "permission_denied", "unavailable", "timeout", "internal"]);
+  if (resultErrorCode) params.result_error_code = resultErrorCode;
+  const targetType = enumValue("targetType", draft.targetType, ["workspace", "issue", "host"]);
+  if (targetType && value(draft.targetID)) {
+    params.target_type = targetType;
     params.target_id = value(draft.targetID);
   }
   return params;

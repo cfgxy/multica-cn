@@ -512,6 +512,7 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
         <Stack.Screen name="more/audit" options={{ title: i18n.t("layout:nav.audit", "MCP audit"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/audit/[id]" options={LONG_CONTENT_SHEET_OPTIONS} />
         {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
         <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
         <Stack.Screen
