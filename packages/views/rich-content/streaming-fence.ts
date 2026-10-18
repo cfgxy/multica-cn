@@ -23,6 +23,7 @@ import type { Root, RootContent, Code } from "mdast";
 
 // Opening fence: up to 3 leading spaces, then >= 3 backticks or tildes.
 const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+const MAY_CONTAIN_CODE_BLOCK_RE = /[`~]|^(?: {0,3}(?:>|[*+-]\s|\d+[.)]\s)| {4,}|\t)/m;
 
 function isCodeNode(node: RootContent | Root): node is Code {
   return node.type === "code";
@@ -81,6 +82,7 @@ function endsWithClosingFence(raw: string): boolean {
 export function computeClosedFenceOffsets(source: string): Set<number> {
   const closed = new Set<number>();
   if (!source) return closed;
+  if (!MAY_CONTAIN_CODE_BLOCK_RE.test(source)) return closed;
 
   let tree: Root;
   try {

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const mockPush = jest.fn();
 const mockOpenExternalUrl = jest.fn();
+const mockWorkspaceListeners = new Set();
 const mockWorkspaceStore = {
   state: {
     currentWorkspaceId: "ws-1",
@@ -53,14 +54,22 @@ jest.mock("@/lib/use-workspace-prefix", () => ({
   useWorkspaceIssuePrefix: () => "RUYI",
 }));
 jest.mock("@/data/workspace-store", () => ({
-  useWorkspaceStore: (selector) => selector(mockWorkspaceStore.state),
+  useWorkspaceStore: (selector) => {
+    const { useSyncExternalStore } = jest.requireActual("react");
+    return useSyncExternalStore((listener) => {
+      mockWorkspaceListeners.add(listener);
+      return () => mockWorkspaceListeners.delete(listener);
+    }, () => selector(mockWorkspaceStore.state));
+  },
 }));
 jest.mock("@/lib/comment-anchor-context", () => ({ useCommentAnchor: () => ({ focus: jest.fn() }) }));
 jest.mock("@/components/issue/issue-reference-list", () => ({
-  IssueReferenceList: ({ references }) => {
+  IssueReferenceList: ({ references, content }) => {
     const { createElement } = jest.requireActual("react");
     const { Text } = jest.requireActual("react-native");
-    const refs = references.map((ref) => `${ref.form}:${ref.ref}`).join(",");
+    const { dedupeIssueReferences, extractIssueReferences } = jest.requireActual("@multica/core/markdown");
+    const refs = (references ?? dedupeIssueReferences(extractIssueReferences(content, { workspacePrefix: "RUYI" })))
+      .map((ref) => `${ref.form}:${ref.ref}`).join(",");
     return createElement(Text, { testID: "issue-references" }, refs);
   },
 }));
@@ -169,6 +178,9 @@ describe("mobile Markdown reference intents (RUYI-728)", () => {
       client,
     );
     const update = async (content) => {
+      await act(async () => {
+        mockWorkspaceListeners.forEach((listener) => listener());
+      });
       await utils.rerender(
         <QueryClientProvider client={client}><Markdown content={content} /></QueryClientProvider>,
       );
