@@ -870,19 +870,20 @@ type DaemonFileAccessTarget struct {
 }
 
 type DaemonFileOperation struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	TargetID    string             `json:"target_id"`
-	Kind        string             `json:"kind"`
-	Request     []byte             `json:"request"`
-	Status      string             `json:"status"`
-	LeaseEpoch  int64              `json:"lease_epoch"`
-	Result      []byte             `json:"result"`
-	ErrorClass  pgtype.Text        `json:"error_class"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	ClaimedAt   pgtype.Timestamptz `json:"claimed_at"`
-	FinishedAt  pgtype.Timestamptz `json:"finished_at"`
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	TargetID     string             `json:"target_id"`
+	Kind         string             `json:"kind"`
+	Request      []byte             `json:"request"`
+	Status       string             `json:"status"`
+	LeaseEpoch   int64              `json:"lease_epoch"`
+	Result       []byte             `json:"result"`
+	ErrorClass   pgtype.Text        `json:"error_class"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
 }
 
 type DaemonOpsCommand struct {
@@ -1571,6 +1572,15 @@ type MarketplacePromptVersion struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type McpFileAccessInstanceBinding struct {
+	InstanceID  string             `json:"instance_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TargetID    string             `json:"target_id"`
+	Enabled     bool               `json:"enabled"`
+	UpdatedBy   pgtype.UUID        `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type McpInvocationAuditOutbox struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -1591,6 +1601,15 @@ type McpInvocationAuditOutbox struct {
 	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
 	LastErrorCode pgtype.Text        `json:"last_error_code"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type McpPreAuthRejection struct {
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	InstanceID   string             `json:"instance_id"`
+	ReasonCode   string             `json:"reason_code"`
+	FileToolName pgtype.Text        `json:"file_tool_name"`
+	RecordedAt   pgtype.Timestamptz `json:"recorded_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Member struct {
