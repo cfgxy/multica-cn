@@ -6667,12 +6667,14 @@ export class ApiClient {
     owner: string,
     repo: string,
     number: number,
+    options?: { signal?: AbortSignal },
   ): Promise<GitHubPullRequest | null> {
     const params = new URLSearchParams({ owner, repo, number: String(number) });
     let raw: unknown;
     try {
       raw = await this.fetch<unknown>(
         `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: options?.signal },
       );
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) return null;
@@ -6697,11 +6699,13 @@ export class ApiClient {
   async lookupPullRequestByNumber(
     workspaceId: string,
     number: number,
+    options?: { signal?: AbortSignal },
   ): Promise<GitHubPullRequest | null> {
     let raw: unknown;
     try {
       raw = await this.fetch<unknown>(
         `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${number}`,
+        { signal: options?.signal },
       );
     } catch (err) {
       if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
