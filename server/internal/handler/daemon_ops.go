@@ -165,7 +165,12 @@ func (h *Handler) claimOpsCommands(ctx context.Context, rt db.AgentRuntime, ack 
 }
 
 func (h *Handler) claimFileOperations(ctx context.Context, rt db.AgentRuntime, ack *protocol.DaemonHeartbeatAckPayload) {
-	if rt.Status != "online" {
+	if rt.Status != "online" || !runtimeHasCapability(rt.Metadata, protocol.DaemonCapabilityFileReadPolicyV1) {
+		return
+	}
+	policy, err := h.loadMCPFileReadPolicy(ctx)
+	if err != nil {
+		slog.Warn("file read policy unavailable; refusing file operation dispatch", "runtime_id", uuidToString(rt.ID), "error", err)
 		return
 	}
 	if err := h.Queries.ExpireFileOperations(ctx); err != nil {
@@ -190,11 +195,15 @@ func (h *Handler) claimFileOperations(ctx context.Context, rt db.AgentRuntime, a
 		if json.Unmarshal(target.Roots, &roots) != nil || len(roots) == 0 {
 			continue
 		}
+		policyJSON, marshalErr := json.Marshal(policy)
+		if marshalErr != nil {
+			continue
+		}
 		ack.PendingFileOperations = append(ack.PendingFileOperations, protocol.DaemonFileOperationDispatch{
 			OperationID: uuidToString(row.ID), TargetID: row.TargetID, Kind: row.Kind,
 			Path: req.Path, Offset: req.Offset, Length: req.Length, Limit: req.Limit,
 			Cursor: req.Cursor, ExpectedSize: req.ExpectedSize, ExpectedModTime: formatTime(req.ExpectedModTime),
-			LeaseEpoch: row.LeaseEpoch, Roots: roots,
+			LeaseEpoch: row.LeaseEpoch, Roots: roots, Policy: policyJSON, PolicyVersion: policy.Version,
 		})
 	}
 }

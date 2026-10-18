@@ -1909,6 +1909,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/oauth/grants", h.AdminListOAuthGrants)
 			r.Delete("/oauth/grants/{id}", h.AdminRevokeOAuthGrant)
 			r.Get("/mcp/status", h.AdminMCPServerStatus)
+			r.Get("/file-read-policy", h.AdminGetFileReadPolicy)
+			r.Put("/file-read-policy", h.AdminUpdateFileReadPolicy)
+			r.Post("/file-read-policy/restore-defaults", h.AdminRestoreFileReadPolicy)
 		})
 
 		r.Route("/api/workspaces", func(r chi.Router) {

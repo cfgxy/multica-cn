@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/fileaccess"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestResolveFileAccessTargetByHost(t *testing.T) {
@@ -66,6 +67,21 @@ func TestListRuntimeFilesRejectsMissingHost(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), fileaccess.ErrorHostNotRegistered.Error()) {
 		t.Fatalf("response = %q, want missing-host error", response.Body.String())
+	}
+}
+
+func TestFileAccessRejectsLegacyDaemonBeforeQueue(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := dbfx.Runtime(t, "legacy file access runtime", testutil.Cols{"visibility": "public"})
+	targetID := "legacy-files-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = '{}'::jsonb WHERE id = $1`, runtimeID)
+	request := submitFilesRequest(runtimeID, targetID, "/srv/data/report.txt", testUserID)
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, request, http.StatusConflict, "daemon_upgrade_required")
+	if count := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE runtime_id = $1`, runtimeID); count != 0 {
+		t.Fatalf("legacy daemon received %d file operations", count)
 	}
 }
 
@@ -131,6 +147,25 @@ func TestSubmitRuntimeFileAccessDBBackedRejectionsAndQueue(t *testing.T) {
 	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, disabledID, "/srv/data/a.txt", testUserID), http.StatusForbidden, fileaccess.ErrorTargetDisabled.Error())
 	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, memberOnlyID, "/srv/data/a.txt", deniedUserID), http.StatusForbidden, fileaccess.ErrorPermissionDenied.Error())
 	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/etc/passwd", testUserID), http.StatusForbidden, fileaccess.ErrorPathNotAllowed.Error())
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/srv/data/.env", testUserID), http.StatusBadRequest, fileaccess.ErrorSensitivePathDenied.Error())
+	var denialDetails []byte
+	if err := testPool.QueryRow(t.Context(), `
+		SELECT details FROM audit_event
+		WHERE event_type = 'runtime.file_access_denied' AND runtime_id = $1
+		ORDER BY occurred_at DESC, id DESC LIMIT 1
+	`, runtimeID).Scan(&denialDetails); err != nil {
+		t.Fatal(err)
+	}
+	var denial map[string]string
+	if err := json.Unmarshal(denialDetails, &denial); err != nil {
+		t.Fatal(err)
+	}
+	if denial["target_id"] != targetID || denial["error_class"] != fileaccess.ErrorSensitivePathDenied.Error() {
+		t.Fatalf("denial audit = %+v", denial)
+	}
+	if _, hasPath := denial["path"]; hasPath {
+		t.Fatalf("denial audit leaked a path: %+v", denial)
+	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE runtime_id = $1`, runtimeID); got != 0 {
 		t.Fatalf("rejected requests queued %d operations, want 0", got)
 	}
@@ -416,10 +451,14 @@ func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
 	expiredID := insertFileOperation(t, runtimeID, "receipt-target", "file_list", "expired", 1)
 	staleID := insertFileOperation(t, runtimeID, "receipt-target", "file_list", "claimed", 3)
 	validID := insertFileOperation(t, runtimeID, "receipt-target", "file_list", "claimed", 3)
+	var policyVersion int64
+	if err := testPool.QueryRow(t.Context(), `SELECT version FROM mcp_file_read_policy WHERE singleton = TRUE`).Scan(&policyVersion); err != nil {
+		t.Fatal(err)
+	}
 
 	report := func(id string, epoch int64) *http.Request {
 		request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/file-operations/"+id+"/result", map[string]any{
-			"status": "succeeded", "lease_epoch": epoch, "result": map[string]any{"entries": []any{}},
+			"status": "succeeded", "lease_epoch": epoch, "policy_version": policyVersion, "result": map[string]any{"entries": []any{}},
 		}, testWorkspaceID, "file-operation-receipt-test")
 		return testutil.WithURLParams(request, "runtimeId", runtimeID, "operationId", id)
 	}
@@ -443,6 +482,7 @@ func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
 
 func registerFileAccessTarget(t *testing.T, runtimeID, id string, enabled bool, roots, workspaceIDs, memberIDs []string) {
 	t.Helper()
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
 	rootJSON, err := json.Marshal(roots)
 	if err != nil {
 		t.Fatal(err)
@@ -481,7 +521,7 @@ func insertFileOperation(t *testing.T, runtimeID, targetID, kind, status string,
 	return dbfx.Insert(t, "daemon_file_operation", testutil.Cols{
 		"id": uuid.NewString(), "workspace_id": testWorkspaceID, "runtime_id": runtimeID,
 		"target_id": targetID, "kind": kind, "request": []byte(`{"path":"/srv/data/a.txt"}`),
-		"status": status, "lease_epoch": leaseEpoch,
+		"status": status, "lease_epoch": leaseEpoch, "requester_id": testUserID,
 	})
 }
 
@@ -491,10 +531,12 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 		t.Skip("database not available")
 	}
 	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
 	targetID := "heartbeat-files-" + uuid.NewString()
 	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
 	operationID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
 	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
 	var response struct {
 		Pending []struct {
 			OperationID string `json:"operation_id"`
@@ -504,5 +546,36 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
 	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 {
 		t.Fatalf("claimed operation missing from HTTP response: %+v", response.Pending)
+	}
+}
+
+func TestDaemonHeartbeatDoesNotClaimOperationAfterRequesterACLRevocation(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
+	targetID := "revoked-files-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, []string{testUserID})
+	opID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
+	otherMemberID := dbfx.User(t, "File requester revoked", "file-requester-revoked+"+uuid.NewString()+"@multica.test")
+	dbfx.Member(t, testWorkspaceID, otherMemberID, "member")
+	dbfx.Exec(t, `UPDATE daemon_file_access_target SET member_acl = $2::jsonb WHERE id = $1`, targetID, []byte(`["`+otherMemberID+`"]`))
+
+	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
+	var response struct {
+		Pending []struct {
+			OperationID string `json:"operation_id"`
+		} `json:"pending_file_operations"`
+	}
+	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
+	if len(response.Pending) != 0 {
+		t.Fatalf("ACL-revoked requester received claimed operations: %+v", response.Pending)
+	}
+	var status string
+	dbfx.QueryRow(t, `SELECT status FROM daemon_file_operation WHERE id = $1`, opID).Scan(&status)
+	if status != "pending" {
+		t.Fatalf("ACL-revoked operation status = %q, want pending for expiry", status)
 	}
 }
