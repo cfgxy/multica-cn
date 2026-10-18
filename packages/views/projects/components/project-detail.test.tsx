@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Project } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -405,13 +405,16 @@ describe("ProjectDetail agent instructions", () => {
     renderProjectDetail();
 
     await user.click(screen.getByRole("button", { name: "Add agent instructions" }));
-    const expandButton = screen.getByRole("button", { name: "Expand editor" });
-    fireEvent.blur(screen.getByRole("textbox", { name: "Agent instructions" }), {
-      relatedTarget: expandButton,
-    });
-    await user.click(expandButton);
+    await user.click(screen.getByRole("textbox", { name: "Agent instructions" }));
+    await user.click(screen.getByRole("button", { name: "Expand editor" }));
 
     const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(
+      within(dialog).getByRole("textbox", { name: "Agent instructions" }),
+    ).toBeInTheDocument();
+    expect(mocks.updateProject).not.toHaveBeenCalled();
+
     const expanded = within(dialog).getByRole("textbox", { name: "Agent instructions" });
     await user.type(expanded, "Keep this project prompt.");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
