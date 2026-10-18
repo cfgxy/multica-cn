@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# gh-pr-guard —— GitHub CLI 写操作 fail-closed 守卫（RUYI-401）
+#
+# 设计目标：fork 场景下 gh 隐式选仓导致 PR/写操作误投上游（事故样本
+# multica-ai/multica#9030），本守卫使裸写操作不可达：
+#   1. 拦截 gh 写操作族（pr/issue/release/repo/secret/variable/label/
+#      workflow/run 及 gh api 写方法），读操作原样透传。
+#   2. 写目标必须显式声明：命令内 --repo/-R，或环境变量
+#      GH_GUARD_EXPECTED_REPO；两者同时在且不一致 → 拒绝。
+#   3. precondition：目标仓必须命中 canonical 登记白名单
+#      （GH_GUARD_CONF，默认 ~/.config/gh-guard/canonical-repos.conf），
+#      未登记 → 拒绝；命中任一登记条目声明的 upstream → deny-by-default，
+#      仅 GH_GUARD_ALLOW_UPSTREAM=<owner/repo> 精确授权可解。
+#   4. 执行期强制：pr/issue/release 写族缺 --repo 时由守卫注入
+#      --repo <expected>，使显式声明成为真实执行参数而非事后核对。
+#   5. postcondition：pr create 成功后回读输出 URL，仓库与 expected
+#      不一致立即非零退出并告警。
+#   6. GH_REPO 环境变量与 expected 不一致 → 拒绝（防环境串台）。
+#   7. repo 写家族（delete/archive/unarchive/edit）：位置参数即写目标，
+#      必须与 expected 一致，缺失时注入 expected 为位置参数；rename 的
+#      写目标来自 git 上下文推导不可核验 → 一律拒绝。
+#   8. gh api 写操作不含可核验 repos/<owner>/<repo>/ 路径（如 graphql）
+#      → 默认拒绝，仅 GH_GUARD_ALLOW_GRAPHQL=1 显式放行。
+#
+# 绕过通道：真实 gh 经 `command gh`（或绝对路径）可达，仅供只读调试；
+# 写操作绕过守卫属于违反团队规则的行为，由提示词层条款约束。
+# GH_GUARD_DRYRUN=1 时只输出判定结果，不执行任何命令。
+#
+# 选仓逻辑实证见同目录 gh-pr-repo-selection-findings.md。
+
+set -u
+
+CONF_DEFAULT="$HOME/.config/gh-guard/canonical-repos.conf"
+GH_GUARD_CONF="${GH_GUARD_CONF:-$CONF_DEFAULT}"
+
+die() { printf 'gh-guard: %s\n' "$*" >&2; exit 1; }
+
+norm_repo() {
+    # <[HOST/]OWNER/REPO> → 小写 owner/repo
+    local r="$1"
+    r="${r##*://}"
+    r="${r%.git}"
+    case "$r" in */*/*) r="${r#*/}";; esac
+    printf '%s' "$(printf '%s' "$r" | tr '[:upper:]' '[:lower:]')"
+}
+
+GH_BIN="$(command -v gh)" || die "找不到 gh 可执行文件"
+
+# ---- 1. 分离 gh 全局形态：第一个非 flag 参数为命令，第二个为子命令 ----
+[ $# -ge 1 ] || exec command gh
+cmd="$1"; shift
+case "$cmd" in
+    -*) die "不支持的调用形态：gh $cmd …（请在子命令后传参）";;
+esac
+
+sub=""
+if [ $# -ge 1 ]; then
+    case "$1" in
+        -*) ;;
+        *) sub="$1"; shift;;
+    esac
+fi
+
+# ---- 2. 写操作表：命中即受守卫约束 ----
+is_write=0
+case "$cmd:$sub" in
+    pr:create|pr:merge|pr:edit|pr:close|pr:reopen|pr:comment|pr:ready|pr:review|pr:update-branch) is_write=1;;
+    issue:create|issue:close|issue:edit|issue:comment|issue:reopen|issue:transfer|issue:pin|issue:unpin|issue:lock|issue:unlock|issue:delete) is_write=1;;
+    release:create|release:delete|release:edit|release:upload|release:unpublish) is_write=1;;
+    repo:edit|repo:delete|repo:rename|repo:archive|repo:unarchive) is_write=1;;
+    secret:set|secret:delete|variable:set|variable:delete) is_write=1;;
+    label:create|label:delete|label:edit|label:clone) is_write=1;;
+    workflow:run|workflow:enable|workflow:disable|run:cancel|run:rerun|run:delete) is_write=1;;
+esac
+
+# gh api 写方法：-X POST/PATCH/PUT/DELETE，或 -f/-F（隐式 POST）
+if [ "$cmd" = "api" ]; then
+    is_write=0
+    prev=""
+    for a in "$@"; do
+        case "$a" in
+            -X|--method) prev="X";;
+            -X*|--method=*) m="${a#-X}"; m="${m#-method=}"; m="${m#--method=}";
+                case "$(printf '%s' "$m" | tr '[:lower:]' '[:upper:]')" in POST|PATCH|PUT|DELETE) is_write=1;; esac;;
+            -f|-F|--field|--raw-field) is_write=1;;
+        esac
+        if [ "$prev" = "X" ]; then
+            case "$(printf '%s' "$a" | tr '[:lower:]' '[:upper:]')" in POST|PATCH|PUT|DELETE) is_write=1;; esac
+            prev=""
+        fi
+    done
+fi
+
+[ $is_write -eq 1 ] || exec "$GH_BIN" "$cmd" ${sub:+"$sub"} "$@"
+
+# ---- 3. 以下为写操作的守卫路径 ----
+dryrun="${GH_GUARD_DRYRUN:-0}"
+
+# 3a. 提取命令内显式 --repo/-R
+explicit=""
+prev=""
+for a in "$@"; do
+    case "$a" in
+        --repo=*) explicit="${a#--repo=}";;
+        -R=*) explicit="${a#-R=}";;
+        --repo|-R) prev="repo";;
+        -*) prev="";;
+        *) if [ "$prev" = "repo" ]; then explicit="$a"; prev=""; fi;;
+    esac
+done
+
+declared=0
+if [ -n "$explicit" ]; then
+    expected="$(norm_repo "$explicit")"; declared=1
+    if [ -n "${GH_GUARD_EXPECTED_REPO:-}" ] \
+        && [ "$(norm_repo "$GH_GUARD_EXPECTED_REPO")" != "$expected" ]; then
+        die "--repo($explicit) 与 GH_GUARD_EXPECTED_REPO($GH_GUARD_EXPECTED_REPO) 不一致，拒绝执行"
+    fi
+elif [ -n "${GH_GUARD_EXPECTED_REPO:-}" ]; then
+    expected="$(norm_repo "$GH_GUARD_EXPECTED_REPO")"; declared=1
+else
+    die "裸写操作已拦截：gh $cmd ${sub} 缺少显式目标仓。加 --repo <owner/repo>，或设 GH_GUARD_EXPECTED_REPO。选仓逻辑见 tools/gh-pr-repo-selection-findings.md"
+fi
+
+# 3b. GH_REPO 环境串台检查
+if [ -n "${GH_REPO:-}" ] && [ "$(norm_repo "$GH_REPO")" != "$expected" ]; then
+    die "GH_REPO=$GH_REPO 与写目标 $expected 不一致，拒绝执行（防环境串台）"
+fi
+
+# 3b-2. repo 写家族：位置参数即真实写目标，必须与 expected 一致；缺失则
+# 注入 expected 为位置参数（防「声明 A、操作 B」漂移，实证见 findings G1）。
+if [ "$cmd" = "repo" ]; then
+    case "$sub" in
+        delete|archive|unarchive|edit)
+            pos=""; skipnext=0
+            for a in "$@"; do
+                if [ "$skipnext" -eq 1 ]; then skipnext=0; continue; fi
+                case "$a" in
+                    --*=*) :;;
+                    -y|--yes|-h|--help) :;;
+                    -*) skipnext=1;;
+                    *) pos="$a"; break;;
+                esac
+            done
+            if [ -z "$pos" ]; then
+                set -- "$GH_GUARD_EXPECTED_REPO" "$@"
+            else
+                [ "$(norm_repo "$pos")" = "$expected" ] \
+                    || die "repo $sub 位置参数目标 $pos 与声明目标 $expected 不一致，拒绝执行"
+            fi;;
+        rename)
+            die "repo rename 的写目标来自 git 上下文推导而非命令参数，guard 无法核验落点，拒绝执行；请在 GitHub 网页操作，或改用可显式声明目标的路径";;
+    esac
+fi
+
+# 3c. canonical 白名单 + upstream deny-by-default
+[ -f "$GH_GUARD_CONF" ] || die "登记文件不存在：$GH_GUARD_CONF（无登记 = 禁止写操作）。格式与登记流程见安装说明。"
+canon_ok=0; upstream_hit=""
+while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    [ -n "$(printf '%s' "$line" | tr -d '[:space:]')" ] || continue
+    for tok in $line; do
+        case "$tok" in
+            upstream=*) [ "$(norm_repo "${tok#upstream=}")" = "$expected" ] && upstream_hit="$expected";;
+            *) [ "$(norm_repo "$tok")" = "$expected" ] && canon_ok=1;;
+        esac
+    done
+done < "$GH_GUARD_CONF"
+
+# 3c-前置. 注入准备：pr/issue/release 写族缺显式 --repo 时由守卫补上
+extra=()
+case "$cmd:$sub" in
+    pr:*|issue:*|release:*)
+        [ -z "$explicit" ] && extra=(--repo "$GH_GUARD_EXPECTED_REPO");;
+esac
+GUARD_ARGS=("$@")
+run_gh() { "$GH_BIN" "$cmd" ${sub:+"$sub"} ${GUARD_ARGS[@]+"${GUARD_ARGS[@]}"} ${extra[@]+"${extra[@]}"}; }
+
+if [ -n "$upstream_hit" ]; then
+    if [ "$(norm_repo "${GH_GUARD_ALLOW_UPSTREAM:-}")" = "$expected" ]; then
+        if [ "$dryrun" = 1 ]; then
+            echo "gh-guard[DRYRUN]: ALLOW(upstream 已授权) $cmd ${sub} → $expected"
+            exit 0
+        fi
+        run_gh
+        exit $?
+    fi
+    die "目标仓 $expected 是登记的 fork upstream，默认禁写（deny-by-default）。确需写上游须以 GH_GUARD_ALLOW_UPSTREAM=$expected 显式授权并留任务依据"
+fi
+[ $canon_ok -eq 1 ] || die "目标仓 $expected 未登记 canonical 白名单（$GH_GUARD_CONF），拒绝执行。新仓先登记再写"
+
+# 3d. gh api 写方法：URL 路径中的仓库必须等于 expected
+if [ "$cmd" = "api" ]; then
+    pathrepo=""
+    for a in "$@"; do
+        case "$a" in
+            repos/*) pathrepo="$(printf '%s' "$a" | cut -d/ -f2-3)"; break;;
+        esac
+    done
+    if [ -n "$pathrepo" ] && [ "$(norm_repo "$pathrepo")" != "$expected" ]; then
+        die "gh api 路径目标 $pathrepo 与声明目标 $expected 不一致，拒绝执行"
+    fi
+    if [ -z "$pathrepo" ]; then
+        [ "${GH_GUARD_ALLOW_GRAPHQL:-}" = "1" ] || die "gh api 写操作未含可核验的 repos/<owner>/<repo>/ 路径（如 graphql），目标仓无法锁定，默认拒绝；确需执行请设 GH_GUARD_ALLOW_GRAPHQL=1 并人工核对语句目标"
+    fi
+fi
+
+# 3e. dry-run 判定输出（不执行任何命令）
+if [ "$dryrun" = 1 ]; then
+    echo "gh-guard[DRYRUN]: ALLOW $cmd ${sub} → $expected${explicit:+（命令内显式）}；缺参注入=$([ ${#extra[@]} -gt 0 ] && echo 开 || echo 关)"
+    exit 0
+fi
+
+# ---- 4. postcondition：pr create 回读 URL 仓一致 ----
+if [ "$cmd:$sub" = "pr:create" ]; then
+    tmpout="$(mktemp)"; tmperr="$(mktemp)"
+    run_gh >"$tmpout" 2>"$tmperr"; rc=$?
+    if [ $rc -ne 0 ]; then
+        cat "$tmpout"; cat "$tmperr" >&2; rm -f "$tmpout" "$tmperr"; exit $rc
+    fi
+    url="$(grep -oE 'https://[^[:space:]]+/pull/[0-9]+' "$tmpout" | head -1 || true)"
+    if [ -z "$url" ]; then
+        cat "$tmpout"; cat "$tmperr" >&2; rm -f "$tmpout" "$tmperr"
+        die "pr create 已成功但输出未含 PR URL，postcondition 无法回读，按 fail-closed 处置：请人工核对 PR 实际落点"
+    fi
+    got="$(norm_repo "$(printf '%s' "$url" | sed -E 's#https://[^/]+/##; s#/pull/[0-9]+$##')")"
+    cat "$tmpout"; cat "$tmperr" >&2; rm -f "$tmpout" "$tmperr"
+    [ "$got" = "$expected" ] || die "postcondition 失败：PR 实际落点 $got 与声明目标 $expected 不一致，立即检查并关闭误建 PR"
+    exit 0
+fi
+
+run_gh

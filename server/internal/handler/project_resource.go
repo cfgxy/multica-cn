@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -86,10 +87,13 @@ func validateAndNormalizeResourceRef(resourceType string, ref json.RawMessage) (
 }
 
 type githubRepoRef struct {
-	URL               string `json:"url"`
-	DefaultBranchHint string `json:"default_branch_hint,omitempty"`
-	Ref               string `json:"ref,omitempty"`
+	URL               string  `json:"url"`
+	Upstream          *string `json:"upstream,omitempty"`
+	DefaultBranchHint string  `json:"default_branch_hint,omitempty"`
+	Ref               string  `json:"ref,omitempty"`
 }
+
+var githubRepoIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 func validateGithubRepoRef(ref json.RawMessage) (json.RawMessage, error) {
 	var payload githubRepoRef
@@ -103,6 +107,23 @@ func validateGithubRepoRef(ref json.RawMessage) (json.RawMessage, error) {
 	if !isValidGitRepoURL(payload.URL) {
 		return nil, errors.New("github_repo: url must be a valid http(s) or ssh git URL")
 	}
+	if payload.Upstream != nil {
+		if strings.TrimSpace(*payload.Upstream) == "" {
+			return nil, errors.New("github_repo: upstream cannot be empty; omit it until confirmed")
+		}
+		canonical, err := githubRepoIdentity(payload.URL)
+		if err != nil {
+			return nil, fmt.Errorf("github_repo: invalid canonical URL: %w", err)
+		}
+		upstream, err := githubRepoIdentity(*payload.Upstream)
+		if err != nil {
+			return nil, fmt.Errorf("github_repo: upstream must be a valid GitHub repository URL: %w", err)
+		}
+		if upstream == canonical {
+			return nil, errors.New("github_repo: upstream must differ from canonical repository")
+		}
+		payload.Upstream = &upstream
+	}
 	payload.DefaultBranchHint = strings.TrimSpace(payload.DefaultBranchHint)
 	payload.Ref = strings.TrimSpace(payload.Ref)
 	out, err := json.Marshal(payload)
@@ -110,6 +131,43 @@ func validateGithubRepoRef(ref json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func githubRepoIdentity(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	var host, path string
+	if strings.Contains(value, "://") {
+		u, err := url.Parse(value)
+		if err != nil || u.RawQuery != "" || u.Fragment != "" || (u.Port() != "" && (u.Scheme != "ssh" || u.Port() != "22")) {
+			return "", errors.New("expected an http(s) or SSH GitHub URL")
+		}
+		switch u.Scheme {
+		case "https", "http":
+			if u.User != nil {
+				return "", errors.New("expected an http(s) GitHub URL without credentials")
+			}
+		case "ssh":
+			if u.User == nil || u.User.Username() != "git" {
+				return "", errors.New("expected a GitHub SSH URL for user git")
+			}
+		default:
+			return "", errors.New("expected an http(s) or SSH GitHub URL")
+		}
+		host, path = u.Hostname(), strings.TrimPrefix(u.EscapedPath(), "/")
+	} else if strings.HasPrefix(value, "git@") {
+		parts := strings.SplitN(strings.TrimPrefix(value, "git@"), ":", 2)
+		if len(parts) != 2 {
+			return "", errors.New("expected a GitHub SSH URL")
+		}
+		host, path = parts[0], parts[1]
+	} else {
+		return "", errors.New("expected a GitHub repository URL")
+	}
+	path = strings.TrimSuffix(path, ".git")
+	if !strings.EqualFold(host, "github.com") || !githubRepoIdentityPattern.MatchString(path) {
+		return "", errors.New("URL must identify exactly github.com/owner/repo")
+	}
+	return strings.ToLower(path), nil
 }
 
 // Execution modes for resource_type=local_directory. The zero value (absent
@@ -1226,11 +1284,16 @@ func projectResourcesForClaim(rows []db.ProjectResource) ([]ProjectResourceData,
 		})
 		if row.ResourceType == "github_repo" {
 			var payload struct {
-				URL string `json:"url"`
-				Ref string `json:"ref,omitempty"`
+				URL      string  `json:"url"`
+				Upstream *string `json:"upstream,omitempty"`
+				Ref      string  `json:"ref,omitempty"`
 			}
 			if json.Unmarshal(row.ResourceRef, &payload) == nil && payload.URL != "" {
-				repos = append(repos, RepoData{URL: payload.URL, Ref: strings.TrimSpace(payload.Ref)})
+				upstream := ""
+				if payload.Upstream != nil {
+					upstream = *payload.Upstream
+				}
+				repos = append(repos, RepoData{URL: payload.URL, Upstream: upstream, Ref: strings.TrimSpace(payload.Ref)})
 			}
 		}
 	}
