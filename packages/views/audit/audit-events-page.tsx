@@ -107,7 +107,7 @@ export function AuditEventsPage() {
     for (const page of query.data?.pages ?? []) for (const event of page.events) byId.set(event.id, event);
     return [...byId.values()];
   }, [query.data]);
-  const hasFilters = Object.keys(filters).some((key) => key !== "limit" && key !== "time_basis");
+  const hasFilters = Object.keys(filters).some((key) => !["domain", "limit", "time_basis"].includes(key));
   const resultOptions = RESULTS.map((value) => ({
     value,
     label: value === "success" ? t(($) => $.audit_view.result_success)
