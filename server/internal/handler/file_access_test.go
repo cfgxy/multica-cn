@@ -539,13 +539,30 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
 	var response struct {
 		Pending []struct {
-			OperationID string `json:"operation_id"`
-			LeaseEpoch  int64  `json:"lease_epoch"`
+			OperationID string   `json:"operation_id"`
+			LeaseEpoch  int64    `json:"lease_epoch"`
+			Roots       []string `json:"roots"`
 		} `json:"pending_file_operations"`
 	}
 	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
-	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 {
-		t.Fatalf("claimed operation missing from HTTP response: %+v", response.Pending)
+	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 ||
+		len(response.Pending[0].Roots) != 1 || response.Pending[0].Roots[0] != "/srv/data" {
+		var status string
+		var leaseEpoch int64
+		var roots []byte
+		dbfx.QueryRow(t, `
+			SELECT operation.status, operation.lease_epoch, target.roots
+			FROM daemon_file_operation AS operation
+			JOIN daemon_file_access_target AS target ON target.id = operation.target_id
+			WHERE operation.id = $1
+		`, operationID).Scan(&status, &leaseEpoch, &roots)
+		t.Fatalf("claimed operation missing from HTTP response: dispatch=%+v status=%s lease_epoch=%d roots=%s", response.Pending, status, leaseEpoch, roots)
+	}
+	var status string
+	var leaseEpoch int64
+	dbfx.QueryRow(t, `SELECT status, lease_epoch FROM daemon_file_operation WHERE id = $1`, operationID).Scan(&status, &leaseEpoch)
+	if status != "claimed" || leaseEpoch != 1 {
+		t.Fatalf("claimed operation state = %s/%d, want claimed/1", status, leaseEpoch)
 	}
 }
 
