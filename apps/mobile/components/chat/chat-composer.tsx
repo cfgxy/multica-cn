@@ -27,6 +27,7 @@ import { ChatInputBar } from "@/components/chat/chat-input-bar";
 import type { Attachment } from "@multica/core/types";
 import type { SharedFile } from "@/lib/share-payload";
 import type { VoiceAvailability } from "@/data/voice-providers";
+import type { Href } from "expo-router";
 
 const IS_IOS = process.env.EXPO_OS === "ios";
 
@@ -62,6 +63,9 @@ interface Props {
   voiceGate: VoiceAvailability | null;
   /** 发起全屏语音会话（🔵）。 */
   onOpenVoice: () => void;
+  skillPickerPath?: Href;
+  projectId?: string | null;
+  onProjectChange?: (projectId: string | null) => void;
   restoredAttachments?: Attachment[];
   onRestoredAttachmentsConsumed?: () => void;
 }
@@ -82,6 +86,9 @@ export function ChatComposer({
   onIncomingSharedFilesConsumed,
   voiceGate,
   onOpenVoice,
+  skillPickerPath,
+  projectId,
+  onProjectChange,
   restoredAttachments,
   onRestoredAttachmentsConsumed,
 }: Props) {
@@ -109,6 +116,9 @@ export function ChatComposer({
       onIncomingSharedFilesConsumed={onIncomingSharedFilesConsumed}
       voiceGate={voiceGate}
       onOpenVoice={onOpenVoice}
+      skillPickerPath={skillPickerPath}
+      projectId={projectId}
+      onProjectChange={onProjectChange}
       restoredAttachments={restoredAttachments}
       onRestoredAttachmentsConsumed={onRestoredAttachmentsConsumed}
     />

@@ -73,7 +73,6 @@ import { useChatInputFocus } from "./use-chat-input-focus";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
 import { ChatQueue } from "./chat-queue";
-import { ChatSessionModelSelector } from "./chat-session-model-selector";
 import { EmptyState } from "./chat-empty-state";
 import { SessionRenameInput } from "./session-rename-input";
 import { ChatResizeHandles } from "./chat-resize-handles";
@@ -978,18 +977,6 @@ export function ChatWindow() {
         <OfflineBanner agentName={activeAgent?.name} availability={availability} />
       )}
 
-      {currentSession && activeAgent ? (
-        <div className="px-3 pb-2">
-          <ChatSessionModelSelector
-            session={currentSession}
-            wsId={wsId}
-            runtimeId={activeAgent.runtime_id ?? null}
-            agentModel={activeAgent.model ?? null}
-            disabled={isSessionArchived || isAgentArchived || isAgentAccessRevoked || !activeAgentRuntimeBound}
-          />
-        </div>
-      ) : null}
-
       <ChatQueue
         tasks={queuedTasks}
         headStatus={pendingTask?.status}
@@ -1024,6 +1011,12 @@ export function ChatWindow() {
         agentAccessRevoked={isAgentAccessRevoked}
         agentRuntimeRequired={!activeAgentRuntimeBound}
         agentName={activeAgent?.name}
+        modelSelector={currentSession && activeAgent?.runtime_id ? {
+          session: currentSession,
+          runtimeId: activeAgent.runtime_id,
+          agentModel: activeAgent.model ?? null,
+          disabled: isSessionArchived || isAgentArchived || isAgentAccessRevoked || !activeAgentRuntimeBound,
+        } : undefined}
         projects={projects}
         projectId={activeProjectId}
         onProjectChange={handleProjectChange}

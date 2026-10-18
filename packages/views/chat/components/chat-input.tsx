@@ -28,7 +28,7 @@ import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import { skillListOptions } from "@multica/core/workspace/queries";
 import { useQuery } from "@tanstack/react-query";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
-import type { Attachment, Project } from "@multica/core/types";
+import type { Attachment, ChatSession, Project } from "@multica/core/types";
 import { ProjectPicker } from "../../projects/components/project-picker";
 import { ClearablePillButton } from "../../common/pill-button";
 import { useT } from "../../i18n";
@@ -146,6 +146,12 @@ interface ChatInputProps {
    *  the composer only surfaces a warning next to the chip and in the
    *  project submenu. */
   projectContextUnsupported?: boolean;
+  modelSelector?: {
+    session: ChatSession;
+    runtimeId: string;
+    agentModel: string | null;
+    disabled: boolean;
+  };
   /** Monotonic nonce bumped by the owner whenever the compose box should grab
    *  keyboard focus — currently on "new chat" so the user can type right away.
    *  0 (the initial value) is inert, so a plain deep-link open never steals
@@ -184,6 +190,7 @@ export function ChatInput({
   onProjectChange,
   isProjectUpdating,
   projectContextUnsupported,
+  modelSelector,
   focusRequest,
   draftKeyOverride,
   editorKeyOverride,
@@ -199,6 +206,7 @@ export function ChatInput({
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   // Two keys with deliberately different concerns:
   //
@@ -671,6 +679,7 @@ export function ChatInput({
       )}
     >
       <div
+        ref={surfaceRef}
         data-slot="chat-input-surface"
         {...(uploadEnabled ? dropZoneProps : {})}
         className={cn(
@@ -756,9 +765,9 @@ export function ChatInput({
             showBubbleMenu
           />
         </div>
-        {(uploadEnabled || projectSelectionEnabled || leftAdornment) && (
+        {(uploadEnabled || projectSelectionEnabled || !!modelSelector || leftAdornment) && (
           <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
-            {(uploadEnabled || projectSelectionEnabled) && (
+            {(uploadEnabled || projectSelectionEnabled || modelSelector) && (
               <ChatAddMenu
                 onSelectFile={uploadEnabled
                   ? (file) => editorRef.current?.uploadFile(file)
@@ -767,6 +776,11 @@ export function ChatInput({
                 projectId={projectId}
                 onSelectProject={projectSelectionEnabled ? onProjectChange : undefined}
                 projectContextUnsupported={projectContextUnsupported}
+                model={modelSelector ? {
+                  ...modelSelector,
+                  wsId: modelSelector.session.workspace_id,
+                } : undefined}
+                anchor={surfaceRef.current}
               />
             )}
             {leftAdornment}

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { Agent, ChatSession } from "@multica/core/types";
+import type { ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
 
 const updateMutate = vi.hoisted(() => vi.fn());
@@ -198,27 +198,12 @@ describe("ChatSessionHeader rename keyboard behavior", () => {
 });
 
 describe("ChatSessionHeader model selector", () => {
-  it("shows the current session model selector when enabled by the page", () => {
-    const agent = {
-      id: "agent-1",
-      name: "Agent",
-      runtime_id: "runtime-1",
-      model: "agent-default",
-    } as Agent;
-    const sessionWithOverride = { ...session, model_override: "session-model-b" };
-
+  it("keeps model selection out of the session header", () => {
     render(
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatSessionHeader
-          session={sessionWithOverride}
-          agent={agent}
-          showModelSelector
-          modelSelectorDisabled
-        />
+        <ChatSessionHeader session={session} agent={null} />
       </I18nProvider>,
     );
-
-    expect(screen.getByTestId("session-model-selector")).toHaveTextContent("session-model-b");
-    expect(screen.getByTestId("session-model-selector")).toBeDisabled();
+    expect(screen.queryByTestId("session-model-selector")).not.toBeInTheDocument();
   });
 });
