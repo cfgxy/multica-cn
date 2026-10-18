@@ -42,6 +42,7 @@ class SpeechRecognitionModule : Module() {
   companion object {
     private const val TAG = "SpeechRecognitionModule"
     private const val REQUEST_PERMISSIONS_CODE = 47012
+    private const val PTT_SILENCE_TIMEOUT_MS = 60_000L
   }
 
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -121,6 +122,16 @@ class SpeechRecognitionModule : Module() {
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             // 听写跟随系统语言：用户用自己的语言说话，不随 App UI 语言切换。
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            // The JS PTT guard also ends at 60s; use the same silence limit so
+            // SpeechRecognizer does not end a held recording on its shorter default.
+            putExtra(
+              RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+              PTT_SILENCE_TIMEOUT_MS,
+            )
+            putExtra(
+              RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+              PTT_SILENCE_TIMEOUT_MS,
+            )
           }
           rec.startListening(intent)
           promise.resolve(null)
