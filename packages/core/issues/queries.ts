@@ -133,6 +133,11 @@ export const issueKeys = {
     [...issueKeys.childrenByParentsAll(wsId), parentIds] as const,
   childProgress: (wsId: string) =>
     [...issueKeys.all(wsId), "child-progress"] as const,
+  /** PREFIX for every per-issue structured-relations query. */
+  relationsAll: (wsId: string) =>
+    [...issueKeys.all(wsId), "relations"] as const,
+  relations: (wsId: string, id: string) =>
+    [...issueKeys.relationsAll(wsId), id] as const,
   /** Prefix-match keys for invalidating the per-issue caches below across
    *  all issues. These keys carry no wsId, so `issueKeys.all(wsId)` does NOT
    *  cover them — WS reconnect recovery must invalidate these `*All`
@@ -431,7 +436,7 @@ export function projectGanttIssuesOptions(
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
-    queryFn: () => api.getIssue(id),
+    queryFn: ({ signal }) => api.getIssue(id, { signal }),
   });
 }
 
@@ -528,6 +533,18 @@ export function childIssuesOptions(wsId: string, id: string) {
     // desktop tab is showing another workspace). The global Infinity
     // staleTime would otherwise reuse an incomplete children snapshot when
     // the parent is opened again, with no later event guaranteed to heal it.
+    refetchOnMount: "always",
+  });
+}
+
+export function issueRelationsOptions(wsId: string, id: string) {
+  return queryOptions({
+    queryKey: issueKeys.relations(wsId, id),
+    queryFn: () => api.getIssueRelations(id),
+    // Relation edges emit no WS event (the server only bumps the anchor
+    // revisions — see server/internal/handler/issue_relation.go), so a
+    // cached snapshot would never heal while the page stays mounted.
+    // Same contract as childIssuesOptions: every mount re-pulls.
     refetchOnMount: "always",
   });
 }

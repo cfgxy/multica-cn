@@ -3,6 +3,7 @@ export { KnowledgePage } from "./knowledge-page";
 export { SkillsEvolutionPage } from "./skills-page";
 export { SkillEvolutionDetailPage } from "./skill-detail-page";
 export { QualityPage } from "./quality-page";
+export { ClauseGovernancePage, ClauseGovernanceDetailPage } from "./clause-governance-page";
 export { QuizPage } from "./quiz-page";
 export { ProposalsPage } from "./proposals-page";
 export { VersionsPage } from "./versions-page";

@@ -7,8 +7,8 @@
  * that changes). Reads/writes `useTasksViewStore` directly, same
  * self-contained pattern as `issues-filter.tsx`.
  */
+import { SheetHeader } from "@/components/ui/sheet-header";
 import { Pressable, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Text } from "@/components/ui/text";
 import { useTasksViewStore, type TaskSortKey } from "@/data/stores/tasks-view-store";
@@ -35,17 +35,16 @@ const SORT_CHOICES: { value: TaskSortKey; labelKey: string; fallback: string }[]
 export default function TasksSortRoute() {
   const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
-  const insets = useSafeAreaInsets();
   const sortBy = useTasksViewStore((s) => s.sortBy);
 
   return (
     <View className="flex-1">
-      {/* 顶部让出系统状态栏（RUYI-563）。 */}
-      <View className="flex-row items-center justify-between px-4 pb-3" style={{ paddingTop: insets.top + 16 }}>
+      {/* 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
+      <SheetHeader className="flex-row items-center justify-between px-4 pb-3" gap={16}>
         <Text className="text-base font-semibold text-foreground">
           {t("mobile.tasks.sort.title", "Sort")}
         </Text>
-      </View>
+      </SheetHeader>
       {SORT_CHOICES.map((choice) => {
         const checked = sortBy === choice.value;
         return (

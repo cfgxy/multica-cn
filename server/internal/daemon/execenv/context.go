@@ -25,10 +25,13 @@ const TaskContextMarkerManagedBy = "multica-daemon-task"
 
 type taskContextMarkerFile struct {
 	ManagedBy     string `json:"managed_by"`
+	TaskID        string `json:"task_id,omitempty"`
 	AgentID       string `json:"agent_id,omitempty"`
 	IssueID       string `json:"issue_id,omitempty"`
 	ChatSessionID string `json:"chat_session_id,omitempty"`
 	AutopilotID   string `json:"autopilot_id,omitempty"`
+	Branch        string `json:"branch,omitempty"`
+	BaseCommit    string `json:"base_commit,omitempty"`
 }
 
 // EnsureWorkspacesRootMarker writes a persistent daemon-task marker at
@@ -215,10 +218,13 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 	// as daemon context and fails closed instead of using a user PAT.
 	payload := taskContextMarkerFile{
 		ManagedBy:     TaskContextMarkerManagedBy,
+		TaskID:        ctx.TaskID,
 		AgentID:       ctx.AgentID,
 		IssueID:       ctx.IssueID,
 		ChatSessionID: ctx.ChatSessionID,
 		AutopilotID:   ctx.AutopilotID,
+		Branch:        ctx.ManagedBranch,
+		BaseCommit:    ctx.BaseCommit,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {

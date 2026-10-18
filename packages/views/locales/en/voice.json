@@ -25,5 +25,17 @@
       "credential_missing": "Voice isn't fully configured for this agent (missing credentials). A workspace admin needs to finish setup.",
       "credential_invalid": "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them."
     }
+  },
+  "dictation": {
+    "open": "Dictation",
+    "close": "Close dictation",
+    "hold_to_talk": "Hold to talk",
+    "release_to_cancel": "Release to cancel",
+    "release_to_transcribe": "Release to transcribe",
+    "transcribing": "Transcribing…",
+    "transcribe_failed": "Transcription failed, try again",
+    "not_recognized": "No speech detected",
+    "listening": "Listening…",
+    "stop_agent": "Stop agent"
   }
 }

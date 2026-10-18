@@ -65,7 +65,8 @@ func TestWorkspaceDecisionInboxList(t *testing.T) {
 	issueB := dbfx.Issue(t, "Inbox issue B")
 
 	insertInboxCard(t, testWorkspaceID, issueA, "oldest open", "open", "3 hours")
-	insertInboxCard(t, testWorkspaceID, issueA, "newer open", "open", "2 hours")
+	insertInboxCard(t, testWorkspaceID, issueA, "newer open", "open", "2 hours",
+		testutil.Cols{"context": testutil.Raw(`'{"why_now":"Release window closes today.","facts":[{"statement":"Build passed.","evidence":["CI 123"]}]}'::jsonb`)})
 	insertInboxCard(t, testWorkspaceID, issueB, "answered card", "answered", "1 hour",
 		testutil.Cols{"selected_indices": testutil.Raw(`'[0]'::jsonb`)})
 	insertInboxCard(t, testWorkspaceID, issueB, "cancelled card", "cancelled", "30 minutes")
@@ -96,6 +97,9 @@ func TestWorkspaceDecisionInboxList(t *testing.T) {
 	}
 	if got := byQuestion["newer open"]; got.IssueTitle != "Inbox issue A" || got.IssueID != issueA {
 		t.Fatalf("newer open card = %+v, want issue A context", got)
+	}
+	if got := byQuestion["newer open"].Context; got == nil || got.WhyNow != "Release window closes today." || got.Facts[0].Evidence[0] != "CI 123" {
+		t.Fatalf("inbox context = %+v, want structured context preserved", got)
 	}
 
 	// Newest-first ordering: the 30-minute card leads, the 3-hour card trails.

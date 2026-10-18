@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -48,6 +49,7 @@ func init() {
 	issueDecisionCmd.AddCommand(issueDecisionListCmd)
 
 	issueDecisionAddCmd.Flags().String("question", "", "The decision question (1-500 characters)")
+	issueDecisionAddCmd.Flags().String("context", "", "Structured decision context as a JSON object")
 	// RUYI-691: option labels are free-form text (e.g. "{provider_id, model,
 	// advanced}") — StringArray keeps each occurrence verbatim where
 	// StringSlice would CSV-split it on English commas.
@@ -109,6 +111,14 @@ func validateDecisionOptions(question string, options []string, recommended []in
 	return nil
 }
 
+func parseDecisionContextJSON(raw string) (map[string]any, error) {
+	var value map[string]any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil || value == nil {
+		return nil, fmt.Errorf("--context must be a JSON object")
+	}
+	return value, nil
+}
+
 func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 	question, _ := cmd.Flags().GetString("question")
 	options, _ := cmd.Flags().GetStringArray("option")
@@ -154,6 +164,13 @@ func runIssueDecisionAdd(cmd *cobra.Command, args []string) error {
 	}
 	if len(recommended) > 0 {
 		body["recommended_indices"] = recommended
+	}
+	if rawContext, _ := cmd.Flags().GetString("context"); rawContext != "" {
+		decisionContext, err := parseDecisionContextJSON(rawContext)
+		if err != nil {
+			return err
+		}
+		body["context"] = decisionContext
 	}
 	if sourceComment, _ := cmd.Flags().GetString("source-comment"); sourceComment != "" {
 		body["source_comment_id"] = sourceComment

@@ -420,6 +420,26 @@ WHERE autopilot_id = $1
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
+-- name: ListAutopilotRunsFiltered :many
+-- Keep MCP and the product UI on the same native run history. `scheduled`
+-- and `replay` are presentation sources: schedule is stored as `schedule`,
+-- while replay is encoded in the persisted payload so the historical input
+-- can be reproduced without a second run table.
+SELECT * FROM autopilot_run r
+WHERE r.autopilot_id = @autopilot_id
+  AND (sqlc.narg('status')::text IS NULL OR r.status = sqlc.narg('status'))
+  AND (
+    sqlc.narg('source')::text IS NULL
+    OR (sqlc.narg('source') = 'scheduled' AND r.source = 'schedule')
+    OR (sqlc.narg('source') = 'replay' AND r.trigger_payload ? '_mcp_replay')
+    OR (sqlc.narg('source') = 'manual' AND r.source = 'manual' AND NOT COALESCE(r.trigger_payload ? '_mcp_replay', false))
+    OR (sqlc.narg('source') NOT IN ('scheduled', 'replay', 'manual') AND r.source = sqlc.narg('source'))
+  )
+  AND (sqlc.narg('triggered_after')::timestamptz IS NULL OR r.triggered_at >= sqlc.narg('triggered_after'))
+  AND (sqlc.narg('triggered_before')::timestamptz IS NULL OR r.triggered_at < sqlc.narg('triggered_before'))
+ORDER BY r.triggered_at DESC, r.id DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
 -- name: UpdateAutopilotRunIssueCreated :one
 UPDATE autopilot_run
 SET status = 'issue_created', issue_id = $2

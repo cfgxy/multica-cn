@@ -32,16 +32,18 @@ import ReactMarkdown, {
   type Options as ReactMarkdownOptions,
 } from "react-markdown";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
-import rehypeKatex from "rehype-katex";
 import remarkBreaks from "remark-breaks";
 import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
-import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
-import { useWorkspaceSlug } from "@multica/core/paths";
+import {
+  useCurrentWorkspace,
+  useWorkspacePaths,
+  useWorkspaceSlug,
+} from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
+import type { IssueReference } from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import {
   isAllowedFileCardHref,
@@ -50,6 +52,7 @@ import {
   markdownUrlTransform,
 } from "@multica/ui/markdown";
 import {
+  AppLink,
   resolveClickIntent,
   useAppOrigin,
   useOptionalNavigation,
@@ -57,7 +60,10 @@ import {
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
-import { IssueReferenceTail } from "./issue-reference-footer";
+import {
+  isPullRequestResolution,
+  useIssueReferenceResolutions,
+} from "../issues/hooks/use-issue-reference-resolutions";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
@@ -71,7 +77,13 @@ import { highlightToHtml } from "../editor/utils/highlight-markdown";
 import { AttachmentDownloadProvider } from "../editor/attachment-download-context";
 import { Attachment as AttachmentRenderer } from "../editor/attachment";
 import { computeClosedFenceOffsets } from "./streaming-fence";
+import { LazyIssueReferenceTail } from "./lazy-issue-reference-tail";
 import { remarkRepairCjkStrongTrailingWhitespace } from "./cjk-emphasis";
+import { remarkGfmWithSharedExtensions } from "./shared-gfm-extensions";
+import {
+  rehypeKatexWhenNeeded,
+  rehypeRawWhenNeeded,
+} from "./rehype-raw-gate";
 import {
   CodeBlockShell,
   RichFenceBlock,
@@ -115,11 +127,11 @@ function useIsFenceClosed(offset: number | undefined): boolean {
  * IssueMentionCard; the wrapper only shields surrounding click handlers
  * (e.g. collapsed-comment expanders) from mention clicks.
  *
- * RUYI-635: markdown `mention://issue/…` links no longer reach this path —
- * they render as plain body text and aggregate into the tail footer. The chip
- * survives for the one remaining inline surface: a bare pasted in-app issue
- * URL, where the author wrote a link and the unfurl keeps it navigable in
- * place (see unfurlableEntityLink below).
+ * RUYI-728: markdown `mention://issue/…` links render as underlined in-app
+ * anchors again (body links + tail aggregation), so this chip is back to the
+ * one remaining inline card surface: a bare pasted in-app issue URL, where
+ * the author wrote a link and the unfurl keeps the card in place (see
+ * unfurlableEntityLink below).
  */
 function IssueMentionLink({ issueId, label }: { issueId: string; label?: string }) {
   return (
@@ -153,6 +165,75 @@ function IdentifierIssueMentionLink({
   const issue = useResolveIssueIdentifier(identifier);
   if (!issue) return <>{fallback}</>;
   return <IssueMentionLink issueId={issue.id} label={identifier} />;
+}
+
+/**
+ * RUYI-728: the body-side issue link. A mention is a real anchor to the
+ * issue's in-app route — the same underlined-link family as the GitHub PR
+ * links — wrapped in the chip's click shield so a mention click never
+ * toggles a surrounding expander.
+ */
+function IssueBodyLink({
+  issueId,
+  label,
+}: {
+  issueId: string;
+  label?: string;
+}) {
+  const p = useWorkspacePaths();
+  return (
+    <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
+      <AppLink href={p.issueDetail(issueId)}>{label ?? issueId}</AppLink>
+    </span>
+  );
+}
+
+/**
+ * A bare identifier mention (from the autolink preprocessor) resolves before
+ * it links: a hit renders the body link above, a miss — not-found, still
+ * loading, wrong prefix — keeps the RUYI-635 plain-text degradation, since a
+ * token this workspace cannot see must not grow a dead anchor.
+ */
+function IdentifierIssueBodyLink({
+  identifier,
+  fallback,
+}: {
+  identifier: string;
+  fallback: string;
+}) {
+  const issue = useResolveIssueIdentifier(identifier);
+  if (!issue) return <span data-issue-mention-text="">{fallback}</span>;
+  return <IssueBodyLink issueId={issue.id} label={identifier} />;
+}
+
+/**
+ * An `MR !N` text reference (RUYI-728), autolinked by the readonly
+ * preprocessor into `mention://merge-request/<N>`. Resolves N against the
+ * workspace PR snapshot by number (unique-hit query; a never-seen or
+ * ambiguous number resolves to null) and renders the authored text as a real
+ * GitHub anchor on a hit — a miss degrades to the same plain-text span the
+ * identifier miss uses.
+ */
+function MergeRequestBodyLink({
+  number,
+  label,
+}: {
+  number: number;
+  label?: string;
+}) {
+  const reference = useMemo<IssueReference>(
+    () => ({ ref: `MR !${number}`, label: null, form: "merge_request" }),
+    [number],
+  );
+  const resolved =
+    useIssueReferenceResolutions([reference]).get(
+      `merge_request:MR !${number}`,
+    ) ?? null;
+  const text = label ?? `MR !${number}`;
+  if (!isPullRequestResolution(resolved)) {
+    return <span data-issue-mention-text="">{text}</span>;
+  }
+  return <RichAnchor href={resolved.html_url}>{text}</RichAnchor>;
 }
 
 /**
@@ -209,14 +290,56 @@ function unfurlableEntityLink(
   return entity;
 }
 
+/**
+ * The plain anchor every non-mention link renders as. External URLs open via
+ * `openLink` — a URL pointing back at this deployment routes in-app rather
+ * than out to the browser.
+ *
+ * Platform probe only: `openInNewTab` present means desktop, where native
+ * anchor behavior is a dead end and every click must be intercepted. Absent
+ * (web), modified clicks are left to the browser — the only way to get a
+ * real background tab.
+ */
+function RichAnchor({
+  href,
+  children,
+}: {
+  href?: string;
+  children?: ReactNode;
+}) {
+  const slug = useWorkspaceSlug();
+  const appOrigin = useAppOrigin();
+  const desktopTabs = !!useOptionalNavigation()?.openInNewTab;
+  return (
+    <a
+      href={href}
+      onClick={(e) => {
+        if (!href) {
+          e.preventDefault();
+          return;
+        }
+        if (!desktopTabs && (e.metaKey || e.ctrlKey || e.shiftKey)) return;
+        e.preventDefault();
+        openLink(href, slug, appOrigin, resolveClickIntent(e));
+      }}
+      onAuxClick={(e) => {
+        if (e.button !== 1 || !href) return;
+        // Web: native middle click on a real anchor already opens a
+        // background tab. Desktop: the native window-open request dead-ends
+        // (denied, then dropped by the http/https allowlist), so route it.
+        if (!desktopTabs) return;
+        e.preventDefault();
+        openLink(href, slug, appOrigin, "background-tab");
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
-  // Platform probe only: `openInNewTab` present means desktop, where native
-  // anchor behavior is a dead end and every click must be intercepted. Absent
-  // (web), modified clicks are left to the browser — the only way to get a
-  // real background tab.
-  const desktopTabs = !!useOptionalNavigation()?.openInNewTab;
 
   if (href?.startsWith("slash://skill/")) {
     return <span className="slash-command">{children}</span>;
@@ -224,20 +347,33 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
 
   if (isMentionHref(href)) {
     const match = href.match(
-      /^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/,
+      /^mention:\/\/(member|agent|issue|merge-request|project|comment|all)\/(.+)$/,
     );
     if (match?.[1] === "issue" && match[2]) {
-      // RUYI-635: issue mentions read as plain text in the body — a bare
-      // identifier shows the identifier, a UUID mention shows its authored
-      // label — and every reference aggregates into the tail list rendered by
-      // IssueReferenceFooter below. No resolution, no chip: the body must not
-      // flicker while references resolve.
-      // A bare identifier (from the autolink preprocessor) is carried as the id
-      // segment; a real mention carries a UUID. Dispatch on the id shape.
+      // RUYI-728: issue mentions read as underlined in-app links again — the
+      // same real-anchor family as the GitHub links — while the tail list
+      // below keeps aggregating every reference. A bare identifier (from the
+      // autolink preprocessor) is carried as the id segment and resolves
+      // first; a real mention carries a UUID and links directly. Dispatch on
+      // the id shape.
+      if (isIssueIdentifier(match[2])) {
+        return (
+          <IdentifierIssueBodyLink
+            identifier={match[2]}
+            fallback={childrenToLabel(children) ?? match[2]}
+          />
+        );
+      }
       return (
-        <span data-issue-mention-text="">
-          {isIssueIdentifier(match[2]) ? match[2] : childrenToLabel(children)}
-        </span>
+        <IssueBodyLink issueId={match[2]} label={childrenToLabel(children)} />
+      );
+    }
+    if (match?.[1] === "merge-request" && match[2]) {
+      return (
+        <MergeRequestBodyLink
+          number={Number(match[2])}
+          label={childrenToLabel(children)}
+        />
       );
     }
     if (match?.[1] === "project" && match[2]) {
@@ -267,31 +403,7 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   // deployment routes in-app rather than out to the browser. Built first
   // because it is also what an unfurl falls back to when the entity behind the
   // URL cannot be resolved.
-  const plainLink = (
-    <a
-      href={href}
-      onClick={(e) => {
-        if (!href) {
-          e.preventDefault();
-          return;
-        }
-        if (!desktopTabs && (e.metaKey || e.ctrlKey || e.shiftKey)) return;
-        e.preventDefault();
-        openLink(href, slug, appOrigin, resolveClickIntent(e));
-      }}
-      onAuxClick={(e) => {
-        if (e.button !== 1 || !href) return;
-        // Web: native middle click on a real anchor already opens a
-        // background tab. Desktop: the native window-open request dead-ends
-        // (denied, then dropped by the http/https allowlist), so route it.
-        if (!desktopTabs) return;
-        e.preventDefault();
-        openLink(href, slug, appOrigin, "background-tab");
-      }}
-    >
-      {children}
-    </a>
-  );
+  const plainLink = <RichAnchor href={href}>{children}</RichAnchor>;
 
   // A bare in-app entity URL renders as the chip its mention form would.
   const entity = href
@@ -490,15 +602,15 @@ const COMPONENTS: Partial<Components> = {
 const REMARK_PLUGINS = [
   [remarkMath, { singleDollarTextMath: false }],
   remarkBreaks,
-  [remarkGfm, { singleTilde: false }],
+  remarkGfmWithSharedExtensions,
   remarkCjkFriendly,
   remarkRepairCjkStrongTrailingWhitespace,
 ] satisfies NonNullable<ReactMarkdownOptions["remarkPlugins"]>;
 
 const REHYPE_PLUGINS = [
-  rehypeRaw,
+  rehypeRawWhenNeeded,
   [rehypeSanitize, markdownSanitizeSchema],
-  rehypeKatex,
+  rehypeKatexWhenNeeded,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
 // ---------------------------------------------------------------------------
@@ -541,13 +653,23 @@ export const RichContent = memo(function RichContent({
   // re-run it. Subscribing puts the value in the memo dependencies below, so a
   // late config arrival reprocesses exactly once.
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
+  // Same reactivity rule for the workspace's issue prefix (RUYI-705): the
+  // readonly autolink rewrite must not turn a wrong-prefix token (`AC-1`)
+  // into an issue reference, and a late workspace-list arrival has to
+  // reprocess content that rendered before the prefix was known.
+  const workspacePrefix = useCurrentWorkspace()?.issue_prefix || null;
 
   const processed = useMemo(
     () =>
       highlightToHtml(
-        preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true }),
+        preprocessMarkdown(content, {
+          cdnDomain,
+          autolinkIssueIdentifiers: true,
+          autolinkReferenceTokens: true,
+          issueIdentifierPrefix: workspacePrefix,
+        }),
       ),
-    [content, cdnDomain],
+    [content, cdnDomain, workspacePrefix],
   );
 
   // Derived from the SAME string handed to ReactMarkdown, so offsets line up
@@ -595,7 +717,7 @@ export const RichContent = memo(function RichContent({
         )}
       >
         {markdown}
-        <IssueReferenceTail content={content} />
+        <LazyIssueReferenceTail content={content} />
         <LinkHoverCard {...hover} />
       </div>
     </AttachmentDownloadProvider>

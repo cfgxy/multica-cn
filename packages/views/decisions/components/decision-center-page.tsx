@@ -1,12 +1,15 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
-import { Columns3, Filter, FilterX, Gavel, List } from "lucide-react";
+import { Columns3, Filter, FilterX, Gavel, List, ShieldCheck } from "lucide-react";
 import {
   workspaceDecisionInboxQueryOptions,
 } from "@multica/core/issues/decisions";
+import {
+  workspaceDecisionRequestsQueryOptions,
+} from "@multica/core/issues/decision-requests";
 import {
   useCurrentWorkspace,
 } from "@multica/core/paths";
@@ -31,8 +34,11 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
+import type { WorkspaceDecisionInboxItem } from "@multica/core/types";
 import { DecisionListView } from "./decision-list-view";
 import { DecisionBoardView } from "./decision-board-view";
+import { DecisionRequestRow } from "./decision-request-row";
+import { DecisionDetailSheet } from "./decision-detail-sheet";
 import {
   DECISION_STATUS_CONFIG,
   DECISION_STATUS_ORDER,
@@ -54,6 +60,8 @@ const VIEW_ICON: Record<DecisionCenterViewMode, typeof List> = {
 export function DecisionCenterPage() {
   const { t } = useT("decisions");
   const workspace = useCurrentWorkspace();
+  const [selectedDecision, setSelectedDecision] = useState<WorkspaceDecisionInboxItem | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const viewMode = useStore(decisionCenterPrefsStore, (s) => s.viewMode);
   const hiddenStatuses = useStore(decisionCenterPrefsStore, (s) => s.hiddenStatuses);
@@ -65,6 +73,13 @@ export function DecisionCenterPage() {
     workspaceDecisionInboxQueryOptions(workspace?.id),
   );
 
+  // Authorization requests (RUYI-630) render as their own section above the
+  // question-card surfaces: 决策5 keeps the authorization summary out of the
+  // card list/board buckets entirely, so its only toggle is presence.
+  const { data: requestsData, isPending: requestsPending } = useQuery(
+    workspaceDecisionRequestsQueryOptions(workspace?.id),
+  );
+
   const visibleStatuses = useMemo(
     () => DECISION_STATUS_ORDER.filter((s) => !hiddenStatuses.includes(s)),
     [hiddenStatuses],
@@ -73,10 +88,16 @@ export function DecisionCenterPage() {
     () => (data?.items ?? []).filter((item) => visibleStatuses.includes(item.status)),
     [data, visibleStatuses],
   );
+  const requestItems = useMemo(() => requestsData?.items ?? [], [requestsData]);
   const activeFilterCount = hiddenStatuses.length;
   const isFilteredEmpty = activeFilterCount > 0 && filteredItems.length === 0;
   const isEmpty =
-    !isPending && !isError && activeFilterCount === 0 && (data?.items.length ?? 0) === 0;
+    !isPending &&
+    !requestsPending &&
+    !isError &&
+    activeFilterCount === 0 &&
+    (data?.items.length ?? 0) === 0 &&
+    requestItems.length === 0;
 
   const ViewIcon = VIEW_ICON[viewMode];
 
@@ -180,7 +201,14 @@ export function DecisionCenterPage() {
         </div>
       </div>
 
-      {isPending && (
+      {/*
+        RUYI-738: the skeleton stands in for the page body, so it may only
+        hold while the page would otherwise be blank — the inbox itself still
+        loading, or an empty inbox that cannot yet be declared empty because
+        the auxiliary decision-requests query has not settled. It must never
+        cover a rendered list while decision-requests is still in flight.
+      */}
+      {(isPending || (!isError && (data?.items.length ?? 0) === 0 && requestsPending)) && (
         <div className="flex flex-col gap-2 px-4 py-3" data-testid="decision-center-loading">
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
@@ -225,6 +253,23 @@ export function DecisionCenterPage() {
         </div>
       )}
 
+      {!requestsPending && !isError && !isFilteredEmpty && !isEmpty && requestItems.length > 0 && (
+        <section className="px-4 pb-2" data-testid="decision-requests-section">
+          <div className="flex items-center gap-2 py-2">
+            <ShieldCheck className="size-3.5 text-brand" aria-hidden />
+            <h2 className="text-caption font-medium text-muted-foreground">
+              {t(($) => $.requests.section_title)}
+            </h2>
+            <span className="text-caption text-faint-foreground">{requestItems.length}</span>
+          </div>
+          <div className="flex flex-col">
+            {requestItems.map((request) => (
+              <DecisionRequestRow key={request.id} request={request} />
+            ))}
+          </div>
+        </section>
+      )}
+
       {!isPending && !isError && !isFilteredEmpty && !isEmpty && (
         <>
           {viewMode === "list" && (
@@ -232,6 +277,7 @@ export function DecisionCenterPage() {
               items={data?.items ?? []}
               counts={data?.counts ?? { open: 0, answered: 0, cancelled: 0 }}
               visibleStatuses={visibleStatuses}
+              onSelect={(item) => { setSelectedDecision(item); setDetailOpen(true); }}
             />
           )}
           {viewMode === "board" && (
@@ -239,10 +285,16 @@ export function DecisionCenterPage() {
               items={data?.items ?? []}
               counts={data?.counts ?? { open: 0, answered: 0, cancelled: 0 }}
               visibleStatuses={visibleStatuses}
+              onSelect={(item) => { setSelectedDecision(item); setDetailOpen(true); }}
             />
           )}
         </>
       )}
+      <DecisionDetailSheet
+        item={selectedDecision}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+      />
     </div>
   );
 }

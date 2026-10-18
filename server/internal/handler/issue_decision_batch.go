@@ -142,7 +142,7 @@ func (h *Handler) AnswerIssueDecisionsBatch(w http.ResponseWriter, r *http.Reque
 		results = append(results, result)
 	}
 
-	resp := h.applyDecisionBatchAnswers(r, issue, authorID, open, items, results)
+	resp := h.applyDecisionBatchAnswers(r, issue, authorID, open, items, results, decisionSourceBatch)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -156,9 +156,19 @@ func (h *Handler) listOpenDecisions(r *http.Request, issue db.Issue) ([]db.Issue
 	}
 	open := make([]db.IssueDecision, 0, len(decisions))
 	for _, d := range decisions {
-		if d.Status == "open" {
-			open = append(open, d)
+		if d.Status != "open" {
+			continue
 		}
+		// RUYI-630: authorization cards answer only by card click — they are
+		// invisible to the batch numbering and the "1A 2B" text binding, so
+		// a text reply can never constitute an authorization.
+		if d.DecisionKind == "authorization" {
+			continue
+		}
+		if !h.decisionCardVisibleToCaller(r, uuidToString(issue.WorkspaceID), d) {
+			continue
+		}
+		open = append(open, d)
 	}
 	return open, nil
 }
@@ -195,7 +205,7 @@ type answeredCardInfo struct {
 // once. Results are updated in place so per-card outcomes keep the caller's
 // request order; results carrying status "open" are exactly the prepared
 // items, in order. The open snapshot feeds the echo's 决策 N numbering.
-func (h *Handler) applyDecisionBatchAnswers(r *http.Request, issue db.Issue, authorID string, open []db.IssueDecision, items []batchDecisionAnswer, results []BatchDecisionAnswerOutcome) BatchAnswerIssueDecisionsResponse {
+func (h *Handler) applyDecisionBatchAnswers(r *http.Request, issue db.Issue, authorID string, open []db.IssueDecision, items []batchDecisionAnswer, results []BatchDecisionAnswerOutcome, answerSource string) BatchAnswerIssueDecisionsResponse {
 	resp := BatchAnswerIssueDecisionsResponse{Results: results}
 	seqByID := make(map[string]int, len(open))
 	for i, card := range open {
@@ -216,6 +226,7 @@ func (h *Handler) applyDecisionBatchAnswers(r *http.Request, issue db.Issue, aut
 			SelectedIndices: item.SelectedJSON,
 			AnsweredByType:  pgtype.Text{String: "member", Valid: true},
 			AnsweredByID:    parseUUID(authorID),
+			AnswerSource:    answerSource,
 		})
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -434,6 +445,6 @@ func (h *Handler) applyDecisionBatchAnswersWithOutcomes(r *http.Request, issue d
 	for i, item := range items {
 		results[i] = BatchDecisionAnswerOutcome{DecisionID: uuidToString(item.Decision.ID), Status: "open"}
 	}
-	resp := h.applyDecisionBatchAnswers(r, issue, authorID, open, items, results)
+	resp := h.applyDecisionBatchAnswers(r, issue, authorID, open, items, results, decisionSourceTextToken)
 	return resp.TriggerOutcomes
 }

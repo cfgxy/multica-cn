@@ -30,20 +30,30 @@
     "change_project_context": "プロジェクトコンテキストを変更",
     "remove_project_context": "プロジェクトコンテキストを削除",
     "no_projects": "プロジェクトがまだありません",
-    "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です"
+    "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です",
+    "project_context_failed": "プロジェクトコンテキストを更新できませんでした"
   },
   "queue": {
     "title_other": "キュー内のメッセージ {{count}} 件",
+    "title_single": "キュー内のメッセージ {{number}} 件",
+    "title_multiple": "キュー内のメッセージ {{number}} 件",
     "clear": "すべて削除",
-    "steer": "指示",
+    "clear_confirm_title": "キュー内のメッセージを削除しますか？",
+    "clear_confirm_body": "キュー内のメッセージのみ削除されます。現在のタスクは引き続き実行されます。",
+    "steer": "今すぐ送信",
     "steer_unavailable": "現在の返信が開始されると指示できます",
     "steer_no_permission": "このエージェントを実行する権限がありません",
     "steer_unavailable_toast": "現在は指示できません。キューを更新しています。",
+    "more_actions": "キュー内メッセージ {{position}} のその他の操作",
     "edit": "キュー内のメッセージを編集",
     "remove": "キューから削除",
     "more": "その他のキュー操作",
+    "more_actions": "キュー内メッセージ {{position}} のその他の操作",
     "fallback": "キュー内のメッセージ",
     "action_failed_toast": "キュー内のメッセージを更新できませんでした"
+  },
+  "composer": {
+    "quick_replies_title": "クイック返信"
   },
   "message_list": {
     "show_details": "詳細を表示",
@@ -246,6 +256,20 @@
     "unarchive": "アーカイブを解除"
   },
   "mobile": {
+    "model": {
+      "agent_default": "エージェントの既定モデル",
+      "current": "現在のモデル: {{model}}",
+      "runtime_default": "ランタイムの既定",
+      "save_failed_title": "モデルは変更されませんでした",
+      "loading": "モデルを読み込み中…",
+      "load_failed": "モデルを読み込めませんでした",
+      "unsupported": "このランタイムはモデル選択に対応していません",
+      "unavailable": "モデルまたはセッションを利用できません",
+      "save_failed": "モデル選択を保存できませんでした",
+      "save_failed_title": "モデルは変更されませんでした",
+      "current": "現在のモデル: {{model}}",
+      "runtime_default": "ランタイムの既定"
+    },
     "send_blocked": {
       "no_permission_title": "このエージェントを実行する権限がありません",
       "no_permission_message": "このエージェントを実行する権限がなくなったため、メッセージは送信されませんでした。所有者にアクセス権を依頼してください。",
@@ -257,13 +281,21 @@
       "placeholder": "メッセージ…",
       "agent_working": "エージェント処理中…",
       "unavailable": "チャットを利用できません",
-      "stop_agent": "エージェントを停止"
+      "stop_agent": "エージェントを停止",
+      "stop_failed_title": "エージェントを停止できませんでした",
+      "stop_failed": "もう一度お試しください。現在のメッセージは保持されました。",
+      "quick_replies_title": "クイック返信"
     },
     "send_failure": {
       "no_permission": "このエージェントを実行する権限がなくなったため、メッセージは送信されませんでした。",
       "runtime_required": "メッセージを送信する前に、このエージェントにランタイムをバインドしてください。",
       "budget_reached": "このランタイムの当期コスト予算を使い切ったため、メッセージは送信されませんでした。予算期間がリセットされると再度送信できます。",
       "generic": "メッセージを送信できませんでした。もう一度お試しください。"
+    },
+    "queue": {
+      "action_failed_title": "キューが変更されました",
+      "stale": "このキュー内メッセージは変更されました。キューを更新しました。",
+      "action_failed": "キューを更新できませんでした。もう一度お試しください。"
     },
     "disabled_reason": {
       "no_agent": "エージェントが選択されていません",
@@ -338,6 +370,17 @@
     },
     "timeline": {
       "truncated": "…（省略されました）"
+    },
+    "plus": {
+      "open": "追加",
+      "title": "メッセージに追加",
+      "camera": "カメラ",
+      "image": "写真",
+      "files": "ファイル",
+      "mention": "メンション",
+      "skill": "スキル",
+      "quick_replies": "クイック返信",
+      "close": "閉じる"
     }
   }
 }

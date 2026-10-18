@@ -14,6 +14,8 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
+import { readAuditCredential } from "./audit-credential.js";
+import { readFileAccessCredential } from "./file-access-credential.js";
 import { resolveCredentials, resolveServerUrl, type CredentialOverrides } from "./config.js";
 import { stderrLogger } from "./log.js";
 import { MulticaClient } from "./rest.js";
@@ -27,6 +29,9 @@ interface ParsedFlags {
   token?: string;
   serverUrl?: string;
   profile?: string;
+  auditCredentialFile?: string;
+  fileAccessInstanceId?: string;
+  fileAccessCredentialFile?: string;
 }
 
 function fail(message: string): never {
@@ -44,6 +49,9 @@ function parseFlags(): ParsedFlags {
         token: { type: "string" },
         "server-url": { type: "string" },
         profile: { type: "string" },
+        "audit-credential-file": { type: "string" },
+        "file-access-instance-id": { type: "string" },
+        "file-access-credential-file": { type: "string" },
       },
     });
     return {
@@ -53,6 +61,9 @@ function parseFlags(): ParsedFlags {
       token: values.token,
       serverUrl: values["server-url"],
       profile: values.profile,
+      auditCredentialFile: values["audit-credential-file"],
+      fileAccessInstanceId: values["file-access-instance-id"],
+      fileAccessCredentialFile: values["file-access-credential-file"],
     };
   } catch (error) {
     fail(`invalid arguments: ${error instanceof Error ? error.message : String(error)}`);
@@ -76,6 +87,9 @@ async function main(): Promise<void> {
     const client = new MulticaClient({
       serverUrl: credentials.serverUrl,
       token: credentials.token,
+      auditServiceCredential: readAuditCredential(flags.auditCredentialFile),
+      mcpInstanceId: flags.fileAccessInstanceId ?? process.env.MULTICA_MCP_INSTANCE_ID,
+      fileAccessInstanceCredential: readFileAccessCredential(flags.fileAccessCredentialFile ?? process.env.MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE),
     });
     await runStdio(client, stderrLogger);
     return;
@@ -105,6 +119,9 @@ async function main(): Promise<void> {
       host,
       serverUrl,
       siteRoot,
+      auditServiceCredential: readAuditCredential(flags.auditCredentialFile),
+      mcpInstanceId: process.env.MULTICA_MCP_INSTANCE_ID,
+      fileAccessInstanceCredential: readFileAccessCredential(process.env.MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE),
     });
     const shutdown = (): void => {
       httpServer.close(() => process.exit(0));

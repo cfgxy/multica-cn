@@ -81,6 +81,7 @@ type gcStats struct {
 	evidenceSwept                 int            // expired recycle-evidence files removed by the guard's sweeper
 	taskTempDirsReclaimed         int            // per-task temp dirs under the temp base reclaimed after their owning execution ended
 	taskRootIndexEntriesReclaimed int            // abandoned stable-root records and unpublished entries reclaimed past the orphan TTL
+	snapshotTreesReaped           int            // local snapshot trees (failed-run and crash-orphan) reaped via the per-env-root ledger
 	bytesReclaimed                int64          // total bytes freed in this cycle
 	byPattern                     map[string]int // configured basename or managed path label -> reclaim count
 }
@@ -228,6 +229,18 @@ func (d *Daemon) gcWorkspace(ctx context.Context, wsDir string, stats *gcStats) 
 		if d.isActiveEnvRoot(taskDir) {
 			stats.skipped++
 			continue
+		}
+		// Snapshot sweep (RUYI-669): release failed-run trees past their
+		// retention window and crash leftovers past the orphan age, driven
+		// entirely by the per-env-root ledger. Runs before the env-root
+		// disposition so a root the LocalDirectory exemption keeps around
+		// still sheds its expired snapshot trees on schedule.
+		if reaped := execenv.ReapExpiredSnapshots(taskDir, time.Now()); len(reaped) > 0 {
+			stats.snapshotTreesReaped += len(reaped)
+			d.logger.Info("gc: reaped expired local snapshot trees",
+				"env_root", taskDir,
+				"count", len(reaped),
+				"stems", strings.Join(reaped, ","))
 		}
 		meta, metaErr := execenv.ReadGCMeta(taskDir)
 		if d.cfg.EnvironmentArchiveEnabled {

@@ -137,9 +137,12 @@ var postConsolidationStems = []string{
 	"935_retrospective_agent",                        // RUYI-552 (934 issued to the same issue's direction-2 attempt and deleted unreleased)
 	"936_agent_task_queue_failed_retry_reeval_index", // RUYI-579 (renumbered from 934: yielded to RUYI-551's 934_self_evolution_model_config on main)
 	"937_live_session_mode",                          // RUYI-626
+	"938_workspace_backpressure_settings",            // RUYI-618 (reserved when RUYI-641 was issued; later merged)
 	"939_scheduling_pause",                           // RUYI-608 (renumbered from 936: yielded to RUYI-579's 936_agent_task_queue_failed_retry_reeval_index on main)
+	"940_decision_requests",                          // RUYI-630 (reserved when RUYI-641 was issued; later merged)
 	"941_autopilot_param",                            // RUYI-641 stage A (938, 940 reserved by in-flight issues)
 	"942_drop_agent_webhook",                         // RUYI-641 stage C (retires the 900_agent_webhooks table)
+	"943_daemon_ops_command_channel",                 // RUYI-645 (938, 940 reserved by in-flight issues)
 	"944_workspace_squad_revision",                   // RUYI-666
 	"945_plugin_public_listing",                      // RUYI-668 (renumbered from 457: yielded to upstream 457_task_message_output_truncated, upstream-sync fork-yield rule)
 	"946_plugin_package_public_index",                // RUYI-668 (renumbered from 458: yielded to upstream 458_agent_task_cancellation_actor, upstream-sync fork-yield rule)
@@ -156,10 +159,34 @@ var postConsolidationStems = []string{
 	"957_user_model_key_grant_identity",              // RUYI-670 (from trustbe-cn 551)
 	"958_runtime_config_template_identity",           // RUYI-670 (from trustbe-cn 552)
 	"959_computer_runtime_model_config_identity",     // RUYI-670 (from trustbe-cn 553)
+	"961_voice_provider_config",                      // RUYI-693
+	"962_task_local_directory_scope",                 // RUYI-669 (task-level local_directory subdirectory scope declarations)
 	"963_runtime_cost_budget",                        // RUYI-665 (renumbered 966->963 pre-merge, 963-965 idle across all three sources; original 962 yielded to RUYI-669's reserved 962_task_local_directory_scope — registry-reserved, not on main)
 	"964_runtime_cost_budget_pkey_index",             // RUYI-665
 	"965_runtime_cost_budget_primary_key",            // RUYI-665
 	"966_runtime_cost_budget_scope_index",            // RUYI-665
+	"967_decision_request_answer_source_channel",     // RUYI-630 (row-answer channel label; widens answer_source CHECK)
+	"968_prompt_proposal_value_context",              // RUYI-723 (nullable decision-context columns + score CHECK on prompt_proposal)
+	"969_daemon_backpressure_settings",               // RUYI-729 (daemon-level gate card + trigger/recovery event history)
+	"970_clause_asset_injection",                     // RUYI-751 (ADR 007 phase 1: clause/clause_version/clause_binding/clause_injection/clause_quality_daily + prompt_version legislation source)
+	"971_prompt_proposal_migrate_clause",             // RUYI-764 (ADR 007 拆单 5: migrate_clause change kind for legacy-migration inventory adoption)
+	"972_issue_decision_context",                     // RUYI-770
+	"973_mcp_invocation_audit",                       // RUYI-788 (server-trusted MCP invocation lifecycle, restricted sensitive reads and finish outbox)
+	"973_mcp_invocation_audit_audit_event_expiry_index",
+	"973_mcp_invocation_audit_invocation_id_index",
+	"973_mcp_invocation_audit_outbox_expiry_index",
+	"973_mcp_invocation_audit_outbox_id_index",
+	"974_chat_session_model_override", // RUYI-796
+	"975_daemon_file_access",          // RUYI-789
+	"975_file_access_target_id_index", // RUYI-789
+	"975_file_operation_id_index",     // RUYI-789
+	"976_pull_request_base_branch",    // RUYI-773
+	"978_github_pr_review_decision",   // RUYI-773
+	"977_mcp_file_access",             // RUYI-793
+	"977_mcp_file_access_binding_index",
+	"977_mcp_file_access_operation_invocation_index",
+	"977_mcp_pre_auth_rejection_expiry_index",
+	"977_mcp_pre_auth_rejection_invocation_index",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

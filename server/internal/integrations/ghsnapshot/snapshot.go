@@ -24,6 +24,7 @@ const prSnapshotQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor
       headRefOid
       mergeable
       mergeStateStatus
+      reviewDecision
       commits(last:1){nodes{commit{
         statusCheckRollup{
           state
@@ -63,6 +64,7 @@ type PRSnapshot struct {
 	HeadSHA          string
 	Mergeable        string // MERGEABLE / CONFLICTING / UNKNOWN (raw enum)
 	MergeStateStatus string // CLEAN / DIRTY / BLOCKED / BEHIND / UNSTABLE / ... (raw enum)
+	ReviewDecision   string // APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / empty when unknown
 	// RollupState is statusCheckRollup.state (SUCCESS/FAILURE/PENDING/ERROR/
 	// EXPECTED). Empty ONLY when HasChecks is false.
 	RollupState string
@@ -109,6 +111,7 @@ type graphqlPullRequest struct {
 	HeadRefOid       string `json:"headRefOid"`
 	Mergeable        string `json:"mergeable"`
 	MergeStateStatus string `json:"mergeStateStatus"`
+	ReviewDecision   string `json:"reviewDecision"`
 	Commits          struct {
 		Nodes []struct {
 			Commit struct {
@@ -167,6 +170,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			snap.HeadSHA = pr.HeadRefOid
 			snap.Mergeable = pr.Mergeable
 			snap.MergeStateStatus = pr.MergeStateStatus
+			snap.ReviewDecision = pr.ReviewDecision
 		} else if pr.HeadRefOid != snap.HeadSHA {
 			// Every page re-reads the PR's latest commit. If a synchronize
 			// event advances the head while pagination is in progress, mixing

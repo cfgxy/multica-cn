@@ -196,19 +196,20 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:          uuidToString(s.ID),
-				WorkspaceID: uuidToString(s.WorkspaceID),
-				AgentID:     uuidToString(s.AgentID),
-				CreatorID:   uuidToString(s.CreatorID),
-				ProjectID:   uuidToPtr(s.ProjectID),
-				Title:       s.Title,
-				Status:      s.Status,
-				HasUnread:   s.UnreadCount > 0,
-				UnreadCount: int(s.UnreadCount),
-				LastMessage: buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:      s.PinnedAt.Valid,
-				CreatedAt:   timestampToString(s.CreatedAt),
-				UpdatedAt:   timestampToString(s.UpdatedAt),
+				ID:            uuidToString(s.ID),
+				WorkspaceID:   uuidToString(s.WorkspaceID),
+				AgentID:       uuidToString(s.AgentID),
+				CreatorID:     uuidToString(s.CreatorID),
+				ProjectID:     uuidToPtr(s.ProjectID),
+				ModelOverride: textToPtr(s.ModelOverride),
+				Title:         s.Title,
+				Status:        s.Status,
+				HasUnread:     s.UnreadCount > 0,
+				UnreadCount:   int(s.UnreadCount),
+				LastMessage:   buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:        s.PinnedAt.Valid,
+				CreatedAt:     timestampToString(s.CreatedAt),
+				UpdatedAt:     timestampToString(s.UpdatedAt),
 			})
 		}
 	} else {
@@ -226,19 +227,20 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			resp = append(resp, ChatSessionResponse{
-				ID:          uuidToString(s.ID),
-				WorkspaceID: uuidToString(s.WorkspaceID),
-				AgentID:     uuidToString(s.AgentID),
-				CreatorID:   uuidToString(s.CreatorID),
-				ProjectID:   uuidToPtr(s.ProjectID),
-				Title:       s.Title,
-				Status:      s.Status,
-				HasUnread:   s.UnreadCount > 0,
-				UnreadCount: int(s.UnreadCount),
-				LastMessage: buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
-				Pinned:      s.PinnedAt.Valid,
-				CreatedAt:   timestampToString(s.CreatedAt),
-				UpdatedAt:   timestampToString(s.UpdatedAt),
+				ID:            uuidToString(s.ID),
+				WorkspaceID:   uuidToString(s.WorkspaceID),
+				AgentID:       uuidToString(s.AgentID),
+				CreatorID:     uuidToString(s.CreatorID),
+				ProjectID:     uuidToPtr(s.ProjectID),
+				ModelOverride: textToPtr(s.ModelOverride),
+				Title:         s.Title,
+				Status:        s.Status,
+				HasUnread:     s.UnreadCount > 0,
+				UnreadCount:   int(s.UnreadCount),
+				LastMessage:   buildChatLastMessage(s.LastMessageAt, s.LastMessageContent, s.LastMessageRole, s.LastMessageFailureReason, s.LastMessageKind),
+				Pinned:        s.PinnedAt.Valid,
+				CreatedAt:     timestampToString(s.CreatedAt),
+				UpdatedAt:     timestampToString(s.UpdatedAt),
 			})
 		}
 	}
@@ -1930,13 +1932,14 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type ChatSessionResponse struct {
-	ID          string  `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	AgentID     string  `json:"agent_id"`
-	CreatorID   string  `json:"creator_id"`
-	ProjectID   *string `json:"project_id"`
-	Title       string  `json:"title"`
-	Status      string  `json:"status"`
+	ID            string  `json:"id"`
+	WorkspaceID   string  `json:"workspace_id"`
+	AgentID       string  `json:"agent_id"`
+	CreatorID     string  `json:"creator_id"`
+	ProjectID     *string `json:"project_id"`
+	ModelOverride *string `json:"model_override"`
+	Title         string  `json:"title"`
+	Status        string  `json:"status"`
 	// Only populated by list endpoints — single-session fetches return 0/false/nil.
 	// HasUnread is kept as a convenience (== UnreadCount > 0) for existing consumers.
 	HasUnread   bool             `json:"has_unread"`
@@ -2047,16 +2050,17 @@ type ChatMessageResponse struct {
 
 func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 	return ChatSessionResponse{
-		ID:          uuidToString(s.ID),
-		WorkspaceID: uuidToString(s.WorkspaceID),
-		AgentID:     uuidToString(s.AgentID),
-		CreatorID:   uuidToString(s.CreatorID),
-		ProjectID:   uuidToPtr(s.ProjectID),
-		Title:       s.Title,
-		Status:      s.Status,
-		Pinned:      s.PinnedAt.Valid,
-		CreatedAt:   timestampToString(s.CreatedAt),
-		UpdatedAt:   timestampToString(s.UpdatedAt),
+		ID:            uuidToString(s.ID),
+		WorkspaceID:   uuidToString(s.WorkspaceID),
+		AgentID:       uuidToString(s.AgentID),
+		CreatorID:     uuidToString(s.CreatorID),
+		ProjectID:     uuidToPtr(s.ProjectID),
+		ModelOverride: textToPtr(s.ModelOverride),
+		Title:         s.Title,
+		Status:        s.Status,
+		Pinned:        s.PinnedAt.Valid,
+		CreatedAt:     timestampToString(s.CreatedAt),
+		UpdatedAt:     timestampToString(s.UpdatedAt),
 	}
 }
 
