@@ -21,7 +21,8 @@ WITH candidates AS MATERIALIZED (
       AND target.enabled = TRUE AND target.roots <> '[]'::jsonb
       AND candidate.requester_id IS NOT NULL
       AND target.workspace_acl ? candidate.workspace_id::text
-      AND (target.member_acl = '[]'::jsonb OR target.member_acl ? candidate.requester_id::text)
+      AND (target.member_acl IS NULL OR target.member_acl IN ('null'::jsonb, '[]'::jsonb)
+           OR target.member_acl ? candidate.requester_id::text)
     ORDER BY candidate.created_at, candidate.id LIMIT $2
     FOR UPDATE OF candidate SKIP LOCKED
 ), claimed AS (
