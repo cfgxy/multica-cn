@@ -95,7 +95,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"daemon_file_access_target":        workspaceDelete,
 	"daemon_file_operation":            workspaceDelete,
 	"mcp_file_access_instance_binding": workspaceDelete,
-	"mcp_pre_auth_rejection":           workspaceDeleteKeep,
+	// The file-read policy is a deployment-wide singleton and has no
+	// workspace ownership; deleting one workspace must preserve it.
+	"mcp_file_read_policy":   workspaceDeleteKeep,
+	"mcp_pre_auth_rejection": workspaceDeleteKeep,
 	// Ops command ledger (RUYI-645): workspace-scoped operational evidence
 	// with no foreign keys by design, swept explicitly through the
 	// application-layer deletion graph like the other evidence leaves.
