@@ -81,6 +81,7 @@ export interface PromptProposal {
   /** Warn-only local-engine advisory; null = layer off / unchecked. */
   jev_advisory?: PromptJevAdvisory | null;
   enacted_version?: number;
+  rollback_of_version?: number;
   rollback_reason: string;
   merged_from: PromptProposalMergeRef[];
   source: string;

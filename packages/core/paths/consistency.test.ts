@@ -22,6 +22,7 @@ describe("paths.workspace() shape", () => {
         "selfEvolutionKnowledge",
         "selfEvolutionSkills",
         "selfEvolutionQuality",
+        "selfEvolutionClauseGovernance",
         "selfEvolutionQuiz",
         "selfEvolutionProposals",
         "selfEvolutionVersions",
@@ -59,6 +60,7 @@ describe("paths.workspace() shape", () => {
       ["selfEvolutionKnowledge", "self-evolution/knowledge"],
       ["selfEvolutionSkills", "self-evolution/skills"],
       ["selfEvolutionQuality", "self-evolution/quality"],
+      ["selfEvolutionClauseGovernance", "self-evolution/clause-governance"],
       ["selfEvolutionQuiz", "self-evolution/quiz"],
       ["selfEvolutionProposals", "self-evolution/proposals"],
       ["selfEvolutionVersions", "self-evolution/versions"],
@@ -87,6 +89,13 @@ describe("paths.workspace() shape", () => {
       expect(typeof fn).toBe("function");
       expect(fn!()).toBe(`/acme/${segment}`);
     }
+  });
+});
+
+describe("clause governance paths", () => {
+  it("encodes clause identifiers in detail routes", () => {
+    expect(paths.workspace("acme").selfEvolutionClauseGovernanceDetail("clause/1"))
+      .toBe("/acme/self-evolution/clause-governance/clause%2F1");
   });
 });
 

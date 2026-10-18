@@ -227,7 +227,6 @@ const listAgentRuntimeIDsByProfile = `-- name: ListAgentRuntimeIDsByProfile :man
 SELECT id FROM agent_runtime
 WHERE profile_id = $1 AND workspace_id = $2
 ORDER BY id
-FOR UPDATE
 `
 
 type ListAgentRuntimeIDsByProfileParams struct {
@@ -240,6 +239,9 @@ type ListAgentRuntimeIDsByProfileParams struct {
 // archived-squad / autopilot teardown the runtime-delete path uses before
 // removing each runtime row — agent.runtime_id is ON DELETE RESTRICT, so a
 // bare delete would 500 whenever an archived agent still references the row.
+// This enumeration intentionally does not lock runtime rows: profile deletion
+// must lock the associated chat sessions first, matching the send path's
+// session -> runtime foreign-key order.
 func (q *Queries) ListAgentRuntimeIDsByProfile(ctx context.Context, arg ListAgentRuntimeIDsByProfileParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listAgentRuntimeIDsByProfile, arg.ProfileID, arg.WorkspaceID)
 	if err != nil {
@@ -335,6 +337,40 @@ func (q *Queries) ListRuntimeProfiles(ctx context.Context, workspaceID pgtype.UU
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockAgentRuntimesByProfile = `-- name: LockAgentRuntimesByProfile :many
+SELECT id FROM agent_runtime
+WHERE profile_id = $1 AND workspace_id = $2
+ORDER BY id
+FOR UPDATE
+`
+
+type LockAgentRuntimesByProfileParams struct {
+	ProfileID   pgtype.UUID `json:"profile_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Lock runtime rows only after profile deletion has locked every associated
+// chat session, preserving the same session -> runtime order as chat sends.
+func (q *Queries) LockAgentRuntimesByProfile(ctx context.Context, arg LockAgentRuntimesByProfileParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockAgentRuntimesByProfile, arg.ProfileID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

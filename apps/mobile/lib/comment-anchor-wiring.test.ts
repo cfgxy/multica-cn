@@ -68,7 +68,9 @@ describe("手机端评论锚点落地接线", () => {
   });
 
   it("卡片上报回复的行内偏移（气泡基准 + 自身 y）", () => {
-    expect(card).toContain("onLayout={(e) => measureReply(reply.id,");
+    expect(card).toContain("onMeasureReply={measureReply}");
+    expect(card).toContain("commentId={reply.id}");
+    expect(card).toContain("onLayout={(e) => onMeasureReply(commentId, e.nativeEvent.layout)}");
     expect(card).toContain("onLayout={(e) => measureBubble(e.nativeEvent.layout)}");
     expect(card).toContain("new RowGeometryReporter(");
   });

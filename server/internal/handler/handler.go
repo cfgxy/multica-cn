@@ -71,9 +71,14 @@ type dbExecutor interface {
 }
 
 type Config struct {
-	AllowSignup         bool
-	AllowedEmails       []string
-	AllowedEmailDomains []string
+	// MCPAuditServiceCredential is the private credential held by the MCP
+	// service when recording tool invocation lifecycle events. Empty disables
+	// the internal audit-write endpoints; it is never returned by an API.
+	MCPAuditServiceCredential        string
+	MCPFileAccessInstanceCredentials map[string]string
+	AllowSignup                      bool
+	AllowedEmails                    []string
+	AllowedEmailDomains              []string
 	// SuperAdminEmails is the SUPER_ADMIN_EMAILS deployment env (comma
 	// separated, RUYI-47). At login, an account whose email is on the list
 	// is granted the instance-level super-admin flag idempotently. The
@@ -187,6 +192,7 @@ type DaemonPendingWorkNotifier interface {
 
 type Handler struct {
 	Queries                *db.Queries
+	runActivityAuditWriter runActivityAuditWriter
 	DB                     dbExecutor
 	TxStarter              txStarter
 	Hub                    *realtime.Hub
@@ -513,6 +519,8 @@ type Handler struct {
 	PRRefresh *ghsnapshot.Manager
 	cfg       Config
 }
+
+type runActivityAuditWriter func(*http.Request, *db.Queries, pgtype.UUID, pgtype.UUID, pgtype.UUID, pgtype.UUID, string, int32, int, string, runActivityResponse, int, string) bool
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
 	var executor dbExecutor

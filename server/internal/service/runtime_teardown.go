@@ -60,6 +60,13 @@ func ValidateRuntimeAgentWorkspaces(runtime db.AgentRuntime, agents []db.Agent) 
 func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID, opts RuntimeTeardownOptions) (RuntimeTeardownResult, error) {
 	var out RuntimeTeardownResult
 
+	// Chat model writes and sends lock chat_session before reading/updating Agent
+	// state. Do the same before taking runtime/agent locks so teardown cannot
+	// deadlock with a send that is creating a task on this runtime.
+	if _, err := qtx.LockChatSessionsForRuntimeBind(ctx, runtimeID); err != nil {
+		return out, fmt.Errorf("lock runtime chat sessions: %w", err)
+	}
+
 	runtime, err := qtx.LockAgentRuntime(ctx, runtimeID)
 	if err != nil {
 		return out, fmt.Errorf("load runtime: %w", err)

@@ -337,6 +337,7 @@ load_manifest() {
   [ "${NAME:-}" = "$SLOT" ] || die "Manifest $SLOT_MANIFEST declares NAME=${NAME:-}; expected $SLOT."
   : "${CREATED_AT:=}" "${ISSUE:=}" "${CODE_SOURCE:=}" "${CODE_SHA:=}" \
     "${OWNER:=unknown}" "${TTL_HOURS:=0}" "${EXPIRES_AT:=}" "${PHASE:=dev}" \
+    "${DESKTOP_MEMORY_MB:=$(budget_field components.desktop.memory_mb)}" \
     "${DESKTOP_USER_DATA_DIR:=}" "${DESKTOP_ENV_FILE:=$DIR/apps/desktop/.env.development.local}"
   return 0
 }
@@ -362,6 +363,7 @@ save_manifest() {
     write_manifest_value PROFILE "$SLOT_PROFILE"
     write_manifest_value WORKSPACES_ROOT "$SLOT_WORKSPACES_ROOT"
     write_manifest_value DESKTOP_APP_SUFFIX "$SLOT_DESKTOP_SUFFIX"
+    write_manifest_value DESKTOP_MEMORY_MB "${DESKTOP_MEMORY_MB:-$(budget_field components.desktop.memory_mb)}"
     write_manifest_value DESKTOP_USER_DATA_DIR "$(desktop_user_data_dir "$SLOT_DESKTOP_SUFFIX")"
     write_manifest_value DESKTOP_ENV_FILE "$DESKTOP_ENV_FILE"
   } > "$SLOT_MANIFEST"
@@ -697,6 +699,101 @@ desktop_user_data_dir() {
 # The slot env file is generated wholesale from slots.json — no field is ever
 # inherited from a checkout's .env/.env.worktree, which is how the shared main
 # database used to leak into per-issue environments (RUYI-300).
+# Deterministic per-slot credential master key (RUYI-749 deploy material):
+# base64 of SHA-256 over the slot's own DB password — exactly the 32 bytes
+# secretbox.LoadKey demands for MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY.
+# Deriving it from the password keeps it stable for the slot's lifetime
+# (credentials encrypted at rest stay decryptable across env re-materials)
+# and distinct across slots. Dev-only material living beside the password
+# it derives from, in the same 600 file.
+slot_credential_key() {
+  local password="$1"
+  [ -n "$password" ] || return 1
+  SLOT_KEY_SEED="$password" node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.env.SLOT_KEY_SEED, "utf8").digest("base64"))'
+}
+
+slot_mcp_credential() {
+  local password="$1" purpose="$2"
+  [ -n "$password" ] && [ -n "$purpose" ] || return 1
+  SLOT_MCP_CREDENTIAL_SEED="${purpose}:${password}" node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.env.SLOT_MCP_CREDENTIAL_SEED, "utf8").digest("base64"))'
+}
+
+slot_mcp_instance_id() { printf 'slot-%s-file-access' "$SLOT"; }
+slot_mcp_audit_credential_file() { printf '%s/mcp-audit-credential' "$SLOT_DIR"; }
+slot_mcp_file_access_credential_file() { printf '%s/mcp-file-access-credential' "$SLOT_DIR"; }
+
+ensure_slot_secret_file() {
+  local path="$1" expected="$2" replace="${3:-false}"
+  if [ -e "$path" ]; then
+    [ -f "$path" ] || die "MCP credential path is not a regular file: $path"
+    [ "$(stat -c '%a' "$path")" = 600 ] || die "MCP credential file must have mode 600: $path"
+    if [ "$(cat "$path")" = "$expected" ]; then
+      return 0
+    fi
+    [ "$replace" = true ] || die "MCP credential file does not match the slot-derived value: $path"
+  fi
+  (umask 077 && printf '%s' "$expected" > "$path")
+  chmod 600 "$path"
+}
+
+ensure_slot_env_secret() {
+  local key="$1" expected="$2" appended_name="$3" current
+  current="$(env -i bash -c 'set -a; . "$1"; printenv "$2"' _ "$SLOT_ENV_FILE" "$key" 2>/dev/null || true)"
+  if [ -n "$current" ]; then
+    [ "$current" = "$expected" ] || die "slot env field $key does not match its slot-derived value"
+    return 0
+  fi
+  printf '%s=%q\n' "$key" "$expected" >> "$SLOT_ENV_FILE"
+  if [ -n "$appended_name" ]; then
+    MCP_ENV_APPENDED="${MCP_ENV_APPENDED:+$MCP_ENV_APPENDED }$appended_name"
+  fi
+}
+
+ensure_slot_env_raw_secret() {
+  local key="$1" expected="$2" appended_name="$3" current temp
+  current="$(env_file_field "$key" || true)"
+  if [ "$current" = "$expected" ]; then
+    return 0
+  fi
+  if [ -n "$current" ]; then
+    # Older slot files wrote JSON through printf %q. That is valid when sourced
+    # by a shell but Make exports the backslashes literally, so the API rejects
+    # the value as JSON. Rewrite only that known legacy representation.
+    [ "$(env -i bash -c 'set -a; . "$1"; printenv "$2"' _ "$SLOT_ENV_FILE" "$key" 2>/dev/null || true)" = "$expected" ] \
+      || die "slot env field $key does not match its slot-derived value"
+    temp="$(mktemp "$SLOT_DIR/.env.XXXXXX")"
+    RAW_SECRET_KEY="$key" RAW_SECRET_VALUE="$expected" awk '
+      index($0, ENVIRON["RAW_SECRET_KEY"] "=") == 1 {
+        print ENVIRON["RAW_SECRET_KEY"] "=" ENVIRON["RAW_SECRET_VALUE"]
+        next
+      }
+      { print }
+    ' "$SLOT_ENV_FILE" > "$temp"
+    chmod 600 "$temp"
+    mv "$temp" "$SLOT_ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$expected" >> "$SLOT_ENV_FILE"
+    MCP_ENV_APPENDED="${MCP_ENV_APPENDED:+$MCP_ENV_APPENDED }$appended_name"
+  fi
+}
+
+ensure_slot_mcp_credentials() {
+  local password="$1" replace_files="${2:-false}" audit_credential instance_credential instance_id bindings
+  [ -n "$password" ] || die "cannot derive MCP credentials without the slot database password"
+  audit_credential="$(slot_mcp_credential "$password" audit)"
+  instance_credential="$(slot_mcp_credential "$password" file-access)"
+  instance_id="$(slot_mcp_instance_id)"
+  bindings=$(printf '{"%s":"%s"}' "$instance_id" "$instance_credential")
+
+  ensure_slot_env_secret MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL "$audit_credential" MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL
+  ensure_slot_env_raw_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS "$bindings" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS
+  ensure_slot_env_secret MULTICA_MCP_INSTANCE_ID "$instance_id" MULTICA_MCP_INSTANCE_ID
+  ensure_slot_env_secret MCP_AUDIT_CREDENTIAL_FILE "$(slot_mcp_audit_credential_file)" MCP_AUDIT_CREDENTIAL_FILE
+  ensure_slot_env_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE "$(slot_mcp_file_access_credential_file)" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE
+  ensure_slot_secret_file "$(slot_mcp_audit_credential_file)" "$audit_credential" "$replace_files"
+  ensure_slot_secret_file "$(slot_mcp_file_access_credential_file)" "$instance_credential" "$replace_files"
+}
+
 generate_slot_env() {
   local password="$1"
   {
@@ -720,12 +817,24 @@ generate_slot_env() {
     printf 'WORKSPACE_SLUG=%s\n' "$WORKSPACE_SLUG"
     printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
+    printf 'MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=%q\n' "$(slot_mcp_credential "$password" audit)"
+    printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=%s\n' "$(printf '{"%s":"%s"}' "$(slot_mcp_instance_id)" "$(slot_mcp_credential "$password" file-access)")"
+    printf 'MULTICA_MCP_INSTANCE_ID=%q\n' "$(slot_mcp_instance_id)"
+    printf 'MCP_AUDIT_CREDENTIAL_FILE=%q\n' "$(slot_mcp_audit_credential_file)"
+    printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=%q\n' "$(slot_mcp_file_access_credential_file)"
     # E2E fixture dependency (RUYI-632): e2e/agent-mcp.spec.ts asserts the
     # creator-only MCP Apps tab, which the composio_mcp_apps flag gates off by
     # default. Slots exist to run the E2E/dev surface, so the flag ships on.
     printf 'FF_COMPOSIO_MCP_APPS=true\n'
+    # Voice provider credential encryption (RUYI-749): without this the
+    # server fail-closes credential writes with 503 and pool rows stay
+    # "not configured" — the Web/Android voice management screens are dead
+    # on arrival without it.
+    printf 'MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=%s\n' "$(slot_credential_key "$password")"
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
+  MCP_ENV_APPENDED=""
+  ensure_slot_mcp_credentials "$password" true
 }
 
 # `use` and `up` both funnel through here. A missing env file is generated
@@ -734,7 +843,7 @@ generate_slot_env() {
 # so the stored POSTGRES_PASSWORD, the one the shared instance's slot role was
 # provisioned with, survives the upgrade untouched.
 ensure_slot_env() {
-  local password="$1" appended=""
+  local password="$1" appended="" stored_password=""
   if [ ! -f "$SLOT_ENV_FILE" ]; then
     generate_slot_env "$password"
     ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
@@ -752,7 +861,25 @@ ensure_slot_env() {
     printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }FF_COMPOSIO_MCP_APPS"
   fi
-  [ -z "$appended" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
+  if ! grep -q '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$SLOT_ENV_FILE"; then
+    # Derived from the STORED password (RUYI-749) — the same value a fresh
+    # generation would produce for this slot, so pre-existing rows encrypted
+    # under it stay decryptable. A slot env without a password is already
+    # broken; skip the append rather than write a key over an empty seed.
+    if stored_password="$(env_file_field POSTGRES_PASSWORD)" && [ -n "$stored_password" ]; then
+      printf 'MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=%s\n' "$(slot_credential_key "$stored_password")" >> "$SLOT_ENV_FILE"
+      appended="${appended:+$appended }MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY"
+    else
+      warn "slot env $SLOT_ENV_FILE has no POSTGRES_PASSWORD to derive MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY from; credential writes will fail-closed until the env is repaired"
+    fi
+  fi
+  if stored_password="$(env_file_field POSTGRES_PASSWORD)" && [ -n "$stored_password" ]; then
+    password="$stored_password"
+  fi
+  MCP_ENV_APPENDED=""
+  ensure_slot_mcp_credentials "$password"
+  appended="${appended:+$appended }${MCP_ENV_APPENDED:-}"
+  [ -z "${appended// }" ] || ok "upgraded slot env $SLOT_ENV_FILE (added $appended)"
 }
 
 # Materialize the slot env as the worktree's .env.worktree (RUYI-632): the
@@ -1566,11 +1693,38 @@ start_watchdog() {
     "$SLOT" "$SLOT_DIR" "$SLOTS_FILE"
   sleep 0.3
   if pid="$(component_pid watchdog 2>/dev/null)"; then
-    ok "resource watchdog running (pid $pid, budget: api $(budget_field components.api.memory_mb)MB / web $(budget_field components.web.memory_mb)MB / others $(budget_field components.daemon.memory_mb)MB)"
+    ok "resource watchdog running (pid $pid, budget: api $(budget_field components.api.memory_mb)MB / web $(budget_field components.web.memory_mb)MB / desktop ${DESKTOP_MEMORY_MB:-$(budget_field components.desktop.memory_mb)}MB / others $(budget_field components.daemon.memory_mb)MB)"
   else
     warn "resource watchdog did not stay up; log: $(log_file watchdog)"
     return 1
   fi
+}
+
+cmd_resource_budget() {
+  local target="${1:-}" operation="${2:-}" desired
+  local caller
+  [ "$SLOT" = dev2 ] || die "Temporary Desktop budget override is authorized only for dev2."
+  [ "$target" = desktop ] || die "Only the desktop component supports a temporary budget override."
+  case "$operation" in
+    --temporary-4096) desired=4096 ;;
+    --restore) desired="$(budget_field components.desktop.memory_mb)" ;;
+    *) die "Usage: $0 dev2 resource-budget desktop --temporary-4096|--restore" ;;
+  esac
+  [ "$desired" = 256 ] || [ "$desired" = 4096 ] \
+    || die "Desktop budget must be the canonical 256MB or the authorized temporary 4096MB."
+  require_lease active
+  caller="$(caller_owner)"
+  [ "$caller" = RUYI-773 ] || die "The temporary Desktop budget is authorized only for RUYI-773."
+  [ "$(effective_lease_issue)" = RUYI-773 ] \
+    || die "The dev2 lease must belong to RUYI-773 to change its Desktop budget."
+  [ -f "$SLOT_MANIFEST" ] || die "Slot $SLOT has no manifest; bind it with use/up before changing its budget."
+  load_manifest
+  [ "${ISSUE:-}" = RUYI-773 ] \
+    || die "The dev2 manifest must belong to RUYI-773 to change its Desktop budget."
+  DESKTOP_MEMORY_MB="$desired"
+  MANIFEST_ISSUE="$ISSUE"
+  save_manifest
+  ok "dev2 desktop watchdog budget set to ${DESKTOP_MEMORY_MB}MB"
 }
 
 stop_watchdog() {
@@ -1809,6 +1963,9 @@ cmd_use() {
   now="$(now_iso)"
   if [ -f "$SLOT_MANIFEST" ]; then
     load_manifest || true
+    if [ "${ISSUE:-}" != "${MULTICA_CALLER_OWNER:-}" ]; then
+      DESKTOP_MEMORY_MB="$(budget_field components.desktop.memory_mb)"
+    fi
     created="${CREATED_AT:-$now}"
   fi
   CREATED_AT="${created:-$now}"
@@ -2682,6 +2839,7 @@ Fixed-slot local development environments (fact source: scripts/slots.json).
   dev-env.sh <slot> down    [--components ...]  # stop a held slot — run BEFORE lock-release
   dev-env.sh <slot> status  [--json]
   dev-env.sh <slot> use     [sha]        # bind this checkout, or load a revision
+  dev-env.sh dev2 resource-budget desktop --temporary-4096|--restore
   dev-env.sh <slot> handoff --to dev|qa [--note ...]  # role handover, same issue
   dev-env.sh <slot> lock-status
   dev-env.sh <slot> lock-release [--force]
@@ -2772,6 +2930,7 @@ main() {
     down) cmd_down "$@" ;;
     status) cmd_status "$@" ;;
     use) cmd_use "$@" ;;
+    resource-budget) cmd_resource_budget "$@" ;;
     handoff) cmd_handoff "$@" ;;
     lock-status) cmd_lock_status ;;
     lock-release) cmd_lock_release "$@" ;;

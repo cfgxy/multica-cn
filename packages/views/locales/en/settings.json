@@ -475,7 +475,9 @@
       "marketplace": "Marketplace",
       "mcp": "MCP",
       "billing": "Billing",
-      "authorizations": "My Authorizations"
+      "authorizations": "My Authorizations",
+      "voice": "Voice",
+      "workspace": "Workspace"
     }
   },
   "plugins": {
@@ -1690,7 +1692,8 @@
       "sign_out_body": "You'll need to sign in again to use Multica on this device.",
       "notifications_subtitle": "Inbox and system alerts",
       "server_section": "Server",
-      "workspaces_load_failed": "Failed to load workspaces"
+      "workspaces_load_failed": "Failed to load workspaces",
+      "voice_subtitle": "Provider pool, workspace default and dictation"
     },
     "update": {
       "about_section": "About",
@@ -1710,5 +1713,59 @@
       "failed_invalid_local": "Couldn't read the installed version.",
       "failed_unexpected": "Something went wrong. Try again later."
     }
+  },
+  "voice": {
+    "title": "Voice",
+    "description": "Manage the workspace's voice provider pool, the workspace-wide default voice configuration, and dictation (ASR). Agents without their own voice override use the workspace default.",
+    "admin_only_hint": "Viewing only — workspace owners and admins manage voice settings.",
+    "gemini_only_hint": "Realtime voice and dictation currently speak the Gemini protocol; other provider types can be configured in the pool but fall back to the official form.",
+    "pool_section_title": "Voice providers",
+    "pool_section_hint": "The workspace pool of voice suppliers. The API key is stored server-side and never leaves the server — saving runs a connectivity probe.",
+    "add_provider": "Add provider",
+    "create_dialog_title": "Add voice provider",
+    "provider_name_label": "Display name",
+    "provider_name_placeholder": "e.g. Gemini (workspace)",
+    "provider_type_label": "Type",
+    "provider_type_gemini": "Gemini",
+    "provider_type_chatgpt": "ChatGPT",
+    "create": "Create",
+    "enabled_label": "Enabled",
+    "status_not_configured": "No API key",
+    "status_missing": "Key missing",
+    "status_configured": "Key configured",
+    "probe_ok": "Connectivity OK",
+    "probe_invalid": "Key rejected",
+    "probe_unreachable": "Unreachable",
+    "probe_skipped": "Not tested",
+    "probe_checked_at": "Checked {{time}}",
+    "action_set_credential": "Set API key…",
+    "action_reprobe": "Test connectivity",
+    "action_rename": "Rename…",
+    "action_delete": "Delete…",
+    "credential_dialog_title": "API key",
+    "credential_input_label": "API key",
+    "credential_save": "Save & test",
+    "credential_remove": "Remove stored key",
+    "rename_dialog_title": "Rename provider",
+    "save": "Save",
+    "delete_dialog_title": "Delete voice provider",
+    "delete_dialog_body": "Agents overriding this provider fall back to the workspace default, and the workspace default / dictation references to it are cleared.",
+    "delete": "Delete",
+    "default_section_title": "Workspace default voice",
+    "default_section_hint": "Used by every agent without its own voice override. Only Gemini providers can serve realtime voice today.",
+    "asr_section_title": "Voice dictation (ASR)",
+    "asr_section_hint": "Workspace-wide dictation transcription. Once configured, dictation is available to the whole workspace. Only Gemini providers can serve ASR today.",
+    "provider_picker_label": "Provider",
+    "provider_picker_placeholder": "Not configured",
+    "model_label": "Model",
+    "model_placeholder_default": "Default: {{model}}",
+    "advanced_label": "Advanced parameters (JSON)",
+    "advanced_placeholder": "e.g. {\"temperature\": 0.5}",
+    "advanced_invalid": "Advanced parameters must be a valid JSON object",
+    "no_eligible_providers": "No eligible provider yet — add a Gemini provider with a working API key first.",
+    "probe_failed_toast": "Connectivity test failed to run",
+    "save_failed_toast": "Failed to save",
+    "delete_failed_toast": "Failed to delete provider",
+    "cancel": "Cancel"
   }
 }

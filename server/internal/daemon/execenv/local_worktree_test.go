@@ -3,6 +3,7 @@ package execenv
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -464,6 +465,17 @@ func TestWorktreeModeDeliversBranchWithoutSidecars(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(env.WorkDir, ".agent_context")); err != nil {
 		t.Fatalf("precondition: Prepare should have written sidecars into the worktree: %v", err)
+	}
+	markerData, err := os.ReadFile(filepath.Join(env.WorkDir, TaskContextMarkerRelPath))
+	if err != nil {
+		t.Fatalf("read prepared task marker: %v", err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(markerData, &marker); err != nil {
+		t.Fatalf("decode prepared task marker: %v", err)
+	}
+	if marker.TaskID != "11112222-3333-4444-5555-666677778888" || marker.Branch != env.LocalWorktree.Branch || marker.BaseCommit != env.LocalWorktree.BaseCommit {
+		t.Fatalf("prepared delivery context = %+v, want task/branch/base from LocalWorktree %+v", marker, env.LocalWorktree)
 	}
 
 	// The agent's actual work.

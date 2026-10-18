@@ -15,6 +15,7 @@ import {
   promotePendingTaskToRunning,
   seedAcceptedPendingTask,
   seedPendingTaskFromQueued,
+  settlePendingChatTask,
 } from "./chat-ws-updaters";
 import { chatKeys } from "@/data/queries/chat";
 
@@ -105,9 +106,89 @@ describe("applyChatDoneToCache", () => {
 
     expect(qc.getQueryData<ChatMessage[]>(chatKeys.messages(SESSION))).toHaveLength(1);
   });
+
+  it("clears the completed task and promotes its queued successor", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
+      task_id: "task-1",
+      status: "running",
+      queued_tasks: [{
+        task_id: "task-2",
+        status: "queued",
+        created_at: "2026-07-09T00:00:01Z",
+      }],
+    });
+
+    applyChatDoneToCache(qc, donePayload());
+
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toEqual({
+      task_id: "task-2",
+      status: "queued",
+      created_at: "2026-07-09T00:00:01Z",
+      queued_tasks: [],
+    });
+  });
+
+  it("does not clear a newer active task when an older completion arrives", () => {
+    const qc = new QueryClient();
+    const newerTask: ChatPendingTask = {
+      task_id: "task-2",
+      status: "running",
+      queued_tasks: [{
+        task_id: "task-3",
+        status: "queued",
+        created_at: "2026-07-09T00:00:02Z",
+      }],
+    };
+    qc.setQueryData(chatKeys.pendingTask(SESSION), newerTask);
+
+    applyChatDoneToCache(qc, donePayload({ task_id: "task-1" }));
+
+    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(newerTask);
+  });
 });
 
 describe("pending task queue events", () => {
+  it("settles the terminal task immediately and promotes its queued successor", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION), {
+      task_id: "task-1",
+      status: "running",
+      queued_tasks: [{
+        task_id: "task-2",
+        status: "queued",
+        created_at: "2026-07-09T00:00:01Z",
+      }],
+    });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    settlePendingChatTask(qc, SESSION, "task-1");
+
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toEqual({
+      task_id: "task-2",
+      status: "queued",
+      created_at: "2026-07-09T00:00:01Z",
+      queued_tasks: [],
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: chatKeys.pendingTask(SESSION),
+    });
+  });
+
+  it("does not clear a newer active task when a late terminal event arrives", () => {
+    const qc = new QueryClient();
+    const newerTask: ChatPendingTask = {
+      task_id: "task-2",
+      status: "running",
+      queued_tasks: [],
+    };
+    qc.setQueryData(chatKeys.pendingTask(SESSION), newerTask);
+
+    settlePendingChatTask(qc, SESSION, "task-1");
+
+    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(newerTask);
+  });
+
   it("keeps an idle accepted send out of the follow-up queue", () => {
     const qc = new QueryClient();
 
@@ -221,7 +302,7 @@ describe("pending task queue events", () => {
     });
   });
 
-  it("does not replace an active head with a sparse follow-up queued event", () => {
+  it("keeps an active head and immediately exposes a sparse queued follow-up", () => {
     const qc = new QueryClient();
     const active: ChatPendingTask = {
       task_id: "task-active",
@@ -239,7 +320,10 @@ describe("pending task queue events", () => {
       status: "queued",
     });
 
-    expect(qc.getQueryData(chatKeys.pendingTask(SESSION))).toEqual(active);
+    expect(qc.getQueryData<ChatPendingTask>(chatKeys.pendingTask(SESSION))).toMatchObject({
+      task_id: "task-active",
+      queued_tasks: [{ task_id: "task-follow-up", status: "queued" }],
+    });
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: chatKeys.pendingTask(SESSION),
     });
@@ -415,6 +499,17 @@ function sessionUpdatedPayload(
 }
 
 describe("applyChatSessionUpdatedToCache", () => {
+  it("applies and clears a nullable model override from another client", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), [chatSession({ id: SESSION, model_override: null })]);
+
+    applyChatSessionUpdatedToCache(qc, "ws", sessionUpdatedPayload({ model_override: "model-a" }));
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"))?.[0]?.model_override).toBe("model-a");
+
+    applyChatSessionUpdatedToCache(qc, "ws", sessionUpdatedPayload({ model_override: null }));
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"))?.[0]?.model_override).toBeNull();
+  });
+
   it("patches a plain rename without re-sorting", () => {
     const rows = [
       chatSession({
