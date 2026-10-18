@@ -70,6 +70,9 @@
       "dismiss": "Dismiss"
     }
   },
+  "audit_view": {
+    "title": "MCP audit", "description": "Recorded MCP calls, including denied and failed requests.", "since": "Since", "since_placeholder": "Since (RFC3339)", "tool": "Tool", "actor": "Actor", "actor_id": "Actor ID", "result": "Result", "all_results": "All results", "result_success": "Success", "result_failure": "Failure", "result_refused": "Refused", "target": "Target", "target_type": "Target type", "target_id": "Target ID", "all_targets": "All targets", "target_workspace": "Workspace", "target_issue": "Issue", "target_host": "Host", "apply": "Apply", "loading": "Loading audit events...", "load_failed": "Unable to load audit events.", "empty": "No audit events match these filters.", "time": "Time", "reason": "Reason", "started": "Started"
+  },
   "mobile": {
     "agents": {
       "coming_soon": "Agents coming soon."
