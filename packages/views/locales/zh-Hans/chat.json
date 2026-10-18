@@ -286,12 +286,6 @@
       "stop_failed": "请重试。当前消息已保留。",
       "quick_replies_title": "快捷回复"
     },
-    "queue": {
-      "action_failed_title": "队列已变化",
-      "stale": "这条排队消息已变化，队列已刷新。",
-      "action_failed": "无法更新队列，请重试。"
-    },
-    },
     "send_failure": {
       "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
       "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",

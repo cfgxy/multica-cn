@@ -286,12 +286,6 @@
       "stop_failed": "다시 시도하세요. 현재 메시지는 유지되었습니다.",
       "quick_replies_title": "빠른 답장"
     },
-    "queue": {
-      "action_failed_title": "대기열이 변경되었습니다",
-      "stale": "이 대기 메시지가 변경되었습니다. 대기열을 새로 고쳤습니다.",
-      "action_failed": "대기열을 업데이트하지 못했습니다. 다시 시도해 주세요."
-    },
-    },
     "send_failure": {
       "no_permission": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다.",
       "runtime_required": "메시지를 보내기 전에 이 에이전트에 런타임을 바인딩하세요.",
