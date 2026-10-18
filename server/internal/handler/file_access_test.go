@@ -484,3 +484,25 @@ func insertFileOperation(t *testing.T, runtimeID, targetID, kind, status string,
 		"status": status, "lease_epoch": leaseEpoch,
 	})
 }
+
+// HTTP wakeup heartbeats must deliver every claimed file operation to the daemon.
+func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	targetID := "heartbeat-files-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
+	operationID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
+	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	var response struct {
+		Pending []struct {
+			OperationID string `json:"operation_id"`
+			LeaseEpoch  int64  `json:"lease_epoch"`
+		} `json:"pending_file_operations"`
+	}
+	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
+	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 {
+		t.Fatalf("claimed operation missing from HTTP response: %+v", response.Pending)
+	}
+}
