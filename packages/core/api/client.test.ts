@@ -202,6 +202,7 @@ describe("ApiClient audit events", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new ApiClient("https://api.example.test");
     await client.listAuditEvents("ws/1", {
+      domain: "mcp",
       time_basis: "invocation_start",
       since: "2026-10-17T10:00:00.123456789Z",
       actor_type: "member",
@@ -217,6 +218,7 @@ describe("ApiClient audit events", () => {
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(url.pathname).toBe("/api/workspaces/ws%2F1/audit-events");
     expect(url.searchParams.get("since")).toBe("2026-10-17T10:00:00.123456789Z");
+    expect(url.searchParams.get("domain")).toBe("mcp");
     expect(url.searchParams.get("cursor")).toBe("2026-10-17T09:00:00.123456789Z");
     expect(url.searchParams.get("cursor_id")).toBe("event-1");
     expect(url.searchParams.get("result_status")).toBe("success");
