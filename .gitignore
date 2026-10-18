@@ -72,6 +72,8 @@ _features/
 server/server
 data/
 .kilo
+.zcode
+.omc
 .idea
 .gstack/
 

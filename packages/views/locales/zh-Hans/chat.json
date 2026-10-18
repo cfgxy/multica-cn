@@ -34,7 +34,11 @@
   },
   "queue": {
     "title_other": "{{count}} 条排队消息",
+    "title_single": "{{number}} 条排队消息",
+    "title_multiple": "{{number}} 条排队消息",
     "clear": "全部清空",
+    "clear_confirm_title": "清空排队消息？",
+    "clear_confirm_body": "仅清空排队中的消息，当前任务会继续运行。",
     "steer": "引导",
     "steer_unavailable": "当前回复开始后才能引导",
     "steer_no_permission": "你已没有运行该智能体的权限",
@@ -246,6 +250,14 @@
     "unarchive": "取消归档"
   },
   "mobile": {
+    "model": {
+      "agent_default": "智能体默认模型",
+      "loading": "正在加载模型…",
+      "load_failed": "无法加载模型",
+      "unsupported": "此运行时不支持模型选择",
+      "unavailable": "模型或会话已不可用",
+      "save_failed": "无法保存模型选择"
+    },
     "send_blocked": {
       "no_permission_title": "无权运行此 Agent",
       "no_permission_message": "你已不再拥有运行此 Agent 的权限，消息未发送。请向其所有者申请访问权限。",

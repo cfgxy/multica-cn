@@ -236,6 +236,15 @@ SET project_id = sqlc.narg('project_id')
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
 RETURNING *;
 
+-- name: UpdateChatSessionModelOverride :one
+-- The service validates a non-null model against the bound runtime catalog
+-- before calling this query. Do not touch updated_at: model selection is
+-- session configuration, not conversation activity.
+UPDATE chat_session
+SET model_override = sqlc.narg('model_override')
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING *;
+
 -- name: UpdateChatSessionTitleIfCurrent :one
 -- Compare-and-swap the title: only overwrite it when it still equals the
 -- value the caller observed (@expected_title). This is the idempotency /
@@ -390,6 +399,26 @@ FOR KEY SHARE;
 SELECT id FROM chat_session
 WHERE id = $1
 FOR UPDATE;
+
+-- name: LockChatSessionsForAgentRuntimeBind :many
+-- Runtime rebinding changes the model catalog that every chat session uses.
+-- Lock all of the Agent's sessions in a stable order before updating the Agent
+-- row so model saves and chat enqueue serialize with the rebind transaction.
+SELECT id FROM chat_session
+WHERE agent_id = $1
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockChatSessionsForRuntimeBind :many
+-- Bulk runtime changes must acquire the same chat-session locks as model saves
+-- and sends before locking runtime or agent rows. This order lets a send finish
+-- its task insert (which takes a runtime FK lock) before a merge or teardown
+-- waits on its session, avoiding a runtime -> session lock cycle.
+SELECT cs.id FROM chat_session cs
+JOIN agent a ON a.id = cs.agent_id
+WHERE a.runtime_id = $1
+ORDER BY cs.id
+FOR UPDATE OF cs;
 
 -- name: LockChatSessionForEnqueue :one
 -- The chat-task enqueue's answer to archiving, and the one lock on this row
@@ -1061,6 +1090,7 @@ WHERE id = $1;
 -- bypass (MUL-4302 §2).
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
+    chat_model_snapshot,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
     fire_at, channel_context_revision, id
@@ -1068,7 +1098,7 @@ INSERT INTO agent_task_queue (
 SELECT
     $1, $2, NULL,
     CASE WHEN sqlc.narg('fire_at')::timestamptz IS NULL THEN 'queued' ELSE 'deferred' END,
-    $3, $4, $5,
+    $3, $4, sqlc.narg('chat_model_snapshot'), $5,
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
     COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),

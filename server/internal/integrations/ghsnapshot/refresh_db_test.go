@@ -241,7 +241,7 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 
 	// 2. Matching head "B" → applied; snapshot columns + per-check rows written.
 	applied, err = m.applySnapshot(ctx, pr.ID, &PRSnapshot{
-		HeadSHA: "B", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN", HasChecks: true, RollupState: "FAILURE",
+		HeadSHA: "B", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN", ReviewDecision: "CHANGES_REQUESTED", HasChecks: true, RollupState: "FAILURE",
 		Contexts: []CheckContext{
 			{Name: "backend", Status: "completed", Conclusion: "failure"},
 			{Name: "vercel", Status: "completed", Conclusion: "success", IsStatusContext: true},
@@ -256,6 +256,9 @@ func TestApplySnapshotHeadSHAGuard(t *testing.T) {
 	got, _ = q.GetGitHubPullRequestByID(ctx, pr.ID)
 	if got.SnapshotHeadSha != "B" || got.ApiMergeable.String != "MERGEABLE" || got.ChecksRollupState.String != "FAILURE" {
 		t.Fatalf("snapshot not written: %+v", got)
+	}
+	if !got.ReviewDecision.Valid || got.ReviewDecision.String != "CHANGES_REQUESTED" {
+		t.Fatalf("review decision snapshot = %+v, want CHANGES_REQUESTED", got.ReviewDecision)
 	}
 	if n := checkRunCount(t, pool, pr.ID); n != 2 {
 		t.Fatalf("check runs = %d, want 2", n)

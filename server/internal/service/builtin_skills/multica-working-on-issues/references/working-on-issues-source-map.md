@@ -46,6 +46,11 @@ fields the agent can read off each element of `pull_requests`:
   `"passed"`/`"failed"`/`"pending"` or `null`; GitHub derives it only from an
   available current-head snapshot (mapper lines 242-254), while self-hosted VCS
   providers use `aggregateChecksConclusion` (line 275)
+- `review_decision` (`json:"review_decision"`) — GitHub's current-head
+  GraphQL `reviewDecision`, lowercased; `approved`, `changes_requested`, and
+  `review_required` are surfaced directly. A null/unknown value is not inferred
+  from an individual review webhook; those webhooks only enqueue a snapshot
+  refresh (`ghsnapshot/snapshot.go`, `handler/github.go`).
 
 There is **no** standalone `draft` or `merged` boolean in the response. The
 PR lifecycle is encoded in the single `state` string by `derivePRState`

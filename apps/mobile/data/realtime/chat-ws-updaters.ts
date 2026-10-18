@@ -70,6 +70,7 @@ export function applyChatSessionUpdatedToCache(
   payload: {
     chat_session_id: string;
     title?: string;
+    model_override?: string | null;
     pinned?: boolean;
     status?: "active" | "archived";
     updated_at?: string;
@@ -82,6 +83,7 @@ export function applyChatSessionUpdatedToCache(
         ? {
             ...s,
             title: payload.title ?? s.title,
+            ...("model_override" in payload ? { model_override: payload.model_override } : {}),
             pinned: payload.pinned ?? s.pinned,
             status: payload.status ?? s.status,
             updated_at: payload.updated_at ?? s.updated_at,
@@ -188,8 +190,13 @@ export function applyChatDoneToCache(
   qc.invalidateQueries({
     queryKey: chatKeys.messages(payload.chat_session_id),
   });
-  // A queued successor may already exist. Refetch the server-authoritative
-  // head instead of clearing it and briefly presenting the session as idle.
+  // chat:done is authoritative for this task. Remove only its id so a queued
+  // successor becomes the head immediately, matching web's cache transition;
+  // the refetch below still reconciles the server-authoritative queue.
+  qc.setQueryData<ChatPendingTask>(
+    chatKeys.pendingTask(payload.chat_session_id),
+    (old) => removePendingChatTask(old, payload.task_id),
+  );
   invalidatePendingTask(qc, payload.chat_session_id);
 }
 
@@ -278,6 +285,23 @@ export function invalidatePendingTask(
   sessionId: string,
 ) {
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+}
+
+/**
+ * Apply a terminal task event immediately, then reconcile against the server.
+ * The event identifies the settled task, so the active indicator should not
+ * wait for a pending-task refetch that may race the server's persistence.
+ */
+export function settlePendingChatTask(
+  qc: QueryClient,
+  sessionId: string,
+  taskId: string,
+) {
+  qc.setQueryData<ChatPendingTask>(
+    chatKeys.pendingTask(sessionId),
+    (old) => removePendingChatTask(old, taskId),
+  );
+  invalidatePendingTask(qc, sessionId);
 }
 
 export function seedAcceptedPendingTask(

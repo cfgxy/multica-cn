@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import type { ClientTarget, InstallOutcome, McpEntry, StatusOutcome, UninstallOutcome } from "./types.js";
 
 const TABLE_HEADER = "[mcp_servers.multica]";
-const ARGS_LINE = /^\s*args\s*=\s*\[\s*"((?:[^"\\]|\\.)*)"\s*\]\s*$/;
+const ARGS_LINE = /^\s*args\s*=\s*\[\s*"((?:[^"\\]|\\.)*)"(?:\s*,[^\]]*)?\]\s*$/;
 
 function unescapeTomlString(raw: string): string {
   return raw.replace(/\\(.)/g, "$1");
@@ -104,8 +104,17 @@ function removeTable(source: string): string | undefined {
  * `[mcp_servers.*]` entries — is left byte-for-byte untouched.
  */
 export function buildMulticaTable(entry: McpEntry): string {
+  if (!entry.auditCredentialFile) {
+    throw new Error("auditCredentialFile is required to register the MCP server");
+  }
   const escaped = entry.distPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return [TABLE_HEADER, 'command = "node"', `args = ["${escaped}"]`, 'type = "stdio"'].join("\n");
+  const credentialFile = entry.auditCredentialFile.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return [
+    TABLE_HEADER,
+    'command = "node"',
+    `args = ["${escaped}", "--audit-credential-file", "${credentialFile}"]`,
+    'type = "stdio"',
+  ].join("\n");
 }
 
 function readSource(configPath: string): { source: string } | { reason: string } | { missing: true } {
@@ -131,8 +140,9 @@ function readSource(configPath: string): { source: string } | { reason: string }
 export function createCodexClientTarget(options: {
   configPath: string;
   detect: () => boolean;
+  auditCredentialFile: string;
 }): ClientTarget {
-  const { configPath, detect } = options;
+  const { configPath, detect, auditCredentialFile } = options;
 
   function apply(entry: McpEntry): InstallOutcome {
     if (!detect()) {
@@ -145,7 +155,10 @@ export function createCodexClientTarget(options: {
     }
     const source = "missing" in parsed ? "" : parsed.source;
 
-    const updated = replaceOrAppendTable(source, buildMulticaTable(entry));
+    const updated = replaceOrAppendTable(
+      source,
+      buildMulticaTable({ ...entry, auditCredentialFile: entry.auditCredentialFile ?? auditCredentialFile }),
+    );
     mkdirSync(dirname(configPath), { recursive: true });
     writeFileSync(configPath, updated, "utf8");
     return { status: "installed", path: configPath };

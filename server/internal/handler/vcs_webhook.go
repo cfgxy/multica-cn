@@ -32,6 +32,7 @@ func vcsPullRequestToResponse(p db.VcsPullRequest) GitHubPullRequestResponse {
 		Title:            p.Title,
 		State:            p.State,
 		HtmlURL:          p.HtmlUrl,
+		BaseBranch:       textToPtr(p.TargetBranch),
 		Branch:           textToPtr(p.Branch),
 		AuthorLogin:      textToPtr(p.AuthorLogin),
 		AuthorAvatarURL:  textToPtr(p.AuthorAvatarUrl),
@@ -60,6 +61,7 @@ func vcsPullRequestRowToResponse(p db.ListVCSPullRequestsByIssueRow) GitHubPullR
 		Title:            p.Title,
 		State:            p.State,
 		HtmlURL:          p.HtmlUrl,
+		BaseBranch:       textToPtr(p.TargetBranch),
 		Branch:           textToPtr(p.Branch),
 		AuthorLogin:      textToPtr(p.AuthorLogin),
 		AuthorAvatarURL:  textToPtr(p.AuthorAvatarUrl),
@@ -171,6 +173,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		Title:           ev.Title,
 		State:           ev.State,
 		HtmlUrl:         ev.HTMLURL,
+		TargetBranch:    ptrToText(strPtrOrNil(ev.TargetBranch)),
 		Branch:          ptrToText(strPtrOrNil(ev.Branch)),
 		AuthorLogin:     ptrToText(strPtrOrNil(ev.AuthorLogin)),
 		AuthorAvatarUrl: ptrToText(strPtrOrNil(ev.AuthorAvatarURL)),
@@ -233,12 +236,24 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// Freeze close_intent once the terminal merge/close event has arrived.
 	preserveCloseIntent := !ev.Terminal() && (ev.State == "merged" || ev.State == "closed")
 	prefix := h.getIssuePrefix(ctx, conn.WorkspaceID)
+	previousIssueIDs, err := h.Queries.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
+	if err != nil {
+		slog.Warn("vcs: list linked issues for refresh failed", "err", err)
+	}
+	linkedIssueIDs = append(linkedIssueIDs, uuidsToStrings(previousIssueIDs)...)
+	systemIssueIDs, err := h.Queries.ListSystemIssueIDsForVCSPullRequest(ctx, pr.ID)
+	if err != nil {
+		slog.Warn("vcs: list system-linked issues failed", "err", err)
+	}
+	currentlyReferenced := make(map[string]struct{}, len(idents))
 	reevalIssues := make([]db.Issue, 0, len(idents))
 	for _, id := range idents {
 		issue, ok := h.lookupIssueByIdentifier(ctx, conn.WorkspaceID, prefix, id)
 		if !ok {
 			continue
 		}
+		issueID := uuidToString(issue.ID)
+		currentlyReferenced[issueID] = struct{}{}
 		_, declared := closingIdents[id]
 		closeIntent := declared && !preserveCloseIntent
 		_, qualifies := qualifyingIdents[id]
@@ -255,8 +270,21 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 			slog.Warn("vcs: link failed", "err", err)
 			continue
 		}
-		linkedIssueIDs = append(linkedIssueIDs, uuidToString(issue.ID))
+		linkedIssueIDs = append(linkedIssueIDs, issueID)
 		reevalIssues = append(reevalIssues, issue)
+	}
+	if ev.State != "merged" && ev.State != "closed" {
+		for _, issueID := range systemIssueIDs {
+			issueIDString := uuidToString(issueID)
+			if _, stillReferenced := currentlyReferenced[issueIDString]; stillReferenced {
+				continue
+			}
+			if err := h.Queries.UnlinkIssueFromVCSPullRequest(ctx, db.UnlinkIssueFromVCSPullRequestParams{
+				IssueID: issueID, PullRequestID: pr.ID,
+			}); err != nil {
+				slog.Warn("vcs: unlink stale system association failed", "err", err, "issue_id", issueIDString)
+			}
+		}
 	}
 
 	if ev.State == "merged" || ev.State == "closed" {
@@ -276,6 +304,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		}
 	}
 
+	linkedIssueIDs = sortedUniqueStrings(linkedIssueIDs)
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,

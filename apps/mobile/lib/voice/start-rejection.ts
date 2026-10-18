@@ -6,7 +6,7 @@
  * 5xx) maps to null → the generic connection-failure copy. Auth internals
  * are never surfaced. Pure — the lib vitest lane pins the mapping without
  * loading the data layer (body narrowed instead of an ApiError instanceof,
- * same decoupling as instance-delete/task-retry).
+ * same decoupling as task-retry).
  */
 import { parseVoiceRejectionCode, type VoiceRejection } from "@multica/core/voice";
 

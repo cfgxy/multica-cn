@@ -242,4 +242,25 @@ describe("RichContent current-issue rendering", () => {
       expect(chip).toHaveAttribute("data-current", "false");
     }
   });
+
+  it("preserves GFM tables, strikethrough, and task lists", () => {
+    const content = [
+      "| Name | State |",
+      "| --- | --- |",
+      "| parser | stable |",
+      "",
+      "~~removed~~",
+      "",
+      "- [x] complete",
+      "- [ ] pending",
+    ].join("\n");
+    const { container } = renderContent(undefined, content);
+    const firstHtml = container.innerHTML;
+    const secondHtml = renderContent(undefined, content).container.innerHTML;
+
+    expect(container.querySelector("table")?.textContent).toContain("parser");
+    expect(container.querySelector("del")?.textContent).toBe("removed");
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
+    expect(secondHtml).toBe(firstHtml);
+  });
 });

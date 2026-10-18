@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { GitHubPullRequest } from "@multica/core/types";
@@ -23,6 +23,7 @@ vi.mock("@multica/core/github/queries", async () => {
 });
 
 import { PullRequestList } from "./pull-request-list";
+import { PendingPullRequestSection } from "./pending-pull-request-section";
 
 let mockPRs: GitHubPullRequest[] = [];
 
@@ -38,6 +39,7 @@ function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
     state: "open",
     html_url: "https://example.test/pr/1",
     branch: "feat/x",
+    base_branch: null,
     author_login: "octocat",
     author_avatar_url: null,
     merged_at: null,
@@ -68,6 +70,17 @@ function renderList(showGitHub = true) {
     <QueryClientProvider client={qc}>
       <I18nProvider resources={TEST_RESOURCES} locale="en">
         <PullRequestList issueId="issue-1" showGitHub={showGitHub} />
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+}
+
+function renderPendingSection() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <I18nProvider resources={TEST_RESOURCES} locale="en">
+        <PendingPullRequestSection issueId="issue-1" />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -122,6 +135,53 @@ describe("PullRequestList sidebar rows", () => {
     await waitForRender();
     expect(screen.getByText("No checks yet")).toBeInTheDocument();
     expect(screen.queryByText(/All checks passed/)).not.toBeInTheDocument();
+  });
+
+  it("renders an unknown status for an unrecognized rollup", async () => {
+    mockPRs = [
+      makePR({
+        snapshot_available: true,
+        checks_rollup: "mystery",
+        checks_conclusion: "passed",
+        checks_total: 5,
+        checks_passed: 5,
+      }),
+    ];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("Checks status unknown")).toBeInTheDocument();
+    expect(screen.queryByText("No checks yet")).not.toBeInTheDocument();
+    expect(screen.queryByText(/All checks passed/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["failure", "Checks failed"],
+    ["pending", "Checks in progress"],
+    ["success", "Checks passed"],
+  ] as const)("shows a generic %s status when no check counts are available", async (rollup, label) => {
+    mockPRs = [makePR({ checks_rollup: rollup })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText(/0\/0/)).not.toBeInTheDocument();
+  });
+
+  it("keeps failed check names without inventing a zero denominator", async () => {
+    mockPRs = [makePR({ checks_rollup: "failure", failed_check_names: ["backend"] })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("Checks failed · backend")).toBeInTheDocument();
+    expect(screen.queryByText(/0\/0/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a real no-check snapshot distinct from failed, pending, and passed", async () => {
+    mockPRs = [makePR({ snapshot_available: true, checks_rollup: null })];
+    renderList();
+    await waitForRender();
+    expect(screen.getByText("No checks yet")).toBeInTheDocument();
+    expect(screen.queryByText("Checks failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks in progress")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks passed")).not.toBeInTheDocument();
   });
 
   it("hides snapshot status when the GitHub App key is unavailable, even with old data", async () => {
@@ -379,5 +439,71 @@ describe("PullRequestList sidebar rows", () => {
     expect(screen.getByText("PR-C")).toBeInTheDocument();
     expect(screen.queryByText("PR-D")).not.toBeInTheDocument();
     expect(screen.getByText("Show 1 more")).toBeInTheDocument();
+  });
+
+  it("shows only the target branch in the pending section and labels legacy data unknown", async () => {
+    mockPRs = [makePR({ branch: "feat/source" })];
+    renderPendingSection();
+    expect(await screen.findByText("Target branch: Unknown")).toBeInTheDocument();
+    expect(screen.queryByText("feat/source")).not.toBeInTheDocument();
+  });
+
+  it("shows a known target branch in the pending section", async () => {
+    mockPRs = [makePR({ base_branch: "main" })];
+    renderPendingSection();
+    expect(await screen.findByText("Target branch: main")).toBeInTheDocument();
+  });
+});
+
+describe("PendingPullRequestSection", () => {
+  it("keeps the fourth entry point independent and lists open/draft PRs once", async () => {
+    mockPRs = [
+      makePR({ id: "open", number: 1, title: "Open PR" }),
+      makePR({ id: "open-duplicate", number: 1, title: "Open PR duplicate" }),
+      makePR({ id: "draft", number: 2, title: "Draft PR", state: "draft", provider: "gitlab" }),
+      makePR({ id: "merged", number: 3, title: "Merged PR", state: "merged" }),
+      makePR({ id: "closed", number: 4, title: "Closed PR", state: "closed" }),
+    ];
+    renderPendingSection();
+
+    expect(await screen.findByTestId("pending-pull-requests-section")).toBeInTheDocument();
+    expect(screen.getByText("Pending merge PRs")).toBeInTheDocument();
+    expect(screen.getByText("Open PR")).toBeInTheDocument();
+    expect(screen.getByText("Draft PR")).toBeInTheDocument();
+    expect(screen.queryByText("Open PR duplicate")).not.toBeInTheDocument();
+    expect(screen.queryByText("Merged PR")).not.toBeInTheDocument();
+    expect(screen.queryByText("Closed PR")).not.toBeInTheDocument();
+  });
+
+  it("does not render an empty section", async () => {
+    mockPRs = [makePR({ state: "merged" })];
+    renderPendingSection();
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("pending-pull-requests-section")).not.toBeInTheDocument();
+    });
+  });
+
+  it.each([
+    ["APPROVED", "Review approved"],
+    ["CHANGES_REQUESTED", "Changes requested"],
+    ["REVIEW_REQUIRED", "Review required"],
+    [null, "Review status unknown"],
+    ["FUTURE_DECISION", "Review status unknown"],
+  ])("shows authoritative review decision %s", async (decision, label) => {
+    mockPRs = [makePR({ review_decision: decision, snapshot_available: true })];
+    renderPendingSection();
+
+    expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  it("keeps old backends without review_decision compatible", async () => {
+    const pr = makePR({ snapshot_available: true });
+    delete (pr as Partial<GitHubPullRequest>).review_decision;
+    mockPRs = [pr];
+    renderPendingSection();
+
+    expect(await screen.findByText("Test PR")).toBeInTheDocument();
+    expect(screen.queryByText("Review status unknown")).not.toBeInTheDocument();
   });
 });

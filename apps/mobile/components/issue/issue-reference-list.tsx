@@ -50,11 +50,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useQueries } from "@tanstack/react-query";
+import type { IssueReference } from "@multica/core/markdown";
 import {
   parseMergeRequestReference,
   parsePullRequestReference,
 } from "@multica/core/markdown";
-import type { IssueReference } from "@multica/core/markdown";
 import { identifierMatchesPrefix } from "@multica/core/markdown";
 import {
   issueDetailOptions,
@@ -66,6 +66,7 @@ import {
 } from "@/data/queries/github";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
+import { cachedIssueReferences } from "@/lib/issue-reference-cache";
 import { resolveLinkAction } from "@/lib/markdown/link-route";
 import {
   buildReferenceTailRows,
@@ -147,14 +148,21 @@ function renderActionableRow({
 }
 
 export function IssueReferenceList({
-  references,
+  content,
+  references: suppliedReferences,
 }: {
-  references: IssueReference[];
+  content?: string;
+  references?: IssueReference[];
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const workspacePrefix = useWorkspaceIssuePrefix();
+  const references = useMemo(() => {
+    if (suppliedReferences) return suppliedReferences;
+    if (content == null) return [];
+    return cachedIssueReferences(content, workspacePrefix);
+  }, [content, suppliedReferences, workspacePrefix]);
   const currentIssueId = useCurrentIssueId();
   const { colorOf } = useIssueStatuses();
   const { colorScheme } = useColorScheme();
@@ -199,12 +207,15 @@ export function IssueReferenceList({
             // The extractor only emits parseable tokens; the re-parse here is
             // a cheap guard so a malformed ref never spends a query.
             const parts = parsePullRequestReference(ref.ref);
-            return pullRequestLookupOptions(
-              wsId,
-              parts?.owner ?? "",
-              parts?.repo ?? "",
-              parts?.number ?? 0,
-            );
+            return {
+              ...pullRequestLookupOptions(
+                wsId,
+                parts?.owner ?? "",
+                parts?.repo ?? "",
+                parts?.number ?? 0,
+              ),
+              staleTime: 60_000,
+            };
           }
           if (ref.form === "merge_request") {
             // RUYI-728: body-text `MR !N` shares the tail's resolution —
@@ -212,9 +223,12 @@ export function IssueReferenceList({
             // number in several repos) reads as null and the row degrades,
             // the same web-footer contract.
             const parts = parseMergeRequestReference(ref.ref);
-            return pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0);
+            return {
+              ...pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0),
+              staleTime: 60_000,
+            };
           }
-          return issueDetailOptions(wsId, ref.ref);
+          return { ...issueDetailOptions(wsId, ref.ref), staleTime: 60_000 };
         }),
       [references, wsId, workspacePrefix],
     ),

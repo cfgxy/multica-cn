@@ -78,6 +78,8 @@ const WORKSPACE_ROUTES: readonly RoutePattern[] = [
   ["self-evolution", "skills"],
   ["self-evolution", "skills", ":id"],
   ["self-evolution", "quality"],
+  ["self-evolution", "clause-governance"],
+  ["self-evolution", "clause-governance", ":clauseId"],
   ["self-evolution", "quiz"],
   ["self-evolution", "proposals"],
   ["self-evolution", "versions"],
