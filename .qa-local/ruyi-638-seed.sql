@@ -8,6 +8,7 @@ DECLARE
     owner_id UUID;
     member_id UUID;
     web_member_id UUID := '63800000-0000-4000-8000-000000000082';
+    proposal_owner_id UUID := '63800000-0000-4000-8000-000000000083';
     runtime_id UUID := '63800000-0000-4000-8000-000000000001';
     agent_id UUID := '63800000-0000-4000-8000-000000000002';
     issue_ok UUID := '63800000-0000-4000-8000-000000000010';
@@ -43,6 +44,11 @@ BEGIN
                     OR profile_description <> 'RUYI-638 disposable fixture identity')) THEN
         RAISE EXCEPTION 'disposable fixture user ID is already owned by another row';
     END IF;
+    IF EXISTS (SELECT 1 FROM "user" WHERE id = proposal_owner_id
+               AND (email <> 'ruyi638-proposal-owner@multica.test'
+                    OR profile_description <> 'RUYI-638 disposable proposal owner')) THEN
+        RAISE EXCEPTION 'disposable proposal-owner ID is already owned by another row';
+    END IF;
 
     INSERT INTO workspace (id, name, slug, description, context, settings)
     VALUES (
@@ -51,6 +57,16 @@ BEGIN
         'Disposable workspace for RUYI-638 member-permission and proposal-approval QA.',
         E'# 平台协作规范\n\n## 沟通规范\n\n- **行文基调**：专业、正式、准确、简明扼要。\n- **先结论后依据**：第一句给出结论，依据随后。\n\n## 成本纪律\n\n- **合并取数**：能一条命令取得的情报不拆多轮。\n- **禁止叙述轮**：工具编排期间不带工具调用的纯文字轮禁止出现。\n\n## 成员 UUID 索引\n\n| 成员 | UUID |\n| --- | --- |\n| 示例 | 00000000-0000-0000-0000-000000000000 |\n',
         '{}'::jsonb
+    ) ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO "user" (
+        id, name, email, timezone, onboarded_at, onboarding_questionnaire,
+        profile_description
+    ) VALUES (
+        proposal_owner_id, 'RUYI-638 Proposal Owner',
+        'ruyi638-proposal-owner@multica.test', 'Asia/Shanghai', now(),
+        '{"fixture_issue":"RUYI-638"}'::jsonb,
+        'RUYI-638 disposable proposal owner'
     ) ON CONFLICT (id) DO NOTHING;
 
     INSERT INTO "user" (
@@ -78,9 +94,21 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'disposable fixture user identity check failed';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM "user"
+        WHERE id = proposal_owner_id AND email = 'ruyi638-proposal-owner@multica.test'
+          AND profile_description = 'RUYI-638 disposable proposal owner'
+          AND onboarded_at IS NOT NULL AND timezone = 'Asia/Shanghai'
+          AND is_super_admin IS FALSE
+    ) THEN
+        RAISE EXCEPTION 'disposable proposal-owner identity check failed';
+    END IF;
+
+    DELETE FROM member
+    WHERE workspace_id = proposal_ws AND user_id = owner_id AND role = 'owner';
 
     INSERT INTO member (workspace_id, user_id, role)
-    VALUES (proposal_ws, owner_id, 'owner'), (proposal_ws, web_member_id, 'member')
+    VALUES (proposal_ws, proposal_owner_id, 'owner'), (proposal_ws, web_member_id, 'member')
     ON CONFLICT (workspace_id, user_id) DO NOTHING;
 
     INSERT INTO workspace (id, name, slug, description, settings)
@@ -249,19 +277,19 @@ BEGIN
          'ruyi638_qa_draft', '- RUYI-638 draft lifecycle fixture.',
          'Workspace', 'Keep while validating this QA fixture.', 'Negligible fixture-only cost.',
          'No production or shared-workspace conflict.', 'Unique RUYI-638 fixture clause.',
-         'draft', 'manual', 'member', owner_id,
+         'draft', 'manual', 'member', web_member_id,
          'Draft state for lifecycle testing.', 'Allow the owner to submit or discard the fixture.'),
         (proposal_pending, proposal_ws, 'workspace', proposal_ws, '', 'add_clause',
          'ruyi638_qa_pending', '- RUYI-638 pending-owner lifecycle fixture.',
          'Workspace', 'Keep while validating this QA fixture.', 'Negligible fixture-only cost.',
          'No production or shared-workspace conflict.', 'Unique RUYI-638 fixture clause.',
-         'pending_owner', 'manual', 'member', owner_id,
+         'pending_owner', 'manual', 'member', web_member_id,
          'Pending-owner state for approve/reject checks.', 'Allow the owner to review this fixture.'),
         (proposal_rejected, proposal_ws, 'workspace', proposal_ws, '', 'add_clause',
          'ruyi638_qa_rejected', '- RUYI-638 rejected lifecycle fixture.',
          'Workspace', 'Retain as history during QA.', 'No ongoing cost.',
          'No production or shared-workspace conflict.', 'Unique RUYI-638 fixture clause.',
-         'rejected', 'manual', 'member', owner_id,
+         'rejected', 'manual', 'member', web_member_id,
          'Rejected state for history and filter checks.', 'No active behavior change.')
     ON CONFLICT (id) DO UPDATE SET
         status = EXCLUDED.status, clause_text = EXCLUDED.clause_text,

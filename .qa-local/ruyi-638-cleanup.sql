@@ -5,6 +5,7 @@ DECLARE
     ws UUID;
     proposal_ws UUID := '63800000-0000-4000-8000-000000000081';
     web_member_id UUID := '63800000-0000-4000-8000-000000000082';
+    proposal_owner_id UUID := '63800000-0000-4000-8000-000000000083';
 BEGIN
     IF current_database() <> 'multica_dev1' THEN
         RAISE EXCEPTION 'fixture cleanup can only run in multica_dev1';
@@ -136,6 +137,11 @@ BEGIN
       AND email = 'ruyi638-web-member@multica.test'
       AND profile_description = 'RUYI-638 disposable fixture identity'
       AND NOT EXISTS (SELECT 1 FROM member WHERE user_id = web_member_id);
+    DELETE FROM verification_code WHERE email = 'ruyi638-proposal-owner@multica.test';
+    DELETE FROM "user" WHERE id = proposal_owner_id
+      AND email = 'ruyi638-proposal-owner@multica.test'
+      AND profile_description = 'RUYI-638 disposable proposal owner'
+      AND NOT EXISTS (SELECT 1 FROM member WHERE user_id = proposal_owner_id);
 END $$;
 COMMIT;
 
@@ -143,6 +149,7 @@ SELECT json_build_object(
     'database', current_database(),
     'remaining_proposal_workspace', (SELECT count(*) FROM workspace WHERE id = '63800000-0000-4000-8000-000000000081'),
     'remaining_disposable_identity', (SELECT count(*) FROM "user" WHERE id = '63800000-0000-4000-8000-000000000082'),
+    'remaining_disposable_proposal_owner', (SELECT count(*) FROM "user" WHERE id = '63800000-0000-4000-8000-000000000083'),
     'preserved_proposal_audit_events', (SELECT count(*) FROM audit_event WHERE workspace_id = '63800000-0000-4000-8000-000000000081' AND event_type = 'ops.fixture_proposal_audit_preserved' AND details->>'fixture_issue' = 'RUYI-638'),
     'remaining_workspace_fixture', (SELECT count(*) FROM workspace WHERE id = '63800000-0000-4000-8000-000000000005'),
     'remaining_runtime', (SELECT count(*) FROM agent_runtime WHERE id = '63800000-0000-4000-8000-000000000001'),
