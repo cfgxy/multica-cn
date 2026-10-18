@@ -1,14 +1,14 @@
 \set ON_ERROR_STOP on
+\echo 'Retired: this legacy seed modifies the existing ruyi638-qa workspace.'
+\echo 'Use .qa-local/ruyi-638-followup-seed.sql for isolated fixtures.'
+\quit
 BEGIN;
 
 DO $$
 DECLARE
     ws UUID;
-    proposal_ws UUID := '63800000-0000-4000-8000-000000000081';
     owner_id UUID;
     member_id UUID;
-    web_member_id UUID := '63800000-0000-4000-8000-000000000082';
-    proposal_owner_id UUID := '63800000-0000-4000-8000-000000000083';
     runtime_id UUID := '63800000-0000-4000-8000-000000000001';
     agent_id UUID := '63800000-0000-4000-8000-000000000002';
     issue_ok UUID := '63800000-0000-4000-8000-000000000010';
@@ -33,83 +33,6 @@ BEGIN
     WHERE m.workspace_id = ws AND m.role = 'owner' AND u.is_super_admin IS TRUE;
     SELECT user_id INTO STRICT member_id
     FROM member WHERE workspace_id = ws AND role = 'member';
-
-    IF EXISTS (SELECT 1 FROM workspace WHERE id = proposal_ws
-               AND (slug <> 'ruyi638-proposal-fixture'
-                    OR name <> '[RUYI-638 QA] Proposal fixture workspace')) THEN
-        RAISE EXCEPTION 'proposal fixture workspace ID is already owned by another row';
-    END IF;
-    IF EXISTS (SELECT 1 FROM "user" WHERE id = web_member_id
-               AND (email <> 'ruyi638-web-member@multica.test'
-                    OR profile_description <> 'RUYI-638 disposable fixture identity')) THEN
-        RAISE EXCEPTION 'disposable fixture user ID is already owned by another row';
-    END IF;
-    IF EXISTS (SELECT 1 FROM "user" WHERE id = proposal_owner_id
-               AND (email <> 'ruyi638-proposal-owner@multica.test'
-                    OR profile_description <> 'RUYI-638 disposable proposal owner')) THEN
-        RAISE EXCEPTION 'disposable proposal-owner ID is already owned by another row';
-    END IF;
-
-    INSERT INTO workspace (id, name, slug, description, context, settings)
-    VALUES (
-        proposal_ws, '[RUYI-638 QA] Proposal fixture workspace',
-        'ruyi638-proposal-fixture',
-        'Disposable workspace for RUYI-638 member-permission and proposal-approval QA.',
-        E'# 平台协作规范\n\n## 沟通规范\n\n- **行文基调**：专业、正式、准确、简明扼要。\n- **先结论后依据**：第一句给出结论，依据随后。\n\n## 成本纪律\n\n- **合并取数**：能一条命令取得的情报不拆多轮。\n- **禁止叙述轮**：工具编排期间不带工具调用的纯文字轮禁止出现。\n\n## 成员 UUID 索引\n\n| 成员 | UUID |\n| --- | --- |\n| 示例 | 00000000-0000-0000-0000-000000000000 |\n',
-        '{}'::jsonb
-    ) ON CONFLICT (id) DO NOTHING;
-
-    INSERT INTO "user" (
-        id, name, email, timezone, onboarded_at, onboarding_questionnaire,
-        profile_description
-    ) VALUES (
-        proposal_owner_id, 'RUYI-638 Proposal Owner',
-        'ruyi638-proposal-owner@multica.test', 'Asia/Shanghai', now(),
-        '{"fixture_issue":"RUYI-638"}'::jsonb,
-        'RUYI-638 disposable proposal owner'
-    ) ON CONFLICT (id) DO NOTHING;
-
-    INSERT INTO "user" (
-        id, name, email, timezone, onboarded_at, onboarding_questionnaire,
-        profile_description
-    ) VALUES (
-        web_member_id, 'RUYI-638 Web Comparison Member',
-        'ruyi638-web-member@multica.test', 'Asia/Shanghai', now(),
-        '{"fixture_issue":"RUYI-638"}'::jsonb,
-        'RUYI-638 disposable fixture identity'
-    ) ON CONFLICT (id) DO NOTHING;
-
-    IF NOT EXISTS (
-        SELECT 1 FROM workspace
-        WHERE id = proposal_ws AND slug = 'ruyi638-proposal-fixture'
-          AND name = '[RUYI-638 QA] Proposal fixture workspace'
-    ) THEN
-        RAISE EXCEPTION 'proposal fixture workspace identity check failed';
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM "user"
-        WHERE id = web_member_id AND email = 'ruyi638-web-member@multica.test'
-          AND profile_description = 'RUYI-638 disposable fixture identity'
-          AND onboarded_at IS NOT NULL AND timezone = 'Asia/Shanghai'
-    ) THEN
-        RAISE EXCEPTION 'disposable fixture user identity check failed';
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM "user"
-        WHERE id = proposal_owner_id AND email = 'ruyi638-proposal-owner@multica.test'
-          AND profile_description = 'RUYI-638 disposable proposal owner'
-          AND onboarded_at IS NOT NULL AND timezone = 'Asia/Shanghai'
-          AND is_super_admin IS FALSE
-    ) THEN
-        RAISE EXCEPTION 'disposable proposal-owner identity check failed';
-    END IF;
-
-    DELETE FROM member
-    WHERE workspace_id = proposal_ws AND user_id = owner_id AND role = 'owner';
-
-    INSERT INTO member (workspace_id, user_id, role)
-    VALUES (proposal_ws, proposal_owner_id, 'owner'), (proposal_ws, web_member_id, 'member')
-    ON CONFLICT (workspace_id, user_id) DO NOTHING;
 
     INSERT INTO workspace (id, name, slug, description, settings)
     VALUES (
@@ -273,23 +196,23 @@ BEGIN
         gate_answer_conflict, gate_answer_dedup,
         status, source, created_by_type, created_by_id, problem, expected_effect
     ) VALUES
-        (proposal_draft, proposal_ws, 'workspace', proposal_ws, '', 'add_clause',
+        (proposal_draft, ws, 'workspace', ws, '', 'add_clause',
          'ruyi638_qa_draft', '- RUYI-638 draft lifecycle fixture.',
          'Workspace', 'Keep while validating this QA fixture.', 'Negligible fixture-only cost.',
          'No production or shared-workspace conflict.', 'Unique RUYI-638 fixture clause.',
-         'draft', 'manual', 'member', web_member_id,
+         'draft', 'manual', 'member', owner_id,
          'Draft state for lifecycle testing.', 'Allow the owner to submit or discard the fixture.'),
-        (proposal_pending, proposal_ws, 'workspace', proposal_ws, '', 'add_clause',
+        (proposal_pending, ws, 'workspace', ws, '', 'add_clause',
          'ruyi638_qa_pending', '- RUYI-638 pending-owner lifecycle fixture.',
          'Workspace', 'Keep while validating this QA fixture.', 'Negligible fixture-only cost.',
          'No production or shared-workspace conflict.', 'Unique RUYI-638 fixture clause.',
-         'pending_owner', 'manual', 'member', web_member_id,
+         'pending_owner', 'manual', 'member', owner_id,
          'Pending-owner state for approve/reject checks.', 'Allow the owner to review this fixture.'),
-        (proposal_rejected, proposal_ws, 'workspace', proposal_ws, '', 'add_clause',
+        (proposal_rejected, ws, 'workspace', ws, '', 'add_clause',
          'ruyi638_qa_rejected', '- RUYI-638 rejected lifecycle fixture.',
          'Workspace', 'Retain as history during QA.', 'No ongoing cost.',
          'No production or shared-workspace conflict.', 'Unique RUYI-638 fixture clause.',
-         'rejected', 'manual', 'member', web_member_id,
+         'rejected', 'manual', 'member', owner_id,
          'Rejected state for history and filter checks.', 'No active behavior change.')
     ON CONFLICT (id) DO UPDATE SET
         status = EXCLUDED.status, clause_text = EXCLUDED.clause_text,
@@ -297,22 +220,21 @@ BEGIN
 
     INSERT INTO autopilot (
         id, workspace_id, title, description, assignee_id, assignee_type,
-        status, execution_mode, created_by_type, created_by_id, last_run_at
+        status, execution_mode, created_by_type, created_by_id
     ) VALUES
         (autopilot_active, ws, '[RUYI-638 QA] Active autopilot fixture',
          'Inert fixture; no enabled trigger and no run is scheduled.', agent_id, 'agent',
-         'active', 'create_issue', 'member', owner_id, now() - interval '1 day'),
+         'active', 'create_issue', 'member', owner_id),
         (autopilot_paused, ws, '[RUYI-638 QA] Paused autopilot fixture',
          'Paused lifecycle state fixture.', agent_id, 'agent',
-         'paused', 'create_issue', 'member', owner_id, NULL),
+         'paused', 'create_issue', 'member', owner_id),
         (autopilot_archived, ws, '[RUYI-638 QA] Archived autopilot fixture',
          'Archived lifecycle state fixture.', agent_id, 'agent',
-         'archived', 'create_issue', 'member', owner_id, NULL)
+         'archived', 'create_issue', 'member', owner_id)
     ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title, description = EXCLUDED.description,
         assignee_id = EXCLUDED.assignee_id, assignee_type = EXCLUDED.assignee_type,
         status = EXCLUDED.status, execution_mode = EXCLUDED.execution_mode,
-        last_run_at = EXCLUDED.last_run_at,
         updated_at = now();
 
     INSERT INTO autopilot_trigger (
