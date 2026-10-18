@@ -32,6 +32,12 @@ import type {
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
+  DashboardUsageDaily,
+  DashboardUsageByAgent,
+  DashboardAgentRunTime,
+  DashboardRunTimeDaily,
+  DashboardFailureDaily,
+  DashboardFailureByAgent,
   ExecutionProfile,
   ExecutionProfileActivationResponse,
   ExecutionProfileEntry,
@@ -151,6 +157,12 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
+  DashboardUsageDailyListSchema,
+  DashboardUsageByAgentListSchema,
+  DashboardAgentRunTimeListSchema,
+  DashboardRunTimeDailyListSchema,
+  DashboardFailureDailyListSchema,
+  DashboardFailureByAgentListSchema,
 } from "@multica/core/api/schemas";
 import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
@@ -2097,6 +2109,128 @@ class ApiClient {
     return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
       endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
     });
+  }
+
+  // Workspace usage dashboard rollups. The explicit calendar window mirrors
+  // the web dashboard contract and keeps mobile's aggregation scope aligned.
+  async getDashboardUsageDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/daily?${search}`,
+      DashboardUsageDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  async getDashboardUsageByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/by-agent?${search}`,
+      DashboardUsageByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/by-agent" },
+    );
+  }
+
+  async getDashboardAgentRunTime(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAgentRunTime[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/agent-runtime?${search}`,
+      DashboardAgentRunTimeListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/agent-runtime" },
+    );
+  }
+
+  async getDashboardRunTimeDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardRunTimeDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/runtime/daily?${search}`,
+      DashboardRunTimeDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/runtime/daily" },
+    );
+  }
+
+  async getDashboardFailuresDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/daily?${search}`,
+      DashboardFailureDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/daily" },
+    );
+  }
+
+  async getDashboardFailuresByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/by-agent?${search}`,
+      DashboardFailureByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/by-agent" },
+    );
   }
 
   // --- Labels ---
