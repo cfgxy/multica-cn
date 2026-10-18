@@ -106,6 +106,7 @@ describe("createMcpServer (via in-memory client)", () => {
       "get_agent_runtime_config",
       "get_autopilot",
       "get_autopilot_run",
+      "get_autopilot_run_diagnostics",
       "get_comment",
       "get_daemon_instance",
       "get_decision",
