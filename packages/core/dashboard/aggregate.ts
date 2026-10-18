@@ -150,7 +150,7 @@ export function aggregateDailyCost(usage: DashboardUsageDaily[]): DailyCostStack
   }
   const round = (n: number) => Math.round(n * 100) / 100;
   return Array.from(map.entries())
-    .toSorted(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, s]) => {
       const input = round(s.input);
       const output = round(s.output);
@@ -193,7 +193,7 @@ export function aggregateDailyTokens(usage: DashboardUsageDaily[]): DailyTokenDa
     map.set(u.date, entry);
   }
   return Array.from(map.entries())
-    .toSorted(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, t]) => ({
       date,
       label: formatDateLabel(date),
@@ -257,7 +257,7 @@ export function aggregateAgentTokens(rows: DashboardUsageByAgent[]): AgentCostRo
     entry.taskCount += r.task_count;
     map.set(r.agent_id, entry);
   }
-  return Array.from(map.values()).toSorted((a, b) => b.cost - a.cost);
+  return Array.from(map.values()).sort((a, b) => b.cost - a.cost);
 }
 
 export interface AgentDashboardRow {
@@ -308,7 +308,7 @@ export function mergeAgentDashboardRows(
       taskCount: r.task_count,
     });
   }
-  return Array.from(merged.values()).toSorted((a, b) => {
+  return Array.from(merged.values()).sort((a, b) => {
     if (b.cost !== a.cost) return b.cost - a.cost;
     return b.seconds - a.seconds;
   });
@@ -510,7 +510,7 @@ export function aggregateWeeklyTasks(
 // DailyTimeChart. Sorted ascending so the x-axis reads oldest-to-newest,
 // matching the cost / tokens aggregators.
 export function aggregateDailyTime(rows: DashboardRunTimeDaily[]): DailyTimeData[] {
-  return rows.toSorted((a, b) => a.date.localeCompare(b.date))
+  return [...rows].sort((a, b) => a.date.localeCompare(b.date))
     .map((r) => ({
       date: r.date,
       label: formatDateLabel(r.date),
@@ -524,7 +524,7 @@ export function aggregateDailyTime(rows: DashboardRunTimeDaily[]): DailyTimeData
 // is the remainder. Subtracting cancelled matters: without it a run the user
 // stopped would render in the green "completed" segment.
 export function aggregateDailyTasks(rows: DashboardRunTimeDaily[]): DailyTasksData[] {
-  return rows.toSorted((a, b) => a.date.localeCompare(b.date))
+  return [...rows].sort((a, b) => a.date.localeCompare(b.date))
     .map((r) => {
       const failed = r.failed_count;
       const cancelled = r.cancelled_count;
@@ -615,7 +615,7 @@ export function aggregateDailyErrors(
     foldFailureRow(entry, r.failure_reason, r.task_count);
   }
   return Array.from(map.entries())
-    .toSorted(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, counts]) => ({
       ...counts,
       date,
@@ -691,7 +691,7 @@ export function aggregateFailureClasses(
     count: counts[failureClass],
   }))
     .filter((r) => r.count > 0)
-    .toSorted((a, b) => b.count - a.count);
+    .sort((a, b) => b.count - a.count);
 }
 
 export interface FailureReasonRow {
@@ -716,7 +716,7 @@ export function aggregateFailureReasons(
       failureClass: failureClassOf(reason),
       count,
     }))
-    .toSorted((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+    .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 }
 
 // Synthetic agentId for the row aggregating every agent the viewer can't
@@ -816,10 +816,10 @@ export function sortAgentFailures(
   sortBy: OffenderSort,
 ): AgentFailureRow[] {
   if (sortBy === "failed") {
-    return rows.toSorted((a, b) => b.failed - a.failed || b.rate - a.rate);
+    return [...rows].sort((a, b) => b.failed - a.failed || b.rate - a.rate);
   }
   const sample = (r: AgentFailureRow) => (hasRateSample(r) ? 0 : 1);
-  return rows.toSorted(
+  return [...rows].sort(
     (a, b) => sample(a) - sample(b) || b.rate - a.rate || b.failed - a.failed,
   );
 }
