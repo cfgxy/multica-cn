@@ -93,6 +93,26 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Restore Electron build cache
+        id: electron-cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cache/electron
+            .cache/electron-builder
+          key: desktop-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Configure Electron cache paths
+        shell: bash
+        run: |
+          echo "ELECTRON_CACHE=$GITHUB_WORKSPACE/.cache/electron" >> "$GITHUB_ENV"
+          echo "ELECTRON_BUILDER_CACHE=$GITHUB_WORKSPACE/.cache/electron-builder" >> "$GITHUB_ENV"
+
+      - name: Report Electron cache result
+        env:
+          ELECTRON_CACHE_HIT: ${{ steps.electron-cache.outputs.cache-hit }}
+        run: echo "Electron build cache hit: ${ELECTRON_CACHE_HIT:-false}"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

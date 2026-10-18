@@ -18,9 +18,11 @@ import type {
   Agent,
   AgentEnvResponse,
   AgentTask,
+  CancelTaskResponse,
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  PrioritizeQueuedChatTaskResponse,
   ChatSession,
   Comment,
   CreateAgentRequest,
@@ -30,7 +32,12 @@ import type {
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
-  CreateRuntimeProfileRequest,
+  DashboardUsageDaily,
+  DashboardUsageByAgent,
+  DashboardAgentRunTime,
+  DashboardRunTimeDaily,
+  DashboardFailureDaily,
+  DashboardFailureByAgent,
   ExecutionProfile,
   ExecutionProfileActivationResponse,
   ExecutionProfileEntry,
@@ -73,7 +80,6 @@ import type {
   ReorderPinsRequest,
   RemoveSquadMemberRequest,
   RuntimeDevice,
-  RuntimeProfile,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ListIssueStatusesResponse,
@@ -101,7 +107,13 @@ import type {
   WorkspaceSubscriptionSummary,
   DecisionRequest,
   DecisionRequestsList,
+  AuditEventsPage,
+  ListAuditEventsParams,
 } from "@multica/core/types";
+import {
+  EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+  PrioritizeQueuedChatTaskResponseSchema,
+} from "@multica/core/api/schemas";
 import {
   parseTimelineTruncatedKinds,
   type TimelineQueryData,
@@ -110,6 +122,7 @@ import {
   AgentEnvResponseSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
+  CancelTaskResponseSchema,
   EMPTY_AGENT_ENV,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
@@ -149,6 +162,14 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
+  DashboardUsageDailyListSchema,
+  DashboardUsageByAgentListSchema,
+  DashboardAgentRunTimeListSchema,
+  DashboardRunTimeDailyListSchema,
+  DashboardFailureDailyListSchema,
+  DashboardFailureByAgentListSchema,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
 } from "@multica/core/api/schemas";
 import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
@@ -196,9 +217,7 @@ import {
   EMPTY_NOTIFICATION_PREFERENCES,
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
-  EMPTY_RUNTIME,
   EMPTY_RUNTIME_LIST,
-  EMPTY_RUNTIME_PROFILE_LIST_RESPONSE,
   EMPTY_SEARCH_ISSUES_RESPONSE,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
   EMPTY_SQUAD_LIST,
@@ -219,8 +238,6 @@ import {
   PinnedItemSchema,
   ProjectSchema,
   RuntimeListSchema,
-  RuntimeProfileListResponseSchema,
-  RuntimeSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SendChatMessageResponseSchema,
@@ -233,7 +250,6 @@ import {
 } from "./schemas";
 import type { ComposioConnections, IntegrationInstallations } from "./schemas";
 import type { ZodType } from "zod";
-import type { RuntimeCredentialPutResult } from "./schemas";
 import { getCurrentSlug } from "./workspace-store";
 import { getApiUrl } from "./server-store";
 import { parseWithFallback } from "@/lib/parse-response";
@@ -735,6 +751,105 @@ class ApiClient {
     return typeof data.text === "string" ? data.text : "";
   }
 
+  // --- Voice provider pool writes (RUYI-749) ---
+  // Owner/admin only (server-enforced; the screens gate on the member role
+  // first). Endpoint paths + wire shapes mirror packages/core/api/client.ts
+  // one-for-one; mobile keeps its own client so the X-Workspace-Slug header
+  // follows the workspace store. The API key travels once in the PUT body
+  // and is never returned — responses carry only the coarse status badge
+  // plus the probe verdict (保存即探针: the credential PUT probes before
+  // responding, so the returned row already carries the fresh verdict).
+
+  // POST /api/workspaces/:id/voice-providers
+  async createVoiceProvider(
+    workspaceId: string,
+    body: { display_name: string; provider_type: string },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  }
+
+  // PATCH /api/workspaces/:id/voice-providers/:providerId
+  async updateVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+    patch: { display_name?: string; enabled?: boolean },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+  }
+
+  // DELETE /api/workspaces/:id/voice-providers/:providerId — the server
+  // transaction also clears agent override triples and workspace
+  // settings references; cleared_agents feeds the confirm dialog.
+  async deleteVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ id: string; cleared_agents: number }> {
+    return this.fetch<{ id: string; cleared_agents: number }>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // PUT /api/workspaces/:id/voice-providers/:providerId/credentials/:key —
+  // returns the refreshed row (probe included), not a bare 204.
+  async putVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "PUT", body: JSON.stringify({ value }) },
+    );
+  }
+
+  // DELETE /api/workspaces/:id/voice-providers/:providerId/credentials/:key
+  async deleteVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // POST /api/workspaces/:id/voice-providers/:providerId/credential-probe —
+  // manual re-probe behind the row action.
+  async probeVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ voice_provider_id: string; probe: VoiceProvider["credential_probe"] }> {
+    return this.fetch<{
+      voice_provider_id: string;
+      probe: VoiceProvider["credential_probe"];
+    }>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credential-probe`,
+      { method: "POST" },
+    );
+  }
+
+  // PATCH /api/workspaces/:id — settings-bag writes. The bag is replaced
+  // wholesale server-side: callers merge the current bag and send it whole
+  // (never a partial voice-only patch — that would erase sibling keys).
+  async updateWorkspaceSettings(
+    workspaceId: string,
+    settings: Record<string, unknown>,
+  ): Promise<Workspace> {
+    return this.fetch<Workspace>(`/api/workspaces/${workspaceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ settings }),
+    });
+  }
+
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -876,160 +991,32 @@ class ApiClient {
     });
   }
 
-  // --- Voice runtime instances & profiles (RUYI-425 §4.3, mobile) ---
-  // Endpoint paths + wire shapes mirror packages/core/api/client.ts
-  // one-for-one (web parity); mobile keeps its own client so the
-  // X-Workspace-Slug header follows the workspace store. The plaintext API
-  // key travels once in the PUT body and is never returned — responses
-  // carry only the badge plus the connectivity-probe outcome.
-
-  // GET /api/workspaces/:id/runtime-profiles — the Type layer; the voice
-  // create form filters these by capabilities.realtime_voice.
-  async listRuntimeProfiles(
+  async listAuditEvents(
     workspaceId: string,
+    params: ListAuditEventsParams = {},
     opts?: { signal?: AbortSignal },
-  ): Promise<RuntimeProfile[]> {
+  ): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) query.set(key, String(value));
+    }
+    const queryString = query.toString();
+    const suffix = queryString === "" ? "" : `?${queryString}`;
     const raw = await this.fetch<unknown>(
-      `/api/workspaces/${workspaceId}/runtime-profiles`,
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`,
       { signal: opts?.signal },
     );
-    const parsed = parseWithFallback(
-      raw,
-      RuntimeProfileListResponseSchema,
-      EMPTY_RUNTIME_PROFILE_LIST_RESPONSE,
-      { endpoint: "listRuntimeProfiles" },
-    );
-    return parsed.runtime_profiles ?? [];
-  }
-
-  // POST /api/workspaces/:id/runtime-profiles — the §4.3 no-profile escape
-  // hatch creates the workspace's default "Gemini Live" profile (voice
-  // families are API-enforced command-less: command_name: "" is exactly
-  // what the server requires for gemini_live).
-  async createRuntimeProfile(
-    workspaceId: string,
-    body: CreateRuntimeProfileRequest,
-  ): Promise<RuntimeProfile> {
-    return this.fetch<RuntimeProfile>(
-      `/api/workspaces/${workspaceId}/runtime-profiles`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    );
-  }
-
-  // POST /api/runtimes — manual registration of a voice instance (§4.3).
-  // Names may duplicate; the instance is born online/public with
-  // registration_source "manual"; the API key is NOT part of this call —
-  // store it right after via putRuntimeCredential, which also triggers the
-  // server-side connectivity probe.
-  async createManualRuntime(body: {
-    name: string;
-    profile_id: string;
-    model?: string;
-    advanced?: Record<string, unknown>;
-  }): Promise<RuntimeDevice> {
-    return this.fetchValidatedWith(
-      "/api/runtimes",
-      RuntimeSchema,
-      EMPTY_RUNTIME,
-      { method: "POST", body: JSON.stringify(body) },
-      { endpoint: "createManualRuntime" },
-    );
-  }
-
-  // PATCH /api/runtimes/:id — voice instance settings edits (§4.3):
-  // custom_name / model / advanced / disabled merge into instance metadata;
-  // visibility stays server-fixed to public for voice instances.
-  async updateRuntime(
-    runtimeId: string,
-    patch: {
-      visibility?: "private" | "public";
-      custom_name?: string;
-      apply_to_machine?: boolean;
-      model?: string;
-      advanced?: Record<string, unknown>;
-      disabled?: boolean;
-    },
-  ): Promise<RuntimeDevice> {
-    return this.fetchValidatedWith(
-      `/api/runtimes/${runtimeId}`,
-      RuntimeSchema,
-      EMPTY_RUNTIME,
-      { method: "PATCH", body: JSON.stringify(patch) },
-      { endpoint: "updateRuntime" },
-    );
-  }
-
-  // PUT /api/runtimes/:id/credentials/:key — stores/rotates the §4.5
-  // credential and runs the §4.3 probe. Deliberately NOT routed through
-  // parseWithFallback: the tri-state feedback branches on `probe.status`,
-  // and a schema drift must not silently mask the probe outcome.
-  async putRuntimeCredential(
-    runtimeId: string,
-    credentialKey: string,
-    value: string,
-  ): Promise<RuntimeCredentialPutResult> {
-    return this.fetch<RuntimeCredentialPutResult>(
-      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ value }),
-      },
-    );
-  }
-
-  // DELETE /api/runtimes/:id/credentials/:key — idempotent server-side
-  // (204 even when nothing was stored); badge falls back to not_configured.
-  async deleteRuntimeCredential(
-    runtimeId: string,
-    credentialKey: string,
-  ): Promise<void> {
-    await this.fetch<void>(
-      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
-      { method: "DELETE" },
-    );
-  }
-
-  // POST /api/runtimes/:id/credential-probe (RUYI-626) — the device-side
-  // connectivity verdict feeds the same credential_probe metadata badge the
-  // server-side probe writes; unreachable never gates a session start.
-  async reportCredentialProbe(
-    runtimeId: string,
-    probe: { status: "ok" | "invalid" | "unreachable"; http_status?: number },
-  ): Promise<void> {
-    await this.fetch<void>(`/api/runtimes/${runtimeId}/credential-probe`, {
-      method: "POST",
-      body: JSON.stringify(probe),
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "listAuditEvents",
     });
   }
 
-  // DELETE /api/runtimes/:id — direct instance delete (RUYI-566). The
-  // server refuses with a structured 409
-  // (`runtime_profile_instance_delete_unsupported`) while a live runtime
-  // profile backs the instance; that channel is deleteRuntimeProfile below,
-  // whose cascade removes the instance and its credentials in one
-  // transaction.
-  async deleteRuntime(runtimeId: string): Promise<void> {
-    await this.fetch<void>(`/api/runtimes/${runtimeId}`, {
-      method: "DELETE",
-    });
-  }
-
-  // DELETE /api/workspaces/:id/runtime-profiles/:profileId — the supported
-  // delete channel for profile-backed (manual voice) instances: the server
-  // tears down bound instances, deletes their credential rows and the
-  // profile in one transaction (RUYI-540 QA-verified cascade, RUYI-566).
-  async deleteRuntimeProfile(
-    workspaceId: string,
-    profileId: string,
-  ): Promise<void> {
-    await this.fetch<void>(
-      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
-      { method: "DELETE" },
-    );
-  }
+  // --- Voice runtime instances & profiles (RUYI-425 §4.3, mobile) ---
+  // The §4.3 instance-write surface (profile create/delete, manual
+  // instance registration, instance credentials/probe) was removed with
+  // the old voice-instance model in RUYI-748; the pool methods above own
+  // voice configuration now. Reads that still have callers (listRuntimes)
+  // stay.
 
   // Workspace-wide active agent tasks + each agent's most recent terminal —
   // feeds the workload dimension of presence (currently unused in the mobile
@@ -2228,6 +2215,128 @@ class ApiClient {
     });
   }
 
+  // Workspace usage dashboard rollups. The explicit calendar window mirrors
+  // the web dashboard contract and keeps mobile's aggregation scope aligned.
+  async getDashboardUsageDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/daily?${search}`,
+      DashboardUsageDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  async getDashboardUsageByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/by-agent?${search}`,
+      DashboardUsageByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/by-agent" },
+    );
+  }
+
+  async getDashboardAgentRunTime(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAgentRunTime[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/agent-runtime?${search}`,
+      DashboardAgentRunTimeListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/agent-runtime" },
+    );
+  }
+
+  async getDashboardRunTimeDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardRunTimeDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/runtime/daily?${search}`,
+      DashboardRunTimeDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/runtime/daily" },
+    );
+  }
+
+  async getDashboardFailuresDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/daily?${search}`,
+      DashboardFailureDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/daily" },
+    );
+  }
+
+  async getDashboardFailuresByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/by-agent?${search}`,
+      DashboardFailureByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/by-agent" },
+    );
+  }
+
   // --- Labels ---
   async listLabels(opts?: {
     signal?: AbortSignal;
@@ -2553,7 +2662,7 @@ class ApiClient {
   }
 
   async createChatSession(
-    data: { agent_id: string; title?: string },
+    data: { agent_id: string; title?: string; project_id?: string | null },
   ): Promise<ChatSession> {
     // Strict parse — a malformed create response derails the optimistic
     // burst (we need the new session id to seed caches). Fallback would
@@ -2655,7 +2764,7 @@ class ApiClient {
   // helper table in apps/mobile/CLAUDE.md.
   async updateChatSession(
     id: string,
-    data: { title: string },
+    data: { title?: string; project_id?: string | null },
   ): Promise<void> {
     await this.fetch<void>(`/api/chat/sessions/${id}`, {
       method: "PATCH",
@@ -2677,8 +2786,60 @@ class ApiClient {
     });
   }
 
-  async cancelTaskById(taskId: string): Promise<void> {
-    await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+  async setChatSessionModel(id: string, modelOverride: string | null): Promise<ChatSession> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, {
+      id: "", workspace_id: "", agent_id: "", creator_id: "", title: "",
+      status: "active", has_unread: false, created_at: "", updated_at: "",
+    }, { endpoint: "PATCH /api/chat/sessions/:id/model" });
+  }
+
+  async clearQueuedChatTasks(sessionId: string): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${sessionId}/queued-tasks`, { method: "DELETE" });
+  }
+
+  async prioritizeQueuedChatTask(sessionId: string, taskId: string): Promise<PrioritizeQueuedChatTaskResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/queued-tasks/${taskId}/prioritize`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PrioritizeQueuedChatTaskResponseSchema,
+      EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+      { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  async cancelTaskById(
+    taskId: string,
+    options?: { sessionId: string; queuedAction: "edit" | "remove" },
+  ): Promise<CancelTaskResponse> {
+    const params = new URLSearchParams();
+    if (options) {
+      params.set("expected_status", "queued");
+      params.set("chat_session_id", options.sessionId);
+      params.set("queue_action", options.queuedAction);
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}/cancel${query}`, { method: "POST" });
+    return parseWithFallback(raw, CancelTaskResponseSchema, {
+      id: "",
+      agent_id: "",
+      runtime_id: "",
+      issue_id: "",
+      status: "cancelled",
+      priority: 0,
+      dispatched_at: null,
+      started_at: null,
+      completed_at: null,
+      result: null,
+      error: null,
+      created_at: "",
+    }, {
+      endpoint: "POST /api/tasks/:id/cancel",
+    });
   }
 
   // Full per-agent task list (active + terminal) — RUYI-538 ② run history.

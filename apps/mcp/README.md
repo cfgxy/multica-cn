@@ -12,6 +12,11 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 类别 | 工具 | 说明 |
 | --- | --- | --- |
 | 读 | `list_workspaces` | 当前用户所属工作区 |
+| 读 | `get_autopilot` | 读取 Autopilot 配置与状态 |
+| 读 | `list_autopilot_runs` | 按状态、来源和时间过滤原生 Autopilot run，支持分页 |
+| 读 | `get_autopilot_run` | 读取单次原生运行、关联 task 生命周期及脱敏输出/采样摘要 |
+| 读 | `get_autopilot_run_diagnostics` | 读取原生 Autopilot run，并按其 task ID 查询关联运行审计 |
+| 写 | `trigger_autopilot` | 通过原生 Autopilot 调度链路立即执行；支持 current 与历史 payload replay，需提供幂等键 |
 | 读 | `list_agents` | 工作区内可派发的 agent |
 | 读 | `list_projects` | 工作区项目清单 |
 | 读 | `get_project` | 单个项目完整元数据与 revision |
@@ -25,6 +30,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 读 | `get_issue_relations` | 单条 issue 结构化关系：parent 与 blocks/blocked_by/relates_to/supersedes/superseded_by 五向视图 |
 | 读 | `list_issue_runs` | 单条 issue 全部执行 run：状态/agent/触发源/耗时/失败摘要，status 与 trigger 过滤 |
 | 读 | `get_run` | 单个 run 详情：状态、耗时、失败原因、取消归因与完整重试链 |
+| 读 | `get_run_activity` | 单个 run 的有界语义消息增量与状态诊断；worker 证据仅经已认证且绑定 runtime 的 daemon 读取 |
 | 读 | `list_runs` | workspace 级全部 run 视图：status/agent/project/issue/trigger/时间窗过滤，limit 1–200（默认 50）+ offset 分页，返回 issue 编号/标题与失败摘要等定位字段 |
 | 读 | `get_agent` | 单个 agent 管理视图：元数据与运行配置指示器（`has_custom_env`/`custom_env_key_count`/`mcp_config_redacted`），秘密值永不过此层 |
 | 读 | `list_runtimes` | 工作区运行时清单（admin 全量、普通成员可见子集） |
@@ -59,6 +65,8 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 配置读 | `list_runtimes` | runtime 清单：provider/mode/在线状态/可见性/owner |
 | 配置读 | `get_runtime` | 单 runtime 详情 + `used_by` 绑定 agent 清单 |
 | 配置读 | `get_runtime_models` | runtime 模型目录发现：模型清单/不可用项/默认项/每模型 thinking 档位，缓存命中即答、冷目录轮询 |
+
+`get_run_activity` requires `workspace`, `issue`, and `run_id`. `after_seq` is an optional non-negative sequence cursor; `semantic_limit` accepts 1–100 (default 50). `stream` accepts `stdout`, `stderr`, or `both`; `tail_bytes` accepts 1–65536 (default 16384); `worker_cursor` is opaque and limited to 512 bytes. The response separates `run_state`, `semantic_activity`, `worker_evidence`, and `progress_assessment`; the initial read is a baseline, and `running` alone never means `advancing`. A caller is limited to one read per run every 10 seconds. The server records the activity read synchronously and returns no activity body when audit persistence fails. Worker evidence uses a bounded reverse request on the authenticated daemon connection (up to 65536 bytes per selected stream; the complete response is capped at 160 KiB); the daemon resolves the run through its owned manifest and never accepts a path. Cursors are signed and bound to this daemon, run, and exact stream selection; they expire after 24 hours or daemon restart. Missing supervision is `not_supervised`; expired cursors or evidence past its retention deadline are `expired`; missing logs within retention are `not_found`; unavailable connections are `daemon_unreachable`. Before deleting an expired run directory, GC writes a 0600 marker containing only `expires_at`, with a SHA-256-derived filename and no task/run identity. Markers remain for 30 days after evidence expiry, then a later retention GC removes them; malformed markers are conservatively retained. Beyond this classification window, past expiry cannot be distinguished from never-supervised evidence. If marker creation fails, GC keeps the run directory. No server-side filesystem fallback is used.
 | 配置读 | `get_agent_runtime_config` | 单 agent 执行配置读回：runtime/model/thinking/revision（乐观锁令牌） |
 | 配置读 | `list_execution_profiles` | 执行 profile 清单：entry 数/是否激活/revision |
 | 配置读 | `get_execution_profile` | 单 profile 完整读回：全部 entry + revision |
@@ -129,6 +137,51 @@ mention 准入拒绝）以结构化 `code` 返回，不复用异常字符串。�
 默认后端地址为 Multica Cloud（`https://api.multica.ai`）；自托管部署用
 `--server-url` 或 `MULTICA_SERVER_URL` 覆盖。
 
+Inbox 工具通过后端现有的 MCP invocation audit 端点记录调用。部署时须在 MCP
+进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。MCP 进程通过
+`--audit-credential-file` 从用户私有凭据文件读取该值；未配置时，Inbox 操作会在
+执行前失败关闭。审计只记录操作者、工具、工作区、耗时和结果，不记录通知正文、
+认证头或凭据。
+
+### 只读文件工具装配
+
+`list_files`、`get_file_metadata` 和 `read_file_chunk` 还需要一个受管 MCP
+instance 身份。为同一个 instance 配置 ID 和独立凭据：
+
+- API 进程设置 `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS` 为 JSON 对象，键为
+  instance ID，值为 instance 凭据；并继续配置
+  `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。
+- stdio MCP 进程使用 `--file-access-instance-id` 和
+  `--file-access-credential-file`；HTTP MCP 进程使用
+  `MULTICA_MCP_INSTANCE_ID` 和
+  `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE`。凭据文件只放凭据内容并设为
+  `chmod 600` 或 `chmod 400`。HTTP systemd unit 默认只加载审计凭据；部署 HTTP 文件
+  工具时，须另用受限 systemd credential 加载 instance 凭据，并将凭据文件路径传给
+  `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE`，不要把凭据值写入 unit 或日志。
+- 两侧的 instance ID 与凭据必须匹配。instance ID 只允许 ASCII 字母、数字、`-`、`_`，
+  最长 64 字符；凭据最长 512 字节。
+
+在目标 runtime 上先以 owner/admin 身份注册文件目标：
+
+```text
+PUT /api/runtimes/{runtimeId}/file-access-target
+{"id":"<target-id>","enabled":true,"roots":["/allowed/root"],"workspace_ids":["<workspace-uuid>"],"member_ids":["<member-uuid>"]}
+```
+
+`roots` 必须是绝对路径；`workspace_ids` 限定工作区，`member_ids` 非空时限定到所列成员。
+随后把 instance 绑定到目标：
+
+```text
+PUT /api/runtimes/{runtimeId}/file-access-instance-bindings/{instanceId}
+{"target_id":"<target-id>","enabled":true}
+```
+
+MCP 工具的 `host` 可省略；省略时只使用上述已启用的 instance binding。显式传入
+`host` 也只会解析到服务端已登记、并通过 workspace、runtime、member 与 path-root
+校验的目标，不会让 MCP 进程直接读取本地文件或建立 SSH 连接。数据库迁移须先按
+部署仓库的标准流程应用，再启动 API 和 MCP 进程。客户端名称与版本取自 MCP
+initialize 的 peer `clientInfo`，是可伪造的审计观测值，不参与鉴权或授权。
+
 ## 用法
 
 stdio（claude code 示例，`.mcp.json`）：
@@ -138,19 +191,19 @@ stdio（claude code 示例，`.mcp.json`）：
   "mcpServers": {
     "multica": {
       "command": "node",
-      "args": ["/path/to/apps/mcp/dist/index.js"],
+      "args": ["/path/to/apps/mcp/dist/index.js", "--audit-credential-file", "/home/user/.config/multica/mcp-audit-credential"],
       "env": { "MULTICA_TOKEN": "mul_..." }
     }
   }
 }
 ```
 
-生产建议不写 env，直接复用 CLI 登录态（`multica login` 后零配置）。
+生产建议不写 PAT env，直接复用 CLI 登录态（`multica login`）；审计凭据文件需单独准备并限制为当前用户可读。
 
 streamable HTTP：
 
 ```bash
-node apps/mcp/dist/index.js --transport http --port 8080 --host 127.0.0.1
+node apps/mcp/dist/index.js --transport http --port 8080 --host 127.0.0.1 --audit-credential-file ~/.config/multica/mcp-audit-credential
 # 探活：curl http://127.0.0.1:8080/healthz
 # MCP 端点：POST /mcp，Authorization: Bearer mul_...
 ```
@@ -176,6 +229,8 @@ make mcp-uninstall   # 从每个检测到的客户端配置中移除 multica 条
 - 配置文件解析失败（如手工改坏的 JSON/TOML）时，`mcp-update` / `mcp-uninstall` 都会跳过并保留原文件不动，不会覆盖或删除。
 - `mcp-status` 的“失效”指该客户端记录的 dist 路径在磁盘上已不存在（通常是 checkout 被移动或删除），此时应 `make mcp-update`（已注册）或 `make mcp-install`（重新登记）。
 - 以上流程全程不读取、不打印、不持久化任何 Multica PAT。
+- MCP 统一审计凭据单独存放在 `~/.config/multica/mcp-audit-credential`，文件内容只放凭据本身，并设置 `chmod 600 ~/.config/multica/mcp-audit-credential`。安装配置只记录该文件路径，不复制凭据；自定义位置可用 `MCP_AUDIT_CREDENTIAL_FILE=/绝对路径 make mcp-install`，之后重启 MCP 客户端进程。
+- 首次配置可先运行 `mkdir -p ~/.config/multica && install -m 600 /dev/null ~/.config/multica/mcp-audit-credential`，再用本机安全方式把与 API 相同的服务凭据写入该文件；不要将凭据作为命令参数或粘贴到客户端配置。
 - 全部命令均为用户级配置写入，不需要 `sudo`。
 
 ## HTTP 常驻服务（`make mcp-http-*`）
@@ -199,9 +254,11 @@ make mcp-http-uninstall  # 只移除本服务单元，绝不触碰 multica-daemo
   时 `mcp-http-install` 会打印 WARN，需要有权限者执行一次
   `loginctl enable-linger <user>`（这是本机唯一残留的、超出当前用户自身权限的
   前置步骤，且只需执行一次）。
-- **无状态、零前置凭据**：与 `daemon-install` 不同，本服务启动不需要任何已认证的
-  `~/.multica/` profile——每个 `POST /mcp` 自带 `Authorization: Bearer <PAT>`，
-  服务端逐请求转发、不持久化任何凭据。单元文件、日志均不写入 token。
+- **按请求鉴权，审计凭据受限注入**：每个 `POST /mcp` 自带
+  `Authorization: Bearer <PAT>`，服务端逐请求转发；统一 MCP 审计还需要一份
+  服务凭据。将其单独写入用户私有文件并设为 `chmod 600`，再运行
+  `make mcp-http-install MCP_AUDIT_CREDENTIAL_FILE=/绝对路径`。systemd 通过
+  `LoadCredential` 投递到运行时凭据目录，unit 与日志只包含源文件路径，不包含凭据。
 - 默认绑定 `127.0.0.1`；`MCP_HTTP_HOST` 传入非 loopback 值时 `mcp-http-install`
   会打印警告——对外暴露前必须置于 TLS 反代之后，不建议直接暴露明文 HTTP。
 - 单实例（非 `@` 模板）：一台机器通常只需一个 HTTP 端点；需要多端口并存时用不同

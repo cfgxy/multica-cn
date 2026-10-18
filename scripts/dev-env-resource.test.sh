@@ -76,6 +76,7 @@ fail() {
 repo="$tmp_dir/repo"
 mkdir -p "$repo/scripts"
 ln -s "$root_dir/scripts/dev-env.sh" "$repo/scripts/dev-env.sh"
+ln -s "$root_dir/scripts/lib-recycle-guard.sh" "$repo/scripts/lib-recycle-guard.sh"
 git -C "$repo" init -q
 git -C "$repo" config user.email test@localhost
 git -C "$repo" config user.name test
@@ -118,6 +119,38 @@ node -e '
 ' "$repo/scripts/slots.json" || fail "slots.json budget accounting does not match the documented budget"
 
 source "$repo/scripts/dev-env.sh"
+# Exercise the managed state change in the throwaway slot home only. The
+# command is lease-gated, leaves the global fact source unchanged, and restores
+# the canonical value through the same command surface.
+MULTICA_CALLER_OWNER=RUYI-773 dev_env dev2 use > /dev/null 2>&1 \
+  || fail "the temp dev2 slot must bind before setting its budget"
+MULTICA_CALLER_OWNER=RUYI-773 dev_env dev2 resource-budget desktop --temporary-4096 > /dev/null 2>&1 \
+  || fail "the managed dev2 Desktop budget command must apply the authorized value"
+grep -qx 'DESKTOP_MEMORY_MB=4096' "$MULTICA_SLOTS_HOME/dev2/manifest.env" \
+  || fail "the managed command must persist 4096MB in only dev2's manifest"
+if MULTICA_CALLER_OWNER=RUYI-773 dev_env dev1 resource-budget desktop --temporary-4096 > /dev/null 2>&1; then
+  fail "the temporary Desktop budget command must refuse dev1"
+fi
+MULTICA_CALLER_OWNER=RUYI-773 dev_env dev2 resource-budget desktop --restore > /dev/null 2>&1 \
+  || fail "the managed dev2 Desktop budget command must restore the canonical value"
+grep -qx 'DESKTOP_MEMORY_MB=256' "$MULTICA_SLOTS_HOME/dev2/manifest.env" \
+  || fail "the managed command must restore the original 256MB budget"
+MULTICA_CALLER_OWNER=RUYI-773 dev_env dev2 resource-budget desktop --temporary-4096 > /dev/null 2>&1 \
+  || fail "RUYI-773 must be able to reapply its temporary Desktop budget"
+MULTICA_CALLER_OWNER=RUYI-773 dev_env dev2 lock-release --force > /dev/null 2>&1 \
+  || fail "the isolated RUYI-773 lease must release"
+MULTICA_CALLER_OWNER=RUYI-814 dev_env dev2 use > /dev/null 2>&1 \
+  || fail "a different issue must be able to acquire the released sandbox slot"
+grep -qx 'DESKTOP_MEMORY_MB=256' "$MULTICA_SLOTS_HOME/dev2/manifest.env" \
+  || fail "rebinding dev2 to another issue must clear the RUYI-773 Desktop exception"
+if MULTICA_CALLER_OWNER=RUYI-814 dev_env dev2 resource-budget desktop --temporary-4096 > /dev/null 2>&1; then
+  fail "another issue holding dev2 must not enable RUYI-773's temporary budget"
+fi
+node -e '
+  const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  if (f.resource_budget.components.desktop.memory_mb !== 256) process.exit(1);
+' "$repo/scripts/slots.json" || fail "the managed override must leave canonical slots.json unchanged"
+
 # require_slot dies by exiting, so run the negative probe in a subshell.
 if (require_slot dev3) > /dev/null 2>&1; then
   fail "a slot outside the fact source must be refused"
@@ -134,9 +167,18 @@ env_args="$(component_resource_env daemon)"
 grep -q 'GOMEMLIMIT=256MiB' <<< "$env_args" || fail "daemon must get GOMEMLIMIT=256MiB, got: $env_args"
 [ -z "$(component_resource_env desktop)" ] || fail "desktop must get no env caps (enforced by pin + watchdog)"
 
+# The temporary exception is state on the dev2 manifest; the canonical facts
+# source and every non-desktop component retain their normal budgets.
+grep -q 'DESKTOP_MEMORY_MB.*budget_field components.desktop.memory_mb' "$repo/scripts/dev-env.sh" \
+  || fail "the manifest default must preserve the canonical desktop budget"
+grep -q 'Only the desktop component supports a temporary budget override' "$repo/scripts/dev-env.sh" \
+  || fail "the managed override must be restricted to Desktop"
+grep -q 'Temporary Desktop budget override is authorized only for dev2' "$repo/scripts/dev-env.sh" \
+  || fail "the managed override must be restricted to dev2"
+
 # docker compose mirrors the fact source's shared_postgres cap.
-mem_lines="$(grep -c '^    mem_limit:' "$root_dir/docker-compose.yml" || true)"
-[ "$mem_lines" = 1 ] || fail "docker-compose.yml must declare exactly one mem_limit, got $mem_lines"
+mem_lines="$(grep -c "^    mem_limit: $(budget_field shared_postgres.memory)$" "$root_dir/docker-compose.yml" || true)"
+[ "$mem_lines" = 1 ] || fail "docker-compose.yml must mirror the shared PostgreSQL memory cap exactly once, got $mem_lines"
 grep -xq "    mem_limit: $(budget_field shared_postgres.memory)" "$root_dir/docker-compose.yml" \
   || fail "compose mem_limit must mirror slots.json shared_postgres.memory ($(budget_field shared_postgres.memory))"
 cpu_lines="$(grep -c '^    cpus:' "$root_dir/docker-compose.yml" || true)"
@@ -302,6 +344,54 @@ node -e '
 [ -f "$slot2/api.pid" ] || fail "another slot's pid bookkeeping must be untouched"
 stop_watchdog_dir "$slot1" "$wd"
 watchdog_pids=""
+
+# The same watchdog reads the per-slot Desktop exception from its manifest.
+# Fabricated RSS stays at 300MB: below 4096MB while the exception is active,
+# then above the restored 256MB baseline. No process allocates that memory.
+desktop_dir="$tmp_dir/wd-desktop"
+write_manifest "$desktop_dir" RUYI-773
+printf 'DESKTOP_MEMORY_MB=4096\n' >> "$desktop_dir/manifest.env"
+desktop_pid="$(spawn_stub "$desktop_dir" desktop)"
+stub_pids="$desktop_pid"
+PATH="$stub_bin:$PATH" FAKE_RSS_PIDS="$desktop_pid" FAKE_RSS_KB=307200 \
+  MULTICA_SLOT_WATCHDOG_INTERVAL=1 MULTICA_SLOT_WATCHDOG_BREACHES=2 \
+  bash "$root_dir/scripts/slot-watchdog.sh" dev2 "$desktop_dir" "$repo/scripts/slots.json" &
+wd=$!
+watchdog_pids="$wd"
+sleep 3
+kill -0 "$desktop_pid" 2>/dev/null || fail "4096MB dev2 Desktop budget must tolerate the 300MB stub reading"
+node -e '
+  const fs = require("fs");
+  const rows = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").map(JSON.parse);
+  if (!rows.some(r => r.slot === "dev2" && r.component === "desktop" && r.quota_mb === 4096)) process.exit(1);
+' "$desktop_dir/resource-events.log" || fail "the watchdog must report the same 4096MB dev2 Desktop budget"
+write_manifest "$desktop_dir" RUYI-773
+printf 'DESKTOP_MEMORY_MB=256\n' >> "$desktop_dir/manifest.env"
+wait_dead "$desktop_pid" || fail "restoring 256MB must make the watchdog stop the 300MB stub"
+grep -q '"component":"desktop".*"quota_mb":256' "$desktop_dir/resource-events.log" \
+  || fail "the restored Desktop budget must be enforced by the same watchdog"
+stop_watchdog_dir "$desktop_dir" "$wd"
+watchdog_pids=""
+stub_pids=""
+
+# A leftover exception value is inert once a different Issue owns the
+# manifest. The watchdog must enforce the canonical 256MB limit in that case.
+desktop_other_issue="$tmp_dir/wd-desktop-other-issue"
+write_manifest "$desktop_other_issue" RUYI-814
+printf 'DESKTOP_MEMORY_MB=4096\n' >> "$desktop_other_issue/manifest.env"
+desktop_other_pid="$(spawn_stub "$desktop_other_issue" desktop)"
+stub_pids="$desktop_other_pid"
+PATH="$stub_bin:$PATH" FAKE_RSS_PIDS="$desktop_other_pid" FAKE_RSS_KB=307200 \
+  MULTICA_SLOT_WATCHDOG_INTERVAL=1 MULTICA_SLOT_WATCHDOG_BREACHES=2 \
+  bash "$root_dir/scripts/slot-watchdog.sh" dev2 "$desktop_other_issue" "$repo/scripts/slots.json" &
+wd=$!
+watchdog_pids="$wd"
+wait_dead "$desktop_other_pid" || fail "another issue's leftover 4096MB value must not bypass the 256MB watchdog budget"
+grep -q '"component":"desktop".*"quota_mb":256' "$desktop_other_issue/resource-events.log" \
+  || fail "the watchdog must record the canonical budget for another issue"
+stop_watchdog_dir "$desktop_other_issue" "$wd"
+watchdog_pids=""
+stub_pids=""
 
 # ---------------------------------------------------------------------------
 # Scenario R (regrouped descendant — the QA round-2 blind shape): launcher →

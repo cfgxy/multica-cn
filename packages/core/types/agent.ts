@@ -664,6 +664,15 @@ export interface Agent {
   voice_runtime_id?: string;
   /** False exactly when the agent has no voice runtime. Older backends omit it. */
   voice_runtime_bound?: boolean;
+  /**
+   * D2 voice override triple (RUYI-693), level-wise atomic: the agent-level
+   * voice configuration. Empty/absent id = no override — the workspace
+   * default (settings.voice.default) applies next, and the official vanilla
+   * form is the final fallback. Older backends omit these.
+   */
+  voice_provider_id?: string;
+  voice_model?: string;
+  voice_advanced?: Record<string, unknown> | null;
   name: string;
   description: string;
   /** What this agent's owner wrote. For a system agent this holds only the
@@ -871,6 +880,15 @@ export interface CreateAgentRequest {
    * slot's instance (one instance cannot hold both slots).
    */
   voice_runtime_id?: string;
+  /**
+   * D2 voice override triple (RUYI-693). Non-empty voice_provider_id requires
+   * the pool entry to exist in this workspace, be enabled, and speak a family
+   * the gateway serves today; voice_model / voice_advanced refine the
+   * override and are stored with it (level-wise atomic).
+   */
+  voice_provider_id?: string;
+  voice_model?: string;
+  voice_advanced?: Record<string, unknown> | null;
   runtime_config?: Record<string, unknown>;
   custom_env?: Record<string, string>;
   custom_args?: string[];
@@ -987,6 +1005,22 @@ export interface UpdateAgentRequest {
    *     capability and refuses the text slot's instance)
    */
   voice_runtime_id?: string;
+  /**
+   * D2 voice override triple (RUYI-693), level-wise atomic:
+   *   - field omitted → no change to the current override
+   *   - voice_provider_id present with ""/null → unbind: the WHOLE triple
+   *     clears (voice_model / voice_advanced must not be sent alongside)
+   *   - voice_provider_id present with an id → bind/replace, validated by
+   *     the server (exists + workspace + enabled + gateway-servable);
+   *     voice_model / voice_advanced in the same request refine the new
+   *     override. voice_advanced: null/"" preserves the stored refinement,
+   *     {} stores an explicit empty refinement.
+   * voice_model / voice_advanced sent WITHOUT a provider id only refine the
+   * already-bound override; with no override bound the server rejects them.
+   */
+  voice_provider_id?: string | null;
+  voice_model?: string;
+  voice_advanced?: Record<string, unknown> | null;
   runtime_config?: Record<string, unknown>;
   /**
    * NOTE: `custom_env` is intentionally NOT updatable through this
@@ -1762,6 +1796,62 @@ export interface RuntimeLocalSkillImportRequest {
   error?: string;
   created_at: string;
   updated_at: string;
+}
+
+export type RuntimeOpsCommandStatus =
+  | "pending"
+  | "claimed"
+  | "succeeded"
+  | "failed"
+  | "rejected"
+  | "timeout"
+  | "expired";
+
+export interface RuntimeOpsService {
+  name: string;
+  type?: string;
+  status: string;
+  detail?: string;
+}
+
+export interface RuntimeOpsInventory {
+  daemon_id: string;
+  collect_status: "ok" | "unavailable";
+  services: RuntimeOpsService[];
+  error?: string | null;
+  last_report_at?: string | null;
+  last_success_at?: string | null;
+}
+
+export interface RuntimeOpsCommandResult {
+  stdout?: string;
+  stderr?: string;
+  truncated?: boolean;
+}
+
+export interface RuntimeOpsCommand {
+  id: string;
+  runtime_id: string;
+  kind: string;
+  args?: unknown;
+  status: RuntimeOpsCommandStatus;
+  timeout_s: number;
+  lease_epoch: number;
+  exit_code?: number | null;
+  result?: RuntimeOpsCommandResult | null;
+  reject_reason?: string | null;
+  submission_key?: string | null;
+  created_at: string;
+  claimed_at?: string | null;
+  finished_at?: string | null;
+  idempotent?: boolean;
+}
+
+export interface CreateRuntimeOpsCommandRequest {
+  kind: string;
+  args?: Record<string, unknown>;
+  timeout_s?: number;
+  submission_key?: string;
 }
 
 export interface RuntimeLocalSkillsResult {

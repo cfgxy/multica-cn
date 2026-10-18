@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,7 +26,8 @@ type Supervisor struct {
 	// daemonID is this daemon's persistent identity, written into every
 	// manifest at Launch so reconciliation can attribute units to their
 	// launching daemon (RUYI-592 fix 1).
-	daemonID string
+	daemonID          string
+	evidenceCursorKey [32]byte
 
 	// LockHeld probes the task's env-root execution lock for the lost
 	// convergence (RUYI-592 fix 2), mirroring Reconciler.LockHeld. nil
@@ -62,7 +64,11 @@ func New(mgr *Manager, sys *systemdCtl, binPath, daemonID, owner string, log *sl
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Supervisor{mgr: mgr, sys: sys, binPath: binPath, daemonID: daemonID, owner: owner, log: log}, nil
+	s := &Supervisor{mgr: mgr, sys: sys, binPath: binPath, daemonID: daemonID, owner: owner, log: log}
+	if _, err := rand.Read(s.evidenceCursorKey[:]); err != nil {
+		return nil, fmt.Errorf("supervisor: initialize evidence cursor key: %w", err)
+	}
+	return s, nil
 }
 
 // Manager exposes the run registry (reconciliation, cleanup, tests).

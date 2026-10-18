@@ -65,13 +65,14 @@ const (
 
 // HookResult is what a completed hook call returns to whoever invoked it.
 type HookResult struct {
-	Status   string          `json:"status"`
-	Output   json.RawMessage `json:"output,omitempty"`
-	Error    string          `json:"error,omitempty"`
-	Latency  int             `json:"latency_ms"`
-	HookKey  string          `json:"hook_key"`
-	Trigger  string          `json:"trigger"`
-	Attempts int             `json:"attempts"`
+	Status      string          `json:"status"`
+	Output      json.RawMessage `json:"output,omitempty"`
+	Error       string          `json:"error,omitempty"`
+	AuditStatus string          `json:"audit_status,omitempty"`
+	Latency     int             `json:"latency_ms"`
+	HookKey     string          `json:"hook_key"`
+	Trigger     string          `json:"trigger"`
+	Attempts    int             `json:"attempts"`
 }
 
 // HookActor is who the resulting writes belong to.
@@ -204,17 +205,77 @@ func (s *PluginService) InvokeHook(ctx context.Context, invocation HookInvocatio
 	invocation.Attempt = attempt
 	hook := invocation.Hook
 	result := HookResult{HookKey: hook.Key, Trigger: invocation.Trigger, Attempts: attempt}
+	auditContext := MCPInvocationAuditContext{
+		InvocationID: invocation.ID,
+		WorkspaceID:  invocation.Installation.WorkspaceID,
+		ActorType:    invocation.Actor.Type,
+		ActorID:      invocation.Actor.ID,
+		IssueID:      invocation.IssueID,
+	}
+	if invocation.Actor.Type == AuditActorAgent {
+		auditContext.AgentID = invocation.Actor.ID
+	}
+	startEvent := MCPInvocationAuditEvent(auditContext, AuditMCPInvocationStarted, map[string]any{
+		"installation_id": uuidString(invocation.Installation.ID),
+		"hook_key":        hook.Key,
+		"trigger":         invocation.Trigger,
+		"attempt":         attempt,
+	}, false)
+	startInserted, err := AppendMCPInvocationAuditEvent(ctx, s.Queries, startEvent)
+	if err != nil {
+		result.Status = "refused"
+		result.Error = "MCP audit storage unavailable"
+		result.AuditStatus = "unrecorded"
+		return result, pluginErrf(PluginErrorUnavailable, "MCP audit storage unavailable")
+	}
+	if !startInserted {
+		result.Status = "refused"
+		result.Error = "MCP invocation already recorded"
+		result.AuditStatus = "recorded"
+		return result, pluginErrf(PluginErrorForbidden, "MCP invocation already recorded")
+	}
+	finishAudit := func(status string, latency int, cause error) {
+		details := map[string]any{
+			"installation_id": uuidString(invocation.Installation.ID),
+			"hook_key":        hook.Key,
+			"trigger":         invocation.Trigger,
+			"attempt":         attempt,
+			"status":          status,
+			"latency_ms":      latency,
+		}
+		if invocation.EventType != "" {
+			details["event_type"] = invocation.EventType
+		}
+		if cause != nil {
+			details["error_category"] = status
+		}
+		finishEvent := MCPInvocationAuditEvent(auditContext, AuditMCPInvocationFinished, details, false)
+		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		result.AuditStatus = FinishMCPInvocationAudit(finishCtx, s.Queries, finishEvent)
+	}
 
 	if !invocation.Installation.Enabled {
-		return result, pluginErrf(PluginErrorForbidden, "this Plugin is disabled")
+		err := pluginErrf(PluginErrorForbidden, "this Plugin is disabled")
+		result.Status = hookFailureStatus(err)
+		finishAudit(result.Status, 0, err)
+		return result, err
 	}
 	if !HookAllowsTrigger(hook, invocation.Trigger) {
-		return result, pluginErrf(PluginErrorForbidden, "hook %q does not declare the %s trigger", hook.Key, invocation.Trigger)
+		err := pluginErrf(PluginErrorForbidden, "hook %q does not declare the %s trigger", hook.Key, invocation.Trigger)
+		result.Status = hookFailureStatus(err)
+		finishAudit(result.Status, 0, err)
+		return result, err
 	}
 	if hook.Transport.Type != plugincontract.TransportHTTP {
-		return result, pluginErrf(PluginErrorIncompatible, "hook transport %q is not supported yet", hook.Transport.Type)
+		err := pluginErrf(PluginErrorIncompatible, "hook transport %q is not supported yet", hook.Transport.Type)
+		result.Status = hookFailureStatus(err)
+		finishAudit(result.Status, 0, err)
+		return result, err
 	}
 	if err := s.checkHookRate(ctx, invocation.Installation.ID, hook.Key); err != nil {
+		result.Status = hookFailureStatus(err)
+		finishAudit(result.Status, 0, err)
 		return result, err
 	}
 
@@ -233,6 +294,7 @@ func (s *PluginService) InvokeHook(ctx context.Context, invocation HookInvocatio
 		result.Output = output
 	}
 	result.Status = status
+	finishAudit(status, latency, callErr)
 
 	s.recordInvocation(ctx, invocation, status, attempt, latency, message)
 	if callErr != nil {

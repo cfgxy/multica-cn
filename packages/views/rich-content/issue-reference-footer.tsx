@@ -89,8 +89,11 @@ const PR_STATE_ICON: Record<PullRequestVisualState, {
   unknown: { Icon: GitPullRequest, className: "text-muted-foreground" },
 };
 
-function prIdentifier(pr: GitHubPullRequest): string {
-  return `${pr.repo_owner}/${pr.repo_name}#${pr.number}`;
+function prRepositoryLabel(pr: GitHubPullRequest): string {
+  const repository = pr.repo_owner === "cfgxy"
+    ? pr.repo_name
+    : `${pr.repo_owner}/${pr.repo_name}`;
+  return `${repository}/`;
 }
 
 function IssueReferenceFooter({ references }: { references: IssueReference[] }) {
@@ -171,16 +174,23 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
           className="issue-reference-row no-underline"
           data-reference-kind="pr"
         >
-          <Icon
-            aria-hidden
-            className={`h-[15px] w-[15px] shrink-0 ${className} ${
-              visual.dimmed ? "opacity-80" : ""
-            }`}
-          />
-          <span className="issue-reference-identifier" translate="no">
-            {prIdentifier(row.pr)}
+          <span className="issue-reference-pr-leading">
+            <Icon
+              aria-hidden
+              className={`h-[15px] w-[15px] shrink-0 ${className} ${
+                visual.dimmed ? "opacity-80" : ""
+              }`}
+            />
+            <span className="issue-reference-identifier" translate="no">
+              #{row.pr.number}
+            </span>
           </span>
-          <span className="issue-reference-title">{row.pr.title}</span>
+          <span className="issue-reference-pr-content">
+            <span className="issue-reference-pr-project" translate="no">
+              {prRepositoryLabel(row.pr)}
+            </span>
+            <span className="issue-reference-title">{row.pr.title}</span>
+          </span>
         </a>
       );
     }
@@ -227,16 +237,20 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
  * mount this — one extraction and one dedup policy, no per-surface fork.
  * Nothing renders when there are no references.
  */
-function IssueReferenceTail({ content }: { content: string }) {
+export function useIssueReferences(content: string): IssueReference[] {
   const workspace = useCurrentWorkspace();
   const workspacePrefix = workspace?.issue_prefix || null;
-  const references = useMemo(
+  return useMemo(
     () =>
       dedupeIssueReferences(
         extractIssueReferences(content, { workspacePrefix }),
       ),
     [content, workspacePrefix],
   );
+}
+
+function IssueReferenceTail({ content }: { content: string }) {
+  const references = useIssueReferences(content);
   if (references.length === 0) return null;
   return <IssueReferenceFooter references={references} />;
 }

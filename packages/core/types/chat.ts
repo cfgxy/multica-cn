@@ -91,6 +91,8 @@ export interface ChatSession {
   /** Durable project context for every turn in this session. Null when the
    *  conversation uses workspace context only; optional for older servers. */
   project_id?: string | null;
+  /** Session-only model selection; null follows the Agent default. */
+  model_override?: string | null;
   title: string;
   status: "active" | "archived";
   /** True when the session has any unread assistant replies. List-only.

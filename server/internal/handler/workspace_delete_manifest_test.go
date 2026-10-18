@@ -39,6 +39,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// so like admin_audit_log they are left in place with workspace_id
 	// intact — the trail still shows what the deleted workspace did.
 	"audit_event":                 workspaceDeleteSettle,
+	"mcp_invocation_audit_outbox": workspaceDelete,
 	"autopilot":                   workspaceDelete,
 	"autopilot_collaborator":      workspaceDelete,
 	"autopilot_param":             workspaceDelete,
@@ -55,42 +56,57 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_chat_context_generation": workspaceDelete,
 	// Run-trigger intents (RUYI-304) own nothing outside the database: the
 	// cascade deletes them directly instead of settling through a reconciler.
-	"channel_chat_run_intent":         workspaceDelete,
-	"channel_chat_session_binding":    workspaceDelete,
-	"channel_inbound_audit":           workspaceDelete,
-	"channel_inbound_message_dedup":   workspaceDelete,
-	"channel_installation":            workspaceDelete,
-	"channel_media_pending_object":    workspaceDeleteSettle,
-	"channel_outbound_card_message":   workspaceDelete,
-	"channel_outbound_message":        workspaceDelete,
-	"channel_task_delivery":           workspaceDelete,
-	"channel_user_binding":            workspaceDelete,
-	"chat_draft_restore":              workspaceDelete,
-	"chat_message":                    workspaceDelete,
-	"chat_pinned_agent":               workspaceDelete,
-	"chat_session":                    workspaceDelete,
-	"client_usage_daily":              workspaceDeleteDetach,
-	"comment":                         workspaceDelete,
-	"comment_reaction":                workspaceDelete,
-	"contact_sales_inquiry":           workspaceDeleteKeep,
+	"channel_chat_run_intent":       workspaceDelete,
+	"channel_chat_session_binding":  workspaceDelete,
+	"channel_inbound_audit":         workspaceDelete,
+	"channel_inbound_message_dedup": workspaceDelete,
+	"channel_installation":          workspaceDelete,
+	"channel_media_pending_object":  workspaceDeleteSettle,
+	"channel_outbound_card_message": workspaceDelete,
+	"channel_outbound_message":      workspaceDelete,
+	"channel_task_delivery":         workspaceDelete,
+	"channel_user_binding":          workspaceDelete,
+	"chat_draft_restore":            workspaceDelete,
+	"chat_message":                  workspaceDelete,
+	"chat_pinned_agent":             workspaceDelete,
+	"chat_session":                  workspaceDelete,
+	"client_usage_daily":            workspaceDeleteDetach,
+	"comment":                       workspaceDelete,
+	"comment_reaction":              workspaceDelete,
+	"contact_sales_inquiry":         workspaceDeleteKeep,
 	// Clause asset family (RUYI-751 / ADR 007): identity, versions, bindings,
 	// injection attribution and the daily quality rollup all die with the
 	// workspace (DeleteWorkspaceClauseAssets). The rollup watermark is a
 	// global singleton keyed to no workspace and is kept, like its
 	// prompt-quality twin (task_usage_hourly_rollup_state).
-	"clause":                       workspaceDelete,
-	"clause_binding":               workspaceDelete,
-	"clause_injection":             workspaceDelete,
-	"clause_quality_daily":         workspaceDelete,
-	"clause_quality_rollup_state":  workspaceDeleteKeep,
-	"clause_version":               workspaceDelete,
+	"clause":                      workspaceDelete,
+	"clause_binding":              workspaceDelete,
+	"clause_injection":            workspaceDelete,
+	"clause_quality_daily":        workspaceDelete,
+	"clause_quality_rollup_state": workspaceDeleteKeep,
+	"clause_version":              workspaceDelete,
 	// RUYI-729: daemon-host backpressure tables (no FK, house rule). Event
 	// history dies with the workspace; a settings row is swept only once no
 	// runtime anywhere still points at its daemon_id, so a shared daemon
 	// serving another workspace keeps its gate config.
-	"daemon_backpressure_event":       workspaceDelete,
-	"daemon_backpressure_settings":    workspaceDelete,
-	"daemon_connection":            workspaceDelete,
+	"daemon_backpressure_event":        workspaceDelete,
+	"daemon_backpressure_settings":     workspaceDelete,
+	"daemon_connection":                workspaceDelete,
+	"daemon_file_access_target":        workspaceDelete,
+	"daemon_file_operation":            workspaceDelete,
+	"mcp_file_access_instance_binding": workspaceDelete,
+	// The file-read policy is a deployment-wide singleton and has no
+	// workspace ownership; deleting one workspace must preserve it.
+	"mcp_file_read_policy":   workspaceDeleteKeep,
+	"mcp_pre_auth_rejection": workspaceDeleteKeep,
+	// Ops command ledger (RUYI-645): workspace-scoped operational evidence
+	// with no foreign keys by design, swept explicitly through the
+	// application-layer deletion graph like the other evidence leaves.
+	"daemon_ops_command": workspaceDelete,
+	// The daemon's last service inventory is a machine fact keyed by
+	// daemon_id with no workspace_id: it survives workspace teardown and is
+	// overwritten by the daemon's next report cycle (RUYI-645).
+	"daemon_service_inventory":        workspaceDeleteKeep,
 	"daemon_token":                    workspaceDelete,
 	"dingtalk_group_presence":         workspaceDelete,
 	"dingtalk_bot_identity":           workspaceDelete,

@@ -54,6 +54,13 @@ describe("resolveLinkAction", () => {
     });
   });
 
+  it("mention://pull-request 解析为编号动作，且不依赖 workspace slug", () => {
+    expect(resolveLinkAction("mention://pull-request/412", null)).toEqual({
+      kind: "pullRequest",
+      number: 412,
+    });
+  });
+
   it("畸形 MR 编号（非正整数）静默忽略，绝不交给系统", () => {
     for (const url of [
       "mention://merge-request/abc",

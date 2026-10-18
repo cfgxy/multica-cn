@@ -19,6 +19,7 @@ import {
   issuePullRequestsOptions,
   deriveChecksStatus,
   deriveMergeStatus,
+  deriveReviewDecision,
   derivePullRequestStateVisual,
   shouldShowPullRequestStats,
   type PullRequestChecksStatus,
@@ -102,7 +103,13 @@ export function PullRequestList({ issueId, showGitHub = true }: { issueId: strin
   );
 }
 
-function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
+export function PullRequestRow({
+  pr,
+  showTargetBranch = false,
+}: {
+  pr: GitHubPullRequest;
+  showTargetBranch?: boolean;
+}) {
   const { t } = useT("issues");
   const visual = derivePullRequestStateVisual(pr.state);
   const cfg = STATE_ICON[visual.state];
@@ -129,6 +136,11 @@ function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
           {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
           {pr.author_login ? ` · @${pr.author_login}` : null}
         </p>
+        {showTargetBranch ? (
+          <p className="text-micro text-muted-foreground truncate">
+            {t(($) => $.detail.pull_request_target_branch_label)}: {pr.base_branch || t(($) => $.detail.pull_request_target_branch_unknown)}
+          </p>
+        ) : null}
         <PullRequestRowDetails pr={pr} />
       </div>
     </a>
@@ -151,6 +163,9 @@ function PullRequestRowDetails({ pr }: { pr: GitHubPullRequest }) {
   const isTerminal = pr.state === "merged" || pr.state === "closed";
   const checksBadge = isTerminal ? null : getChecksBadge(deriveChecksStatus(pr), t);
   const mergeBadge = isTerminal ? null : getMergeBadge(deriveMergeStatus(pr), t);
+  const reviewBadge = isTerminal
+    ? null
+    : getReviewBadge(deriveReviewDecision(pr.review_decision, pr.snapshot_available), t);
 
   // A stale snapshot (GitHub outage / revoked key) greys out both elements and
   // annotates them with the snapshot age instead of hiding the last-known data.
@@ -161,15 +176,50 @@ function PullRequestRowDetails({ pr }: { pr: GitHubPullRequest }) {
       : t(($) => $.detail.pull_request_snapshot_stale_unknown)
     : undefined;
 
-  if (!showStats && !checksBadge && !mergeBadge) return null;
+  if (!showStats && !checksBadge && !mergeBadge && !reviewBadge) return null;
 
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-micro text-muted-foreground">
       {showStats ? <PullRequestStats pr={pr} /> : null}
       {checksBadge ? <PullRequestBadge badge={checksBadge} stale={stale} title={staleTitle} /> : null}
       {mergeBadge ? <PullRequestBadge badge={mergeBadge} stale={stale} title={staleTitle} /> : null}
+      {reviewBadge ? <PullRequestBadge badge={reviewBadge} stale={stale} title={staleTitle} /> : null}
     </div>
   );
+}
+
+function getReviewBadge(
+  decision: ReturnType<typeof deriveReviewDecision>,
+  t: IssuesT,
+): PullRequestBadgeConfig | null {
+  switch (decision) {
+    case "approved":
+      return {
+        icon: CheckCircle2,
+        className: "text-emerald-600 dark:text-emerald-400",
+        label: t(($) => $.detail.pull_request_review_approved),
+      };
+    case "changes_requested":
+      return {
+        icon: XCircle,
+        className: "text-rose-600 dark:text-rose-400",
+        label: t(($) => $.detail.pull_request_review_changes_requested),
+      };
+    case "review_required":
+      return {
+        icon: CircleDashed,
+        className: "text-amber-600 dark:text-amber-400",
+        label: t(($) => $.detail.pull_request_review_required),
+      };
+    case "unknown":
+      return {
+        icon: Circle,
+        className: "text-muted-foreground",
+        label: t(($) => $.detail.pull_request_review_unknown),
+      };
+    default:
+      return null;
+  }
 }
 
 function PullRequestStats({ pr }: { pr: GitHubPullRequest }) {
@@ -232,23 +282,35 @@ function getChecksBadge(
       return {
         icon: CircleDashed,
         className: "text-amber-600 dark:text-amber-400",
-        label: t(($) => $.detail.pull_request_checks_running, {
-          passed: status.passed,
-          total: status.total,
-          running: status.running,
-        }),
+        label:
+          status.total > 0
+            ? t(($) => $.detail.pull_request_checks_running, {
+                passed: status.passed,
+                total: status.total,
+                running: status.running,
+              })
+            : t(($) => $.detail.pull_request_checks_pending),
       };
     case "passed":
       return {
         icon: CheckCircle2,
         className: "text-emerald-600 dark:text-emerald-400",
-        label: t(($) => $.detail.pull_request_checks_all_passed, { total: status.total }),
+        label:
+          status.total > 0
+            ? t(($) => $.detail.pull_request_checks_all_passed, { total: status.total })
+            : t(($) => $.detail.pull_request_checks_passed),
       };
     case "none":
       return {
         icon: Circle,
         className: "text-muted-foreground",
         label: t(($) => $.detail.pull_request_checks_none),
+      };
+    case "unknown":
+      return {
+        icon: Circle,
+        className: "text-muted-foreground",
+        label: t(($) => $.detail.pull_request_checks_unknown),
       };
     case "unavailable":
       return null;
@@ -260,6 +322,15 @@ function checksFailedLabel(
   t: IssuesT,
 ): string {
   const shown = status.names.slice(0, 2);
+  if (status.total <= 0) {
+    if (shown.length === 0) return t(($) => $.detail.pull_request_checks_failed_unknown);
+    const names = [...shown];
+    const remaining = status.names.length - shown.length;
+    if (remaining > 0) names.push(t(($) => $.detail.pull_request_checks_more, { count: remaining }));
+    return t(($) => $.detail.pull_request_checks_failed_named_unknown_count, {
+      names: names.join(", "),
+    });
+  }
   if (shown.length === 0) {
     return t(($) => $.detail.pull_request_checks_failed_count, {
       failed: status.failed,

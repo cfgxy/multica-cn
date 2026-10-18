@@ -57,6 +57,7 @@ func issueDecisionFromInboxRow(row db.ListWorkspaceIssueDecisionsRow) db.IssueDe
 		IssueID:               row.IssueID,
 		SourceCommentID:       row.SourceCommentID,
 		Question:              row.Question,
+		Context:               row.Context,
 		Options:               row.Options,
 		MultiSelect:           row.MultiSelect,
 		RecommendedIndices:    row.RecommendedIndices,
