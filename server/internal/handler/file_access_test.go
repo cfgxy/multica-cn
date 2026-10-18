@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -190,6 +193,218 @@ func TestGetRuntimeFileOperationIsolatedByRuntimeAndACL(t *testing.T) {
 	dbfx.Member(t, testWorkspaceID, deniedID, "member")
 	deniedRequest := testutil.WithURLParams(newRequestAs(deniedID, http.MethodGet, "/api/runtimes/"+runtimeID+"/file-operations/"+opID, nil), "runtimeId", runtimeID, "operationId", opID)
 	wantFileAccessError(t, testHandler.GetRuntimeFileOperation, deniedRequest, http.StatusNotFound, "operation not found")
+}
+
+func TestMCPFileAccessQueuesAuditedOperationAndEnforcesTargetACL(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const instanceID = "mcp-file-access-test"
+	const instanceCredential = "test-mcp-file-access-instance-credential"
+	previousAuditCredential := testHandler.cfg.MCPAuditServiceCredential
+	previousInstanceCredentials := testHandler.cfg.MCPFileAccessInstanceCredentials
+	testHandler.cfg.MCPAuditServiceCredential = mcpAuditTestCredential
+	testHandler.cfg.MCPFileAccessInstanceCredentials = map[string]string{instanceID: instanceCredential}
+	t.Cleanup(func() {
+		testHandler.cfg.MCPAuditServiceCredential = previousAuditCredential
+		testHandler.cfg.MCPFileAccessInstanceCredentials = previousInstanceCredentials
+	})
+
+	runtimeID := dbfx.Runtime(t, "MCP file access runtime", testutil.Cols{"visibility": "public"})
+	targetID := "mcp-files-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, []string{testUserID})
+
+	startInvocation := func(actorID, toolName string) string {
+		t.Helper()
+		invocationID := uuid.NewString()
+		body, err := json.Marshal(map[string]any{
+			"invocation_id": invocationID, "workspace_id": testWorkspaceID,
+			"tool_name": toolName, "instance_id": instanceID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/mcp/audit-start", bytes.NewReader(body))
+		request.Header.Set("X-User-ID", actorID)
+		request.Header.Set("X-Multica-MCP-Service-Credential", mcpAuditTestCredential)
+		request.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+		request.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+		recorder := httptest.NewRecorder()
+		testHandler.StartMCPInvocationAudit(recorder, request)
+		var response mcpAuditWriteResponse
+		_ = json.Unmarshal(recorder.Body.Bytes(), &response)
+		if recorder.Code != http.StatusCreated || response.Status != "recorded" {
+			t.Fatalf("start MCP file invocation: status=%d response=%+v", recorder.Code, response)
+		}
+		return invocationID
+	}
+
+	invocationID := startInvocation(testUserID, "list_files")
+	writeRequest := newRequest(http.MethodPost, "/api/file-access/list", map[string]any{
+		"invocation_id": invocationID, "host": targetID, "path": "/srv/data/./report.txt",
+	})
+	writeRequest.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	writeRequest.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	var queued struct {
+		OperationID string `json:"operation_id"`
+		Status      string `json:"status"`
+	}
+	testutil.Call(t, testHandler.ListMCPFiles, writeRequest).Want(http.StatusAccepted).JSON(&queued)
+	if queued.OperationID == "" || queued.Status != "pending" {
+		t.Fatalf("queued MCP file operation = %+v", queued)
+	}
+	var storedTargetID, storedPath, storedInvocationID string
+	if err := testPool.QueryRow(t.Context(), `
+		SELECT target_id, request->>'path', invocation_id::text
+		FROM daemon_file_operation WHERE id = $1
+	`, queued.OperationID).Scan(&storedTargetID, &storedPath, &storedInvocationID); err != nil {
+		t.Fatal(err)
+	}
+	if storedTargetID != targetID || storedPath != "/srv/data/report.txt" || storedInvocationID != invocationID {
+		t.Fatalf("stored operation target/path/invocation = %q/%q/%q", storedTargetID, storedPath, storedInvocationID)
+	}
+
+	if _, err := testPool.Exec(t.Context(), `UPDATE daemon_file_operation SET status = 'succeeded', result = $2 WHERE id = $1`, queued.OperationID,
+		[]byte(`{"entries":[{"name":"report.txt"}],"private_daemon_field":"must-not-project"}`)); err != nil {
+		t.Fatal(err)
+	}
+	readRequest := newRequest(http.MethodGet, "/api/file-access/operations/"+queued.OperationID+"?invocation_id="+invocationID, nil)
+	readRequest.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	readRequest.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	readRequest = withURLParam(readRequest, "operationId", queued.OperationID)
+	var projected struct {
+		OperationID string         `json:"operation_id"`
+		Status      string         `json:"status"`
+		Result      map[string]any `json:"result"`
+	}
+	testutil.Call(t, testHandler.GetMCPFileOperation, readRequest).Want(http.StatusOK).JSON(&projected)
+	if projected.OperationID != queued.OperationID || projected.Status != "succeeded" || projected.Result["entries"] == nil {
+		t.Fatalf("MCP file operation projection = %+v", projected)
+	}
+	if _, leaked := projected.Result["private_daemon_field"]; leaked {
+		t.Fatalf("MCP file result exposed an unapproved daemon field: %+v", projected.Result)
+	}
+
+	finishBody, err := json.Marshal(map[string]any{
+		"invocation_id": invocationID, "operation_id": queued.OperationID,
+		"status": "success", "duration_ms": 12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishRequest := httptest.NewRequest(http.MethodPost, "/api/mcp/audit-finish", bytes.NewReader(finishBody))
+	finishRequest.Header.Set("X-User-ID", testUserID)
+	finishRequest.Header.Set("X-Multica-MCP-Service-Credential", mcpAuditTestCredential)
+	finishRequest.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	finishRequest.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	finishRecorder := httptest.NewRecorder()
+	testHandler.FinishMCPInvocationAudit(finishRecorder, finishRequest)
+	var finishResponse mcpAuditWriteResponse
+	_ = json.Unmarshal(finishRecorder.Body.Bytes(), &finishResponse)
+	if finishRecorder.Code != http.StatusOK || finishResponse.Status != "recorded" {
+		t.Fatalf("finish MCP file invocation: status=%d response=%+v", finishRecorder.Code, finishResponse)
+	}
+	var finishDetailsJSON []byte
+	if err := testPool.QueryRow(t.Context(), `
+		SELECT details FROM audit_event WHERE invocation_id = $1 AND event_type = 'mcp.invocation_finished'
+	`, invocationID).Scan(&finishDetailsJSON); err != nil {
+		t.Fatal(err)
+	}
+	var finishDetails map[string]any
+	if err := json.Unmarshal(finishDetailsJSON, &finishDetails); err != nil {
+		t.Fatal(err)
+	}
+	if finishDetails["target_id"] != targetID || finishDetails["normalized_path"] != "/srv/data/report.txt" || finishDetails["operation_id"] != queued.OperationID {
+		t.Fatalf("finish audit did not derive fields from the stored operation: %+v", finishDetails)
+	}
+
+	deniedUserID := dbfx.User(t, "MCP file ACL denied", "mcp-file-acl-denied+"+uuid.NewString()+"@multica.test")
+	dbfx.Member(t, testWorkspaceID, deniedUserID, "member")
+	deniedInvocationID := startInvocation(deniedUserID, "list_files")
+	deniedRequest := newRequestAs(deniedUserID, http.MethodPost, "/api/file-access/list", map[string]any{
+		"invocation_id": deniedInvocationID, "host": targetID, "path": "/srv/data/secret.txt",
+	})
+	deniedRequest.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	deniedRequest.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	wantFileAccessError(t, testHandler.ListMCPFiles, deniedRequest, http.StatusForbidden, "permission_denied")
+	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE invocation_id = $1`, deniedInvocationID); got != 0 {
+		t.Fatalf("ACL-denied MCP invocation queued %d operations, want 0", got)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM audit_event WHERE invocation_id = ANY($1::uuid[])`, []string{invocationID, deniedInvocationID})
+	})
+}
+
+func TestMCPFileInvocationTargetFilterUsesQueuedOperation(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const instanceID = "mcp-file-audit-filter-test"
+	const instanceCredential = "test-mcp-file-audit-filter-instance-credential"
+	previousAuditCredential := testHandler.cfg.MCPAuditServiceCredential
+	previousInstanceCredentials := testHandler.cfg.MCPFileAccessInstanceCredentials
+	testHandler.cfg.MCPAuditServiceCredential = mcpAuditTestCredential
+	testHandler.cfg.MCPFileAccessInstanceCredentials = map[string]string{instanceID: instanceCredential}
+	t.Cleanup(func() {
+		testHandler.cfg.MCPAuditServiceCredential = previousAuditCredential
+		testHandler.cfg.MCPFileAccessInstanceCredentials = previousInstanceCredentials
+	})
+
+	runtimeID := dbfx.Runtime(t, "MCP audit filter runtime", testutil.Cols{"visibility": "public"})
+	targetID := "mcp-audit-filter-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, []string{testUserID})
+	invocationID := uuid.NewString()
+	startBody, err := json.Marshal(map[string]any{
+		"invocation_id": invocationID, "workspace_id": testWorkspaceID,
+		"tool_name": "read_file_chunk", "instance_id": instanceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := httptest.NewRequest(http.MethodPost, "/api/mcp/audit-start", bytes.NewReader(startBody))
+	start.Header.Set("X-User-ID", testUserID)
+	start.Header.Set("X-Multica-MCP-Service-Credential", mcpAuditTestCredential)
+	start.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	start.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	startRecorder := httptest.NewRecorder()
+	testHandler.StartMCPInvocationAudit(startRecorder, start)
+	if startRecorder.Code != http.StatusCreated {
+		t.Fatalf("start MCP file invocation: status=%d body=%s", startRecorder.Code, startRecorder.Body.String())
+	}
+
+	queue := newRequest(http.MethodPost, "/api/file-access/read-chunk", map[string]any{
+		"invocation_id": invocationID, "host": targetID, "path": "/srv/data/report.txt", "offset": 0, "length": 64,
+	})
+	queue.Header.Set("X-Multica-MCP-Instance-ID", instanceID)
+	queue.Header.Set("X-Multica-MCP-Instance-Credential", instanceCredential)
+	var queued struct {
+		OperationID string `json:"operation_id"`
+		Status      string `json:"status"`
+	}
+	testutil.Call(t, testHandler.ReadMCPFileChunk, queue).Want(http.StatusAccepted).JSON(&queued)
+	if queued.OperationID == "" || queued.Status != "pending" {
+		t.Fatalf("queued operation = %+v", queued)
+	}
+
+	query := "time_basis=invocation_start&tool_name=read_file_chunk&target_type=host&target_id=" + url.QueryEscape(targetID)
+	page, code := fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 1 || page.Events[0].ID == "" || page.Events[0].EventType != "mcp.invocation_started" {
+		t.Fatalf("pending file invocation target filter: status=%d events=%+v", code, page.Events)
+	}
+	if _, err := testPool.Exec(t.Context(), `UPDATE daemon_file_operation SET status = 'claimed' WHERE id = $1`, queued.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	page, code = fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 1 {
+		t.Fatalf("claimed file invocation target filter: status=%d events=%+v", code, page.Events)
+	}
+	if _, err := testPool.Exec(t.Context(), `UPDATE daemon_file_operation SET status = 'timeout' WHERE id = $1`, queued.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	page, code = fetchWorkspaceAuditEvents(t, query)
+	if code != http.StatusOK || len(page.Events) != 1 {
+		t.Fatalf("timed out file invocation target filter: status=%d events=%+v", code, page.Events)
+	}
 }
 
 func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
