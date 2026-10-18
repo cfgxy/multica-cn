@@ -74,6 +74,7 @@ const (
 	AuditRuntimeOfflineDetected    = "runtime.offline_detected"
 	AuditRuntimeGC                 = "runtime.gc"
 	AuditRuntimeReconnectExhausted = "runtime.reconnect_exhausted"
+	AuditRuntimeFileAccessDenied   = "runtime.file_access_denied"
 
 	// Agent domain: agent-scoped operational and security events.
 	AuditAgentRunsCancelled           = "agent.runs_cancelled"

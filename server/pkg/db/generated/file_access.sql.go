@@ -19,6 +19,9 @@ WHERE id IN (
         AND target.runtime_id = candidate.runtime_id AND target.workspace_id = candidate.workspace_id
     WHERE candidate.runtime_id = $1 AND candidate.status = 'pending'
       AND target.enabled = TRUE AND target.roots <> '[]'::jsonb
+      AND candidate.requester_id IS NOT NULL
+      AND target.workspace_acl ? candidate.workspace_id::text
+      AND (target.member_acl = '[]'::jsonb OR target.member_acl ? candidate.requester_id::text)
     ORDER BY candidate.created_at, candidate.id LIMIT $2 FOR UPDATE SKIP LOCKED
 ) RETURNING id, target_id, kind, request, lease_epoch
 `
@@ -88,7 +91,7 @@ func (q *Queries) ExpireFileOperations(ctx context.Context) error {
 const finalizeFileOperation = `-- name: FinalizeFileOperation :one
 UPDATE daemon_file_operation SET status = $3, result = $4, error_class = $5, finished_at = now()
 WHERE id = $1 AND runtime_id = $2 AND status = 'claimed' AND lease_epoch = $6
-RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
+RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id, requester_id
 `
 
 type FinalizeFileOperationParams struct {
@@ -125,6 +128,7 @@ func (q *Queries) FinalizeFileOperation(ctx context.Context, arg FinalizeFileOpe
 		&i.ClaimedAt,
 		&i.FinishedAt,
 		&i.InvocationID,
+		&i.RequesterID,
 	)
 	return i, err
 }
@@ -133,7 +137,7 @@ const finalizeFileOperationForPolicy = `-- name: FinalizeFileOperationForPolicy 
 UPDATE daemon_file_operation SET status = $3, result = $4, error_class = $5, finished_at = now()
 WHERE id = $1 AND runtime_id = $2 AND status = 'claimed' AND lease_epoch = $6
   AND EXISTS (SELECT 1 FROM mcp_file_read_policy WHERE singleton = TRUE AND version = $7)
-RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
+RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id, requester_id
 `
 
 type FinalizeFileOperationForPolicyParams struct {
@@ -172,6 +176,7 @@ func (q *Queries) FinalizeFileOperationForPolicy(ctx context.Context, arg Finali
 		&i.ClaimedAt,
 		&i.FinishedAt,
 		&i.InvocationID,
+		&i.RequesterID,
 	)
 	return i, err
 }
@@ -224,7 +229,7 @@ func (q *Queries) GetFileAccessTargetByRuntime(ctx context.Context, arg GetFileA
 }
 
 const getFileOperation = `-- name: GetFileOperation :one
-SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id FROM daemon_file_operation WHERE id = $1
+SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id, requester_id FROM daemon_file_operation WHERE id = $1
 `
 
 func (q *Queries) GetFileOperation(ctx context.Context, id pgtype.UUID) (DaemonFileOperation, error) {
@@ -245,12 +250,13 @@ func (q *Queries) GetFileOperation(ctx context.Context, id pgtype.UUID) (DaemonF
 		&i.ClaimedAt,
 		&i.FinishedAt,
 		&i.InvocationID,
+		&i.RequesterID,
 	)
 	return i, err
 }
 
 const getFileOperationForInvocation = `-- name: GetFileOperationForInvocation :one
-SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id FROM daemon_file_operation
+SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id, requester_id FROM daemon_file_operation
 WHERE id = $1 AND invocation_id = $2
 `
 
@@ -277,6 +283,7 @@ func (q *Queries) GetFileOperationForInvocation(ctx context.Context, arg GetFile
 		&i.ClaimedAt,
 		&i.FinishedAt,
 		&i.InvocationID,
+		&i.RequesterID,
 	)
 	return i, err
 }
@@ -363,8 +370,8 @@ func (q *Queries) GetMCPFileReadPolicy(ctx context.Context) (GetMCPFileReadPolic
 }
 
 const insertFileOperation = `-- name: InsertFileOperation :one
-INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, invocation_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id
+INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, requester_id, invocation_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id, requester_id
 `
 
 type InsertFileOperationParams struct {
@@ -374,6 +381,7 @@ type InsertFileOperationParams struct {
 	TargetID     string      `json:"target_id"`
 	Kind         string      `json:"kind"`
 	Request      []byte      `json:"request"`
+	RequesterID  pgtype.UUID `json:"requester_id"`
 	InvocationID pgtype.UUID `json:"invocation_id"`
 }
 
@@ -385,6 +393,7 @@ func (q *Queries) InsertFileOperation(ctx context.Context, arg InsertFileOperati
 		arg.TargetID,
 		arg.Kind,
 		arg.Request,
+		arg.RequesterID,
 		arg.InvocationID,
 	)
 	var i DaemonFileOperation
@@ -403,6 +412,7 @@ func (q *Queries) InsertFileOperation(ctx context.Context, arg InsertFileOperati
 		&i.ClaimedAt,
 		&i.FinishedAt,
 		&i.InvocationID,
+		&i.RequesterID,
 	)
 	return i, err
 }
@@ -442,7 +452,7 @@ func (q *Queries) ListFileAccessTargetsByHost(ctx context.Context, host string) 
 }
 
 const listFileOperations = `-- name: ListFileOperations :many
-SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id FROM daemon_file_operation WHERE workspace_id = $1 AND target_id = $2
+SELECT id, workspace_id, runtime_id, target_id, kind, request, status, lease_epoch, result, error_class, created_at, claimed_at, finished_at, invocation_id, requester_id FROM daemon_file_operation WHERE workspace_id = $1 AND target_id = $2
 ORDER BY created_at DESC, id DESC LIMIT $3
 `
 
@@ -476,6 +486,7 @@ func (q *Queries) ListFileOperations(ctx context.Context, arg ListFileOperations
 			&i.ClaimedAt,
 			&i.FinishedAt,
 			&i.InvocationID,
+			&i.RequesterID,
 		); err != nil {
 			return nil, err
 		}

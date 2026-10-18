@@ -147,6 +147,25 @@ func TestSubmitRuntimeFileAccessDBBackedRejectionsAndQueue(t *testing.T) {
 	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, disabledID, "/srv/data/a.txt", testUserID), http.StatusForbidden, fileaccess.ErrorTargetDisabled.Error())
 	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, memberOnlyID, "/srv/data/a.txt", deniedUserID), http.StatusForbidden, fileaccess.ErrorPermissionDenied.Error())
 	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/etc/passwd", testUserID), http.StatusForbidden, fileaccess.ErrorPathNotAllowed.Error())
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, submitFilesRequest(runtimeID, targetID, "/srv/data/.env", testUserID), http.StatusBadRequest, fileaccess.ErrorSensitivePathDenied.Error())
+	var denialDetails []byte
+	if err := testPool.QueryRow(t.Context(), `
+		SELECT details FROM audit_event
+		WHERE event_type = 'runtime.file_access_denied' AND runtime_id = $1
+		ORDER BY occurred_at DESC, id DESC LIMIT 1
+	`, runtimeID).Scan(&denialDetails); err != nil {
+		t.Fatal(err)
+	}
+	var denial map[string]string
+	if err := json.Unmarshal(denialDetails, &denial); err != nil {
+		t.Fatal(err)
+	}
+	if denial["target_id"] != targetID || denial["error_class"] != fileaccess.ErrorSensitivePathDenied.Error() {
+		t.Fatalf("denial audit = %+v", denial)
+	}
+	if _, hasPath := denial["path"]; hasPath {
+		t.Fatalf("denial audit leaked a path: %+v", denial)
+	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE runtime_id = $1`, runtimeID); got != 0 {
 		t.Fatalf("rejected requests queued %d operations, want 0", got)
 	}
@@ -502,7 +521,7 @@ func insertFileOperation(t *testing.T, runtimeID, targetID, kind, status string,
 	return dbfx.Insert(t, "daemon_file_operation", testutil.Cols{
 		"id": uuid.NewString(), "workspace_id": testWorkspaceID, "runtime_id": runtimeID,
 		"target_id": targetID, "kind": kind, "request": []byte(`{"path":"/srv/data/a.txt"}`),
-		"status": status, "lease_epoch": leaseEpoch,
+		"status": status, "lease_epoch": leaseEpoch, "requester_id": testUserID,
 	})
 }
 
@@ -527,5 +546,36 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
 	if len(response.Pending) != 1 || response.Pending[0].OperationID != operationID || response.Pending[0].LeaseEpoch != 1 {
 		t.Fatalf("claimed operation missing from HTTP response: %+v", response.Pending)
+	}
+}
+
+func TestDaemonHeartbeatDoesNotClaimOperationAfterRequesterACLRevocation(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
+	targetID := "revoked-files-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, []string{testUserID})
+	opID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
+	otherMemberID := dbfx.User(t, "File requester revoked", "file-requester-revoked+"+uuid.NewString()+"@multica.test")
+	dbfx.Member(t, testWorkspaceID, otherMemberID, "member")
+	dbfx.Exec(t, `UPDATE daemon_file_access_target SET member_acl = $2::jsonb WHERE id = $1`, targetID, []byte(`["`+otherMemberID+`"]`))
+
+	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
+	var response struct {
+		Pending []struct {
+			OperationID string `json:"operation_id"`
+		} `json:"pending_file_operations"`
+	}
+	testutil.Call(t, testHandler.DaemonHeartbeat, request).Want(http.StatusOK).JSON(&response)
+	if len(response.Pending) != 0 {
+		t.Fatalf("ACL-revoked requester received claimed operations: %+v", response.Pending)
+	}
+	var status string
+	dbfx.QueryRow(t, `SELECT status FROM daemon_file_operation WHERE id = $1`, opID).Scan(&status)
+	if status != "pending" {
+		t.Fatalf("ACL-revoked operation status = %q, want pending for expiry", status)
 	}
 }
