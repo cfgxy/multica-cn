@@ -6,9 +6,9 @@ import { useConfigStore } from "@multica/core/config";
 import { AGENT_FOCUS_CONVERSATION_STARTERS } from "@multica/core/paths";
 import type { Agent, AgentConversationStarter } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
-import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../../i18n";
+import { LongTextEditor } from "../../../common/long-text-editor";
 import { PromptMarketStatusStrip } from "../../../market/prompt-status-strip";
 import { useOptionalNavigation } from "../../../navigation";
 
@@ -179,17 +179,30 @@ export function InstructionsTab({
     onDirtyChange?.(isDirty);
   }, [isDirty, onDirtyChange]);
 
+  const save = async () => {
+    await onSave({
+      instructions: value,
+      ...(conversationStartersSupported
+        ? { conversation_starters: conversationStarters }
+        : {}),
+    });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave({
-        instructions: value,
-        ...(conversationStartersSupported
-          ? { conversation_starters: conversationStarters }
-          : {}),
-      });
+      await save();
     } catch {
       // toast handled by parent
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleExpandedSave = async () => {
+    setSaving(true);
+    try {
+      await save();
     } finally {
       setSaving(false);
     }
@@ -252,19 +265,28 @@ export function InstructionsTab({
             ? t(($) => $.tab_body.instructions.workspace_notes_label)
             : t(($) => $.tab_body.instructions.system_prompt_label)}
         </label>
-        <Textarea
+        <LongTextEditor
           id={`agent-system-prompt-${agent.id}`}
-          name="agent-system-prompt"
-          autoComplete="off"
           value={value}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={setValue}
+          onSave={handleExpandedSave}
+          ariaLabel={
+            hasSystemLayer
+              ? t(($) => $.tab_body.instructions.workspace_notes_label)
+              : t(($) => $.tab_body.instructions.system_prompt_label)
+          }
+          dialogTitle={
+            hasSystemLayer
+              ? t(($) => $.tab_body.instructions.workspace_notes_label)
+              : t(($) => $.tab_body.instructions.system_prompt_label)
+          }
           placeholder={
             hasSystemLayer
               ? t(($) => $.tab_body.instructions.workspace_notes_placeholder)
               : t(($) => $.tab_body.instructions.placeholder)
           }
-          rows={18}
-          className="min-h-96 resize-y leading-6"
+          minHeight={384}
+          maxHeight={520}
         />
       </div>
 
