@@ -620,7 +620,7 @@ desktop-dev: ## Run only the Electron desktop app for the current env file
 # overrides the env file's daemon-shaped ws://.../ws MULTICA_SERVER_URL with
 # the REST origin; MULTICA_MCP_PORT (slot env) picks the listener port.
 mcp-dev: ## Run only the MCP HTTP server for the current env file
-	node apps/mcp/dist/index.js --transport http --host 127.0.0.1 --server-url http://localhost:$(PORT)
+	node apps/mcp/dist/index.js --transport http --host 127.0.0.1 --server-url http://localhost:$(PORT) --audit-credential-file "$${MCP_AUDIT_CREDENTIAL_FILE:?}" --file-access-instance-id "$${MULTICA_MCP_INSTANCE_ID:?}" --file-access-credential-file "$${MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE:?}"
 
 # ---------- One-click commands ----------
 ##@ One-click

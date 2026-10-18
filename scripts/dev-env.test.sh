@@ -605,6 +605,7 @@ require_contains "$MULTICA_SLOTS_HOME/dev1/lease-history.log" "$issue_a qa->dev"
 slot_env="$MULTICA_SLOTS_HOME/dev1/env"
 
 write_dev1_env() { # database user endpoint [declared_db] [declared_user]
+  rm -f "$MULTICA_SLOTS_HOME/dev1/mcp-audit-credential" "$MULTICA_SLOTS_HOME/dev1/mcp-file-access-credential"
   cat > "$slot_env" <<ENVEOF
 POSTGRES_DB=${4:-multica_dev1}
 POSTGRES_USER=${5:-dev1_app}
@@ -671,6 +672,11 @@ fi
 # MCP process.
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "slot env must carry MCP_URL pointing at the slot MCP port"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "slot env must carry the slot MCP port for the mcp-dev target"
+grep -q '^MULTICA_MCP_INSTANCE_ID=slot-dev1-file-access$' "$slot_env" || fail "slot env must carry the fixed MCP file access instance ID"
+grep -q '^MCP_AUDIT_CREDENTIAL_FILE=.*/dev1/mcp-audit-credential$' "$slot_env" || fail "slot env must point MCP at its slot audit credential file"
+grep -q '^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=.*/dev1/mcp-file-access-credential$' "$slot_env" || fail "slot env must point MCP at its slot file access credential file"
+[ "$(stat -c %a "$MULTICA_SLOTS_HOME/dev1/mcp-audit-credential")" = 600 ] || fail "slot audit credential must be owner-only"
+[ "$(stat -c %a "$MULTICA_SLOTS_HOME/dev1/mcp-file-access-credential")" = 600 ] || fail "slot file access credential must be owner-only"
 # composio_mcp_apps gates the creator MCP Apps tab off by default; the E2E
 # surface (e2e/agent-mcp.spec.ts) needs it on, so slots ship it enabled (RUYI-632).
 grep -q '^FF_COMPOSIO_MCP_APPS=true$' "$slot_env" || fail "slot env must enable FF_COMPOSIO_MCP_APPS for the E2E surface"
@@ -683,11 +689,14 @@ printf '%s' "${cred_key_line#*=}" | base64 -d | wc -c | grep -q '^32$' || fail "
 # Env files generated before RUYI-428 predate the MCP lines: `use` upgrades
 # them in place (append only) instead of regenerating, so the stored account
 # password — the one the shared instance's role was provisioned with — survives.
-sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
+sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=/d; /^MULTICA_MCP_INSTANCE_ID=/d; /^MCP_AUDIT_CREDENTIAL_FILE=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
 password_before="$(grep '^POSTGRES_PASSWORD=' "$slot_env")"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "use must accept a pre-MCP legacy env"
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "legacy env must gain MCP_URL via the in-place upgrade"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "legacy env must gain MULTICA_MCP_PORT via the in-place upgrade"
+grep -q '^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=' "$slot_env" || fail "legacy env must gain the slot audit credential"
+grep -q '^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=' "$slot_env" || fail "legacy env must gain the slot file access instance credential map"
+grep -q '^MULTICA_MCP_INSTANCE_ID=slot-dev1-file-access$' "$slot_env" || fail "legacy env must gain the slot file access instance ID"
 grep -q '^FF_COMPOSIO_MCP_APPS=true$' "$slot_env" || fail "legacy env must gain FF_COMPOSIO_MCP_APPS via the in-place upgrade"
 [ "$(grep '^POSTGRES_PASSWORD=' "$slot_env")" = "$password_before" ] || fail "the in-place upgrade must not rotate the stored password"
 grep -q '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$slot_env" || fail "legacy env must gain MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY via the in-place upgrade"
