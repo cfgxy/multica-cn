@@ -1250,6 +1250,31 @@ describe("aggregateByWeek", () => {
     };
   }
 
+  it("aggregates dashboard weeks without Array.prototype.toSorted (Hermes compatibility)", () => {
+    const originalToSorted = Array.prototype.toSorted;
+    try {
+      Object.defineProperty(Array.prototype, "toSorted", {
+        configurable: true,
+        value: undefined,
+      });
+
+      const result = aggregateByWeek([], "UTC", 2, "2026-05-24", "2026-05-11");
+
+      expect(result.weeklyTokens).toHaveLength(2);
+      expect(result.weeklyCostStack).toHaveLength(2);
+    } finally {
+      if (originalToSorted === undefined) {
+        Reflect.deleteProperty(Array.prototype, "toSorted");
+      } else {
+        Object.defineProperty(Array.prototype, "toSorted", {
+          configurable: true,
+          writable: true,
+          value: originalToSorted,
+        });
+      }
+    }
+  });
+
   it("groups daily rows into Mon-anchored ISO weeks", () => {
     // 2026-05-24 is Sunday, so the calendar week containing "today" is
     // Mon=05-18..Sun=05-24. With weekCount=2 the window covers weeks

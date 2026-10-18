@@ -7,6 +7,8 @@ import {
   aggregateDailyCost,
   aggregateDailyErrors,
   aggregateDailyTasks,
+  aggregateDailyTime,
+  aggregateDailyTokens,
   aggregateFailureClasses,
   aggregateFailureReasons,
   aggregateWeeklyErrors,
@@ -24,7 +26,64 @@ import {
   sortAgentFailures,
 } from "./aggregate";
 
+describe("dashboard aggregations", () => {
+  it("runs the stats aggregation path without Array.prototype.toSorted (Hermes compatibility)", () => {
+    const originalToSorted = Array.prototype.toSorted;
+    try {
+      Object.defineProperty(Array.prototype, "toSorted", {
+        configurable: true,
+        value: undefined,
+      });
+
+      const result = aggregateDailyCost([
+        {
+          date: "2026-05-10",
+          provider: "claude",
+          model: "claude-sonnet-4-6",
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          task_count: 1,
+        },
+        {
+          date: "2026-05-09",
+          provider: "claude",
+          model: "claude-sonnet-4-6",
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          task_count: 1,
+        },
+      ]);
+
+      expect(result.map((row) => row.date)).toEqual(["2026-05-09", "2026-05-10"]);
+      expect(aggregateDailyTokens([])).toEqual([]);
+      expect(aggregateDailyTime([])).toEqual([]);
+      expect(aggregateDailyTasks([])).toEqual([]);
+      expect(aggregateDailyErrors([])).toEqual([]);
+      expect(aggregateFailureClasses([])).toEqual([]);
+      expect(aggregateAgentFailures([])).toEqual([]);
+      expect(aggregateAgentTokens([])).toEqual([]);
+      expect(mergeAgentDashboardRows([], [])).toEqual([]);
+      expect(sortAgentFailures([], "failed")).toEqual([]);
+    } finally {
+      if (originalToSorted === undefined) {
+        Reflect.deleteProperty(Array.prototype, "toSorted");
+      } else {
+        Object.defineProperty(Array.prototype, "toSorted", {
+          configurable: true,
+          writable: true,
+          value: originalToSorted,
+        });
+      }
+    }
+  });
+});
+
 describe("aggregateDailyCost", () => {
+
   it("collapses multiple rows per day into one stack and sorts by date asc", () => {
     const result = aggregateDailyCost([
       {

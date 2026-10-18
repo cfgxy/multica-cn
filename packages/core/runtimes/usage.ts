@@ -1014,11 +1014,11 @@ export function aggregateByWeek(
   };
 
   const weeklyTokens: WeeklyTokenData[] = Array.from(tokenMap.values())
-    .toSorted((a, b) => a.weekStart.localeCompare(b.weekStart))
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
     .map((t) => ({ ...t, ...decorate(t.weekStart) }));
 
   const weeklyCostStack: WeeklyCostStackData[] = Array.from(stackMap.entries())
-    .toSorted(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => a.localeCompare(b))
     .map(([weekStart, s]) => {
       const round = (n: number) => Math.round(n * 100) / 100;
       const input = round(s.input);

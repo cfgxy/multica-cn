@@ -1177,7 +1177,7 @@ function LeaderboardCard({
 
   const sortedRows = useMemo(() => {
     const metric = SORT_METRIC[sortBy];
-    return rows.toSorted((a, b) => metric(b) - metric(a));
+    return [...rows].sort((a, b) => metric(b) - metric(a));
   }, [rows, sortBy]);
 
   // Bar scale measured across every row so collapsed and expanded states
