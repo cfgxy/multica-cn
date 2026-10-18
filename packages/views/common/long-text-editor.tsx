@@ -94,9 +94,11 @@ export function LongTextEditor({
   const snapshotRef = useRef(value);
   const inlineRef = useRef<HTMLTextAreaElement | null>(null);
   const expandButtonRef = useRef<HTMLButtonElement | null>(null);
+  const expandedRef = useRef(false);
   const selectionRef = useRef<{ start: number; end: number } | null>(null);
 
   const openExpanded = () => {
+    expandedRef.current = true;
     snapshotRef.current = value;
     const el = inlineRef.current;
     selectionRef.current = el
@@ -111,6 +113,7 @@ export function LongTextEditor({
   };
 
   const closeExpanded = () => {
+    expandedRef.current = false;
     setExpanded(false);
     // Reset the view for the next open; a dialog reopened in preview mode
     // would hide freshly typed text behind a stale render.
@@ -171,7 +174,8 @@ export function LongTextEditor({
           onChange={(event) => onChange(event.target.value)}
           onBlur={(event) => {
             // Moving focus to the expand control is part of opening the editor,
-            // not an inline commit. The button handles a later keyboard blur.
+            // and moving focus into the dialog is not an inline commit either.
+            if (expandedRef.current) return;
             if (event.relatedTarget === expandButtonRef.current) return;
             onBlur?.();
           }}
