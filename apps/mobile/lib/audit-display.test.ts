@@ -16,13 +16,25 @@ describe("audit display helpers", () => {
     });
   });
 
-  it("does not send a partial target filter rejected by the service", () => {
-    const params = buildAuditParams({
+  it("rejects a target type without a target ID", () => {
+    expect(() => buildAuditParams({
       since: "", until: "", timeBasis: "", actorID: "", actorType: "", clientName: "", clientVersion: "",
       toolName: "", resultStatus: "", resultErrorCode: "", targetType: "host", targetID: "",
-    });
-    expect(params).not.toHaveProperty("target_type");
-    expect(params).not.toHaveProperty("target_id");
+    })).toThrow("Audit target type and ID must be provided together");
+  });
+
+  it("rejects a target ID without a target type", () => {
+    expect(() => buildAuditParams({
+      since: "", until: "", timeBasis: "", actorID: "", actorType: "", clientName: "", clientVersion: "",
+      toolName: "", resultStatus: "", resultErrorCode: "", targetType: "", targetID: "host-id",
+    })).toThrow("Audit target type and ID must be provided together");
+  });
+
+  it("maps a valid target type and ID pair", () => {
+    expect(buildAuditParams({
+      since: "", until: "", timeBasis: "", actorID: "", actorType: "", clientName: "", clientVersion: "",
+      toolName: "", resultStatus: "", resultErrorCode: "", targetType: "host", targetID: " host-id ",
+    })).toMatchObject({ target_type: "host", target_id: "host-id" });
   });
 
   it("maps picked dates to UTC RFC3339 values and rejects invalid dates", () => {
