@@ -96,6 +96,10 @@ func (g *RetentionGC) Run(ctx context.Context) (GCSummary, error) {
 				continue
 			}
 		}
+		if err := g.Mgr.recordEvidenceExpiry(man.TaskID, man.ConvergedAt.Add(retain)); err != nil {
+			log.Error("supervisor: retention expiry record failed", "run_id", id, "error", err)
+			continue
+		}
 		if err := g.Mgr.RemoveRun(id); err != nil {
 			log.Error("supervisor: retention removal failed", "run_id", id, "error", err)
 			continue

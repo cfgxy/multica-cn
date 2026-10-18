@@ -20,6 +20,7 @@ package supervisor
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -211,6 +212,36 @@ func (m *Manager) ReadManifest(runID string) (*Manifest, error) {
 		return nil, err
 	}
 	return &man, nil
+}
+
+type evidenceExpiry struct {
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (m *Manager) evidenceExpiryPath(taskID string) string {
+	sum := sha256.Sum256([]byte(taskID))
+	return filepath.Join(m.root, ".evidence-expiry-"+hex.EncodeToString(sum[:])+".json")
+}
+
+func (m *Manager) recordEvidenceExpiry(taskID string, expiresAt time.Time) error {
+	if taskID == "" || expiresAt.IsZero() {
+		return errors.New("supervisor: invalid evidence expiry")
+	}
+	return writeJSONFile(m.evidenceExpiryPath(taskID), &evidenceExpiry{ExpiresAt: expiresAt.UTC()}, 0o600)
+}
+
+func (m *Manager) readEvidenceExpiry(taskID string) (time.Time, error) {
+	var expiry evidenceExpiry
+	if taskID == "" {
+		return time.Time{}, os.ErrNotExist
+	}
+	if err := readJSONFile(m.evidenceExpiryPath(taskID), &expiry); err != nil {
+		return time.Time{}, err
+	}
+	if expiry.ExpiresAt.IsZero() {
+		return time.Time{}, errors.New("supervisor: invalid evidence expiry record")
+	}
+	return expiry.ExpiresAt, nil
 }
 
 // WriteSpec stores the launcher brief 0600. The path is handed to the launcher

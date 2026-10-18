@@ -90,6 +90,10 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		}
 	}
 	if man == nil {
+		if evidenceExpired(s.mgr, req.RunID, nil) {
+			out.Unavailable = "expired"
+			return out
+		}
 		out.Unavailable = "not_supervised"
 		return out
 	}
@@ -137,7 +141,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	if req.Stream == "stdout" || req.Stream == "both" {
 		out.StdoutTail, cur.Out, observed, err = read(stdoutLogPath(s.mgr.Dir(man.RunID)), cur.Out)
 		if err != nil {
-			out.Unavailable = "not_found"
+			out.Unavailable = evidenceMissingCategory(s.mgr, man)
 			return out
 		}
 	}
@@ -145,7 +149,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		var at time.Time
 		out.StderrTail, cur.Err, at, err = read(stderrLogPath(s.mgr.Dir(man.RunID)), cur.Err)
 		if err != nil {
-			out.Unavailable = "not_found"
+			out.Unavailable = evidenceMissingCategory(s.mgr, man)
 			return out
 		}
 		if at.After(observed) {
@@ -176,4 +180,18 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	}
 	out.Available = true
 	return out
+}
+
+func evidenceMissingCategory(mgr *Manager, man *Manifest) string {
+	if evidenceExpired(mgr, man.TaskID, man.ConvergedAt) {
+		return "expired"
+	}
+	return "not_found"
+}
+
+func evidenceExpired(mgr *Manager, taskID string, convergedAt *time.Time) bool {
+	if expiresAt, err := mgr.readEvidenceExpiry(taskID); err == nil && !time.Now().UTC().Before(expiresAt) {
+		return true
+	}
+	return convergedAt != nil && time.Since(*convergedAt) >= DefaultRetention
 }
