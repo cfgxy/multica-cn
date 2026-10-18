@@ -93,7 +93,9 @@ exec "$guard" "$@"
 
 func installCodexCommandGuards(env []string, guardBinDir, home string) ([]string, error) {
 	if runtime.GOOS == "windows" {
-		return nil, fmt.Errorf("POSIX command guard shims are not supported on Windows")
+		// The current shims rely on Bash. Keep Windows Codex launches usable until
+		// a native wrapper exists; this must not be mistaken for guard coverage.
+		return env, nil
 	}
 	if guardBinDir == "" {
 		return nil, fmt.Errorf("codex command guard directory is empty")
